@@ -91,6 +91,7 @@ class Odds(Base):
     market = Column(String, nullable=False)     # "1x2", "over_under_2.5"
     outcome = Column(String, nullable=False)    # "home", "away", "draw", "over", "under"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
+    point = Column(Float, nullable=True)        # Line/Point (e.g. 2.5, -6.5) for Spread/Total
     
     updated_at = Column(DateTime, default=datetime.utcnow)
     

@@ -1,0 +1,26 @@
+{
+    "id": "unibet",
+    "name": "Unibet",
+    "domain": "unibet.se",
+    "method": "retriever",
+    "retriever_type": "kambi",
+    "api_type": "kambi",
+    "base_url": "https://eu1.offering-api.kambicdn.com/offering/v2018",
+    "brand": "ubse",
+    "status": "working",
+    "params": {
+        "market": "SE",
+        "lang": "sv_SE",
+        "channel_id": "1",
+        "client_id": "2"
+    },
+    "endpoints": {
+        "groups": "group.json",
+        "events": "betoffer/group/{group_id}.json"
+    },
+    "parser_map": {
+        "home_team": "$.events[*].homeName",
+        "odds_value": "$.betOffers[*].outcomes[*].odds"
+    },
+    "notes": "Full extraction working across all sports via Kambi API"
+}

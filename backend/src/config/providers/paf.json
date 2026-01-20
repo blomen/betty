@@ -1,0 +1,16 @@
+{
+    "id": "paf",
+    "name": "Paf",
+    "domain": "paf.se",
+    "method": "api",
+    "api_type": "kambi",
+    "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
+    "brand": "pafse",
+    "site_url": "https://www.paf.se",
+    "params": {
+        "market": "SE",
+        "lang": "sv_SE",
+        "odds_format": "decimal"
+    },
+    "status": "working"
+}

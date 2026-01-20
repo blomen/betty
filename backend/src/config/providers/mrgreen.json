@@ -1,0 +1,15 @@
+{
+    "id": "mrgreen",
+    "name": "Mr Green",
+    "domain": "mrgreen.com",
+    "method": "api",
+    "api_type": "kambi",
+    "api_base": "https://e4-api.kambi.com/offering/v2018/mrgreen",
+    "site_url": "https://www.mrgreen.com",
+    "params": {
+        "market": "SE",
+        "lang": "sv_SE",
+        "odds_format": "decimal"
+    },
+    "status": "working"
+}

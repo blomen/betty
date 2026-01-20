@@ -1,0 +1,16 @@
+{
+    "id": "polymarket",
+    "name": "Polymarket",
+    "method": "retriever",
+    "retriever_type": "polymarket",
+    "api_type": "polymarket",
+    "status": "working",
+    "base_url": "https://gamma-api.polymarket.com",
+    "params": {
+        "game_bets_tag_id": 100639
+    },
+    "endpoints": {
+        "events": "/events",
+        "sports": "/sports"
+    }
+}

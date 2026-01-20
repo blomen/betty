@@ -1,0 +1,15 @@
+{
+    "id": "casumo",
+    "name": "Casumo",
+    "domain": "casumo.com",
+    "method": "api",
+    "api_type": "kambi",
+    "api_base": "https://e4-api.kambi.com/offering/v2018/casumo",
+    "site_url": "https://www.casumo.com",
+    "params": {
+        "market": "SE",
+        "lang": "sv_SE",
+        "odds_format": "decimal"
+    },
+    "status": "working"
+}

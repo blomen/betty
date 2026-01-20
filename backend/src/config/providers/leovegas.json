@@ -1,0 +1,15 @@
+{
+    "id": "leovegas",
+    "name": "LeoVegas",
+    "domain": "leovegas.com",
+    "method": "api",
+    "api_type": "kambi",
+    "api_base": "https://e4-api.kambi.com/offering/v2018/leovegas",
+    "site_url": "https://www.leovegas.com",
+    "params": {
+        "market": "SE",
+        "lang": "sv_SE",
+        "odds_format": "decimal"
+    },
+    "status": "working"
+}

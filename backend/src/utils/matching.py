@@ -65,6 +65,9 @@ TEAM_ALIASES = {
     "real madrid": ["r madrid", "rmcf"],
     "barcelona": ["fc barcelona", "barca", "fcb"],
     "real sociedad": ["r sociedad", "la real"],
+    "athletic club": ["athletic bilbao", "athletic"],
+    "olympiacos": ["olympiacos sfp", "olympiakos", "olympiakos piraeus"],
+    "bayer leverkusen": ["b04", "bayer 04 leverkusen", "bayer 04"],
     
     # German (important: handle BV, VfL, etc variations)
     "bayern munich": ["bayern munchen", "fc bayern", "bayern", "bayern münchen"],
