@@ -44,6 +44,8 @@ class SpectateRetriever(Retriever):
             if isinstance(self.transport, BrowserTransport):
                 await self.transport._ensure_browser()
                 await self.transport.page.goto(self.site_url, wait_until="domcontentloaded")
+                await self.transport.page.screenshot(path="backend/src/debug_888_init.png")
+                logger.info(f"[{self.provider_id}] Initialized. Screenshot saved to backend/src/debug_888_init.png")
                 self._initialized = True
         except Exception as e:
             logger.error(f"Spectate init failed: {e}")
@@ -52,7 +54,10 @@ class SpectateRetriever(Retriever):
         return ""
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
-        await self._ensure_init()
+        try:
+            await self._ensure_init()
+        except Exception:
+            pass # Try anyway?
         
         tournaments = self.tournaments_map.get(sport, [])
         if limit and len(tournaments) > limit:
@@ -76,15 +81,21 @@ class SpectateRetriever(Retriever):
 
     async def _fetch_api(self, endpoint: str) -> dict:
         url = f"{self.api_base}{endpoint}"
+        logger.info(f"[{self.provider_id}] Fetching API: {url}")
         # Use Transport.get - our BrowserTransport logic handles context requests
         # We pass headers to simulate the referer
-        data = await self.transport.get(url, headers={
-             "accept": "application/json",
-             "origin": self.site_url,
-             "referer": f"{self.site_url}/",
-        })
-        # Transport returns json or text.
-        return data if isinstance(data, dict) else {}
+        try:
+            data = await self.transport.get(url, headers={
+                 "accept": "application/json",
+                 "origin": self.site_url,
+                 "referer": f"{self.site_url}/",
+            })
+            if not data:
+                logger.warning(f"[{self.provider_id}] API returned empty/None for {url}")
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] API fetch failed: {e}")
+            return {}
 
     def parse(self, data: Any, sport: str, league: str = "") -> List[StandardEvent]:
         events = []

@@ -25,13 +25,29 @@ class PolymarketRetriever(Retriever):
                     sports_data = json.load(f)
                     
                 mapping = {}
-                for s in sports_data:
-                    # s is list of objects? Or list of dicts?
-                    # sports.json structure: [{"name": "football", "polymarket_series_id": 123}, ...]
+                
+                # Helper to process single item
+                def process_item(s):
                     name = s.get("name")
                     pid = s.get("polymarket_series_id")
-                    if name and pid:
-                        mapping[name] = pid
+                    slug = s.get("polymarket_slug")
+                    tid = s.get("polymarket_tag_id")
+                    
+                    if name and (pid or slug or tid):
+                        mapping[name] = {"id": pid, "slug": slug, "tag_id": tid}
+
+                if isinstance(sports_data, list) and len(sports_data) > 0 and "leagues" in sports_data[0]:
+                    # Nested format
+                    for group in sports_data:
+                        # Polymarket IDs are usually on the league level, but could be on group level later?
+                        # For now, just iterate leagues
+                        for league in group.get("leagues", []):
+                            process_item(league)
+                else:
+                    # Flat format
+                    for s in sports_data:
+                        process_item(s)
+                            
                 return mapping
         except Exception as e:
             logger.warning(f"Failed to load sports.json for Polymarket: {e}")
@@ -42,14 +58,16 @@ class PolymarketRetriever(Retriever):
         return ""
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
-        series_id = self.sports_map.get(sport)
-        if not series_id:
-            logger.warning(f"[{self.provider_id}] No series_id found for sport '{sport}'")
+        config = self.sports_map.get(sport)
+        if not config:
+            logger.warning(f"[{self.provider_id}] No series_id/slug/tag found for sport '{sport}'")
             return []
+        
+        series_id = config.get("id")
+        series_slug = config.get("slug")
+        tag_id = config.get("tag_id")
             
         params = {
-            "series_id": series_id,
-            "tag_id": self.game_bets_tag_id,
             "active": "true",
             "closed": "false",
             "order": "startTime",
@@ -57,11 +75,34 @@ class PolymarketRetriever(Retriever):
             "limit": limit
         }
         
+        # Strategy: Series ID > Tag ID > Slug (Client Filter)
+        if series_id:
+            params["series_id"] = series_id
+            # Don't restrict by tag if we have series ID, to imply broader search
+        elif tag_id:
+            params["tag_id"] = tag_id
+        elif series_slug:
+            # Fallback: Fetch broad (no tag) and filter client-side
+            # We explicitly do NOT set tag_id here to avoid "Game Bets" restriction
+            pass
+        else:
+             return []
+        
         url = f"{self.base_url}/events"
         data = await self.transport.get(url, params=params)
         
         if not data: return []
         
+        # Client-Side Filtering if using Slug strategy
+        if not series_id and not tag_id and series_slug:
+            filtered_data = []
+            for item in data:
+                # Check Series Slug OR potentially Event Slug if lenient
+                actual_slug = item.get("seriesSlug") or ""
+                if actual_slug == series_slug:
+                    filtered_data.append(item)
+            data = filtered_data
+            
         return self.parse(data, sport)
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:

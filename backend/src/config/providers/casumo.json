@@ -4,7 +4,8 @@
     "domain": "casumo.com",
     "method": "api",
     "api_type": "kambi",
-    "api_base": "https://e4-api.kambi.com/offering/v2018/casumo",
+    "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
+    "brand": "case",
     "site_url": "https://www.casumo.com",
     "params": {
         "market": "SE",

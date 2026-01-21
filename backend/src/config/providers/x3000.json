@@ -1,12 +1,12 @@
 {
-    "id": "mrgreen",
-    "name": "Mr Green",
-    "domain": "mrgreen.se",
+    "id": "x3000",
+    "name": "X3000",
+    "domain": "x3000.se",
     "method": "api",
     "api_type": "kambi",
     "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
-    "brand": "mrgreen",
-    "site_url": "https://www.mrgreen.com",
+    "brand": "speedyspelse",
+    "site_url": "https://www.x3000.se",
     "params": {
         "market": "SE",
         "lang": "sv_SE",

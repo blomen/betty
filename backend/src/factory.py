@@ -43,7 +43,21 @@ class ExtractorFactory:
         try:
             with open(os.path.join(config_path, "sports.json"), "r") as f:
                 sports_data = json.load(f)
-                self.sports = [SportConfig(s) for s in sports_data]
+                
+                # Check format and flatten if nested
+                self.sports = []
+                if isinstance(sports_data, list) and len(sports_data) > 0 and "leagues" in sports_data[0]:
+                    # New format: List of Sport Groups
+                    for group in sports_data:
+                        defaults = group.get("defaults", {})
+                        for league in group.get("leagues", []):
+                            # Merge defaults with league data
+                            merged = defaults.copy()
+                            merged.update(league)
+                            self.sports.append(SportConfig(merged))
+                else:
+                    # Old format: Flat list
+                    self.sports = [SportConfig(s) for s in sports_data]
         except Exception as e:
             logger.warning(f"Failed to load sports.json: {e}")
             self.sports = []
@@ -95,6 +109,13 @@ class ExtractorFactory:
         return list(self.providers.keys())
 
     def get_extractor(self, provider_id: str) -> Retriever:
+        # Check if we already have an instance
+        if hasattr(self, "_extractor_cache") and provider_id in self._extractor_cache:
+            return self._extractor_cache[provider_id]
+            
+        if not hasattr(self, "_extractor_cache"):
+            self._extractor_cache = {}
+
         config = self.providers.get(provider_id)
         if not config:
             raise ValueError(f"Provider {provider_id} not found or not active.")
@@ -102,20 +123,26 @@ class ExtractorFactory:
         retriever_type = config.get("retriever_type")
         
         # Mapping
-        if retriever_type == "kambi":
-            return KambiRetriever(config)
-        elif retriever_type == "polymarket":
-            return PolymarketRetriever(config)
-        elif retriever_type == "spectate":
-            return SpectateRetriever(config)
-
-            
         # Fallback for old configs if any remains
         api_type = config.get("api_type")
-        if api_type == "kambi": return KambiRetriever(config)
-        if api_type == "polymarket": return PolymarketRetriever(config)
+        retriever = None
         
-        dom_type = config.get("dom_type")
-        if dom_type == "spectate": return SpectateRetriever(config)
+        if retriever_type == "kambi":
+            retriever = KambiRetriever(config)
+        elif retriever_type == "polymarket":
+            retriever = PolymarketRetriever(config)
+        elif retriever_type == "spectate":
+            retriever = SpectateRetriever(config)
         
-        raise ValueError(f"Unknown retriever type for {provider_id}")
+        elif api_type == "kambi": retriever = KambiRetriever(config)
+        elif api_type == "polymarket": retriever = PolymarketRetriever(config)
+        
+        else:
+            dom_type = config.get("dom_type")
+            if dom_type == "spectate": retriever = SpectateRetriever(config)
+        
+        if not retriever:
+            raise ValueError(f"Unknown retriever type for {provider_id}")
+            
+        self._extractor_cache[provider_id] = retriever
+        return retriever

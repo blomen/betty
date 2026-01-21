@@ -41,7 +41,13 @@ class KambiRetriever(Retriever):
         groups_url = f"{self.base_url}/{self.brand}/group.json"
         
         logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
-        group_data = await self.transport.get(groups_url, params=self.default_params)
+        
+        if groups_url in self._group_cache:
+            group_data = self._group_cache[groups_url]
+        else:
+            group_data = await self.transport.get(groups_url, params=self.default_params)
+            if group_data:
+                self._group_cache[groups_url] = group_data
         
         if not group_data:
             return []

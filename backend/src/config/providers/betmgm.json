@@ -1,12 +1,12 @@
 {
-    "id": "mrgreen",
-    "name": "Mr Green",
-    "domain": "mrgreen.se",
+    "id": "betmgm",
+    "name": "BetMGM",
+    "domain": "betmgm.se",
     "method": "api",
     "api_type": "kambi",
     "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
-    "brand": "mrgreen",
-    "site_url": "https://www.mrgreen.com",
+    "brand": "betmgmse",
+    "site_url": "https://www.betmgm.se",
     "params": {
         "market": "SE",
         "lang": "sv_SE",

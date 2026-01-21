@@ -200,9 +200,11 @@ class ExtractionPipeline:
                 # NOTE: Kambi extractor uses max_groups, Base uses limit. 
                 # Refactor pass normalized args
                 events = await extractor.extract(sport, limit=limit)
+                logger.info(f"DEBUG: {provider_id} - {sport}: {len(events)} events")
                 
                 for event in events:
                     ev_new, ev_processed_odds, ev_new_odds = self._store_provider_event(event, provider_id)
+                    logger.debug(f"DEBUG: {provider_id} stored event {event.id}: new={ev_new}, odds={ev_new_odds}")
                     
                     events_processed += 1
                     if ev_new:

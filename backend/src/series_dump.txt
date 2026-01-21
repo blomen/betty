@@ -1,0 +1,869 @@
+SERIES: ID=10644 | Slug=us-bank-bailout | Title=US Bank Bailout
+SERIES: ID=10566 | Slug=ukraine-joins-nato | Title=Ukraine Joins NATO
+SERIES: ID=10649 | Slug=iran-nuke | Title=Iran Nuke 
+SERIES: ID=10946 | Slug=aapl-multi-strikes-weekly | Title=AAPL Multi Strikes Weekly
+SERIES: ID=10381 | Slug=ndx-daily-up-or-down | Title=NDX Daily Up or Down
+SERIES: ID=10458 | Slug=comex-silver-futures-daily-up-or-down | Title=COMEX Silver Futures Daily Up or Down
+SERIES: ID=10384 | Slug=dow-jones-daily-up-or-down | Title=Dow Jones Daily Up or Down
+SERIES: ID=10378 | Slug=amzn-daily-up-down | Title=AMZN Daily Up Down
+SERIES: ID=10398 | Slug=xpd-daily-up-or-down | Title=XPD Daily Up or Down
+SERIES: ID=10391 | Slug=pltr-daily-up-or-down | Title=PLTR Daily Up or Down
+SERIES: ID=10395 | Slug=nya | Title=NYA
+SERIES: ID=10557 | Slug=obama-arrest | Title=Obama Arrest
+SERIES: ID=10874 | Slug=kbl | Title=KBL
+SERIES: ID=10369 | Slug=valorant | Title=Valorant
+SERIES: ID=10553 | Slug=russian-slovainsk-capture | Title=Russian Slovainsk Capture
+SERIES: ID=10242 | Slug=afc-wc | Title=AFC WC
+SERIES: ID=10558 | Slug=nato-article-5 | Title=NATO Article 5
+SERIES: ID=10617 | Slug=musk-out-as-tesla-ceo | Title=Musk Out as Tesla CEO
+SERIES: ID=10906 | Slug=level-4-warning | Title=Level 4 warning
+SERIES: ID=10471 | Slug=cwbb | Title=CWBB
+SERIES: ID=10491 | Slug=speed-chess-qf | Title=Speed Chess QF
+SERIES: ID=10045 | Slug=solana-etf | Title=Solana ETF
+SERIES: ID=10541 | Slug=ukraine-x-russia-peace-deal | Title=Ukraine x Russia Peace Deal
+SERIES: ID=10351 | Slug=marques-brownlee-views-day-1 | Title=Marques Brownlee views day 1
+SERIES: ID=10156 | Slug=earthquake | Title=Earthquake
+SERIES: ID=10742 | Slug=seoul-daily-weather | Title=Seoul Daily Weather
+SERIES: ID=10700 | Slug=khl-2026 | Title=khl-2026
+SERIES: ID=10030 | Slug=best-ai-company | Title=Best AI Company
+SERIES: ID=10844 | Slug=6pt5-earthquake-weekly | Title=6.5 Earthquake Weekly
+SERIES: ID=10027 | Slug=ecb-rates | Title=ECB Rates
+SERIES: ID=10317 | Slug=dfb-pokal | Title=DFB-Pokal
+SERIES: ID=10048 | Slug=ripple-etf | Title=Ripple ETF
+SERIES: ID=10164 | Slug=bondi-bongino-or-patel-out | Title= Bondi, Bongino or Patel out
+SERIES: ID=10924 | Slug=jokic-sga-prizm-184-multistrike-weekly | Title=Jokic SGA Prizm 184 Multistrike Weekly
+SERIES: ID=10741 | Slug=shanghai-daily-weather | Title=Shanghai Daily Weather
+SERIES: ID=10243 | Slug=uef-qualifiers | Title=UEF Qualifiers
+SERIES: ID=10206 | Slug=openai-browser | Title=OpenAI browser
+SERIES: ID=10389 | Slug=netflix-daily-up-or-down | Title=Netflix Daily Up or Down
+SERIES: ID=10113 | Slug=rotten-tomatoes | Title=rotten tomatoes
+SERIES: ID=10669 | Slug=bank-of-mexico-decision | Title=Bank of Mexico Decision
+SERIES: ID=10532 | Slug=yoon-prison-sentence | Title=Yoon Prison Sentence
+SERIES: ID=10498 | Slug=tesla-multi-strikes-weekly | Title=Tesla Multi Strikes Weekly
+SERIES: ID=10209 | Slug=uel-2025 | Title=UEFA Europa League 2025
+SERIES: ID=10642 | Slug=rklb-neg-risk-weekly | Title=RKLB Neg Risk Weekly
+SERIES: ID=10953 | Slug=nvda-multi-strikes-weekly | Title=NVDA Multi Strikes Weekly
+SERIES: ID=10341 | Slug=houthi-attack-on-shipping | Title=Houthi attack on shipping
+SERIES: ID=10072 | Slug=xrp-up-down-monthly | Title=XRP Up Down Monthly
+SERIES: ID=10847 | Slug=counter-strike-doppler-index-multi-strike-monthly | Title=Counter Strike Doppler Index Multi Strike Monthly
+SERIES: ID=10779 | Slug=tsa-daily | Title=TSA Daily
+SERIES: ID=10599 | Slug=dax-hit-price-monthly | Title=DAX Hit Price Monthly
+SERIES: ID=10719 | Slug=2-netflix-show | Title=#2 Netflix Show
+SERIES: ID=10432 | Slug=rainbow-six-siege | Title=Rainbow Six Siege
+SERIES: ID=10638 | Slug=nvda-neg-risk-weekly | Title=NVDA Neg Risk Weekly
+SERIES: ID=10228 | Slug=euro-basket | Title=euro-basket
+SERIES: ID=10614 | Slug=trump-tariff-dividend | Title=Trump Tariff Dividend
+SERIES: ID=10575 | Slug=peak-us-national-debt | Title=Peak US National Debt
+SERIES: ID=10179 | Slug=maxwell-pardon | Title=maxwell pardon
+SERIES: ID=10653 | Slug=china-x-taiwan-clash | Title=China x Taiwan Clash
+SERIES: ID=10745 | Slug=elon-musk-trillionaire | Title=Elon Musk Trillionaire
+SERIES: ID=10829 | Slug=another-7pt0-or-above-earthquake-by | Title=Another 7.0 or above earthquake by
+SERIES: ID=10873 | Slug=lnb | Title=LNB
+SERIES: ID=10769 | Slug=best-ai-math | Title=Best AI Math
+SERIES: ID=10724 | Slug=monthly-tornadoes-us | Title=Monthly Tornadoes US
+SERIES: ID=10893 | Slug=us-strike-on-somalia | Title=U.S. strike on Somalia
+SERIES: ID=10902 | Slug=wellington-daily-weather | Title=Wellington Daily Weather
+SERIES: ID=10804 | Slug=silver-si-above | Title=Silver (SI) above ___
+SERIES: ID=10237 | Slug=trump-out | Title=Trump out
+SERIES: ID=10335 | Slug=player-props | Title=Player Props
+SERIES: ID=10593 | Slug=nuclear-test | Title=nuclear test
+SERIES: ID=10841 | Slug=rugby-top-14 | Title=Rugby Top 14
+SERIES: ID=10135 | Slug=us-to-invade-iran | Title=US to invade Iran
+SERIES: ID=10580 | Slug=congress-stock-trading-ban | Title=Congress Stock Trading Ban
+SERIES: ID=10173 | Slug=erdoan-out | Title=Erdoğan out
+SERIES: ID=10615 | Slug=tiktok-sale | Title=TikTok Sale
+SERIES: ID=10821 | Slug=crude-oil-cl-settle | Title=Crude Oil (CL) settle
+SERIES: ID=10594 | Slug=spx-hit-price-monthly | Title=SPX Hit Price Monthly
+SERIES: ID=10490 | Slug=inflation-argentina-monthly | Title=Inflation Argentina - Monthly
+SERIES: ID=10129 | Slug=israel-declares-war | Title=Israel declares war
+SERIES: ID=10363 | Slug=denmark-superliga | Title=Denmark Superliga
+SERIES: ID=10868 | Slug=brics-add-a-new-member | Title=BRICS add a new member
+SERIES: ID=10840 | Slug=rugby-premiership | Title=Rugby Premiership
+SERIES: ID=10431 | Slug=pubg | Title=PUBG
+SERIES: ID=10182 | Slug=error1 | Title=error1
+SERIES: ID=10126 | Slug=khamenei-out | Title=Khamenei out
+SERIES: ID=10342 | Slug=fed-3-parlay | Title=Fed 3-Parlay
+SERIES: ID=10001 | Slug=rcp-polling-margin | Title=RCP Polling Margin
+SERIES: ID=10583 | Slug=foreign-intervention-in-gaza | Title=Foreign Intervention In Gaza
+SERIES: ID=10833 | Slug=lai-ching-te-impeached | Title=Lai Ching-te impeached
+SERIES: ID=10208 | Slug=trump-putin-and-zelensky-meet | Title=Trump, Putin, and Zelensky meet
+SERIES: ID=10069 | Slug=nothing-ever-happens | Title=Nothing Ever Happens
+SERIES: ID=10316 | Slug=copa-del-rey | Title=Copa del Rey
+SERIES: ID=10067 | Slug=10-year-treasur | Title=10-year Treasur
+SERIES: ID=10238 | Slug=fifa-friendly | Title=Fifa Friendly
+SERIES: ID=10672 | Slug=la-liga-2 | Title=La Liga 2
+SERIES: ID=10137 | Slug=khameni | Title=Khameni
+SERIES: ID=10492 | Slug=greg-goes-all-in | Title=Greg Goes All In
+SERIES: ID=10448 | Slug=lanka-premier-league | Title=Lanka Premier League
+SERIES: ID=10883 | Slug=super-rugby-pacific | Title=Super Rugby Pacific
+SERIES: ID=10409 | Slug=usdjpy-daily-up-or-down | Title=USD/JPY Daily Up or Down
+SERIES: ID=10880 | Slug=rugby-six-nations | Title=Rugby Six Nations
+SERIES: ID=10834 | Slug=inflation-canada-monthly | Title=Inflation Canada - Monthly
+SERIES: ID=10928 | Slug=charizard-4-base-multistrike-monthly | Title=Charizard 4 Base Multistrike Monthly
+SERIES: ID=10634 | Slug=amzn-neg-risk-weekly | Title=AMZN Neg Risk Weekly
+SERIES: ID=10426 | Slug=mobile-legends-bang-bang | Title=Mobile Legends: Bang Bang
+SERIES: ID=10427 | Slug=call-of-duty | Title=Call of Duty
+SERIES: ID=10611 | Slug=bank-failure | Title=Bank Failure
+SERIES: ID=10673 | Slug=concacaf-nations-league | Title=Concacaf Nations League
+SERIES: ID=10158 | Slug=netanyahu-out | Title=Netanyahu out
+SERIES: ID=10285 | Slug=arg-2025 | Title=Argentina Primera División 2025
+SERIES: ID=10757 | Slug=pelosi-vs-mtg | Title=Pelosi vs. MTG
+SERIES: ID=10451 | Slug=odi | Title=ODI
+SERIES: ID=10838 | Slug=us-forces-in-venezuela | Title=US forces in Venezuela
+SERIES: ID=10370 | Slug=kbo | Title=KBO
+SERIES: ID=10414 | Slug=1-paid-app | Title=#1 Paid App
+SERIES: ID=10576 | Slug=yoon-out-of-custody | Title=Yoon Out Of Custody
+SERIES: ID=10786 | Slug=africa-cup-of-nations | Title=Africa Cup of Nations
+SERIES: ID=10348 | Slug=shutdown-ends-neg | Title=Shutdown ends (neg)
+SERIES: ID=10290 | Slug=mex-2025 | Title=Liga MX 2025
+SERIES: ID=10481 | Slug=tesla-hit-price-monthly | Title=Tesla Hit Price Monthly
+SERIES: ID=10766 | Slug=2-free-app | Title=#2 Free App
+SERIES: ID=10483 | Slug=netflix-hit-price-monthly | Title=Netflix Hit Price Monthly
+SERIES: ID=10134 | Slug=iran-regime | Title=iran regime
+SERIES: ID=10313 | Slug=russian-premier-league | Title=Russian Premier League
+SERIES: ID=10526 | Slug=gold-card | Title=Gold Card
+SERIES: ID=10358 | Slug=tennis | Title=Tennis
+SERIES: ID=10948 | Slug=amzn-multi-strikes-weekly | Title=AMZN Multi Strikes Weekly
+SERIES: ID=10054 | Slug=border-encounters | Title=Border encounters
+SERIES: ID=10086 | Slug=solana-up-or-down-daily | Title=Solana Up or Down Daily
+SERIES: ID=10397 | Slug=xag-daily-up-or-down | Title=XAG Daily Up or Down
+SERIES: ID=10367 | Slug=chuck-schumer-meet-trump | Title=Chuck Schumer meet trump
+SERIES: ID=10944 | Slug=hood-daily-up-or-down | Title=HOOD Daily Up or Down
+SERIES: ID=10486 | Slug=rocket-lab-hit-price-monthly | Title=Rocket Lab Hit Price Monthly
+SERIES: ID=10333 | Slug=sol-up-or-down-4h | Title=SOL Up or Down 4H
+SERIES: ID=10709 | Slug=enter-lyman | Title=enter Lyman
+SERIES: ID=10314 | Slug=fa-cup | Title=FA Cup
+SERIES: ID=10470 | Slug=ncaa-cbb | Title=NCAA CBB
+SERIES: ID=10666 | Slug=fide-world-cup-2025-quarterfinals | Title=FIDE World Cup 2025 Quarterfinals
+SERIES: ID=10529 | Slug=israel-x-saudi-arabia-relations | Title=Israel x Saudi Arabia relations
+SERIES: ID=10246 | Slug=conmebol | Title=Conmebol
+SERIES: ID=10136 | Slug=kahmenei-out | Title=Kahmenei Out
+SERIES: ID=10157 | Slug=keon-hee-arrest | Title=Keon-hee arrest
+SERIES: ID=10189 | Slug=mls-2025 | Title=MLS 2025
+SERIES: ID=10046 | Slug=litecoin-etf | Title=Litecoin ETF
+SERIES: ID=10907 | Slug=cricket-u19-world-cup | Title=Cricket U19 World Cup
+SERIES: ID=10725 | Slug=la-daily-weather | Title=LA Daily Weather
+SERIES: ID=10730 | Slug=denver-daily-weather | Title=Denver Daily Weather
+SERIES: ID=10194 | Slug=bundesliga-2025 | Title=Bundesliga 2025
+SERIES: ID=10362 | Slug=norway-eliteserien | Title=Norway Eliteserien
+SERIES: ID=10582 | Slug=us-debt-downgrade | Title=US Debt Downgrade
+SERIES: ID=10752 | Slug=cricket-australia | Title=Cricket Australia
+SERIES: ID=10859 | Slug=nasdaq-100-monthly-close-negrisk | Title=NASDAQ 100 monthly close negrisk
+SERIES: ID=10853 | Slug=strike-on-moscow | Title=strike on Moscow
+SERIES: ID=10139 | Slug=tesla-robotaxi | Title=Tesla robotaxi
+SERIES: ID=10675 | Slug=ligue-2 | Title=Ligue 2
+SERIES: ID=10947 | Slug=msft-multi-strikes-weekly | Title=MSFT Multi Strikes Weekly
+SERIES: ID=10289 | Slug=lib-2025 | Title=Copa Libertadores 2025
+SERIES: ID=10435 | Slug=starcraft-2 | Title=StarCraft 2
+SERIES: ID=10024 | Slug=xrp-multi-strikes-weekly | Title=XRP Multi Strikes Weekly
+SERIES: ID=10299 | Slug=richest-person | Title=Richest person
+SERIES: ID=10028 | Slug=jobs-added | Title=Jobs Added
+SERIES: ID=10864 | Slug=billboard-1-song | Title=Billboard #1 Song
+SERIES: ID=10917 | Slug=charizard-4-base-multistrike-weekly | Title=Charizard 4 Base Multistrike Weekly
+SERIES: ID=10003 | Slug=ucl | Title=UEFA Champions League
+SERIES: ID=10658 | Slug=starmer-pmqs | Title=Starmer PMQs
+SERIES: ID=10339 | Slug=second-largest-company | Title=Second Largest Company
+SERIES: ID=10201 | Slug=archived2 | Title=archived2
+SERIES: ID=10096 | Slug=ethbtc-up-or-down-weekly | Title=ETH/BTC Up or Down Weekly
+SERIES: ID=10798 | Slug=bank-of-russia-decision | Title=Bank of Russia Decision
+SERIES: ID=10668 | Slug=ethena-hit-price-monthly | Title=Ethena Hit Price Monthly
+SERIES: ID=10528 | Slug=international-cricket | Title=International Cricket
+SERIES: ID=10417 | Slug=rbob-gasoline-daily-up-or-down | Title=RBOB Gasoline Daily Up or Down
+SERIES: ID=10440 | Slug=top-netflix-show-week | Title=Top Netflix Show Week
+SERIES: ID=10616 | Slug=yearly-ipos | Title=Yearly IPOs
+SERIES: ID=10756 | Slug=nancy-updown | Title=Nancy Up/Down
+SERIES: ID=10153 | Slug=trump-try-to-fire-powell | Title=Trump try to fire powell
+SERIES: ID=10705 | Slug=musk-change-his-x-profile-picture | Title=Musk change his X profile picture
+SERIES: ID=10357 | Slug=pewdiepie-views-week-1 | Title=PewDiePie views week 1
+SERIES: ID=10900 | Slug=ankara-daily-weather | Title=Ankara Daily Weather
+SERIES: ID=10602 | Slug=nya-hit-price-monthly | Title=NYA Hit Price Monthly
+SERIES: ID=10287 | Slug=itc-2025 | Title=Coppa Italia 2025
+SERIES: ID=10652 | Slug=us-x-iran-nuclear-talks | Title=US x Iran Nuclear Talks
+SERIES: ID=10418 | Slug=corn-daily-up-or-down | Title=Corn Daily Up or Down
+SERIES: ID=10430 | Slug=overwatch | Title=Overwatch
+SERIES: ID=10229 | Slug=epl-2025 | Title=EPL 2025
+SERIES: ID=10443 | Slug=japan-j2-league | Title=Japan J2 League
+SERIES: ID=10641 | Slug=open-neg-risk-weekly | Title=OPEN Neg Risk Weekly
+SERIES: ID=10150 | Slug=xi-jinping-out | Title=Xi Jinping out
+SERIES: ID=10904 | Slug=uk-gdp | Title=UK GDP
+SERIES: ID=10888 | Slug=deepseek-v4 | Title=DeepSeek V4
+SERIES: ID=10561 | Slug=musk-presidential-run | Title=Musk Presidential Run
+SERIES: ID=10823 | Slug=crude-oil-cl-above | Title=Crude Oil (CL) above ___
+SERIES: ID=10506 | Slug=microsoft-multi-strikes-monthly | Title=Microsoft Multi Strikes Monthly
+SERIES: ID=39 | Slug=march-madness | Title=March Madness Games
+SERIES: ID=10590 | Slug=zelenskyy-x-putin-next-meeting | Title=Zelenskyy x Putin Next Meeting
+SERIES: ID=10605 | Slug=dji-multi-strikes-weekly | Title=DJI Multi Strikes Weekly
+SERIES: ID=10321 | Slug=mrbeast-views-week-1 | Title=MrBeast views week 1
+SERIES: ID=10424 | Slug=diddy-pardon | Title=diddy pardon
+SERIES: ID=10447 | Slug=pakistan-tri-series | Title=Pakistan Tri-Series
+SERIES: ID=10122 | Slug=solana-up-or-down-hourly | Title=Solana Up or Down Hourly
+SERIES: ID=10123 | Slug=xrp-up-or-down-hourly | Title=XRP Up or Down Hourly
+SERIES: ID=10759 | Slug=mag-7-weekly | Title=mag 7 weekly
+SERIES: ID=10885 | Slug=next-country-us-strike | Title=next country us strike
+SERIES: ID=10029 | Slug=largest-company | Title=Largest Company
+SERIES: ID=10200 | Slug=bitcoin-hit-price-daily | Title=Bitcoin Hit Price Daily
+SERIES: ID=10839 | Slug=us-x-venezuela-military-engagement | Title=US x Venezuela military engagement
+SERIES: ID=10636 | Slug=meta-neg-risk-weekly | Title=META Neg Risk Weekly
+SERIES: ID=10882 | Slug=rugby-champions-cup | Title=Rugby Champions Cup
+SERIES: ID=10021 | Slug=testsetset | Title=testsetset
+SERIES: ID=10704 | Slug=odds-of-russia-x-ukraine-ceasefire | Title=Odds of Russia x Ukraine ceasefire
+SERIES: ID=10751 | Slug=cricket-pakistan | Title=Cricket Pakistan
+SERIES: ID=10767 | Slug=how-high-will-trumps-approval-rating-go | Title=How high will Trump's approval rating go
+SERIES: ID=10349 | Slug=sidemen-views-day-1 | Title=Sidemen views day 1
+SERIES: ID=10822 | Slug=crude-oil-cl-up-or-down | Title=Crude Oil (CL) Up or Down
+SERIES: ID=10806 | Slug=what-will-silver-si-settle-at | Title=What will Silver (SI) settle at
+SERIES: ID=10360 | Slug=japan-j-league | Title=Japan J League
+SERIES: ID=10127 | Slug=us-strikes-iran | Title=US strikes iran
+SERIES: ID=10039 | Slug=xrp-hit-price-monthly | Title=XRP Hit Price Monthly
+SERIES: ID=10104 | Slug=ethereum-neg-risk-4h | Title=Ethereum Neg Risk 4H
+SERIES: ID=10295 | Slug=second-best-ai-company | Title=Second Best AI Company
+SERIES: ID=10031 | Slug=powell-mentions | Title=Powell mentions
+SERIES: ID=42 | Slug=ethereum-multi-strikes-weekly | Title=Ethereum Multi Strikes Weekly
+SERIES: ID=10250 | Slug=xrp-neg-risk-4h | Title=XRP Neg Risk 4H
+SERIES: ID=10079 | Slug=eth-ath | Title=eth ath
+SERIES: ID=10637 | Slug=tsla-neg-risk-weekly | Title=TSLA Neg Risk Weekly
+SERIES: ID=10814 | Slug=thailand-strikes-cambodia | Title=Thailand strikes Cambodia
+SERIES: ID=10743 | Slug=toronto-daily-weather | Title=Toronto Daily Weather
+SERIES: ID=10151 | Slug=bitcoin-hit-price-weekly | Title=Bitcoin Hit Price Weekly
+SERIES: ID=10016 | Slug=bitcoin-hit-price-monthly | Title=Bitcoin Hit Price Monthly
+SERIES: ID=10080 | Slug=btc-ath | Title=btc ath
+SERIES: ID=10772 | Slug=1-us-netflix-show | Title=#1 US Netflix Show
+SERIES: ID=10923 | Slug=jokic-prizm-335-multistrike-weekly | Title=Jokic Prizm 335 Multistrike Weekly
+SERIES: ID=10783 | Slug=unemployment-rate-uk | Title=Unemployment Rate - U.K.
+SERIES: ID=10078 | Slug=sol-ath | Title=Sol ath
+SERIES: ID=10085 | Slug=hyperliquid-up-or-down-daily | Title=Hyperliquid Up or Down Daily
+SERIES: ID=10240 | Slug=caf | Title=CAF
+SERIES: ID=10323 | Slug=bitcoin-up-or-down-4h | Title=Bitcoin Up or Down 4H
+SERIES: ID=10901 | Slug=auckland-daily-weather | Title=Auckland Daily Weather
+SERIES: ID=10909 | Slug=womens-national-cricket-league | Title=Women's National Cricket League
+SERIES: ID=10077 | Slug=xrp-ath | Title=xrp ath
+SERIES: ID=10385 | Slug=ftse-100-daily-up-or-down | Title=FTSE 100 Daily Up or Down
+SERIES: ID=10632 | Slug=aapl-neg-risk-weekly | Title=AAPL Neg Risk Weekly
+SERIES: ID=10192 | Slug=btc-up-or-down-15m | Title=BTC Up or Down 15m
+SERIES: ID=10828 | Slug=second-hottest-year-on-record | Title=second hottest year on record
+SERIES: ID=10775 | Slug=1-us-netflix-movie | Title=#1 US Netflix Movie
+SERIES: ID=10401 | Slug=cl-daily-up-or-down | Title=CL Daily Up or Down
+SERIES: ID=10032 | Slug=solana-hit-price-monthly | Title=Solana Hit Price Monthly
+SERIES: ID=10202 | Slug=bitcoin-multi-strikes-4h | Title=Bitcoin Multi Strikes 4H
+SERIES: ID=3 | Slug=mlb | Title=MLB
+SERIES: ID=10919 | Slug=pikachu-ex-238-multistrike-weekly | Title=Pikachu ex #238 Multistrike Weekly
+SERIES: ID=36 | Slug=epl | Title=EPL
+SERIES: ID=10178 | Slug=thailand-ceasefire | Title=Thailand ceasefire
+SERIES: ID=10677 | Slug=dept-of-education-end | Title=Dept of Education End
+SERIES: ID=10361 | Slug=saudi-professional-league | Title=Saudi Professional League
+SERIES: ID=10059 | Slug=north-korea-missile-test | Title=North Korea missile test
+SERIES: ID=10233 | Slug=solana-multi-strikes-4h | Title=Solana Multi Strikes 4H
+SERIES: ID=10932 | Slug=ohtani-bowman-49-multistrike-monthly | Title=Ohtani Bowman 49 Multistrike Monthly
+SERIES: ID=10149 | Slug=ethereum-monthly-strikes | Title=Ethereum Monthly Strikes
+SERIES: ID=10112 | Slug=measles | Title=measles
+SERIES: ID=5 | Slug=cpi | Title=CPI
+SERIES: ID=10023 | Slug=doge-weeklies | Title=DOGE weeklies
+SERIES: ID=10044 | Slug=unemployment | Title=Unemployment
+SERIES: ID=10002 | Slug=cfb | Title=CFB
+SERIES: ID=10371 | Slug=euroleague-basketball | Title=Euroleague Basketball
+SERIES: ID=10770 | Slug=top-us-spotify-song | Title=Top US Spotify Song
+SERIES: ID=10819 | Slug=israel-strike-gaza-on | Title=Israel strike Gaza on
+SERIES: ID=10940 | Slug=counter-strike-case-index-multistrike-monthly | Title=Counter-Strike Case Index Multistrike Monthly
+SERIES: ID=43 | Slug=arb-price | Title=ARB Price
+SERIES: ID=10504 | Slug=airbnb-multi-strikes-weekly | Title=Airbnb Multi Strikes Weekly
+SERIES: ID=37 | Slug=champions-league | Title=Champions League
+SERIES: ID=10383 | Slug=spx-daily-up-or-down | Title=SPX Daily Up or Down
+SERIES: ID=10057 | Slug=trump-approval-positve | Title=Trump approval (Positve)
+SERIES: ID=10601 | Slug=rut-hit-price-monthly | Title=RUT Hit Price Monthly
+SERIES: ID=10862 | Slug=dji-monthly-close-negrisk | Title=DJI monthly close negrisk
+SERIES: ID=10503 | Slug=rocket-lab-multi-strikes-weekly | Title=Rocket Lab Multi Strikes Weekly
+SERIES: ID=10715 | Slug=israel-x-iraq-strike | Title=Israel x Iraq Strike
+SERIES: ID=10042 | Slug=trump-negative-approval | Title=Trump negative approval
+SERIES: ID=10340 | Slug=megaquake | Title=Megaquake
+SERIES: ID=10922 | Slug=ohtani-topps-us285-multistrike-weekly | Title=Ohtani Topps US285 Multistrike Weekly
+SERIES: ID=10508 | Slug=google-multi-strikes-monthly | Title=Google Multi Strikes Monthly
+SERIES: ID=10511 | Slug=nvidia-multi-strikes-monthly | Title=Nvidia Multi Strikes Monthly
+SERIES: ID=10144 | Slug=trump-increase-sanctions-on-russia | Title=Trump increase sanctions on Russia
+SERIES: ID=10143 | Slug=pumpfun-daily | Title=pumpfun daily
+SERIES: ID=10180 | Slug=handala | Title=Handala
+SERIES: ID=10708 | Slug=houthi-strike-on-israel | Title=Houthi strike on Israel
+SERIES: ID=10456 | Slug=choo-kyung-ho-in-jail | Title=Choo Kyung-ho in jail
+SERIES: ID=10373 | Slug=vegas-matt | Title=Vegas Matt
+SERIES: ID=10005 | Slug=nyc-daily-weather | Title=NYC Daily Weather
+SERIES: ID=10795 | Slug=reserve-bank-of-australia-decision | Title=Reserve Bank of Australia Decision
+SERIES: ID=10746 | Slug=first-to-leave-the-trump-cabinet | Title=First to leave the Trump Cabinet
+SERIES: ID=10454 | Slug=bangladesh-test-series | Title=Bangladesh Test Series
+SERIES: ID=10510 | Slug=tesla-multi-strikes-monthly | Title=Tesla Multi Strikes Monthly
+SERIES: ID=10688 | Slug=bnb-hit-price-monthly | Title=BNB Hit Price Monthly
+SERIES: ID=10480 | Slug=meta-hit-price-monthly | Title=Meta Hit Price Monthly
+SERIES: ID=10682 | Slug=fide-world-cup-2025-semifinals | Title=FIDE World Cup 2025 Semifinals
+SERIES: ID=10010 | Slug=trump-daily-eos | Title=Trump Daily EOs
+SERIES: ID=10494 | Slug=microsoft-multi-strikes-weekly | Title=Microsoft Multi Strikes Weekly
+SERIES: ID=10035 | Slug=egg-prices-monthly | Title=Egg Prices Monthly
+SERIES: ID=10502 | Slug=opendoor-multi-strikes-weekly | Title=Opendoor Multi Strikes Weekly
+SERIES: ID=10322 | Slug=drug-boat | Title=drug boat
+SERIES: ID=10099 | Slug=trump-approval-weekly-brackets | Title=Trump Approval Weekly Brackets
+SERIES: ID=10843 | Slug=new-album | Title=new album
+SERIES: ID=10084 | Slug=fartcoin-monthly-hit-price | Title=Fartcoin Monthly Hit Price
+SERIES: ID=10488 | Slug=how-many-different-countries-will-israel-strike | Title=How many different countries will Israel strike
+SERIES: ID=10142 | Slug=dogecoin-up-or-down-daily | Title=Dogecoin Up or Down Daily
+SERIES: ID=10639 | Slug=nflx-neg-risk-weekly | Title=NFLX Neg Risk Weekly
+SERIES: ID=10245 | Slug=oceania-wc-qualifiers | Title=Oceania WC Qualifiers
+SERIES: ID=10489 | Slug=nfl-underdog | Title=NFL underdog
+SERIES: ID=10802 | Slug=what-will-gold-gc-hit | Title=What will Gold (GC) hit__
+SERIES: ID=10466 | Slug=cbot-soybean-futures-daily-up-or-down | Title=CBOT Soybean Futures Daily Up or Down
+SERIES: ID=10664 | Slug=uk-election-called | Title=UK Election Called?
+SERIES: ID=10603 | Slug=spx-multi-strikes-weekly | Title=SPX Multi Strikes Weekly
+SERIES: ID=10698 | Slug=fed-derivative-pair-on-date | Title=Fed Derivative pair on date
+SERIES: ID=10512 | Slug=netflix-multi-strikes-monthly | Title=Netflix Multi Strikes Monthly
+SERIES: ID=10929 | Slug=umbreon-vmax-215-multistrike-monthly | Title=Umbreon VMAX #215 Multistrike Monthly
+SERIES: ID=10716 | Slug=tsa-passengers | Title=TSA passengers
+SERIES: ID=10499 | Slug=nvidia-multi-strikes-weekly | Title=Nvidia Multi Strikes Weekly
+SERIES: ID=10525 | Slug=deportation-count | Title=Deportation Count
+SERIES: ID=10739 | Slug=atlanta-daily-weather | Title=Atlanta Daily Weather
+SERIES: ID=10047 | Slug=doge-etf | Title=DOGE ETF
+SERIES: ID=10326 | Slug=solana-up-or-down-4h | Title=Solana Up or Down 4H
+SERIES: ID=10662 | Slug=govt-shutdown-by | Title=Govt Shutdown By?
+SERIES: ID=44 | Slug=ipl | Title=IPL
+SERIES: ID=10211 | Slug=earthquake-7pt0-monthly | Title=Earthquake 7.0 Monthly
+SERIES: ID=10049 | Slug=airdrops | Title=Airdrops
+SERIES: ID=10608 | Slug=abraham-accords-new-country | Title=Abraham Accords New Country
+SERIES: ID=10248 | Slug=solana-neg-risk-4h | Title=Solana Neg Risk 4H
+SERIES: ID=10075 | Slug=dogecoin-hit-price-monthly | Title=Dogecoin Hit Price Monthly
+SERIES: ID=10856 | Slug=sp-500-monthly-close-negrisk | Title=S&P 500 monthly close negrisk
+SERIES: ID=10477 | Slug=microsoft-hit-price-monthly | Title=Microsoft Hit Price Monthly
+SERIES: ID=10368 | Slug=hamas-release-any-hostages | Title=Hamas release any hostages
+SERIES: ID=10352 | Slug=marques-brownlee-views-week-1 | Title=Marques Brownlee views week 1
+SERIES: ID=10523 | Slug=trump-countries-visited | Title=Trump Countries Visited
+SERIES: ID=10234 | Slug=metaplanet | Title=Metaplanet
+SERIES: ID=10952 | Slug=tsla-multi-strikes-weekly | Title=TSLA Multi Strikes Weekly
+SERIES: ID=10449 | Slug=big-bash-league | Title=Big Bash League
+SERIES: ID=10140 | Slug=us-declares-war-on-iran | Title=US declares war on Iran
+SERIES: ID=10168 | Slug=israel-strike-syria | Title=Israel strike Syria
+SERIES: ID=10332 | Slug=eth-up-or-down-4h | Title=ETH Up or Down 4h
+SERIES: ID=10041 | Slug=bitcoin-neg-risk-weekly | Title=Bitcoin Neg Risk Weekly
+SERIES: ID=10933 | Slug=ohtani-topps-us285-multistrike-monthly | Title=Ohtani Topps US285 Multistrike Monthly
+SERIES: ID=10943 | Slug=coin-daily-up-or-down | Title=COIN Daily Up or Down
+SERIES: ID=10811 | Slug=counter-strike-doppler-index-multistrike-weekly | Title=Counter-Strike Doppler Index Multistrike Weekly
+SERIES: ID=10820 | Slug=crude-oil-cl-hit | Title=Crude Oil (CL) hit__
+SERIES: ID=10738 | Slug=time-derivatives | Title=Time + Derivatives
+SERIES: ID=10762 | Slug=will-mrbeast-hit-billion-views | Title=Will MrBeast hit ___ Billion views
+SERIES: ID=10056 | Slug=kanye-tweets | Title=Kanye tweets
+SERIES: ID=10497 | Slug=meta-multi-strikes-weekly | Title=Meta Multi Strikes Weekly
+SERIES: ID=10796 | Slug=bank-of-korea-decision | Title=Bank of Korea decision
+SERIES: ID=10670 | Slug=bundesliga-2 | Title=Bundesliga 2
+SERIES: ID=10040 | Slug=trump-538-approval | Title=Trump 538 Approval
+SERIES: ID=10212 | Slug=houthi-strike-israel | Title=Houthi strike Israel
+SERIES: ID=10707 | Slug=russia-strike-on-kyiv | Title=Russia strike on Kyiv
+SERIES: ID=10013 | Slug=ecb-interest-rates | Title=ECB Interest Rates
+SERIES: ID=10740 | Slug=tokyo-daily-weather | Title=Tokyo Daily Weather
+SERIES: ID=10394 | Slug=abnb-daily-up-or-down | Title=ABNB Daily Up or Down
+SERIES: ID=10845 | Slug=lighter-hit-price-monthly | Title=Lighter Hit Price Monthly
+SERIES: ID=10832 | Slug=flu-hospitalization-rate-week | Title=Flu Hospitalization Rate Week
+SERIES: ID=10425 | Slug=world-leader-out | Title=world leader out
+SERIES: ID=10800 | Slug=named-in-newly-released-epstein-files | Title=named in newly released Epstein files
+SERIES: ID=10711 | Slug=third-best-ai-company | Title=Third Best AI Company
+SERIES: ID=10063 | Slug=yoon-out | Title=Yoon Out
+SERIES: ID=10355 | Slug=efl-championship | Title=EFL Championship
+SERIES: ID=10372 | Slug=123hottest-month-on-record | Title=123Hottest month on record
+SERIES: ID=2 | Slug=nba | Title=NBA
+SERIES: ID=10837 | Slug=new-coronavirus-pandemic | Title=New Coronavirus Pandemic
+SERIES: ID=10850 | Slug=what-will-bitcoin-outperform | Title=What will Bitcoin outperform
+SERIES: ID=10423 | Slug=sol-up-or-down-15m | Title=SOL Up or Down 15m
+SERIES: ID=10066 | Slug=fear-greed | Title=Fear & Greed
+SERIES: ID=10513 | Slug=palantir-multi-strikes-monthly | Title=Palantir Multi Strikes Monthly
+SERIES: ID=10897 | Slug=us-forces-seize-another-oil-ship | Title=U.S. forces seize another oil ship
+SERIES: ID=10006 | Slug=london-daily-weather | Title=London Daily Weather
+SERIES: ID=10782 | Slug=companies-added-to-sp-500 | Title=Companies added to S&P 500
+SERIES: ID=10312 | Slug=primera-divisin-argentina | Title=Primera División Argentina
+SERIES: ID=10095 | Slug=ethereum-up-or-down-weekly | Title=Ethereum Up or Down Weekly
+SERIES: ID=10331 | Slug=btc-up-or-down-4h | Title=BTC Up or Down 4h
+SERIES: ID=10109 | Slug=israel-strike-iran-nuke | Title=israel strike iran nuke
+SERIES: ID=10083 | Slug=sui-monthly-hit-price | Title=SUI Monthly Hit Price
+SERIES: ID=10816 | Slug=elon-tweets-48h | Title=Elon Tweets 48H
+SERIES: ID=10061 | Slug=mrbeast-views-day-1 | Title=MrBeast views day 1
+SERIES: ID=10790 | Slug=central-bank-of-colombia-decision | Title=Central Bank of Colombia Decision
+SERIES: ID=10012 | Slug=ncaab | Title=NCAAB
+SERIES: ID=10025 | Slug=hottest-month | Title=Hottest Month
+SERIES: ID=10286 | Slug=ere-2025 | Title=Eredivisie 2025
+SERIES: ID=10406 | Slug=gbpusd-daily-up-or-down | Title=GBP/USD Daily Up or Down
+SERIES: ID=10092 | Slug=bitcoin-dominance-up-or-down-monthly | Title=Bitcoin Dominance Up or Down Monthly
+SERIES: ID=10347 | Slug=trump-talk-monthly | Title=Trump talk monthly
+SERIES: ID=10420 | Slug=soybeans-daily-up-or-down | Title=Soybeans Daily Up or Down
+SERIES: ID=10531 | Slug=palestine-recognition | Title=Palestine recognition
+SERIES: ID=10744 | Slug=buenos-aires-daily-weather | Title=Buenos Aires Daily Weather
+SERIES: ID=10721 | Slug=odds-of-russia-x-ukraine-on-friday | Title=Odds of Russia x Ukraine on Friday
+SERIES: ID=1 | Slug=nfl | Title=NFL
+SERIES: ID=10344 | Slug=trump-monthly-meeting | Title=trump monthly meeting
+SERIES: ID=10934 | Slug=jokic-prizm-335-multistrike-monthly | Title=Jokic Prizm 335 Multistrike Monthly
+SERIES: ID=10747 | Slug=bucharest-flip | Title=Bucharest Flip
+SERIES: ID=10687 | Slug=top-magnificent-7 | Title=Top Magnificent 7
+SERIES: ID=10100 | Slug=xrp-up-or-down-daily | Title=XRP Up or Down Daily
+SERIES: ID=10676 | Slug=serie-b | Title=Serie B
+SERIES: ID=10453 | Slug=sheffield-shield | Title=Sheffield Shield
+SERIES: ID=10478 | Slug=amazon-hit-price-monthly | Title=Amazon Hit Price Monthly
+SERIES: ID=10736 | Slug=minneapolis-daily-weather | Title=Minneapolis Daily Weather
+SERIES: ID=10927 | Slug=charizard-ex-199-multistrike-monthly | Title=Charizard Ex 199 Multistrike Monthly
+SERIES: ID=10167 | Slug=israel-strikes-syria | Title=Israel strikes Syria
+SERIES: ID=10034 | Slug=trump-positive-favorability | Title=Trump Positive Favorability
+SERIES: ID=10595 | Slug=ndx-hit-price-monthly | Title=NDX Hit Price Monthly
+SERIES: ID=10722 | Slug=2-ai-model-style-control-on | Title=#2 AI model Style Control On
+SERIES: ID=10019 | Slug=tawetwettweet | Title=tawetwettweet
+SERIES: ID=10892 | Slug=geenland-deriv | Title=geenland deriv
+SERIES: ID=40 | Slug=eth-up-or-down-daily | Title=ETH Up or Down Daily
+SERIES: ID=10325 | Slug=ethereum-up-or-down-4h | Title=Ethereum Up or Down 4H
+SERIES: ID=10591 | Slug=first-to-leave-trump-cabinet | Title=First To Leave Trump Cabinet
+SERIES: ID=10514 | Slug=opendoor-multi-strikes-monthly | Title=Opendoor Multi Strikes Monthly
+SERIES: ID=10190 | Slug=trump-meet-putin | Title=trump meet Putin
+SERIES: ID=10485 | Slug=opendoor-hit-price-monthly | Title=Opendoor Hit Price Monthly
+SERIES: ID=10403 | Slug=nzdusd-daily-up-or-down | Title=NZD/USD Daily Up or Down
+SERIES: ID=10773 | Slug=2-us-netflix-show | Title=#2 US Netflix Show
+SERIES: ID=10720 | Slug=2-netflix-movie | Title=#2 Netflix Movie
+SERIES: ID=10935 | Slug=sga-prizm-184-multistrike-monthly | Title=SGA Prizm 184 Multistrike Monthly
+SERIES: ID=10294 | Slug=ofc | Title=Oceania Football Confederation
+SERIES: ID=10437 | Slug=europa-conference-league | Title=Europa Conference League
+SERIES: ID=10138 | Slug=khamenei | Title=Khamenei
+SERIES: ID=10062 | Slug=mlb-games | Title=MLB Games
+SERIES: ID=10154 | Slug=powell-out | Title=powell out
+SERIES: ID=10650 | Slug=israel-x-lebanon-ground-offense | Title=Israel x Lebanon Ground Offense
+SERIES: ID=10758 | Slug=buffett-v-ackman-v-sp | Title=Buffett v. Ackman v. S&P
+SERIES: ID=10890 | Slug=khamenei-public-appearance | Title=Khamenei public appearance
+SERIES: ID=10768 | Slug=how-many-spacex-starship-launches | Title=How many SpaceX Starship launches
+SERIES: ID=10522 | Slug=trump-announces-new-drug-boat-strike | Title=Trump announces new drug boat strike
+SERIES: ID=10147 | Slug=bitcoin-monthly-strikes | Title=Bitcoin Monthly Strikes
+SERIES: ID=10939 | Slug=counter-strike-glove-index-multistrike-monthly | Title=Counter-Strike Glove Index Multistrike Monthly
+SERIES: ID=10920 | Slug=pikachu-grey-felt-hat-85-multistrike-weekly | Title=Pikachu Grey Felt Hat #85 Multistrike Weekly
+SERIES: ID=10778 | Slug=trump-invoke-war-powers | Title=Trump invoke War Powers
+SERIES: ID=10070 | Slug=bitcoin-up-or-down-monthly | Title=Bitcoin Up or Down Monthly
+SERIES: ID=10065 | Slug=ethereum-neg-risk-weekly | Title=Ethereum Neg Risk Weekly
+SERIES: ID=10459 | Slug=nymex-palladium-futures-daily-up-or-down | Title=NYMEX Palladium Futures Daily Up or Down
+SERIES: ID=10846 | Slug=counter-strike-knife-index-multi-strike-monthly | Title=Counter Strike Knife Index Multi Strike Monthly
+SERIES: ID=10931 | Slug=pikachu-with-grey-felt-hat-85-multistrike-monthly | Title=Pikachu with Grey Felt Hat #85 Multistrike Monthly
+SERIES: ID=10479 | Slug=google-hit-price-monthly | Title=Google Hit Price Monthly
+SERIES: ID=10060 | Slug=israel-x-hamas-ceasefire | Title=Israel x Hamas ceasefire
+SERIES: ID=10073 | Slug=sol-up-down-monthly | Title=SOL Up Down Monthly
+SERIES: ID=10402 | Slug=audusd-daily-up-or-down | Title=AUD/USD Daily Up or Down
+SERIES: ID=10659 | Slug=leavitt-next-briefing | Title=Leavitt Next Briefing
+SERIES: ID=10017 | Slug=ethereum-hit-price-monthly | Title=Ethereum Hit Price Monthly
+SERIES: ID=10038 | Slug=press-briefings | Title=Press Briefings
+SERIES: ID=10442 | Slug=north-korea-missile-launch | Title=North Korea missile launch
+SERIES: ID=10082 | Slug=hyperliquid-hit-price-monthly | Title=Hyperliquid Hit Price Monthly
+SERIES: ID=10379 | Slug=msft-daily-up-down | Title=MSFT Daily Up Down
+SERIES: ID=10291 | Slug=sud-2025 | Title=Copa Sudamericana 2025
+SERIES: ID=10866 | Slug=30-year-mortgage-rate | Title=30-year mortgage rate
+SERIES: ID=10729 | Slug=phoenix-daily-weather | Title=Phoenix Daily Weather
+SERIES: ID=10464 | Slug=cbot-corn-futures-daily-up-or-down | Title=CBOT Corn Futures Daily Up or Down
+SERIES: ID=10469 | Slug=jake-paul-vs-gervonta-davis | Title=Jake Paul vs. Gervonta Davis
+SERIES: ID=10166 | Slug=trump-meet-xi-jinping | Title=Trump meet Xi Jinping
+SERIES: ID=10105 | Slug=wnba | Title=WNBA
+SERIES: ID=10022 | Slug=solana-multi-strikes-weekly | Title=Solana Multi Strikes Weekly
+SERIES: ID=10467 | Slug=john-brennan-federally-charged | Title=John Brennan federally charged
+SERIES: ID=10298 | Slug=taylor-swift-new-song | Title=Taylor Swift New Song
+SERIES: ID=10115 | Slug=dubai-daily-weather | Title=Dubai Daily Weather
+SERIES: ID=10941 | Slug=counter-strike-doppler-index-multistrike-monthly | Title=Counter-Strike Doppler Index Multistrike Monthly
+SERIES: ID=10463 | Slug=nymex-rbob-gasoline-futures-daily-up-or-down | Title=NYMEX RBOB Gasoline Futures Daily Up or Down
+SERIES: ID=10938 | Slug=counter-strike-knife-index-multistrike-monthly | Title=Counter-Strike Knife Index Multistrike Monthly
+SERIES: ID=10726 | Slug=chicago-daily-weather | Title=Chicago Daily Weather
+SERIES: ID=10413 | Slug=tesla-deliveries | Title=Tesla deliveries
+SERIES: ID=10439 | Slug=chinese-super-league | Title=Chinese Super League
+SERIES: ID=10584 | Slug=weed-rescheduling | Title=Weed Rescheduling
+SERIES: ID=10468 | Slug=us-tariff-agreements | Title=U.S. tariff agreements
+SERIES: ID=10755 | Slug=cricket-new-zealand | Title=Cricket New Zealand
+SERIES: ID=10712 | Slug=maduro-leaves-venezuela | Title=Maduro leaves Venezuela
+SERIES: ID=4 | Slug=nhl | Title=NHL
+SERIES: ID=10851 | Slug=bank-of-israel-decision | Title=Bank of Israel Decision
+SERIES: ID=10936 | Slug=maye-downtown-13-multistrike-monthly | Title=Maye Downtown 13 Multistrike Monthly
+SERIES: ID=10930 | Slug=pikachu-ex-238-multistrike-monthly | Title=Pikachu ex #238 Multistrike Monthly
+SERIES: ID=10230 | Slug=efl-2025 | Title=EFL 2025
+SERIES: ID=10732 | Slug=hurricane-form | Title=Hurricane Form
+SERIES: ID=10074 | Slug=doge-up-down-monthly | Title=DOGE Up Down Monthly
+SERIES: ID=10613 | Slug=sarkozy-imprisoned | Title=Sarkozy imprisoned
+SERIES: ID=10345 | Slug=nba-2026 | Title=NBA 2026
+SERIES: ID=10812 | Slug=counter-strike-case-index-multistrike-weekly | Title=Counter-Strike Case Index Multistrike Weekly
+SERIES: ID=10518 | Slug=2025-fide-world-cup | Title=2025 FIDE World Cup
+SERIES: ID=10203 | Slug=serie-a-2025 | Title=Serie A 2025
+SERIES: ID=10152 | Slug=ethereum-hit-price-weekly | Title=Ethereum Hit Price Weekly
+SERIES: ID=10788 | Slug=2-grossing-play-store | Title=#2 Grossing Play Store
+SERIES: ID=10524 | Slug=trump-meetings | Title=Trump Meetings
+SERIES: ID=10055 | Slug=mstr-holdings | Title=MSTR holdings
+SERIES: ID=10338 | Slug=anti-cartel-operation | Title=anti-cartel operation
+SERIES: ID=10886 | Slug=next-country-us-strikes | Title=Next Country US Strikes
+SERIES: ID=10188 | Slug=premier-league-2025 | Title=Premier League 2025
+SERIES: ID=10592 | Slug=putin-x-zelenskyy-where-next | Title=Putin x Zelenskyy Where Next
+SERIES: ID=10434 | Slug=honor-of-kings | Title=Honor of Kings
+SERIES: ID=10728 | Slug=miami-daily-weather | Title=Miami Daily Weather
+SERIES: ID=10937 | Slug=maye-prizm-329-multistrike-monthly | Title=Maye Prizm 329 Multistrike Monthly
+SERIES: ID=10789 | Slug=seize-venezuela-ship | Title=seize Venezuela ship
+SERIES: ID=10465 | Slug=cbot-wheat-futures-daily-up-or-down | Title=CBOT Wheat Futures Daily Up or Down
+SERIES: ID=10604 | Slug=ndx-multi-strikes-weekly | Title=NDX Multi Strikes Weekly
+SERIES: ID=10695 | Slug=shl-2026 | Title=SHL 2026
+SERIES: ID=10441 | Slug=top-netflix-movie-week | Title=Top Netflix Movie Week
+SERIES: ID=10803 | Slug=what-will-gold-gc-settle-at | Title=What will Gold (GC) settle at
+SERIES: ID=10805 | Slug=will-silver-si-hit | Title=Will Silver (SI) hit__
+SERIES: ID=10472 | Slug=bank-of-england-decision | Title=Bank of England decision
+SERIES: ID=10087 | Slug=fartcoin-up-or-down-daily | Title=Fartcoin Up or Down Daily
+SERIES: ID=10213 | Slug=powerball | Title=Powerball
+SERIES: ID=10474 | Slug=bank-of-japan | Title=Bank of Japan
+SERIES: ID=10612 | Slug=outdoor-boys-new-video | Title=Outdoor Boys New Video
+SERIES: ID=10098 | Slug=soleth-up-or-down-monthly | Title=SOL/ETH Up or Down Monthly
+SERIES: ID=10037 | Slug=uel | Title=UEL
+SERIES: ID=10776 | Slug=china-inflation-monthly | Title=China Inflation - Monthly
+SERIES: ID=10141 | Slug=congress-authorizes-military-force-against-iran-before-july | Title=Congress authorizes military force against Iran before July?
+SERIES: ID=10232 | Slug=xrp-multi-strikes-4h | Title=XRP Multi Strikes 4H
+SERIES: ID=10043 | Slug=deepseek-top-model | Title=Deepseek Top Model
+SERIES: ID=10068 | Slug=houthis-end-attacks-on-shipping | Title=Houthis  end attacks on shipping 
+SERIES: ID=10408 | Slug=usdmxn-daily-up-or-down | Title=USD/MXN Daily Up or Down
+SERIES: ID=10356 | Slug=pewdiepie-views-day-1 | Title=PewDiePie views day 1
+SERIES: ID=10433 | Slug=rocket-league | Title=Rocket League
+SERIES: ID=10193 | Slug=la-liga-2025 | Title=La Liga 2025
+SERIES: ID=10462 | Slug=ice-brent-crude-oil-futures-daily-up-or-down | Title=ICE Brent Crude Oil Futures Daily Up or Down
+SERIES: ID=10600 | Slug=hsi-hit-price-monthly | Title=HSI Hit Price Monthly
+SERIES: ID=10106 | Slug=fartcoin-weeklies | Title=Fartcoin weeklies
+SERIES: ID=10860 | Slug=dji-monthly-hit | Title=DJI monthly hit
+SERIES: ID=10484 | Slug=palantir-hit-price-monthly | Title=Palantir Hit Price Monthly
+SERIES: ID=10407 | Slug=usdcad-daily-up-or-down | Title=USD/CAD Daily Up or Down
+SERIES: ID=10155 | Slug=epstein-files-relased | Title=epstein files relased
+SERIES: ID=10871 | Slug=reserve-bank-of-india-decision | Title=Reserve Bank of India Decision
+SERIES: ID=10891 | Slug=ukraine-hits-moscow | Title=Ukraine hits Moscow
+SERIES: ID=10482 | Slug=nvidia-hit-price-monthly | Title=Nvidia Hit Price Monthly
+SERIES: ID=10007 | Slug=us-annual-inflation | Title=US Annual Inflation 
+SERIES: ID=10336 | Slug=greta-thunberg-arrested | Title=Greta Thunberg arrested
+SERIES: ID=10607 | Slug=nya-multi-strikes-weekly | Title=NYA Multi Strikes Weekly
+SERIES: ID=10633 | Slug=msft-neg-risk-weekly | Title=MSFT Neg Risk Weekly
+SERIES: ID=38 | Slug=ufc | Title=UFC
+SERIES: ID=10093 | Slug=bitcoin-dominance-up-or-down-weekly | Title=Bitcoin Dominance Up or Down Weekly
+SERIES: ID=10419 | Slug=wheat-daily-up-or-down | Title=Wheat Daily Up or Down
+SERIES: ID=10542 | Slug=trump-trade-deal-countries | Title=Trump Trade Deal Countries
+SERIES: ID=10346 | Slug=nhl-2026 | Title=NHL 2026
+SERIES: ID=10475 | Slug=dissent-at-fed-meeting | Title=Dissent at Fed meeting
+SERIES: ID=10942 | Slug=counter-strike-top-2000-index-multistrike-monthly | Title=Counter-Strike Top 2000 Index Multistrike Monthly
+SERIES: ID=10416 | Slug=brent-crude-oil-daily-up-or-down | Title=Brent Crude Oil Daily Up or Down
+SERIES: ID=10183 | Slug=eth-outperforms-bitcoin | Title=ETH outperforms Bitcoin
+SERIES: ID=10889 | Slug=inflation-argentina-annual | Title=Inflation Argentina - Annual
+SERIES: ID=10076 | Slug=gdp-quarterly | Title=gdp quarterly
+SERIES: ID=10921 | Slug=ohtani-bowman-49-multistrike-weekly | Title=Ohtani Bowman 49 Multistrike Weekly
+SERIES: ID=10630 | Slug=which-artists-will-release-songs | Title=Which Artists Will Release Songs
+SERIES: ID=10793 | Slug=of-announced-new-drug-boat-strikes | Title=# of announced new drug boat strikes
+SERIES: ID=45 | Slug=btc-multi-strikes-weekly | Title=BTC Multi Strikes Weekly
+SERIES: ID=10184 | Slug=india-strike-pakistan | Title=India strike Pakistan
+SERIES: ID=10905 | Slug=level-3-warning | Title=Level 3 warning
+SERIES: ID=10640 | Slug=pltr-neg-risk-weekly | Title=PLTR Neg Risk Weekly
+SERIES: ID=10521 | Slug=putin-out-as-president | Title=Putin out as President
+SERIES: ID=10309 | Slug=dota-2 | Title=Dota 2
+SERIES: ID=10297 | Slug=top-ai-company-style-on | Title=Top AI Company (Style on)
+SERIES: ID=10597 | Slug=dji-hit-price-monthly | Title=DJI Hit Price Monthly
+SERIES: ID=10609 | Slug=bolsonaro-in-jail | Title=Bolsonaro In Jail
+SERIES: ID=10186 | Slug=nfl-preseason-2025 | Title=NFL Preseason 2025
+SERIES: ID=10091 | Slug=bitcoin-and-ethereum-up-daily | Title=Bitcoin and Ethereum Up Daily
+SERIES: ID=10727 | Slug=dallas-daily-weather | Title=Dallas Daily Weather
+SERIES: ID=10159 | Slug=israel-withdraws-from-syria | Title=Israel withdraws from Syria
+SERIES: ID=10667 | Slug=house-votes-epstein | Title=house votes epstein #
+SERIES: ID=10452 | Slug=womens-cricket-world-cup | Title=Women's Cricket World Cup
+SERIES: ID=10050 | Slug=cbb | Title=CBB
+SERIES: ID=10097 | Slug=ethbtc-up-or-down-monthly | Title=ETH/BTC Up or Down Monthly
+SERIES: ID=10596 | Slug=nik-hit-price-monthly | Title=NIK Hit Price Monthly
+SERIES: ID=10053 | Slug=trump-monthly-eos | Title=Trump Monthly EOs
+SERIES: ID=10124 | Slug=iran-strike-israel | Title=iran strike israel
+SERIES: ID=10507 | Slug=amazon-multi-strikes-monthly | Title=Amazon Multi Strikes Monthly
+SERIES: ID=10116 | Slug=trump-epstein | Title=Trump epstein
+SERIES: ID=10898 | Slug=iran-strike-on-us-military | Title=Iran strike on US military
+SERIES: ID=10792 | Slug=3rd-largest-company | Title=3rd largest company
+SERIES: ID=10455 | Slug=world-test-championship | Title=World Test Championship
+SERIES: ID=10110 | Slug=archbtc-up-or-down-hourly | Title=archBTC Up or Down Hourly
+SERIES: ID=10849 | Slug=counter-strike-case-index-multi-strike-monthly | Title=Counter Strike Case Index Multi Strike Monthly
+SERIES: ID=10718 | Slug=trump-x-maduro-talk | Title=Trump x Maduro Talk
+SERIES: ID=10925 | Slug=maye-downtown-13-multistrike-weekly | Title=Maye Downtown 13 Multistrike Weekly
+SERIES: ID=10181 | Slug=elon-tweet-daily | Title=elon tweet daily
+SERIES: ID=10753 | Slug=cricket-south-africa | Title=Cricket South Africa
+SERIES: ID=10813 | Slug=counter-strike-gloves-index-multistrike-weekly | Title=Counter-Strike Gloves Index Multistrike Weekly
+SERIES: ID=10515 | Slug=rocket-lab-multi-strikes-monthly | Title=Rocket Lab Multi Strikes Monthly
+SERIES: ID=10429 | Slug=league-of-legends-wild-rift | Title=League of Legends: Wild Rift
+SERIES: ID=10415 | Slug=1-free-app | Title=#1 Free App
+SERIES: ID=10081 | Slug=sol-dailies | Title=SOL dailies
+SERIES: ID=10185 | Slug=pakistan-strike-india | Title=Pakistan strike India
+SERIES: ID=10107 | Slug=solana-neg-risk-weekly | Title=Solana Neg Risk Weekly
+SERIES: ID=10307 | Slug=efa-2025 | Title=English Football Association Cup 2025
+SERIES: ID=10011 | Slug=trump-truths | Title=Trump Truths
+SERIES: ID=10320 | Slug=trump-meet-musk | Title=Trump meet Musk
+SERIES: ID=10239 | Slug=xrp-hit-price-weekly | Title=XRP Hit Price Weekly
+SERIES: ID=41 | Slug=btc-up-or-down-daily | Title=BTC Up or Down Daily
+SERIES: ID=10350 | Slug=sidemen-views-week-1 | Title=Sidemen views week 1
+SERIES: ID=10103 | Slug=bitcoin-neg-risk-4h | Title=Bitcoin Neg Risk 4H
+SERIES: ID=10071 | Slug=eth-up-or-down-monthly | Title=ETH Up or Down Monthly
+SERIES: ID=10404 | Slug=usdchf-daily-up-or-down | Title=USD/CHF Daily Up or Down
+SERIES: ID=10293 | Slug=brazil-monthly-inflation | Title=Brazil Monthly Inflation
+SERIES: ID=10791 | Slug=ukraine-strikes-another-tanker-in-black-sea | Title=Ukraine strikes another tanker in Black Sea
+SERIES: ID=10130 | Slug=iran-declares-war | Title=Iran declares war
+SERIES: ID=10231 | Slug=ethereum-multi-strikes-4h | Title=Ethereum Multi Strikes 4H
+SERIES: ID=10569 | Slug=gambling-loss-deduction-cap | Title=Gambling Loss Deduction Cap
+SERIES: ID=10505 | Slug=apple-multi-strikes-monthly | Title=Apple Multi Strikes Monthly
+SERIES: ID=10311 | Slug=league-of-legends | Title=League of Legends
+SERIES: ID=10606 | Slug=rut-multi-strikes-weekly | Title=RUT Multi Strikes Weekly
+SERIES: ID=10945 | Slug=spx-open-daily-up-or-down | Title=SPX Open Daily Up or Down
+SERIES: ID=10111 | Slug=trump-approval-binary | Title=trump approval binary
+SERIES: ID=10926 | Slug=maye-prizm-329-multistrike-weekly | Title=Maye Prizm 329 Multistrike Weekly
+SERIES: ID=10210 | Slug=cfb-2025 | Title=CFB 2025
+SERIES: ID=10244 | Slug=concacaf | Title=Concacaf
+SERIES: ID=10161 | Slug=kash-patel-out | Title=Kash Patel out
+SERIES: ID=10146 | Slug=nuclear-deal | Title=nuclear deal
+SERIES: ID=10635 | Slug=googl-neg-risk-weekly | Title=GOOGL Neg Risk Weekly
+SERIES: ID=10364 | Slug=indian-super-league | Title=Indian Super League
+SERIES: ID=10393 | Slug=rklb-daily-up-or-down | Title=RKLB Daily Up or Down
+SERIES: ID=10827 | Slug=hottest-year-on-record | Title=hottest year on record
+SERIES: ID=10033 | Slug=potus-tweets | Title=POTUS Tweets
+SERIES: ID=10717 | Slug=honduran-deriv | Title=honduran deriv
+SERIES: ID=10863 | Slug=spanish-super-cup | Title=Spanish Super Cup
+SERIES: ID=10538 | Slug=trump-approval-rating-floor | Title=Trump Approval Rating Floor
+SERIES: ID=10830 | Slug=how-many-7pt0-or-above-earthquakes | Title=How many 7.0 or above earthquakes
+SERIES: ID=10196 | Slug=major-league-pickleball | Title=Major League Pickleball
+SERIES: ID=10835 | Slug=inflation-canada-annual | Title=Inflation Canada - Annual
+SERIES: ID=10496 | Slug=google-multi-strikes-weekly | Title=Google Multi Strikes Weekly
+SERIES: ID=10495 | Slug=amazon-multi-strikes-weekly | Title=Amazon Multi Strikes Weekly
+SERIES: ID=10020 | Slug=elon-net-worth | Title=Elon Net Worth
+SERIES: ID=10461 | Slug=comex-copper-futures-daily-up-or-down | Title=COMEX Copper Futures Daily Up or Down
+SERIES: ID=10058 | Slug=russia-x-ukraine-ceasefire | Title=Russia x Ukraine Ceasefire
+SERIES: ID=10581 | Slug=gaza-board-of-peace-establishment | Title=Gaza Board Of Peace Establishment
+SERIES: ID=10174 | Slug=thailand-x-cambodia-ceasefire | Title=Thailand x Cambodia ceasefire
+SERIES: ID=10133 | Slug=fda-approval | Title=FDA Approval
+SERIES: ID=10438 | Slug=a-league-soccer | Title=A League Soccer
+SERIES: ID=10737 | Slug=named-storm-forms-before-hurricane-season | Title=Named storm forms before hurricane season
+SERIES: ID=10780 | Slug=mustafa-test | Title=mustafa test
+SERIES: ID=10867 | Slug=release-any-more-epstein-related-files | Title=release any more Epstein related files
+SERIES: ID=10895 | Slug=eurozone-gdp | Title=Eurozone GDP
+SERIES: ID=10292 | Slug=tur-2025 | Title=Süper Lig 2025
+SERIES: ID=10918 | Slug=umbreon-vmax-215-multistrike-weekly | Title=Umbreon VMAX 215 Multistrike Weekly
+SERIES: ID=10026 | Slug=temperature-increase | Title=Temperature Increase
+SERIES: ID=10094 | Slug=bitcoin-up-or-down-weekly | Title=Bitcoin Up or Down Weekly
+SERIES: ID=10108 | Slug=israel-strike-iran | Title=Israel strike iran
+SERIES: ID=10916 | Slug=charizard-ex-199-multistrike-weekly | Title=Charizard Ex 199 Multistrike Weekly
+SERIES: ID=10663 | Slug=will-newjeans-perform | Title=Will NewJeans Perform
+SERIES: ID=10699 | Slug=ahl-2026 | Title=ahl-2026
+SERIES: ID=10516 | Slug=airbnb-multi-strikes-monthly | Title=Airbnb Multi Strikes Monthly
+SERIES: ID=10836 | Slug=max-chatbot-arena | Title=Max Chatbot Arena
+SERIES: ID=10589 | Slug=trump-resignation | Title=Trump Resignation
+SERIES: ID=10831 | Slug=measles-cases-binary | Title=Measles cases binary
+SERIES: ID=10571 | Slug=trump-declassifies-ufo | Title=Trump Declassifies UFO
+SERIES: ID=10117 | Slug=eth-up-or-down-hourly | Title=ETH Up or Down Hourly
+SERIES: ID=10327 | Slug=xrp-up-or-down-4h | Title=XRP Up or Down 4H
+SERIES: ID=10008 | Slug=us-monthly-inflation | Title=US Monthly Inflation
+SERIES: ID=10400 | Slug=hg-daily-up-or-down | Title=HG Daily Up or Down
+SERIES: ID=10247 | Slug=xrp-neg-risk-weekly | Title=XRP Neg Risk Weekly
+SERIES: ID=10761 | Slug=will-mrbeast-hit-million-subscribers | Title=Will MrBeast hit ___ Million subscribers
+SERIES: ID=10735 | Slug=boston-daily-weather | Title=Boston Daily Weather
+SERIES: ID=10588 | Slug=bangladesh-premier-league | Title=Bangladesh Premier League
+SERIES: ID=10861 | Slug=dji-monthly-ou | Title=DJI Monthly O/U
+SERIES: ID=10661 | Slug=cricket-test | Title=Cricket Test
+SERIES: ID=10187 | Slug=nfl-2025 | Title=NFL 2025
+SERIES: ID=10446 | Slug=csa-t20 | Title=CSA T20
+SERIES: ID=10204 | Slug=ucl-2025 | Title=UEFA Champions League 2025
+SERIES: ID=10815 | Slug=next-us-x-venezuela-military-engagement-on | Title=Next US x Venezuela military engagement on
+SERIES: ID=10801 | Slug=gold-gc-above | Title=Gold (GC) above ___
+SERIES: ID=10145 | Slug=trump-increase-sanctions-on-russia-before-august | Title=Trump increase sanctions on Russia before August
+SERIES: ID=10114 | Slug=btc-up-or-down-hourly | Title=BTC Up or Down Hourly
+SERIES: ID=10000 | Slug=elon-tweets | Title=Elon Tweets
+SERIES: ID=10854 | Slug=sp-500-monthly-hit | Title=S&P 500 monthly hit
+SERIES: ID=10009 | Slug=ice-detainers | Title=ICE Detainers
+SERIES: ID=10787 | Slug=1-grossing-play-store | Title=#1 Grossing Play Store
+SERIES: ID=10487 | Slug=airbnb-hit-price-monthly | Title=Airbnb Hit Price Monthly
+SERIES: ID=10241 | Slug=afc | Title=AFC
+SERIES: ID=10903 | Slug=jesus-christ-return | Title=Jesus Christ return
+SERIES: ID=10881 | Slug=united-rugby-championship | Title=United Rugby Championship
+SERIES: ID=10894 | Slug=china-gdp | Title=China GDP
+SERIES: ID=10870 | Slug=argentina-official-usd-exchange-rate | Title=Argentina Official USD Exchange Rate
+SERIES: ID=10809 | Slug=ukraine-peacekeeping | Title=ukraine peacekeeping
+SERIES: ID=10501 | Slug=palantir-multi-strikes-weekly | Title=Palantir Multi Strikes Weekly
+SERIES: ID=10051 | Slug=gas-prices | Title=Gas Prices
+SERIES: ID=10723 | Slug=3-ai-model-style-control-on | Title= #3 AI model Style Control On
+SERIES: ID=10887 | Slug=how-many-different-countries-will-the-us-strike | Title=How many different countries will the US strike
+SERIES: ID=10310 | Slug=counter-strike | Title=Counter Strike
+SERIES: ID=10421 | Slug=bnb-up-or-down-daily | Title=BNB Up or Down Daily
+SERIES: ID=10794 | Slug=cs2-operation | Title=CS2 Operation
+SERIES: ID=10655 | Slug=highest-grossing-movie | Title=Highest Grossing Movie
+SERIES: ID=35 | Slug=fomc | Title=FOMC
+SERIES: ID=10734 | Slug=seattle-daily-weather | Title=Seattle Daily Weather
+SERIES: ID=10460 | Slug=nymex-crude-oil-futures-wti-daily-up-or-down | Title=NYMEX Crude Oil Futures (WTI) Daily Up or Down
+SERIES: ID=10128 | Slug=iran-x-israel-conflict-ends-before-july | Title=Iran x Israel conflict ends before July?
+SERIES: ID=10493 | Slug=apple-multi-strikes-weekly | Title=Apple Multi Strikes Weekly
+SERIES: ID=10702 | Slug=cehl-2026 | Title=cehl-2026
+SERIES: ID=10587 | Slug=china-bitcoin-ban | Title=China Bitcoin Ban
+SERIES: ID=10825 | Slug=meteor-strike-10kt | Title=meteor strike (10kt+)
+SERIES: ID=10808 | Slug=ukraine-security-guarantee | Title=ukraine security guarantee
+SERIES: ID=10559 | Slug=us-nato-withdrawal | Title=US NATO Withdrawal
+SERIES: ID=10318 | Slug=taiwan-blockade | Title=Taiwan blockade
+SERIES: ID=10545 | Slug=israel-x-lebanon-relations | Title=Israel x Lebanon Relations
+SERIES: ID=10685 | Slug=xrp-up-or-down-5m | Title=XRP Up or Down 5m
+SERIES: ID=10684 | Slug=btc-up-or-down-5m | Title=BTC Up or Down 5m
+SERIES: ID=10683 | Slug=eth-up-or-down-5m | Title=ETH Up or Down 5m
+SERIES: ID=10686 | Slug=sol-up-or-down-5m | Title=SOL Up or Down 5m
+SERIES: ID=10818 | Slug=israel-strike-lebanon-on | Title=Israel strike Lebanon on
+SERIES: ID=10551 | Slug=trump-25th-amendment | Title=Trump 25th Amendment
+SERIES: ID=10410 | Slug=bitcoin-etf-flows-daily | Title=Bitcoin ETF Flows Daily
+SERIES: ID=10405 | Slug=eurusd-daily-up-or-down | Title=EUR/USD Daily Up or Down
+SERIES: ID=10125 | Slug=israel-x-iran-ceasefire | Title=israel x iran ceasefire
+SERIES: ID=10598 | Slug=ukx-hit-price-monthly | Title=UKX Hit Price Monthly
+SERIES: ID=10896 | Slug=us-seize-oil-ship | Title=US Seize Oil Ship
+SERIES: ID=10665 | Slug=bank-of-brazil-decision | Title=Bank of Brazil decision
+SERIES: ID=10678 | Slug=kaito | Title=Kaito
+SERIES: ID=10954 | Slug=zuffa | Title=Zuffa
+SERIES: ID=10392 | Slug=open-daily-up-or-down | Title=OPEN Daily Up or Down
+SERIES: ID=10645 | Slug=china-coup | Title=China Coup
+SERIES: ID=10621 | Slug=openai-acquired | Title=OpenAI Acquired
+SERIES: ID=10572 | Slug=merz-out | Title=Merz Out
+SERIES: ID=10536 | Slug=obama-divorce | Title=Obama Divorce
+SERIES: ID=10912 | Slug=womens-t20-world-cup-qualifier | Title=Women's T20 World Cup Qualifier
+SERIES: ID=10375 | Slug=tsla-daily-up-down | Title=TSLA Daily Up Down
+SERIES: ID=10914 | Slug=fraukger-strike-iran | Title=Fra/UK/Ger Strike Iran
+SERIES: ID=10543 | Slug=trump-corporate-tax-cut | Title=Trump Corporate Tax Cut
+SERIES: ID=10366 | Slug=wta | Title=WTA
+SERIES: ID=10064 | Slug=negative-gdp | Title=Negative gdp
+SERIES: ID=10172 | Slug=zelenskyy-out | Title=Zelenskyy out
+SERIES: ID=10826 | Slug=5kt-meteor-strike | Title=5kt meteor strike
+SERIES: ID=10713 | Slug=new-pandemic | Title=New Pandemic
+SERIES: ID=10703 | Slug=snhl-2026 | Title=snhl-2026
+SERIES: ID=10549 | Slug=putin-x-zelenskyy-handshake | Title=Putin x Zelenskyy Handshake
+SERIES: ID=10625 | Slug=openai-token-release | Title=OpenAI Token Release
+SERIES: ID=10329 | Slug=efl-cup | Title=EFL Cup
+SERIES: ID=10330 | Slug=primeira-liga | Title=Primeira Liga
+SERIES: ID=10807 | Slug=ukraine-cede-territory | Title=Ukraine cede territory
+SERIES: ID=10476 | Slug=apple-hit-price-monthly | Title=Apple Hit Price Monthly
+SERIES: ID=10365 | Slug=atp | Title=ATP
+SERIES: ID=10500 | Slug=netflix-multi-strikes-weekly | Title=Netflix Multi Strikes Weekly
+SERIES: ID=10754 | Slug=cricket-uae | Title=Cricket UAE
+SERIES: ID=10399 | Slug=xpt-daily-up-or-down | Title=XPT Daily Up or Down
+SERIES: ID=10445 | Slug=international-t20 | Title=International T20
+SERIES: ID=10671 | Slug=copa-liga | Title=Copa Liga
+SERIES: ID=10396 | Slug=xau-daily-up-or-down | Title=XAU Daily Up or Down
+SERIES: ID=10878 | Slug=liga-endesa | Title=Liga Endesa
+SERIES: ID=46 | Slug=box-office-openings | Title=Box Office Openings
+SERIES: ID=10842 | Slug=next-leader-out | Title=Next leader out
+SERIES: ID=10824 | Slug=100m-views-on-a-mrbeast-video | Title=100m views on a MrBeast video
+SERIES: ID=10132 | Slug=israel-ends-military-operations | Title=Israel ends military operations
+SERIES: ID=10877 | Slug=basketball-series-a | Title=Basketball Series A
+SERIES: ID=10748 | Slug=cricket-india | Title=Cricket India
+SERIES: ID=10578 | Slug=iran-npt-withdrawal | Title=Iran NPT Withdrawal
+SERIES: ID=10131 | Slug=strait-of-hormuz | Title=Strait of Hormuz
+SERIES: ID=10654 | Slug=china-x-philippines-clash | Title=China x Philippines Clash
+SERIES: ID=10207 | Slug=putin-meet-zelenskyy | Title=Putin meet Zelenskyy
+SERIES: ID=10875 | Slug=cba | Title=CBA
+SERIES: ID=10899 | Slug=israel-nuclear-weapon-use | Title=Israel nuclear weapon use
+SERIES: ID=10354 | Slug=stokes-twins-views-week-1 | Title=Stokes Twins views week 1
+SERIES: ID=10170 | Slug=solana-hit-price-weekly | Title=Solana Hit Price Weekly
+SERIES: ID=10169 | Slug=israel-strike-yemen | Title=Israel strike Yemen
+SERIES: ID=10288 | Slug=lcs-2025 | Title=Leagues Cup 2025
+SERIES: ID=10908 | Slug=cricket-women-premier-league | Title=Cricket Women Premier League
+SERIES: ID=10647 | Slug=hezbollah-x-israel-strike | Title=Hezbollah x Israel Strike
+SERIES: ID=10509 | Slug=meta-multi-strikes-monthly | Title=Meta Multi Strikes Monthly
+SERIES: ID=10534 | Slug=elon-party | Title=Elon Party
+SERIES: ID=10387 | Slug=hang-seng-daily-up-or-down | Title=Hang Seng Daily Up or Down
+SERIES: ID=10628 | Slug=anthropic-acquired | Title=Anthropic Acquired
+SERIES: ID=10781 | Slug=trump-putin-and-zelensky-seen | Title=Trump, Putin, and Zelensky seen
+SERIES: ID=10651 | Slug=us-recognizes-russian-ukraine-sovereignty | Title=US Recognizes Russian Ukraine Sovereignty
+SERIES: ID=10537 | Slug=lee-jae-myung-arrest | Title=Lee Jae-myung Arrest
+SERIES: ID=10910 | Slug=afghanistan-vs-west-indies-t20i | Title=Afghanistan vs West Indies (T20I)
+SERIES: ID=10915 | Slug=counter-strike-glove-index-multi-strike-weekly | Title=Counter Strike Glove Index Multi Strike Weekly
+SERIES: ID=10390 | Slug=nflx-daily-up-or-down | Title=NFLX Daily Up or Down
+SERIES: ID=10585 | Slug=ahmed-al-sharaa-out | Title=Ahmed al-Sharaa Out
+SERIES: ID=10540 | Slug=national-ethereum-reserve | Title=National Ethereum Reserve
+SERIES: ID=10382 | Slug=nik-daily-up-or-down | Title=NIK Daily Up or Down
+SERIES: ID=10586 | Slug=tiktok-ban | Title=TikTok Ban
+SERIES: ID=10627 | Slug=altman-equity | Title=Altman Equity
+SERIES: ID=10777 | Slug=us-civil-war | Title=US civil war
+SERIES: ID=10560 | Slug=us-treasury-blockchain | Title=US Treasury Blockchain
+SERIES: ID=10620 | Slug=tesla-robotaxi-launch | Title=Tesla Robotaxi Launch
+SERIES: ID=10577 | Slug=iran-nuclear-test | Title=Iran Nuclear Test
+SERIES: ID=10771 | Slug=qbgami | Title=QBgami
+SERIES: ID=10374 | Slug=nvda-daily-up-down | Title=NVDA Daily Up Down
+SERIES: ID=10564 | Slug=us-forces-in-gaza | Title=US Forces In Gaza
+SERIES: ID=10660 | Slug=us-ally-nukes | Title=US Ally Nukes
+SERIES: ID=10785 | Slug=aca-premium-tax-credits | Title=ACA premium tax credits
+SERIES: ID=10852 | Slug=sports-prediction-markets-banned | Title=sports prediction markets banned
+SERIES: ID=10570 | Slug=lee-jae-myung-impeachment | Title=Lee Jae-myung Impeachment
+SERIES: ID=10657 | Slug=biggest-opening-weekend | Title=Biggest Opening Weekend
+SERIES: ID=10872 | Slug=pro-a | Title=Pro A
+SERIES: ID=10643 | Slug=abnb-neg-risk-weekly | Title=ABNB Neg Risk Weekly
+SERIES: ID=10750 | Slug=cricket-england | Title=Cricket England
+SERIES: ID=10319 | Slug=musk-rejoins-trump | Title=Musk rejoins Trump
+SERIES: ID=10911 | Slug=bhutan-tri-series | Title=Bhutan Tri-Series
+SERIES: ID=10412 | Slug=ethereum-etf-flows-daily | Title=Ethereum ETF Flows Daily
+SERIES: ID=10568 | Slug=canadian-secession-referendum | Title=Canadian Secession Referendum
+SERIES: ID=10444 | Slug=k-league | Title=K-league
+SERIES: ID=10388 | Slug=russell-2000-daily-up-or-down | Title=Russell 2000 Daily Up or Down
+SERIES: ID=10533 | Slug=ukraine-not-nato | Title=Ukraine Not NATO
+SERIES: ID=10377 | Slug=googl-daily-up-down | Title=GOOGL Daily Up Down
+SERIES: ID=10436 | Slug=starcraft-brood-war | Title=StarCraft: Brood War
+SERIES: ID=10530 | Slug=trump-administration-resignations | Title=Trump administration resignations
+SERIES: ID=10876 | Slug=nbl | Title=NBL
+SERIES: ID=10556 | Slug=kim-jong-un-out | Title=Kim Jong Un Out
+SERIES: ID=10760 | Slug=openai-new-model | Title=OpenAI new model
+SERIES: ID=10428 | Slug=ea-sports-fifa | Title=EA Sports FIFA
+SERIES: ID=10195 | Slug=ligue-1-2025 | Title=Ligue 1 2025
+SERIES: ID=10674 | Slug=scottish-premiership | Title=Scottish Premiership
+SERIES: ID=10949 | Slug=googl-multi-strikes-weekly | Title=GOOGL Multi Strikes Weekly
+SERIES: ID=10623 | Slug=ai-imo-gold-medal | Title=AI IMO Gold Medal
+SERIES: ID=10328 | Slug=nfl-scorigami | Title=NFL Scorigami
+SERIES: ID=10857 | Slug=nasdaq-100-monthly-hit | Title=Nasdaq 100 monthly hit
+SERIES: ID=10701 | Slug=dehl-2026 | Title=dehl-2026
+SERIES: ID=10450 | Slug=sa20 | Title=SA20
+SERIES: ID=10731 | Slug=hurricane-landfall-us | Title=Hurricane Landfall US
+SERIES: ID=10359 | Slug=brazil-serie-a | Title=Brazil Serie A
+SERIES: ID=10884 | Slug=rugby-championship | Title=Rugby Championship
+SERIES: ID=10205 | Slug=nubcat | Title=Nubcat
+SERIES: ID=10547 | Slug=hezbollah-disarm | Title=Hezbollah Disarm
+SERIES: ID=10710 | Slug=1-spotify-song | Title=#1 Spotify Song
+SERIES: ID=10422 | Slug=xrp-up-or-down-15m | Title=XRP Up or Down 15m
+SERIES: ID=10191 | Slug=eth-up-or-down-15m | Title=ETH Up or Down 15m
+SERIES: ID=10648 | Slug=modi-out | Title=Modi Out
+SERIES: ID=10519 | Slug=gemini-performance | Title=Gemini Performance
+SERIES: ID=10879 | Slug=basketball-champions-league | Title=Basketball Champions League
+SERIES: ID=10544 | Slug=ukraine-surrender-donbas | Title=Ukraine Surrender Donbas
+SERIES: ID=10848 | Slug=counter-strike-glove-index-multi-strike-monthly | Title=Counter Strike Glove Index Multi Strike Monthly
+SERIES: ID=10714 | Slug=netanyahu-pardon | Title=Netanyahu Pardon
+SERIES: ID=10774 | Slug=2-us-netflix-movie | Title=#2 US Netflix Movie
+SERIES: ID=10622 | Slug=microstrategy-bankruptcy | Title=MicroStrategy Bankruptcy
+SERIES: ID=10706 | Slug=apple-acquire-mistral | Title=Apple acquire Mistral 
+SERIES: ID=10315 | Slug=coupe-de-france | Title=Coupe de France
+SERIES: ID=10550 | Slug=abraham-accords-new-member | Title=Abraham Accords New Member
+SERIES: ID=10797 | Slug=reserve-bank-of-new-zealand-decision | Title=Reserve Bank of New Zealand Decision
+SERIES: ID=10799 | Slug=cricket-bangladesh | Title=Cricket Bangladesh
+SERIES: ID=10306 | Slug=rus-2025 | Title=Russian Premier League 2025
+SERIES: ID=10337 | Slug=earnings | Title=Earnings
+SERIES: ID=10160 | Slug=israel-strike-damascus | Title=Israel strike Damascus
+SERIES: ID=10610 | Slug=bank-of-canada-decision | Title=Bank of Canada decision
+SERIES: ID=10810 | Slug=counter-strike-knife-index-multistrike-weekly | Title=Counter-Strike Knife Index Multistrike Weekly
+SERIES: ID=10457 | Slug=comex-gold-futures-daily-up-or-down | Title=COMEX Gold Futures Daily Up or Down
+SERIES: ID=10696 | Slug=chainlink-hit-price-monthly | Title=Chainlink Hit Price Monthly
+SERIES: ID=10353 | Slug=stokes-twins-views-day-1 | Title=Stokes Twins views day 1
+SERIES: ID=10913 | Slug=internet-access-restored-in-iran | Title=Internet access restored in Iran
+SERIES: ID=10865 | Slug=billboard-1-album | Title=Billboard #1 Album
+SERIES: ID=10618 | Slug=chinese-ai-1 | Title=Chinese AI #1
+SERIES: ID=10565 | Slug=trump-deficit-reduction | Title=Trump Deficit Reduction
+SERIES: ID=10573 | Slug=nord-stream-on | Title=Nord Stream On
+SERIES: ID=10520 | Slug=us-national-bitcoin-reserve | Title=US National Bitcoin Reserve
+SERIES: ID=10535 | Slug=poilievre-out | Title=Poilievre Out
+SERIES: ID=10563 | Slug=israel-x-turkey-clash | Title=Israel x Turkey Clash
+SERIES: ID=10517 | Slug=sp-500-company-buys-bitcoin | Title=S&P 500 Company buys Bitcoin
+SERIES: ID=10555 | Slug=mamdani-citizenship | Title=Mamdani Citizenship
+SERIES: ID=10171 | Slug=china-invade-taiwan | Title=China invade Taiwan
+SERIES: ID=10380 | Slug=aapl-daily-up-down | Title=AAPL Daily Up Down
+SERIES: ID=10656 | Slug=bkfc | Title=BKFC
+SERIES: ID=10629 | Slug=ai-frontiermath-score-90 | Title=AI FrontierMath Score 90+
+SERIES: ID=10554 | Slug=north-korean-sk-invasion | Title=North Korean SK Invasion
+SERIES: ID=10733 | Slug=us-tariff-revenue-up | Title=US tariff revenue up
+SERIES: ID=10552 | Slug=obama-federal-charges | Title=Obama Federal Charges
+SERIES: ID=10631 | Slug=fed-emergency-rate-cut | Title=Fed Emergency Rate Cut
+SERIES: ID=10626 | Slug=bitcoin-most-valuable-company | Title=Bitcoin most valuable company
+SERIES: ID=10527 | Slug=impeachment | Title=Impeachment
+SERIES: ID=10546 | Slug=milei-out | Title=Milei Out
+SERIES: ID=10817 | Slug=epstein-alive | Title=Epstein Alive
+SERIES: ID=10236 | Slug=trump-resign | Title=Trump resign
+SERIES: ID=10376 | Slug=meta-daily-up-down | Title=META Daily Up Down
+SERIES: ID=10386 | Slug=dax-daily-up-or-down | Title=DAX Daily Up or Down
+SERIES: ID=10101 | Slug=mstr-weekly-strike | Title=MSTR Weekly Strike
+SERIES: ID=10548 | Slug=fed-abolition | Title=Fed Abolition
+SERIES: ID=10646 | Slug=russia-rejoin-g7 | Title=Russia Rejoin G7
+SERIES: ID=10579 | Slug=us-defaults-on-debt | Title=US Defaults On Debt
+SERIES: ID=10619 | Slug=reusable-spacex-starship | Title=Reusable SpaceX Starship
+SERIES: ID=10574 | Slug=israel-x-west-bank-annex | Title=Israel x West Bank Annex
+SERIES: ID=10567 | Slug=north-x-south-korea-talks | Title=North x South Korea Talks
+SERIES: ID=10562 | Slug=long-term-capital-gains-tax-cut | Title=Long Term Capital Gains Tax Cut
+SERIES: ID=10539 | Slug=russian-sovereignty-crimea | Title=Russian Sovereignty (Crimea)
+SERIES: ID=10869 | Slug=country-leave-brics | Title=country leave BRICS
+SERIES: ID=10036 | Slug=mstr-weeklies | Title=MSTR weeklies
+SERIES: ID=10855 | Slug=sp-500-monthly-ou | Title=S&P 500 monthly O/U
+SERIES: ID=10858 | Slug=nasdaq-100-monthly-ou | Title=Nasdaq 100 monthly O/U
+SERIES: ID=10624 | Slug=us-ai-safety-bill | Title=US AI Safety Bill

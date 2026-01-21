@@ -4,7 +4,8 @@
     "domain": "leovegas.com",
     "method": "api",
     "api_type": "kambi",
-    "api_base": "https://e4-api.kambi.com/offering/v2018/leovegas",
+    "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
+    "brand": "leose",
     "site_url": "https://www.leovegas.com",
     "params": {
         "market": "SE",
