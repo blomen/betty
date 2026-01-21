@@ -15,6 +15,10 @@ class Transport(ABC):
     @abstractmethod
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         pass
+
+    @abstractmethod
+    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+        pass
         
     @abstractmethod
     async def close(self):
@@ -52,6 +56,20 @@ class HttpTransport(Transport):
                 return await response.json()
             return await response.text()
 
+    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+        await self._ensure_session()
+        req_headers = self.headers.copy()
+        if headers:
+            req_headers.update(headers)
+
+        async with self.session.post(url, data=data, json=json, headers=req_headers) as response:
+             if response.status not in (200, 201):
+                 logger.warning(f"HTTP POST {url} returned status {response.status}")
+                 return None
+             if "application/json" in response.headers.get("Content-Type", ""):
+                 return await response.json()
+             return await response.text()
+
     async def close(self):
         if self.session:
             await self.session.close()
@@ -82,10 +100,6 @@ class BrowserTransport(Transport):
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_browser()
         
-        # Playwright doesn't handle params automatically in goto, so we might need to append them
-        # For simple usage, we assume url is full or simple. 
-        # Ideal: use urllib.parse or context.request (API style)
-        
         # Mode 1: Hybrid - Use Fetch API from context (faster, no page load if not needed)
         try:
             response = await self.context.request.get(url, params=params, headers=headers)
@@ -103,14 +117,53 @@ class BrowserTransport(Transport):
         # Mode 2: Full Page Load
         try:
             await self.page.goto(url, wait_until="domcontentloaded")
-            # Return page content or evaluate? 
-            # For "Transport", we usually want the data.
-            # If the user wants DOM, they should access page directly.
-            # But here we're implementing a generic "get".
-            # Let's return the content.
             return await self.page.content()
         except Exception as e:
             logger.error(f"Browser GET failed: {e}")
+            return None
+
+    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+        await self._ensure_browser()
+        
+        # Mode 1: Hybrid context request
+        try:
+            # Playwright request.post supports 'data' (form) or 'data' (json if object? no `multipart` usually explicitly)
+            # request.post(url, data=..., form=..., multipart=...)
+            # We map generic 'data' to 'form' if dict and not json
+            
+            kwargs = {"headers": headers}
+            if json:
+                kwargs["data"] = json # Playwright treats dict in data as JSON automatically? No, requests does. 
+                # Playwright: data (str|bytes|Serializable), form (Dict), multipart (Dict)
+                # If we pass json dict to 'data', it serializes?
+                # Best to use 'data' for json if content-type header is set, otherwise...
+                pass
+            
+            # Simplified mapping:
+            # If json arg is present -> assume JSON body
+            # If data arg is present -> assume Form/Multipart
+            
+            if json:
+                response = await self.context.request.post(url, data=json, headers=headers)
+            elif isinstance(data, dict):
+                 response = await self.context.request.post(url, form=data, headers=headers)
+            elif data:
+                 # Pass raw string/bytes to 'data'
+                 response = await self.context.request.post(url, data=data, headers=headers)
+            else:
+                response = await self.context.request.post(url, headers=headers)
+
+            if response.status in (200, 201):
+                try:
+                    return await response.json()
+                except:
+                    return await response.text()
+            else:
+                logger.warning(f"Browser POST {url} returned {response.status} {response.status_text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Browser POST failed: {e}")
             return None
 
     async def close(self):

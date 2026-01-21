@@ -2,15 +2,62 @@
     "id": "mrgreen",
     "name": "Mr Green",
     "domain": "mrgreen.se",
-    "method": "api",
-    "api_type": "kambi",
-    "api_base": "https://eu1.offering-api.kambicdn.com/offering/v2018",
-    "brand": "mrgreen",
-    "site_url": "https://www.mrgreen.com",
+    "method": "retriever",
+    "retriever_type": "spectate",
+    "dom_type": "spectate",
+    "api_base": "https://spectate-web.mrgreen.se/spectate",
+    "site_url": "https://www.mrgreen.se/sport/",
     "params": {
-        "market": "SE",
-        "lang": "sv_SE",
-        "odds_format": "decimal"
+        "tournaments": {
+            "football": [
+                "england/english-premier-league",
+                "england/english-championship",
+                "spain/la-liga",
+                "germany/bundesliga",
+                "italy/serie-a",
+                "france/ligue-1",
+                "europe/uefa-champions-league",
+                "europe/uefa-europa-league",
+                "sweden/allsvenskan",
+                "netherlands/eredivisie",
+                "portugal/primeira-liga"
+            ],
+            "basketball": [
+                "usa/nba",
+                "europe/euroleague",
+                "usa/ncaa"
+            ],
+            "tennis": [
+                "atp/atp",
+                "wta/wta",
+                "australia/australian-open"
+            ],
+            "ice_hockey": [
+                "usa/nhl",
+                "sweden/shl"
+            ],
+            "american_football": [
+                "usa/nfl"
+            ],
+            "baseball": [
+                "usa/mlb"
+            ],
+            "mma": [
+                "ufc/ufc"
+            ],
+            "esports": [
+                "counter-strike/esl-pro-league",
+                "league-of-legends/lec"
+            ],
+            "rugby": [
+                "europe/six-nations",
+                "international/six-nations"
+            ],
+            "cricket": [
+                "international/test-matches",
+                "india/ipl"
+            ]
+        }
     },
     "status": "working"
 }
