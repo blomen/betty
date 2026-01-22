@@ -166,6 +166,96 @@ class BrowserTransport(Transport):
             logger.error(f"Browser POST failed: {e}")
             return None
 
+    async def new_page(self):
+        """Create a new page in the existing context (sharing cookies)."""
+        await self._ensure_browser()
+        return await self.context.new_page()
+
+    async def smart_scroll(self, timeout: int = 10000, button_selector: Optional[str] = None, page: Any = None):
+        """
+        Robust smart scrolling mechanism adapted from modern scraping libraries.
+        - Scrolls to bottom
+        - Waits for network idle
+        - Checks for height change
+        - Clicks "Show More" buttons if selector provided
+        """
+        await self._ensure_browser()
+        target_page = page or self.page
+        if not target_page:
+             raise ValueError("No page available for scrolling")
+        
+        js_script = """
+        async (args) => {
+            const { timeout, buttonSelector } = args;
+            const startTime = Date.now();
+            let lastHeight = 0;
+            let sameHeightCount = 0;
+            const maxRetries = 5;
+            
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            
+            while (Date.now() - startTime < timeout) {
+                // 1. Scroll to bottom
+                window.scrollTo(0, document.body.scrollHeight);
+                await sleep(500);
+                
+                // 2. Click button if exists
+                let clicked = false;
+                if (buttonSelector) {
+                    let btn = null;
+                    
+                    // Determine if XPath or CSS
+                    if (buttonSelector.startsWith('/') || buttonSelector.startsWith('(') || buttonSelector.startsWith('xpath=')) {
+                        const cleanXpath = buttonSelector.replace('xpath=', '');
+                        try {
+                            const result = document.evaluate(cleanXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                            btn = result.singleNodeValue;
+                        } catch (e) {
+                            console.log("XPath error:", e);
+                        }
+                    } else {
+                        try {
+                            btn = document.querySelector(buttonSelector);
+                        } catch (e) {
+                            console.log("CSS Selector error:", e);
+                        }
+                    }
+                    
+                    if (btn && btn.offsetParent !== null) { // Check visibility
+                        console.log("Clicking load more button");
+                        btn.click();
+                        await sleep(2000); // Wait for content load
+                        clicked = true;
+                        sameHeightCount = 0; // Reset counter on click
+                    }
+                }
+                
+                // 3. Check height if we didn't click (if we clicked, height likely changed or will change)
+                if (!clicked) {
+                    const currentHeight = document.body.scrollHeight;
+                    if (currentHeight === lastHeight) {
+                        sameHeightCount++;
+                        if (sameHeightCount >= maxRetries) {
+                            console.log("Reached end of page (height constant)");
+                            break;
+                        }
+                    } else {
+                        sameHeightCount = 0;
+                        lastHeight = currentHeight;
+                    }
+                }
+                
+                await sleep(500);
+            }
+        }
+        """
+        
+        try:
+            await target_page.evaluate(js_script, {"timeout": timeout, "buttonSelector": button_selector})
+            logger.info("Smart scroll completed.")
+        except Exception as e:
+            logger.error(f"Smart scroll failed: {e}")
+
     async def close(self):
         if self.browser:
             await self.browser.close()

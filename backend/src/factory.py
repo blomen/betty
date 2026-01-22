@@ -141,6 +141,11 @@ class ExtractorFactory:
             dom_type = config.get("dom_type")
             if dom_type == "spectate": retriever = SpectateRetriever(config)
         
+        if retriever_type == "snabbare":
+            # For Snabbare we use local import or ensure top level import
+            from backend.src.providers.snabbare import SnabbareRetriever
+            retriever = SnabbareRetriever(config)
+        
         if not retriever:
             raise ValueError(f"Unknown retriever type for {provider_id}")
             
