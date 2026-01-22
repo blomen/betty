@@ -102,25 +102,37 @@ class ExtractionPipeline:
             results["polymarket"] = poly_results
             log(f"  Polymarket: {poly_results['events_processed']} processed ({poly_results['events_new']} new), {poly_results['odds_new']} new odds")
 
-        # Extract from other providers
+        # Extract from other providers in parallel
         target_providers = providers if providers is not None else self.engine.get_enabled_providers()
         kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
-        for provider_id in target_providers:
-            log(f"Extracting from {provider_id}...")
-            try:
-                provider_results = await self._extract_provider(provider_id, kambi_sports, max_events_per_sport)
-                results["providers"][provider_id] = provider_results
-                log(f"  {provider_id}: {provider_results['events_processed']} processed ({provider_results['events_new']} new), {provider_results['odds_new']} new odds")
-            except Exception as e:
-                logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
-                results["providers"][provider_id] = {
-                    "events_processed": 0,
-                    "events_new": 0,
-                    "odds_processed": 0,
-                    "odds_new": 0,
-                    "error": str(e)
-                }
+        if target_providers:
+            log(f"Extracting from {len(target_providers)} providers in parallel...")
+
+            # Create tasks for parallel extraction
+            async def extract_with_error_handling(provider_id):
+                try:
+                    log(f"  Starting {provider_id}...")
+                    provider_results = await self._extract_provider(provider_id, kambi_sports, max_events_per_sport)
+                    log(f"  {provider_id}: {provider_results['events_processed']} processed ({provider_results['events_new']} new), {provider_results['odds_new']} new odds")
+                    return provider_id, provider_results
+                except Exception as e:
+                    logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
+                    return provider_id, {
+                        "events_processed": 0,
+                        "events_new": 0,
+                        "odds_processed": 0,
+                        "odds_new": 0,
+                        "error": str(e)
+                    }
+
+            # Run all providers in parallel
+            provider_tasks = [extract_with_error_handling(pid) for pid in target_providers]
+            provider_results_list = await asyncio.gather(*provider_tasks)
+
+            # Collect results
+            for provider_id, provider_result in provider_results_list:
+                results["providers"][provider_id] = provider_result
 
         self.session.commit()
 
@@ -148,6 +160,10 @@ class ExtractionPipeline:
         odds_processed = 0
         odds_new = 0
 
+        # Batch commit configuration
+        BATCH_SIZE = 100
+        event_count = 0
+
         # Use the generic extractor factory for Polymarket too
         extractor = self.engine.get_extractor("polymarket")
 
@@ -167,15 +183,22 @@ class ExtractionPipeline:
                         )
 
                         events_processed += 1
+                        event_count += 1
                         if ev_new:
                             events_new += 1
 
                         odds_processed += ev_processed_odds
                         odds_new += ev_new_odds
 
+                        # Batch commit every BATCH_SIZE events
+                        if event_count % BATCH_SIZE == 0:
+                            self.session.commit()
+                            logger.debug(f"[polymarket] Batch committed {event_count} events")
+
                 except Exception as e:
                     logger.debug(f"Polymarket {sport_config.name}: {e}")
 
+            # Final commit for any remaining events
             self.session.commit()
 
         logger.info(f"Polymarket extraction complete. New events: {events_new}, New odds: {odds_new}")
@@ -204,6 +227,10 @@ class ExtractionPipeline:
         odds_processed = 0
         odds_new = 0
 
+        # Batch commit configuration
+        BATCH_SIZE = 100
+        event_count = 0
+
         extractor = self.engine.get_extractor(provider_id)
 
         for sport in sports:
@@ -221,13 +248,17 @@ class ExtractionPipeline:
                     logger.debug(f"DEBUG: {provider_id} stored event {event.id}: new={ev_new}, odds={ev_new_odds}")
 
                     events_processed += 1
+                    event_count += 1
                     if ev_new:
                         events_new += 1
 
                     odds_processed += ev_processed_odds
                     odds_new += ev_new_odds
 
-                self.session.commit()
+                    # Batch commit every BATCH_SIZE events
+                    if event_count % BATCH_SIZE == 0:
+                        self.session.commit()
+                        logger.debug(f"[{provider_id}] Batch committed {event_count} events")
 
                 # Close if it needs closing (e.g. Spectate/Playwright)
                 if hasattr(extractor, 'close'):
@@ -242,6 +273,10 @@ class ExtractionPipeline:
                 if hasattr(extractor, 'close'):
                     if asyncio.iscoroutinefunction(extractor.close):
                         await extractor.close()
+
+        # Final commit for any remaining events
+        self.session.commit()
+        logger.debug(f"[{provider_id}] Final commit completed")
 
         return {
             "events_processed": events_processed,

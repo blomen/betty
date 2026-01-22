@@ -6,7 +6,12 @@
       "Bash(ls:*)",
       "Bash(xargs rm:*)",
       "Bash(python -c:*)",
-      "Bash(python test_refactor.py:*)"
+      "Bash(python test_refactor.py:*)",
+      "Bash(python main.py:*)",
+      "Bash(python -m backend.src.app:*)",
+      "Bash($env:PYTHONIOENCODING=\"utf-8\")",
+      "Bash(python test_extraction.py:*)",
+      "Bash(python validate_pipeline.py:*)"
     ]
   }
 }

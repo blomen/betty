@@ -12,23 +12,25 @@ class KambiRetriever(Retriever):
     """
     Kambi Logic ported to the new Retriever Architecture.
     """
-    
+
+    # Shared class-level cache for group data across all Kambi providers
+    # This avoids fetching the same group tree multiple times
+    # Key format: "{base_url}/{brand}/group.json"
+    _SHARED_GROUP_CACHE = {}
+
     # We might need to fetch the groups first, then the events.
     # The Retriever interface assumes a single URL per sport usually,
     # but we can implement custom logic in `extract` or `_get_sport_url`.
-    
+
     # Kambi requires a 2-step process:
     # 1. Fetch Group Tree -> Find Sport Group ID
     # 2. Fetch Events for that Group ID
-    
+
     def __init__(self, config: dict, transport=None):
         super().__init__(config, transport)
         self.brand = config.get("brand") or config.get("id")
         self.base_url = config.get("api_base") or config.get("base_url")
         self.default_params = config.get("params", {})
-        
-        # Cache for group IDs?
-        self._group_cache = {}
 
     def _get_sport_url(self, sport: str) -> str:
         # This method in the base class returns a single URL.
@@ -37,18 +39,20 @@ class KambiRetriever(Retriever):
         return "" 
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
-        # 1. Get Groups
+        # 1. Get Groups (using shared cache)
         groups_url = f"{self.base_url}/{self.brand}/group.json"
-        
-        logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
-        
-        if groups_url in self._group_cache:
-            group_data = self._group_cache[groups_url]
+
+        # Check shared cache first
+        if groups_url in self._SHARED_GROUP_CACHE:
+            logger.debug(f"[{self.provider_id}] Using cached groups for {groups_url}")
+            group_data = self._SHARED_GROUP_CACHE[groups_url]
         else:
+            logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
             group_data = await self.transport.get(groups_url, params=self.default_params)
             if group_data:
-                self._group_cache[groups_url] = group_data
-        
+                self._SHARED_GROUP_CACHE[groups_url] = group_data
+                logger.debug(f"[{self.provider_id}] Cached groups for {groups_url}")
+
         if not group_data:
             return []
             
@@ -63,13 +67,28 @@ class KambiRetriever(Retriever):
              
         if limit and len(target_groups) > limit:
             target_groups = target_groups[:limit]
-            
-        # 3. Fetch Events for each group
+
+        # 3. Fetch Events for each group in parallel (with concurrency limit)
         all_events = []
-        for group in target_groups:
-            events = await self._fetch_group_events(group)
-            all_events.extend(events)
-            
+
+        # Use semaphore to limit concurrent requests (avoid overwhelming the API)
+        sem = asyncio.Semaphore(5)
+
+        async def fetch_with_limit(group):
+            async with sem:
+                return await self._fetch_group_events(group)
+
+        # Fetch all groups in parallel
+        tasks = [fetch_with_limit(group) for group in target_groups]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect results (filter out errors)
+        for result in results:
+            if isinstance(result, list):
+                all_events.extend(result)
+            elif isinstance(result, Exception):
+                logger.debug(f"[{self.provider_id}] Group fetch error: {result}")
+
         return all_events
         
     async def _fetch_group_events(self, group: dict) -> List[StandardEvent]:
