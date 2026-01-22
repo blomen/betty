@@ -93,9 +93,9 @@ class SnabbareRetriever(BrowserRetriever):
 
         # 2. Scrape each league concurrently
         unique_ids = set()
-        
-        # Limit concurrency
-        sem = asyncio.Semaphore(5) # 5 parallel tabs
+
+        # Limit concurrency (increased from 5 to 10 for better performance)
+        sem = asyncio.Semaphore(10) # 10 parallel tabs
         
         async def process_league_task(league):
             async with sem:
@@ -126,15 +126,26 @@ class SnabbareRetriever(BrowserRetriever):
             logger.info(f"Navigating to {lname} ({url})")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             
-            # Scroll down to trigger lazy loading
+            # Quick check for empty state before scrolling
+            empty_indicators = await page.query_selector_all('text=/Inga matcher|Inga spel|No matches|No events/i')
+            if empty_indicators:
+                logger.debug(f"[{self.provider_id}] No matches indicator found for {lname}, skipping")
+                return []
+
+            # Scroll down to trigger lazy loading (reduced timeout)
             xpath = "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'visa mer') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'visa fler')]"
-            await self.transport.smart_scroll(timeout=60000, button_selector=f"xpath={xpath}", page=page)
-            
-            # Wait for match cards (timeout 15s)
+            await self.transport.smart_scroll(timeout=30000, button_selector=f"xpath={xpath}", page=page)
+
+            # Wait for match cards (reduced timeout from 15s to 5s)
             try:
-                await page.wait_for_selector('[data-at="game-card"]', timeout=15000)
+                await page.wait_for_selector('[data-at="game-card"]', timeout=5000)
             except:
-                logger.warning(f"Timeout waiting for matches on {lname}")
+                # Double-check for empty state after scroll
+                empty_check = await page.query_selector_all('text=/Inga matcher|Inga spel|No matches/i')
+                if empty_check:
+                    logger.debug(f"[{self.provider_id}] No matches for {lname}")
+                    return []
+                logger.debug(f"[{self.provider_id}] Timeout waiting for matches on {lname}")
                 
             # Scrape data using selectors
             scraped_data = await page.evaluate("""

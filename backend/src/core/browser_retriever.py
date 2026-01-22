@@ -69,10 +69,11 @@ class BrowserRetriever(Retriever):
         try:
             if isinstance(self.transport, BrowserTransport):
                 await self.transport._ensure_browser()
-                await self.transport.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Use 'load' instead of 'networkidle' to avoid timeouts on pages with continuous activity
+                await self.transport.page.goto(url, wait_until="load", timeout=15000)
 
-                # Wait for cookies/session to settle
-                await self.transport.page.wait_for_timeout(1000)
+                # Wait for cookies/session to settle and JS to execute
+                await self.transport.page.wait_for_timeout(2000)
 
                 self._initialized_pages.add(page_key)
                 self._session_ready = True

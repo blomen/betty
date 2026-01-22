@@ -89,13 +89,44 @@ class BrowserTransport(Transport):
 
     async def _ensure_browser(self):
         if self.page: return
-        
+
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context(
-             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+        # Launch browser with stealth options
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-web-security'
+            ]
         )
+
+        # Create context with simple settings (like the working debug script)
+        self.context = await self.browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
         self.page = await self.context.new_page()
+
+        # Inject scripts to hide automation
+        await self.page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+
+            window.chrome = {
+                runtime: {}
+            };
+
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['sv-SE', 'sv', 'en']
+            });
+        """)
 
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_browser()

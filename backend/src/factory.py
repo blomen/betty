@@ -88,7 +88,10 @@ class ExtractorFactory:
             sports_map = self._config_loader.get_sports_map_for_polymarket()
             retriever = PolymarketRetriever(config, sports_map=sports_map)
         elif retriever_type == "spectate":
-            retriever = SpectateRetriever(config)
+            # Spectate requires visible browser for bot detection bypass
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=False)
+            retriever = SpectateRetriever(config, transport=transport)
         elif retriever_type == "snabbare":
             from .providers.snabbare import SnabbareRetriever
             retriever = SnabbareRetriever(config)

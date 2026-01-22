@@ -72,6 +72,11 @@ npm run build    # Production build
 npm run lint     # ESLint
 ```
 
+### Workflow
+
+- **No emojis allowed, use ascii style for symbols.
+- **Temp files like test files or debug files created in /scrap folder, deleted before commit.
+
 ## Key Concepts
 
 ### Canonical Event IDs
@@ -119,6 +124,7 @@ When working on specific areas, check these files:
 | Topic | File |
 |-------|------|
 | Architectural patterns | `.claude/docs/architectural_patterns.md` |
+| Provider optimization (DOM + API) | `.claude/docs/provider_optimizations.md` |
 | Team name normalization | `backend/src/matching/normalizer.py` |
 | Provider configs | `backend/src/config/providers.yaml` |
 | Config validation | `backend/src/config/loader.py` |

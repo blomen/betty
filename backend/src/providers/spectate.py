@@ -3,6 +3,7 @@ import logging
 import re
 import json
 import asyncio
+from datetime import datetime, timedelta
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
 
 logger = logging.getLogger(__name__)
@@ -36,42 +37,85 @@ class SpectateRetriever(BrowserRetriever):
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain', '888sport.se')}")
         self.site_url: str = raw_site_url.rstrip("/")
 
+        # ✅ OPTIMIZATION: Digest cache (TTL: 5 minutes)
+        self._digest_cache: Dict[str, Dict] = {}
+        self._digest_cache_time: Dict[str, datetime] = {}
+        self._digest_cache_ttl: int = 300  # 5 minutes in seconds
+
+        # ✅ OPTIMIZATION: Bucket response cache (TTL: 2 minutes)
+        self._bucket_cache: Dict[str, List[StandardEvent]] = {}
+        self._bucket_cache_time: Dict[str, datetime] = {}
+        self._bucket_cache_ttl: int = 120  # 2 minutes (shorter for event data)
+
     async def _ensure_sport_init(self, sport: str) -> None:
         """Initialize session for a specific sport."""
-        slug = self.SITE_SLUGS.get(sport, sport)
-        url = f"{self.site_url}/sport/{slug}/"
-        await self._ensure_init(url=url, page_key=f"sport_{sport}")
+        # Only initialize once for all sports
+        if not self._session_ready:
+            slug = self.SITE_SLUGS.get(sport, sport)
+            www_url = f"{self.site_url}/sport/{slug}/"
+            logger.info(f"[{self.provider_id}] Initializing session via {www_url}")
+
+            # Initialize browser and visit page
+            await self.transport._ensure_browser()
+            try:
+                # Use 'domcontentloaded' for faster page load
+                await self.transport.page.goto(www_url, wait_until="domcontentloaded", timeout=15000)
+                # Wait for page JS and cookies to initialize
+                await self.transport.page.wait_for_timeout(2000)
+            except Exception as e:
+                logger.error(f"[{self.provider_id}] Page load error: {e}")
+
+            self._session_ready = True
+            self._initialized_pages.add("spectate_session")
+            logger.info(f"[{self.provider_id}] Session initialized")
 
     async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
         # 1. Ensure session is initialized for this sport
         await self._ensure_sport_init(sport)
-        
+
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
         all_events: List[StandardEvent] = []
-        
-        # 2. Fetch Digest (Discovery)
-        digest_url = f"/eventsrequest/getEventsDigest/{sport_slug}"
-        digest = await self._fetch_api(digest_url)
-        
-        buckets_to_fetch: List[str] = ["upcoming"]
-             
+
+        # ✅ OPTIMIZATION 1: Check digest cache first
+        digest = None
+        if sport in self._digest_cache:
+            cache_time = self._digest_cache_time.get(sport)
+            if cache_time and (datetime.now() - cache_time).total_seconds() < self._digest_cache_ttl:
+                digest = self._digest_cache[sport]
+                logger.debug(f"[{self.provider_id}] Using cached digest for {sport}")
+
+        # 2. Fetch Digest if not cached (Discovery)
+        if digest is None:
+            digest_url = f"/eventsrequest/getEventsDigest/{sport_slug}"
+            digest = await self._fetch_api(digest_url)
+
+            # Cache the digest
+            if digest:
+                self._digest_cache[sport] = digest
+                self._digest_cache_time[sport] = datetime.now()
+
+        # ✅ OPTIMIZATION 2: Better bucket filtering to avoid 400 errors
+        buckets_to_fetch: List[str] = []
+
         if isinstance(digest, dict):
-            # Prioritize near-term buckets
+            # Prioritize near-term buckets (only if count > 0)
             for key in ["today", "tomorrow", "starting_soon"]:
-                if digest.get(key, 0) > 0:
+                count = digest.get(key, 0)
+                if isinstance(count, (int, float)) and count > 0:
                     buckets_to_fetch.append(key)
-            
+
             # Check specific dates if upcoming has counts
             upcoming_counts = digest.get("upcoming", {})
             if isinstance(upcoming_counts, dict):
                 for date_key, count in upcoming_counts.items():
-                    if count > 0 and date_key not in buckets_to_fetch:
+                    # Only add dates with count > 0
+                    if isinstance(count, (int, float)) and count > 0 and date_key not in buckets_to_fetch:
                         buckets_to_fetch.append(date_key)
-        
-        # Default fallback
+
+        # Default fallback (only if no buckets found)
         if not buckets_to_fetch:
-            buckets_to_fetch = ["today", "upcoming"]
-            
+            buckets_to_fetch = ["upcoming"]
+
         # Deduplicate buckets
         unique_buckets: List[str] = []
         seen_buckets: Set[str] = set()
@@ -79,40 +123,56 @@ class SpectateRetriever(BrowserRetriever):
             if b not in seen_buckets:
                 unique_buckets.append(b)
                 seen_buckets.add(b)
-        
-        logger.debug(f"[{self.provider_id}] {sport}: Crawling buckets: {unique_buckets}")
-        
-        # 3. Fetch Buckets
+
+        logger.debug(f"[{self.provider_id}] {sport}: Crawling {len(unique_buckets)} buckets with events")
+
+        # ✅ OPTIMIZATION 3: Fetch buckets in parallel instead of sequentially
         seen_events: Set[str] = set()
-        
-        for bucket in unique_buckets:
-            # Spectate requires Multipart boundary for GET-like POST requests
-            method = "POST"
-            boundary = "----WebKitFormBoundaryQ5RAQxk9ozbkr9H6"
-            content_type = f"multipart/form-data; boundary={boundary}"
-            data = f"--{boundary}--\r\n".encode('utf-8')
 
-            headers = {
-                "content-type": content_type
-            }
+        async def fetch_bucket(bucket: str) -> List[StandardEvent]:
+            """Fetch events from a single bucket with caching."""
+            cache_key = f"{sport}:{bucket}"
 
+            # ✅ OPTIMIZATION 4: Check bucket cache first
+            if cache_key in self._bucket_cache:
+                cache_time = self._bucket_cache_time.get(cache_key)
+                if cache_time and (datetime.now() - cache_time).total_seconds() < self._bucket_cache_ttl:
+                    logger.debug(f"[{self.provider_id}] Using cached bucket: {cache_key}")
+                    return self._bucket_cache[cache_key]
+
+            # Fetch from API if not cached or expired
             endpoint = f"/sportsbook-req/getUpcomingEvents/{sport_slug}/{bucket}"
-            resp_data = await self._fetch_api(endpoint, method=method, data=data, headers=headers)
-            
+            resp_data = await self._fetch_api(endpoint, method="POST")
             events = self.parse(resp_data, sport)
+
+            # Cache the result
+            self._bucket_cache[cache_key] = events
+            self._bucket_cache_time[cache_key] = datetime.now()
+
+            return events
+
+        # Fetch all buckets concurrently
+        tasks = [fetch_bucket(bucket) for bucket in unique_buckets]
+        bucket_results = await asyncio.gather(*tasks)
+
+        # Combine results and deduplicate
+        for events in bucket_results:
             for ev in events:
                 if ev.id not in seen_events:
                     all_events.append(ev)
                     seen_events.add(ev.id)
-            
+
+                    if limit and len(all_events) >= limit:
+                        break
+
             if limit and len(all_events) >= limit:
                 break
-                
+
         return all_events
 
     async def _fetch_api(self, endpoint: str, method: str = "GET", data: Any = None, headers: Optional[Dict[str, str]] = None) -> Any:
         url = f"{self.api_base}{endpoint}"
-        
+
         base_headers = {
              "accept": "application/json",
              "origin": self.site_url,
@@ -120,14 +180,18 @@ class SpectateRetriever(BrowserRetriever):
         }
         if headers:
             base_headers.update(headers)
-            
+
         try:
             if not isinstance(self.transport, BrowserTransport):
                 logger.error(f"[{self.provider_id}] SpectateRetriever requires BrowserTransport")
                 return {}
 
+            # Ensure browser is initialized before accessing context
+            await self.transport._ensure_browser()
+
+            # Use context.request like the working debug script
             if method.upper() == "POST":
-                response = await self.transport.context.request.post(url, data=data, headers=base_headers)
+                response = await self.transport.context.request.post(url, headers=base_headers)
             else:
                 response = await self.transport.context.request.get(url, headers=base_headers)
                 
@@ -141,7 +205,7 @@ class SpectateRetriever(BrowserRetriever):
             elif response.status not in (200, 201):
                 logger.warning(f"[{self.provider_id}] {method} {url} returned {response.status}")
                 return {}
-                
+
             try:
                 return await response.json()
             except Exception:
@@ -159,7 +223,7 @@ class SpectateRetriever(BrowserRetriever):
     def parse(self, data: Any, sport: str, league: str = "") -> List[StandardEvent]:
         events: List[StandardEvent] = []
         if not data: return events
-        
+
         # unexpected types
         if not isinstance(data, (dict, list)):
             return events
@@ -190,7 +254,7 @@ class SpectateRetriever(BrowserRetriever):
     def _parse_event(self, event_data: dict, sport: str, league: str) -> Optional[StandardEvent]:
         try:
             if event_data.get("inplay"): return None
-            
+
             ev_id = str(event_data.get("id", ""))
             name = event_data.get("name", "")
             start_time = event_data.get("start_time", "")
@@ -222,7 +286,7 @@ class SpectateRetriever(BrowserRetriever):
             markets = self._parse_markets(event_data)
             if not markets:
                 return None
-            
+
             return StandardEvent(
                 id=ev_id, 
                 name=name, 

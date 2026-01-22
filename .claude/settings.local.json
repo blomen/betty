@@ -11,7 +11,16 @@
       "Bash(python -m backend.src.app:*)",
       "Bash($env:PYTHONIOENCODING=\"utf-8\")",
       "Bash(python test_extraction.py:*)",
-      "Bash(python validate_pipeline.py:*)"
+      "Bash(python validate_pipeline.py:*)",
+      "Bash(python -m src.app extract:*)",
+      "Bash(timeout 30 python:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(timeout 45 python:*)",
+      "Bash(python validate_snabbare.py:*)",
+      "Bash(iconv:*)",
+      "Bash(python:*)",
+      "Bash(move dom_scraper_optimizations.md provider_optimizations.md)",
+      "WebSearch"
     ]
   }
 }
