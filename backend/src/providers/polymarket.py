@@ -2,56 +2,27 @@ from typing import List, Any, Optional
 import logging
 import json
 import os
-from backend.src.core import Retriever, StandardEvent
+from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
 
 class PolymarketRetriever(Retriever):
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, sports_map: dict = None):
+        """
+        Initialize Polymarket retriever.
+
+        Args:
+            config: Provider configuration
+            transport: Optional transport instance
+            sports_map: Sports mapping (injected by factory)
+        """
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.game_bets_tag_id = config.get("params", {}).get("game_bets_tag_id", 100639)
-        self.sports_map = self._load_sports_map()
+        self.sports_map = sports_map or {}
 
-    def _load_sports_map(self) -> dict:
-        """Load sports.json to map sport name -> series_id."""
-        try:
-            # Assuming standard path relative to project root
-            # or we could pass this in config.
-            # For now, simplistic relative path loading
-            path = os.path.join(os.getcwd(), "backend", "src", "config", "sports.json")
-            if os.path.exists(path):
-                with open(path, "r") as f:
-                    sports_data = json.load(f)
-                    
-                mapping = {}
-                
-                # Helper to process single item
-                def process_item(s):
-                    name = s.get("name")
-                    pid = s.get("polymarket_series_id")
-                    slug = s.get("polymarket_slug")
-                    tid = s.get("polymarket_tag_id")
-                    
-                    if name and (pid or slug or tid):
-                        mapping[name] = {"id": pid, "slug": slug, "tag_id": tid}
-
-                if isinstance(sports_data, list) and len(sports_data) > 0 and "leagues" in sports_data[0]:
-                    # Nested format
-                    for group in sports_data:
-                        # Polymarket IDs are usually on the league level, but could be on group level later?
-                        # For now, just iterate leagues
-                        for league in group.get("leagues", []):
-                            process_item(league)
-                else:
-                    # Flat format
-                    for s in sports_data:
-                        process_item(s)
-                            
-                return mapping
-        except Exception as e:
-            logger.warning(f"Failed to load sports.json for Polymarket: {e}")
-        return {}
+        if not self.sports_map:
+            logger.warning("No sports map provided to PolymarketRetriever")
 
     def _get_sport_url(self, sport: str) -> str:
         # Not used directly in new logic, we build URL in extract

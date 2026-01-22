@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, Optional
 
 # Kambi Specific Logic adapted from APIExtractor
-from backend.src.core import Retriever, StandardEvent
+from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
 

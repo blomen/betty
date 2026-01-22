@@ -105,38 +105,6 @@ class Odds(Base):
     provider = relationship("Provider", back_populates="odds")
 
 
-class Opportunity(Base):
-    """A detected betting opportunity (arb, value, or bonus match)."""
-    __tablename__ = "opportunities"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    type = Column(String, nullable=False)       # "arb", "value", "bonus"
-    event_id = Column(String, ForeignKey("events.id"), nullable=False)
-    market = Column(String, nullable=False)
-    
-    # Providers involved
-    provider1_id = Column(String, ForeignKey("providers.id"), nullable=False)
-    provider2_id = Column(String, ForeignKey("providers.id"))  # Optional for value bets
-    
-    # Odds
-    odds1 = Column(Float, nullable=False)
-    odds2 = Column(Float)
-    outcome1 = Column(String)                   # "home"
-    outcome2 = Column(String)                   # "away"
-    
-    # Metrics
-    profit_pct = Column(Float)                  # Arb profit %
-    edge_pct = Column(Float)                    # Value edge %
-    
-    # State
-    is_active = Column(Boolean, default=True)
-    detected_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationships
-    event = relationship("Event")
-
-
 # ============ Bet Tracking ============
 
 class Bet(Base):
@@ -213,6 +181,51 @@ class Profile(Base):
     max_stake_pct = Column(Float, default=5.0)      # Max % of bankroll per bet
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============ Opportunities ============
+
+class Opportunity(Base):
+    """
+    Detected opportunities (arbitrage, value bets, bonus matches).
+
+    Stores snapshots of opportunities at time of detection.
+    Can be marked inactive when odds change.
+    """
+    __tablename__ = "opportunities"
+
+    id = Column(Integer, primary_key=True)
+    type = Column(String, nullable=False)  # "arbitrage", "value", "bonus"
+
+    # Event reference
+    event_id = Column(String, ForeignKey("events.id"))
+    market = Column(String)
+
+    # Provider details
+    provider1_id = Column(String, ForeignKey("providers.id"))
+    provider2_id = Column(String, ForeignKey("providers.id"), nullable=True)
+
+    # Odds at detection
+    odds1 = Column(Float)
+    odds2 = Column(Float, nullable=True)
+
+    # Outcomes
+    outcome1 = Column(String)
+    outcome2 = Column(String, nullable=True)
+
+    # Calculated metrics
+    profit_pct = Column(Float, nullable=True)  # For arbitrage
+    edge_pct = Column(Float, nullable=True)     # For value bets
+
+    # Status
+    is_active = Column(Boolean, default=True)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    event = relationship("Event")
+    provider1 = relationship("Provider", foreign_keys=[provider1_id])
+    provider2 = relationship("Provider", foreign_keys=[provider2_id])
 
 
 # ============ Database Functions ============

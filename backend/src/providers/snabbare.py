@@ -4,22 +4,22 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from backend.src.core import Retriever, StandardEvent, BrowserTransport
+from ..core import BrowserRetriever, StandardEvent, BrowserTransport
 
 logger = logging.getLogger(__name__)
 
-class SnabbareRetriever(Retriever):
+class SnabbareRetriever(BrowserRetriever):
     """
     Retriever for Snabbare (Sportradar MTS).
     Uses BrowserTransport to bypass protection and query the internal API.
     """
-    
+
     # Mapping for sports to internal IDs or slugs if needed
     # Usually MTS uses integer IDs but Snabbare API might use slugs or keys
     SPORT_IDS = {
         "football": 1,
         "basketball": 2,
-        "ice_hockey": 4, 
+        "ice_hockey": 4,
         "tennis": 6,
         "american_football": 3,
         "baseball": 12,
@@ -32,43 +32,20 @@ class SnabbareRetriever(Retriever):
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
-        # Enforce BrowserTransport as Snabbare is protected
-        transport = transport or BrowserTransport(headless=True)
         super().__init__(config, transport)
-        
+
         # Base is .../api (v2 is part of path for some, but not all)
         self.api_base = config.get("api_base", "https://www.snabbare.com/sportsbook-api/api")
         self.site_url = config.get("site_url", "https://www.snabbare.com")
-        self._session_ready = False
         self.default_params = {
             "franchiseCode": "SWEDEN_SNABBARE",
             "locale": "sv"
         }
 
-    async def _ensure_init(self):
-        """Navigate to site to establish session/cookies."""
-        if self._session_ready:
-            return
-
-        logger.info(f"[{self.provider_id}] Initializing session via {self.site_url}...")
-        try:
-            if isinstance(self.transport, BrowserTransport):
-                await self.transport._ensure_browser()
-                # Go to generic odds page
-                await self.transport.page.goto(f"{self.site_url}/sv/odds", wait_until="domcontentloaded", timeout=30000)
-                # Wait for cookies
-                await self.transport.page.wait_for_timeout(2000)
-                self._session_ready = True
-                logger.info(f"[{self.provider_id}] Session initialized.")
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Init failed: {e}")
-
-    def _get_sport_url(self, sport: str) -> str:
-        return ""
-
     async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
         from datetime import datetime
-        await self._ensure_init()
+        # Initialize session by visiting the odds page
+        await self._ensure_init(url=f"{self.site_url}/sv/odds", page_key="odds_page")
         all_events = []
         
         sport_id = self.SPORT_IDS.get(sport)

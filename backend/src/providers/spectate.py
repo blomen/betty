@@ -3,11 +3,11 @@ import logging
 import re
 import json
 import asyncio
-from backend.src.core import Retriever, StandardEvent, BrowserTransport
+from ..core import BrowserRetriever, StandardEvent, BrowserTransport
 
 logger = logging.getLogger(__name__)
 
-class SpectateRetriever(Retriever):
+class SpectateRetriever(BrowserRetriever):
     """
     Retriever for 888sport / Spectate based sites.
     Uses BrowserTransport to bypass protections.
@@ -29,48 +29,22 @@ class SpectateRetriever(Retriever):
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
-        # Enforce BrowserTransport
-        transport = transport or BrowserTransport(headless=True)
         super().__init__(config, transport)
-        
+
         self.api_base: str = config.get("api_base", "https://spectate-web.888sport.se/spectate")
         # Ensure site_url is clean (no trailing slash)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain', '888sport.se')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        
-        self._initialized_sports: Set[str] = set()
 
-    def _get_sport_url(self, sport: str) -> str:
-        # Not used in this retriever type
-        return ""
-
-    async def _ensure_init(self, sport: str = None) -> None:
-        """Initializes session by visiting the site and optionally a specific sport page."""
-        target_path = "/"
-        if sport:
-            slug = self.SITE_SLUGS.get(sport, sport)
-            target_path = f"/sport/{slug}/"
-            
-        if target_path in self._initialized_sports:
-            return
-
-        url = f"{self.site_url}{target_path}"
-        logger.info(f"[{self.provider_id}] Initializing session via {url}...")
-        try:
-            if isinstance(self.transport, BrowserTransport):
-                await self.transport._ensure_browser()
-                await self.transport.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Wait a bit for cookies to settle
-                await self.transport.page.wait_for_timeout(1000)
-                self._initialized_sports.add(target_path)
-                logger.info(f"[{self.provider_id}] Initialized {target_path}")
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Initialization failed for {url}: {e}")
-            # Don't raise, try to proceed as existing cookies might be enough
+    async def _ensure_sport_init(self, sport: str) -> None:
+        """Initialize session for a specific sport."""
+        slug = self.SITE_SLUGS.get(sport, sport)
+        url = f"{self.site_url}/sport/{slug}/"
+        await self._ensure_init(url=url, page_key=f"sport_{sport}")
 
     async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
         # 1. Ensure session is initialized for this sport
-        await self._ensure_init(sport)
+        await self._ensure_sport_init(sport)
         
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
         all_events: List[StandardEvent] = []

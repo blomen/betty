@@ -1,0 +1,165 @@
+# Provider Configuration
+# Uses YAML anchors to reduce duplication
+
+# Base configurations
+kambi_defaults: &kambi_defaults
+  retriever_type: kambi
+  base_url: https://eu1.offering-api.kambicdn.com/offering/v2018
+  params:
+    market: SE
+    lang: sv_SE
+    odds_format: decimal
+
+spectate_tournaments: &spectate_tournaments
+  football:
+    - england/english-premier-league
+    - england/english-championship
+    - spain/la-liga
+    - germany/bundesliga
+    - italy/serie-a
+    - france/ligue-1
+    - europe/uefa-champions-league
+    - europe/uefa-europa-league
+    - sweden/allsvenskan
+    - netherlands/eredivisie
+    - portugal/primeira-liga
+  basketball:
+    - usa/nba
+    - europe/euroleague
+    - usa/ncaa
+  tennis:
+    - atp/atp
+    - wta/wta
+    - australia/australian-open
+  ice_hockey:
+    - usa/nhl
+    - sweden/shl
+  american_football:
+    - usa/nfl
+  baseball:
+    - usa/mlb
+  mma:
+    - ufc/ufc
+  esports:
+    - counter-strike/esl-pro-league
+    - league-of-legends/lec
+
+# Provider definitions
+providers:
+  # Kambi providers (same API, different brands)
+  unibet:
+    <<: *kambi_defaults
+    id: unibet
+    name: Unibet
+    domain: unibet.se
+    brand: ubse
+
+  leovegas:
+    <<: *kambi_defaults
+    id: leovegas
+    name: LeoVegas
+    domain: leovegas.com
+    brand: leose
+
+  expekt:
+    <<: *kambi_defaults
+    id: expekt
+    name: Expekt
+    domain: expekt.se
+    brand: expektse
+
+  paf:
+    <<: *kambi_defaults
+    id: paf
+    name: Paf
+    domain: paf.se
+    brand: pafse
+
+  atg:
+    <<: *kambi_defaults
+    id: atg
+    name: ATG
+    domain: atg.se
+    brand: atg
+
+  betmgm:
+    <<: *kambi_defaults
+    id: betmgm
+    name: BetMGM
+    domain: betmgm.se
+    brand: betmgmse
+
+  casumo:
+    <<: *kambi_defaults
+    id: casumo
+    name: Casumo
+    domain: casumo.com
+    brand: case
+
+  speedybet:
+    <<: *kambi_defaults
+    id: speedybet
+    name: SpeedyBet
+    domain: speedybet.com
+    brand: speedybetse
+
+  x3000:
+    <<: *kambi_defaults
+    id: x3000
+    name: X3000
+    domain: x3000.se
+    brand: speedyspelse
+
+  # Spectate providers
+  mrgreen:
+    id: mrgreen
+    name: Mr Green
+    domain: mrgreen.se
+    retriever_type: spectate
+    api_base: https://spectate-web.mrgreen.se/spectate
+    params:
+      tournaments:
+        <<: *spectate_tournaments
+
+  888sport:
+    id: 888sport
+    name: 888sport
+    domain: 888sport.se
+    retriever_type: spectate
+    api_base: https://spectate-web.888sport.se/spectate
+    params:
+      tournaments:
+        <<: *spectate_tournaments
+
+  # Snabbare (custom retriever)
+  snabbare:
+    id: snabbare
+    name: Snabbare
+    domain: snabbare.com
+    retriever_type: snabbare
+    api_base: https://www.snabbare.com/sportsbook-api/api
+    params:
+      tournaments:
+        football:
+          - sweden/allsvenskan
+          - england/premier-league
+
+  # Polymarket (truth source)
+  polymarket:
+    id: polymarket
+    name: Polymarket
+    retriever_type: polymarket
+    base_url: https://gamma-api.polymarket.com
+    params:
+      game_bets_tag_id: 100639
+
+# Active providers (subset of above to use)
+active:
+  - unibet
+  - leovegas
+  - expekt
+  - casumo
+  - mrgreen
+  - 888sport
+  - snabbare
+  - polymarket

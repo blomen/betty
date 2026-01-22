@@ -1,3 +1,14 @@
-# Config package
-# Configuration is now loaded via JSON files in ExtractorEngine.
+"""
+Configuration Module
 
+Centralized configuration loading and validation.
+"""
+
+from .loader import ConfigLoader, SportConfig, ProviderConfig, load_config
+
+__all__ = [
+    "ConfigLoader",
+    "SportConfig",
+    "ProviderConfig",
+    "load_config",
+]

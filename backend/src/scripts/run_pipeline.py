@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from backend.src.pipeline import ExtractionPipeline
-from backend.src.db.models import init_db
+from ..pipeline import ExtractionPipeline
+from ..db.models import init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +25,7 @@ async def main():
     print(results)
     
     # Check DB stats by sport for mrgreen
-    from backend.src.db.models import Event, Odds
+    from ..db.models import Event, Odds
     from sqlalchemy import func
     
     print("\n--- Mr Green Events per Sport ---")
@@ -45,7 +45,7 @@ async def main():
     print(f"Total Mr Green Odds: {total_mg}")
     
     # Check DB immediately
-    from backend.src.db.models import Provider, Event, Odds
+    from ..db.models import Provider, Event, Odds
     p = pipeline.session.query(Provider).get("mrgreen")
     print(f"Provider 'mrgreen' in DB: {p}")
     

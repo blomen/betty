@@ -1,0 +1,463 @@
+# Team Name Aliases
+# Format: canonical_name: [alias1, alias2, ...]
+
+# English Premier League
+manchester united:
+  - man utd
+  - man united
+  - mufc
+manchester city:
+  - man city
+  - mcfc
+tottenham:
+  - tottenham hotspur
+  - spurs
+  - thfc
+wolverhampton:
+  - wolverhampton wanderers
+  - wolves
+brighton:
+  - brighton & hove albion
+  - brighton hove
+newcastle:
+  - newcastle united
+  - nufc
+west ham:
+  - west ham united
+  - whu
+  - hammers
+nottingham forest:
+  - notts forest
+  - nffc
+
+# Spanish La Liga
+atletico madrid:
+  - atl madrid
+  - atletico de madrid
+real madrid:
+  - r madrid
+  - rmcf
+barcelona:
+  - fc barcelona
+  - barca
+  - fcb
+real sociedad:
+  - r sociedad
+  - la real
+athletic club:
+  - athletic bilbao
+  - athletic
+olympiacos:
+  - olympiacos sfp
+  - olympiakos
+  - olympiakos piraeus
+
+# German Bundesliga
+bayern munich:
+  - bayern munchen
+  - fc bayern
+  - bayern
+  - "bayern münchen"
+borussia dortmund:
+  - bvb
+  - dortmund
+  - bv borussia 09 dortmund
+  - bv borussia dortmund
+rb leipzig:
+  - rasenballsport leipzig
+  - leipzig
+bayer leverkusen:
+  - leverkusen
+  - b04
+  - bayer 04 leverkusen
+  - bayer 04
+heidenheim:
+  - 1 fc heidenheim
+  - 1 fc heidenheim 1846
+  - fc heidenheim
+koln:
+  - 1 fc koln
+  - fc koln
+  - "1 fc köln"
+  - "fc köln"
+  - cologne
+union berlin:
+  - 1 fc union berlin
+  - fc union berlin
+mainz:
+  - 1 fsv mainz 05
+  - mainz 05
+  - fsv mainz
+wolfsburg:
+  - vfl wolfsburg
+frankfurt:
+  - eintracht frankfurt
+  - sge
+gladbach:
+  - borussia monchengladbach
+  - "borussia mönchengladbach"
+  - bmg
+  - borussia m'gladbach
+freiburg:
+  - sc freiburg
+hoffenheim:
+  - tsg hoffenheim
+  - tsg 1899 hoffenheim
+augsburg:
+  - fc augsburg
+bremen:
+  - sv werder bremen
+  - werder bremen
+  - werder
+bochum:
+  - vfl bochum
+  - vfl bochum 1848
+st pauli:
+  - fc st pauli
+  - fc st pauli 1910
+  - st pauli 1910
+
+# Italian Serie A
+inter milan:
+  - internazionale
+  - inter
+  - fc inter
+  - fc internazionale milano
+ac milan:
+  - milan
+  - acm
+juventus:
+  - juve
+  - juventus fc
+napoli:
+  - ssc napoli
+roma:
+  - as roma
+lazio:
+  - ss lazio
+  - lazio roma
+fiorentina:
+  - acf fiorentina
+atalanta:
+  - atalanta bc
+  - atalanta bergamo
+bologna:
+  - bologna fc
+  - bologna fc 1909
+torino:
+  - torino fc
+udinese:
+  - udinese calcio
+cagliari:
+  - cagliari calcio
+genoa:
+  - genoa cfc
+lecce:
+  - us lecce
+verona:
+  - hellas verona
+empoli:
+  - empoli fc
+sassuolo:
+  - us sassuolo
+  - us sassuolo calcio
+monza:
+  - ac monza
+
+# French Ligue 1
+paris saint-germain:
+  - psg
+  - paris sg
+olympique marseille:
+  - marseille
+  - om
+olympique lyon:
+  - lyon
+  - ol
+nice:
+  - ogc nice
+nantes:
+  - fc nantes
+monaco:
+  - as monaco
+lille:
+  - losc
+  - lille osc
+
+# Dutch Eredivisie
+feyenoord:
+  - feyenoord rotterdam
+psv:
+  - psv eindhoven
+ajax:
+  - afc ajax
+az alkmaar:
+  - az
+
+# Portuguese Primeira Liga
+benfica:
+  - sl benfica
+  - sport lisboa e benfica
+sporting cp:
+  - sporting lisbon
+  - sporting clube de portugal
+porto:
+  - fc porto
+braga:
+  - sc braga
+
+# Swedish/Nordic
+farjestad:
+  - faerjestad
+  - "färjestad"
+  - farjestads bk
+lulea:
+  - luleaa
+  - "luleå"
+  - lulea hf
+vaxjo:
+  - vaexjoe
+  - "växjö"
+  - vaxjo lakers
+orebro:
+  - oerebro
+  - "örebro"
+  - orebro hk
+skelleftea:
+  - skellefteaa
+  - "skellefteå"
+  - skelleftea aik
+timra:
+  - timraa
+  - "timrå"
+  - timra ik
+frolunda:
+  - froelunda
+  - "frölunda"
+  - frolunda hc
+rogle:
+  - roegle
+  - "rögle"
+  - rogle bk
+hv71:
+  - hv 71
+sonderjyske:
+  - "sönderjyske"
+  - soenderjyske
+  - sonderjyske fodbold
+nordsjaelland:
+  - fc nordsjaelland
+  - nordsjalland
+  - "nordsjælland"
+  - "fc nordsjælland"
+
+# NBA
+lakers:
+  - los angeles lakers
+  - la lakers
+clippers:
+  - los angeles clippers
+  - la clippers
+celtics:
+  - boston celtics
+warriors:
+  - golden state warriors
+  - gsw
+heat:
+  - miami heat
+bulls:
+  - chicago bulls
+knicks:
+  - new york knicks
+  - ny knicks
+nets:
+  - brooklyn nets
+sixers:
+  - philadelphia 76ers
+  - 76ers
+bucks:
+  - milwaukee bucks
+mavericks:
+  - dallas mavericks
+  - mavs
+suns:
+  - phoenix suns
+nuggets:
+  - denver nuggets
+jazz:
+  - utah jazz
+grizzlies:
+  - memphis grizzlies
+pelicans:
+  - new orleans pelicans
+hawks:
+  - atlanta hawks
+magic:
+  - orlando magic
+thunder:
+  - oklahoma city thunder
+  - okc thunder
+rockets:
+  - houston rockets
+spurs:
+  - san antonio spurs
+raptors:
+  - toronto raptors
+pacers:
+  - indiana pacers
+cavaliers:
+  - cleveland cavaliers
+  - cavs
+pistons:
+  - detroit pistons
+hornets:
+  - charlotte hornets
+wizards:
+  - washington wizards
+timberwolves:
+  - minnesota timberwolves
+  - wolves
+blazers:
+  - portland trail blazers
+  - trail blazers
+kings:
+  - sacramento kings
+
+# NFL
+chiefs:
+  - kansas city chiefs
+  - kc chiefs
+bills:
+  - buffalo bills
+ravens:
+  - baltimore ravens
+eagles:
+  - philadelphia eagles
+49ers:
+  - san francisco 49ers
+  - niners
+cowboys:
+  - dallas cowboys
+packers:
+  - green bay packers
+lions:
+  - detroit lions
+dolphins:
+  - miami dolphins
+broncos:
+  - denver broncos
+bengals:
+  - cincinnati bengals
+vikings:
+  - minnesota vikings
+saints:
+  - new orleans saints
+chargers:
+  - los angeles chargers
+  - la chargers
+seahawks:
+  - seattle seahawks
+steelers:
+  - pittsburgh steelers
+patriots:
+  - new england patriots
+  - pats
+bears:
+  - chicago bears
+commanders:
+  - washington commanders
+giants:
+  - new york giants
+  - ny giants
+jets:
+  - new york jets
+  - ny jets
+raiders:
+  - las vegas raiders
+  - oakland raiders
+browns:
+  - cleveland browns
+texans:
+  - houston texans
+colts:
+  - indianapolis colts
+jaguars:
+  - jacksonville jaguars
+titans:
+  - tennessee titans
+falcons:
+  - atlanta falcons
+panthers:
+  - carolina panthers
+buccaneers:
+  - tampa bay buccaneers
+  - bucs
+cardinals:
+  - arizona cardinals
+rams:
+  - los angeles rams
+  - la rams
+
+# NHL
+maple leafs:
+  - toronto maple leafs
+canadiens:
+  - montreal canadiens
+  - habs
+bruins:
+  - boston bruins
+rangers:
+  - new york rangers
+  - ny rangers
+islanders:
+  - new york islanders
+  - ny islanders
+flyers:
+  - philadelphia flyers
+penguins:
+  - pittsburgh penguins
+  - pens
+capitals:
+  - washington capitals
+  - caps
+hurricanes:
+  - carolina hurricanes
+  - canes
+lightning:
+  - tampa bay lightning
+  - bolts
+panthers:
+  - florida panthers
+red wings:
+  - detroit red wings
+blackhawks:
+  - chicago blackhawks
+wild:
+  - minnesota wild
+blues:
+  - st louis blues
+predators:
+  - nashville predators
+  - preds
+stars:
+  - dallas stars
+avalanche:
+  - colorado avalanche
+  - avs
+flames:
+  - calgary flames
+oilers:
+  - edmonton oilers
+canucks:
+  - vancouver canucks
+kraken:
+  - seattle kraken
+golden knights:
+  - vegas golden knights
+  - vgk
+sharks:
+  - san jose sharks
+ducks:
+  - anaheim ducks
+coyotes:
+  - arizona coyotes
