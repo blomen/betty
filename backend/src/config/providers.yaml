@@ -110,6 +110,34 @@ providers:
     domain: x3000.se
     brand: speedyspelse
 
+  svenskaspel:
+    <<: *kambi_defaults
+    id: svenskaspel
+    name: Svenskaspel
+    domain: spela.svenskaspel.se
+    brand: svenskaspel
+
+  goldenbull:
+    <<: *kambi_defaults
+    id: goldenbull
+    name: Golden Bull
+    domain: goldenbull.se
+    brand: goldenbullse
+
+  1x2:
+    <<: *kambi_defaults
+    id: 1x2
+    name: 1X2
+    domain: 1x2.se
+    brand: 1x2se
+
+  flaxcasino:
+    <<: *kambi_defaults
+    id: flaxcasino
+    name: Flax Casino
+    domain: flaxcasino.se
+    brand: flaxse
+
   # Spectate providers
   mrgreen:
     id: mrgreen
@@ -167,6 +195,22 @@ providers:
     retriever_type: gecko_v2
     site_url: https://www.nordicbet.com
 
+  # Pinnacle (guest API - no auth required)
+  pinnacle:
+    id: pinnacle
+    name: Pinnacle
+    domain: pinnacle.com
+    retriever_type: pinnacle
+    api_base: https://guest.api.arcadia.pinnacle.com/0.1
+
+  # Coolbet (browser automation with API interception)
+  coolbet:
+    id: coolbet
+    name: Coolbet
+    domain: coolbet.com
+    retriever_type: coolbet
+    site_url: https://www.coolbet.com
+
   # Polymarket (truth source)
   polymarket:
     id: polymarket
@@ -176,12 +220,43 @@ providers:
     params:
       game_bets_tag_id: 100639
 
+  # SBTech providers (browser automation with API interception)
+  bethard:
+    id: bethard
+    name: Bethard
+    domain: bethard.com
+    retriever_type: sbtech
+    site_url: https://www.bethard.com
+
+  comeon:
+    id: comeon
+    name: ComeOn
+    domain: comeon.com
+    retriever_type: sbtech
+    site_url: https://www.comeon.com
+
+  hajper:
+    id: hajper
+    name: Hajper
+    domain: hajper.com
+    retriever_type: sbtech
+    site_url: https://www.hajper.com
+
 # Active providers (subset of above to use)
 active:
   - unibet
   - leovegas
   - expekt
   - casumo
+  - svenskaspel
+  - paf
+  - atg
+  - betmgm
+  - speedybet
+  - x3000
+  - goldenbull
+  - 1x2
+  - flaxcasino
   - mrgreen
   - 888sport
   - snabbare
@@ -189,4 +264,10 @@ active:
   - betsson
   - betsafe
   - nordicbet
+  # Public API providers
+  - pinnacle
   - polymarket
+  # SBTech providers (browser automation)
+  - bethard
+  # - comeon  # TODO: Implement custom parser for /api/v2/leagues endpoint (different API structure)
+  # - hajper  # TODO: Implement custom parser for /api/v2/leagues endpoint (different API structure)

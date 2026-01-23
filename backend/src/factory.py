@@ -15,6 +15,10 @@ from .providers.spectate import SpectateRetriever
 from .providers.gecko import GeckoRetriever
 from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.gecko_api import GeckoAPIRetriever
+from .providers.pinnacle import PinnacleRetriever
+from .providers.bethard import BethardRetriever
+from .providers.comeon import ComeOnRetriever
+from .providers.hajper import HajperRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -112,6 +116,26 @@ class ExtractorFactory:
         elif retriever_type == "snabbare":
             from .providers.snabbare import SnabbareRetriever
             retriever = SnabbareRetriever(config)
+        elif retriever_type == "pinnacle":
+            retriever = PinnacleRetriever(config)
+        elif retriever_type == "sbtech":
+            # SBTech providers require browser for API interception
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=True)
+
+            # Select brand-specific retriever
+            if provider_id == "bethard":
+                retriever = BethardRetriever(config, transport=transport)
+            elif provider_id == "comeon":
+                retriever = ComeOnRetriever(config, transport=transport)
+            elif provider_id == "hajper":
+                retriever = HajperRetriever(config, transport=transport)
+            else:
+                raise ValueError(f"Unknown SBTech provider '{provider_id}'")
+        # elif retriever_type == "coolbet":
+        #     # BLOCKED - Coolbet requires commercial services (residential proxies or scraping API)
+        #     from .providers.coolbet_nodriver import CoolbetNodriverRetriever
+        #     retriever = CoolbetNodriverRetriever(config)
         else:
             raise ValueError(f"Unknown retriever type '{retriever_type}' for {provider_id}")
 
