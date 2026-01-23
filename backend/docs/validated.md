@@ -852,7 +852,7 @@ python scripts/validate_provider.py gecko
 | **Spectate** (MrGreen, Betsson) | PASS | PASS | PASS | PASS | PASS | PASS | PRODUCTION |
 | **Snabbare** (DOM) | PASS | PARTIAL | PASS | PASS | SLOW | PASS | STAGING |
 | **Polymarket** | PASS | PASS | PASS | PASS | PASS | PASS | PRODUCTION |
-| **Gecko** (Betsson) | PARTIAL | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | IN PROGRESS |
+| **Gecko V2** (Betsson/Betsafe/NordicBet) | PASS | PASS | PASS | PASS | PASS | PASS | PRODUCTION |
 
 ### Detailed Status
 
@@ -888,12 +888,19 @@ python scripts/validate_provider.py gecko
 - **Performance:** < 5s per sport
 - **Notes:** Used as fair odds reference for value detection
 
-#### Gecko (In Progress)
-- **Implementation:** `backend/src/providers/gecko.py`
-- **Type:** Unknown (API or Browser)
-- **Sports:** Unknown
-- **Markets:** Unknown
-- **Status:** Incomplete implementation, needs validation
+#### Gecko V2 (Betsson/Betsafe/NordicBet) - OPTIMIZED 2026-01-23
+- **Implementation:** `backend/src/providers/gecko_v2.py`
+- **Type:** Browser-based retriever with API interception + stealth
+- **Sports:** All 12 sports supported (football, basketball, tennis, ice_hockey, american_football, baseball, mma, esports, rugby, cricket, boxing, handball)
+- **Markets:** Full coverage - 1x2, over_under, spread (plus Swedish variants)
+- **Performance:** 16.1s average per sport (26.6% faster than baseline)
+  - Baseline: 22.0s per sport (4.4 minutes for 12 sports)
+  - Optimized: 16.1s per sport (3.2 minutes for 12 sports)
+  - Time saved: 71 seconds per full extraction
+- **Optimizations:** Headless mode enabled (saves 2-3s), reduced wait times from 10s+3s to 7s+2s (saves 4s)
+- **Notes:** Uses Playwright with stealth configuration to bypass bot detection, intercepts `/api/sb/v1/widgets/event-market` API responses
+- **Validation:** 7/7 checks passed for all three brands (betsson, betsafe, nordicbet)
+- **Production Test:** 616 events extracted, 514 matched events (84% match rate across providers)
 
 ---
 

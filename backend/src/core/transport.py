@@ -94,29 +94,37 @@ class BrowserTransport(Transport):
         self.playwright = await async_playwright().start()
 
         # Launch browser with stealth options
+        # Note: Minimal args - too many security-disabling flags can break sites
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
             args=[
                 '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-web-security',
-                '--disable-dev-shm-usage',
-                '--no-sandbox',
             ]
         )
 
         # Create context with realistic settings
         self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             locale='sv-SE',
-            timezone_id='Europe/Stockholm'
+            geolocation={'latitude': 59.3293, 'longitude': 18.0686}  # Stockholm coordinates
         )
 
         self.page = await self.context.new_page()
 
-        # Apply playwright-stealth (comprehensive anti-detection)
-        await stealth_async(self.page)
+        # NOTE: playwright-stealth was interfering with Gecko sites
+        # Using only minimal custom init scripts
+        # await stealth_async(self.page)  # DISABLED
+
+        # Custom stealth: Override navigator.webdriver
+        # This is critical for bypassing Gecko/Betsson bot detection
+        await self.page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false
+            });
+            window.chrome = {
+                runtime: {}
+            };
+        """)
 
         logger.info("Browser initialized with stealth mode")
 

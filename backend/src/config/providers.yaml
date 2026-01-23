@@ -144,26 +144,27 @@ providers:
           - sweden/allsvenskan
           - england/premier-league
 
-  # Gecko providers (Betsson Group - BetRadar/Sportradar platform)
+  # Gecko providers (Betsson Group - Custom API platform)
+  # Using gecko_v2: Browser automation with API interception + stealth to bypass bot detection
   betsson:
     id: betsson
     name: Betsson
     domain: betsson.com
-    retriever_type: gecko
+    retriever_type: gecko_v2
     site_url: https://www.betsson.com
 
   betsafe:
     id: betsafe
     name: Betsafe
     domain: betsafe.com
-    retriever_type: gecko
+    retriever_type: gecko_v2
     site_url: https://www.betsafe.com
 
   nordicbet:
     id: nordicbet
     name: NordicBet
     domain: nordicbet.com
-    retriever_type: gecko
+    retriever_type: gecko_v2
     site_url: https://www.nordicbet.com
 
   # Polymarket (truth source)
@@ -184,6 +185,7 @@ active:
   - mrgreen
   - 888sport
   - snabbare
+  # Gecko providers now enabled with gecko_v2 (stealth + API interception)
   - betsson
   - betsafe
   - nordicbet

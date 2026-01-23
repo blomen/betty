@@ -13,6 +13,8 @@ from .providers.kambi import KambiRetriever
 from .providers.polymarket import PolymarketRetriever
 from .providers.spectate import SpectateRetriever
 from .providers.gecko import GeckoRetriever
+from .providers.gecko_v2 import GeckoV2Retriever
+from .providers.gecko_api import GeckoAPIRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,15 @@ class ExtractorFactory:
             from .core import BrowserTransport
             transport = BrowserTransport(headless=False)
             retriever = GeckoRetriever(config, transport=transport)
+        elif retriever_type == "gecko_v2":
+            # Gecko V2 - API interception approach (faster than DOM parsing)
+            # Using headless=True for better performance (2-3s faster per sport)
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=True)
+            retriever = GeckoV2Retriever(config, transport=transport)
+        elif retriever_type == "gecko_api":
+            # Gecko API - Direct API calls without browser (fastest)
+            retriever = GeckoAPIRetriever(config)
         elif retriever_type == "snabbare":
             from .providers.snabbare import SnabbareRetriever
             retriever = SnabbareRetriever(config)

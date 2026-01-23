@@ -20,7 +20,8 @@ from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 from .analysis import find_arbitrage, find_best_value
 
-console = Console()
+# Force UTF-8 encoding for Windows console to support Unicode characters
+console = Console(force_terminal=True, legacy_windows=False)
 app = typer.Typer(help="OddOpp - Betting Analytics Platform")
 
 
