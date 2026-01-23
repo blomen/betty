@@ -18,9 +18,12 @@ venv/
 # Environment
 .env
 .claude/mcp_config.json
+.claude/settings.local.json
 
 # Data
 data/*.db
+backend/data/*.db
+*.db
 
 # OS
 .DS_Store
