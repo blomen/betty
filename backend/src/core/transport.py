@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 import logging
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 logger = logging.getLogger(__name__)
 
@@ -98,35 +99,26 @@ class BrowserTransport(Transport):
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-web-security'
+                '--disable-web-security',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
             ]
         )
 
-        # Create context with simple settings (like the working debug script)
+        # Create context with realistic settings
         self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            locale='sv-SE',
+            timezone_id='Europe/Stockholm'
         )
 
         self.page = await self.context.new_page()
 
-        # Inject scripts to hide automation
-        await self.page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
+        # Apply playwright-stealth (comprehensive anti-detection)
+        await stealth_async(self.page)
 
-            window.chrome = {
-                runtime: {}
-            };
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['sv-SE', 'sv', 'en']
-            });
-        """)
+        logger.info("Browser initialized with stealth mode")
 
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_browser()

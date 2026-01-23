@@ -20,7 +20,16 @@
       "Bash(iconv:*)",
       "Bash(python:*)",
       "Bash(move dom_scraper_optimizations.md provider_optimizations.md)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(pip install:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(node:*)",
+      "Bash(uvx:*)",
+      "Bash(npx:*)",
+      "Bash(explorer %APPDATA%Claude)",
+      "Bash(cmd /c \"if exist %APPDATA%\\\\Claude\\\\claude_desktop_config.json \\(echo Config file exists\\) else \\(echo Config file not found\\)\")",
+      "Bash(cmd /c \"start explorer %APPDATA%\\\\Claude\")"
     ]
   }
 }

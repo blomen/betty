@@ -144,6 +144,28 @@ providers:
           - sweden/allsvenskan
           - england/premier-league
 
+  # Gecko providers (Betsson Group - BetRadar/Sportradar platform)
+  betsson:
+    id: betsson
+    name: Betsson
+    domain: betsson.com
+    retriever_type: gecko
+    site_url: https://www.betsson.com
+
+  betsafe:
+    id: betsafe
+    name: Betsafe
+    domain: betsafe.com
+    retriever_type: gecko
+    site_url: https://www.betsafe.com
+
+  nordicbet:
+    id: nordicbet
+    name: NordicBet
+    domain: nordicbet.com
+    retriever_type: gecko
+    site_url: https://www.nordicbet.com
+
   # Polymarket (truth source)
   polymarket:
     id: polymarket
@@ -162,4 +184,7 @@ active:
   - mrgreen
   - 888sport
   - snabbare
+  - betsson
+  - betsafe
+  - nordicbet
   - polymarket

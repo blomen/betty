@@ -12,6 +12,7 @@ from .core import Retriever
 from .providers.kambi import KambiRetriever
 from .providers.polymarket import PolymarketRetriever
 from .providers.spectate import SpectateRetriever
+from .providers.gecko import GeckoRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,11 @@ class ExtractorFactory:
             from .core import BrowserTransport
             transport = BrowserTransport(headless=False)
             retriever = SpectateRetriever(config, transport=transport)
+        elif retriever_type == "gecko":
+            # Gecko (Betsson/Betsafe/NordicBet) requires visible browser for security
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=False)
+            retriever = GeckoRetriever(config, transport=transport)
         elif retriever_type == "snabbare":
             from .providers.snabbare import SnabbareRetriever
             retriever = SnabbareRetriever(config)
