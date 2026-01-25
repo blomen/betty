@@ -132,6 +132,16 @@ class ExtractorFactory:
                 retriever = HajperRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
+        elif retriever_type == "custom":
+            # Custom provider implementations
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=True)
+
+            if provider_id == "comeon":
+                from .providers.comeon_multileague import ComeOnMultiLeagueRetriever
+                retriever = ComeOnMultiLeagueRetriever(config, transport=transport)
+            else:
+                raise ValueError(f"Unknown custom provider '{provider_id}'")
         # elif retriever_type == "coolbet":
         #     # BLOCKED - Coolbet requires commercial services (residential proxies or scraping API)
         #     from .providers.coolbet_nodriver import CoolbetNodriverRetriever

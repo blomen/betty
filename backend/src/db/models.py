@@ -95,9 +95,10 @@ class Odds(Base):
     
     updated_at = Column(DateTime, default=datetime.utcnow)
     
-    # Unique constraint: one odds per event/provider/market/outcome combo
+    # Unique constraint: one odds per event/provider/market/outcome/point combo
+    # Includes point to allow multiple lines per market (e.g., over 2.5 vs over 3.0)
     __table_args__ = (
-        UniqueConstraint('event_id', 'provider_id', 'market', 'outcome', name='uq_odds'),
+        UniqueConstraint('event_id', 'provider_id', 'market', 'outcome', 'point', name='uq_odds_with_point'),
     )
     
     # Relationships

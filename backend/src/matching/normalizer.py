@@ -232,21 +232,40 @@ def normalize_market(market: str) -> str:
     Normalize market type to standard format.
 
     Maps various market names to canonical types:
-    - "1x2", "full time result", etc. -> "1x2"
-    - "over/under", "totals" -> "over_under"
-    - "spread", "handicap" -> "spread"
+    - "1x2", "full time result", "helmatchen" -> "1x2"
+    - "over/under", "totals", "över/under" -> "over_under"
+    - "spread", "handicap", "handikapp" -> "spread"
+    - "both teams to score", "båda lagen" -> "both_teams_to_score"
+
+    Supports both English and Swedish market names.
     """
     market = market.lower().strip()
 
-    if '1x2' in market or 'full time' in market or ('will' in market and 'win' in market):
-        return '1x2'
-    if 'over' in market and 'under' in market or 'o/u' in market:
-        return 'over_under'
-    if 'spread' in market or 'handicap' in market:
-        return 'spread'
-    if 'draw' in market:
+    # 1x2 / Moneyline
+    if any(kw in market for kw in ['1x2', 'full time', 'match result', 'helmatchen', 'slutresultat', 'will' and 'win']):
         return '1x2'
 
+    # Over/Under / Totals (Swedish: över/under)
+    if any(kw in market for kw in ['over/under', 'o/u', 'total', 'över/under', 'mål över', 'mål under']):
+        return 'over_under'
+
+    # Spread / Handicap (Swedish: handikapp)
+    if any(kw in market for kw in ['spread', 'handicap', 'asian', 'handikapp', 'europeiskt']):
+        return 'spread'
+
+    # Both Teams to Score (Swedish: båda lagen)
+    if any(kw in market for kw in ['both teams', 'btts', 'båda lagen']):
+        return 'both_teams_to_score'
+
+    # Draw No Bet
+    if 'draw no bet' in market or 'dnb' in market:
+        return 'draw_no_bet'
+
+    # Double Chance
+    if 'double chance' in market or 'dc' in market:
+        return 'double_chance'
+
+    # Fallback: clean and truncate
     return market.replace(' ', '_')[:30]
 
 
