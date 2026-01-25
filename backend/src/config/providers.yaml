@@ -232,8 +232,38 @@ providers:
     id: comeon
     name: ComeOn
     domain: comeon.com
-    retriever_type: sbtech
+    retriever_type: custom  # Multi-league WebSocket implementation
     site_url: https://www.comeon.com
+
+    # Breadth controls
+    max_leagues: 999  # Number of leagues to extract (999 = all available leagues ~157, ~1000 events)
+    concurrent_leagues: 5  # Number of parallel league extractions
+
+    # Depth controls (OPTIMIZED)
+    extract_full_markets: true  # Enable event detail page extraction
+    concurrent_event_details: 8  # OPTIMIZED: Reduced from 15 to 8 for better performance
+    detail_extraction_filter: "all"  # Extract all events for maximum coverage
+
+    # Multi-sport support
+    sports_to_extract: "all"  # "all" or list of specific sports
+    # sports_to_extract:  # Alternative: specify sports
+    #   - football
+    #   - basketball
+    #   - tennis
+
+    supported_sports:  # Multi-sport support via URL slug mapping
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - cricket
+      - rugby
+      - esports
+      - mma
+      - boxing
+      - motorsports
 
   hajper:
     id: hajper
@@ -252,6 +282,7 @@ active:
   - paf
   - atg
   - betmgm
+  - comeon
   - speedybet
   - x3000
   - goldenbull
@@ -269,5 +300,5 @@ active:
   - polymarket
   # SBTech providers (browser automation)
   - bethard
-  # - comeon  # TODO: Implement custom parser for /api/v2/leagues endpoint (different API structure)
+  - comeon  # Testing - implementing custom parser
   # - hajper  # TODO: Implement custom parser for /api/v2/leagues endpoint (different API structure)

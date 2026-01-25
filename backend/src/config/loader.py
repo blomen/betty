@@ -48,6 +48,14 @@ class ProviderConfig(BaseModel):
     base_url: Optional[str] = None
     brand: Optional[str] = None
     params: Dict = Field(default_factory=dict)
+    max_leagues: Optional[int] = None  # For multi-league providers like ComeOn
+    concurrent_leagues: Optional[int] = 3  # Number of parallel league extractions (default 3)
+
+    # ComeOn-specific depth extraction configuration
+    extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
+    concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads
+    detail_extraction_filter: Optional[str] = "all"  # "all", "popular", or "none"
+    sports_to_extract: Optional[str | List[str]] = None  # Sports to extract ("all" or list)
 
 
 class AppConfig(BaseModel):
