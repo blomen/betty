@@ -4,6 +4,12 @@ Altenar Retriever - REST API-based extraction
 Altenar platform uses REST API for sportsbook data.
 Events are fetched via /widget/GetUpcoming and /widget/GetLivenow endpoints.
 
+API Usage:
+- GetUpcoming requires 'sportId' parameter for sport-specific events
+- Without sportId: Returns football events only (default)
+- With sportId=67: Returns basketball events
+- Each sport requires separate API call with corresponding sportId
+
 Providers using Altenar:
 - Betinia (betinia.se / betinia.com)
 - FrankFred (frankfred.com)
@@ -31,10 +37,13 @@ class AltenarRetriever(Retriever):
     - /widget/GetLivenow - Live events
 
     Architecture:
-    1. Call GetUpcoming/GetLivenow endpoint
+    1. Call GetUpcoming/GetLivenow endpoint with sportId parameter
     2. Parse response with events, competitors, markets, odds
     3. Resolve relational references by ID
     4. Map to StandardEvent format
+
+    Note: sportId parameter is REQUIRED to get sport-specific events.
+    Without it, only football events are returned.
     """
 
     # Sport mapping from Altenar sportId to our sport keys
@@ -52,12 +61,20 @@ class AltenarRetriever(Retriever):
 
     # Market type mapping from Altenar typeId to our market types
     MARKET_TYPE_MAPPING = {
+        # Football/Soccer
         1: '1x2',              # Match result
         2: 'over_under',       # Total goals
         3: 'spread',           # Handicap
         18: 'over_under',      # Total (alternative)
+        29: 'both_teams_to_score',  # Both teams to score (GG/NG)
         52: 'both_teams_to_score',
         60: 'double_chance',
+
+        # Basketball
+        219: 'moneyline',      # Winner (incl. overtime)
+        223: 'spread',         # Spread (incl. overtime)
+        225: 'over_under',     # Total (incl. overtime)
+
         # Add more as discovered
     }
 
@@ -77,12 +94,141 @@ class AltenarRetriever(Retriever):
                 return item
         return None
 
-    async def _fetch_events(self, endpoint: str) -> Dict[str, Any]:
+    def _standardize_outcome(
+        self,
+        outcome_name: str,
+        market_type: str,
+        raw_home: str,
+        raw_away: str
+    ) -> str:
+        """
+        Standardize outcome names to platform conventions.
+
+        Args:
+            outcome_name: Raw outcome name from API
+            market_type: Market type (1x2, over_under, spread, etc.)
+            raw_home: Raw home team name (before normalization)
+            raw_away: Raw away team name (before normalization)
+
+        Returns:
+            Standardized outcome name (home, away, draw, over, under)
+        """
+        outcome_lower = outcome_name.lower().strip()
+
+        # For 1x2 markets
+        if market_type == '1x2':
+            # Check for draw first (most specific)
+            if outcome_lower in ['x', 'draw', 'tie', 'x2']:
+                return 'draw'
+
+            # Check if outcome contains home or away team name
+            # Need to match against RAW team names from API
+            # Extract team name without parentheses and extra text
+            def extract_base_name(team_name):
+                # Remove content in parentheses and normalize
+                import re
+                base = re.sub(r'\([^)]*\)', '', team_name).strip()
+                return normalize_team_name(base)
+
+            home_base = extract_base_name(raw_home)
+            away_base = extract_base_name(raw_away)
+            outcome_base = extract_base_name(outcome_name)
+
+            # Try exact match with normalized names
+            if outcome_base == home_base:
+                return 'home'
+            if outcome_base == away_base:
+                return 'away'
+
+            # Try partial match - check if any word from team name is in outcome
+            home_words = set(home_base.split())
+            away_words = set(away_base.split())
+            outcome_words = set(outcome_base.split())
+
+            if home_words & outcome_words:  # Intersection not empty
+                return 'home'
+            if away_words & outcome_words:
+                return 'away'
+
+            # Simple numeric markers
+            if outcome_lower in ['1', '2']:
+                return 'home' if outcome_lower == '1' else 'away'
+
+        # For moneyline (no draw)
+        if market_type == 'moneyline':
+            def extract_base_name(team_name):
+                import re
+                base = re.sub(r'\([^)]*\)', '', team_name).strip()
+                return normalize_team_name(base)
+
+            home_base = extract_base_name(raw_home)
+            away_base = extract_base_name(raw_away)
+            outcome_base = extract_base_name(outcome_name)
+
+            if outcome_base == home_base:
+                return 'home'
+            if outcome_base == away_base:
+                return 'away'
+
+            home_words = set(home_base.split())
+            away_words = set(away_base.split())
+            outcome_words = set(outcome_base.split())
+
+            if home_words & outcome_words:
+                return 'home'
+            if away_words & outcome_words:
+                return 'away'
+
+        # For over/under
+        if market_type == 'over_under':
+            if 'over' in outcome_lower:
+                return 'over'
+            if 'under' in outcome_lower:
+                return 'under'
+
+        # For spread/handicap
+        if market_type == 'spread':
+            def extract_base_name(team_name):
+                import re
+                base = re.sub(r'\([^)]*\)', '', team_name).strip()
+                return normalize_team_name(base)
+
+            home_base = extract_base_name(raw_home)
+            away_base = extract_base_name(raw_away)
+            outcome_base = extract_base_name(outcome_name)
+
+            if outcome_base == home_base or any(word in outcome_base for word in home_base.split()):
+                return 'home'
+            if outcome_base == away_base or any(word in outcome_base for word in away_base.split()):
+                return 'away'
+
+        # For both teams to score
+        if market_type == 'both_teams_to_score':
+            if 'yes' in outcome_lower or 'both' in outcome_lower:
+                return 'yes'
+            if 'no' in outcome_lower or 'not' in outcome_lower:
+                return 'no'
+
+        # For double chance
+        if market_type == 'double_chance':
+            outcome_lower_clean = outcome_lower.replace(' ', '')
+            if '1x' in outcome_lower_clean or ('home' in outcome_lower and 'draw' in outcome_lower):
+                return 'home_or_draw'
+            if '12' in outcome_lower_clean or ('home' in outcome_lower and 'away' in outcome_lower):
+                return 'home_or_away'
+            if '2x' in outcome_lower_clean or ('away' in outcome_lower and 'draw' in outcome_lower):
+                return 'away_or_draw'
+
+        # If no match found, return original (will be logged as 'other')
+        return outcome_name
+
+    async def _fetch_events(self, endpoint: str, sport_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Fetch events from Altenar API endpoint.
 
         Args:
             endpoint: API endpoint (e.g., 'widget/GetUpcoming')
+            sport_id: Optional sport ID to filter events (e.g., 67 for basketball)
 
         Returns:
             Response data with events, competitors, markets, odds
@@ -97,6 +243,10 @@ class AltenarRetriever(Retriever):
                 'deviceType': '1',
                 'numFormat': 'en-GB'
             }
+
+            # Add sport filter if provided
+            if sport_id is not None:
+                params['sportId'] = str(sport_id)
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
@@ -152,15 +302,19 @@ class AltenarRetriever(Retriever):
             ]
             competitors = [c for c in competitors if c]  # Filter out None
 
-            # Determine home/away teams
-            home_team = competitors[0]['name'] if len(competitors) > 0 else None
-            away_team = competitors[1]['name'] if len(competitors) > 1 else None
+            # Determine home/away teams (normalize immediately)
+            raw_home = competitors[0]['name'] if len(competitors) > 0 else None
+            raw_away = competitors[1]['name'] if len(competitors) > 1 else None
 
             # For events with only one competitor (e.g., futures), use event name
-            if not home_team and not away_team:
+            if not raw_home and not raw_away:
                 # This might be a special market (futures, outright, etc.)
                 # Skip for now
                 return None
+
+            # Normalize team names
+            home_team = normalize_team_name(raw_home) if raw_home else None
+            away_team = normalize_team_name(raw_away) if raw_away else None
 
             # Get championship (league)
             champ_id = event_data.get('champId')
@@ -185,19 +339,54 @@ class AltenarRetriever(Retriever):
                 odd_ids = market.get('oddIds', [])
                 outcomes = []
 
+                # Extract point value from market name if present (e.g., "Over/Under 2.5")
+                point = None
+                if market_type in ['over_under', 'spread']:
+                    import re
+                    match = re.search(r'(\d+\.?\d*)', market_name)
+                    if match:
+                        try:
+                            point = float(match.group(1))
+                        except ValueError:
+                            pass
+
                 for odd_id in odd_ids:
                     odd = self._find_by_id(reference_data.get('odds', []), odd_id)
                     if odd:
+                        raw_outcome = odd.get('name', '')
+                        standardized_outcome = self._standardize_outcome(
+                            raw_outcome,
+                            market_type,
+                            raw_home,
+                            raw_away
+                        )
+
+                        # Extract point from outcome name if not found in market name
+                        if point is None and market_type in ['over_under', 'spread']:
+                            import re
+                            match = re.search(r'(\d+\.?\d*)', raw_outcome)
+                            if match:
+                                try:
+                                    point = float(match.group(1))
+                                except ValueError:
+                                    pass
+
                         outcomes.append({
-                            'name': odd.get('name', ''),
+                            'name': standardized_outcome,
                             'odds': odd.get('price', 0.0)
                         })
 
                 if outcomes:
-                    markets.append({
+                    market_dict = {
                         'type': market_type,
                         'outcomes': outcomes
-                    })
+                    }
+
+                    # Add point value for spreads and totals
+                    if point is not None and market_type in ['over_under', 'spread']:
+                        market_dict['point'] = point
+
+                    markets.append(market_dict)
 
                     # Log unmapped market types for future improvement
                     if market_type == 'other' and market_type_id:
@@ -228,7 +417,7 @@ class AltenarRetriever(Retriever):
         Get API URL for sport.
 
         Not used for Altenar since we use the generic GetUpcoming endpoint
-        and filter by sportId.
+        with sportId parameter instead of sport-specific URLs.
         """
         return f"{self.api_base}/widget/GetUpcoming"
 
@@ -266,22 +455,18 @@ class AltenarRetriever(Retriever):
             return []
 
         try:
-            # Fetch upcoming events
-            logger.info(f"[{self.provider_id}] Fetching upcoming events")
-            data = await self._fetch_events('widget/GetUpcoming')
+            # Fetch upcoming events with sport filter
+            logger.info(f"[{self.provider_id}] Fetching upcoming events for {sport} (sportId={sport_id})")
+            data = await self._fetch_events('widget/GetUpcoming', sport_id=sport_id)
 
             if not data or 'events' not in data:
                 logger.warning(f"[{self.provider_id}] No data returned from API")
                 return []
 
-            # Filter events for requested sport
-            all_events = data.get('events', [])
-            sport_events = [e for e in all_events if e.get('sportId') == sport_id]
+            # All events should match the requested sport (no client-side filtering needed)
+            sport_events = data.get('events', [])
 
-            logger.info(
-                f"[{self.provider_id}] Found {len(sport_events)} {sport} events "
-                f"(out of {len(all_events)} total)"
-            )
+            logger.info(f"[{self.provider_id}] Found {len(sport_events)} {sport} events")
 
             # Reference data for resolving IDs
             reference_data = {

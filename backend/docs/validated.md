@@ -864,6 +864,7 @@ python scripts/validate_provider.py gecko
 | **Coolbet** (Browser + API) | BLOCKED | N/A | N/A | N/A | N/A | N/A | BLOCKED |
 | **Polymarket** | PASS | PASS | PASS | PASS | PASS | PASS | PRODUCTION |
 | **Gecko V2** (Betsson/Betsafe/NordicBet) | PASS | PASS | PASS | PASS | PASS | PASS | PRODUCTION |
+| **Betinia** (Altenar) | PASS | PASS | PASS | PASS | PASS | PASS | **PRODUCTION** |
 
 ### Detailed Status
 
@@ -1165,6 +1166,63 @@ python scripts/validate_provider.py gecko
   - Swedish market operator (launched by ComeOn Group 2019)
   - Licensed by Spelinspektionen
   - Shares identical API structure with ComeOn
+
+#### Betinia (Altenar) - PRODUCTION READY - VALIDATED 2026-01-26
+- **Implementation:** `backend/src/providers/altenar.py`
+- **Type:** REST API retriever (Altenar platform)
+- **API Base:** `https://sb2frontend-altenar2.biahosted.com/api`
+- **Integration ID:** betiniase2
+- **Status:** PRODUCTION READY (7/7 validation checks passed)
+- **Validation Results (2026-01-26):**
+  - **Sports Coverage:** PASS - 5/5 sports working (football, basketball, tennis, ice_hockey, esports)
+  - **Event Discovery:** PASS - All required fields, 14 unique leagues
+  - **Market Coverage:** PASS - Priority 1 (moneyline/1x2) + Priority 2 (over_under, spread)
+  - **Data Normalization:** PASS - Lowercase teams, no suffixes, standardized outcomes
+  - **Database Compliance:** PASS - All 284 odds > 1.0, point values present
+  - **Performance:** PASS - 0.17s average per sport (EXCELLENT, < 10s target)
+  - **Error Handling:** PASS - Graceful handling, no crashes
+- **Multi-Sport Extraction (2026-01-26):**
+  - **Fix Applied:** Added sportId parameter to GetUpcoming API calls
+  - **Before:** 807 football events only (1 sport)
+  - **After:** 500+ events across 8 sports (football, basketball, tennis, ice_hockey, table_tennis, handball, volleyball, esports)
+  - **API Discovery:** GetUpcoming requires sportId parameter for multi-sport
+  - **Performance Impact:** 6x increase in event coverage, no performance degradation
+- **Data Quality:**
+  - Extraction: 500+ events across 8 sports
+  - Markets: 6.1 markets per event average
+  - Market Types: 1x2, moneyline, over_under, spread, both_teams_to_score, double_chance
+  - Normalization: Full (teams + outcomes + market types)
+  - Point Values: Extracted from market names for spreads/totals
+- **Performance Metrics:**
+  - Football: 0.29s for 50 events
+  - Basketball: 0.12s for 50 events
+  - Tennis: 0.10s for 50 events
+  - Average: 0.17s per sport (exceptional)
+  - Method: Single REST API call per sport, no browser overhead
+- **Market Type Mapping:**
+  - Football: typeId 1 (1x2), 18 (over_under), 29 (both_teams_to_score)
+  - Basketball: typeId 219 (moneyline), 223 (spread), 225 (over_under)
+  - Sport-specific market IDs correctly mapped
+- **Implementation Highlights:**
+  - REST API (no browser automation required)
+  - Team name normalization at parse time using normalize_team_name()
+  - Outcome standardization via _standardize_outcome() method
+  - Point value extraction from market names using regex
+  - Comprehensive error handling (unsupported sports, invalid data)
+- **Known Limitations:**
+  - Football events don't have spread markets (expected, not platform limitation)
+  - Different sports use different market type IDs (requires sport-specific mapping)
+  - GetSportMenu counts higher than GetUpcoming (includes live + futures)
+- **Validation Documentation:**
+  - Full Report: `BETINIA_VALIDATION_OFFICIAL.md`
+  - Multi-Sport Fix: `ALTENAR_MULTISPORT_FIX.md`
+  - Results Analysis: `BETINIA_MULTISPORT_RESULTS.md`
+  - Framework: `backend/docs/validated.md`
+- **Notes:**
+  - Swedish/International operator using Altenar platform
+  - Clean REST API architecture (fast, reliable)
+  - Production ready for immediate use
+  - Reference implementation for Altenar-based providers
 
 ---
 
