@@ -78,6 +78,19 @@ class HajperRetriever(BrowserRetriever):
 
     async def _extract_league_links(self, page) -> List[Dict[str, str]]:
         """Extract league links from main sport page DOM."""
+        # Note: Initial testing showed Hajper loads all leagues immediately (no lazy loading)
+        # The page height stabilizes at ~720px regardless of scrolling
+        # Keeping wait time for initial render but removing scrolling logic
+
+        await page.wait_for_timeout(2000)  # Wait for initial render
+
+        # Count leagues before extraction for debugging
+        initial_count = await page.evaluate('''() => {
+            return document.querySelectorAll('a[href*="/leagues/"]').length;
+        }''')
+
+        logger.info(f"[{self.provider_id}] Found {initial_count} league link elements on page")
+
         league_links = await page.evaluate('''() => {
             const links = [];
             const seen = new Set();
@@ -115,8 +128,15 @@ class HajperRetriever(BrowserRetriever):
         # Navigate to league page
         full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
         try:
-            await page.goto(full_url, wait_until="networkidle", timeout=30000)
+            # Add Python-level timeout wrapper to prevent hangs
+            await asyncio.wait_for(
+                page.goto(full_url, wait_until="networkidle", timeout=30000),
+                timeout=45.0  # Python-level timeout (45s)
+            )
             await page.wait_for_timeout(2000)  # Allow WebSocket messages
+        except asyncio.TimeoutError:
+            logger.warning(f"[{self.provider_id}] Timeout loading {league_url}")
+            return []
         except Exception as e:
             logger.warning(f"[{self.provider_id}] Failed to load {league_url}: {e}")
             return []
@@ -225,14 +245,29 @@ class HajperRetriever(BrowserRetriever):
             '1': '1x2',           # Match result
             '2': 'over_under',    # Goals over/under
             '3': 'both_teams_to_score',  # BTTS
+            '4': 'double_chance',  # Double chance 1X
+            '5': 'double_chance',  # Double chance 12
+            '6': 'double_chance',  # Double chance X2
+            '7': 'double_chance',  # Double chance (generic)
             '8': 'other',         # First goal
+            '9': 'draw_no_bet',   # Draw no bet
             '10': 'spread',       # Asian handicap
+            '11': 'draw_no_bet',  # Draw no bet (alternative)
+            '12': 'over_under',   # Alternative totals
+            '13': 'over_under',   # Goals over/under (alternative)
+            '14': 'other',        # Corners
+            '15': 'other',        # Cards/bookings
+            '16': 'other',        # Props (penalties/free kicks)
+            '17': 'other',        # Team props
             '18': 'other',        # Correct score
+            '19': 'over_under',   # Team totals
+            '20': 'over_under',   # Half totals
             '52': 'other',        # Half time result
             '60': 'other',        # Half time/Full time
             '103': 'over_under',  # Total goals
             '186': 'spread',      # Handicap
             '342': 'other',       # Anytime goalscorer
+            '1100': 'over_under', # Alternative totals (common unmapped ID)
             '1781': 'spread',     # European handicap
             '2718': 'other',      # First/last goalscorer
         }
@@ -350,7 +385,7 @@ class HajperRetriever(BrowserRetriever):
 
                     # Log unmapped market types for future enhancement
                     if market_type == 'other' and market_type_id not in ['8', '18', '52', '60', '342', '2718']:
-                        logger.debug(f"[{self.provider_id}] {sport}: Unmapped marketTypeId: {market_type_id}")
+                        logger.info(f"[{self.provider_id}] {sport}: Unmapped marketTypeId: {market_type_id}")
 
                     markets_dict[market_id] = {
                         'type': market_type,
@@ -419,7 +454,7 @@ class HajperRetriever(BrowserRetriever):
             sport_url = f"{self.site_url}{sport_url_path}"
             logger.info(f"[{self.provider_id}] Loading main page: {sport_url}")
 
-            await page.goto(sport_url, wait_until='networkidle', timeout=60000)
+            await page.goto(sport_url, wait_until='networkidle', timeout=90000)
 
             # Handle cookie consent
             try:
