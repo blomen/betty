@@ -17,8 +17,6 @@ from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.gecko_api import GeckoAPIRetriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.bethard import BethardRetriever
-from .providers.comeon import ComeOnRetriever
-from .providers.hajper import HajperRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -126,10 +124,6 @@ class ExtractorFactory:
             # Select brand-specific retriever
             if provider_id == "bethard":
                 retriever = BethardRetriever(config, transport=transport)
-            elif provider_id == "comeon":
-                retriever = ComeOnRetriever(config, transport=transport)
-            elif provider_id == "hajper":
-                retriever = HajperRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
         elif retriever_type == "custom":
@@ -140,6 +134,9 @@ class ExtractorFactory:
             if provider_id == "comeon":
                 from .providers.comeon_multileague import ComeOnMultiLeagueRetriever
                 retriever = ComeOnMultiLeagueRetriever(config, transport=transport)
+            elif provider_id == "hajper":
+                from .providers.hajper import HajperRetriever
+                retriever = HajperRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown custom provider '{provider_id}'")
         # elif retriever_type == "coolbet":
