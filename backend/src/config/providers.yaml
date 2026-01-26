@@ -228,6 +228,13 @@ providers:
     retriever_type: sbtech
     site_url: https://www.bethard.com
 
+  fastbet:
+    id: fastbet
+    name: Fastbet
+    domain: fastbet.com
+    retriever_type: sbtech
+    site_url: https://www.fastbet.com
+
   comeon:
     id: comeon
     name: ComeOn

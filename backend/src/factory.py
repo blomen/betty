@@ -17,6 +17,7 @@ from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.gecko_api import GeckoAPIRetriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.bethard import BethardRetriever
+from .providers.fastbet import FastbetRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,8 @@ class ExtractorFactory:
             # Select brand-specific retriever
             if provider_id == "bethard":
                 retriever = BethardRetriever(config, transport=transport)
+            elif provider_id == "fastbet":
+                retriever = FastbetRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
         elif retriever_type == "custom":
