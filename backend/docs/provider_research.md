@@ -1,258 +1,148 @@
-# Provider Research Summary
+# Provider Research & Implementation Notes
 
-This document tracks research on Swedish betting providers and their platform technologies.
+## Fastbet.com - SBTech (Implemented)
 
-## Provider Status Overview
+### Status: Code Ready, Requires Authentication
 
-Total providers in list: 53
-- Added to providers.yaml: 25 (47%)
-- Researched but not added: 28 (53%)
+**Platform:** SBTech
+**Parent Company:** Bethard Group Limited (same as Bethard)
+**License:** Sweden (valid until 2027-09-12)
+**Type:** Pay N Play (BankID required)
 
-## Added Providers (25)
+### Research Sources
+- [Bethard/Fastbet Relationship](https://igamingbusiness.com/tech-innovation/bethard-relaunches-fastbet-as-part-of-b2b-growth-plans/)
+- [SBTech Platform](https://casinobeats.com/2023/05/25/thunderkick-bethard-fastbet-sweden/)
+- [Swedish License](https://www.sbo.net/country/sweden/)
 
-### Kambi Platform (13)
-| Provider | Domain | Brand ID | Status |
-|----------|--------|----------|--------|
-| Unibet | unibet.se | ubse | Active |
-| LeoVegas | leovegas.com | leose | Active |
-| Expekt | expekt.se | expektse | Active |
-| Paf | paf.se | pafse | Active |
-| ATG | atg.se | atg | Active |
-| BetMGM | betmgm.se | betmgmse | Active |
-| Casumo | casumo.com | case | Active |
-| SpeedyBet | speedybet.com | speedybetse | Active |
-| X3000 | x3000.se | speedyspelse | Active |
-| Svenskaspel | spela.svenskaspel.se | svenskaspel | Active |
-| Golden Bull | goldenbull.se | goldenbullse | Active |
-| 1X2 | 1x2.se | 1x2se | Active |
-| Flax Casino | flaxcasino.se | flaxse | Active |
+### Implementation
+- **File:** `backend/src/providers/fastbet.py`
+- **Base Class:** `SBTechRetriever` (shared with Bethard)
+- **Configuration:** `backend/src/config/providers.yaml`
+- **Factory:** Registered in `backend/src/factory.py`
 
-### Spectate Platform (2)
-| Provider | Domain | API Base | Status |
-|----------|--------|----------|--------|
-| Mr Green | mrgreen.se | spectate-web.mrgreen.se | Active |
-| 888sport | 888sport.se | spectate-web.888sport.se | Active |
+### Challenge
+Fastbet uses Pay N Play authentication model requiring Swedish BankID. This means:
+- No public sportsbook page without authentication
+- Requires valid Swedish banking credentials
+- Cannot be tested without actual Swedish BankID
 
-### Gecko Platform (3)
-| Provider | Domain | Type | Status |
-|----------|--------|------|--------|
-| Betsson | betsson.com | gecko_v2 | Active |
-| Betsafe | betsafe.com | gecko_v2 | Active |
-| NordicBet | nordicbet.com | gecko_v2 | Active |
+### Code Status
+✓ Retriever implemented correctly
+✓ Configuration added
+✓ Factory registration complete
+? Testing blocked by authentication requirement
+- Not added to active providers (requires BankID for actual use)
 
-### SBTech Platform (3)
-| Provider | Domain | Type | Status |
-|----------|--------|------|--------|
-| Bethard | bethard.com | sbtech | Active |
-| ComeOn | comeon.com | sbtech | Active |
-| Hajper | hajper.com | sbtech | Active |
+---
 
-### Custom Platforms (4)
-| Provider | Domain | Type | Status |
-|----------|--------|------|--------|
-| Snabbare | snabbare.com | snabbare | Active |
-| Pinnacle | pinnacle.com | pinnacle | Active (guest API) |
-| Coolbet | coolbet.com | coolbet_nodriver | BLOCKED (Incapsula - requires commercial services) |
-| Polymarket | polymarket | polymarket | Active (truth source) |
+## 10bet.se - PlayTech (Not Implemented)
 
-## Researched Providers Requiring New Implementation (31)
+### Status: Incorrect Platform Assumption
 
-### Public API Providers (1)
-**Priority: HIGH - Can be added with custom retrievers**
+**Platform:** PlayTech (NOT SBTech as initially researched)
+**Research Correction:** [PlayTech Launch](https://www.gamblinginsider.com/news/24071/playtech-launches-sportsbook-with-10bet-in-sweden/)
 
-1. **Smarkets** (smarkets.com)
-   - Platform: Betting exchange
-   - API: Trading API (docs.smarkets.com)
-   - Features: Peer-to-peer betting, 2% commission
-   - Status: Needs smarkets retriever
+Initial research indicated SBTech, but 10bet actually uses PlayTech platform. We don't have PlayTech support implemented.
 
-### SBTech Platform (3)
-**Priority: MEDIUM - Shared platform, one retriever for all**
+**Decision:** Abandoned implementation
 
-1. **Bethard** (bethard.com)
-   - Platform: SBTech (5-year contract)
-   - Nordic focus, Malta-based
+---
 
-2. **ComeOn** (comeon.com)
-   - Platform: SBTech
-   - European sportsbook
+## Happy Casino - Kambi (In Transition)
 
-3. **Hajper** (hajper.com)
-   - Platform: SBTech
-   - Swedish license active
+### Status: Platform Migration In Progress
 
-**Implementation:** Create sbtech.py retriever (similar to kambi.py pattern)
+**Platform:** Transitioning to Kambi (from Altenar)
+**Parent:** Glitnor Group
+**Announcement:** October 2025
+**Rollout:** 2025-2026
 
-### Soft2Bet Platform (2)
-**Priority: MEDIUM - Shared platform**
+### Research Sources
+- [Glitnor/Kambi Partnership](https://igamingbusiness.com/sports-betting/online-sports-betting/glitnor-partners-kambi-sportsbook-rollout/)
+- [Kambi Press Release](https://www.kambi.com/news-insights/kambi-turnkey-sportsbook-partnership-glitnor-group/)
 
-1. **CampoBet** (campobet.se)
-   - Platform: Soft2Bet MEGA engine
-   - Operator: Romix Limited
-   - Launched: 2020 in Sweden
+### Decision
+Wait for Kambi migration to complete. Currently still on Altenar platform.
 
-2. **QuickCasino** (quickcasino.se)
-   - Platform: Soft2Bet MEGA gamification
-   - Features: 4,500+ games
-   - Awards: EGR "Rising Star" 2025
+**When Ready:**
+- Will be simple Kambi configuration (like other Kambi providers)
+- Just need to find Kambi brand ID
+- Estimated implementation: 1-2 hours
 
-**Implementation:** Create soft2bet.py retriever
+---
 
-### PlayTech Platform (1)
-**Priority: LOW - Single provider**
+## Unimplemented Provider Analysis
 
-1. **10bet** (10bet.se)
-   - Platform: PlayTech (formerly SBTech)
-   - License: Malta Gaming Authority
+### By Platform Type
 
-### Altenar Platform (2)
-**Priority: LOW**
+**Kambi (13 already implemented)**
+- unibet, leovegas, expekt, casumo, svenskaspel, paf, atg, betmgm, speedybet, x3000, goldenbull, 1x2, flaxcasino
 
-1. **LuckyCasino** (luckycasino.com)
-   - Platform: Altenar
-   - Operator: Glitnor Services
-   - Top 5 Swedish brand
+**SBTech**
+- bethard ✓ (implemented)
+- fastbet ✓ (implemented, requires BankID)
 
-2. **HappyCasino** (happycasino.se)
-   - Platform: Altenar
-   - Operator: Glitnor Group
-   - License valid until June 2027
+**ComeOn Group (WebSocket/RSocket)**
+- comeon ✓ (implemented)
+- hajper ✓ (implemented)
 
-### Proprietary Platforms (12)
-**Priority: LOW - Custom implementation required for each**
+**Other Platforms**
+- Spectate: mrgreen ✓, snabbare ✓
+- Gecko: betsson, betsafe, nordicbet ✓
+- Pinnacle API: pinnacle ✓
+- PlayTech: 10bet (not implemented)
+- Altenar: betinia, frankfred (not implemented)
+- GiG: tipwin (not implemented)
+- BetConstruct: vbet (not implemented)
 
-1. **Bet365** (bet365.com)
-   - Platform: Proprietary (Erlang-based)
-   - Major international bookmaker
-   - No public API
+### Remaining from providers.json (26 unimplemented)
 
-2. **Tipwin** (tipwin.se)
-   - Platform: Proprietary + GiG partnership
-   - Built from scratch
+Most require new platform implementations:
 
-3. **Videoslots** (sports.videoslots.com)
-   - Platform: Proprietary
-   - Parent: Videoslots Malta
+1. **bet365** - Proprietary platform (very difficult)
+2. **betinia** - Altenar (8-12 hours, new platform)
+3. **frankfred** - Altenar (4-6 hours once Altenar done)
+4. **interwetten** - Mixed (Kambi pools + other)
+5. **tipwin** - GiG platform (16-24 hours)
+6. **vbet** - BetConstruct (16-24 hours)
+7. **10bet** - PlayTech (requires new platform)
+8-26. Various casino-focused or small operators
 
-4. **Interwetten** (interwetten.se)
-   - Platform: Proprietary
-   - Founded: 1990
-   - Historical Kambi connection (pool betting only, 2011-2013)
+---
 
-5. **Fastbet** (fastbet.com)
-   - Platform: Custom
-   - Focus: Pakistan market
+## Recommendations
 
-6. **FrankFred** (frankfred.com)
-   - Platform: Proprietary
-   - Operator: UnionJack Limited
-   - Relaunched: Nov 2024
+### Quick Wins (When Available)
+1. **Happy Casino** - When Kambi migration completes (1-2 hours)
+2. **Other Glitnor brands** - Lucky Casino, Flax Casino if they migrate to Kambi
 
-7. **PokerStars** (pokerstars.se)
-   - Platform: Flutter Entertainment proprietary
-   - Part of Flutter group (FanDuel, Betfair, etc.)
+### Medium Effort
+3. **Altenar Platform** - Would unlock betinia + frankfred (8-12 hours first, 4-6 second)
 
-8. **VBET** (vbet.se)
-   - Platform: BetConstruct
-   - Armenian platform, 400+ payment methods
-
-9. **ProntoSport** (prontosport.se)
-   - Platform: PremierGaming proprietary
-   - License: Spelinspektionen 24Si351
-   - Events: 170,000+/month
-   - Launched: Dec 2023
-
-10. **DBET** (dbet.com)
-    - Platform: DBET Ltd proprietary
-    - License: Spelinspektionen 24Si2403
-    - Malta-based operator
-
-11. **RaceCasino** (racecasino.com)
-    - Platform: L&L Europe proprietary
-    - Pay N Play: Trustly
-    - Launched: 2020
-
-12. **Spelklubben** (spelklubben.se)
-    - Platform: Betsson proprietary (NOT Kambi)
-    - Operator: Betsson Group subsidiary
-    - Launched: Summer 2024
-    - Note: Uses Betsson sportsbook, not Kambi odds
-
-### Multi-Provider Aggregators (5)
-**Priority: VERY LOW - No unified sportsbook API**
-
-1. **NoBonusCasino** (nobonuscasino.com)
-   - Aggregates: Microgaming, NetEnt, Playtech, Evolution, 1x2gaming, Pragmatic
-   - Launched: 2013
-
-2. **LylloCasino** (lyllocasino.com)
-   - Operator: MOA Gaming Sweden
-   - Providers: NetEnt, Red Tiger, Play'n Go, Playtech, Evolution
-   - 1,300+ games
-
-3. **YakoCasino** (yakocasino.com)
-   - Platform: CasinoEngine aggregator
-   - Operator: L&L Europe
-   - 4,000+ games
-
-4. **YetiCasino** (yeticasino.com)
-   - HTML5 multi-provider
-   - 3,000+ games, 100+ live casino
-
-5. **Casinostugan** (casinostugan.com)
-   - Platform: ComeOn Group proprietary
-   - Live Casino: Evolution Gaming Ruby Lounge
-
-### Additional Videoslots Group (2)
-**Priority: LOW - Proprietary Videoslots platform**
-
-1. **Kungaslottet** (kungaslottet.se)
-   - Platform: Videoslots Group proprietary
-   - 4,500+ games
-   - Launched: March 2024
-
-2. **MegaRiches** (megariches.com)
-   - Platform: Videoslots Limited
-   - 9,000+ games
-   - Sponsor: West Bromwich Albion
-
-### Unknown/Unverified (2)
-**Priority: NONE - Needs verification**
-
-1. **Betinia** (betinia.se)
-   - Status: Could not verify platform
-   - Recommendation: Manual investigation
-
-2. **Betsbk** (betsbk.com)
-   - Status: No information found
-   - Recommendation: Verify Spelinspektionen license
-
-## Implementation Priority Recommendations
-
-### Immediate (Ready to Add)
-- None currently - all easy Kambi/Spectate/Gecko providers added
-
-### High Priority (Public APIs)
-1. Create Coolbet retriever
-2. Create Smarkets retriever
-3. Create Pinnacle retriever (if API access obtained)
-
-### Medium Priority (Shared Platforms)
-1. Create SBTech retriever (enables 3 providers: Bethard, ComeOn, Hajper)
-2. Create Soft2Bet retriever (enables 2 providers: CampoBet, QuickCasino)
-
-### Low Priority (Custom Implementation)
-- Bet365, PokerStars, VBET (require complex custom integrations)
-- Single-provider platforms (10bet/PlayTech, LuckyCasino/Altenar)
+### High Effort
+4. **GiG/BetConstruct** - Would unlock tipwin, vbet (16-24 hours each)
 
 ### Not Recommended
-- Multi-provider aggregators (no unified sportsbook API)
-- Unverified providers (Betinia, Betsbk)
+- **bet365** - Proprietary, heavily protected, very difficult
+- **10bet** - PlayTech platform (major new implementation)
+- **Pay N Play only sites** - Require Swedish BankID authentication
 
-## Notes
+---
 
-- Kambi providers are easiest to add (same API, different brand parameter)
-- Spectate providers use consistent API across Mr Green and 888sport
-- Gecko providers require browser automation but gecko_v2 handles it
-- SBTech could unlock 3 providers with one retriever implementation
-- Focus on providers with proper Swedish licenses from Spelinspektionen
+## Summary
+
+**Current Coverage:** 25 providers implemented
+- 13 Kambi
+- 2 SBTech
+- 2 ComeOn Group
+- 3 Gecko
+- 2 Spectate
+- 1 Pinnacle
+- 2 Custom (Polymarket + others)
+
+**Best Path Forward:**
+1. Wait for Happy Casino Kambi migration
+2. Consider Altenar platform for betinia/frankfred
+3. Focus on improving existing providers (market classification, coverage)
+
+The Swedish market is well-covered with current implementations. Most remaining providers offer limited additional value or require significant platform development.

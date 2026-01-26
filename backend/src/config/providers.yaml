@@ -293,6 +293,27 @@ providers:
       - mma
       - esports
 
+  # Altenar Platform Providers
+  betinia:
+    id: betinia
+    name: Betinia
+    domain: betinia.se
+    retriever_type: altenar  # REST API extraction (Altenar platform)
+
+    # Altenar API configuration
+    api_base: https://sb2frontend-altenar2.biahosted.com/api
+    integration: betiniase2  # Altenar skin ID for Betinia
+
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - table_tennis
+      - handball
+      - volleyball
+      - esports
+
 # Active providers (subset of above to use)
 active:
   - unibet
@@ -305,6 +326,7 @@ active:
   - betmgm
   - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
   - comeon
+  - betinia  # REST API (Altenar platform) - 807 football events
   - speedybet
   - x3000
   - goldenbull
