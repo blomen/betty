@@ -269,8 +269,12 @@ providers:
     id: hajper
     name: Hajper
     domain: hajper.com
-    retriever_type: custom  # WebSocket-based extraction (ComeOn Group)
+    retriever_type: custom  # Multi-league WebSocket extraction (ComeOn Group)
     site_url: https://www.hajper.com
+
+    # Breadth controls
+    max_leagues: 999  # Number of leagues to extract (999 = all available leagues)
+    concurrent_leagues: 5  # Number of parallel league extractions
 
     supported_sports:
       - football
