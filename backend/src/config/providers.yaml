@@ -296,6 +296,7 @@ active:
   - paf
   - atg
   - betmgm
+  - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
   - comeon
   - speedybet
   - x3000

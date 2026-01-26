@@ -151,20 +151,31 @@ class HajperRetriever(BrowserRetriever):
         name_lower = market_name.lower()
 
         # 1x2 / Match result
-        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'matchresultat']):
+        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'matchresultat', 'vinnare', 'winner']):
             return '1x2'
 
         # Over/Under / Totals
-        if any(kw in name_lower for kw in ['över/under', 'over/under', 'o/u', 'total', 'mål över', 'mål under']):
+        if any(kw in name_lower for kw in ['över/under', 'over/under', 'o/u', 'total', 'mål över', 'mål under',
+                                             'totalt antal', 'total goals', 'antal mål', 'poäng över', 'poäng under',
+                                             'points over', 'points under']):
             return 'over_under'
 
         # Spread / Handicap
-        if any(kw in name_lower for kw in ['handikapp', 'handicap', 'asian', 'europeiskt', 'spread']):
+        if any(kw in name_lower for kw in ['handikapp', 'handicap', 'asian', 'europeiskt', 'spread', 'point spread',
+                                             'asiatiskt', 'europeisk']):
             return 'spread'
 
         # Both Teams to Score
-        if any(kw in name_lower for kw in ['båda lagen', 'both teams', 'btts']):
+        if any(kw in name_lower for kw in ['båda lagen', 'both teams', 'btts', 'bägge lagen', 'both teams score']):
             return 'both_teams_to_score'
+
+        # Double Chance
+        if any(kw in name_lower for kw in ['dubbel chans', 'double chance']):
+            return 'double_chance'
+
+        # Draw No Bet
+        if any(kw in name_lower for kw in ['oavgjort återbetalas', 'draw no bet', 'dnb']):
+            return 'draw_no_bet'
 
         return 'other'
 
@@ -179,7 +190,7 @@ class HajperRetriever(BrowserRetriever):
                 return 'home'
             if 'away' in type_lower or any(kw in name_lower for kw in ['borta', 'away', '2']):
                 return 'away'
-            if 'draw' in type_lower or any(kw in name_lower for kw in ['oavgjort', 'draw', 'x']):
+            if 'draw' in type_lower or any(kw in name_lower for kw in ['oavgjort', 'draw', 'x', 'lika']):
                 return 'draw'
 
         # Over/Under
@@ -189,7 +200,98 @@ class HajperRetriever(BrowserRetriever):
             if 'under' in type_lower or 'under' in name_lower:
                 return 'under'
 
+        # Both Teams to Score
+        if market_type == 'both_teams_to_score':
+            if any(kw in name_lower for kw in ['ja', 'yes', 'båda']):
+                return 'yes'
+            if any(kw in name_lower for kw in ['nej', 'no', 'inte båda']):
+                return 'no'
+
+        # Double Chance
+        if market_type == 'double_chance':
+            if any(kw in name_lower for kw in ['1x', 'hemma eller lika', 'home or draw']):
+                return '1X'
+            if any(kw in name_lower for kw in ['12', 'hemma eller borta', 'home or away']):
+                return '12'
+            if any(kw in name_lower for kw in ['x2', 'lika eller borta', 'draw or away']):
+                return 'X2'
+
         return outcome_name
+
+    def _get_sport_market_type_map(self, sport: str) -> Dict[str, str]:
+        """Get sport-specific market type mapping."""
+        # Football/soccer markets
+        football_markets = {
+            '1': '1x2',           # Match result
+            '2': 'over_under',    # Goals over/under
+            '3': 'both_teams_to_score',  # BTTS
+            '8': 'other',         # First goal
+            '10': 'spread',       # Asian handicap
+            '18': 'other',        # Correct score
+            '52': 'other',        # Half time result
+            '60': 'other',        # Half time/Full time
+            '103': 'over_under',  # Total goals
+            '186': 'spread',      # Handicap
+            '342': 'other',       # Anytime goalscorer
+            '1781': 'spread',     # European handicap
+            '2718': 'other',      # First/last goalscorer
+        }
+
+        # Basketball markets (moneyline, spread, totals)
+        basketball_markets = {
+            '1': '1x2',           # Match winner (no draw)
+            '2': 'over_under',    # Points over/under
+            '10': 'spread',       # Point spread
+            '103': 'over_under',  # Total points
+            '186': 'spread',      # Handicap
+            **football_markets    # Include football markets as fallback
+        }
+
+        # Tennis markets (match winner, set betting, totals)
+        tennis_markets = {
+            '1': '1x2',           # Match winner (no draw)
+            '2': 'over_under',    # Games over/under
+            '10': 'spread',       # Game handicap
+            '103': 'over_under',  # Total games
+            '186': 'spread',      # Handicap
+            **football_markets    # Include football markets as fallback
+        }
+
+        # Ice hockey markets (similar to football)
+        ice_hockey_markets = football_markets.copy()
+
+        # American football markets (similar to basketball)
+        american_football_markets = basketball_markets.copy()
+
+        # Baseball markets
+        baseball_markets = {
+            '1': '1x2',           # Match winner (no draw)
+            '2': 'over_under',    # Runs over/under
+            '10': 'spread',       # Run line
+            '103': 'over_under',  # Total runs
+            '186': 'spread',      # Handicap
+            **football_markets    # Include football markets as fallback
+        }
+
+        # MMA markets
+        mma_markets = {
+            '1': '1x2',           # Fight winner (no draw)
+            **football_markets    # Include football markets as fallback
+        }
+
+        # Map sports to their market configurations
+        sport_maps = {
+            'football': football_markets,
+            'basketball': basketball_markets,
+            'tennis': tennis_markets,
+            'ice_hockey': ice_hockey_markets,
+            'american_football': american_football_markets,
+            'baseball': baseball_markets,
+            'mma': mma_markets,
+            'esports': football_markets,  # Use football as default
+        }
+
+        return sport_maps.get(sport, football_markets)
 
     def _parse_event(self, event_data: Dict, sport: str, all_selections: list) -> Optional[StandardEvent]:
         """Parse event data from WebSocket message."""
@@ -225,6 +327,9 @@ class HajperRetriever(BrowserRetriever):
             event_id = str(event_data.get('id', ''))
             markets_dict = {}
 
+            # Get sport-specific market type mapping
+            market_type_map = self._get_sport_market_type_map(sport)
+
             # Build markets from selections
             for selection in all_selections:
                 selection_event_id = str(selection.get('eventId', ''))
@@ -240,15 +345,12 @@ class HajperRetriever(BrowserRetriever):
 
                 # Create market if not exists
                 if market_id not in markets_dict:
-                    # Infer market type from marketTypeId
-                    # 1 = 1x2, 8 = first goal, etc.
-                    market_type_map = {
-                        '1': '1x2',
-                        '8': 'other',  # first goal
-                        '103': 'over_under',
-                        '1781': 'spread',
-                    }
+                    # Infer market type from marketTypeId using sport-specific mapping
                     market_type = market_type_map.get(market_type_id, 'other')
+
+                    # Log unmapped market types for future enhancement
+                    if market_type == 'other' and market_type_id not in ['8', '18', '52', '60', '342', '2718']:
+                        logger.debug(f"[{self.provider_id}] {sport}: Unmapped marketTypeId: {market_type_id}")
 
                     markets_dict[market_id] = {
                         'type': market_type,
