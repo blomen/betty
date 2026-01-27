@@ -53,6 +53,20 @@ function buildSystemPrompt(context: BettingContext): string {
     `[*] Understand implied probabilities and margins`,
     `[*] Track bankroll and bet history`,
     ``,
+    `Available slash commands (users can type these):`,
+    `[*] /help - Show all available commands`,
+    `[*] /extractall - Run extraction on all providers`,
+    `[*] /extract [providers] - Run extraction on specific providers`,
+    `[*] /opportunities, /arb, /value - Show opportunities`,
+    `[*] /bets - Show pending/completed bets`,
+    `[*] /bankroll - Show balance breakdown`,
+    `[*] /providers - List all providers`,
+    `[*] /health - Check system health`,
+    `[*] /refresh - Refresh all data`,
+    `[*] /clear - Clear chat history`,
+    ``,
+    `When a user executes a command, respond helpfully about what's happening. For extraction commands, provide context about the process. Suggest relevant slash commands when appropriate.`,
+    ``,
     `Be concise, data-driven, and use tables when presenting odds data. Never use emojis.`
   );
 

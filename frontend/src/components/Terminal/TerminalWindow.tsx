@@ -105,25 +105,71 @@ export function TerminalWindow({
     setSelectedBetToSettle(null);
   };
 
-  // Command handlers
+  // Command handlers that send messages to LLM
   const handleRunExtraction = useCallback(async (providers?: string) => {
     const providerList = providers || 'unibet,leovegas,casumo';
-    await runExtraction(providerList, 'football', 5);
-    sendMessage(`Running extraction for ${providerList}...`);
+
+    // Send initial message to LLM
+    sendMessage(`Starting extraction for providers: ${providerList}`);
+
+    try {
+      // Start extraction (this triggers the background job)
+      await runExtraction(providerList, 'football', 5);
+
+      // Show immediate feedback
+      setTimeout(() => {
+        sendMessage(`Extraction started successfully. Monitoring progress...`);
+      }, 500);
+
+      // Poll for progress updates
+      let attempts = 0;
+      const maxAttempts = 60; // 60 seconds max
+      let lastEventCount = 0;
+      let lastOddsCount = 0;
+
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const extractionStatus = await api.getExtractionStatus();
+
+          // Show progress updates when counts change
+          if (extractionStatus.events !== lastEventCount || extractionStatus.odds !== lastOddsCount) {
+            lastEventCount = extractionStatus.events;
+            lastOddsCount = extractionStatus.odds;
+
+            if (extractionStatus.running) {
+              sendMessage(`Extraction in progress... Found ${extractionStatus.events} events, ${extractionStatus.odds} odds so far.`);
+            }
+          }
+
+          if (!extractionStatus.running) {
+            clearInterval(pollInterval);
+            sendMessage(`Extraction completed successfully!\n\n**Results:**\n- Events extracted: ${extractionStatus.events}\n- Odds collected: ${extractionStatus.odds}\n- Last run: ${extractionStatus.last_run || 'just now'}\n\nYou can now use /opportunities to see arbitrage and value bets.`);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            sendMessage(`Extraction is taking longer than expected. It may still be running in the background. Check /providers for status.`);
+          }
+        } catch (err) {
+          console.error('Error polling extraction status:', err);
+        }
+      }, 2000); // Poll every 2 seconds
+    } catch (err) {
+      sendMessage(`Failed to start extraction: ${err instanceof Error ? err.message : 'Unknown error'}. Make sure the backend is running.`);
+    }
   }, [runExtraction, sendMessage]);
 
   const handleShowProviders = useCallback(() => {
     const providerList = context.providers.map((p) => `- **${p.id}**: ${p.name} (${p.is_enabled ? 'enabled' : 'disabled'})`).join('\n');
-    sendMessage(`**Providers:**\n\n${providerList}`);
+    sendMessage(`Here are the current providers:\n\n${providerList}\n\nYou can run extraction with /extractall or /extract [providers]`);
   }, [context.providers, sendMessage]);
 
   const handleShowHealth = useCallback(async () => {
     try {
       const response = await fetch('/health');
       const health = await response.json();
-      sendMessage(`**System Health:** ${health.status}\nTime: ${health.time}`);
+      sendMessage(`System health check:\n\n**Status:** ${health.status}\n**Time:** ${health.time}\n\nAll systems operational!`);
     } catch (err) {
-      sendMessage(`**Error:** Failed to fetch health status`);
+      sendMessage(`Failed to check system health. The server may be down.`);
     }
   }, [sendMessage]);
 
@@ -145,7 +191,7 @@ export function TerminalWindow({
 
   const commands = useMemo(() => Object.values(commandRegistry), [commandRegistry]);
 
-  // Handle command execution
+  // Handle command execution with LLM context
   const handleCommand = useCallback(
     (command: string, args: string) => {
       const cmd = commandRegistry[command];
@@ -167,9 +213,25 @@ export function TerminalWindow({
         return;
       }
 
+      // UI commands that don't need LLM messages
+      const silentCommands = ['opportunities', 'arb', 'value', 'bets', 'bankroll', 'balance'];
+
       // Execute the command
       try {
         cmd.execute();
+
+        // Send feedback message for non-silent commands
+        if (!silentCommands.includes(command)) {
+          const messages: Record<string, string> = {
+            clear: 'Chat history cleared.',
+            refresh: 'Refreshing all data...',
+            extractall: 'Starting extraction on all providers...',
+          };
+          const message = messages[command];
+          if (message) {
+            sendMessage(message);
+          }
+        }
       } catch (err) {
         sendMessage(`Error executing /${command}: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
