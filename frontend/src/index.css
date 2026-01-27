@@ -15,7 +15,7 @@ html, body, #root {
 body {
   font-family: 'JetBrains Mono', monospace;
   background-color: #0a0a0a;
-  color: #00ff00;
+  color: #d4af37;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -36,12 +36,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #00ff00;
+  background: #d4af37;
 }
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(0, 255, 0, 0.3);
+  background-color: rgba(212, 175, 55, 0.3);
   color: #0a0a0a;
 }
 
@@ -57,14 +57,14 @@ pre {
 code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.9em;
-  color: #00ff00;
+  color: #d4af37;
 }
 
 :not(pre) > code {
-  background-color: rgba(0, 255, 0, 0.1);
+  background-color: rgba(212, 175, 55, 0.1);
   padding: 2px 6px;
   border-radius: 4px;
-  border: 1px solid rgba(0, 255, 0, 0.2);
+  border: 1px solid rgba(212, 175, 55, 0.2);
 }
 
 /* Markdown tables */
@@ -82,7 +82,7 @@ th, td {
 
 th {
   background-color: #1a1a1a;
-  color: #00ff00;
+  color: #d4af37;
   font-weight: 600;
 }
 
@@ -98,5 +98,5 @@ a {
 
 a:hover {
   text-decoration: underline;
-  color: #00ff00;
+  color: #d4af37;
 }
