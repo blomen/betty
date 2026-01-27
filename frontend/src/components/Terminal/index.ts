@@ -5,3 +5,8 @@ export { ChatMessage } from './ChatMessage';
 export { StreamingText } from './StreamingText';
 export { WelcomeMessage } from './WelcomeMessage';
 export { ProfileSelector } from './ProfileSelector';
+export { BalanceBreakdownModal } from './BalanceBreakdownModal';
+export { OpportunitiesOverlay } from './OpportunitiesOverlay';
+export { BetPlacementModal } from './BetPlacementModal';
+export { BetsPanel } from './BetsPanel';
+export { SettleBetModal } from './SettleBetModal';

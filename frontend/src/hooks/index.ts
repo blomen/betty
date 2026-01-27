@@ -9,3 +9,4 @@ export { useBets } from './useBets';
 export { useWebSocket } from './useWebSocket';
 export { useBonusMode } from './useBonusMode';
 export { useOpportunities } from './useOpportunities';
+export { useProfiles } from './useProfiles';

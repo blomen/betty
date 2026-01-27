@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 import { useEffect, useRef, useState } from 'react';
-import type { BettingContext, OpportunityWithEvent, Bet } from '@/types';
-=======
-import { useEffect, useRef } from 'react';
-import type { BettingContext, Profile, ProfileCreate, ProfileUpdate } from '@/types';
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
+import type { BettingContext, OpportunityWithEvent, Bet, Profile, ProfileCreate, ProfileUpdate } from '@/types';
 import { useChat } from '@/hooks/useChat';
 import { useBankroll } from '@/hooks/useBankroll';
 import { TerminalHeader } from './TerminalHeader';
@@ -115,27 +110,21 @@ export function TerminalWindow({
         isLoading={isContextLoading}
         onClear={clearMessages}
         onRefresh={onRefresh}
-<<<<<<< HEAD
         onShowBalanceBreakdown={() => setShowBalanceBreakdown(true)}
-=======
         profilesState={profilesState}
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
       />
 
       {/* Messages area - centered */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto">
           {messages.length === 0 ? (
-<<<<<<< HEAD
             <WelcomeMessage
               context={context}
               exposure={exposure}
+              activeProfile={profilesState.activeProfile}
               onShowOpportunities={() => setShowOpportunities(true)}
               onShowBets={() => setShowBets(true)}
             />
-=======
-            <WelcomeMessage context={context} activeProfile={profilesState.activeProfile} />
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
           ) : (
             <div className="pb-4">
               {messages.map((message) => (

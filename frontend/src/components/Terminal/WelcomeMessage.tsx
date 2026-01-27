@@ -1,10 +1,10 @@
-<<<<<<< HEAD
-import type { BettingContext, BankrollExposure } from '@/types';
+import type { BettingContext, BankrollExposure, Profile } from '@/types';
 import { useBets } from '@/hooks/useBets';
 
 interface WelcomeMessageProps {
   context: BettingContext;
   exposure: BankrollExposure;
+  activeProfile: Profile | null;
   onShowOpportunities: () => void;
   onShowBets: () => void;
 }
@@ -12,20 +12,11 @@ interface WelcomeMessageProps {
 export function WelcomeMessage({
   context,
   exposure,
+  activeProfile,
   onShowOpportunities,
   onShowBets,
 }: WelcomeMessageProps) {
   const { count: totalBetsCount } = useBets(undefined, 0);
-=======
-import type { BettingContext, Profile } from '@/types';
-
-interface WelcomeMessageProps {
-  context: BettingContext;
-  activeProfile: Profile | null;
-}
-
-export function WelcomeMessage({ context, activeProfile }: WelcomeMessageProps) {
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
   const suggestions = [
     'Show me arbitrage opportunities',
     'What value bets do you see?',

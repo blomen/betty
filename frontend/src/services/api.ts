@@ -207,27 +207,6 @@ export const api = {
     });
   },
 
-  // ============ Profile ============
-  async getProfile(): Promise<Profile> {
-    return fetchJson<Profile>('/profile');
-  },
-
-  async updateProfile(data: {
-    kelly_fraction?: number;
-    min_edge_pct?: number;
-    min_arb_pct?: number;
-    max_stake_pct?: number;
-    min_retention_pct?: number;
-    preferred_counterparts?: string[];
-    bonus_enabled?: boolean;
-  }): Promise<{ success: boolean }> {
-    return fetchJson('/profile', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  },
-
   // ============ Stake Calculator ============
   async calculateStake(odds: number, fairOdds: number): Promise<StakeCalculation> {
     return fetchJson('/calculate/stake', {

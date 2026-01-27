@@ -15,7 +15,7 @@ export function ProfileSelector({
   activeProfile,
   onActivate,
   onCreate,
-  onUpdate,
+  onUpdate: _onUpdate,
   onDelete,
 }: ProfileSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);

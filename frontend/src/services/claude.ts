@@ -22,18 +22,11 @@ function buildSystemPrompt(context: BettingContext): string {
     `- Use **bold** for emphasis, not emoji`,
     ``,
     `Current data summary:`,
-<<<<<<< HEAD
-    `- ${arbitrageOpps.length} arbitrage opportunities`,
-    `- ${valueOpps.length} value bets detected`,
-    `- ${context.events.length} events tracked`,
-    `- ${context.providers.length} providers connected`,
-    `- $${context.bankroll.total.toFixed(2)} total bankroll`,
-=======
-    `[+] ${context.arbitrage.length} arbitrage opportunities`,
-    `[+] ${context.valueBets.length} value bets detected`,
+    `[+] ${arbitrageOpps.length} arbitrage opportunities`,
+    `[+] ${valueOpps.length} value bets detected`,
     `[+] ${context.events.length} events tracked`,
     `[+] ${context.providers.length} providers connected`,
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
+    `[$] $${context.bankroll.total.toFixed(2)} total bankroll`,
   ];
 
   if (arbitrageOpps.length > 0) {
@@ -53,20 +46,12 @@ function buildSystemPrompt(context: BettingContext): string {
   parts.push(
     ``,
     `You can help users:`,
-<<<<<<< HEAD
-    `- Analyze current betting opportunities`,
-    `- Explain arbitrage and value betting strategies`,
-    `- Calculate optimal stake sizes using Kelly criterion`,
-    `- Compare odds across providers`,
-    `- Understand implied probabilities and margins`,
-    `- Track bankroll and bet history`,
-=======
     `[*] Analyze current betting opportunities`,
     `[*] Explain arbitrage and value betting strategies`,
     `[*] Calculate optimal stake sizes using Kelly criterion`,
     `[*] Compare odds across providers`,
     `[*] Understand implied probabilities and margins`,
->>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
+    `[*] Track bankroll and bet history`,
     ``,
     `Be concise, data-driven, and use tables when presenting odds data. Never use emojis.`
   );
