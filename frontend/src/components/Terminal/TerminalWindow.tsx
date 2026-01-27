@@ -1,21 +1,34 @@
 import { useEffect, useRef } from 'react';
-import type { BettingContext } from '@/types';
+import type { BettingContext, Profile, ProfileCreate, ProfileUpdate } from '@/types';
 import { useChat } from '@/hooks/useChat';
 import { TerminalHeader } from './TerminalHeader';
 import { TerminalInput } from './TerminalInput';
 import { ChatMessage } from './ChatMessage';
 import { WelcomeMessage } from './WelcomeMessage';
 
+interface ProfilesState {
+  profiles: Profile[];
+  activeProfile: Profile | null;
+  isLoading: boolean;
+  error: string | null;
+  createProfile: (data: ProfileCreate) => Promise<Profile>;
+  updateProfile: (id: number, data: ProfileUpdate) => Promise<Profile>;
+  activateProfile: (id: number) => Promise<Profile>;
+  deleteProfile: (id: number) => Promise<void>;
+}
+
 interface TerminalWindowProps {
   context: BettingContext;
   onRefresh: () => void;
   isContextLoading: boolean;
+  profilesState: ProfilesState;
 }
 
 export function TerminalWindow({
   context,
   onRefresh,
   isContextLoading,
+  profilesState,
 }: TerminalWindowProps) {
   const { messages, isLoading, sendMessage, stopGeneration, clearMessages } =
     useChat(context);
@@ -34,13 +47,14 @@ export function TerminalWindow({
         isLoading={isContextLoading}
         onClear={clearMessages}
         onRefresh={onRefresh}
+        profilesState={profilesState}
       />
 
       {/* Messages area - centered */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto">
           {messages.length === 0 ? (
-            <WelcomeMessage context={context} />
+            <WelcomeMessage context={context} activeProfile={profilesState.activeProfile} />
           ) : (
             <div className="pb-4">
               {messages.map((message) => (

@@ -4,3 +4,4 @@ export { TerminalInput } from './TerminalInput';
 export { ChatMessage } from './ChatMessage';
 export { StreamingText } from './StreamingText';
 export { WelcomeMessage } from './WelcomeMessage';
+export { ProfileSelector } from './ProfileSelector';

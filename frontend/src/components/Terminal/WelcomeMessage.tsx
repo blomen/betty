@@ -1,10 +1,11 @@
-import type { BettingContext } from '@/types';
+import type { BettingContext, Profile } from '@/types';
 
 interface WelcomeMessageProps {
   context: BettingContext;
+  activeProfile: Profile | null;
 }
 
-export function WelcomeMessage({ context }: WelcomeMessageProps) {
+export function WelcomeMessage({ context, activeProfile }: WelcomeMessageProps) {
   const suggestions = [
     'Show me arbitrage opportunities',
     'What value bets do you see?',
@@ -30,6 +31,14 @@ export function WelcomeMessage({ context }: WelcomeMessageProps) {
         <p className="text-terminal-muted mb-8">
           AI-powered betting analytics. Find arbitrage and value across bookmakers.
         </p>
+
+        {/* Active Profile */}
+        {activeProfile && (
+          <div className="mb-6 px-4 py-2 bg-terminal-surface border border-terminal-border rounded-lg inline-flex items-center gap-2">
+            <span className="text-terminal-accent">[@]</span>
+            <span className="text-terminal-text font-medium">{activeProfile.name}</span>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-4 mb-8">

@@ -72,3 +72,36 @@ export interface Provider {
   balance: number;
   active: boolean;
 }
+
+export interface Profile {
+  id: number;
+  name: string;
+  bankroll: number;
+  currency: string;
+  kelly_fraction: number;
+  min_edge_pct: number;
+  min_arb_pct: number;
+  max_stake_pct: number;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface ProfileCreate {
+  name: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
+}

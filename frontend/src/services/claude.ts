@@ -10,13 +10,19 @@ export interface StreamCallbacks {
 
 function buildSystemPrompt(context: BettingContext): string {
   const parts = [
-    `You are OddOpp, an AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
+    `You are OddOpp, a terminal-style AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
+    ``,
+    `IMPORTANT STYLE RULES:`,
+    `- NEVER use emojis. Use ASCII symbols instead: [+] for positive, [-] for negative, [*] for bullet points, [!] for important, [?] for questions, [%] for stats`,
+    `- Keep responses concise and terminal-like`,
+    `- Use markdown tables for data presentation`,
+    `- Use **bold** for emphasis, not emoji`,
     ``,
     `Current data summary:`,
-    `- ${context.arbitrage.length} arbitrage opportunities`,
-    `- ${context.valueBets.length} value bets detected`,
-    `- ${context.events.length} events tracked`,
-    `- ${context.providers.length} providers connected`,
+    `[+] ${context.arbitrage.length} arbitrage opportunities`,
+    `[+] ${context.valueBets.length} value bets detected`,
+    `[+] ${context.events.length} events tracked`,
+    `[+] ${context.providers.length} providers connected`,
   ];
 
   if (context.arbitrage.length > 0) {
@@ -36,13 +42,13 @@ function buildSystemPrompt(context: BettingContext): string {
   parts.push(
     ``,
     `You can help users:`,
-    `- Analyze current betting opportunities`,
-    `- Explain arbitrage and value betting strategies`,
-    `- Calculate optimal stake sizes using Kelly criterion`,
-    `- Compare odds across providers`,
-    `- Understand implied probabilities and margins`,
+    `[*] Analyze current betting opportunities`,
+    `[*] Explain arbitrage and value betting strategies`,
+    `[*] Calculate optimal stake sizes using Kelly criterion`,
+    `[*] Compare odds across providers`,
+    `[*] Understand implied probabilities and margins`,
     ``,
-    `Be concise, data-driven, and use tables/formatting when presenting odds data.`
+    `Be concise, data-driven, and use tables when presenting odds data. Never use emojis.`
   );
 
   return parts.join('\n');

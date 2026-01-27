@@ -167,21 +167,29 @@ class Bet(Base):
 class Profile(Base):
     """User settings for stake calculation and filtering."""
     __tablename__ = "profiles"
-    
+
     id = Column(Integer, primary_key=True)
     name = Column(String, default="default", unique=True)
-    
+
+    # Bankroll for this profile
+    bankroll = Column(Float, default=1000.0)
+    currency = Column(String, default="USD")
+
     # Kelly criterion
     kelly_fraction = Column(Float, default=0.25)    # Quarter Kelly
-    
+
     # Opportunity thresholds
     min_edge_pct = Column(Float, default=2.0)       # Min edge for value bets
     min_arb_pct = Column(Float, default=0.5)        # Min profit for arbs
-    
+
     # Risk limits
     max_stake_pct = Column(Float, default=5.0)      # Max % of bankroll per bet
-    
+
+    # Profile state
+    is_active = Column(Boolean, default=False)      # Currently selected profile
+
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ============ Opportunities ============
