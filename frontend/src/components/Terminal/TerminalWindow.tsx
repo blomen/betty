@@ -119,7 +119,8 @@ export function TerminalWindow({
 
   const handleShowHealth = useCallback(async () => {
     try {
-      const health = await api.getHealth();
+      const response = await fetch('/health');
+      const health = await response.json();
       sendMessage(`**System Health:** ${health.status}\nTime: ${health.time}`);
     } catch (err) {
       sendMessage(`**Error:** Failed to fetch health status`);
