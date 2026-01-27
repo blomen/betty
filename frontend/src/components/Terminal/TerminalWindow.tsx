@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import type { BettingContext, OpportunityWithEvent, Bet, Profile, ProfileCreate, ProfileUpdate } from '@/types';
 import { useChat } from '@/hooks/useChat';
 import { useBankroll } from '@/hooks/useBankroll';
+import { useExtraction } from '@/hooks/useExtraction';
 import { TerminalHeader } from './TerminalHeader';
 import { TerminalInput } from './TerminalInput';
 import { ChatMessage } from './ChatMessage';
@@ -11,6 +12,8 @@ import { OpportunitiesOverlay } from './OpportunitiesOverlay';
 import { BetPlacementModal } from './BetPlacementModal';
 import { BetsPanel } from './BetsPanel';
 import { SettleBetModal } from './SettleBetModal';
+import { createCommandRegistry, formatCommandHelp } from '@/utils/commands';
+import { api } from '@/services/api';
 
 interface ProfilesState {
   profiles: Profile[];
@@ -39,6 +42,7 @@ export function TerminalWindow({
   const { messages, isLoading, sendMessage, stopGeneration, clearMessages } =
     useChat(context);
   const { exposure } = useBankroll(30000);
+  const { runExtraction } = useExtraction();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Modal states
@@ -101,6 +105,77 @@ export function TerminalWindow({
     setSelectedBetToSettle(null);
   };
 
+  // Command handlers
+  const handleRunExtraction = useCallback(async (providers?: string) => {
+    const providerList = providers || 'unibet,leovegas,casumo';
+    await runExtraction(providerList, 'football', 5);
+    sendMessage(`Running extraction for ${providerList}...`);
+  }, [runExtraction, sendMessage]);
+
+  const handleShowProviders = useCallback(() => {
+    const providerList = context.providers.map((p) => `- **${p.id}**: ${p.name} (${p.is_enabled ? 'enabled' : 'disabled'})`).join('\n');
+    sendMessage(`**Providers:**\n\n${providerList}`);
+  }, [context.providers, sendMessage]);
+
+  const handleShowHealth = useCallback(async () => {
+    try {
+      const health = await api.getHealth();
+      sendMessage(`**System Health:** ${health.status}\nTime: ${health.time}`);
+    } catch (err) {
+      sendMessage(`**Error:** Failed to fetch health status`);
+    }
+  }, [sendMessage]);
+
+  // Create command registry
+  const commandRegistry = useMemo(
+    () =>
+      createCommandRegistry({
+        onShowOpportunities: () => setShowOpportunities(true),
+        onShowBets: () => setShowBets(true),
+        onShowBalanceBreakdown: () => setShowBalanceBreakdown(true),
+        onRefresh,
+        onClear: clearMessages,
+        onRunExtraction: handleRunExtraction,
+        onShowProviders: handleShowProviders,
+        onShowHealth: handleShowHealth,
+      }),
+    [onRefresh, clearMessages, handleRunExtraction, handleShowProviders, handleShowHealth]
+  );
+
+  const commands = useMemo(() => Object.values(commandRegistry), [commandRegistry]);
+
+  // Handle command execution
+  const handleCommand = useCallback(
+    (command: string, args: string) => {
+      const cmd = commandRegistry[command];
+      if (!cmd) {
+        sendMessage(`Unknown command: /${command}. Type /help for available commands.`);
+        return;
+      }
+
+      // Special handling for /help and /commands
+      if (command === 'help' || command === 'commands') {
+        const helpText = formatCommandHelp(commandRegistry);
+        sendMessage(helpText);
+        return;
+      }
+
+      // Special handling for /extract with args
+      if (command === 'extract' && args) {
+        handleRunExtraction(args);
+        return;
+      }
+
+      // Execute the command
+      try {
+        cmd.execute();
+      } catch (err) {
+        sendMessage(`Error executing /${command}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+    },
+    [commandRegistry, sendMessage, handleRunExtraction]
+  );
+
   return (
     <div className="flex flex-col h-full bg-terminal-bg">
       {/* Header */}
@@ -140,6 +215,8 @@ export function TerminalWindow({
       <div className="max-w-4xl mx-auto w-full">
         <TerminalInput
           onSend={sendMessage}
+          onCommand={handleCommand}
+          commands={commands}
           onStop={stopGeneration}
           isLoading={isLoading}
         />
