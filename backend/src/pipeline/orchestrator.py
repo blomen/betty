@@ -75,6 +75,28 @@ class ExtractionPipeline:
         else:
             self.circuit_breaker = None
 
+        # Initialize cache if enabled
+        if orchestrator_config.cache.enabled:
+            from .cache import ResponseCache
+            self.cache = ResponseCache(
+                default_ttl_seconds=orchestrator_config.cache.ttl_seconds,
+                max_entries=orchestrator_config.cache.max_entries,
+                per_provider=orchestrator_config.cache.cache_per_provider
+            )
+            logger.info("[Orchestrator] Response cache enabled")
+        else:
+            self.cache = None
+
+        # Initialize health checker if enabled
+        if orchestrator_config.health_check.enabled:
+            from .health import HealthChecker
+            self.health_checker = HealthChecker(
+                timeout_seconds=orchestrator_config.health_check.timeout_seconds
+            )
+            logger.info("[Orchestrator] Health checker enabled")
+        else:
+            self.health_checker = None
+
     def _ensure_providers(self):
         """Create provider records in DB if they don't exist."""
         # Get all providers from engine (returns dict of ProviderConfig dicts)
@@ -254,12 +276,26 @@ class ExtractionPipeline:
         kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
         if target_providers:
-            # Filter providers by circuit breaker status
+            # Filter providers by circuit breaker status and health checks
             available_providers = []
             for pid in target_providers:
+                # Check circuit breaker
                 if self.circuit_breaker and self.circuit_breaker.is_open(pid):
                     log_progress(f"[{pid}] SKIPPED: Circuit breaker open")
                     continue
+
+                # Health check if enabled
+                if (self.health_checker and
+                    self.orchestrator_config.health_check.check_before_extraction):
+                    extractor = self.engine.get_extractor(pid)
+                    health = await self.health_checker.check_provider(pid, extractor)
+
+                    if not health.healthy:
+                        log_progress(f"[{pid}] SKIPPED: Health check failed - {health.error}")
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_failure(pid)
+                        continue
+
                 available_providers.append(pid)
 
             if not available_providers:
@@ -369,6 +405,10 @@ class ExtractionPipeline:
                 }
                 for pid, status in statuses.items()
             }
+
+        # Add cache stats
+        if self.cache:
+            results["cache_stats"] = self.cache.get_stats()
 
         total_elapsed = time.time() - pipeline_start_time
         log_progress(f"Pipeline complete in {total_elapsed:.1f}s")

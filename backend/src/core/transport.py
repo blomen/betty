@@ -44,22 +44,56 @@ class HttpTransport(Transport):
         if not self.session:
             self.session = aiohttp.ClientSession(headers=self.headers)
 
-    async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def get(
+        self,
+        url: str,
+        params: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        cache: Optional[Any] = None,
+        provider_id: Optional[str] = None
+    ) -> Any:
+        """
+        GET request with optional caching.
+
+        Args:
+            url: Request URL
+            params: Optional query parameters
+            headers: Optional headers
+            cache: Optional ResponseCache instance
+            provider_id: Optional provider identifier for cache
+
+        Returns:
+            Response data (JSON or text)
+        """
+        # Check cache first
+        if cache:
+            cached = cache.get(url, params, provider_id)
+            if cached is not None:
+                logger.debug(f"Cache HIT: {url}")
+                return cached
+
         await self._ensure_session()
         # Merge headers if provided
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
-            
+
         async with self.session.get(url, params=params, headers=req_headers) as response:
             if response.status != 200:
                 logger.warning(f"HTTP GET {url} returned status {response.status}")
                 return None
-            
+
             # Auto-detect JSON vs Text
             if "application/json" in response.headers.get("Content-Type", ""):
-                return await response.json()
-            return await response.text()
+                data = await response.json()
+            else:
+                data = await response.text()
+
+            # Store in cache
+            if cache and data:
+                cache.set(url, data, params, provider_id)
+
+            return data
 
     async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_session()
