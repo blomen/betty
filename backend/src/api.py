@@ -110,6 +110,13 @@ class ProviderUpdate(BaseModel):
     is_enabled: Optional[bool] = None
     balance: Optional[float] = None
 
+class BulkBalanceUpdate(BaseModel):
+    balance: float
+    provider_ids: Optional[list[str]] = None  # If None, updates all enabled providers
+
+class BalanceAdjustment(BaseModel):
+    amount: float  # Can be positive (add) or negative (subtract)
+
 class BetCreate(BaseModel):
     event_id: Optional[str] = None
     provider_id: str
@@ -129,6 +136,19 @@ class ProfileUpdate(BaseModel):
     min_edge_pct: Optional[float] = None
     min_arb_pct: Optional[float] = None
     max_stake_pct: Optional[float] = None
+    min_retention_pct: Optional[float] = None
+    preferred_counterparts: Optional[list[str]] = None
+    bonus_enabled: Optional[bool] = None
+
+class BonusMatchRequest(BaseModel):
+    event_id: str
+    market: str
+    anchor_provider: str
+    anchor_outcome: str
+    anchor_odds: float
+    anchor_stake: float
+    is_free_bet: bool = False
+    counterpart_providers: Optional[list[str]] = None
 
 
 # ============ Dependency ============
@@ -190,15 +210,17 @@ async def create_provider(provider: ProviderCreate, db: Session = Depends(get_db
 
 @app.put("/api/providers/{provider_id}")
 async def update_provider(
-    provider_id: str, 
-    data: ProviderUpdate, 
+    provider_id: str,
+    data: ProviderUpdate,
     db: Session = Depends(get_db)
 ):
     """Update provider (balance, enabled, etc.)."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, f"Provider {provider_id} not found")
-    
+
+    old_balance = provider.balance
+
     if data.name is not None:
         provider.name = data.name
     if data.url is not None:
@@ -207,10 +229,16 @@ async def update_provider(
         provider.is_enabled = data.is_enabled
     if data.balance is not None:
         provider.balance = data.balance
-    
+
     provider.updated_at = datetime.utcnow()
     db.commit()
-    return {"success": True, "provider_id": provider_id}
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "old_balance": old_balance,
+        "new_balance": provider.balance,
+    }
 
 
 # ============ Bankroll ============
@@ -234,19 +262,130 @@ async def get_bankroll_stats(db: Session = Depends(get_db)):
     """Get bankroll statistics including bet history."""
     # Get all settled bets
     bets = db.query(Bet).filter(Bet.result != "pending").all()
-    
+
     total_staked = sum(b.stake for b in bets)
     total_profit = sum(b.profit for b in bets)
     win_count = len([b for b in bets if b.result == "won"])
     loss_count = len([b for b in bets if b.result == "lost"])
-    
+    void_count = len([b for b in bets if b.result == "void"])
+
     return {
         "total_bets": len(bets),
         "wins": win_count,
         "losses": loss_count,
+        "voids": void_count,
         "total_staked": round(total_staked, 2),
         "total_profit": round(total_profit, 2),
         "roi_pct": round(total_profit / total_staked * 100, 2) if total_staked > 0 else 0,
+        "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
+    }
+
+
+@app.post("/api/bankroll/set-all")
+async def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db)):
+    """Set balance for multiple providers at once."""
+    if data.provider_ids:
+        providers = db.query(Provider).filter(Provider.id.in_(data.provider_ids)).all()
+    else:
+        providers = db.query(Provider).filter(Provider.is_enabled == True).all()
+
+    if not providers:
+        raise HTTPException(404, "No providers found")
+
+    updated_count = 0
+    for provider in providers:
+        provider.balance = data.balance
+        provider.updated_at = datetime.utcnow()
+        updated_count += 1
+
+    db.commit()
+
+    total_balance = sum(p.balance for p in providers)
+
+    return {
+        "success": True,
+        "updated_count": updated_count,
+        "balance_per_provider": data.balance,
+        "total_balance": total_balance,
+    }
+
+
+@app.post("/api/bankroll/adjust/{provider_id}")
+async def adjust_balance(
+    provider_id: str,
+    data: BalanceAdjustment,
+    db: Session = Depends(get_db)
+):
+    """Add or subtract from provider balance."""
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    old_balance = provider.balance
+    provider.balance += data.amount
+    provider.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "old_balance": old_balance,
+        "adjustment": data.amount,
+        "new_balance": provider.balance,
+    }
+
+
+@app.post("/api/bankroll/reset-all")
+async def reset_all_balances(db: Session = Depends(get_db)):
+    """Reset all provider balances to 0."""
+    providers = db.query(Provider).all()
+
+    for provider in providers:
+        provider.balance = 0.0
+        provider.updated_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "success": True,
+        "reset_count": len(providers),
+        "message": "All balances reset to 0",
+    }
+
+
+@app.get("/api/bankroll/exposure")
+async def get_bankroll_exposure(db: Session = Depends(get_db)):
+    """Get bankroll with exposure breakdown per provider."""
+    providers = db.query(Provider).filter(Provider.is_enabled == True).all()
+
+    exposure_data = []
+    for provider in providers:
+        # Calculate pending bets for this provider
+        pending_bets = db.query(Bet).filter(
+            Bet.provider_id == provider.id,
+            Bet.result == "pending"
+        ).all()
+
+        pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
+        pending_count = len(pending_bets)
+
+        exposure_data.append({
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "total_balance": provider.balance,
+            "pending_exposure": pending_exposure,
+            "pending_bets_count": pending_count,
+            "available": provider.balance,  # Already deducted when bet placed
+        })
+
+    total_balance = sum(p.balance for p in providers)
+    total_pending = sum(e["pending_exposure"] for e in exposure_data)
+
+    return {
+        "total_balance": total_balance,
+        "total_pending": total_pending,
+        "total_available": total_balance,
+        "providers": exposure_data,
     }
 
 
@@ -317,18 +456,45 @@ async def get_event(event_id: str, db: Session = Depends(get_db)):
 async def list_opportunities(
     type: Optional[str] = None,
     active_only: bool = True,
+    provider1: Optional[str] = None,
+    provider2: Optional[str] = None,
+    providers: Optional[str] = None,
+    market: Optional[str] = None,
+    sport: Optional[str] = None,
+    min_value: Optional[float] = None,
     db: Session = Depends(get_db)
 ):
-    """Get current arb/value/bonus opportunities."""
+    """Get current arb/value/bonus opportunities with enhanced filtering."""
     query = db.query(Opportunity)
-    
+
     if type:
         query = query.filter(Opportunity.type == type)
     if active_only:
         query = query.filter(Opportunity.is_active == True)
-    
+    if provider1:
+        query = query.filter(Opportunity.provider1_id == provider1)
+    if provider2:
+        query = query.filter(Opportunity.provider2_id == provider2)
+    if providers:
+        provider_list = [p.strip() for p in providers.split(',')]
+        query = query.filter(
+            (Opportunity.provider1_id.in_(provider_list)) |
+            (Opportunity.provider2_id.in_(provider_list))
+        )
+    if market:
+        query = query.filter(Opportunity.market == market)
+    if sport:
+        # Join with Event table to filter by sport
+        query = query.join(Event, Event.id == Opportunity.event_id).filter(Event.sport == sport)
+    if min_value is not None:
+        # Filter by profit_pct for arb or edge_pct for value
+        query = query.filter(
+            (Opportunity.profit_pct >= min_value) |
+            (Opportunity.edge_pct >= min_value)
+        )
+
     opps = query.order_by(Opportunity.detected_at.desc()).limit(50).all()
-    
+
     return {
         "opportunities": [
             {
@@ -349,6 +515,76 @@ async def list_opportunities(
             for o in opps
         ],
         "count": len(opps),
+    }
+
+
+@app.post("/api/opportunities/bonus/match")
+async def match_bonus_bet(
+    data: BonusMatchRequest,
+    db: Session = Depends(get_db)
+):
+    """Find the best hedge for a bonus bet."""
+    # Query all odds for the event/market
+    query = db.query(Odds).filter(
+        Odds.event_id == data.event_id,
+        Odds.market == data.market,
+        Odds.outcome != data.anchor_outcome,
+        Odds.provider_id != data.anchor_provider
+    )
+
+    # Filter by counterpart providers if specified
+    if data.counterpart_providers:
+        query = query.filter(Odds.provider_id.in_(data.counterpart_providers))
+
+    opposing_odds = query.all()
+
+    if not opposing_odds:
+        raise HTTPException(
+            404,
+            "No opposing odds found for the specified event/market/outcome combination"
+        )
+
+    # Format for find_best_hedge
+    opposing_list = [
+        {
+            "provider": o.provider_id,
+            "outcome": o.outcome,
+            "odds": o.odds
+        }
+        for o in opposing_odds
+    ]
+
+    # Find best hedge
+    result = find_best_hedge(
+        event_id=data.event_id,
+        market=data.market,
+        anchor_provider=data.anchor_provider,
+        anchor_outcome=data.anchor_outcome,
+        anchor_odds=data.anchor_odds,
+        anchor_stake=data.anchor_stake,
+        opposing_odds_list=opposing_list,
+        is_free_bet=data.is_free_bet
+    )
+
+    if not result:
+        raise HTTPException(
+            404,
+            "No suitable hedge found (all hedges are same-provider or no valid options)"
+        )
+
+    return {
+        "event_id": result.event_id,
+        "market": result.market,
+        "anchor_provider": result.anchor_provider,
+        "anchor_outcome": result.anchor_outcome,
+        "anchor_odds": result.anchor_odds,
+        "anchor_stake": result.anchor_stake,
+        "hedge_provider": result.hedge_provider,
+        "hedge_outcome": result.hedge_outcome,
+        "hedge_odds": result.hedge_odds,
+        "hedge_stake": result.hedge_stake,
+        "qualifying_loss": result.qualifying_loss,
+        "retention_pct": result.retention_pct,
     }
 
 
@@ -398,7 +634,15 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
     provider = db.query(Provider).filter(Provider.id == bet.provider_id).first()
     if not provider:
         raise HTTPException(404, f"Provider {bet.provider_id} not found")
-    
+
+    # Validate sufficient balance (unless free bet)
+    if not bet.is_bonus:
+        if provider.balance < bet.stake:
+            raise HTTPException(
+                400,
+                f"Insufficient balance: {provider.balance:.2f} available, {bet.stake:.2f} required"
+            )
+
     b = Bet(
         event_id=bet.event_id,
         provider_id=bet.provider_id,
@@ -410,11 +654,11 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
         bonus_type=bet.bonus_type,
     )
     db.add(b)
-    
+
     # Deduct stake from provider balance (unless free bet)
     if not bet.is_bonus:
         provider.balance -= bet.stake
-    
+
     db.commit()
     return {"success": True, "bet_id": b.id}
 
@@ -445,31 +689,45 @@ async def settle_bet(bet_id: int, data: BetUpdate, db: Session = Depends(get_db)
 async def get_profile(db: Session = Depends(get_db)):
     """Get user profile settings."""
     profile = db.query(Profile).filter(Profile.name == "default").first()
-    
+
     if not profile:
         # Create default profile
         profile = Profile(name="default")
         db.add(profile)
         db.commit()
-    
+
+    # Parse preferred_counterparts JSON if exists
+    preferred_counterparts = []
+    if profile.preferred_counterparts:
+        import json
+        try:
+            preferred_counterparts = json.loads(profile.preferred_counterparts)
+        except:
+            pass
+
     return {
         "name": profile.name,
         "kelly_fraction": profile.kelly_fraction,
         "min_edge_pct": profile.min_edge_pct,
         "min_arb_pct": profile.min_arb_pct,
         "max_stake_pct": profile.max_stake_pct,
+        "min_retention_pct": profile.min_retention_pct,
+        "preferred_counterparts": preferred_counterparts,
+        "bonus_enabled": profile.bonus_enabled,
     }
 
 
 @app.put("/api/profile")
 async def update_profile(data: ProfileUpdate, db: Session = Depends(get_db)):
     """Update user profile settings."""
+    import json
+
     profile = db.query(Profile).filter(Profile.name == "default").first()
-    
+
     if not profile:
         profile = Profile(name="default")
         db.add(profile)
-    
+
     if data.kelly_fraction is not None:
         profile.kelly_fraction = data.kelly_fraction
     if data.min_edge_pct is not None:
@@ -478,7 +736,13 @@ async def update_profile(data: ProfileUpdate, db: Session = Depends(get_db)):
         profile.min_arb_pct = data.min_arb_pct
     if data.max_stake_pct is not None:
         profile.max_stake_pct = data.max_stake_pct
-    
+    if data.min_retention_pct is not None:
+        profile.min_retention_pct = data.min_retention_pct
+    if data.preferred_counterparts is not None:
+        profile.preferred_counterparts = json.dumps(data.preferred_counterparts)
+    if data.bonus_enabled is not None:
+        profile.bonus_enabled = data.bonus_enabled
+
     db.commit()
     return {"success": True}
 

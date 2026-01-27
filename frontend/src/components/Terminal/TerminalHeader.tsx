@@ -1,19 +1,26 @@
-import type { BettingContext } from '@/types';
+import type { BettingContext, BankrollExposure } from '@/types';
 
 interface TerminalHeaderProps {
   context: BettingContext;
+  exposure: BankrollExposure;
   isLoading: boolean;
   onClear: () => void;
   onRefresh: () => void;
+  onShowBalanceBreakdown: () => void;
 }
 
 export function TerminalHeader({
   context,
+  exposure,
   isLoading,
   onClear,
   onRefresh,
+  onShowBalanceBreakdown,
 }: TerminalHeaderProps) {
-  const hasData = context.arbitrage.length > 0 || context.valueBets.length > 0;
+  const arbCount = context.opportunities.filter(o => o.type === 'arbitrage').length;
+  const valueCount = context.opportunities.filter(o => o.type === 'value').length;
+  const hasData = context.opportunities.length > 0;
+  const hasPending = exposure.total_pending > 0;
 
   return (
     <div className="flex items-center justify-between px-4 py-3 bg-terminal-surface border-b border-terminal-border">
@@ -33,16 +40,31 @@ export function TerminalHeader({
             <span>{hasData ? 'connected' : 'no data'}</span>
           </div>
 
-          {context.arbitrage.length > 0 && (
+          {arbCount > 0 && (
             <span className="text-terminal-cyan">
-              {context.arbitrage.length} arb
+              {arbCount} arb
             </span>
           )}
 
-          {context.valueBets.length > 0 && (
+          {valueCount > 0 && (
             <span className="text-terminal-green">
-              {context.valueBets.length} value
+              {valueCount} value
             </span>
+          )}
+
+          {context.bankroll.total > 0 && (
+            <button
+              onClick={onShowBalanceBreakdown}
+              className="text-terminal-yellow hover:text-terminal-accent transition-colors"
+              title="Click for balance breakdown"
+            >
+              ${context.bankroll.total.toFixed(0)}
+              {hasPending && (
+                <span className="ml-1 text-xs text-yellow-500">
+                  ({exposure.total_pending.toFixed(0)} pending)
+                </span>
+              )}
+            </button>
           )}
         </div>
       </div>
