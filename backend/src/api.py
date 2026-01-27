@@ -131,6 +131,18 @@ class BetUpdate(BaseModel):
     result: str  # "won", "lost", "void"
     payout: float = 0.0
 
+class ProfileCreate(BaseModel):
+    name: str
+    bankroll: Optional[float] = 1000.0
+    currency: Optional[str] = "USD"
+    kelly_fraction: Optional[float] = 0.25
+    min_edge_pct: Optional[float] = 2.0
+    min_arb_pct: Optional[float] = 0.5
+    max_stake_pct: Optional[float] = 5.0
+    min_retention_pct: Optional[float] = 80.0
+    preferred_counterparts: Optional[list[str]] = None
+    bonus_enabled: Optional[bool] = True
+
 class ProfileUpdate(BaseModel):
     kelly_fraction: Optional[float] = None
     min_edge_pct: Optional[float] = None
