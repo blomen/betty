@@ -17,16 +17,48 @@ export function WelcomeMessage({
   onShowBets,
 }: WelcomeMessageProps) {
   const { count: totalBetsCount } = useBets(undefined, 0);
-  const suggestions = [
-    'Show me arbitrage opportunities',
-    'What value bets do you see?',
-    'Explain Kelly criterion staking',
-    'Compare odds for NBA games',
+  const commandCategories = [
+    {
+      title: 'Opportunities',
+      commands: [
+        'Show me all arbitrage opportunities',
+        'What are the best value bets right now?',
+        'Find bonus bet hedging opportunities',
+        'Show opportunities with >5% edge',
+      ],
+    },
+    {
+      title: 'Bankroll & Bets',
+      commands: [
+        'Show my current bankroll breakdown',
+        'What are my pending bets?',
+        'Calculate Kelly stake for 2.5 odds at 3% edge',
+        'Show bet history from last 7 days',
+      ],
+    },
+    {
+      title: 'Providers',
+      commands: [
+        'Which providers are healthy?',
+        'Show provider performance metrics',
+        'Check extraction status',
+        'Run extraction for football',
+      ],
+    },
+    {
+      title: 'Analytics',
+      commands: [
+        'Explain Kelly criterion staking',
+        'What is arbitrage betting?',
+        'How do you calculate implied probability?',
+        'Compare odds across all providers',
+      ],
+    },
   ];
 
   return (
     <div className="flex-1 flex items-center justify-center p-8">
-      <div className="max-w-lg text-center">
+      <div className="max-w-4xl text-center">
         {/* ASCII Logo */}
         <div className="flex justify-center mb-6">
           <div className="w-16 h-16 rounded-xl bg-terminal-accent/10 border border-terminal-accent/20
@@ -132,30 +164,37 @@ export function WelcomeMessage({
           </div>
         </div>
 
-        {/* Suggestions */}
-        <div className="space-y-2">
+        {/* Command Categories */}
+        <div className="space-y-4">
           <p className="text-xs text-terminal-muted uppercase tracking-wide mb-3">
-            Try asking
+            Available Commands
           </p>
-          <div className="flex flex-wrap justify-center gap-2">
-            {suggestions.map((suggestion) => (
-              <button
-                key={suggestion}
-                onClick={() => {
-                  // Find the input and set its value
-                  const input = document.querySelector('textarea');
-                  if (input) {
-                    input.value = suggestion;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.focus();
-                  }
-                }}
-                className="px-3 py-1.5 text-sm bg-terminal-surface border border-terminal-border
-                           rounded text-terminal-muted hover:text-terminal-text
-                           hover:border-terminal-accent transition-colors"
-              >
-                {suggestion}
-              </button>
+          <div className="grid grid-cols-2 gap-4 text-left">
+            {commandCategories.map((category) => (
+              <div key={category.title} className="bg-terminal-surface/50 border border-terminal-border rounded-lg p-3">
+                <h3 className="text-xs text-terminal-accent uppercase tracking-wide mb-2 font-bold">
+                  [{category.title}]
+                </h3>
+                <div className="space-y-1.5">
+                  {category.commands.map((command) => (
+                    <button
+                      key={command}
+                      onClick={() => {
+                        const input = document.querySelector('textarea');
+                        if (input) {
+                          input.value = command;
+                          input.dispatchEvent(new Event('input', { bubbles: true }));
+                          input.focus();
+                        }
+                      }}
+                      className="block w-full text-left px-2 py-1 text-xs font-mono text-terminal-muted
+                                 hover:text-terminal-accent hover:bg-terminal-accent/10 rounded transition-colors"
+                    >
+                      <span className="text-terminal-accent">[{'>'}]</span> {command}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         </div>
