@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background-color: #1E1E1E;
+  color: #E5E5E5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2D2D2D;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3D3D3D;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4D4D4D;
+}
+
+/* Selection styling */
+::selection {
+  background-color: rgba(255, 140, 66, 0.3);
+}
+
+/* Markdown code blocks */
+pre {
+  background-color: #2D2D2D !important;
+  border: 1px solid #3D3D3D;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+}
+
+:not(pre) > code {
+  background-color: rgba(61, 61, 61, 0.5);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Markdown tables */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+}
+
+th, td {
+  border: 1px solid #3D3D3D;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+th {
+  background-color: #2D2D2D;
+  color: #FF8C42;
+  font-weight: 600;
+}
+
+tr:nth-child(even) {
+  background-color: rgba(45, 45, 45, 0.5);
+}
+
+/* Links */
+a {
+  color: #4A9EFF;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

@@ -6,11 +6,18 @@ Connects to SQLite database and analysis modules.
 """
 
 import asyncio
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
+
+# Load .env from backend directory
+load_dotenv(Path(__file__).parent.parent / ".env")
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -897,6 +904,96 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# ============ Chat with Claude ============
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    system: Optional[str] = None
+    messages: list[ChatMessage]
+    stream: bool = True
+
+
+async def stream_anthropic_response(system: str, messages: list[dict]):
+    """Stream responses from Anthropic API."""
+    import httpx
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        yield 'data: {"content": "Error: ANTHROPIC_API_KEY not set"}\n\n'
+        yield 'data: [DONE]\n\n'
+        return
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 4096,
+                    "system": system,
+                    "messages": messages,
+                    "stream": True,
+                },
+                timeout=60.0,
+            )
+
+            if response.status_code != 200:
+                error_text = response.text
+                yield f'data: {{"content": "API error: {response.status_code}"}}\n\n'
+                yield 'data: [DONE]\n\n'
+                return
+
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        import json
+                        event = json.loads(data)
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                yield f'data: {{"content": {json.dumps(text)}}}\n\n'
+                    except:
+                        pass
+
+            yield 'data: [DONE]\n\n'
+
+        except Exception as e:
+            yield f'data: {{"content": "Error: {str(e)}"}}\n\n'
+            yield 'data: [DONE]\n\n'
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest):
+    """Chat endpoint with Claude API streaming."""
+    system = request.system or "You are a helpful betting analytics assistant."
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+
+    if request.stream:
+        return StreamingResponse(
+            stream_anthropic_response(system, messages),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+    else:
+        # Non-streaming response (simplified)
+        return {"content": "Streaming is recommended for chat."}
 
 
 # Entry point for development
