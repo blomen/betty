@@ -28,13 +28,13 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'pending':
-        return <Clock className="w-4 h-4 text-yellow-500" />;
+        return <Clock className="w-4 h-4 text-terminal-yellow" />;
       case 'won':
         return <CheckCircle className="w-4 h-4 text-[#00ff00]" />;
       case 'lost':
-        return <XCircle className="w-4 h-4 text-red-500" />;
+        return <XCircle className="w-4 h-4 text-terminal-red" />;
       case 'void':
-        return <AlertCircle className="w-4 h-4 text-gray-500" />;
+        return <AlertCircle className="w-4 h-4 text-terminal-muted" />;
       default:
         return null;
     }
@@ -43,20 +43,20 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'pending':
-        return 'text-yellow-500';
+        return 'text-terminal-yellow';
       case 'won':
         return 'text-[#00ff00]';
       case 'lost':
-        return 'text-red-500';
+        return 'text-terminal-red';
       case 'void':
-        return 'text-gray-500';
+        return 'text-terminal-muted';
       default:
         return 'text-[#00ff00]/60';
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/90 flex flex-col z-50">
+    <div className="fixed inset-0 bg-terminal-bg/95 flex flex-col z-50">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-[#00ff00]/30">
         <div className="flex items-center gap-3">
@@ -89,7 +89,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
           className={`px-3 py-1 rounded font-mono text-sm transition-colors ${
             statusFilter === 'pending'
               ? 'bg-yellow-500 text-black'
-              : 'border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10'
+              : 'border border-yellow-500/30 text-terminal-yellow hover:bg-yellow-500/10'
           }`}
         >
           Pending
@@ -108,8 +108,8 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
           onClick={() => setStatusFilter('lost')}
           className={`px-3 py-1 rounded font-mono text-sm transition-colors ${
             statusFilter === 'lost'
-              ? 'bg-red-500 text-black'
-              : 'border border-red-500/30 text-red-500 hover:bg-red-500/10'
+              ? 'bg-terminal-red/100 text-black'
+              : 'border border-red-500/30 text-terminal-red hover:bg-terminal-red/100/10'
           }`}
         >
           Lost
@@ -119,7 +119,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
           className={`px-3 py-1 rounded font-mono text-sm transition-colors ${
             statusFilter === 'void'
               ? 'bg-gray-500 text-black'
-              : 'border border-gray-500/30 text-gray-500 hover:bg-gray-500/10'
+              : 'border border-terminal-border/30 text-terminal-muted hover:bg-terminal-surface500/10'
           }`}
         >
           Void
@@ -134,7 +134,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
           </div>
         ) : error ? (
           <div className="text-center py-8">
-            <div className="text-red-500 font-mono">{error}</div>
+            <div className="text-terminal-red font-mono">{error}</div>
           </div>
         ) : bets.length === 0 ? (
           <div className="text-center py-8">
@@ -208,7 +208,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
                         <div className="text-xs text-[#00ff00]/60 font-mono">Profit</div>
                         <div
                           className={`font-mono ${
-                            bet.profit > 0 ? 'text-[#00ff00]' : 'text-red-500'
+                            bet.profit > 0 ? 'text-[#00ff00]' : 'text-terminal-red'
                           }`}
                         >
                           {bet.profit >= 0 ? '+' : ''}${bet.profit.toFixed(2)}
@@ -218,7 +218,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
                         <div className="text-xs text-[#00ff00]/60 font-mono">ROI</div>
                         <div
                           className={`font-mono ${
-                            bet.roi_pct > 0 ? 'text-[#00ff00]' : 'text-red-500'
+                            bet.roi_pct > 0 ? 'text-[#00ff00]' : 'text-terminal-red'
                           }`}
                         >
                           {bet.roi_pct >= 0 ? '+' : ''}

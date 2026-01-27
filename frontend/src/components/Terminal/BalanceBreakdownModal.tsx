@@ -46,8 +46,8 @@ export function BalanceBreakdownModal({ exposure, isOpen, onClose }: BalanceBrea
               </div>
             </div>
             <div>
-              <div className="text-xs text-yellow-500/60 font-mono mb-1">PENDING</div>
-              <div className="text-xl font-mono text-yellow-500">
+              <div className="text-xs text-terminal-yellow/60 font-mono mb-1">PENDING</div>
+              <div className="text-xl font-mono text-terminal-yellow">
                 ${exposure.total_pending.toFixed(2)}
               </div>
             </div>
@@ -75,7 +75,7 @@ export function BalanceBreakdownModal({ exposure, isOpen, onClose }: BalanceBrea
                   <div className="flex items-center gap-2">
                     <h3 className="font-mono text-[#00ff00]">{provider.provider_name}</h3>
                     {isLowBalance && (
-                      <AlertTriangle className="w-4 h-4 text-yellow-500" />
+                      <AlertTriangle className="w-4 h-4 text-terminal-yellow" />
                     )}
                   </div>
                   <div className="text-right">
@@ -92,10 +92,10 @@ export function BalanceBreakdownModal({ exposure, isOpen, onClose }: BalanceBrea
                   </div>
                   {hasPending && (
                     <div>
-                      <div className="text-xs text-yellow-500/60 font-mono">
+                      <div className="text-xs text-terminal-yellow/60 font-mono">
                         Pending ({provider.pending_bets_count} bets)
                       </div>
-                      <div className="font-mono text-yellow-500">
+                      <div className="font-mono text-terminal-yellow">
                         ${provider.pending_exposure.toFixed(2)}
                       </div>
                     </div>

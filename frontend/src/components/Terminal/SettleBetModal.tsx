@@ -143,8 +143,8 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
                 onClick={() => setResult('lost')}
                 className={`py-2 px-3 rounded font-mono text-sm flex items-center justify-center gap-2 transition-colors ${
                   result === 'lost'
-                    ? 'bg-red-500 text-black'
-                    : 'border border-red-500/30 text-red-500 hover:bg-red-500/10'
+                    ? 'bg-terminal-red/100 text-black'
+                    : 'border border-red-500/30 text-terminal-red hover:bg-terminal-red/100/10'
                 }`}
               >
                 <XCircle className="w-4 h-4" />
@@ -155,7 +155,7 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
                 className={`py-2 px-3 rounded font-mono text-sm flex items-center justify-center gap-2 transition-colors ${
                   result === 'void'
                     ? 'bg-gray-500 text-black'
-                    : 'border border-gray-500/30 text-gray-500 hover:bg-gray-500/10'
+                    : 'border border-terminal-border/30 text-terminal-muted hover:bg-terminal-surface500/10'
                 }`}
               >
                 <AlertCircle className="w-4 h-4" />
@@ -176,7 +176,7 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
                 onChange={(e) => setPayout(parseFloat(e.target.value) || 0)}
                 step="0.01"
                 min="0"
-                className="w-full bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono focus:outline-none focus:border-[#00ff00]"
+                className="w-full bg-terminal-bg border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono focus:outline-none focus:border-[#00ff00]"
               />
             </div>
           )}
@@ -188,7 +188,7 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
                 <div>
                   <div className="text-xs text-[#00ff00]/60 font-mono">Profit</div>
                   <div
-                    className={`font-mono text-lg ${profit >= 0 ? 'text-[#00ff00]' : 'text-red-500'}`}
+                    className={`font-mono text-lg ${profit >= 0 ? 'text-[#00ff00]' : 'text-terminal-red'}`}
                   >
                     {profit >= 0 ? '+' : ''}${profit.toFixed(2)}
                   </div>
@@ -196,7 +196,7 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
                 <div>
                   <div className="text-xs text-[#00ff00]/60 font-mono">ROI</div>
                   <div
-                    className={`font-mono text-lg ${roiPct >= 0 ? 'text-[#00ff00]' : 'text-red-500'}`}
+                    className={`font-mono text-lg ${roiPct >= 0 ? 'text-[#00ff00]' : 'text-terminal-red'}`}
                   >
                     {roiPct >= 0 ? '+' : ''}
                     {roiPct.toFixed(1)}%
@@ -208,9 +208,9 @@ export function SettleBetModal({ bet, isOpen, onClose }: SettleBetModalProps) {
 
           {/* Error Message */}
           {error && (
-            <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded">
-              <AlertCircle className="w-4 h-4 text-red-500" />
-              <span className="text-sm text-red-500 font-mono">{error}</span>
+            <div className="flex items-center gap-2 p-3 bg-terminal-red/100/10 border border-red-500/30 rounded">
+              <AlertCircle className="w-4 h-4 text-terminal-red" />
+              <span className="text-sm text-terminal-red font-mono">{error}</span>
             </div>
           )}
         </div>

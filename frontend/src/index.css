@@ -14,8 +14,8 @@ html, body, #root {
 
 body {
   font-family: 'JetBrains Mono', monospace;
-  background-color: #1E1E1E;
-  color: #E5E5E5;
+  background-color: #0a0a0a;
+  color: #00ff00;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -27,27 +27,28 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #2D2D2D;
+  background: #1a1a1a;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3D3D3D;
+  background: #2a2a2a;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4D4D4D;
+  background: #00ff00;
 }
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(255, 140, 66, 0.3);
+  background-color: rgba(0, 255, 0, 0.3);
+  color: #0a0a0a;
 }
 
 /* Markdown code blocks */
 pre {
-  background-color: #2D2D2D !important;
-  border: 1px solid #3D3D3D;
+  background-color: #1a1a1a !important;
+  border: 1px solid #2a2a2a;
   border-radius: 6px;
   padding: 12px;
   overflow-x: auto;
@@ -56,12 +57,14 @@ pre {
 code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.9em;
+  color: #00ff00;
 }
 
 :not(pre) > code {
-  background-color: rgba(61, 61, 61, 0.5);
+  background-color: rgba(0, 255, 0, 0.1);
   padding: 2px 6px;
   border-radius: 4px;
+  border: 1px solid rgba(0, 255, 0, 0.2);
 }
 
 /* Markdown tables */
@@ -72,27 +75,28 @@ table {
 }
 
 th, td {
-  border: 1px solid #3D3D3D;
+  border: 1px solid #2a2a2a;
   padding: 8px 12px;
   text-align: left;
 }
 
 th {
-  background-color: #2D2D2D;
-  color: #FF8C42;
+  background-color: #1a1a1a;
+  color: #00ff00;
   font-weight: 600;
 }
 
 tr:nth-child(even) {
-  background-color: rgba(45, 45, 45, 0.5);
+  background-color: rgba(26, 26, 26, 0.5);
 }
 
 /* Links */
 a {
-  color: #4A9EFF;
+  color: #00aaff;
   text-decoration: none;
 }
 
 a:hover {
   text-decoration: underline;
+  color: #00ff00;
 }

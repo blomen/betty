@@ -52,42 +52,42 @@ export function OpportunitiesOverlay({
   const getTypeBadgeColor = (type: string) => {
     switch (type) {
       case 'arbitrage':
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+        return 'bg-terminal-cyan/20 text-terminal-cyan border-terminal-cyan/30';
       case 'value':
-        return 'bg-[#00ff00]/20 text-[#00ff00] border-[#00ff00]/30';
+        return 'bg-terminal-green/20 text-terminal-green border-terminal-green/30';
       case 'bonus':
-        return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
+        return 'bg-terminal-purple/20 text-terminal-purple border-terminal-purple/30';
       default:
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+        return 'bg-terminal-muted/20 text-terminal-muted border-terminal-muted/30';
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/90 flex flex-col z-50">
+    <div className="fixed inset-0 bg-terminal-bg/95 flex flex-col z-50">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-[#00ff00]/30">
+      <div className="flex items-center justify-between p-4 border-b border-terminal-accent/30">
         <div className="flex items-center gap-3">
-          <h2 className="text-xl font-mono text-[#00ff00]">Opportunities</h2>
-          <span className="text-sm font-mono text-[#00ff00]/60">({count} found)</span>
+          <h2 className="text-xl font-mono text-terminal-accent">Opportunities</h2>
+          <span className="text-sm font-mono text-terminal-muted">({count} found)</span>
         </div>
         <button
           onClick={onClose}
-          className="p-2 hover:bg-[#00ff00]/10 rounded transition-colors"
+          className="p-2 hover:bg-terminal-accent/10 rounded transition-colors"
           aria-label="Close"
         >
-          <X className="w-5 h-5 text-[#00ff00]" />
+          <X className="w-5 h-5 text-terminal-accent" />
         </button>
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 p-4 border-b border-[#00ff00]/20 bg-[#0a0a0a]">
-        <Filter className="w-4 h-4 text-[#00ff00]/60" />
+      <div className="flex items-center gap-3 p-4 border-b border-terminal-accent/20 bg-terminal-bg">
+        <Filter className="w-4 h-4 text-terminal-muted" />
 
         {/* Type Filter */}
         <select
           value={typeFilter || ''}
           onChange={(e) => setTypeFilter(e.target.value as any || undefined)}
-          className="bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-1 rounded font-mono text-sm focus:outline-none focus:border-[#00ff00]"
+          className="bg-terminal-bg border border-terminal-accent/30 text-terminal-accent px-3 py-1 rounded font-mono text-sm focus:outline-none focus:border-terminal-accent"
         >
           <option value="">All Types</option>
           <option value="arbitrage">Arbitrage</option>
@@ -101,7 +101,7 @@ export function OpportunitiesOverlay({
           placeholder="Sport (e.g., football)"
           value={sportFilter}
           onChange={(e) => setSportFilter(e.target.value)}
-          className="bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-1 rounded font-mono text-sm focus:outline-none focus:border-[#00ff00] placeholder-[#00ff00]/40"
+          className="bg-terminal-bg border border-terminal-accent/30 text-terminal-accent px-3 py-1 rounded font-mono text-sm focus:outline-none focus:border-terminal-accent placeholder-terminal-muted/50"
         />
 
         {/* Min Value Filter */}
@@ -110,7 +110,7 @@ export function OpportunitiesOverlay({
           placeholder="Min %"
           value={minValueFilter || ''}
           onChange={(e) => setMinValueFilter(parseFloat(e.target.value) || 0)}
-          className="bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-1 rounded font-mono text-sm w-24 focus:outline-none focus:border-[#00ff00] placeholder-[#00ff00]/40"
+          className="bg-terminal-bg border border-terminal-accent/30 text-terminal-accent px-3 py-1 rounded font-mono text-sm w-24 focus:outline-none focus:border-terminal-accent placeholder-terminal-muted/50"
         />
       </div>
 
@@ -118,7 +118,7 @@ export function OpportunitiesOverlay({
       <div className="flex-1 overflow-y-auto p-4">
         {isLoading ? (
           <div className="text-center py-8">
-            <div className="text-[#00ff00]/60 font-mono">Loading opportunities...</div>
+            <div className="text-terminal-muted font-mono">Loading opportunities...</div>
           </div>
         ) : error ? (
           <div className="text-center py-8">
@@ -126,7 +126,7 @@ export function OpportunitiesOverlay({
           </div>
         ) : opportunities.length === 0 ? (
           <div className="text-center py-8">
-            <div className="text-[#00ff00]/60 font-mono">No opportunities found</div>
+            <div className="text-terminal-muted font-mono">No opportunities found</div>
           </div>
         ) : (
           <div className="grid gap-3 max-w-4xl mx-auto">
@@ -139,7 +139,7 @@ export function OpportunitiesOverlay({
                 <button
                   key={opp.id}
                   onClick={() => onSelectOpportunity(opp)}
-                  className="border border-[#00ff00]/30 rounded p-4 hover:border-[#00ff00] hover:bg-[#00ff00]/5 transition-all text-left"
+                  className="border border-terminal-accent/30 rounded p-4 hover:border-terminal-accent hover:bg-terminal-accent/5 transition-all text-left"
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
@@ -152,7 +152,7 @@ export function OpportunitiesOverlay({
                         {opp.type.toUpperCase()}
                       </span>
                       {value !== null && value !== undefined && (
-                        <span className="text-lg font-mono text-[#00ff00]">
+                        <span className="text-lg font-mono text-terminal-accent">
                           {valueLabel}: {value.toFixed(2)}%
                         </span>
                       )}
@@ -161,10 +161,10 @@ export function OpportunitiesOverlay({
 
                   {opp.event && (
                     <div className="mb-3">
-                      <div className="text-sm font-mono text-[#00ff00]">
+                      <div className="text-sm font-mono text-terminal-accent">
                         {opp.event.home_team} vs {opp.event.away_team}
                       </div>
-                      <div className="text-xs text-[#00ff00]/60 font-mono mt-1">
+                      <div className="text-xs text-terminal-muted font-mono mt-1">
                         {opp.event.sport} - {opp.event.league}
                       </div>
                     </div>
@@ -172,15 +172,15 @@ export function OpportunitiesOverlay({
 
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
-                      <div className="text-xs text-[#00ff00]/60 font-mono">Provider 1</div>
-                      <div className="font-mono text-[#00ff00]">
+                      <div className="text-xs text-terminal-muted font-mono">Provider 1</div>
+                      <div className="font-mono text-terminal-accent">
                         {opp.provider1}: {opp.outcome1} @ {opp.odds1.toFixed(2)}
                       </div>
                     </div>
                     {opp.provider2 && (
                       <div>
-                        <div className="text-xs text-[#00ff00]/60 font-mono">Provider 2</div>
-                        <div className="font-mono text-[#00ff00]">
+                        <div className="text-xs text-terminal-muted font-mono">Provider 2</div>
+                        <div className="font-mono text-terminal-accent">
                           {opp.provider2}: {opp.outcome2} @ {opp.odds2?.toFixed(2)}
                         </div>
                       </div>
@@ -194,8 +194,8 @@ export function OpportunitiesOverlay({
       </div>
 
       {/* Footer */}
-      <div className="p-4 border-t border-[#00ff00]/30 text-center bg-[#0a0a0a]">
-        <p className="text-xs text-[#00ff00]/60 font-mono">
+      <div className="p-4 border-t border-terminal-accent/30 text-center bg-terminal-bg">
+        <p className="text-xs text-terminal-muted font-mono">
           ESC to close | Ctrl+O to reopen | Auto-refresh every 10s
         </p>
       </div>

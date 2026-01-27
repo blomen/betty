@@ -142,7 +142,7 @@ export function BetPlacementModal({
             <select
               value={selectedProvider}
               onChange={(e) => setSelectedProvider(e.target.value)}
-              className="w-full bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono focus:outline-none focus:border-[#00ff00]"
+              className="w-full bg-terminal-bg border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono focus:outline-none focus:border-[#00ff00]"
             >
               <option value={opportunity.provider1}>{opportunity.provider1}</option>
               {opportunity.provider2 && (
@@ -155,13 +155,13 @@ export function BetPlacementModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-[#00ff00]/60 font-mono mb-1">Outcome</label>
-              <div className="bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono">
+              <div className="bg-terminal-bg border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono">
                 {selectedOutcome}
               </div>
             </div>
             <div>
               <label className="block text-xs text-[#00ff00]/60 font-mono mb-1">Odds</label>
-              <div className="bg-black border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono">
+              <div className="bg-terminal-bg border border-[#00ff00]/30 text-[#00ff00] px-3 py-2 rounded font-mono">
                 {selectedOdds.toFixed(2)}
               </div>
             </div>
@@ -183,14 +183,14 @@ export function BetPlacementModal({
               onChange={(e) => setStake(parseFloat(e.target.value) || 0)}
               step="0.01"
               min="0"
-              className={`w-full bg-black border px-3 py-2 rounded font-mono focus:outline-none ${
+              className={`w-full bg-terminal-bg border px-3 py-2 rounded font-mono focus:outline-none ${
                 hasInsufficientBalance
-                  ? 'border-red-500 text-red-500'
+                  ? 'border-red-500 text-terminal-red'
                   : 'border-[#00ff00]/30 text-[#00ff00] focus:border-[#00ff00]'
               }`}
             />
             {hasInsufficientBalance && (
-              <div className="flex items-center gap-2 mt-1 text-xs text-red-500 font-mono">
+              <div className="flex items-center gap-2 mt-1 text-xs text-terminal-red font-mono">
                 <AlertCircle className="w-3 h-3" />
                 Insufficient balance
               </div>
@@ -226,9 +226,9 @@ export function BetPlacementModal({
 
           {/* Error Message */}
           {error && (
-            <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded">
-              <AlertCircle className="w-4 h-4 text-red-500" />
-              <span className="text-sm text-red-500 font-mono">{error}</span>
+            <div className="flex items-center gap-2 p-3 bg-terminal-red/100/10 border border-red-500/30 rounded">
+              <AlertCircle className="w-4 h-4 text-terminal-red" />
+              <span className="text-sm text-terminal-red font-mono">{error}</span>
             </div>
           )}
         </div>
