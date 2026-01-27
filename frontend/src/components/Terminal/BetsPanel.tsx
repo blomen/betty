@@ -241,7 +241,7 @@ export function BetsPanel({ isOpen, onClose, onSettleBet }: BetsPanelProps) {
       {/* Footer */}
       <div className="p-4 border-t border-[#00ff00]/30 text-center bg-[#0a0a0a]">
         <p className="text-xs text-[#00ff00]/60 font-mono">
-          Press ESC to close | Auto-refresh every 10s
+          ESC to close | Ctrl+B to reopen | Auto-refresh every 10s
         </p>
       </div>
     </div>

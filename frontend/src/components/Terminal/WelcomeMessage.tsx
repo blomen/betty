@@ -88,7 +88,7 @@ export function WelcomeMessage({
                          rounded text-terminal-accent hover:bg-terminal-accent/20
                          transition-colors font-mono text-sm"
             >
-              View Opportunities <span className="text-xs opacity-60">(Cmd+O)</span>
+              View Opportunities <span className="text-xs opacity-60">(Ctrl+O)</span>
             </button>
             <button
               onClick={onShowBets}
@@ -96,7 +96,7 @@ export function WelcomeMessage({
                          rounded text-terminal-text hover:border-terminal-accent
                          transition-colors font-mono text-sm"
             >
-              Manage Bets <span className="text-xs opacity-60">({totalBetsCount}) (Cmd+B)</span>
+              Manage Bets <span className="text-xs opacity-60">({totalBetsCount}) (Ctrl+B)</span>
             </button>
           </div>
         </div>
@@ -108,13 +108,13 @@ export function WelcomeMessage({
           </p>
           <div className="grid grid-cols-2 gap-2 text-xs font-mono">
             <div className="text-terminal-muted">
-              <span className="text-terminal-accent">Cmd+O</span> - Opportunities
+              <span className="text-terminal-accent">Ctrl+O</span> - Opportunities
             </div>
             <div className="text-terminal-muted">
-              <span className="text-terminal-accent">Cmd+B</span> - Bets
+              <span className="text-terminal-accent">Ctrl+B</span> - Bets
             </div>
             <div className="text-terminal-muted">
-              <span className="text-terminal-accent">Cmd+L</span> - Clear Chat
+              <span className="text-terminal-accent">Ctrl+L</span> - Clear Chat
             </div>
             <div className="text-terminal-muted">
               <span className="text-terminal-accent">F5</span> - Refresh

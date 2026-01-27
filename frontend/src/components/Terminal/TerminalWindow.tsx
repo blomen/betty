@@ -45,18 +45,18 @@ export function TerminalWindow({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd+O or Ctrl+O: Open opportunities
-      if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+      // Ctrl+O: Open opportunities
+      if (e.ctrlKey && e.key === 'o' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowOpportunities(true);
       }
-      // Cmd+B or Ctrl+B: Open bets
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+      // Ctrl+B: Open bets
+      if (e.ctrlKey && e.key === 'b' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowBets(true);
       }
-      // Cmd+L or Ctrl+L: Clear chat
-      if ((e.metaKey || e.ctrlKey) && e.key === 'l') {
+      // Ctrl+L: Clear chat
+      if (e.ctrlKey && e.key === 'l' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         clearMessages();
       }
