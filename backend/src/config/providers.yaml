@@ -340,7 +340,7 @@ providers:
 
     # Breadth controls
     max_leagues: 999  # Number of leagues to extract (999 = all available leagues)
-    concurrent_leagues: 5  # Number of parallel league extractions
+    concurrent_leagues: 8  # Number of parallel league extractions (optimized from 5)
 
     supported_sports:
       - football

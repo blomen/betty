@@ -82,7 +82,7 @@ class HajperRetriever(BrowserRetriever):
         # The page height stabilizes at ~720px regardless of scrolling
         # Keeping wait time for initial render but removing scrolling logic
 
-        await page.wait_for_timeout(2000)  # Wait for initial render
+        await page.wait_for_timeout(1000)  # Wait for initial render (optimized)
 
         # Count leagues before extraction for debugging
         initial_count = await page.evaluate('''() => {
@@ -128,12 +128,12 @@ class HajperRetriever(BrowserRetriever):
         # Navigate to league page
         full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
         try:
-            # Add Python-level timeout wrapper to prevent hangs
+            # Optimized: Use "domcontentloaded" for balance between speed and completeness
             await asyncio.wait_for(
-                page.goto(full_url, wait_until="networkidle", timeout=30000),
-                timeout=45.0  # Python-level timeout (45s)
+                page.goto(full_url, wait_until="domcontentloaded", timeout=20000),
+                timeout=25.0  # Python-level timeout (25s) - reduced from 45s
             )
-            await page.wait_for_timeout(2000)  # Allow WebSocket messages
+            await page.wait_for_timeout(1800)  # Allow WebSocket messages (balanced: 1.8s)
         except asyncio.TimeoutError:
             logger.warning(f"[{self.provider_id}] Timeout loading {league_url}")
             return []
@@ -346,6 +346,10 @@ class HajperRetriever(BrowserRetriever):
             if not home_team or not away_team:
                 return None
 
+            # Normalize team names
+            home_team = normalize_team_name(home_team)
+            away_team = normalize_team_name(away_team)
+
             # Parse start time
             start_time_str = event_data.get('startingOn')
             start_time = None
@@ -454,7 +458,7 @@ class HajperRetriever(BrowserRetriever):
             sport_url = f"{self.site_url}{sport_url_path}"
             logger.info(f"[{self.provider_id}] Loading main page: {sport_url}")
 
-            await page.goto(sport_url, wait_until='networkidle', timeout=90000)
+            await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)  # Optimized: domcontentloaded
 
             # Handle cookie consent
             try:
@@ -464,7 +468,7 @@ class HajperRetriever(BrowserRetriever):
             except:
                 pass
 
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(1500)  # Optimized from 3s
 
             # Extract league links from DOM
             league_links = await self._extract_league_links(page)
@@ -477,8 +481,8 @@ class HajperRetriever(BrowserRetriever):
             leagues_to_process = league_links[:self.max_leagues]
             logger.info(f"[{self.provider_id}] Processing {len(leagues_to_process)} of {len(league_links)} leagues")
 
-            # Step 2: Navigate to leagues in parallel
-            concurrent_limit = self.config.get('concurrent_leagues', 5)
+            # Step 2: Navigate to leagues in parallel (optimized concurrency)
+            concurrent_limit = self.config.get('concurrent_leagues', 8)  # Increased from 5 to 8
             sem = asyncio.Semaphore(concurrent_limit)
 
             async def extract_league_with_limit(league_index: int, league: dict) -> tuple:

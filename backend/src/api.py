@@ -523,96 +523,35 @@ async def calculate_stake(
 async def run_extraction_task(providers: list[str], sport: str, max_groups: int):
     """Background task to run extraction."""
     global extraction_state
-    
-    from .extractors.kambi import get_extractor, KAMBI_PROVIDERS
-    import re
-    
+
+    from .pipeline.orchestrator import ExtractionPipeline
+
     extraction_state["running"] = True
     extraction_state["events"] = 0
     extraction_state["odds"] = 0
-    
-    db = get_session()
-    
+
     try:
-        for provider_id in providers:
-            if provider_id not in KAMBI_PROVIDERS:
-                continue
-            
-            # Ensure provider exists
-            if not db.query(Provider).filter(Provider.id == provider_id).first():
-                config = KAMBI_PROVIDERS[provider_id]
-                db.add(Provider(id=provider_id, name=provider_id.title(), url=config["domain"], balance=0))
-                db.commit()
-            
-            # Extract
-            extractor = get_extractor(provider_id)
-            events = await extractor.extract(sport, max_groups=max_groups)
-            
-            # Store events
-            for kambi_event in events:
-                # Generate canonical ID
-                home = re.sub(r'[^\w\s]', '', kambi_event.home_team.lower().strip())
-                away = re.sub(r'[^\w\s]', '', kambi_event.away_team.lower().strip())
-                try:
-                    date_str = datetime.fromisoformat(kambi_event.start_time.replace('Z', '+00:00')).strftime('%Y%m%d')
-                except:
-                    date_str = 'unknown'
-                canonical_id = f"{kambi_event.sport}:{home}:{away}:{date_str}"
-                
-                # Upsert event
-                event = db.query(Event).filter(Event.id == canonical_id).first()
-                if not event:
-                    try:
-                        start_dt = datetime.fromisoformat(kambi_event.start_time.replace('Z', '+00:00'))
-                    except:
-                        start_dt = None
-                    event = Event(
-                        id=canonical_id,
-                        sport=kambi_event.sport,
-                        league=kambi_event.league,
-                        home_team=kambi_event.home_team,
-                        away_team=kambi_event.away_team,
-                        start_time=start_dt,
-                    )
-                    db.add(event)
-                    extraction_state["events"] += 1
-                
-                # Store odds
-                for market in kambi_event.markets:
-                    market_type = market.get('type', '')[:30].lower().replace(' ', '_')
-                    for outcome in market.get('outcomes', []):
-                        outcome_name = outcome.get('name', '')[:20].lower()
-                        odds_value = outcome.get('odds', 0)
-                        if odds_value <= 1:
-                            continue
-                        
-                        existing = db.query(Odds).filter(
-                            Odds.event_id == canonical_id,
-                            Odds.provider_id == provider_id,
-                            Odds.market == market_type,
-                            Odds.outcome == outcome_name,
-                        ).first()
-                        
-                        if existing:
-                            existing.odds = odds_value
-                            existing.updated_at = datetime.utcnow()
-                        else:
-                            db.add(Odds(
-                                event_id=canonical_id,
-                                provider_id=provider_id,
-                                market=market_type,
-                                outcome=outcome_name,
-                                odds=odds_value,
-                            ))
-                            extraction_state["odds"] += 1
-            
-            db.commit()
-        
+        # Run extraction pipeline
+        pipeline = ExtractionPipeline()
+        results = await pipeline.run(
+            polymarket=True,
+            providers=providers if providers else None
+        )
+
+        # Update extraction state from results
+        if results:
+            extraction_state["events"] = results.get("total_events", 0)
+            extraction_state["odds"] = results.get("total_odds", 0)
+
         extraction_state["last_run"] = datetime.utcnow().isoformat()
-        
+
+    except Exception as e:
+        print(f"Extraction failed: {e}")
+        import traceback
+        traceback.print_exc()
+
     finally:
         extraction_state["running"] = False
-        db.close()
 
 
 @app.get("/api/extraction/status")
@@ -882,6 +821,245 @@ async def clear_health_check_cache(provider_id: Optional[str] = None):
     return {
         "success": True,
         "message": f"Health check cache cleared{' for ' + provider_id if provider_id else ' (all)'}"
+    }
+
+
+# ============ Provider Monitoring ============
+
+@app.get("/api/monitor/providers")
+async def monitor_all_providers(limit: int = 20):
+    """Get health assessment for all providers."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        raise HTTPException(400, "Metrics not enabled")
+
+    # Get metrics history
+    history = pipeline.metrics.get_history(limit=limit)
+
+    if not history:
+        return {"error": "No metrics history available", "providers": {}}
+
+    # Get circuit breaker and health check statuses
+    cb_statuses = {}
+    if pipeline.circuit_breaker:
+        statuses = pipeline.circuit_breaker.get_all_statuses()
+        cb_statuses = {
+            pid: {
+                "state": status.state.value,
+                "failure_count": status.failure_count,
+                "success_count": status.success_count,
+            }
+            for pid, status in statuses.items()
+        }
+
+    hc_statuses = {}
+    if pipeline.health_checker:
+        statuses = pipeline.health_checker.get_all_statuses()
+        hc_statuses = {
+            pid: {
+                "healthy": status.healthy,
+                "error": status.error,
+            }
+            for pid, status in statuses.items()
+        }
+
+    # Assess providers
+    from .pipeline.provider_monitor import ProviderMonitor
+    monitor = ProviderMonitor()
+    assessments = monitor.assess_all_providers(history, cb_statuses, hc_statuses)
+
+    return {
+        "providers": {
+            pid: {
+                "health_score": health.health_score.value,
+                "score_value": health.score_value,
+                "is_healthy": health.is_healthy,
+                "has_critical_issues": health.has_critical_issues,
+                "avg_events_per_run": health.avg_events_per_run,
+                "avg_response_time_ms": health.avg_response_time_ms,
+                "success_rate": health.success_rate,
+                "trend_direction": health.trend_direction,
+                "issues": [
+                    {
+                        "type": issue.issue_type.value,
+                        "severity": issue.severity,
+                        "message": issue.message,
+                        "metric_value": issue.metric_value,
+                    }
+                    for issue in health.issues
+                ],
+            }
+            for pid, health in assessments.items()
+        },
+        "summary": {
+            "total_providers": len(assessments),
+            "healthy": sum(1 for h in assessments.values() if h.is_healthy),
+            "unhealthy": sum(1 for h in assessments.values() if not h.is_healthy),
+            "critical": sum(1 for h in assessments.values() if h.has_critical_issues),
+        }
+    }
+
+
+@app.get("/api/monitor/providers/{provider_id}")
+async def monitor_provider(provider_id: str, limit: int = 20):
+    """Get detailed health assessment for specific provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        raise HTTPException(400, "Metrics not enabled")
+
+    history = pipeline.metrics.get_history(limit=limit)
+
+    if not history:
+        raise HTTPException(404, "No metrics history available")
+
+    # Get statuses
+    cb_status = None
+    if pipeline.circuit_breaker:
+        status = pipeline.circuit_breaker.get_status(provider_id)
+        cb_status = {
+            "state": status.state.value,
+            "failure_count": status.failure_count,
+            "success_count": status.success_count,
+        }
+
+    hc_status = None
+    if pipeline.health_checker:
+        status = pipeline.health_checker.get_cached_status(provider_id)
+        if status:
+            hc_status = {
+                "healthy": status.healthy,
+                "error": status.error,
+                "response_time_ms": status.response_time_ms,
+            }
+
+    # Assess provider
+    from .pipeline.provider_monitor import ProviderMonitor
+    monitor = ProviderMonitor()
+    health = monitor.assess_provider(provider_id, history, cb_status, hc_status)
+
+    return {
+        "provider_id": provider_id,
+        "health_score": health.health_score.value,
+        "score_value": health.score_value,
+        "is_healthy": health.is_healthy,
+        "has_critical_issues": health.has_critical_issues,
+        "metrics": {
+            "avg_events_per_run": health.avg_events_per_run,
+            "avg_response_time_ms": health.avg_response_time_ms,
+            "success_rate": health.success_rate,
+            "uptime_pct": health.uptime_pct,
+            "avg_odds_per_event": health.avg_odds_per_event,
+        },
+        "trend": {
+            "direction": health.trend_direction,
+            "is_degrading": health.is_degrading,
+        },
+        "issues": [
+            {
+                "type": issue.issue_type.value,
+                "severity": issue.severity,
+                "message": issue.message,
+                "metric_value": issue.metric_value,
+                "threshold_value": issue.threshold_value,
+                "detected_at": issue.detected_at,
+            }
+            for issue in health.issues
+        ],
+        "assessed_at": health.assessed_at,
+    }
+
+
+@app.get("/api/monitor/unhealthy")
+async def get_unhealthy_providers(limit: int = 20):
+    """Get list of unhealthy providers."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        raise HTTPException(400, "Metrics not enabled")
+
+    history = pipeline.metrics.get_history(limit=limit)
+
+    if not history:
+        return {"unhealthy_providers": [], "count": 0}
+
+    # Assess all providers
+    from .pipeline.provider_monitor import ProviderMonitor
+    monitor = ProviderMonitor()
+
+    cb_statuses = {}
+    if pipeline.circuit_breaker:
+        statuses = pipeline.circuit_breaker.get_all_statuses()
+        cb_statuses = {
+            pid: {"state": s.state.value, "failure_count": s.failure_count}
+            for pid, s in statuses.items()
+        }
+
+    assessments = monitor.assess_all_providers(history, cb_statuses)
+    unhealthy = monitor.get_unhealthy_providers(assessments)
+
+    return {
+        "unhealthy_providers": [
+            {
+                "provider_id": pid,
+                "health_score": assessments[pid].health_score.value,
+                "score_value": assessments[pid].score_value,
+                "issue_count": len(assessments[pid].issues),
+                "critical_issues": sum(1 for i in assessments[pid].issues if i.severity == "critical"),
+            }
+            for pid in unhealthy
+        ],
+        "count": len(unhealthy)
+    }
+
+
+@app.get("/api/monitor/critical")
+async def get_critical_providers(limit: int = 20):
+    """Get list of providers with critical issues."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        raise HTTPException(400, "Metrics not enabled")
+
+    history = pipeline.metrics.get_history(limit=limit)
+
+    if not history:
+        return {"critical_providers": [], "count": 0}
+
+    # Assess all providers
+    from .pipeline.provider_monitor import ProviderMonitor
+    monitor = ProviderMonitor()
+
+    cb_statuses = {}
+    if pipeline.circuit_breaker:
+        statuses = pipeline.circuit_breaker.get_all_statuses()
+        cb_statuses = {
+            pid: {"state": s.state.value, "failure_count": s.failure_count}
+            for pid, s in statuses.items()
+        }
+
+    assessments = monitor.assess_all_providers(history, cb_statuses)
+    critical = monitor.get_critical_providers(assessments)
+
+    return {
+        "critical_providers": [
+            {
+                "provider_id": pid,
+                "health_score": assessments[pid].health_score.value,
+                "score_value": assessments[pid].score_value,
+                "critical_issues": [
+                    {
+                        "type": i.issue_type.value,
+                        "message": i.message,
+                    }
+                    for i in assessments[pid].issues
+                    if i.severity == "critical"
+                ],
+            }
+            for pid in critical
+        ],
+        "count": len(critical)
     }
 
 

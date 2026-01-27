@@ -67,15 +67,19 @@ pytest tests/ -v                    # Verbose
 ```bash
 cd frontend
 npm install
-npm run dev      # Dev server
+npm run dev      # Dev server (http://localhost:3000)
 npm run build    # Production build
+npm run preview  # Preview production build
 npm run lint     # ESLint
 ```
+
+**Note:** Frontend requires backend running on port 8000 for API proxy.
 
 ### Workflow
 
 - **No emojis allowed, use ascii style for symbols.
 - **Temp files like test files or debug files created in /scrap folder, deleted before commit.
+- **Create doc files such as md in /docs.
 
 ## Key Concepts
 
@@ -125,6 +129,8 @@ When working on specific areas, check these files:
 |-------|------|
 | **Provider Implementation** | `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` |
 | **Provider Validation** | `backend/docs/validated.md` |
+| **Provider Optimization** | `backend/docs/PROVIDER_OPTIMIZATION_WORKFLOW.md` |
+| **Optimization Quick Reference** | `backend/docs/OPTIMIZATION_QUICK_REFERENCE.md` |
 | Architectural patterns | `.claude/docs/architectural_patterns.md` |
 | Provider optimization (DOM + API) | `.claude/docs/provider_optimizations.md` |
 | Team name normalization | `backend/src/matching/normalizer.py` |
@@ -160,3 +166,9 @@ When working on specific areas, check these files:
    - Test pipeline integration
    - Monitor performance
    - Commit with validation results
+
+6. **Optimize** → `backend/docs/PROVIDER_OPTIMIZATION_WORKFLOW.md`
+   - Benchmark current performance: `python scripts/benchmark_provider.py {provider}`
+   - Apply systematic optimizations (see quick reference)
+   - Target: 40-60% faster extraction
+   - Validate data quality maintained

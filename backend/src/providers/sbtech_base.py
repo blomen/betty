@@ -17,6 +17,7 @@ import logging
 import asyncio
 from datetime import datetime
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +156,12 @@ class SBTechRetriever(BrowserRetriever):
 
             # Intercept API responses
             pending_tasks = []
+            all_responses_count = 0
 
             def intercept_response(response):
                 """Synchronous handler that schedules async processing."""
+                nonlocal all_responses_count
+                all_responses_count += 1
                 url = response.url
 
                 # Log API calls for debugging
@@ -179,10 +183,12 @@ class SBTechRetriever(BrowserRetriever):
             # Wait for page to fully render and make API calls
             logger.info(f"[{self.provider_id}] Waiting for API calls...")
             await asyncio.sleep(8)
+            logger.debug(f"[{self.provider_id}] Total HTTP responses: {all_responses_count}")
 
             # Scroll to trigger lazy loading
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
             await asyncio.sleep(3)
+            logger.debug(f"[{self.provider_id}] Total HTTP responses after scroll: {all_responses_count}")
 
             # Remove interceptor
             page.remove_listener('response', intercept_response)
@@ -326,6 +332,10 @@ class SBTechRetriever(BrowserRetriever):
 
             if not home_team or not away_team:
                 return None
+
+            # Normalize team names
+            home_team = normalize_team_name(home_team)
+            away_team = normalize_team_name(away_team)
 
             # Parse start time
             start_time_raw = event_data.get('startDate')
