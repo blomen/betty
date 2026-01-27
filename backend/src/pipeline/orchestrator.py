@@ -63,6 +63,18 @@ class ExtractionPipeline:
         else:
             self.metrics = None
 
+        # Initialize circuit breaker if enabled
+        if orchestrator_config.circuit_breaker.enabled:
+            from .circuit_breaker import CircuitBreaker
+            self.circuit_breaker = CircuitBreaker(
+                failure_threshold=orchestrator_config.circuit_breaker.failure_threshold,
+                recovery_timeout_seconds=orchestrator_config.circuit_breaker.recovery_timeout_seconds,
+                half_open_max_attempts=orchestrator_config.circuit_breaker.half_open_max_attempts
+            )
+            logger.info("[Orchestrator] Circuit breaker enabled")
+        else:
+            self.circuit_breaker = None
+
     def _ensure_providers(self):
         """Create provider records in DB if they don't exist."""
         # Get all providers from engine (returns dict of ProviderConfig dicts)
@@ -77,6 +89,88 @@ class ExtractionPipeline:
             if not self.session.query(Provider).filter(Provider.id == pid).first():
                 self.session.add(Provider(id=pid, name=name, balance=0))
         self.session.commit()
+
+    async def _extract_provider_with_retry(
+        self,
+        provider_id: str,
+        kambi_sports: list[str],
+        limit: int
+    ) -> dict:
+        """
+        Wrapper for provider extraction with retry logic.
+
+        Args:
+            provider_id: Provider identifier
+            kambi_sports: List of sports to extract
+            limit: Max events per sport
+
+        Returns:
+            Dictionary with extraction results
+
+        Raises:
+            Exception: If all retries exhausted
+        """
+        retry_config = self.orchestrator_config.retry
+
+        if not retry_config.enabled:
+            return await self._extract_provider(provider_id, kambi_sports, limit)
+
+        last_error = None
+
+        for attempt in range(retry_config.max_retries):
+            try:
+                result = await self._extract_provider(provider_id, kambi_sports, limit)
+
+                # Success - record in circuit breaker
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success(provider_id)
+
+                return result
+
+            except asyncio.TimeoutError as e:
+                last_error = e
+                if not retry_config.retry_on_timeout:
+                    raise
+
+                # Record retry in metrics
+                if self.metrics:
+                    self.metrics.record_retry(provider_id)
+
+                # Calculate backoff
+                if attempt < retry_config.max_retries - 1:
+                    backoff = min(
+                        retry_config.initial_backoff_seconds * (retry_config.exponential_base ** attempt),
+                        retry_config.max_backoff_seconds
+                    )
+                    logger.warning(
+                        f"[{provider_id}] Timeout on attempt {attempt+1}/{retry_config.max_retries}, "
+                        f"retrying in {backoff:.1f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+
+            except Exception as e:
+                last_error = e
+
+                # Record retry in metrics
+                if self.metrics:
+                    self.metrics.record_retry(provider_id)
+
+                if attempt < retry_config.max_retries - 1:
+                    backoff = min(
+                        retry_config.initial_backoff_seconds * (retry_config.exponential_base ** attempt),
+                        retry_config.max_backoff_seconds
+                    )
+                    logger.warning(
+                        f"[{provider_id}] Error on attempt {attempt+1}/{retry_config.max_retries}: {e}, "
+                        f"retrying in {backoff:.1f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+
+        # All retries exhausted - record failure in circuit breaker
+        if self.circuit_breaker:
+            self.circuit_breaker.record_failure(provider_id)
+
+        raise last_error
 
     async def run(
         self,
@@ -160,7 +254,18 @@ class ExtractionPipeline:
         kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
         if target_providers:
-            log_progress(f"Extracting {len(target_providers)} providers...")
+            # Filter providers by circuit breaker status
+            available_providers = []
+            for pid in target_providers:
+                if self.circuit_breaker and self.circuit_breaker.is_open(pid):
+                    log_progress(f"[{pid}] SKIPPED: Circuit breaker open")
+                    continue
+                available_providers.append(pid)
+
+            if not available_providers:
+                log_progress("No providers available (all circuits open)")
+            else:
+                log_progress(f"Extracting {len(available_providers)} providers...")
 
             # Create tasks for parallel extraction
             async def extract_with_error_handling(provider_id):
@@ -169,7 +274,14 @@ class ExtractionPipeline:
                     self.metrics.start_provider(provider_id)
 
                 try:
-                    provider_results = await self._extract_provider(provider_id, kambi_sports, max_events_per_sport)
+                    # Check circuit breaker before attempting call
+                    if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
+                        raise Exception("Circuit breaker open")
+
+                    # Use retry wrapper
+                    provider_results = await self._extract_provider_with_retry(
+                        provider_id, kambi_sports, max_events_per_sport
+                    )
 
                     # End provider metrics on success
                     if self.metrics:
@@ -182,6 +294,10 @@ class ExtractionPipeline:
                     # End provider metrics on failure
                     if self.metrics:
                         self.metrics.end_provider(provider_id, success=False, error=str(e))
+
+                    # Record failure in circuit breaker
+                    if self.circuit_breaker:
+                        self.circuit_breaker.record_failure(provider_id)
 
                     return provider_id, {
                         "events_processed": 0,
@@ -196,8 +312,8 @@ class ExtractionPipeline:
                 async with self.provider_semaphore:
                     return await extract_with_error_handling(provider_id)
 
-            # Run all providers with concurrency limit
-            provider_tasks = [extract_with_concurrency_limit(pid) for pid in target_providers]
+            # Run all available providers with concurrency limit
+            provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
             provider_results_list = await asyncio.gather(*provider_tasks)
 
             # Collect results and log each provider
@@ -241,6 +357,18 @@ class ExtractionPipeline:
                     "providers_failed": current_run.providers_failed,
                     "overall_success_rate": current_run.overall_success_rate,
                 }
+
+        # Add circuit breaker stats
+        if self.circuit_breaker:
+            statuses = self.circuit_breaker.get_all_statuses()
+            results["circuit_breaker"] = {
+                pid: {
+                    "state": status.state.value,
+                    "failure_count": status.failure_count,
+                    "success_count": status.success_count,
+                }
+                for pid, status in statuses.items()
+            }
 
         total_elapsed = time.time() - pipeline_start_time
         log_progress(f"Pipeline complete in {total_elapsed:.1f}s")
