@@ -9,27 +9,31 @@ export interface StreamCallbacks {
 }
 
 function buildSystemPrompt(context: BettingContext): string {
+  const arbitrageOpps = context.opportunities.filter(o => o.type === 'arbitrage');
+  const valueOpps = context.opportunities.filter(o => o.type === 'value');
+
   const parts = [
     `You are OddOpp, an AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
     ``,
     `Current data summary:`,
-    `- ${context.arbitrage.length} arbitrage opportunities`,
-    `- ${context.valueBets.length} value bets detected`,
+    `- ${arbitrageOpps.length} arbitrage opportunities`,
+    `- ${valueOpps.length} value bets detected`,
     `- ${context.events.length} events tracked`,
     `- ${context.providers.length} providers connected`,
+    `- $${context.bankroll.total.toFixed(2)} total bankroll`,
   ];
 
-  if (context.arbitrage.length > 0) {
+  if (arbitrageOpps.length > 0) {
     parts.push(``, `Top arbitrage opportunities:`);
-    context.arbitrage.slice(0, 3).forEach((arb, i) => {
-      parts.push(`${i + 1}. ${arb.event} - ${arb.profit_pct.toFixed(2)}% profit`);
+    arbitrageOpps.slice(0, 3).forEach((arb, i) => {
+      parts.push(`${i + 1}. ${arb.event_id} - ${arb.profit_pct?.toFixed(2)}% profit (${arb.provider1} vs ${arb.provider2})`);
     });
   }
 
-  if (context.valueBets.length > 0) {
+  if (valueOpps.length > 0) {
     parts.push(``, `Top value bets:`);
-    context.valueBets.slice(0, 3).forEach((vb, i) => {
-      parts.push(`${i + 1}. ${vb.event} - ${vb.outcome} @ ${vb.odds} (${vb.edge_pct.toFixed(1)}% edge)`);
+    valueOpps.slice(0, 3).forEach((vb, i) => {
+      parts.push(`${i + 1}. ${vb.event_id} - ${vb.outcome1} @ ${vb.odds1} (${vb.edge_pct?.toFixed(1)}% edge) via ${vb.provider1}`);
     });
   }
 
@@ -41,6 +45,7 @@ function buildSystemPrompt(context: BettingContext): string {
     `- Calculate optimal stake sizes using Kelly criterion`,
     `- Compare odds across providers`,
     `- Understand implied probabilities and margins`,
+    `- Track bankroll and bet history`,
     ``,
     `Be concise, data-driven, and use tables/formatting when presenting odds data.`
   );
@@ -133,27 +138,30 @@ export async function simulateChat(
   const lastMessage = messages[messages.length - 1];
   const input = lastMessage.content.toLowerCase();
 
+  const arbitrageOpps = context.opportunities.filter(o => o.type === 'arbitrage');
+  const valueOpps = context.opportunities.filter(o => o.type === 'value');
+
   let response = '';
 
   if (input.includes('arbitrage') || input.includes('arb')) {
-    if (context.arbitrage.length === 0) {
+    if (arbitrageOpps.length === 0) {
       response = 'No arbitrage opportunities currently detected. I scan for situations where the sum of implied probabilities across bookmakers is less than 100%, guaranteeing profit regardless of outcome.';
     } else {
-      response = `Found **${context.arbitrage.length}** arbitrage opportunities:\n\n`;
-      response += '| Event | Profit | Providers |\n|-------|--------|----------|\n';
-      context.arbitrage.slice(0, 5).forEach((arb) => {
-        const providers = arb.legs.map((l) => l.provider).join(', ');
-        response += `| ${arb.event} | ${arb.profit_pct.toFixed(2)}% | ${providers} |\n`;
+      response = `Found **${arbitrageOpps.length}** arbitrage opportunities:\n\n`;
+      response += '| Event | Market | Profit | Providers |\n|-------|--------|--------|----------|\n';
+      arbitrageOpps.slice(0, 5).forEach((arb) => {
+        const providers = `${arb.provider1} vs ${arb.provider2}`;
+        response += `| ${arb.event_id} | ${arb.market} | ${arb.profit_pct?.toFixed(2)}% | ${providers} |\n`;
       });
     }
   } else if (input.includes('value') || input.includes('edge')) {
-    if (context.valueBets.length === 0) {
+    if (valueOpps.length === 0) {
       response = 'No value bets currently detected. Value bets occur when bookmaker odds exceed fair probability (derived from Polymarket).';
     } else {
-      response = `Found **${context.valueBets.length}** value bets:\n\n`;
-      response += '| Event | Outcome | Odds | Edge | Kelly |\n|-------|---------|------|------|-------|\n';
-      context.valueBets.slice(0, 5).forEach((vb) => {
-        response += `| ${vb.event} | ${vb.outcome} | ${vb.odds.toFixed(2)} | ${vb.edge_pct.toFixed(1)}% | ${(vb.kelly_stake * 100).toFixed(1)}% |\n`;
+      response = `Found **${valueOpps.length}** value bets:\n\n`;
+      response += '| Event | Outcome | Odds | Edge |\n|-------|---------|------|------|\n';
+      valueOpps.slice(0, 5).forEach((vb) => {
+        response += `| ${vb.event_id} | ${vb.outcome1} | ${vb.odds1.toFixed(2)} | ${vb.edge_pct?.toFixed(1)}% |\n`;
       });
     }
   } else if (input.includes('help') || input.includes('what can')) {
@@ -172,16 +180,17 @@ Try asking: "Show me arbitrage opportunities" or "What value bets do you see?"`;
     } else {
       response = `Connected providers:\n\n`;
       context.providers.forEach((p) => {
-        const status = p.active ? '[OK]' : '[--]';
+        const status = p.is_enabled ? '[OK]' : '[--]';
         response += `${status} **${p.name}** - Balance: $${p.balance.toFixed(2)}\n`;
       });
     }
   } else {
     response = `I'm OddOpp, your betting analytics assistant. I currently see:
 
-- **${context.arbitrage.length}** arbitrage opportunities
-- **${context.valueBets.length}** value bets
+- **${arbitrageOpps.length}** arbitrage opportunities
+- **${valueOpps.length}** value bets
 - **${context.events.length}** events tracked
+- **$${context.bankroll.total.toFixed(2)}** total bankroll
 
 Ask me about arbitrage, value bets, or specific events!`;
   }

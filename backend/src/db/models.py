@@ -167,20 +167,25 @@ class Bet(Base):
 class Profile(Base):
     """User settings for stake calculation and filtering."""
     __tablename__ = "profiles"
-    
+
     id = Column(Integer, primary_key=True)
     name = Column(String, default="default", unique=True)
-    
+
     # Kelly criterion
     kelly_fraction = Column(Float, default=0.25)    # Quarter Kelly
-    
+
     # Opportunity thresholds
     min_edge_pct = Column(Float, default=2.0)       # Min edge for value bets
     min_arb_pct = Column(Float, default=0.5)        # Min profit for arbs
-    
+
     # Risk limits
     max_stake_pct = Column(Float, default=5.0)      # Max % of bankroll per bet
-    
+
+    # Bonus settings
+    min_retention_pct = Column(Float, default=80.0)  # Min % for free bet value
+    preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
+    bonus_enabled = Column(Boolean, default=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
