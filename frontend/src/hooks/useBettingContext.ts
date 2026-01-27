@@ -3,10 +3,13 @@ import type { BettingContext } from '@/types';
 import { api } from '@/services/api';
 
 const EMPTY_CONTEXT: BettingContext = {
-  arbitrage: [],
-  valueBets: [],
+  opportunities: [],
   events: [],
   providers: [],
+  bankroll: {
+    total: 0,
+    providers: [],
+  },
 };
 
 export function useBettingContext(refreshInterval = 30000) {
@@ -16,14 +19,19 @@ export function useBettingContext(refreshInterval = 30000) {
 
   const refresh = useCallback(async () => {
     try {
-      const [arbitrage, valueBets, events, providers] = await Promise.all([
-        api.getArbitrage(),
-        api.getValueBets(),
+      const [opportunitiesRes, eventsRes, providersRes, bankrollRes] = await Promise.all([
+        api.getOpportunities(),
         api.getEvents(),
         api.getProviders(),
+        api.getBankroll(),
       ]);
 
-      setContext({ arbitrage, valueBets, events, providers });
+      setContext({
+        opportunities: opportunitiesRes.opportunities,
+        events: eventsRes.events,
+        providers: providersRes.providers,
+        bankroll: bankrollRes,
+      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load betting data');
