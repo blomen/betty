@@ -198,3 +198,84 @@ canonical_id = f"{sport}:{home_norm}:{away_norm}:{date}"
 
 Pipeline caches Polymarket events then fuzzy-matches provider events against them (`backend/src/pipeline.py:319-351`).
 
+## 13. Provider Development Workflow Pattern
+
+**Locations**:
+- Research: `backend/docs/{PROVIDER}_RESEARCH.md`
+- Implementation: `backend/src/providers/{provider_id}.py`
+- Configuration: `backend/src/config/providers.yaml`
+- Validation: `backend/docs/validated.md`
+
+**Workflow Stages:**
+
+```
+Research → Implementation → Configuration → Testing → Validation → Production
+```
+
+**Stage 1: Research Phase**
+- Analyze betting site (API vs Browser vs WebSocket)
+- Map sports and market types
+- Choose implementation strategy
+- Document in `{PROVIDER}_RESEARCH.md`
+
+**Stage 2: Implementation Phase**
+- Create Retriever subclass in `backend/src/providers/{id}.py`
+- Choose base class:
+  - `Retriever` for REST APIs
+  - `BrowserRetriever` for browser automation
+- Implement required methods:
+  - `_get_sport_url()` - Map sport to endpoint
+  - `parse()` - Convert raw data to StandardEvent
+  - `extract()` - Optional override for custom workflow
+- Apply normalization:
+  - Team names via `normalize_team_name()`
+  - Market types to standard names
+  - Outcomes to standard names
+
+**Stage 3: Configuration Phase**
+- Add provider to `backend/src/config/providers.yaml`:
+  ```yaml
+  providers:
+    newprovider:
+      id: newprovider
+      retriever_type: custom
+      api_base: https://api.provider.com
+  ```
+- Register retriever type in `backend/src/factory.py:get_extractor()`
+- Do NOT add to `active` list until validated
+
+**Stage 4: Testing Phase**
+- Manual extraction test: `python -c "..."`
+- Data quality checks (normalization, markets)
+- Unit tests in `backend/tests/test_{id}.py`
+- Integration test with pipeline
+
+**Stage 5: Validation Phase**
+- Run validation script: `python scripts/validate_provider.py {id}`
+- Check 7 criteria (sports, events, markets, normalization, database, performance, errors)
+- Document results in `backend/docs/{PROVIDER}_VALIDATION.md`
+- Update status matrix in `backend/docs/validated.md`
+
+**Stage 6: Production Phase**
+- Add to `active` list in `providers.yaml`
+- Test full pipeline: `python main.py --providers {id}`
+- Verify database storage
+- Monitor initial performance
+- Git commit with validation results
+
+**Key Principles:**
+- Configuration-driven (minimize code, maximize reusability)
+- Fail gracefully (return empty list, never crash)
+- Log appropriately (debug for skips, error for failures)
+- Validate at boundaries (normalize team names, standardize outcomes)
+- Test incrementally (don't wait until end to validate)
+
+**Pattern Usage:**
+- Kambi: Configuration-only (13 providers, 1 implementation)
+- Altenar: REST API pattern (direct API calls)
+- Gecko V2: Browser + API interception pattern
+- ComeOn: Multi-league navigation pattern
+- SBTech: Shared base class pattern (Bethard, Fastbet)
+
+For complete implementation guide, see: `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md`
+

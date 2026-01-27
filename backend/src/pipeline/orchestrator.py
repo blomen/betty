@@ -6,6 +6,7 @@ Main ExtractionPipeline class that coordinates extraction from all sources.
 
 import asyncio
 import logging
+import time
 from typing import Callable
 
 from ..factory import ExtractorFactory
@@ -42,6 +43,25 @@ class ExtractionPipeline:
         # Dict indexed by sport for O(1) sport lookup
         # {sport: [(id, home, away, date_str), ...]}
         self.polymarket_events = {}
+
+        # Get orchestrator config
+        orchestrator_config = self.engine.config_loader.get_orchestrator_config()
+
+        # Create provider semaphore for concurrency control
+        self.provider_semaphore = asyncio.Semaphore(
+            orchestrator_config.max_concurrent_providers
+        )
+        self.orchestrator_config = orchestrator_config
+
+        # Initialize metrics collector if enabled
+        if orchestrator_config.metrics.enabled:
+            from .metrics import MetricsCollector
+            self.metrics = MetricsCollector(
+                max_history=orchestrator_config.metrics.retention_count
+            )
+            logger.info("[Orchestrator] Metrics collection enabled")
+        else:
+            self.metrics = None
 
     def _ensure_providers(self):
         """Create provider records in DB if they don't exist."""
@@ -80,9 +100,19 @@ class ExtractionPipeline:
                 "polymarket": {...},
                 "providers": {provider_id: {...}},
                 "total_events": int,
-                "matched_events": int
+                "matched_events": int,
+                "metrics": {...} (if enabled),
+                "cache_stats": {...} (if enabled)
             }
         """
+        # Start timing
+        pipeline_start_time = time.time()
+
+        # Start metrics collection
+        run_id = f"run_{int(time.time())}"
+        if self.metrics:
+            self.metrics.start_run(run_id)
+
         results = {
             "polymarket": {"events": 0, "odds": 0},
             "providers": {},
@@ -90,34 +120,69 @@ class ExtractionPipeline:
             "matched_events": 0,
         }
 
+        def log_progress(msg: str):
+            """Log with elapsed time."""
+            elapsed = time.time() - pipeline_start_time
+            logger.info(f"[{elapsed:6.1f}s] {msg}")
+            if on_progress:
+                on_progress(f"[{elapsed:.1f}s] {msg}")
+
         def log(msg: str):
+            """Legacy log function for compatibility."""
             logger.info(msg)
             if on_progress:
                 on_progress(msg)
 
+        log_progress("Pipeline started")
+
         # Extract from Polymarket
         if polymarket:
-            log("Extracting from Polymarket...")
+            log_progress("Extracting Polymarket (truth source)...")
+            poly_start = time.time()
+
             poly_results = await self._extract_polymarket(max_events_per_sport)
             results["polymarket"] = poly_results
-            log(f"  Polymarket: {poly_results['events_processed']} processed ({poly_results['events_new']} new), {poly_results['odds_new']} new odds")
+
+            # Update metrics
+            if self.metrics:
+                self.metrics.set_polymarket_stats(
+                    events=poly_results.get("events_processed", 0),
+                    odds=poly_results.get("odds_processed", 0)
+                )
+
+            poly_elapsed = time.time() - poly_start
+            log_progress(
+                f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
+            )
 
         # Extract from other providers in parallel
         target_providers = providers if providers is not None else self.engine.get_enabled_providers()
         kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
         if target_providers:
-            log(f"Extracting from {len(target_providers)} providers in parallel...")
+            log_progress(f"Extracting {len(target_providers)} providers...")
 
             # Create tasks for parallel extraction
             async def extract_with_error_handling(provider_id):
+                # Start provider metrics
+                if self.metrics:
+                    self.metrics.start_provider(provider_id)
+
                 try:
-                    log(f"  Starting {provider_id}...")
                     provider_results = await self._extract_provider(provider_id, kambi_sports, max_events_per_sport)
-                    log(f"  {provider_id}: {provider_results['events_processed']} processed ({provider_results['events_new']} new), {provider_results['odds_new']} new odds")
+
+                    # End provider metrics on success
+                    if self.metrics:
+                        self.metrics.end_provider(provider_id, success=True)
+
                     return provider_id, provider_results
                 except Exception as e:
                     logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
+
+                    # End provider metrics on failure
+                    if self.metrics:
+                        self.metrics.end_provider(provider_id, success=False, error=str(e))
+
                     return provider_id, {
                         "events_processed": 0,
                         "events_new": 0,
@@ -126,13 +191,33 @@ class ExtractionPipeline:
                         "error": str(e)
                     }
 
-            # Run all providers in parallel
-            provider_tasks = [extract_with_error_handling(pid) for pid in target_providers]
+            # Wrap provider extraction with semaphore for concurrency control
+            async def extract_with_concurrency_limit(provider_id):
+                async with self.provider_semaphore:
+                    return await extract_with_error_handling(provider_id)
+
+            # Run all providers with concurrency limit
+            provider_tasks = [extract_with_concurrency_limit(pid) for pid in target_providers]
             provider_results_list = await asyncio.gather(*provider_tasks)
 
-            # Collect results
+            # Collect results and log each provider
             for provider_id, provider_result in provider_results_list:
                 results["providers"][provider_id] = provider_result
+
+                if "error" in provider_result:
+                    log_progress(f"[{provider_id}] FAILED: {provider_result['error']}")
+                else:
+                    sport_errors = provider_result.get("sport_errors", [])
+                    sports_ok = provider_result.get("sports_succeeded", 0)
+                    sports_total = provider_result.get("sports_attempted", 0)
+
+                    status = f"{sports_ok}/{sports_total} sports"
+                    if sport_errors:
+                        status += f" ({len(sport_errors)} failed)"
+
+                    log_progress(
+                        f"[{provider_id}] {provider_result['events_processed']} events, {status}"
+                    )
 
         self.session.commit()
 
@@ -140,8 +225,27 @@ class ExtractionPipeline:
         results["total_events"] = self.session.query(Event).count()
         results["matched_events"] = self._count_matched_events()
 
-        log(f"Total events in DB: {results['total_events']}")
-        log(f"Matched events: {results['matched_events']}")
+        # End metrics collection and add to results
+        if self.metrics:
+            # Get current run BEFORE ending it
+            current_run = self.metrics.get_current_run()
+            self.metrics.end_run()
+
+            # Use the saved reference (now completed)
+            if current_run:
+                results["metrics"] = {
+                    "run_id": run_id,
+                    "duration_seconds": current_run.duration_seconds,
+                    "total_events": current_run.total_events,
+                    "providers_succeeded": current_run.providers_succeeded,
+                    "providers_failed": current_run.providers_failed,
+                    "overall_success_rate": current_run.overall_success_rate,
+                }
+
+        total_elapsed = time.time() - pipeline_start_time
+        log_progress(f"Pipeline complete in {total_elapsed:.1f}s")
+        log_progress(f"Total events in DB: {results['total_events']}")
+        log_progress(f"Matched events: {results['matched_events']}")
 
         return results
 
@@ -212,7 +316,7 @@ class ExtractionPipeline:
 
     async def _extract_provider(self, provider_id: str, sports: list[str], limit: int) -> dict:
         """
-        Extract from a specific provider.
+        Extract from a specific provider across multiple sports (PARALLEL).
 
         Args:
             provider_id: Provider identifier
@@ -222,68 +326,125 @@ class ExtractionPipeline:
         Returns:
             Dictionary with extraction statistics
         """
-        events_processed = 0
-        events_new = 0
-        odds_processed = 0
-        odds_new = 0
+        # Get provider config for concurrency settings
+        provider_config = self.engine.get_provider(provider_id)
+        concurrent_sports = getattr(
+            provider_config,
+            'concurrent_leagues',
+            self.orchestrator_config.max_concurrent_sports_per_provider
+        )
 
-        # Batch commit configuration
-        BATCH_SIZE = 100
-        event_count = 0
+        # Create semaphore for sport-level concurrency
+        sport_semaphore = asyncio.Semaphore(concurrent_sports)
 
+        # Get or create extractor
         extractor = self.engine.get_extractor(provider_id)
 
-        for sport in sports:
-            try:
-                events = await extractor.extract(sport, limit=limit)
-                logger.info(f"DEBUG: {provider_id} - {sport}: {len(events)} events")
+        # Define per-sport extraction function
+        async def extract_sport(sport: str):
+            """Extract single sport with error handling."""
+            async with sport_semaphore:
+                sport_start_time = time.time()
 
-                for event in events:
-                    ev_new, ev_processed_odds, ev_new_odds = store_provider_event(
-                        self.session,
-                        event,
-                        provider_id,
-                        self.polymarket_events,
-                    )
-                    logger.debug(f"DEBUG: {provider_id} stored event {event.id}: new={ev_new}, odds={ev_new_odds}")
+                try:
+                    events = await extractor.extract(sport, limit=limit)
 
-                    events_processed += 1
-                    event_count += 1
-                    if ev_new:
-                        events_new += 1
+                    # Store events
+                    events_processed = 0
+                    events_new = 0
+                    odds_processed = 0
+                    odds_new = 0
 
-                    odds_processed += ev_processed_odds
-                    odds_new += ev_new_odds
+                    for event in events:
+                        is_new, odds_proc, odds_new_count = store_provider_event(
+                            session=self.session,
+                            provider=provider_id,
+                            event=event,
+                            polymarket_cache=self.polymarket_events
+                        )
+                        events_processed += 1
+                        if is_new:
+                            events_new += 1
+                        odds_processed += odds_proc
+                        odds_new += odds_new_count
 
-                    # Batch commit every BATCH_SIZE events
-                    if event_count % BATCH_SIZE == 0:
+                    # Batch commit if needed
+                    if events_processed % self.orchestrator_config.batch_commit_size == 0:
                         self.session.commit()
-                        logger.debug(f"[{provider_id}] Batch committed {event_count} events")
 
-                # Close if it needs closing (e.g. Spectate/Playwright)
-                if hasattr(extractor, 'close'):
-                    if asyncio.iscoroutinefunction(extractor.close):
-                        await extractor.close()
-                    else:
-                        extractor.close()
+                    sport_elapsed = time.time() - sport_start_time
+                    logger.info(
+                        f"[{provider_id}] {sport}: {len(events)} events in {sport_elapsed:.1f}s"
+                    )
 
-            except Exception as e:
-                logger.debug(f"Provider {provider_id}/{sport}: {e}")
-                # Ensure cleanup on error
-                if hasattr(extractor, 'close'):
-                    if asyncio.iscoroutinefunction(extractor.close):
-                        await extractor.close()
+                    return {
+                        "sport": sport,
+                        "events_processed": events_processed,
+                        "events_new": events_new,
+                        "odds_processed": odds_processed,
+                        "odds_new": odds_new,
+                        "error": None
+                    }
 
-        # Final commit for any remaining events
-        self.session.commit()
-        logger.debug(f"[{provider_id}] Final commit completed")
+                except Exception as e:
+                    logger.warning(f"[{provider_id}] {sport} failed: {e}", exc_info=True)
+                    return {
+                        "sport": sport,
+                        "events_processed": 0,
+                        "events_new": 0,
+                        "odds_processed": 0,
+                        "odds_new": 0,
+                        "error": {"error": str(e), "error_type": type(e).__name__}
+                    }
 
-        return {
-            "events_processed": events_processed,
-            "events_new": events_new,
-            "odds_processed": odds_processed,
-            "odds_new": odds_new
-        }
+        try:
+            # PARALLEL sport extraction
+            sport_tasks = [extract_sport(sport) for sport in sports]
+            sport_results = await asyncio.gather(*sport_tasks)
+
+            # Aggregate results
+            total_events_processed = 0
+            total_events_new = 0
+            total_odds_processed = 0
+            total_odds_new = 0
+            sport_errors = []
+
+            for result in sport_results:
+                total_events_processed += result["events_processed"]
+                total_events_new += result["events_new"]
+                total_odds_processed += result["odds_processed"]
+                total_odds_new += result["odds_new"]
+
+                if result["error"]:
+                    sport_errors.append({
+                        "sport": result["sport"],
+                        **result["error"]
+                    })
+
+            # Final commit
+            self.session.commit()
+
+            return {
+                "events_processed": total_events_processed,
+                "events_new": total_events_new,
+                "odds_processed": total_odds_processed,
+                "odds_new": total_odds_new,
+                "sport_errors": sport_errors,
+                "sports_attempted": len(sports),
+                "sports_succeeded": len(sports) - len(sport_errors)
+            }
+
+        except Exception as e:
+            logger.error(f"[{provider_id}] Provider extraction failed: {e}", exc_info=True)
+            raise
+
+        finally:
+            # Cleanup
+            if hasattr(extractor, 'close'):
+                if asyncio.iscoroutinefunction(extractor.close):
+                    await extractor.close()
+                else:
+                    extractor.close()
 
     def _count_matched_events(self) -> int:
         """

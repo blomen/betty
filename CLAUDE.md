@@ -123,8 +123,40 @@ When working on specific areas, check these files:
 
 | Topic | File |
 |-------|------|
+| **Provider Implementation** | `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` |
+| **Provider Validation** | `backend/docs/validated.md` |
 | Architectural patterns | `.claude/docs/architectural_patterns.md` |
 | Provider optimization (DOM + API) | `.claude/docs/provider_optimizations.md` |
 | Team name normalization | `backend/src/matching/normalizer.py` |
 | Provider configs | `backend/src/config/providers.yaml` |
 | Config validation | `backend/src/config/loader.py` |
+
+### Provider Development Workflow
+
+**Adding a new provider? Follow this workflow:**
+
+1. **Research** → `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` (Phase 1)
+   - Analyze betting site API/structure
+   - Choose implementation strategy
+   - Document findings
+
+2. **Implement** → `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` (Phase 2-3)
+   - Create provider class in `backend/src/providers/{id}.py`
+   - Configure in `backend/src/config/providers.yaml`
+   - Register in `backend/src/factory.py`
+
+3. **Test** → `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` (Phase 4)
+   - Unit tests for normalization
+   - Integration tests for extraction
+   - Manual verification
+
+4. **Validate** → `backend/docs/validated.md` (7 criteria)
+   - Run validation script: `python scripts/validate_provider.py {provider}`
+   - Check sports coverage, markets, normalization, performance
+   - Document results
+
+5. **Deploy** → `backend/docs/PROVIDER_IMPLEMENTATION_GUIDE.md` (Phase 6)
+   - Enable in active providers list
+   - Test pipeline integration
+   - Monitor performance
+   - Commit with validation results

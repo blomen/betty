@@ -55,9 +55,18 @@ class ExtractorFactory:
         # Return as dict for backward compatibility
         return {pid: config.model_dump() for pid, config in self._config_loader.providers.items()}
 
+    @property
+    def config_loader(self):
+        """Get config loader instance."""
+        return self._config_loader
+
     def get_enabled_providers(self):
         """Get list of enabled provider IDs."""
         return self._config_loader.get_enabled_providers()
+
+    def get_provider(self, provider_id: str):
+        """Get provider configuration."""
+        return self._config_loader.get_provider(provider_id)
 
     def get_extractor(self, provider_id: str) -> Retriever:
         """

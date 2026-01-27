@@ -3,7 +3,11 @@ from typing import Any, Dict, Optional
 import aiohttp
 import logging
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    stealth_async = None
 
 logger = logging.getLogger(__name__)
 

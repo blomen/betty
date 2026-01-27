@@ -74,6 +74,83 @@ class AppConfig(BaseModel):
         return v
 
 
+class RetryConfig(BaseModel):
+    """Retry logic configuration."""
+    enabled: bool = True
+    max_retries: int = 3
+    initial_backoff_seconds: float = 2.0
+    max_backoff_seconds: float = 60.0
+    exponential_base: float = 2.0
+    retry_on_timeout: bool = True
+
+
+class CircuitBreakerConfig(BaseModel):
+    """Circuit breaker configuration."""
+    enabled: bool = True
+    failure_threshold: int = 5
+    recovery_timeout_seconds: int = 300
+    half_open_max_attempts: int = 3
+
+
+class CacheConfig(BaseModel):
+    """Response caching configuration."""
+    enabled: bool = True
+    ttl_seconds: int = 300
+    max_entries: int = 1000
+    cache_layer: str = "transport"  # "transport" or "orchestrator"
+    cache_per_provider: bool = True
+
+
+class HealthCheckConfig(BaseModel):
+    """Provider health check configuration."""
+    enabled: bool = True
+    strategy: str = "on_demand"
+    timeout_seconds: float = 10.0
+    check_before_extraction: bool = True
+
+
+class MetricsConfig(BaseModel):
+    """Performance metrics configuration."""
+    enabled: bool = True
+    track_timing: bool = True
+    track_success_rate: bool = True
+    track_cache_hit_rate: bool = True
+    persist_to_db: bool = False
+    retention_count: int = 100
+
+
+class ProgressConfig(BaseModel):
+    """Progress reporting configuration."""
+    enabled: bool = True
+    transport: str = "callback"  # "callback" or "websocket"
+    websocket_path: str = "/ws/extraction"
+
+
+class GracefulShutdownConfig(BaseModel):
+    """Graceful shutdown configuration."""
+    enabled: bool = True
+    shutdown_timeout_seconds: int = 30
+    cancel_pending_tasks: bool = True
+
+
+class OrchestratorConfig(BaseModel):
+    """Global orchestrator configuration."""
+    max_concurrent_providers: int = 5
+    max_concurrent_sports_per_provider: int = 3
+    provider_timeout: int = 300
+    sport_timeout: int = 60
+    batch_commit_size: int = 100
+
+    # Enhancement configurations
+    retry: RetryConfig = Field(default_factory=RetryConfig)
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    progress: ProgressConfig = Field(default_factory=ProgressConfig)
+    graceful_shutdown: GracefulShutdownConfig = Field(default_factory=GracefulShutdownConfig)
+
+
 # ============ Config Loader (Singleton) ============
 
 class ConfigLoader:
@@ -90,6 +167,7 @@ class ConfigLoader:
         self._providers: Dict[str, ProviderConfig] = {}
         self._sports_map: Dict[str, SportConfig] = {}
         self._loaded = False
+        self.orchestrator_config: Optional[OrchestratorConfig] = None
 
     @classmethod
     def get_instance(cls) -> 'ConfigLoader':
@@ -166,6 +244,18 @@ class ConfigLoader:
         with open(providers_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
+        # Load orchestrator config
+        if "orchestrator" in config:
+            try:
+                self.orchestrator_config = OrchestratorConfig(**config["orchestrator"])
+                logger.info(f"Loaded orchestrator config: max_concurrent_providers={self.orchestrator_config.max_concurrent_providers}")
+            except Exception as e:
+                logger.error(f"Invalid orchestrator config: {e}")
+                self.orchestrator_config = OrchestratorConfig()  # Use defaults
+        else:
+            self.orchestrator_config = OrchestratorConfig()  # Use defaults
+            logger.info("No orchestrator config found, using defaults")
+
         # Get active providers list
         active_providers = set(config.get("active", []))
 
@@ -217,6 +307,12 @@ class ConfigLoader:
             if sport.polymarket_config:
                 mapping[sport.name] = sport.polymarket_config
         return mapping
+
+    def get_orchestrator_config(self) -> OrchestratorConfig:
+        """Get orchestrator configuration."""
+        if self.orchestrator_config is None:
+            raise ValueError("Configuration not loaded")
+        return self.orchestrator_config
 
 
 # ============ Convenience Function ============

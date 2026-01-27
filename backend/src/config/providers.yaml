@@ -1,6 +1,65 @@
 # Provider Configuration
 # Uses YAML anchors to reduce duplication
 
+# Global orchestrator configuration
+orchestrator:
+  # Concurrency limits
+  max_concurrent_providers: 5          # Max providers running simultaneously
+  max_concurrent_sports_per_provider: 3 # Max sports per provider
+
+  # Timeouts (seconds)
+  provider_timeout: 300                # Per-provider timeout
+  sport_timeout: 60                    # Per-sport timeout
+
+  # Performance
+  batch_commit_size: 100               # Events per DB commit
+
+  # Enhancement configurations (all optional, defaults shown)
+  retry:
+    enabled: true
+    max_retries: 3
+    initial_backoff_seconds: 2.0
+    max_backoff_seconds: 60.0
+    exponential_base: 2.0
+    retry_on_timeout: true
+
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout_seconds: 300
+    half_open_max_attempts: 3
+
+  cache:
+    enabled: true
+    ttl_seconds: 300
+    max_entries: 1000
+    cache_layer: transport
+    cache_per_provider: true
+
+  health_check:
+    enabled: true
+    strategy: on_demand
+    timeout_seconds: 10.0
+    check_before_extraction: true
+
+  metrics:
+    enabled: true
+    track_timing: true
+    track_success_rate: true
+    track_cache_hit_rate: true
+    persist_to_db: false
+    retention_count: 100
+
+  progress:
+    enabled: true
+    transport: callback
+    websocket_path: /ws/extraction
+
+  graceful_shutdown:
+    enabled: true
+    shutdown_timeout_seconds: 30
+    cancel_pending_tasks: true
+
 # Base configurations
 kambi_defaults: &kambi_defaults
   retriever_type: kambi
@@ -344,5 +403,4 @@ active:
   - polymarket
   # SBTech providers (browser automation)
   - bethard
-  - comeon
-  - hajper
+  - fastbet
