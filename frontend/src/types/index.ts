@@ -112,7 +112,10 @@ export interface Bet {
 
 // Profile
 export interface Profile {
+  id: number;
   name: string;
+  bankroll: number;
+  currency: string;
   kelly_fraction: number;
   min_edge_pct: number;
   min_arb_pct: number;
@@ -120,6 +123,31 @@ export interface Profile {
   min_retention_pct: number;
   preferred_counterparts: string[];
   bonus_enabled: boolean;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface ProfileCreate {
+  name: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
+  min_retention_pct?: number;
+  preferred_counterparts?: string[];
+  bonus_enabled?: boolean;
 }
 
 // Stake Calculator
@@ -271,4 +299,37 @@ export interface BetPlacementData {
   stake: number;
   is_bonus?: boolean;
   bonus_type?: string;
+}
+
+export interface Profile {
+  id: number;
+  name: string;
+  bankroll: number;
+  currency: string;
+  kelly_fraction: number;
+  min_edge_pct: number;
+  min_arb_pct: number;
+  max_stake_pct: number;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface ProfileCreate {
+  name: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  bankroll?: number;
+  currency?: string;
+  kelly_fraction?: number;
+  min_edge_pct?: number;
+  min_arb_pct?: number;
+  max_stake_pct?: number;
 }

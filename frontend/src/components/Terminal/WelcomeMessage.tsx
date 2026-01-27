@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import type { BettingContext, BankrollExposure } from '@/types';
 import { useBets } from '@/hooks/useBets';
 
@@ -15,6 +16,16 @@ export function WelcomeMessage({
   onShowBets,
 }: WelcomeMessageProps) {
   const { count: totalBetsCount } = useBets(undefined, 0);
+=======
+import type { BettingContext, Profile } from '@/types';
+
+interface WelcomeMessageProps {
+  context: BettingContext;
+  activeProfile: Profile | null;
+}
+
+export function WelcomeMessage({ context, activeProfile }: WelcomeMessageProps) {
+>>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
   const suggestions = [
     'Show me arbitrage opportunities',
     'What value bets do you see?',
@@ -40,6 +51,14 @@ export function WelcomeMessage({
         <p className="text-terminal-muted mb-8">
           AI-powered betting analytics. Find arbitrage and value across bookmakers.
         </p>
+
+        {/* Active Profile */}
+        {activeProfile && (
+          <div className="mb-6 px-4 py-2 bg-terminal-surface border border-terminal-border rounded-lg inline-flex items-center gap-2">
+            <span className="text-terminal-accent">[@]</span>
+            <span className="text-terminal-text font-medium">{activeProfile.name}</span>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">

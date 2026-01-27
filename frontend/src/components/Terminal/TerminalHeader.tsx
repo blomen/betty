@@ -1,4 +1,16 @@
-import type { BettingContext, BankrollExposure } from '@/types';
+import type { BettingContext, BankrollExposure, Profile, ProfileCreate, ProfileUpdate } from '@/types';
+import { ProfileSelector } from './ProfileSelector';
+
+interface ProfilesState {
+  profiles: Profile[];
+  activeProfile: Profile | null;
+  isLoading: boolean;
+  error: string | null;
+  createProfile: (data: ProfileCreate) => Promise<Profile>;
+  updateProfile: (id: number, data: ProfileUpdate) => Promise<Profile>;
+  activateProfile: (id: number) => Promise<Profile>;
+  deleteProfile: (id: number) => Promise<void>;
+}
 
 interface TerminalHeaderProps {
   context: BettingContext;
@@ -7,6 +19,7 @@ interface TerminalHeaderProps {
   onClear: () => void;
   onRefresh: () => void;
   onShowBalanceBreakdown: () => void;
+  profilesState: ProfilesState;
 }
 
 export function TerminalHeader({
@@ -16,6 +29,7 @@ export function TerminalHeader({
   onClear,
   onRefresh,
   onShowBalanceBreakdown,
+  profilesState,
 }: TerminalHeaderProps) {
   const arbCount = context.opportunities.filter(o => o.type === 'arbitrage').length;
   const valueCount = context.opportunities.filter(o => o.type === 'value').length;
@@ -69,27 +83,40 @@ export function TerminalHeader({
         </div>
       </div>
 
-      {/* Right: Actions */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={onRefresh}
-          disabled={isLoading}
-          className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-text
-                     hover:bg-terminal-border/50 transition-colors
-                     disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Refresh data"
-        >
-          {isLoading ? '[...]' : '[refresh]'}
-        </button>
+      {/* Right: Profile selector and actions */}
+      <div className="flex items-center gap-3">
+        {/* Profile selector */}
+        <ProfileSelector
+          profiles={profilesState.profiles}
+          activeProfile={profilesState.activeProfile}
+          onActivate={async (id) => { await profilesState.activateProfile(id); }}
+          onCreate={profilesState.createProfile}
+          onUpdate={async (id, data) => { await profilesState.updateProfile(id, data); }}
+          onDelete={profilesState.deleteProfile}
+        />
 
-        <button
-          onClick={onClear}
-          className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-red
-                     hover:bg-terminal-border/50 transition-colors"
-          title="Clear chat"
-        >
-          [clear]
-        </button>
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onRefresh}
+            disabled={isLoading}
+            className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-text
+                       hover:bg-terminal-border/50 transition-colors
+                       disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Refresh data"
+          >
+            {isLoading ? '[...]' : '[refresh]'}
+          </button>
+
+          <button
+            onClick={onClear}
+            className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-red
+                       hover:bg-terminal-border/50 transition-colors"
+            title="Clear chat"
+          >
+            [clear]
+          </button>
+        </div>
       </div>
     </div>
   );

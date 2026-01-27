@@ -171,6 +171,10 @@ class Profile(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, default="default", unique=True)
 
+    # Bankroll for this profile
+    bankroll = Column(Float, default=1000.0)
+    currency = Column(String, default="USD")
+
     # Kelly criterion
     kelly_fraction = Column(Float, default=0.25)    # Quarter Kelly
 
@@ -186,7 +190,11 @@ class Profile(Base):
     preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
 
+    # Profile state
+    is_active = Column(Boolean, default=False)      # Currently selected profile
+
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ============ Opportunities ============

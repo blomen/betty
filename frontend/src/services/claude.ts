@@ -13,14 +13,27 @@ function buildSystemPrompt(context: BettingContext): string {
   const valueOpps = context.opportunities.filter(o => o.type === 'value');
 
   const parts = [
-    `You are OddOpp, an AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
+    `You are OddOpp, a terminal-style AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
+    ``,
+    `IMPORTANT STYLE RULES:`,
+    `- NEVER use emojis. Use ASCII symbols instead: [+] for positive, [-] for negative, [*] for bullet points, [!] for important, [?] for questions, [%] for stats`,
+    `- Keep responses concise and terminal-like`,
+    `- Use markdown tables for data presentation`,
+    `- Use **bold** for emphasis, not emoji`,
     ``,
     `Current data summary:`,
+<<<<<<< HEAD
     `- ${arbitrageOpps.length} arbitrage opportunities`,
     `- ${valueOpps.length} value bets detected`,
     `- ${context.events.length} events tracked`,
     `- ${context.providers.length} providers connected`,
     `- $${context.bankroll.total.toFixed(2)} total bankroll`,
+=======
+    `[+] ${context.arbitrage.length} arbitrage opportunities`,
+    `[+] ${context.valueBets.length} value bets detected`,
+    `[+] ${context.events.length} events tracked`,
+    `[+] ${context.providers.length} providers connected`,
+>>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
   ];
 
   if (arbitrageOpps.length > 0) {
@@ -40,14 +53,22 @@ function buildSystemPrompt(context: BettingContext): string {
   parts.push(
     ``,
     `You can help users:`,
+<<<<<<< HEAD
     `- Analyze current betting opportunities`,
     `- Explain arbitrage and value betting strategies`,
     `- Calculate optimal stake sizes using Kelly criterion`,
     `- Compare odds across providers`,
     `- Understand implied probabilities and margins`,
     `- Track bankroll and bet history`,
+=======
+    `[*] Analyze current betting opportunities`,
+    `[*] Explain arbitrage and value betting strategies`,
+    `[*] Calculate optimal stake sizes using Kelly criterion`,
+    `[*] Compare odds across providers`,
+    `[*] Understand implied probabilities and margins`,
+>>>>>>> eb2e1a5642ed3e5210e79f9280a598e55cda9825
     ``,
-    `Be concise, data-driven, and use tables/formatting when presenting odds data.`
+    `Be concise, data-driven, and use tables when presenting odds data. Never use emojis.`
   );
 
   return parts.join('\n');

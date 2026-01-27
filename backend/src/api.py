@@ -683,30 +683,25 @@ async def settle_bet(bet_id: int, data: BetUpdate, db: Session = Depends(get_db)
     return {"success": True, "profit": bet.profit}
 
 
-# ============ Profile ============
+# ============ Profiles ============
 
-@app.get("/api/profile")
-async def get_profile(db: Session = Depends(get_db)):
-    """Get user profile settings."""
-    profile = db.query(Profile).filter(Profile.name == "default").first()
-
-    if not profile:
-        # Create default profile
-        profile = Profile(name="default")
-        db.add(profile)
-        db.commit()
+def profile_to_dict(profile: Profile) -> dict:
+    """Convert profile to dict response."""
+    import json
 
     # Parse preferred_counterparts JSON if exists
     preferred_counterparts = []
     if profile.preferred_counterparts:
-        import json
         try:
             preferred_counterparts = json.loads(profile.preferred_counterparts)
         except:
             pass
 
     return {
+        "id": profile.id,
         "name": profile.name,
+        "bankroll": profile.bankroll,
+        "currency": profile.currency,
         "kelly_fraction": profile.kelly_fraction,
         "min_edge_pct": profile.min_edge_pct,
         "min_arb_pct": profile.min_arb_pct,
@@ -714,20 +709,96 @@ async def get_profile(db: Session = Depends(get_db)):
         "min_retention_pct": profile.min_retention_pct,
         "preferred_counterparts": preferred_counterparts,
         "bonus_enabled": profile.bonus_enabled,
+        "is_active": profile.is_active,
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
 
 
-@app.put("/api/profile")
-async def update_profile(data: ProfileUpdate, db: Session = Depends(get_db)):
-    """Update user profile settings."""
-    import json
+@app.get("/api/profiles")
+async def list_profiles(db: Session = Depends(get_db)):
+    """List all profiles."""
+    profiles = db.query(Profile).order_by(Profile.created_at).all()
 
-    profile = db.query(Profile).filter(Profile.name == "default").first()
+    # Ensure at least one default profile exists
+    if not profiles:
+        default = Profile(name="default", is_active=True)
+        db.add(default)
+        db.commit()
+        profiles = [default]
+
+    return {
+        "profiles": [profile_to_dict(p) for p in profiles],
+        "active": next((profile_to_dict(p) for p in profiles if p.is_active), None),
+    }
+
+
+@app.get("/api/profiles/active")
+async def get_active_profile(db: Session = Depends(get_db)):
+    """Get currently active profile."""
+    profile = db.query(Profile).filter(Profile.is_active == True).first()
 
     if not profile:
-        profile = Profile(name="default")
+        # Create and activate default profile
+        profile = Profile(name="default", is_active=True)
         db.add(profile)
+        db.commit()
 
+    return profile_to_dict(profile)
+
+
+@app.post("/api/profiles")
+async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
+    """Create a new profile."""
+    # Check name uniqueness
+    existing = db.query(Profile).filter(Profile.name == data.name).first()
+    if existing:
+        raise HTTPException(400, f"Profile '{data.name}' already exists")
+
+    profile = Profile(
+        name=data.name,
+        bankroll=data.bankroll,
+        currency=data.currency,
+        kelly_fraction=data.kelly_fraction,
+        min_edge_pct=data.min_edge_pct,
+        min_arb_pct=data.min_arb_pct,
+        max_stake_pct=data.max_stake_pct,
+        is_active=False,
+    )
+    db.add(profile)
+    db.commit()
+
+    return {"success": True, "profile": profile_to_dict(profile)}
+
+
+@app.get("/api/profiles/{profile_id}")
+async def get_profile(profile_id: int, db: Session = Depends(get_db)):
+    """Get profile by ID."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, f"Profile {profile_id} not found")
+
+    return profile_to_dict(profile)
+
+
+@app.put("/api/profiles/{profile_id}")
+async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Depends(get_db)):
+    """Update profile settings."""
+    import json
+
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, f"Profile {profile_id} not found")
+
+    if data.name is not None:
+        # Check name uniqueness
+        existing = db.query(Profile).filter(Profile.name == data.name, Profile.id != profile_id).first()
+        if existing:
+            raise HTTPException(400, f"Profile name '{data.name}' already exists")
+        profile.name = data.name
+    if data.bankroll is not None:
+        profile.bankroll = data.bankroll
+    if data.currency is not None:
+        profile.currency = data.currency
     if data.kelly_fraction is not None:
         profile.kelly_fraction = data.kelly_fraction
     if data.min_edge_pct is not None:
@@ -744,6 +815,39 @@ async def update_profile(data: ProfileUpdate, db: Session = Depends(get_db)):
         profile.bonus_enabled = data.bonus_enabled
 
     db.commit()
+    return {"success": True, "profile": profile_to_dict(profile)}
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
+    """Set profile as active (deactivates others)."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, f"Profile {profile_id} not found")
+
+    # Deactivate all profiles
+    db.query(Profile).update({Profile.is_active: False})
+
+    # Activate selected
+    profile.is_active = True
+    db.commit()
+
+    return {"success": True, "profile": profile_to_dict(profile)}
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def delete_profile(profile_id: int, db: Session = Depends(get_db)):
+    """Delete a profile."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, f"Profile {profile_id} not found")
+
+    if profile.is_active:
+        raise HTTPException(400, "Cannot delete active profile. Activate another profile first.")
+
+    db.delete(profile)
+    db.commit()
+
     return {"success": True}
 
 
