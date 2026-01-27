@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -38,6 +38,50 @@ app.add_middleware(
 
 # Extraction state
 extraction_state = {"running": False, "last_run": None, "events": 0, "odds": 0}
+
+# Global pipeline instance for accessing metrics/circuit breaker/cache
+_pipeline_instance = None
+
+def get_pipeline():
+    """Get or create pipeline singleton."""
+    global _pipeline_instance
+    if _pipeline_instance is None:
+        from .pipeline import ExtractionPipeline
+        _pipeline_instance = ExtractionPipeline()
+    return _pipeline_instance
+
+
+# WebSocket connection manager for real-time progress
+class ConnectionManager:
+    """Manages WebSocket connections for real-time updates."""
+
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        """Accept and store new connection."""
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        """Remove disconnected client."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        """Broadcast message to all connected clients."""
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+
+        # Clean up disconnected clients
+        for conn in disconnected:
+            self.disconnect(conn)
+
+ws_manager = ConnectionManager()
 
 # Initialize database on startup
 @app.on_event("startup")
@@ -580,11 +624,279 @@ async def run_extraction(
     """Trigger extraction from Kambi providers."""
     if extraction_state["running"]:
         raise HTTPException(400, "Extraction already running")
-    
+
     provider_list = [p.strip() for p in providers.split(",")]
     background_tasks.add_task(run_extraction_task, provider_list, sport, max_groups)
-    
+
     return {"status": "started", "providers": provider_list, "sport": sport}
+
+
+# ============ Metrics ============
+
+@app.get("/api/metrics/history")
+async def get_metrics_history(limit: int = 10):
+    """Get historical metrics from pipeline runs."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        return {"error": "Metrics not enabled", "history": []}
+
+    history = pipeline.metrics.get_history(limit=limit)
+
+    return {
+        "history": [run.to_dict() for run in history],
+        "count": len(history)
+    }
+
+
+@app.get("/api/metrics/provider/{provider_id}")
+async def get_provider_metrics(provider_id: str, limit: int = 10):
+    """Get aggregate metrics for a specific provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        return {"error": "Metrics not enabled"}
+
+    agg = pipeline.metrics.get_provider_aggregate(provider_id, limit=limit)
+
+    return agg
+
+
+@app.get("/api/metrics/current")
+async def get_current_metrics():
+    """Get metrics for current/latest run."""
+    pipeline = get_pipeline()
+
+    if not pipeline.metrics:
+        return {"error": "Metrics not enabled"}
+
+    current = pipeline.metrics.get_current_run()
+    if current:
+        return current.to_dict()
+
+    # Get latest from history
+    history = pipeline.metrics.get_history(limit=1)
+    if history:
+        return history[0].to_dict()
+
+    return {"error": "No metrics available"}
+
+
+# ============ Circuit Breaker ============
+
+@app.get("/api/circuit-breaker/status")
+async def get_circuit_breaker_status():
+    """Get circuit breaker status for all providers."""
+    pipeline = get_pipeline()
+
+    if not pipeline.circuit_breaker:
+        return {"error": "Circuit breaker not enabled", "statuses": {}}
+
+    statuses = pipeline.circuit_breaker.get_all_statuses()
+
+    return {
+        "statuses": {
+            pid: {
+                "state": status.state.value,
+                "failure_count": status.failure_count,
+                "success_count": status.success_count,
+                "last_failure_time": status.last_failure_time,
+                "last_success_time": status.last_success_time,
+                "opened_at": status.opened_at,
+            }
+            for pid, status in statuses.items()
+        }
+    }
+
+
+@app.get("/api/circuit-breaker/status/{provider_id}")
+async def get_provider_circuit_breaker_status(provider_id: str):
+    """Get circuit breaker status for specific provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.circuit_breaker:
+        return {"error": "Circuit breaker not enabled"}
+
+    status = pipeline.circuit_breaker.get_status(provider_id)
+
+    return {
+        "provider_id": provider_id,
+        "state": status.state.value,
+        "failure_count": status.failure_count,
+        "success_count": status.success_count,
+        "last_failure_time": status.last_failure_time,
+        "last_success_time": status.last_success_time,
+        "opened_at": status.opened_at,
+    }
+
+
+@app.post("/api/circuit-breaker/reset/{provider_id}")
+async def reset_circuit_breaker(provider_id: str):
+    """Manually reset circuit breaker for provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.circuit_breaker:
+        raise HTTPException(400, "Circuit breaker not enabled")
+
+    pipeline.circuit_breaker.reset(provider_id)
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "message": "Circuit breaker reset to CLOSED"
+    }
+
+
+# ============ Cache ============
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics."""
+    pipeline = get_pipeline()
+
+    if not pipeline.cache:
+        return {"error": "Cache not enabled"}
+
+    stats = pipeline.cache.get_stats()
+
+    return stats
+
+
+@app.get("/api/cache/stats/{provider_id}")
+async def get_provider_cache_stats(provider_id: str):
+    """Get cache statistics for specific provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.cache:
+        return {"error": "Cache not enabled"}
+
+    stats = pipeline.cache.get_provider_stats(provider_id)
+
+    return {
+        "provider_id": provider_id,
+        **stats
+    }
+
+
+@app.post("/api/cache/clear")
+async def clear_cache(provider_id: Optional[str] = None):
+    """Clear cache (all or specific provider)."""
+    pipeline = get_pipeline()
+
+    if not pipeline.cache:
+        raise HTTPException(400, "Cache not enabled")
+
+    pipeline.cache.clear(provider_id=provider_id)
+
+    return {
+        "success": True,
+        "message": f"Cache cleared{' for ' + provider_id if provider_id else ' (all providers)'}"
+    }
+
+
+@app.post("/api/cache/evict-expired")
+async def evict_expired_cache():
+    """Manually evict expired cache entries."""
+    pipeline = get_pipeline()
+
+    if not pipeline.cache:
+        raise HTTPException(400, "Cache not enabled")
+
+    pipeline.cache.evict_expired()
+
+    return {
+        "success": True,
+        "message": "Expired cache entries evicted"
+    }
+
+
+# ============ Health Checks ============
+
+@app.get("/api/health-check/status")
+async def get_health_check_status():
+    """Get cached health check status for all providers."""
+    pipeline = get_pipeline()
+
+    if not pipeline.health_checker:
+        return {"error": "Health checker not enabled", "statuses": {}}
+
+    statuses = pipeline.health_checker.get_all_statuses()
+
+    return {
+        "statuses": {
+            pid: {
+                "healthy": status.healthy,
+                "response_time_ms": status.response_time_ms,
+                "error": status.error,
+                "checked_at": status.checked_at,
+            }
+            for pid, status in statuses.items()
+        }
+    }
+
+
+@app.post("/api/health-check/run/{provider_id}")
+async def run_health_check(provider_id: str, force: bool = False):
+    """Run health check for specific provider."""
+    pipeline = get_pipeline()
+
+    if not pipeline.health_checker:
+        raise HTTPException(400, "Health checker not enabled")
+
+    # Get extractor
+    extractor = pipeline.engine.get_extractor(provider_id)
+    if not extractor:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    # Run check
+    status = await pipeline.health_checker.check_provider(
+        provider_id, extractor, force=force
+    )
+
+    return {
+        "provider_id": provider_id,
+        "healthy": status.healthy,
+        "response_time_ms": status.response_time_ms,
+        "error": status.error,
+        "checked_at": status.checked_at,
+    }
+
+
+@app.post("/api/health-check/clear-cache")
+async def clear_health_check_cache(provider_id: Optional[str] = None):
+    """Clear health check cache."""
+    pipeline = get_pipeline()
+
+    if not pipeline.health_checker:
+        raise HTTPException(400, "Health checker not enabled")
+
+    pipeline.health_checker.clear_cache(provider_id=provider_id)
+
+    return {
+        "success": True,
+        "message": f"Health check cache cleared{' for ' + provider_id if provider_id else ' (all)'}"
+    }
+
+
+# ============ WebSocket Progress ============
+
+@app.websocket("/ws/extraction")
+async def websocket_extraction_progress(websocket: WebSocket):
+    """WebSocket endpoint for real-time extraction progress."""
+    await ws_manager.connect(websocket)
+
+    try:
+        # Keep connection alive
+        while True:
+            # Wait for client message (ping)
+            data = await websocket.receive_text()
+
+            # Echo back to confirm connection
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
 
 
 # Entry point for development

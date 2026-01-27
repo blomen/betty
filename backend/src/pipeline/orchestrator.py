@@ -97,6 +97,17 @@ class ExtractionPipeline:
         else:
             self.health_checker = None
 
+        # Initialize graceful shutdown if enabled
+        if orchestrator_config.graceful_shutdown.enabled:
+            import signal
+            self._shutdown_event = asyncio.Event()
+            self._shutdown_timeout = orchestrator_config.graceful_shutdown.shutdown_timeout_seconds
+            self._cancel_pending = orchestrator_config.graceful_shutdown.cancel_pending_tasks
+            self._register_signal_handlers()
+            logger.info("[Orchestrator] Graceful shutdown enabled")
+        else:
+            self._shutdown_event = None
+
     def _ensure_providers(self):
         """Create provider records in DB if they don't exist."""
         # Get all providers from engine (returns dict of ProviderConfig dicts)
@@ -111,6 +122,18 @@ class ExtractionPipeline:
             if not self.session.query(Provider).filter(Provider.id == pid).first():
                 self.session.add(Provider(id=pid, name=name, balance=0))
         self.session.commit()
+
+    def _register_signal_handlers(self):
+        """Register SIGINT/SIGTERM handlers for graceful shutdown."""
+        import signal
+
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            if self._shutdown_event:
+                self._shutdown_event.set()
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
     async def _extract_provider_with_retry(
         self,
@@ -140,6 +163,11 @@ class ExtractionPipeline:
         last_error = None
 
         for attempt in range(retry_config.max_retries):
+            # Check for shutdown signal
+            if self._shutdown_event and self._shutdown_event.is_set():
+                logger.info(f"[{provider_id}] Shutdown requested, aborting extraction")
+                raise asyncio.CancelledError("Shutdown requested")
+
             try:
                 result = await self._extract_provider(provider_id, kambi_sports, limit)
 
@@ -251,169 +279,185 @@ class ExtractionPipeline:
 
         log_progress("Pipeline started")
 
-        # Extract from Polymarket
-        if polymarket:
-            log_progress("Extracting Polymarket (truth source)...")
-            poly_start = time.time()
+        try:
+            # Check for shutdown at start
+            if self._shutdown_event and self._shutdown_event.is_set():
+                log_progress("Shutdown signal detected, aborting pipeline")
+                return results
 
-            poly_results = await self._extract_polymarket(max_events_per_sport)
-            results["polymarket"] = poly_results
+            # Extract from Polymarket
+            if polymarket:
+                log_progress("Extracting Polymarket (truth source)...")
+                poly_start = time.time()
 
-            # Update metrics
-            if self.metrics:
-                self.metrics.set_polymarket_stats(
-                    events=poly_results.get("events_processed", 0),
-                    odds=poly_results.get("odds_processed", 0)
+                poly_results = await self._extract_polymarket(max_events_per_sport)
+                results["polymarket"] = poly_results
+
+                # Update metrics
+                if self.metrics:
+                    self.metrics.set_polymarket_stats(
+                        events=poly_results.get("events_processed", 0),
+                        odds=poly_results.get("odds_processed", 0)
+                    )
+
+                poly_elapsed = time.time() - poly_start
+                log_progress(
+                    f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
                 )
 
-            poly_elapsed = time.time() - poly_start
-            log_progress(
-                f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
-            )
+            # Extract from other providers in parallel
+            target_providers = providers if providers is not None else self.engine.get_enabled_providers()
+            kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
-        # Extract from other providers in parallel
-        target_providers = providers if providers is not None else self.engine.get_enabled_providers()
-        kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
-
-        if target_providers:
-            # Filter providers by circuit breaker status and health checks
-            available_providers = []
-            for pid in target_providers:
-                # Check circuit breaker
-                if self.circuit_breaker and self.circuit_breaker.is_open(pid):
-                    log_progress(f"[{pid}] SKIPPED: Circuit breaker open")
-                    continue
-
-                # Health check if enabled
-                if (self.health_checker and
-                    self.orchestrator_config.health_check.check_before_extraction):
-                    extractor = self.engine.get_extractor(pid)
-                    health = await self.health_checker.check_provider(pid, extractor)
-
-                    if not health.healthy:
-                        log_progress(f"[{pid}] SKIPPED: Health check failed - {health.error}")
-                        if self.circuit_breaker:
-                            self.circuit_breaker.record_failure(pid)
+            if target_providers:
+                # Filter providers by circuit breaker status and health checks
+                available_providers = []
+                for pid in target_providers:
+                    # Check circuit breaker
+                    if self.circuit_breaker and self.circuit_breaker.is_open(pid):
+                        log_progress(f"[{pid}] SKIPPED: Circuit breaker open")
                         continue
 
-                available_providers.append(pid)
+                    # Health check if enabled
+                    if (self.health_checker and
+                        self.orchestrator_config.health_check.check_before_extraction):
+                        extractor = self.engine.get_extractor(pid)
+                        health = await self.health_checker.check_provider(pid, extractor)
 
-            if not available_providers:
-                log_progress("No providers available (all circuits open)")
-            else:
-                log_progress(f"Extracting {len(available_providers)} providers...")
+                        if not health.healthy:
+                            log_progress(f"[{pid}] SKIPPED: Health check failed - {health.error}")
+                            if self.circuit_breaker:
+                                self.circuit_breaker.record_failure(pid)
+                            continue
 
-            # Create tasks for parallel extraction
-            async def extract_with_error_handling(provider_id):
-                # Start provider metrics
-                if self.metrics:
-                    self.metrics.start_provider(provider_id)
+                    available_providers.append(pid)
 
-                try:
-                    # Check circuit breaker before attempting call
-                    if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
-                        raise Exception("Circuit breaker open")
+                if not available_providers:
+                    log_progress("No providers available (all circuits open)")
+                else:
+                    log_progress(f"Extracting {len(available_providers)} providers...")
 
-                    # Use retry wrapper
-                    provider_results = await self._extract_provider_with_retry(
-                        provider_id, kambi_sports, max_events_per_sport
-                    )
-
-                    # End provider metrics on success
+                # Create tasks for parallel extraction
+                async def extract_with_error_handling(provider_id):
+                    # Start provider metrics
                     if self.metrics:
-                        self.metrics.end_provider(provider_id, success=True)
+                        self.metrics.start_provider(provider_id)
 
-                    return provider_id, provider_results
-                except Exception as e:
-                    logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
+                    try:
+                        # Check circuit breaker before attempting call
+                        if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
+                            raise Exception("Circuit breaker open")
 
-                    # End provider metrics on failure
-                    if self.metrics:
-                        self.metrics.end_provider(provider_id, success=False, error=str(e))
+                        # Use retry wrapper
+                        provider_results = await self._extract_provider_with_retry(
+                            provider_id, kambi_sports, max_events_per_sport
+                        )
 
-                    # Record failure in circuit breaker
-                    if self.circuit_breaker:
-                        self.circuit_breaker.record_failure(provider_id)
+                        # End provider metrics on success
+                        if self.metrics:
+                            self.metrics.end_provider(provider_id, success=True)
 
-                    return provider_id, {
-                        "events_processed": 0,
-                        "events_new": 0,
-                        "odds_processed": 0,
-                        "odds_new": 0,
-                        "error": str(e)
+                        return provider_id, provider_results
+                    except Exception as e:
+                        logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
+
+                        # End provider metrics on failure
+                        if self.metrics:
+                            self.metrics.end_provider(provider_id, success=False, error=str(e))
+
+                        # Record failure in circuit breaker
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_failure(provider_id)
+
+                        return provider_id, {
+                            "events_processed": 0,
+                            "events_new": 0,
+                            "odds_processed": 0,
+                            "odds_new": 0,
+                            "error": str(e)
+                        }
+
+                # Wrap provider extraction with semaphore for concurrency control
+                async def extract_with_concurrency_limit(provider_id):
+                    async with self.provider_semaphore:
+                        return await extract_with_error_handling(provider_id)
+
+                # Run all available providers with concurrency limit
+                provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
+                provider_results_list = await asyncio.gather(*provider_tasks)
+
+                # Collect results and log each provider
+                for provider_id, provider_result in provider_results_list:
+                    results["providers"][provider_id] = provider_result
+
+                    if "error" in provider_result:
+                        log_progress(f"[{provider_id}] FAILED: {provider_result['error']}")
+                    else:
+                        sport_errors = provider_result.get("sport_errors", [])
+                        sports_ok = provider_result.get("sports_succeeded", 0)
+                        sports_total = provider_result.get("sports_attempted", 0)
+
+                        status = f"{sports_ok}/{sports_total} sports"
+                        if sport_errors:
+                            status += f" ({len(sport_errors)} failed)"
+
+                        log_progress(
+                            f"[{provider_id}] {provider_result['events_processed']} events, {status}"
+                        )
+
+            self.session.commit()
+
+            # Count totals
+            results["total_events"] = self.session.query(Event).count()
+            results["matched_events"] = self._count_matched_events()
+
+            # End metrics collection and add to results
+            if self.metrics:
+                # Get current run BEFORE ending it
+                current_run = self.metrics.get_current_run()
+                self.metrics.end_run()
+
+                # Use the saved reference (now completed)
+                if current_run:
+                    results["metrics"] = {
+                        "run_id": run_id,
+                        "duration_seconds": current_run.duration_seconds,
+                        "total_events": current_run.total_events,
+                        "providers_succeeded": current_run.providers_succeeded,
+                        "providers_failed": current_run.providers_failed,
+                        "overall_success_rate": current_run.overall_success_rate,
                     }
 
-            # Wrap provider extraction with semaphore for concurrency control
-            async def extract_with_concurrency_limit(provider_id):
-                async with self.provider_semaphore:
-                    return await extract_with_error_handling(provider_id)
-
-            # Run all available providers with concurrency limit
-            provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
-            provider_results_list = await asyncio.gather(*provider_tasks)
-
-            # Collect results and log each provider
-            for provider_id, provider_result in provider_results_list:
-                results["providers"][provider_id] = provider_result
-
-                if "error" in provider_result:
-                    log_progress(f"[{provider_id}] FAILED: {provider_result['error']}")
-                else:
-                    sport_errors = provider_result.get("sport_errors", [])
-                    sports_ok = provider_result.get("sports_succeeded", 0)
-                    sports_total = provider_result.get("sports_attempted", 0)
-
-                    status = f"{sports_ok}/{sports_total} sports"
-                    if sport_errors:
-                        status += f" ({len(sport_errors)} failed)"
-
-                    log_progress(
-                        f"[{provider_id}] {provider_result['events_processed']} events, {status}"
-                    )
-
-        self.session.commit()
-
-        # Count totals
-        results["total_events"] = self.session.query(Event).count()
-        results["matched_events"] = self._count_matched_events()
-
-        # End metrics collection and add to results
-        if self.metrics:
-            # Get current run BEFORE ending it
-            current_run = self.metrics.get_current_run()
-            self.metrics.end_run()
-
-            # Use the saved reference (now completed)
-            if current_run:
-                results["metrics"] = {
-                    "run_id": run_id,
-                    "duration_seconds": current_run.duration_seconds,
-                    "total_events": current_run.total_events,
-                    "providers_succeeded": current_run.providers_succeeded,
-                    "providers_failed": current_run.providers_failed,
-                    "overall_success_rate": current_run.overall_success_rate,
+            # Add circuit breaker stats
+            if self.circuit_breaker:
+                statuses = self.circuit_breaker.get_all_statuses()
+                results["circuit_breaker"] = {
+                    pid: {
+                        "state": status.state.value,
+                        "failure_count": status.failure_count,
+                        "success_count": status.success_count,
+                    }
+                    for pid, status in statuses.items()
                 }
 
-        # Add circuit breaker stats
-        if self.circuit_breaker:
-            statuses = self.circuit_breaker.get_all_statuses()
-            results["circuit_breaker"] = {
-                pid: {
-                    "state": status.state.value,
-                    "failure_count": status.failure_count,
-                    "success_count": status.success_count,
-                }
-                for pid, status in statuses.items()
-            }
+            # Add cache stats
+            if self.cache:
+                results["cache_stats"] = self.cache.get_stats()
 
-        # Add cache stats
-        if self.cache:
-            results["cache_stats"] = self.cache.get_stats()
+        except asyncio.CancelledError:
+            log_progress("Pipeline cancelled due to shutdown signal")
+            results["cancelled"] = True
+            return results
 
-        total_elapsed = time.time() - pipeline_start_time
-        log_progress(f"Pipeline complete in {total_elapsed:.1f}s")
-        log_progress(f"Total events in DB: {results['total_events']}")
-        log_progress(f"Matched events: {results['matched_events']}")
+        except Exception as e:
+            log_progress(f"Pipeline error: {e}")
+            raise
+
+        finally:
+            total_elapsed = time.time() - pipeline_start_time
+            log_progress(f"Pipeline complete in {total_elapsed:.1f}s")
+            log_progress(f"Total events in DB: {results['total_events']}")
+            log_progress(f"Matched events: {results['matched_events']}")
 
         return results
 
