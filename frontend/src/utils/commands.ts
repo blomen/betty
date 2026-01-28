@@ -15,83 +15,105 @@ export interface CommandRegistry {
 }
 
 export function createCommandRegistry(handlers: {
-  onShowOpportunities: () => void;
-  onShowBets: () => void;
-  onShowBalanceBreakdown: () => void;
+  onShowOpportunities: (args: string) => Promise<void>;
+  onShowBets: (args: string) => Promise<void>;
+  onShowBalanceBreakdown: () => Promise<void>;
+  onShowStats: () => Promise<void>;
   onRefresh: () => void;
   onClear: () => void;
   onRunExtraction: (providers?: string) => Promise<void>;
   onShowProviders: () => void;
   onShowHealth: () => void;
+  onSettleBet: (args: string) => Promise<void>;
+  onPlaceBet: (args: string) => Promise<void>;
+  onProfileCommand: (args: string) => Promise<void>;
 }): CommandRegistry {
   return {
     // Data & Extraction
-    extractall: {
-      name: 'extractall',
-      description: 'Run extraction on all providers',
+    extract: {
+      name: 'extract',
+      description: 'Extract ALL sports/leagues from configured providers (or specify: /extract unibet,leovegas)',
       category: 'Extraction',
       execute: async () => {
         await handlers.onRunExtraction();
-      },
-    },
-    extract: {
-      name: 'extract',
-      description: 'Run extraction (usage: /extract unibet,leovegas)',
-      category: 'Extraction',
-      execute: async () => {
-        // Will be called with args
       },
     },
 
     // Opportunities & Bets
     opportunities: {
       name: 'opportunities',
-      description: 'Show opportunities overlay',
+      description: 'List opportunities with filters (e.g., --type arb --sport football)',
       category: 'Betting',
-      execute: () => {
-        handlers.onShowOpportunities();
+      execute: async () => {
+        await handlers.onShowOpportunities('');
       },
     },
     arb: {
       name: 'arb',
       description: 'Show arbitrage opportunities',
       category: 'Betting',
-      execute: () => {
-        handlers.onShowOpportunities();
+      execute: async () => {
+        await handlers.onShowOpportunities('--type arb');
       },
     },
     value: {
       name: 'value',
       description: 'Show value bets',
       category: 'Betting',
-      execute: () => {
-        handlers.onShowOpportunities();
+      execute: async () => {
+        await handlers.onShowOpportunities('--type value');
       },
     },
     bets: {
       name: 'bets',
-      description: 'Show bets panel',
+      description: 'Show bets with filters (e.g., --status pending)',
       category: 'Betting',
-      execute: () => {
-        handlers.onShowBets();
+      execute: async () => {
+        await handlers.onShowBets('');
       },
     },
 
     // Bankroll
     bankroll: {
       name: 'bankroll',
-      description: 'Show bankroll breakdown',
+      description: 'Show bankroll breakdown table',
       category: 'Bankroll',
-      execute: () => {
-        handlers.onShowBalanceBreakdown();
+      execute: async () => {
+        await handlers.onShowBalanceBreakdown();
       },
     },
     balance: {
       name: 'balance',
       description: 'Show balance breakdown (alias for /bankroll)',
       category: 'Bankroll',
-      execute: () => {
-        handlers.onShowBalanceBreakdown();
+      execute: async () => {
+        await handlers.onShowBalanceBreakdown();
+      },
+    },
+    stats: {
+      name: 'stats',
+      description: 'Show betting statistics',
+      category: 'Analytics',
+      execute: async () => {
+        await handlers.onShowStats();
+      },
+    },
+
+    // Actions
+    'place-bet': {
+      name: 'place-bet',
+      description: 'Place bet on opportunity (usage: /place-bet <opp#> <stake> [provider])',
+      category: 'Actions',
+      execute: async () => {
+        // Will be handled with args
+      },
+    },
+    'settle-bet': {
+      name: 'settle-bet',
+      description: 'Settle pending bet (usage: /settle-bet <id> won/lost/void)',
+      category: 'Actions',
+      execute: async () => {
+        // Will be handled with args
       },
     },
 
@@ -126,6 +148,16 @@ export function createCommandRegistry(handlers: {
       category: 'System',
       execute: () => {
         handlers.onClear();
+      },
+    },
+
+    // Profile Management
+    profile: {
+      name: 'profile',
+      description: 'Manage profiles (usage: /profile list|switch|create|delete <name>)',
+      category: 'Profile',
+      execute: async () => {
+        // Will be handled with args
       },
     },
 

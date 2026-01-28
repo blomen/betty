@@ -221,17 +221,23 @@ export const api = {
     return fetchJson<ExtractionStatus>('/extraction/status');
   },
 
+  async getExtractionProgress(): Promise<ExtractionStatus> {
+    return fetchJson<ExtractionStatus>('/extraction/progress');
+  },
+
   async runExtraction(
-    providers = 'unibet,leovegas,casumo',
-    sport = 'football',
-    maxGroups = 5
-  ): Promise<{ status: string; providers: string[]; sport: string }> {
-    const params = new URLSearchParams({
-      providers,
-      sport,
-      max_groups: maxGroups.toString(),
-    });
-    return fetchJson(`/extraction/run?${params}`, { method: 'POST' });
+    providers?: string  // Optional: "unibet,leovegas" or undefined for all
+  ): Promise<{ status: string; providers: string | string[] }> {
+    const params = new URLSearchParams();
+    if (providers) {
+      params.append('providers', providers);
+    }
+
+    const url = params.toString()
+      ? `/extraction/run?${params}`
+      : '/extraction/run';
+
+    return fetchJson(url, { method: 'POST' });
   },
 
   // ============ Metrics ============

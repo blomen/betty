@@ -25,9 +25,9 @@ export function useExtraction(pollInterval = 5000) {
   }, []);
 
   const runExtraction = useCallback(
-    async (providers?: string, sport?: string, maxGroups?: number) => {
+    async (providers?: string) => {
       try {
-        await api.runExtraction(providers, sport, maxGroups);
+        await api.runExtraction(providers);
         await refresh();
       } catch (err) {
         throw err instanceof Error ? err : new Error('Failed to run extraction');
