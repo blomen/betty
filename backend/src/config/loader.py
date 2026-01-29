@@ -133,13 +133,26 @@ class GracefulShutdownConfig(BaseModel):
     cancel_pending_tasks: bool = True
 
 
+class ProviderGroupConfig(BaseModel):
+    """Provider group with shared resource constraints."""
+    name: str
+    retriever_types: List[str]       # ["kambi"] or ["gecko_v2", "spectate"]
+    max_concurrent: int = 3
+    shared_resource: str = "none"    # "api", "browser", "none"
+    health_check_delay_ms: int = 0   # Delay between health checks in group
+
+
 class OrchestratorConfig(BaseModel):
     """Global orchestrator configuration."""
     max_concurrent_providers: int = 5
     max_concurrent_sports_per_provider: int = 3
+    max_browser_instances: int = 4  # Global browser limit for pool manager
     provider_timeout: int = 300
     sport_timeout: int = 60
     batch_commit_size: int = 100
+
+    # Provider group configurations for type-aware scheduling
+    provider_groups: List[ProviderGroupConfig] = Field(default_factory=list)
 
     # Enhancement configurations
     retry: RetryConfig = Field(default_factory=RetryConfig)

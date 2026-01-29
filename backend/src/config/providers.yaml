@@ -4,8 +4,44 @@
 # Global orchestrator configuration
 orchestrator:
   # Concurrency limits
-  max_concurrent_providers: 5          # Max providers running simultaneously
-  max_concurrent_sports_per_provider: 3 # Max sports per provider
+  # Type-aware scheduling allows higher total concurrent providers by mixing types
+  max_concurrent_providers: 10         # Increased - mixing allows higher total
+  max_concurrent_sports_per_provider: 4 # Max sports per provider
+  max_browser_instances: 4             # Global browser limit
+
+  # Provider groups for type-aware scheduling
+  # Groups providers by shared backend/resource to prevent rate limits and contention
+  provider_groups:
+    - name: kambi_api
+      retriever_types: [kambi]
+      max_concurrent: 2                # Same API backend - prevents 429s
+      shared_resource: api
+      health_check_delay_ms: 500       # 500ms between Kambi health checks
+
+    - name: gecko_browser
+      retriever_types: [gecko_v2]
+      max_concurrent: 2                # Browser + shared Betsson infra
+      shared_resource: browser
+
+    - name: spectate_browser
+      retriever_types: [spectate]
+      max_concurrent: 2                # Browser-based
+      shared_resource: browser
+
+    - name: comeon_group
+      retriever_types: [custom]
+      max_concurrent: 2                # Heavy - multi-page internal parallelism
+      shared_resource: browser
+
+    - name: rest_api
+      retriever_types: [pinnacle, altenar]
+      max_concurrent: 5                # Independent APIs - no limits
+      shared_resource: none
+
+    - name: sbtech_browser
+      retriever_types: [sbtech, snabbare]
+      max_concurrent: 2                # Browser-based
+      shared_resource: browser
 
   # Timeouts (seconds)
   provider_timeout: 300                # Per-provider timeout
@@ -39,7 +75,7 @@ orchestrator:
   health_check:
     enabled: true
     strategy: on_demand
-    timeout_seconds: 10.0
+    timeout_seconds: 15.0              # Increased from 10s for browser-based providers
     check_before_extraction: true
 
   metrics:
@@ -214,6 +250,7 @@ providers:
     domain: 888sport.se
     retriever_type: spectate
     api_base: https://spectate-web.888sport.se/spectate
+    site_url: https://www.888sport.se
     params:
       tournaments:
         <<: *spectate_tournaments
@@ -287,12 +324,13 @@ providers:
     retriever_type: sbtech
     site_url: https://www.bethard.com
 
-  fastbet:
-    id: fastbet
-    name: Fastbet
-    domain: fastbet.com
-    retriever_type: sbtech
-    site_url: https://www.fastbet.com
+  # DISABLED: Fastbet uses SpringBuilder/YoSpace (not SBTech), needs custom implementation
+  # fastbet:
+  #   id: fastbet
+  #   name: Fastbet
+  #   domain: fastbet.com
+  #   retriever_type: sbtech
+  #   site_url: https://www.fastbet.com
 
   comeon:
     id: comeon
@@ -302,13 +340,13 @@ providers:
     site_url: https://www.comeon.com
 
     # Breadth controls
-    max_leagues: 999  # Number of leagues to extract (999 = all available leagues ~157, ~1000 events)
+    max_leagues: 50  # Limit leagues for faster extraction
     concurrent_leagues: 5  # Number of parallel league extractions
 
-    # Depth controls (OPTIMIZED)
-    extract_full_markets: true  # Enable event detail page extraction
-    concurrent_event_details: 8  # OPTIMIZED: Reduced from 15 to 8 for better performance
-    detail_extraction_filter: "all"  # Extract all events for maximum coverage
+    # Depth controls (DISABLED for validation - causes timeouts)
+    extract_full_markets: false  # Disable event detail page extraction
+    concurrent_event_details: 8
+    detail_extraction_filter: "none"
 
     # Multi-sport support
     sports_to_extract: "all"  # "all" or list of specific sports
@@ -400,7 +438,7 @@ active:
   - nordicbet
   # Public API providers
   - pinnacle
-  - polymarket
+  # DISABLED: polymarket - needs league-level extraction (architecture rework)
+  # DISABLED: fastbet - uses SpringBuilder/YoSpace (not SBTech)
   # SBTech providers (browser automation)
   - bethard
-  - fastbet

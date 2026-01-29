@@ -12,6 +12,7 @@ from typing import Callable
 from ..factory import ExtractorFactory
 from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event
+from .pool_manager import ProviderPoolManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +47,24 @@ class ExtractionPipeline:
 
         # Get orchestrator config
         orchestrator_config = self.engine.config_loader.get_orchestrator_config()
+        self.orchestrator_config = orchestrator_config
 
-        # Create provider semaphore for concurrency control
+        # Create provider semaphore for global concurrency control (fallback)
         self.provider_semaphore = asyncio.Semaphore(
             orchestrator_config.max_concurrent_providers
         )
-        self.orchestrator_config = orchestrator_config
+
+        # Initialize pool manager for type-aware scheduling
+        if orchestrator_config.provider_groups:
+            # Use config_loader.providers which has ProviderConfig objects
+            self.pool_manager = ProviderPoolManager(
+                orchestrator_config,
+                self.engine.config_loader.providers
+            )
+            logger.info("[Orchestrator] Type-aware pool manager enabled")
+        else:
+            self.pool_manager = None
+            logger.info("[Orchestrator] Using flat semaphore (no provider groups configured)")
 
         # Initialize metrics collector if enabled
         if orchestrator_config.metrics.enabled:
@@ -226,7 +239,7 @@ class ExtractionPipeline:
         self,
         polymarket: bool = True,
         providers: list[str] | None = None,
-        max_events_per_sport: int = 100,
+        max_events_per_sport: int = 9999,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict:
         """
@@ -235,7 +248,7 @@ class ExtractionPipeline:
         Args:
             polymarket: Extract from Polymarket (default: True)
             providers: List of provider IDs to extract (default: all enabled)
-            max_events_per_sport: Limit events per sport (default: 100)
+            max_events_per_sport: Limit events per sport (default: 9999, effectively unlimited)
             on_progress: Optional callback for progress updates
 
         Returns:
@@ -261,6 +274,7 @@ class ExtractionPipeline:
             "polymarket": {"events": 0, "odds": 0},
             "providers": {},
             "total_events": 0,
+            "total_odds": 0,
             "matched_events": 0,
         }
 
@@ -318,9 +332,16 @@ class ExtractionPipeline:
                         log_progress(f"[{pid}] SKIPPED: Circuit breaker open")
                         continue
 
-                    # Health check if enabled
+                    # Health check if enabled (with group-aware delays)
                     if (self.health_checker and
                         self.orchestrator_config.health_check.check_before_extraction):
+
+                        # Add delay between health checks for same-API groups
+                        if self.pool_manager:
+                            delay = self.pool_manager.get_health_check_delay(pid)
+                            if delay > 0:
+                                await asyncio.sleep(delay)
+
                         extractor = self.engine.get_extractor(pid)
                         health = await self.health_checker.check_provider(pid, extractor)
 
@@ -335,7 +356,12 @@ class ExtractionPipeline:
                 if not available_providers:
                     log_progress("No providers available (all circuits open)")
                 else:
-                    log_progress(f"Extracting {len(available_providers)} providers...")
+                    # Reorder providers for optimal type mixing
+                    if self.pool_manager:
+                        available_providers = self.pool_manager.get_interleaved_order(available_providers)
+                        log_progress(f"Extracting {len(available_providers)} providers (type-aware scheduling)...")
+                    else:
+                        log_progress(f"Extracting {len(available_providers)} providers...")
 
                 # Create tasks for parallel extraction
                 async def extract_with_error_handling(provider_id):
@@ -377,10 +403,16 @@ class ExtractionPipeline:
                             "error": str(e)
                         }
 
-                # Wrap provider extraction with semaphore for concurrency control
+                # Wrap provider extraction with type-aware concurrency control
                 async def extract_with_concurrency_limit(provider_id):
-                    async with self.provider_semaphore:
-                        return await extract_with_error_handling(provider_id)
+                    if self.pool_manager:
+                        # Use type-aware pool manager
+                        async with self.pool_manager.acquire(provider_id):
+                            return await extract_with_error_handling(provider_id)
+                    else:
+                        # Fallback to global semaphore
+                        async with self.provider_semaphore:
+                            return await extract_with_error_handling(provider_id)
 
                 # Run all available providers with concurrency limit
                 provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
@@ -407,8 +439,20 @@ class ExtractionPipeline:
 
             self.session.commit()
 
+            # Run opportunity analysis
+            log_progress("Running opportunity analysis...")
+            from .analyzer import OpportunityAnalyzer
+            analyzer = OpportunityAnalyzer(self.session)
+            analysis_results = analyzer.run()
+            results["analysis"] = analysis_results
+            log_progress(
+                f"Analysis complete: {analysis_results['arbitrage']['found']} arbs, "
+                f"{analysis_results['value']['found']} value bets"
+            )
+
             # Count totals
             results["total_events"] = self.session.query(Event).count()
+            results["total_odds"] = self.session.query(Odds).count()
             results["matched_events"] = self._count_matched_events()
 
             # End metrics collection and add to results
@@ -443,6 +487,10 @@ class ExtractionPipeline:
             # Add cache stats
             if self.cache:
                 results["cache_stats"] = self.cache.get_stats()
+
+            # Add pool manager stats
+            if self.pool_manager:
+                results["pool_stats"] = self.pool_manager.get_stats()
 
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
