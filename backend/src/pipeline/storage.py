@@ -276,16 +276,23 @@ def upsert_odds(
     Returns:
         1 if new odds inserted, 0 if updated
     """
-    existing = session.query(Odds).filter(
+    # Build filter including point (handles NULL correctly)
+    filters = [
         Odds.event_id == event_id,
         Odds.provider_id == provider,
         Odds.market == market,
         Odds.outcome == outcome,
-    ).first()
+    ]
+    # Point filter: use is_(None) for NULL comparison
+    if point is None:
+        filters.append(Odds.point.is_(None))
+    else:
+        filters.append(Odds.point == point)
+
+    existing = session.query(Odds).filter(*filters).first()
 
     if existing:
         existing.odds = odds
-        existing.point = point
         existing.updated_at = datetime.now(timezone.utc)
         return 0
     else:
