@@ -265,6 +265,26 @@ class OpportunityScanner:
 
         return dict(grouped)
 
+    def _count_outcomes_per_provider(
+        self, odds_by_outcome: dict[str, list[dict]]
+    ) -> dict[str, int]:
+        """
+        Count how many outcomes each provider has in this market.
+
+        Used to detect market type mismatches (e.g., 3-way European handicap
+        vs 2-way Asian handicap).
+
+        Returns:
+            {provider_id: outcome_count}
+        """
+        provider_outcomes = defaultdict(set)
+
+        for outcome, provider_list in odds_by_outcome.items():
+            for po in provider_list:
+                provider_outcomes[po["provider"]].add(outcome)
+
+        return {p: len(outcomes) for p, outcomes in provider_outcomes.items()}
+
     def _find_value_in_market(
         self,
         event_id: str,
@@ -276,6 +296,16 @@ class OpportunityScanner:
     ) -> list[ValueBet]:
         """Find value bets in a single market."""
         values = []
+
+        # Count outcomes per provider to detect market type mismatch
+        provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
+
+        # Find which sharp has data and their outcome count
+        sharp_outcome_count = 0
+        for sharp in sharp_priority:
+            if sharp in provider_outcome_counts:
+                sharp_outcome_count = provider_outcome_counts[sharp]
+                break
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Get fair odds (de-vigged and/or blended)
@@ -295,6 +325,12 @@ class OpportunityScanner:
             for po in provider_odds_list:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue  # Don't compare sharp vs sharp
+
+                # Skip if market types don't match (different outcome counts)
+                soft_count = provider_outcome_counts.get(po["provider"], 0)
+                if soft_count > 0 and sharp_outcome_count > 0:
+                    if soft_count != sharp_outcome_count:
+                        continue  # Don't compare 3-way vs 2-way markets
 
                 vb = find_value(
                     event_id=event_id,
@@ -322,6 +358,23 @@ class OpportunityScanner:
     ) -> list[BonusOpportunity]:
         """Find bonus opportunities in a single market."""
         opportunities = []
+
+        # Count outcomes per provider to detect market type mismatch
+        # (e.g., 3-way European handicap vs 2-way Asian handicap)
+        provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
+        anchor_outcome_count = provider_outcome_counts.get(anchor_provider, 0)
+
+        # Find which sharp has data and their outcome count
+        sharp_outcome_count = 0
+        for sharp in counterpart_providers:
+            if sharp in provider_outcome_counts:
+                sharp_outcome_count = provider_outcome_counts[sharp]
+                break
+
+        # Skip if market types don't match (different outcome counts)
+        if anchor_outcome_count > 0 and sharp_outcome_count > 0:
+            if anchor_outcome_count != sharp_outcome_count:
+                return []  # Don't compare 3-way vs 2-way markets
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Find anchor provider odds for this outcome
