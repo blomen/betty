@@ -251,13 +251,72 @@ def normalize_market(market: str) -> str:
     ]):
         return '1x2'
 
-    # Over/Under / Totals (Swedish: över/under)
+    # Team-specific totals/props (MUST check BEFORE general over/under)
+    # Swedish patterns:
+    #   - "Totala mål för X" (Total goals for X)
+    #   - "Totala kort - Brighton" (Total cards - Brighton)
+    #   - "Totala utförda fouls av Brighton" (Total fouls by Brighton)
+    # English patterns:
+    #   - "Total Goals by Brighton"
+    #   - "Brighton total points"
     if any(kw in market for kw in [
-        'over/under', 'o/u', 'total', 'över/under', 'mål över', 'mål under',
-        'totalt antal', 'over ', 'under ', 'points total', 'goals total',
-        'runs total', 'antal mål', 'sammanlagt', 'poäng totalt'
+        # Swedish team-specific patterns
+        'mål för', 'poäng för', 'totalt för', 'total för',  # goals/points for
+        ' av ',  # "fouls av Brighton" (fouls by)
+        'kort -', 'kort–',  # "kort - Brighton" (cards -)
+        # English team-specific patterns
+        ' for ', ' by ',  # "goals by Brighton", "total for Brighton"
+        'team total', 'lag totalt',  # explicit team total
+    ]):
+        return 'team_total'
+
+    # Other stat-specific totals (corners, shots, cards, fouls, saves, etc.)
+    # These should NOT match against match goals from Pinnacle
+    if any(kw in market for kw in [
+        'corner', 'hörn',  # Corners
+        'shot', 'skott',  # Shots
+        'card', 'kort',  # Cards
+        'foul',  # Fouls
+        'booking', 'varning',  # Bookings
+        'offside',  # Offsides
+        'throw', 'inkast',  # Throw-ins
+        'save', 'räddning',  # Saves (goalkeeper)
+        'målvakt', 'keeper', 'goalkeeper',  # Goalkeeper stats
+        'pass', 'passning',  # Passes
+        'tackle', 'tackling',  # Tackles
+        'clearance', 'rensning',  # Clearances
+        'cross', 'inlägg',  # Crosses
+    ]):
+        return 'other_total'  # Separate market type for non-goal totals
+
+    # First Half totals - must check BEFORE full match
+    if any(kw in market for kw in [
+        '1st half', 'first half', 'första halvlek', '1:a halvlek', '- 1h',
+    ]):
+        return 'over_under_1h'
+
+    # Second Half totals - must check BEFORE full match
+    if any(kw in market for kw in [
+        '2nd half', 'second half', 'andra halvlek', '2:a halvlek', '- 2h',
+    ]):
+        return 'over_under_2h'
+
+    # Over/Under / Totals (Swedish: över/under) - FULL MATCH GOALS ONLY
+    # This should only match "Total Goals", "Totala mål", etc.
+    if any(kw in market for kw in [
+        'over/under', 'o/u', 'över/under',  # Generic over/under
+        'totala mål', 'total goals', 'goals total',  # Match goals explicitly
+        'antal mål', 'mål över', 'mål under',  # Swedish match goals
+        'runs total',  # Baseball
+        'points total', 'poäng totalt',  # Basketball
+        'asian totalt', 'asian total',  # Asian total (goals)
     ]):
         return 'over_under'
+
+    # Catch-all for other "total" markets - be careful, only if clearly generic
+    if 'total' in market or 'totalt' in market:
+        # If we get here, it's an unrecognized total - might be stat-specific
+        return 'other_total'
 
     # Spread / Handicap (Swedish: handikapp)
     if any(kw in market for kw in [
@@ -305,8 +364,9 @@ def normalize_market(market: str) -> str:
     if any(kw in market for kw in ['gör mål', 'to score', 'anytime scorer', 'first scorer']):
         return 'team_to_score'
 
-    # Team props - team totals
-    if any(kw in market for kw in ['team total', 'lag totalt', 'träffar']):
+    # Team props - other team-specific markets (hits, etc.)
+    # Note: team totals are handled earlier as 'team_total'
+    if 'träffar' in market:
         return 'team_prop'
 
     # Fallback: clean and truncate
