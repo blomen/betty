@@ -351,7 +351,8 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
         return 'draw'
     if outcome in ['2', 'away', 'borta', 'no']:
         return 'away'
-    if 'over' in outcome:
+    # Over/under - handle Swedish "över"
+    if 'over' in outcome or 'över' in outcome:
         return 'over'
     if 'under' in outcome:
         return 'under'

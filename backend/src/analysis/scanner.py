@@ -342,6 +342,13 @@ class OpportunityScanner:
                     min_edge_pct=min_edge_pct,
                 )
                 if vb:
+                    # Sanity check: edges > 100% are likely data quality issues
+                    if vb.edge_pct > 100:
+                        logger.debug(
+                            f"Skipping suspicious value {vb.edge_pct:+.1f}% for "
+                            f"{event_id} {market} {outcome}"
+                        )
+                        continue
                     values.append(vb)
 
         return values
@@ -407,6 +414,15 @@ class OpportunityScanner:
 
             edge = (anchor_odds / fair_odds) - 1
             edge_pct = round(edge * 100, 2)
+
+            # Sanity check: edges > 100% are almost certainly data quality issues
+            # (mismatched markets, wrong point values, stale data)
+            if abs(edge_pct) > 100:
+                logger.debug(
+                    f"Skipping suspicious edge {edge_pct:+.1f}% for {event.id} "
+                    f"{market} {outcome}: anchor={anchor_odds}, fair={fair_odds}"
+                )
+                continue
 
             opportunities.append(
                 BonusOpportunity(
