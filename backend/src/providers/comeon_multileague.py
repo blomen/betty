@@ -120,6 +120,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         # Navigate to league page
         full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
         try:
+            # networkidle needed for WebSocket data capture
             await page.goto(full_url, wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(2000)  # Allow WebSocket messages
         except Exception as e:
@@ -573,7 +574,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             main_url = self._get_sport_url(sport_normalized)
             logger.info(f"[{self.provider_id}] Loading main page for {sport_normalized}: {main_url}")
 
-            await page.goto(main_url, wait_until='networkidle', timeout=30000)
+            # networkidle needed for WebSocket establishment
+            await page.goto(main_url, wait_until='networkidle', timeout=45000)
             await page.wait_for_timeout(3000)
 
             # Extract league links
@@ -814,6 +816,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                     if not home_team or not away_team:
                         logger.debug(f"[{self.provider_id}] Skipping event {event_id}: missing teams (name: {event_name})")
                         continue
+
+                    # Normalize team names
+                    home_team = normalize_team_name(home_team)
+                    away_team = normalize_team_name(away_team)
 
                     # Extract start time
                     start_time_str = event_data.get('startingOn') or event_data.get('startTime')

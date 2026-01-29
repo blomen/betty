@@ -5,6 +5,7 @@ import json
 import re
 from datetime import datetime
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,14 @@ class SnabbareRetriever(BrowserRetriever):
         lname = league['name']
         url = f"{self.site_url}/sv/sportsbook/leagues/{lid}"
         events = []
-        
+
+        # Ensure browser context is ready before creating new page
+        try:
+            await self.transport._ensure_browser()
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Failed to ensure browser for {lname}: {e}")
+            return []
+
         page = await self.transport.new_page()
         
         try:
@@ -182,54 +190,69 @@ class SnabbareRetriever(BrowserRetriever):
                 try:
                     h_str = item['odds'][0].split()[-1].replace(',', '.')
                     h_price = float(h_str)
-                    
+
+                    # Validate odds > 1.0
+                    if h_price <= 1.0:
+                        continue
+
                     if len(item['odds']) >= 3:
                         # 3-way (1x2)
                         x_str = item['odds'][1].split()[-1].replace(',', '.')
                         a_str = item['odds'][2].split()[-1].replace(',', '.')
                         x_price = float(x_str)
                         a_price = float(a_str)
-                        
+
+                        # Validate all odds > 1.0
+                        if x_price <= 1.0 or a_price <= 1.0:
+                            continue
+
                         outcomes = [
-                            {"name": item['home'], "price": h_price, "side": "home"},
-                            {"name": "Draw", "price": x_price, "side": "draw"},
-                            {"name": item['away'], "price": a_price, "side": "away"}
+                            {"name": item['home'], "odds": h_price, "side": "home"},
+                            {"name": "Draw", "odds": x_price, "side": "draw"},
+                            {"name": item['away'], "odds": a_price, "side": "away"}
                         ]
                         market_type = "1x2"
                     elif len(item['odds']) == 2:
                         # 2-way (Moneyline)
                         a_str = item['odds'][1].split()[-1].replace(',', '.')
                         a_price = float(a_str)
-                        
+
+                        # Validate odds > 1.0
+                        if a_price <= 1.0:
+                            continue
+
                         outcomes = [
-                            {"name": item['home'], "price": h_price, "side": "home"},
-                            {"name": item['away'], "price": a_price, "side": "away"}
+                            {"name": item['home'], "odds": h_price, "side": "home"},
+                            {"name": item['away'], "odds": a_price, "side": "away"}
                         ]
                         market_type = "moneyline"
-                        
+
                 except (ValueError, IndexError, AttributeError):
                     continue
                     
-                # Create StandardEvent
-                ev_id = f"{item['home']}-{item['away']}-{lid}"
+                # Create StandardEvent with normalized team names
+                home_normalized = normalize_team_name(item['home'])
+                away_normalized = normalize_team_name(item['away'])
+
+                ev_id = f"{home_normalized}-{away_normalized}-{lid}"
                 start_time = self._parse_time(item['time'])
-                
+
                 market = {
                     "name": market_type,
                     "type": market_type,
                     "outcomes": outcomes
                 }
-                
+
                 ev = StandardEvent(
                     id=ev_id,
-                    name=f"{item['home']} vs {item['away']}",
+                    name=f"{home_normalized} vs {away_normalized}",
                     sport=sport,
                     league=lname,
                     markets=[market],
                     provider="snabbare",
-                    home_team=item['home'],
-                    away_team=item['away'],
-                    start_time=start_time.isoformat(), 
+                    home_team=home_normalized,
+                    away_team=away_normalized,
+                    start_time=start_time.isoformat(),
                     url=url
                 )
                 events.append(ev)

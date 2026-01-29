@@ -5,6 +5,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,17 @@ class SpectateRetriever(BrowserRetriever):
             # Initialize browser and visit page
             await self.transport._ensure_browser()
             try:
-                # Use 'domcontentloaded' for faster page load
-                await self.transport.page.goto(www_url, wait_until="domcontentloaded", timeout=15000)
-                # Wait for page JS and cookies to initialize
-                await self.transport.page.wait_for_timeout(2000)
+                # Use 'load' for more reliable initialization (changed from 'domcontentloaded')
+                await self.transport.page.goto(www_url, wait_until="load", timeout=20000)
+                # Wait for page JS and cookies to initialize (increased from 2s to 5s)
+                await self.transport.page.wait_for_timeout(5000)
+
+                # Wait for network idle to ensure APIs are ready
+                try:
+                    await self.transport.page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    # Network idle may timeout on sites with continuous activity
+                    logger.debug(f"[{self.provider_id}] Network idle timeout (expected for some sites)")
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Page load error: {e}")
 
@@ -189,13 +197,22 @@ class SpectateRetriever(BrowserRetriever):
             # Ensure browser is initialized before accessing context
             await self.transport._ensure_browser()
 
+            # Validate browser context is ready
+            if not self.transport.context:
+                logger.error(f"[{self.provider_id}] Browser context not available")
+                return {}
+
             # Use context.request like the working debug script
             if method.upper() == "POST":
                 response = await self.transport.context.request.post(url, headers=base_headers)
             else:
                 response = await self.transport.context.request.get(url, headers=base_headers)
-                
-            if response.status == 403:
+
+            if response.status == 400:
+                logger.warning(f"[{self.provider_id}] 400 Bad Request for {url}")
+                logger.debug(f"[{self.provider_id}] Request endpoint: {endpoint}")
+                return {}
+            elif response.status == 403:
                 logger.warning(f"[{self.provider_id}] 403 Forbidden for {url}. Origin/Headers might be rejected.")
                 return {}
             elif response.status == 429:
@@ -282,15 +299,19 @@ class SpectateRetriever(BrowserRetriever):
 
             if not home or not away or not ev_id:
                 return None
-            
+
+            # Normalize team names
+            home = normalize_team_name(home)
+            away = normalize_team_name(away)
+
             markets = self._parse_markets(event_data)
             if not markets:
                 return None
 
             return StandardEvent(
-                id=ev_id, 
-                name=name, 
-                home_team=home, 
+                id=ev_id,
+                name=name,
+                home_team=home,
                 away_team=away, 
                 sport=sport,
                 league=event_data.get("tournament_name") or event_data.get("tournament", {}).get("name") or league,
@@ -338,21 +359,24 @@ class SpectateRetriever(BrowserRetriever):
         for m in items:
             if not isinstance(m, dict): continue
             raw_name = m.get("name", "").lower().strip()
-            
+
             # Direct Map Check
             m_type = MARKET_MAP.get(raw_name)
-            
+
             # Fuzzy / Contains Checks if not exact match
             if not m_type:
                 if "över/under" in raw_name or "over/under" in raw_name:
                     m_type = "over_under"
                 elif "handikapp" in raw_name or "handicap" in raw_name or "spread" in raw_name:
                     m_type = "spread"
-            
+
             # If still no type, skip or tag as unknown (we skip for now)
             if not m_type:
                 continue
-            
+
+            # Get market-level line (some APIs put it here)
+            market_line = m.get("line") or m.get("handicap") or m.get("points")
+
             s_data = m.get("selections", {})
             s_items = s_data.values() if isinstance(s_data, dict) else s_data if isinstance(s_data, list) else []
             
@@ -366,24 +390,27 @@ class SpectateRetriever(BrowserRetriever):
                             "name": s.get("name", ""), 
                             "odds": round(float(price), 3)
                         }
-                        # Capture line/handicap
-                        line = s.get("line") or s.get("handicap")
-                        
-                        # Fallback: Extract from name
+                        # Capture line/handicap from selection
+                        line = s.get("line") or s.get("handicap") or s.get("points")
+
+                        # Fallback 1: Use market-level line
+                        if line is None:
+                            line = market_line
+
+                        # Fallback 2: Extract from name (e.g., "Over 2.5", "Under 2.5")
                         if line is None:
                             name_val = s.get("name", "")
-                            # Matches (+3.5), (-3.5), (3.5) or "Over 150.5"
-                            # Regex to capture finding signed/unsigned floats inside text
-                            match = re.search(r'(?:^|[\s\(])([+-]?\d+\.?\d*)', name_val)
+                            # Match numbers like "2.5", "+1.5", "-1.5" in strings
+                            match = re.search(r'([+-]?\d+[.,]?\d*)', name_val)
                             if match:
-                                val_str = match.group(1)
-                                # Filter out likely jersey numbers or pure odds if mistakenly grabbed
+                                val_str = match.group(1).replace(',', '.')
                                 try:
                                     line = float(val_str)
-                                except: pass
+                                except:
+                                    pass
 
-                        if line is not None:
-                             outcome["line"] = float(line)
+                        if line is not None and m_type in ['over_under', 'spread']:
+                            outcome["point"] = float(line)
                         outcomes.append(outcome)
                 except: continue
             

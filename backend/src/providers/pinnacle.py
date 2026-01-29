@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from ..core import Retriever, StandardEvent
+from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +119,16 @@ class PinnacleRetriever(Retriever):
                 logger.error(f"[{self.provider_id}] Error fetching league {league_name}: {e}")
                 continue
 
-        logger.info(f"[{self.provider_id}] Extracted {len(all_events)} events for {sport}")
-        return all_events
+        # Deduplicate events by ID (same event can appear in multiple matchup types)
+        seen_ids = set()
+        unique_events = []
+        for event in all_events:
+            if event.id not in seen_ids:
+                seen_ids.add(event.id)
+                unique_events.append(event)
+
+        logger.info(f"[{self.provider_id}] Extracted {len(unique_events)} events for {sport}")
+        return unique_events
 
     def _parse_matchup(
         self,
@@ -152,8 +161,12 @@ class PinnacleRetriever(Retriever):
             if not home_participant or not away_participant:
                 return None
 
-            home_team = home_participant.get("name", "")
-            away_team = away_participant.get("name", "")
+            home_team_raw = home_participant.get("name", "")
+            away_team_raw = away_participant.get("name", "")
+
+            # Normalize team names to lowercase for consistent matching
+            home_team = normalize_team_name(home_team_raw)
+            away_team = normalize_team_name(away_team_raw)
 
             # Parse start time (already extracted above)
             start_time = None
@@ -163,52 +176,23 @@ class PinnacleRetriever(Retriever):
                 except Exception:
                     pass
 
-            # Get markets for this matchup
-            markets = markets_by_matchup.get(matchup_id, [])
+            # Get raw markets for this matchup
+            raw_markets = markets_by_matchup.get(matchup_id, [])
 
-            # Find moneyline market (period 0 = full game)
-            moneyline = next(
-                (m for m in markets if m.get("type") == "moneyline" and m.get("period") == 0),
-                None
-            )
-
-            # Parse odds into markets format
-            markets = []
-            if moneyline and moneyline.get("status") == "open":
-                prices = moneyline.get("prices", [])
-                outcomes = []
-                for price_obj in prices:
-                    designation = price_obj.get("designation")
-                    american_odds = price_obj.get("price")
-
-                    if designation and american_odds is not None:
-                        decimal_odds = self._american_to_decimal(american_odds)
-                        outcomes.append({
-                            "name": designation,
-                            "odds": decimal_odds
-                        })
-
-                if outcomes:
-                    # Determine market type (moneyline vs 1x2)
-                    has_draw = any(o["name"] == "draw" for o in outcomes)
-                    market_type = "1x2" if has_draw else "moneyline"
-
-                    markets.append({
-                        "type": market_type,
-                        "outcomes": outcomes
-                    })
+            # Parse all market types
+            parsed_markets = self._parse_markets(raw_markets)
 
             # Build StandardEvent
             event = StandardEvent(
                 id=f"{self.provider_id}_{matchup_id}",
-                name=f"{home_team} vs {away_team}",
+                name=f"{home_team_raw} vs {away_team_raw}",
                 provider=self.provider_id,
                 sport=sport,
                 league=league_name,
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time.isoformat() if start_time else "",
-                markets=markets,
+                markets=parsed_markets,
                 url=""
             )
 
@@ -217,6 +201,148 @@ class PinnacleRetriever(Retriever):
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Error parsing matchup: {e}")
             return None
+
+    def _parse_markets(self, raw_markets: List[dict]) -> List[dict]:
+        """
+        Parse all market types from Pinnacle API response.
+
+        Handles:
+        - moneyline: Winner market (2-way or 3-way with draw)
+        - spread: Point spread / handicap
+        - total: Over/under totals
+        """
+        parsed = []
+
+        for market in raw_markets:
+            # Only process full game markets (period 0)
+            if market.get("period") != 0:
+                continue
+
+            # Only process open markets
+            if market.get("status") != "open":
+                continue
+
+            market_type = market.get("type")
+            prices = market.get("prices", [])
+
+            if not prices:
+                continue
+
+            if market_type == "moneyline":
+                parsed.extend(self._parse_moneyline(prices))
+            elif market_type == "spread":
+                parsed.extend(self._parse_spread(prices))
+            elif market_type == "total":
+                parsed.extend(self._parse_total(prices))
+
+        return parsed
+
+    def _parse_moneyline(self, prices: List[dict]) -> List[dict]:
+        """Parse moneyline (winner) market."""
+        outcomes = []
+
+        for price_obj in prices:
+            designation = price_obj.get("designation")
+            american_odds = price_obj.get("price")
+
+            if designation and american_odds is not None:
+                decimal_odds = self._american_to_decimal(american_odds)
+                outcomes.append({
+                    "name": designation,
+                    "odds": decimal_odds
+                })
+
+        if not outcomes:
+            return []
+
+        # Determine market type (moneyline vs 1x2)
+        has_draw = any(o["name"] == "draw" for o in outcomes)
+        market_type = "1x2" if has_draw else "moneyline"
+
+        return [{
+            "type": market_type,
+            "outcomes": outcomes
+        }]
+
+    def _parse_spread(self, prices: List[dict]) -> List[dict]:
+        """
+        Parse spread (handicap) market.
+
+        Pinnacle spread prices have:
+        - designation: "home" or "away"
+        - points: The spread value (e.g., -6.5, +6.5)
+        - price: American odds
+        """
+        # Group by point value to handle multiple lines
+        by_points = {}
+
+        for price_obj in prices:
+            designation = price_obj.get("designation")
+            points = price_obj.get("points")
+            american_odds = price_obj.get("price")
+
+            if designation and points is not None and american_odds is not None:
+                # Use absolute point value as key (home and away are opposite)
+                key = abs(points)
+                if key not in by_points:
+                    by_points[key] = []
+
+                decimal_odds = self._american_to_decimal(american_odds)
+                by_points[key].append({
+                    "name": designation,
+                    "odds": decimal_odds,
+                    "point": points
+                })
+
+        # Create market for each spread line
+        markets = []
+        for point_key, outcomes in by_points.items():
+            if len(outcomes) >= 2:  # Need both sides
+                markets.append({
+                    "type": "spread",
+                    "outcomes": outcomes
+                })
+
+        return markets
+
+    def _parse_total(self, prices: List[dict]) -> List[dict]:
+        """
+        Parse total (over/under) market.
+
+        Pinnacle total prices have:
+        - designation: "over" or "under"
+        - points: The total line (e.g., 2.5, 42.5)
+        - price: American odds
+        """
+        # Group by point value to handle multiple lines
+        by_points = {}
+
+        for price_obj in prices:
+            designation = price_obj.get("designation")
+            points = price_obj.get("points")
+            american_odds = price_obj.get("price")
+
+            if designation and points is not None and american_odds is not None:
+                if points not in by_points:
+                    by_points[points] = []
+
+                decimal_odds = self._american_to_decimal(american_odds)
+                by_points[points].append({
+                    "name": designation,
+                    "odds": decimal_odds,
+                    "point": points
+                })
+
+        # Create market for each total line
+        markets = []
+        for point_val, outcomes in by_points.items():
+            if len(outcomes) >= 2:  # Need both over and under
+                markets.append({
+                    "type": "over_under",
+                    "outcomes": outcomes
+                })
+
+        return markets
 
     def _american_to_decimal(self, american_odds: int) -> float:
         """Convert American odds to decimal format"""

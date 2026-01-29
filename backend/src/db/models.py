@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, 
-    DateTime, Boolean, ForeignKey, UniqueConstraint
+    create_engine, Column, Integer, String, Float,
+    DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -215,17 +215,27 @@ class Opportunity(Base):
     event_id = Column(String, ForeignKey("events.id"))
     market = Column(String)
 
-    # Provider details
+    # Legacy provider details (kept for backwards compat)
     provider1_id = Column(String, ForeignKey("providers.id"))
     provider2_id = Column(String, ForeignKey("providers.id"), nullable=True)
 
-    # Odds at detection
+    # Legacy odds at detection
     odds1 = Column(Float)
     odds2 = Column(Float, nullable=True)
 
-    # Outcomes
+    # Legacy outcomes
     outcome1 = Column(String)
     outcome2 = Column(String, nullable=True)
+
+    # NEW: Flexible multi-outcome storage for 3-way arbs and detailed stakes
+    # Format: [{"provider": "...", "outcome": "...", "odds": ..., "stake": ..., "return": ...}]
+    outcomes = Column(JSON, nullable=True)
+
+    # NEW: Line/point value for spread and total markets (e.g., 2.5, -6.5)
+    point = Column(Float, nullable=True)
+
+    # NEW: Recommended total stake for the opportunity
+    total_stake = Column(Float, nullable=True)
 
     # Calculated metrics
     profit_pct = Column(Float, nullable=True)  # For arbitrage
@@ -240,6 +250,97 @@ class Opportunity(Base):
     event = relationship("Event")
     provider1 = relationship("Provider", foreign_keys=[provider1_id])
     provider2 = relationship("Provider", foreign_keys=[provider2_id])
+
+
+# ============ Extraction Monitoring ============
+
+class ExtractionRun(Base):
+    """Historical extraction run tracking."""
+    __tablename__ = "extraction_runs"
+
+    id = Column(String, primary_key=True)  # UUID
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    # Aggregates
+    providers_attempted = Column(Integer, default=0)
+    providers_succeeded = Column(Integer, default=0)
+    providers_failed = Column(Integer, default=0)
+    total_events = Column(Integer, default=0)
+    total_odds = Column(Integer, default=0)
+    polymarket_events = Column(Integer, default=0)
+
+    # Metadata
+    trigger = Column(String)  # 'manual', 'scheduled', 'api'
+    config = Column(JSON)  # Snapshot of orchestrator config
+    notes = Column(Text)
+
+    # Relationships
+    provider_metrics = relationship("ProviderRunMetrics", back_populates="extraction_run")
+    sport_metrics = relationship("SportRunMetrics", back_populates="extraction_run")
+
+
+class ProviderRunMetrics(Base):
+    """Per-provider metrics for each extraction run."""
+    __tablename__ = "provider_run_metrics"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("extraction_runs.id"))
+    provider_id = Column(String, nullable=False)
+
+    # Timing
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    # Results
+    events_processed = Column(Integer, default=0)
+    events_new = Column(Integer, default=0)
+    odds_processed = Column(Integer, default=0)
+    odds_new = Column(Integer, default=0)
+    sports_attempted = Column(Integer, default=0)
+    sports_succeeded = Column(Integer, default=0)
+
+    # Performance
+    retries = Column(Integer, default=0)
+    cache_hits = Column(Integer, default=0)
+    avg_response_time = Column(Float, nullable=True)
+
+    # Status
+    status = Column(String)  # 'success', 'partial', 'failed', 'timeout'
+    error_message = Column(Text)
+    circuit_breaker_tripped = Column(Boolean, default=False)
+    health_check_passed = Column(Boolean, default=True)
+
+    # Relationships
+    extraction_run = relationship("ExtractionRun", back_populates="provider_metrics")
+    sport_errors = relationship("SportRunMetrics", back_populates="provider_metrics")
+
+
+class SportRunMetrics(Base):
+    """Per-sport metrics for troubleshooting."""
+    __tablename__ = "sport_run_metrics"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("extraction_runs.id"))
+    provider_run_id = Column(Integer, ForeignKey("provider_run_metrics.id"))
+    provider_id = Column(String, nullable=False)
+    sport = Column(String, nullable=False)
+
+    # Results
+    events_extracted = Column(Integer, default=0)
+    odds_extracted = Column(Integer, default=0)
+    duration_seconds = Column(Float, nullable=True)
+
+    # Status
+    success = Column(Boolean, default=False)
+    error_type = Column(String)  # 'timeout', 'extraction_error', 'validation_error'
+    error_message = Column(Text)
+
+    # Relationships
+    extraction_run = relationship("ExtractionRun", back_populates="sport_metrics")
+    provider_metrics = relationship("ProviderRunMetrics", back_populates="sport_errors")
 
 
 # ============ Database Functions ============

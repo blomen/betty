@@ -52,6 +52,7 @@ class ProviderMetrics:
     sports: Dict[str, SportMetrics] = field(default_factory=dict)
     retries: int = 0
     cache_hits: int = 0
+    rate_limit_hits: int = 0  # 429 errors encountered
     success: bool = False
     error: Optional[str] = None
 
@@ -214,6 +215,11 @@ class PipelineMetrics:
         """Total cache hits across all providers."""
         return sum(p.cache_hits for p in self.providers.values())
 
+    @property
+    def total_rate_limit_hits(self) -> int:
+        """Total 429 rate limit errors across all providers."""
+        return sum(p.rate_limit_hits for p in self.providers.values())
+
     def to_dict(self) -> dict:
         """Convert to dictionary for API/storage."""
         return {
@@ -246,6 +252,7 @@ class PipelineMetrics:
                     "success_rate": p.success_rate,
                     "retries": p.retries,
                     "cache_hits": p.cache_hits,
+                    "rate_limit_hits": p.rate_limit_hits,
                     "success": p.success,
                     "error": p.error,
                     "sports": {
@@ -426,6 +433,18 @@ class MetricsCollector:
             if self._current_run and provider_id in self._current_run.providers:
                 self._current_run.providers[provider_id].cache_hits += 1
 
+    def record_rate_limit(self, provider_id: str):
+        """
+        Record 429 rate limit error for provider.
+
+        Args:
+            provider_id: Provider identifier
+        """
+        with self._lock:
+            if self._current_run and provider_id in self._current_run.providers:
+                self._current_run.providers[provider_id].rate_limit_hits += 1
+                logger.warning(f"[Metrics] Rate limit (429) recorded for {provider_id}")
+
     def set_polymarket_stats(self, events: int, odds: int):
         """
         Set Polymarket extraction stats.
@@ -493,3 +512,83 @@ class MetricsCollector:
                 "total_retries": sum(p.retries for p in provider_runs),
                 "total_cache_hits": sum(p.cache_hits for p in provider_runs)
             }
+
+    def persist_to_db(self, run_metrics: PipelineMetrics, session):
+        """
+        Persist pipeline metrics to database.
+
+        Args:
+            run_metrics: PipelineMetrics instance to persist
+            session: SQLAlchemy session
+        """
+        from datetime import datetime as dt
+        from src.db.models import ExtractionRun, ProviderRunMetrics, SportRunMetrics
+
+        try:
+            # Create extraction run record
+            run = ExtractionRun(
+                id=run_metrics.run_id,
+                start_time=dt.fromtimestamp(run_metrics.start_time),
+                end_time=dt.fromtimestamp(run_metrics.end_time) if run_metrics.end_time else None,
+                duration_seconds=run_metrics.duration_seconds,
+                providers_attempted=run_metrics.providers_attempted,
+                providers_succeeded=run_metrics.providers_succeeded,
+                providers_failed=run_metrics.providers_failed,
+                total_events=run_metrics.total_events,
+                total_odds=run_metrics.total_odds,
+                polymarket_events=run_metrics.polymarket_events,
+                trigger='manual',
+                config=run_metrics.to_dict()
+            )
+            session.add(run)
+
+            # Create provider metrics records
+            for provider_id, pmetrics in run_metrics.providers.items():
+                pm = ProviderRunMetrics(
+                    run_id=run_metrics.run_id,
+                    provider_id=provider_id,
+                    start_time=dt.fromtimestamp(pmetrics.start_time),
+                    end_time=dt.fromtimestamp(pmetrics.end_time) if pmetrics.end_time else None,
+                    duration_seconds=pmetrics.duration_seconds,
+                    events_processed=pmetrics.total_events,
+                    events_new=pmetrics.total_events_new,
+                    odds_processed=pmetrics.total_odds,
+                    odds_new=pmetrics.total_odds_new,
+                    sports_attempted=pmetrics.sports_attempted,
+                    sports_succeeded=pmetrics.sports_succeeded,
+                    retries=pmetrics.retries,
+                    cache_hits=pmetrics.cache_hits,
+                    status='success' if pmetrics.success else 'failed',
+                    error_message=pmetrics.error
+                )
+                session.add(pm)
+                session.flush()  # Get pm.id for sport metrics
+
+                # Create sport metrics
+                for sport, smetrics in pmetrics.sports.items():
+                    sm = SportRunMetrics(
+                        run_id=run_metrics.run_id,
+                        provider_run_id=pm.id,
+                        provider_id=provider_id,
+                        sport=sport,
+                        events_extracted=smetrics.events_processed,
+                        odds_extracted=smetrics.odds_processed,
+                        duration_seconds=smetrics.duration_seconds,
+                        success=smetrics.success,
+                        error_type='extraction_error' if smetrics.error else None,
+                        error_message=smetrics.error
+                    )
+                    session.add(sm)
+
+            session.commit()
+            logger.info(f"[Metrics] Persisted metrics for run {run_metrics.run_id} to database")
+
+        except Exception as e:
+            logger.error(f"[Metrics] Failed to persist to database: {e}")
+            session.rollback()
+            raise
+
+    @property
+    def current_run(self) -> Optional[PipelineMetrics]:
+        """Get current run (property for backward compatibility)."""
+        return self.get_current_run()

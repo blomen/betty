@@ -241,32 +241,78 @@ def normalize_market(market: str) -> str:
     """
     market = market.lower().strip()
 
-    # 1x2 / Moneyline
-    if any(kw in market for kw in ['1x2', 'full time', 'match result', 'helmatchen', 'slutresultat', 'will' and 'win']):
+    # 1x2 / Moneyline / Match Winner (including team-specific win markets)
+    # Swedish: "X vinner matchen", "X att vinna", "vinnare"
+    if any(kw in market for kw in [
+        '1x2', 'full time', 'match result', 'helmatchen', 'slutresultat',
+        'will win', 'to win', 'vinnare', 'match winner', 'moneyline',
+        'money line', 'att vinna', 'vinner matchen', 'vinner match',
+        ' vinner', ' wins', 'winner'
+    ]):
         return '1x2'
 
     # Over/Under / Totals (Swedish: över/under)
-    if any(kw in market for kw in ['over/under', 'o/u', 'total', 'över/under', 'mål över', 'mål under']):
+    if any(kw in market for kw in [
+        'over/under', 'o/u', 'total', 'över/under', 'mål över', 'mål under',
+        'totalt antal', 'over ', 'under ', 'points total', 'goals total',
+        'runs total', 'antal mål', 'sammanlagt', 'poäng totalt'
+    ]):
         return 'over_under'
 
     # Spread / Handicap (Swedish: handikapp)
-    if any(kw in market for kw in ['spread', 'handicap', 'asian', 'handikapp', 'europeiskt']):
+    if any(kw in market for kw in [
+        'spread', 'handicap', 'asian handicap', 'handikapp', 'europeiskt',
+        'point spread', 'run line', 'puck line'
+    ]):
         return 'spread'
 
     # Both Teams to Score (Swedish: båda lagen)
-    if any(kw in market for kw in ['both teams', 'btts', 'båda lagen']):
+    if any(kw in market for kw in ['both teams', 'btts', 'båda lagen', 'båda lag']):
         return 'both_teams_to_score'
 
     # Draw No Bet
-    if 'draw no bet' in market or 'dnb' in market:
+    if 'draw no bet' in market or 'dnb' in market or 'oavgjort ingen insats' in market:
         return 'draw_no_bet'
 
-    # Double Chance
-    if 'double chance' in market or 'dc' in market:
+    # Double Chance (Swedish: dubbelchans)
+    if 'double chance' in market or 'dubbel chans' in market or 'dubbelchans' in market:
         return 'double_chance'
 
+    # Correct Score
+    if 'correct score' in market or 'rätt resultat' in market or 'exakt resultat' in market:
+        return 'correct_score'
+
+    # Half Time / First Half
+    if any(kw in market for kw in [
+        'half time', 'första halvlek', '1st half', 'first half',
+        'halvtid', '1:a halvlek'
+    ]):
+        return 'first_half'
+
+    # Second Half (Swedish: andra halvlek)
+    if any(kw in market for kw in ['second half', '2nd half', 'andra halvlek', '2:a halvlek']):
+        return 'second_half'
+
+    # Player props - goals/points/assists/rebounds/3-pointers
+    if any(kw in market for kw in [
+        'player', 'spelare', 'målskytt', 'poäng av', 'assists av',
+        'returer av', 'trepoängare', '3-pointers', 'rebounds',
+        'blockering', 'steals', 'stölder'
+    ]):
+        return 'player_prop'
+
+    # Team to score / Goal scorer markets (Swedish: "X gör mål")
+    if any(kw in market for kw in ['gör mål', 'to score', 'anytime scorer', 'first scorer']):
+        return 'team_to_score'
+
+    # Team props - team totals
+    if any(kw in market for kw in ['team total', 'lag totalt', 'träffar']):
+        return 'team_prop'
+
     # Fallback: clean and truncate
-    return market.replace(' ', '_')[:30]
+    cleaned = re.sub(r'[^\w\s]', '', market)
+    cleaned = '_'.join(cleaned.split())
+    return cleaned[:30] if cleaned else 'other'
 
 
 def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:

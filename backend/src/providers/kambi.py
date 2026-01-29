@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 # Kambi Specific Logic adapted from APIExtractor
 from ..core import Retriever, StandardEvent
+from ..matching.normalizer import normalize_team_name, normalize_market
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,14 @@ class KambiRetriever(Retriever):
     # 1. Fetch Group Tree -> Find Sport Group ID
     # 2. Fetch Events for that Group ID
 
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
+        # Create transport with circuit breaker and rate limit config if not provided
+        if transport is None:
+            from ..core import HttpTransport
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config
+            )
         super().__init__(config, transport)
         self.brand = config.get("brand") or config.get("id")
         self.base_url = config.get("api_base") or config.get("base_url")
@@ -48,7 +56,11 @@ class KambiRetriever(Retriever):
             group_data = self._SHARED_GROUP_CACHE[groups_url]
         else:
             logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
-            group_data = await self.transport.get(groups_url, params=self.default_params)
+            group_data = await self.transport.get(
+                groups_url,
+                params=self.default_params,
+                provider_id=self.provider_id
+            )
             if group_data:
                 self._SHARED_GROUP_CACHE[groups_url] = group_data
                 logger.debug(f"[{self.provider_id}] Cached groups for {groups_url}")
@@ -89,7 +101,15 @@ class KambiRetriever(Retriever):
             elif isinstance(result, Exception):
                 logger.debug(f"[{self.provider_id}] Group fetch error: {result}")
 
-        return all_events
+        # Deduplicate events by ID (same event can appear in multiple groups)
+        seen_ids = set()
+        unique_events = []
+        for event in all_events:
+            if event.id not in seen_ids:
+                seen_ids.add(event.id)
+                unique_events.append(event)
+
+        return unique_events
         
     async def _fetch_group_events(self, group: dict) -> List[StandardEvent]:
         endpoint = "betoffer/group/{group_id}.json" # Default
@@ -98,8 +118,8 @@ class KambiRetriever(Retriever):
             
         endpoint = endpoint.format(group_id=group["id"])
         url = f"{self.base_url}/{self.brand}/{endpoint}"
-        
-        data = await self.transport.get(url, params=self.default_params)
+
+        data = await self.transport.get(url, params=self.default_params, provider_id=self.provider_id)
         if not data: return []
         
         return self.parse(data, group.get("sport", "").lower())
@@ -126,32 +146,37 @@ class KambiRetriever(Retriever):
             event_id = str(event_raw.get("id", ""))
             home_team = event_raw.get("homeName", "")
             away_team = event_raw.get("awayName", "")
-            
+
             if not home_team or not away_team:
                 participants = event_raw.get("participants", [])
                 for p in participants:
                     if p.get("home"): home_team = p.get("name", "")
                     else: away_team = p.get("name", "")
-            
-            name = event_raw.get("name", "") or f"{home_team} vs {away_team}"
+
             if not home_team or not away_team: return None
-            
+
+            # Normalize team names to lowercase for consistent matching
+            home_team_normalized = normalize_team_name(home_team)
+            away_team_normalized = normalize_team_name(away_team)
+
+            name = event_raw.get("name", "") or f"{home_team} vs {away_team}"
+
             markets = []
             for betoffer in betoffers:
                 if betoffer.get("eventId") != event_raw.get("id"): continue
                 market = self._parse_market(betoffer, outcome_map)
                 if market: markets.append(market)
-            
+
             if not markets: return None
-            
+
             path = event_raw.get("path", [])
             league = path[-1].get("name", "") if path else ""
-            
+
             return StandardEvent(
                 id=event_id,
                 name=name,
-                home_team=home_team,
-                away_team=away_team,
+                home_team=home_team_normalized,
+                away_team=away_team_normalized,
                 sport=sport,
                 league=league,
                 start_time=event_raw.get("start", ""),
@@ -163,7 +188,10 @@ class KambiRetriever(Retriever):
 
     def _parse_market(self, betoffer: dict, outcome_map: dict) -> dict | None:
         try:
-            market_type = betoffer.get("criterion", {}).get("label", "")
+            raw_market_type = betoffer.get("criterion", {}).get("label", "")
+            # Normalize market type to standard format (1x2, over_under, spread, etc.)
+            market_type = normalize_market(raw_market_type)
+
             outcomes = []
             for outcome_ref in betoffer.get("outcomes", []):
                 outcome = outcome_map.get(outcome_ref.get("id"), outcome_ref)

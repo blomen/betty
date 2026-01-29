@@ -1,35 +1,17 @@
-import type { BettingContext, BankrollExposure, Profile, ProfileCreate, ProfileUpdate } from '@/types';
-import { ProfileSelector } from './ProfileSelector';
-
-interface ProfilesState {
-  profiles: Profile[];
-  activeProfile: Profile | null;
-  isLoading: boolean;
-  error: string | null;
-  createProfile: (data: ProfileCreate) => Promise<Profile>;
-  updateProfile: (id: number, data: ProfileUpdate) => Promise<Profile>;
-  activateProfile: (id: number) => Promise<Profile>;
-  deleteProfile: (id: number) => Promise<void>;
-}
+import type { BettingContext, BankrollExposure, Profile } from '@/types';
 
 interface TerminalHeaderProps {
   context: BettingContext;
   exposure: BankrollExposure;
   isLoading: boolean;
-  onClear: () => void;
-  onRefresh: () => void;
-  onShowBalanceBreakdown: () => void;
-  profilesState: ProfilesState;
+  activeProfile: Profile | null;
 }
 
 export function TerminalHeader({
   context,
   exposure,
   isLoading,
-  onClear,
-  onRefresh,
-  onShowBalanceBreakdown,
-  profilesState,
+  activeProfile,
 }: TerminalHeaderProps) {
   const arbCount = context.opportunities.filter(o => o.type === 'arbitrage').length;
   const valueCount = context.opportunities.filter(o => o.type === 'value').length;
@@ -67,56 +49,34 @@ export function TerminalHeader({
           )}
 
           {context.bankroll.total > 0 && (
-            <button
-              onClick={onShowBalanceBreakdown}
-              className="text-terminal-yellow hover:text-terminal-accent transition-colors"
-              title="Click for balance breakdown"
-            >
+            <span className="text-terminal-yellow">
               ${context.bankroll.total.toFixed(0)}
               {hasPending && (
                 <span className="ml-1 text-xs text-yellow-500">
                   ({exposure.total_pending.toFixed(0)} pending)
                 </span>
               )}
-            </button>
+            </span>
           )}
         </div>
       </div>
 
-      {/* Right: Profile selector and actions */}
+      {/* Right: Profile and status */}
       <div className="flex items-center gap-3">
-        {/* Profile selector */}
-        <ProfileSelector
-          profiles={profilesState.profiles}
-          activeProfile={profilesState.activeProfile}
-          onActivate={async (id) => { await profilesState.activateProfile(id); }}
-          onCreate={profilesState.createProfile}
-          onUpdate={async (id, data) => { await profilesState.updateProfile(id, data); }}
-          onDelete={profilesState.deleteProfile}
-        />
+        {/* Active Profile Display */}
+        {activeProfile && (
+          <div className="flex items-center gap-2 px-2 py-1 text-xs text-terminal-muted">
+            <span className="text-terminal-accent">[@]</span>
+            <span className="text-terminal-text">{activeProfile.name}</span>
+          </div>
+        )}
 
-        {/* Actions */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onRefresh}
-            disabled={isLoading}
-            className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-text
-                       hover:bg-terminal-border/50 transition-colors
-                       disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Refresh data"
-          >
-            {isLoading ? '[...]' : '[refresh]'}
-          </button>
-
-          <button
-            onClick={onClear}
-            className="px-2 py-1 rounded text-xs text-terminal-muted hover:text-terminal-red
-                       hover:bg-terminal-border/50 transition-colors"
-            title="Clear chat"
-          >
-            [clear]
-          </button>
-        </div>
+        {/* Loading indicator */}
+        {isLoading && (
+          <span className="text-xs text-terminal-muted">
+            [...]
+          </span>
+        )}
       </div>
     </div>
   );

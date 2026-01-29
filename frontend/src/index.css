@@ -15,7 +15,7 @@ html, body, #root {
 body {
   font-family: 'JetBrains Mono', monospace;
   background-color: #0a0a0a;
-  color: #d4af37;
+  color: #e0e0e0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -57,7 +57,7 @@ pre {
 code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.9em;
-  color: #d4af37;
+  color: #e0e0e0;
 }
 
 :not(pre) > code {
@@ -99,4 +99,11 @@ a {
 a:hover {
   text-decoration: underline;
   color: #d4af37;
+}
+
+/* Dotted grid background pattern */
+.dotted-grid {
+  background-image: radial-gradient(circle, rgba(42, 42, 42, 0.6) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0;
 }

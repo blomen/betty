@@ -11,7 +11,7 @@ from typing import Callable
 
 from ..factory import ExtractorFactory
 from ..db.models import get_session, Event, Odds, Provider
-from .storage import store_polymarket_event, store_provider_event
+from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,9 @@ class ExtractionPipeline:
                 recovery_timeout_seconds=orchestrator_config.circuit_breaker.recovery_timeout_seconds,
                 half_open_max_attempts=orchestrator_config.circuit_breaker.half_open_max_attempts
             )
-            logger.info("[Orchestrator] Circuit breaker enabled")
+            # Inject circuit breaker into factory for transport-level 429 detection
+            self.engine.set_circuit_breaker(self.circuit_breaker)
+            logger.info("[Orchestrator] Circuit breaker enabled (injected into factory)")
         else:
             self.circuit_breaker = None
 
@@ -609,28 +611,32 @@ class ExtractionPipeline:
                 try:
                     events = await extractor.extract(sport, limit=limit)
 
-                    # Store events
+                    # Store events with batch processor for better performance
                     events_processed = 0
                     events_new = 0
                     odds_processed = 0
-                    odds_new = 0
 
-                    for event in events:
-                        is_new, odds_proc, odds_new_count = store_provider_event(
-                            session=self.session,
-                            provider=provider_id,
-                            event=event,
-                            polymarket_cache=self.polymarket_events
-                        )
-                        events_processed += 1
-                        if is_new:
-                            events_new += 1
-                        odds_processed += odds_proc
-                        odds_new += odds_new_count
+                    with OddsBatchProcessor(
+                        self.session,
+                        batch_size=self.orchestrator_config.batch_commit_size
+                    ) as odds_batch:
+                        for event in events:
+                            is_new, odds_proc, _ = store_provider_event(
+                                session=self.session,
+                                provider=provider_id,
+                                event=event,
+                                polymarket_cache=self.polymarket_events,
+                                fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
+                                prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
+                                odds_batch=odds_batch,
+                            )
+                            events_processed += 1
+                            if is_new:
+                                events_new += 1
+                            odds_processed += odds_proc
 
-                    # Batch commit if needed
-                    if events_processed % self.orchestrator_config.batch_commit_size == 0:
-                        self.session.commit()
+                        # Get actual insert/update counts from batch processor
+                        odds_new, odds_updated = odds_batch.get_stats()
 
                     sport_elapsed = time.time() - sport_start_time
                     logger.info(

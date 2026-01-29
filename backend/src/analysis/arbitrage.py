@@ -43,16 +43,16 @@ def find_arbitrage(
 ) -> Optional[ArbitrageOpportunity]:
     """
     Check if arbitrage exists for a market.
-    
+
     Args:
         event_id: Canonical event ID
         market: Market type ("1x2", "over_under_2.5", etc.)
         odds_by_outcome: {outcome: [{provider, odds}, ...]}
         min_profit_pct: Minimum profit to consider (default 0.5%)
-    
+
     Returns:
         ArbitrageOpportunity if found, None otherwise
-    
+
     Example:
         odds_by_outcome = {
             "home": [{"provider": "unibet", "odds": 2.10}, {"provider": "bet365", "odds": 2.05}],
@@ -62,7 +62,11 @@ def find_arbitrage(
     """
     if not odds_by_outcome:
         return None
-    
+
+    # Validate market completeness - must have all expected outcomes
+    if not _is_valid_market(market, odds_by_outcome):
+        return None
+
     # Find best odds for each outcome
     best_per_outcome = []
     for outcome, odds_list in odds_by_outcome.items():
@@ -74,25 +78,38 @@ def find_arbitrage(
             "provider": best["provider"],
             "odds": best["odds"],
         })
-    
+
     if len(best_per_outcome) < 2:
         return None  # Need at least 2 outcomes
-    
+
+    # CRITICAL: Arb requires DIFFERENT providers for different outcomes
+    # If all best odds come from the same provider, it's not an arb
+    providers_used = set(o["provider"] for o in best_per_outcome)
+    if len(providers_used) < 2:
+        return None  # Same provider for all outcomes - no arb possible
+
     # Calculate sum of implied probabilities
     implied_sum = sum(1 / o["odds"] for o in best_per_outcome)
-    
+
     # Arb exists if sum < 1
     if implied_sum >= 1:
         return None
-    
+
     profit_pct = (1 - implied_sum) * 100
-    
+
     if profit_pct < min_profit_pct:
         return None
-    
+
+    # Sanity check: unrealistic arb (>10%) usually means bad data or event mismatch
+    if profit_pct > 10:
+        logger.warning(
+            f"Suspicious arb {event_id} {market}: {profit_pct:.1f}% profit - possible data issue"
+        )
+        return None
+
     # Calculate stakes for $100 total stake
     stakes = calculate_arb_stakes(best_per_outcome, total_stake=100)
-    
+
     return ArbitrageOpportunity(
         event_id=event_id,
         market=market,
@@ -100,6 +117,58 @@ def find_arbitrage(
         outcomes=best_per_outcome,
         stakes=stakes,
     )
+
+
+def _is_valid_market(market: str, odds_by_outcome: dict) -> bool:
+    """
+    Check if market has all required outcomes.
+
+    Returns False for incomplete markets that would give false arb signals.
+    """
+    outcomes = set(k.lower() for k in odds_by_outcome.keys())
+    market_lower = market.lower()
+
+    # 1x2 markets require all 3 outcomes
+    if market_lower in ("1x2", "match_result", "fulltime", "slutresultat"):
+        required = {"home", "draw", "away"}
+        # Also accept Swedish: hemma, oavgjort, borta
+        alt_required = {"hemma", "oavgjort", "borta"}
+        # Also accept: 1, x, 2
+        num_required = {"1", "x", "2"}
+        return (
+            required.issubset(outcomes) or
+            alt_required.issubset(outcomes) or
+            num_required.issubset(outcomes)
+        )
+
+    # Over/under markets require both over and under
+    if "over_under" in market_lower or "totals" in market_lower:
+        # Must have matching over/under pair
+        has_over = any("over" in o or "över" in o for o in outcomes)
+        has_under = any("under" in o for o in outcomes)
+        return has_over and has_under and len(outcomes) == 2
+
+    # Spread/handicap markets require both sides
+    if "spread" in market_lower or "handicap" in market_lower:
+        required = {"home", "away"}
+        return required.issubset(outcomes) and len(outcomes) == 2
+
+    # Moneyline (2-way) requires exactly 2 outcomes
+    if market_lower in ("moneyline", "winner", "h2h", "head_to_head"):
+        return len(outcomes) == 2
+
+    # For unknown markets, require exactly 2 or 3 outcomes (no fragments)
+    # and outcomes must be from different providers
+    if len(outcomes) < 2 or len(outcomes) > 3:
+        return False
+
+    # Check that at least 2 different providers have odds
+    all_providers = set()
+    for odds_list in odds_by_outcome.values():
+        for o in odds_list:
+            all_providers.add(o.get("provider", ""))
+
+    return len(all_providers) >= 2
 
 
 def calculate_arb_stakes(

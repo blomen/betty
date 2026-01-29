@@ -4,6 +4,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
+  isExtraction?: boolean;
 }
 
 export interface ChatState {
@@ -190,8 +191,25 @@ export interface BonusMatch {
 export interface ExtractionStatus {
   running: boolean;
   last_run: string | null;
+  start_time: string | null;
+  elapsed_seconds: number;
+  progress_pct: number;
+  total_events: number;
+  total_odds: number;
+  current_provider: string | null;
+  completed_providers: number;
+  total_providers: number;
+  providers: Record<string, ProviderProgress>;
+}
+
+export interface ProviderProgress {
+  status: 'pending' | 'running' | 'completed' | 'failed';
   events: number;
   odds: number;
+  duration_seconds: number;
+  error: string | null;
+  sports_completed: number;
+  sports_total: number;
 }
 
 // Metrics

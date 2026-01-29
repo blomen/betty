@@ -82,7 +82,7 @@ class HajperRetriever(BrowserRetriever):
         # The page height stabilizes at ~720px regardless of scrolling
         # Keeping wait time for initial render but removing scrolling logic
 
-        await page.wait_for_timeout(1000)  # Wait for initial render (optimized)
+        await page.wait_for_timeout(2000)  # Wait for initial render
 
         # Count leagues before extraction for debugging
         initial_count = await page.evaluate('''() => {
@@ -128,12 +128,12 @@ class HajperRetriever(BrowserRetriever):
         # Navigate to league page
         full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
         try:
-            # Optimized: Use "domcontentloaded" for balance between speed and completeness
+            # Use "networkidle" for reliable WebSocket initialization (reverted from domcontentloaded)
             await asyncio.wait_for(
-                page.goto(full_url, wait_until="domcontentloaded", timeout=20000),
-                timeout=25.0  # Python-level timeout (25s) - reduced from 45s
+                page.goto(full_url, wait_until="networkidle", timeout=30000),
+                timeout=45.0  # Python-level timeout (45s) - restored for reliability
             )
-            await page.wait_for_timeout(1800)  # Allow WebSocket messages (balanced: 1.8s)
+            await page.wait_for_timeout(2000)  # Allow WebSocket messages to complete
         except asyncio.TimeoutError:
             logger.warning(f"[{self.provider_id}] Timeout loading {league_url}")
             return []
@@ -403,10 +403,28 @@ class HajperRetriever(BrowserRetriever):
                 market_type = markets_dict[market_id]['type']
                 normalized_outcome = self._normalize_outcome(outcome_name, outcome_type, market_type)
 
-                markets_dict[market_id]['outcomes'].append({
+                outcome_dict = {
                     "name": normalized_outcome,
                     "odds": odds
-                })
+                }
+
+                # Extract point value for spread/over_under markets
+                # Try multiple possible field names from selection data
+                point_value = selection.get('line') or selection.get('handicap') or selection.get('points')
+                if point_value is None:
+                    # Try to extract from outcome name (e.g., "Over 2.5", "Under 2.5", "-1.5", "+1.5")
+                    import re
+                    match = re.search(r'([+-]?\d+\.?\d*)', outcome_name)
+                    if match:
+                        try:
+                            point_value = float(match.group(1))
+                        except:
+                            pass
+
+                if point_value is not None and market_type in ['over_under', 'spread']:
+                    outcome_dict['point'] = float(point_value)
+
+                markets_dict[market_id]['outcomes'].append(outcome_dict)
 
             # Convert to list and filter empty markets
             markets_list = [m for m in markets_dict.values() if m['outcomes']]

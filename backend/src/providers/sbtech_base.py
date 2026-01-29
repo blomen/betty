@@ -353,19 +353,36 @@ class SBTechRetriever(BrowserRetriever):
                 # Get selections for this market
                 market_selections = selections_by_market.get(market_id, [])
 
+                # Normalize market type first (needed for point value logic)
+                market_type = self._normalize_market_type(market_label)
+
                 # Build outcomes
                 outcomes = []
                 for selection in market_selections:
                     if selection.get('status') == 'Open':
-                        outcomes.append({
+                        outcome_dict = {
                             "name": selection.get('label', ''),
                             "odds": selection.get('odds', 0.0)
-                        })
+                        }
+
+                        # Extract point value for spread/over_under markets
+                        point_value = selection.get('line') or selection.get('handicap') or selection.get('points')
+                        if point_value is None and market_type in ['over_under', 'spread']:
+                            # Try to extract from selection label (e.g., "Over 2.5")
+                            import re
+                            match = re.search(r'([+-]?\d+\.?\d*)', selection.get('label', ''))
+                            if match:
+                                try:
+                                    point_value = float(match.group(1))
+                                except:
+                                    pass
+
+                        if point_value is not None and market_type in ['over_under', 'spread']:
+                            outcome_dict['point'] = float(point_value)
+
+                        outcomes.append(outcome_dict)
 
                 if outcomes:
-                    # Normalize market type (basic mapping for common markets)
-                    market_type = self._normalize_market_type(market_label)
-
                     markets.append({
                         "type": market_type,
                         "outcomes": outcomes
@@ -395,17 +412,24 @@ class SBTechRetriever(BrowserRetriever):
         """Normalize market labels to standard types."""
         label_lower = market_label.lower()
 
-        # Common market patterns
-        if any(kw in label_lower for kw in ['matchresultat', 'match result', '1x2', 'full time result']):
-            return "match_result"
-        elif any(kw in label_lower for kw in ['over/under', 'total goals', 'totalt antal mål']):
+        # 1x2/Match result patterns (most common)
+        if any(kw in label_lower for kw in ['matchresultat', 'match result', '1x2', 'full time result',
+                                             'vinnare', 'winner', 'slutresultat', 'matchodds']):
+            return "1x2"
+        # Over/under patterns
+        elif any(kw in label_lower for kw in ['over/under', 'total goals', 'totalt antal mål', 'över/under',
+                                               'totalt', 'total points', 'antal mål', 'o/u']):
             return "over_under"
-        elif any(kw in label_lower for kw in ['handicap', 'asian handicap', 'asian spread']):
+        # Spread/Handicap patterns
+        elif any(kw in label_lower for kw in ['handicap', 'asian handicap', 'asian spread', 'handikapp',
+                                               'spread', 'point spread', 'pucklinje']):
             return "spread"
-        elif any(kw in label_lower for kw in ['both teams to score', 'båda lagen gör mål']):
+        # Both teams to score
+        elif any(kw in label_lower for kw in ['both teams to score', 'båda lagen gör mål', 'btts']):
             return "both_teams_to_score"
+        # Fallback: check if it looks like a 3-way market by structure (has draw option)
         else:
-            return "other"
+            return "1x2"  # Default to 1x2 for unrecognized markets with 3 outcomes
 
     def _parse_datetime(self, dt_str: Any) -> Optional[datetime]:
         """Parse datetime from various formats."""

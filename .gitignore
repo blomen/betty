@@ -28,3 +28,11 @@ backend/data/*.db
 # OS
 .DS_Store
 Thumbs.db
+nul
+
+# Logs
+*.log
+backend/logs/
+
+# Temp/Scrap
+backend/scrap/

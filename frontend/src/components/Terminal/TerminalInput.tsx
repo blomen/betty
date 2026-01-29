@@ -18,7 +18,7 @@ export function TerminalInput({
   onStop,
   isLoading = false,
   disabled = false,
-  placeholder = 'Ask about arbitrage, value bets, or betting strategies... (or type / for commands)',
+  placeholder = 'Ask a question or type / for commands...',
 }: TerminalInputProps) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -62,16 +62,22 @@ export function TerminalInput({
     const trimmed = input.trim();
     if (!trimmed || isLoading || disabled) return;
 
+    console.log('[DEBUG] handleSend called with:', trimmed);
+    console.log('[DEBUG] isLoading:', isLoading, 'disabled:', disabled);
+    console.log('[DEBUG] onSend:', typeof onSend, 'onCommand:', typeof onCommand);
+
     setHistory((prev) => [...prev, trimmed]);
     setHistoryIndex(-1);
 
     // Check if it's a slash command
     if (trimmed.startsWith('/') && onCommand) {
+      console.log('[DEBUG] Executing slash command');
       const parts = trimmed.slice(1).split(/\s+/);
       const command = parts[0].toLowerCase();
       const args = parts.slice(1).join(' ');
       onCommand(command, args);
     } else {
+      console.log('[DEBUG] Sending message to chat');
       onSend(trimmed);
     }
 
@@ -165,30 +171,30 @@ export function TerminalInput({
     <div className="border-t border-terminal-border bg-terminal-surface relative">
       {/* Command Suggestions Dropdown */}
       {showCommandSuggestions && commandSuggestions.length > 0 && (
-        <div className="absolute bottom-full left-0 right-0 bg-terminal-surface border border-terminal-accent/30 border-b-0 max-h-64 overflow-y-auto">
-          <div className="p-2 border-b border-terminal-border/50 text-xs text-terminal-muted">
-            Available commands (Tab to select, ↑↓ to navigate)
+        <div className="absolute bottom-full left-0 right-0 bg-terminal-bg border-l border-r border-t border-terminal-accent/30 max-h-64 overflow-y-auto">
+          <div className="px-3 py-1.5 border-b border-terminal-border/50 text-[10px] text-terminal-muted uppercase tracking-wider">
+            [commands] Tab to select | Up/Down to navigate
           </div>
           {commandSuggestions.map((cmd, index) => (
             <button
               key={cmd.name}
               onClick={() => handleCommandSelect(cmd)}
               className={`w-full text-left px-3 py-2 flex items-start gap-3 border-b border-terminal-border/30 last:border-b-0
-                         transition-colors ${
+                         transition-colors font-mono text-sm ${
                            index === selectedCommandIndex
-                             ? 'bg-terminal-accent/20 text-terminal-accent'
-                             : 'text-terminal-text hover:bg-terminal-accent/10'
+                             ? 'bg-terminal-accent/10 text-terminal-accent'
+                             : 'text-terminal-text hover:bg-terminal-border/30'
                          }`}
             >
-              <span className="font-mono text-sm font-medium whitespace-nowrap">
+              <span className="font-medium whitespace-nowrap text-terminal-accent">
                 /{cmd.name}
               </span>
-              <span className="text-xs text-terminal-muted flex-1">
+              <span className="text-xs text-terminal-muted flex-1 mt-0.5">
                 {cmd.description}
               </span>
               {cmd.category && (
-                <span className="text-[10px] text-terminal-muted/60 px-1.5 py-0.5 bg-terminal-bg rounded">
-                  {cmd.category}
+                <span className="text-[10px] text-terminal-muted/60 uppercase tracking-wide">
+                  [{cmd.category}]
                 </span>
               )}
             </button>
@@ -196,14 +202,8 @@ export function TerminalInput({
         </div>
       )}
 
-      <div className="flex items-end gap-2 p-3">
-        {/* ASCII Prompt indicator */}
-        <div className="flex-shrink-0 pb-2">
-          <span className={`font-bold ${isLoading ? 'text-terminal-yellow' : 'text-terminal-accent'}`}>
-            {isLoading ? '...' : '>'}
-          </span>
-        </div>
-
+      {/* Input Box */}
+      <div className="flex items-start gap-2 p-3 font-mono">
         {/* Input area */}
         <textarea
           ref={textareaRef}
@@ -213,42 +213,44 @@ export function TerminalInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-terminal-text placeholder-terminal-muted/50
-                     resize-none outline-none py-1.5 min-h-[36px] max-h-[200px]"
+          className="flex-1 bg-transparent text-terminal-text placeholder-terminal-muted/40
+                     resize-none outline-none py-1.5 min-h-[28px] max-h-[200px] font-mono"
         />
 
-        {/* Action button */}
+        {/* Action button - Enhanced style */}
         {isLoading ? (
           <button
             onClick={onStop}
-            className="flex-shrink-0 px-3 py-1.5 rounded bg-terminal-red/20 text-terminal-red
-                       hover:bg-terminal-red/30 transition-colors text-sm font-medium"
+            className="flex-shrink-0 px-3 py-1.5 text-terminal-red hover:bg-terminal-red/10
+                       transition-colors text-xs font-mono font-bold border border-terminal-red/30 rounded"
             title="Stop generation (Esc)"
           >
-            [stop]
+            [STOP]
           </button>
         ) : (
           <button
             onClick={handleSend}
             disabled={!input.trim() || disabled}
-            className="flex-shrink-0 px-3 py-1.5 rounded bg-terminal-accent/20 text-terminal-accent
-                       hover:bg-terminal-accent/30 transition-colors text-sm font-medium
-                       disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-terminal-accent/20"
+            className="flex-shrink-0 px-3 py-1.5 bg-terminal-accent/10 hover:bg-terminal-accent/20 text-terminal-accent
+                       transition-all text-xs font-mono font-bold border border-terminal-accent rounded
+                       disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-terminal-accent/10"
             title="Send message (Enter)"
           >
-            [send]
+            [ASK]
           </button>
         )}
       </div>
 
-      {/* Hints */}
-      <div className="px-3 pb-2 flex items-center gap-4 text-[10px] text-terminal-muted/50">
-        <span>Enter to send</span>
-        <span>/ for commands</span>
-        <span>Shift+Enter for newline</span>
-        {isLoading && <span>Esc to stop</span>}
-        {!showCommandSuggestions && history.length > 0 && <span>Up/Down for history</span>}
-        {showCommandSuggestions && <span>Tab to select</span>}
+      {/* Terminal hints bar */}
+      <div className="px-3 pb-2 border-t border-terminal-border/30 pt-1.5 bg-terminal-bg/50">
+        <div className="flex items-center gap-4 text-[10px] text-terminal-muted/50 font-mono">
+          <span>[Enter] send</span>
+          <span>[/] commands</span>
+          <span>[Shift+Enter] newline</span>
+          {isLoading && <span className="text-terminal-yellow">[Esc] stop</span>}
+          {!showCommandSuggestions && history.length > 0 && <span>[Up/Down] history</span>}
+          {showCommandSuggestions && <span className="text-terminal-accent">[Tab] select</span>}
+        </div>
       </div>
     </div>
   );

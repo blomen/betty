@@ -96,6 +96,16 @@ orchestrator:
     shutdown_timeout_seconds: 30
     cancel_pending_tasks: true
 
+  fuzzy_match:
+    threshold: 85                    # Minimum match score (0-100)
+    prefix_filter_length: 3          # Chars for prefix pre-filtering (0 to disable)
+
+  rate_limit:
+    max_retries: 2                   # Max retries on 429 rate limit
+    default_wait_seconds: 5          # Default wait if no Retry-After header
+    max_wait_seconds: 60             # Cap on exponential backoff
+    notify_circuit_breaker_after: 2  # Notify circuit breaker after N consecutive 429s
+
 # Base configurations
 kambi_defaults: &kambi_defaults
   retriever_type: kambi

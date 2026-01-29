@@ -133,6 +133,20 @@ class GracefulShutdownConfig(BaseModel):
     cancel_pending_tasks: bool = True
 
 
+class FuzzyMatchConfig(BaseModel):
+    """Fuzzy matching configuration."""
+    threshold: int = 85  # Minimum match score (0-100)
+    prefix_filter_length: int = 3  # Chars for prefix pre-filtering (0 to disable)
+
+
+class RateLimitConfig(BaseModel):
+    """Transport-level rate limit handling."""
+    max_retries: int = 2  # Max retries on 429
+    default_wait_seconds: int = 5  # Default wait if no Retry-After header
+    max_wait_seconds: int = 60  # Cap on wait time
+    notify_circuit_breaker_after: int = 2  # Notify circuit breaker after N consecutive 429s
+
+
 class ProviderGroupConfig(BaseModel):
     """Provider group with shared resource constraints."""
     name: str
@@ -162,6 +176,8 @@ class OrchestratorConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     progress: ProgressConfig = Field(default_factory=ProgressConfig)
     graceful_shutdown: GracefulShutdownConfig = Field(default_factory=GracefulShutdownConfig)
+    fuzzy_match: FuzzyMatchConfig = Field(default_factory=FuzzyMatchConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 # ============ Config Loader (Singleton) ============

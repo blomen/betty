@@ -101,6 +101,7 @@ export function useChat(context: BettingContext) {
 
   return {
     messages,
+    setMessages,
     isLoading,
     error,
     sendMessage,

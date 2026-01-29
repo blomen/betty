@@ -11,6 +11,7 @@ export interface StreamCallbacks {
 function buildSystemPrompt(context: BettingContext): string {
   const arbitrageOpps = context.opportunities.filter(o => o.type === 'arbitrage');
   const valueOpps = context.opportunities.filter(o => o.type === 'value');
+  const hasOpportunities = arbitrageOpps.length > 0 || valueOpps.length > 0;
 
   const parts = [
     `You are OddOpp, a terminal-style AI assistant for sports betting analytics. You help users find value bets and arbitrage opportunities by analyzing odds across multiple bookmakers.`,
@@ -20,6 +21,8 @@ function buildSystemPrompt(context: BettingContext): string {
     `- Keep responses concise and terminal-like`,
     `- Use markdown tables for data presentation`,
     `- Use **bold** for emphasis, not emoji`,
+    `- NEVER recommend /extract or /extractall if user just ran extraction or if opportunities already exist`,
+    `- If opportunities exist, guide user to use /opportunities, /arb, or /value commands instead`,
     ``,
     `Current data summary:`,
     `[+] ${arbitrageOpps.length} arbitrage opportunities`,
@@ -43,31 +46,21 @@ function buildSystemPrompt(context: BettingContext): string {
     });
   }
 
+  // Add extraction guidance based on data availability
+  if (hasOpportunities) {
+    parts.push(
+      ``,
+      `[!] OPPORTUNITIES AVAILABLE - DO NOT recommend running extraction`,
+      `[!] User already has ${arbitrageOpps.length + valueOpps.length} opportunities to analyze`,
+      `[!] Guide them to use /opportunities, /arb, or /value commands instead`,
+    );
+  }
+
   parts.push(
     ``,
-    `You can help users:`,
-    `[*] Analyze current betting opportunities`,
-    `[*] Explain arbitrage and value betting strategies`,
-    `[*] Calculate optimal stake sizes using Kelly criterion`,
-    `[*] Compare odds across providers`,
-    `[*] Understand implied probabilities and margins`,
-    `[*] Track bankroll and bet history`,
+    `Type /help to see all available commands. Users can place bets via /place-bet and settle via /settle-bet.`,
     ``,
-    `Available slash commands (users can type these):`,
-    `[*] /help - Show all available commands`,
-    `[*] /extractall - Run extraction on all providers`,
-    `[*] /extract [providers] - Run extraction on specific providers`,
-    `[*] /opportunities, /arb, /value - Show opportunities`,
-    `[*] /bets - Show pending/completed bets`,
-    `[*] /bankroll - Show balance breakdown`,
-    `[*] /providers - List all providers`,
-    `[*] /health - Check system health`,
-    `[*] /refresh - Refresh all data`,
-    `[*] /clear - Clear chat history`,
-    ``,
-    `When a user executes a command, respond helpfully about what's happening. For extraction commands, provide context about the process. Suggest relevant slash commands when appropriate.`,
-    ``,
-    `Be concise, data-driven, and use tables when presenting odds data. Never use emojis.`
+    `Be concise and data-driven. Use tables when presenting odds. Never use emojis.`
   );
 
   return parts.join('\n');

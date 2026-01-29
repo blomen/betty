@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
+import asyncio
 import aiohttp
 import logging
 from playwright.async_api import async_playwright
@@ -34,11 +35,15 @@ class HttpTransport(Transport):
     Lightweight HTTP Transport using aiohttp.
     Best for APIs.
     """
-    def __init__(self, headers: Optional[Dict] = None):
+    def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None):
         self.session = None
         self.headers = headers or {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
+        self.circuit_breaker = circuit_breaker
+        self.rate_limit_config = rate_limit_config
+        # Track consecutive 429s per provider for circuit breaker notification
+        self._consecutive_429s: Dict[str, int] = {}
 
     async def _ensure_session(self):
         if not self.session:
@@ -50,10 +55,11 @@ class HttpTransport(Transport):
         params: Optional[Dict] = None,
         headers: Optional[Dict] = None,
         cache: Optional[Any] = None,
-        provider_id: Optional[str] = None
+        provider_id: Optional[str] = None,
+        max_retries: int = None
     ) -> Any:
         """
-        GET request with optional caching.
+        GET request with optional caching and 429 rate limit handling.
 
         Args:
             url: Request URL
@@ -61,10 +67,18 @@ class HttpTransport(Transport):
             headers: Optional headers
             cache: Optional ResponseCache instance
             provider_id: Optional provider identifier for cache
+            max_retries: Max retries on 429 rate limit (uses config default if None)
 
         Returns:
             Response data (JSON or text)
         """
+        # Use config values or defaults
+        if max_retries is None:
+            max_retries = self.rate_limit_config.max_retries if self.rate_limit_config else 2
+        default_wait = self.rate_limit_config.default_wait_seconds if self.rate_limit_config else 5
+        max_wait = self.rate_limit_config.max_wait_seconds if self.rate_limit_config else 60
+        cb_threshold = self.rate_limit_config.notify_circuit_breaker_after if self.rate_limit_config else 2
+
         # Check cache first
         if cache:
             cached = cache.get(url, params, provider_id)
@@ -78,22 +92,63 @@ class HttpTransport(Transport):
         if headers:
             req_headers.update(headers)
 
-        async with self.session.get(url, params=params, headers=req_headers) as response:
-            if response.status != 200:
-                logger.warning(f"HTTP GET {url} returned status {response.status}")
-                return None
+        # Retry loop for 429 handling
+        for attempt in range(max_retries + 1):
+            async with self.session.get(url, params=params, headers=req_headers) as response:
+                # Handle 429 rate limit with exponential backoff
+                if response.status == 429:
+                    retry_after = response.headers.get('Retry-After', str(default_wait))
+                    try:
+                        wait_seconds = int(retry_after)
+                    except ValueError:
+                        wait_seconds = default_wait
 
-            # Auto-detect JSON vs Text
-            if "application/json" in response.headers.get("Content-Type", ""):
-                data = await response.json()
-            else:
-                data = await response.text()
+                    # Cap wait time and apply exponential backoff
+                    wait_seconds = min(wait_seconds * (2 ** attempt), max_wait)
 
-            # Store in cache
-            if cache and data:
-                cache.set(url, data, params, provider_id)
+                    provider_str = f"[{provider_id}] " if provider_id else ""
+                    logger.warning(
+                        f"{provider_str}429 Rate Limited - Retry-After: {wait_seconds}s "
+                        f"(attempt {attempt + 1}/{max_retries + 1})"
+                    )
 
-            return data
+                    # Track consecutive 429s and notify circuit breaker
+                    if provider_id:
+                        self._consecutive_429s[provider_id] = self._consecutive_429s.get(provider_id, 0) + 1
+                        if self._consecutive_429s[provider_id] >= cb_threshold and self.circuit_breaker:
+                            logger.warning(
+                                f"{provider_str}Notifying circuit breaker after {cb_threshold} consecutive 429s"
+                            )
+                            self.circuit_breaker.record_failure(provider_id)
+
+                    if attempt < max_retries:
+                        await asyncio.sleep(wait_seconds)
+                        continue
+                    else:
+                        logger.error(f"{provider_str}429 Rate limit exceeded after {max_retries + 1} attempts")
+                        return None
+
+                # Reset consecutive 429 counter on success
+                if provider_id and provider_id in self._consecutive_429s:
+                    self._consecutive_429s[provider_id] = 0
+
+                if response.status != 200:
+                    logger.warning(f"HTTP GET {url} returned status {response.status}")
+                    return None
+
+                # Auto-detect JSON vs Text
+                if "application/json" in response.headers.get("Content-Type", ""):
+                    data = await response.json()
+                else:
+                    data = await response.text()
+
+                # Store in cache
+                if cache and data:
+                    cache.set(url, data, params, provider_id)
+
+                return data
+
+        return None
 
     async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_session()

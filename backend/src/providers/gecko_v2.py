@@ -405,12 +405,7 @@ class GeckoV2Retriever(BrowserRetriever):
             if not outcomes:
                 return None
 
-            market_dict = {
-                "type": market_type_normalized,
-                "outcomes": outcomes
-            }
-
-            # Add point value if present (renamed from line for DB schema compatibility)
+            # Extract point value (renamed from line for DB schema compatibility)
             # Try lineValueRaw first (numeric), then lineValue (may be string)
             line_value = market.get('lineValueRaw')
             if line_value is None or line_value == 0:
@@ -421,7 +416,6 @@ class GeckoV2Retriever(BrowserRetriever):
                 try:
                     # Handle both numeric and string values
                     if isinstance(line_value, str):
-                        # Remove empty strings
                         line_value = line_value.strip()
                         if not line_value:
                             line_value = None
@@ -431,7 +425,6 @@ class GeckoV2Retriever(BrowserRetriever):
                         # Only use non-zero points
                         if point_float != 0:
                             point_value = point_float
-                            market_dict["point"] = point_value
                 except (ValueError, TypeError):
                     pass
 
@@ -439,6 +432,16 @@ class GeckoV2Retriever(BrowserRetriever):
             if market_type_normalized in ['over_under', 'spread'] and point_value is None:
                 logger.debug(f"[{self.provider_id}] Skipping {market_type_normalized} market without point value")
                 return None
+
+            # Add point to each outcome for spread/over_under markets
+            if point_value is not None:
+                for outcome in outcomes:
+                    outcome["point"] = point_value
+
+            market_dict = {
+                "type": market_type_normalized,
+                "outcomes": outcomes
+            }
 
             return market_dict
 

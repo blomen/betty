@@ -12,9 +12,14 @@ from ..core import BrowserTransport
 
 
 class FastbetRetriever(SBTechRetriever):
-    """Retriever for Fastbet sportsbook."""
+    """
+    Retriever for Fastbet sportsbook.
 
-    # Fastbet sport slugs (same as Bethard - same platform/company)
+    Note: Despite being owned by Bethard Group, Fastbet uses SpringBuilder/YoSpace
+    technology with a different API structure than standard SBTech.
+    """
+
+    # Fastbet sport slugs
     SPORT_SLUGS: Dict[str, str] = {
         "football": "football",
         "basketball": "basketball",
@@ -26,11 +31,17 @@ class FastbetRetriever(SBTechRetriever):
         "esports": "esports",
     }
 
+    # Fastbet uses SpringBuilder API, not standard SBTech patterns
+    API_PATTERNS = [
+        '/prematch/match/',  # SpringBuilder prematch API
+        '/live/match/',      # SpringBuilder live API (if needed)
+    ]
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
 
     def _get_sport_url(self, sport: str) -> str:
         """Get Fastbet sportsbook URL for a sport."""
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
-        # URL structure should match Bethard (same company/platform)
-        return f"{self.site_url}/sports/{sport_slug}"
+        # Fastbet uses /sv/sports/ path (Swedish site)
+        return f"{self.site_url}/sv/sports/{sport_slug}"

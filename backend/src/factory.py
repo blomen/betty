@@ -36,6 +36,11 @@ class ExtractorFactory:
     def __init__(self):
         self._config_loader = ConfigLoader.get_instance()
         self._extractor_cache: Dict[str, Retriever] = {}
+        self._circuit_breaker = None  # Injected by orchestrator
+
+    def set_circuit_breaker(self, circuit_breaker):
+        """Inject circuit breaker for transport-level 429 detection."""
+        self._circuit_breaker = circuit_breaker
 
     @classmethod
     def get_instance(cls) -> "ExtractorFactory":
@@ -97,16 +102,23 @@ class ExtractorFactory:
         # Create appropriate retriever based on type
         retriever: Retriever = None
 
+        # Get rate limit config for transport
+        rate_limit_config = self._config_loader.get_orchestrator_config().rate_limit
+
         if retriever_type == "kambi":
-            retriever = KambiRetriever(config)
+            retriever = KambiRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config
+            )
         elif retriever_type == "polymarket":
             # Inject sports map from config loader
             sports_map = self._config_loader.get_sports_map_for_polymarket()
             retriever = PolymarketRetriever(config, sports_map=sports_map)
         elif retriever_type == "spectate":
-            # Spectate requires visible browser for bot detection bypass
+            # Spectate providers (888sport, MrGreen) - headless mode works
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=False)
+            transport = BrowserTransport(headless=True)
             retriever = SpectateRetriever(config, transport=transport)
         elif retriever_type == "gecko":
             # Gecko (Betsson/Betsafe/NordicBet) requires visible browser for security
