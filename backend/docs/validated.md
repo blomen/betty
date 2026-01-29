@@ -9,10 +9,7 @@ This document defines production-ready criteria for sports betting providers in 
 - Ensure consistent data quality across all providers
 - Debug extraction issues systematically
 
-**Note:** This document focuses on **validation criteria and testing**. For step-by-step implementation instructions, see:
-- **`PROVIDER_IMPLEMENTATION_GUIDE.md`** - Complete workflow from research to production
-- **`.claude/docs/architectural_patterns.md`** - Design patterns and architecture
-- **`.claude/docs/provider_optimizations.md`** - Performance optimization techniques
+**Note:** This document focuses on **validation criteria and testing**. For implementation instructions, architecture patterns, and optimization techniques, see the main `CLAUDE.md` file.
 
 ### Production-Ready Definition
 A provider is **production-ready** when it:

@@ -151,7 +151,7 @@ def print_recommendations(timings: dict):
         print("  - Remove unnecessary waits")
         print("  - Expected gain: 60-70% faster")
 
-    print(f"\nSee: backend/docs/PROVIDER_OPTIMIZATION_WORKFLOW.md")
+    print(f"\nSee: CLAUDE.md (Optimization Patterns section)")
     print(f"{'='*60}\n")
 
 
