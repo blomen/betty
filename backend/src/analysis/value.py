@@ -1,19 +1,23 @@
 """
 Value Bet Detection
 
-Finds +EV bets where provider odds exceed fair odds from Polymarket.
+Finds +EV bets where provider odds exceed fair odds from sharp sources.
+
+Primary sharp: Pinnacle (de-vigged) > Polymarket
+If both exist, blend 60% Pinnacle + 40% Polymarket.
 
 Formula:
-    fair_odds = 1 / polymarket_probability
     edge = (provider_odds / fair_odds) - 1
     edge_pct = edge * 100
-    
+
 A bet has value if edge > 0 (provider odds > fair odds).
 """
 
 from dataclasses import dataclass
 from typing import Optional
 import logging
+
+from .devig import get_fair_odds_for_outcome, blend_fair_odds
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,79 @@ def find_best_value(
         return None
     
     return max(value_bets, key=lambda x: x.edge_pct)
+
+
+def get_fair_odds(
+    outcome: str,
+    market_odds: dict[str, list[dict]],
+    sharp_priority: list[str] = None,
+    blend_weight: float = 0.6,
+) -> Optional[tuple[float, str]]:
+    """
+    Get de-vigged fair odds for an outcome.
+
+    - De-vigs Pinnacle if available
+    - Blends Pinnacle (60%) + Polymarket (40%) if both exist
+    - Falls back to Polymarket only
+
+    Args:
+        outcome: The outcome to get fair odds for ("home", "away", etc.)
+        market_odds: All odds for this market {outcome: [{provider, odds}, ...]}
+        sharp_priority: Sharp providers in priority order (default ["pinnacle", "polymarket"])
+        blend_weight: Pinnacle weight when blending (default 0.6 = 60%)
+
+    Returns:
+        (fair_odds, source_description) or None if no sharp found
+
+    Example:
+        >>> market = {
+        ...     "home": [{"provider": "pinnacle", "odds": 2.10}, {"provider": "polymarket", "odds": 2.05}],
+        ...     "draw": [{"provider": "pinnacle", "odds": 3.40}],
+        ...     "away": [{"provider": "pinnacle", "odds": 3.50}],
+        ... }
+        >>> get_fair_odds("home", market)
+        (2.16, "pinnacle(60%)+polymarket(40%)")
+    """
+    if sharp_priority is None:
+        sharp_priority = ["pinnacle", "polymarket"]
+
+    # Find sharp provider odds for this outcome
+    outcome_providers = market_odds.get(outcome, [])
+    if not outcome_providers:
+        return None
+
+    pinnacle_odds = None
+    polymarket_odds = None
+
+    for po in outcome_providers:
+        provider = po.get("provider", "")
+        if provider == "pinnacle":
+            pinnacle_odds = po["odds"]
+        elif provider == "polymarket":
+            polymarket_odds = po["odds"]
+
+    # De-vig Pinnacle if available
+    pinnacle_fair = None
+    if pinnacle_odds is not None:
+        # Build Pinnacle market odds for de-vigging
+        pinnacle_market = {}
+        for out, providers in market_odds.items():
+            for p in providers:
+                if p.get("provider") == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
+        if len(pinnacle_market) >= 2:
+            # Full market available, de-vig properly
+            pinnacle_fair = get_fair_odds_for_outcome(
+                outcome, pinnacle_market, method="multiplicative"
+            )
+        else:
+            # Single outcome, can't de-vig - use raw
+            pinnacle_fair = pinnacle_odds
+
+    # Blend or fall back
+    return blend_fair_odds(pinnacle_fair, polymarket_odds, blend_weight)
 
 
 # Quick test
