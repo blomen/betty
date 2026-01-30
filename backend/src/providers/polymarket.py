@@ -242,6 +242,10 @@ class PolymarketRetriever(Retriever):
         event_id = str(item.get("id", ""))
         start_time = item.get("startTime")
 
+        # Skip "More Markets" events - they only have spreads/totals/props, no 1x2
+        if " - More Markets" in title:
+            return None
+
         # Parse teams from title
         home, away = self._parse_teams(title)
         if not home or not away:
@@ -476,14 +480,15 @@ class PolymarketRetriever(Retriever):
             odds = round(1 / yes_price, 3)
 
             # Identify market type from question
-            if "draw" in question:
+            # Only match specific patterns to avoid BTTS, spreads, totals
+            if "end in a draw" in question:
                 draw_odds = odds
-            elif home_lower in question or any(word in question for word in home_lower.split()[:2]):
-                # Match home team - check if team name or first words appear in question
-                home_odds = odds
-            elif away_lower in question or any(word in question for word in away_lower.split()[:2]):
-                # Match away team
-                away_odds = odds
+            elif question.startswith("will ") and " win" in question:
+                # This is a "Will X win?" market - match team name
+                if home_lower in question:
+                    home_odds = odds
+                elif away_lower in question:
+                    away_odds = odds
 
         # Build combined 1x2 market
         if home_odds and away_odds:
