@@ -154,6 +154,7 @@ class ProviderGroupConfig(BaseModel):
     max_concurrent: int = 3
     shared_resource: str = "none"    # "api", "browser", "none"
     health_check_delay_ms: int = 0   # Delay between health checks in group
+    post_extraction_delay_ms: int = 0  # Delay after each provider extraction (rate limit recovery)
 
 
 class OrchestratorConfig(BaseModel):
@@ -195,6 +196,7 @@ class ConfigLoader:
         self._sports: List[SportConfig] = []
         self._providers: Dict[str, ProviderConfig] = {}
         self._sports_map: Dict[str, SportConfig] = {}
+        self._sport_aliases: Dict[str, List[str]] = {}  # Sport key -> list of aliases
         self._loaded = False
         self.orchestrator_config: Optional[OrchestratorConfig] = None
 
@@ -248,6 +250,13 @@ class ConfigLoader:
         sport_dicts = []
         if isinstance(sports_data, list) and sports_data and "leagues" in sports_data[0]:
             for group in sports_data:
+                # Extract sport aliases before flattening
+                sport_key = group.get("key", "").lower()
+                if sport_key:
+                    self._sport_aliases[sport_key] = [
+                        a.lower() for a in group.get("aliases", [])
+                    ]
+
                 defaults = group.get("defaults", {})
                 for league in group.get("leagues", []):
                     merged = {**defaults, **league}
@@ -342,6 +351,10 @@ class ConfigLoader:
         if self.orchestrator_config is None:
             raise ValueError("Configuration not loaded")
         return self.orchestrator_config
+
+    def get_sport_aliases(self, sport_key: str) -> List[str]:
+        """Get aliases for a sport (e.g., football -> ['soccer', 'fotboll'])."""
+        return self._sport_aliases.get(sport_key.lower(), [])
 
 
 # ============ Convenience Function ============

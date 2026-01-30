@@ -15,7 +15,6 @@ from .providers.spectate import SpectateRetriever
 from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.bethard import BethardRetriever
-from .providers.fastbet import FastbetRetriever
 from .providers.altenar import AltenarRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
@@ -139,11 +138,6 @@ class ExtractorFactory:
                 retriever = BethardRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
-        elif retriever_type == "fastbet":
-            # Fastbet uses DOM scraping (not SBTech API)
-            from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
-            retriever = FastbetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
             retriever = AltenarRetriever(config)

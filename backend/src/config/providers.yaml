@@ -18,6 +18,7 @@ orchestrator:
       max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
       health_check_delay_ms: 2000      # 2s between Kambi health checks to avoid rate limits
+      post_extraction_delay_ms: 30000  # 30s delay between providers to let rate limit recover
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
@@ -183,20 +184,6 @@ providers:
       type: doubledeposit
       amount: 1000
 
-  paf:
-    <<: *kambi_defaults
-    id: paf
-    name: Paf
-    domain: paf.se
-    brand: pafse
-
-  atg:
-    <<: *kambi_defaults
-    id: atg
-    name: ATG
-    domain: atg.se
-    brand: atg
-
   betmgm:
     <<: *kambi_defaults
     id: betmgm
@@ -206,13 +193,6 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
-
-  casumo:
-    <<: *kambi_defaults
-    id: casumo
-    name: Casumo
-    domain: casumo.com
-    brand: case
 
   speedybet:
     <<: *kambi_defaults
@@ -234,13 +214,6 @@ providers:
       type: doubledeposit
       amount: 500
 
-  svenskaspel:
-    <<: *kambi_defaults
-    id: svenskaspel
-    name: Svenskaspel
-    domain: spela.svenskaspel.se
-    brand: svenskaspel
-
   goldenbull:
     <<: *kambi_defaults
     id: goldenbull
@@ -260,13 +233,6 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
-
-  flaxcasino:
-    <<: *kambi_defaults
-    id: flaxcasino
-    name: Flax Casino
-    domain: flaxcasino.se
-    brand: flaxse
 
   # Spectate providers
   mrgreen:
@@ -373,14 +339,6 @@ providers:
       type: doubledeposit
       amount: 500
 
-  # Fastbet - DOM Scraper (SpringBuilder/YoSpace platform)
-  fastbet:
-    id: fastbet
-    name: Fastbet
-    domain: fastbet.com
-    retriever_type: fastbet  # Custom DOM scraper (not SBTech API)
-    site_url: https://www.fastbet.com
-
   comeon:
     id: comeon
     name: ComeOn
@@ -471,17 +429,16 @@ providers:
 
 # Active providers (subset of above to use)
 active:
-  # Kambi API providers (with bonus)
+  # Kambi API providers (6 max - Kambi global rate limit caps at 6 brands per run)
   - unibet
   - leovegas
   - expekt
   - betmgm
   - speedybet
   - x3000
-  # DISABLED: casumo, svenskaspel, paf, atg - no bonus
-  # DISABLED: goldenbull, 1x2, flaxcasino - redundant Kambi data, causes rate limits
+  # DISABLED: goldenbull, 1x2 - Kambi rate limit reached after 6 providers (same odds anyway)
   # Browser-based providers (with bonus)
-  - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
+  - hajper
   - comeon
   - mrgreen
   - 888sport
@@ -489,7 +446,6 @@ active:
   # DISABLED: bethard - fails under concurrent browser load
   # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load
   # REST API providers
-  - betinia  # Altenar platform - has bonus
+  - betinia
   - pinnacle  # Sharp lines - truth source
-  - polymarket  # Prediction market - alternative sharp source
-  # DISABLED: fastbet - no bonus
+  - polymarket  # Prediction market

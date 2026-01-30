@@ -124,12 +124,22 @@ class ProviderPoolManager:
                             f"[{provider_id}] Acquired group={group.name} + browser slot"
                         )
                         yield
+                        # Apply post-extraction delay before releasing slot
+                        if group.post_extraction_delay_ms > 0:
+                            delay_sec = group.post_extraction_delay_ms / 1000.0
+                            logger.debug(f"[{provider_id}] Post-extraction delay: {delay_sec}s")
+                            await asyncio.sleep(delay_sec)
                         logger.debug(
                             f"[{provider_id}] Released group={group.name} + browser slot"
                         )
                 else:
                     logger.debug(f"[{provider_id}] Acquired group={group.name} slot")
                     yield
+                    # Apply post-extraction delay before releasing slot
+                    if group.post_extraction_delay_ms > 0:
+                        delay_sec = group.post_extraction_delay_ms / 1000.0
+                        logger.debug(f"[{provider_id}] Post-extraction delay: {delay_sec}s")
+                        await asyncio.sleep(delay_sec)
                     logger.debug(f"[{provider_id}] Released group={group.name} slot")
         else:
             # No group restriction - run freely
