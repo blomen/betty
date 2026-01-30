@@ -1,5 +1,6 @@
 # Provider Configuration
 # Uses YAML anchors to reduce duplication
+# Bonus info source: https://speltips.se/ (check periodically for updates)
 
 # Global orchestrator configuration
 orchestrator:
@@ -14,9 +15,9 @@ orchestrator:
   provider_groups:
     - name: kambi_api
       retriever_types: [kambi]
-      max_concurrent: 2                # Same API backend - prevents 429s
+      max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
-      health_check_delay_ms: 500       # 500ms between Kambi health checks
+      health_check_delay_ms: 2000      # 2s between Kambi health checks to avoid rate limits
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
@@ -75,7 +76,7 @@ orchestrator:
   health_check:
     enabled: true
     strategy: on_demand
-    timeout_seconds: 15.0              # Increased from 10s for browser-based providers
+    timeout_seconds: 60.0              # Increased to 60s for browser-based providers (comeon, hajper, snabbare take 30-50s)
     check_before_extraction: true
 
   metrics:
@@ -158,6 +159,9 @@ providers:
     name: Unibet
     domain: unibet.se
     brand: ubse
+    bonus:
+      type: doubledeposit
+      amount: 1000
 
   leovegas:
     <<: *kambi_defaults
@@ -165,6 +169,9 @@ providers:
     name: LeoVegas
     domain: leovegas.com
     brand: leose
+    bonus:
+      type: doubledeposit
+      amount: 600
 
   expekt:
     <<: *kambi_defaults
@@ -172,6 +179,9 @@ providers:
     name: Expekt
     domain: expekt.se
     brand: expektse
+    bonus:
+      type: doubledeposit
+      amount: 1000
 
   paf:
     <<: *kambi_defaults
@@ -193,6 +203,9 @@ providers:
     name: BetMGM
     domain: betmgm.se
     brand: betmgmse
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   casumo:
     <<: *kambi_defaults
@@ -207,6 +220,9 @@ providers:
     name: SpeedyBet
     domain: speedybet.com
     brand: speedybetse
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   x3000:
     <<: *kambi_defaults
@@ -214,6 +230,9 @@ providers:
     name: X3000
     domain: x3000.se
     brand: speedyspelse
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   svenskaspel:
     <<: *kambi_defaults
@@ -228,6 +247,9 @@ providers:
     name: Golden Bull
     domain: goldenbull.se
     brand: goldenbullse
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   1x2:
     <<: *kambi_defaults
@@ -235,6 +257,9 @@ providers:
     name: 1X2
     domain: 1x2.se
     brand: 1x2se
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   flaxcasino:
     <<: *kambi_defaults
@@ -253,6 +278,9 @@ providers:
     params:
       tournaments:
         <<: *spectate_tournaments
+    bonus:
+      type: freebet
+      amount: 500
 
   888sport:
     id: 888sport
@@ -264,6 +292,9 @@ providers:
     params:
       tournaments:
         <<: *spectate_tournaments
+    bonus:
+      type: doubledeposit
+      amount: 500
 
   # Snabbare (custom retriever)
   snabbare:
@@ -277,6 +308,9 @@ providers:
         football:
           - sweden/allsvenskan
           - england/premier-league
+    bonus:
+      type: doubledeposit
+      amount: 600
 
   # Gecko providers (Betsson Group - Custom API platform)
   # Using gecko_v2: Browser automation with API interception + stealth to bypass bot detection
@@ -286,6 +320,9 @@ providers:
     domain: betsson.com
     retriever_type: gecko_v2
     site_url: https://www.betsson.com
+    bonus:
+      type: freebet
+      amount: 250
 
   betsafe:
     id: betsafe
@@ -293,6 +330,9 @@ providers:
     domain: betsafe.com
     retriever_type: gecko_v2
     site_url: https://www.betsafe.com
+    bonus:
+      type: freebet
+      amount: 100
 
   nordicbet:
     id: nordicbet
@@ -300,14 +340,18 @@ providers:
     domain: nordicbet.com
     retriever_type: gecko_v2
     site_url: https://www.nordicbet.com
+    bonus:
+      type: freebet
+      amount: 100
 
-  # Pinnacle (guest API - no auth required)
+  # Pinnacle (guest API - no auth required) - SHARP BOOK (reference odds)
   pinnacle:
     id: pinnacle
     name: Pinnacle
     domain: pinnacle.com
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
+    sharp: true  # No margin, use as truth source
 
   # Coolbet (browser automation with API interception)
   coolbet:
@@ -316,6 +360,9 @@ providers:
     domain: coolbet.com
     retriever_type: coolbet
     site_url: https://www.coolbet.com
+    bonus:
+      type: doubledeposit
+      amount: 1000
 
   # Polymarket (truth source)
   polymarket:
@@ -333,14 +380,17 @@ providers:
     domain: bethard.com
     retriever_type: sbtech
     site_url: https://www.bethard.com
+    bonus:
+      type: doubledeposit
+      amount: 500
 
-  # DISABLED: Fastbet uses SpringBuilder/YoSpace (not SBTech), needs custom implementation
-  # fastbet:
-  #   id: fastbet
-  #   name: Fastbet
-  #   domain: fastbet.com
-  #   retriever_type: sbtech
-  #   site_url: https://www.fastbet.com
+  # Fastbet - DOM Scraper (SpringBuilder/YoSpace platform)
+  fastbet:
+    id: fastbet
+    name: Fastbet
+    domain: fastbet.com
+    retriever_type: fastbet  # Custom DOM scraper (not SBTech API)
+    site_url: https://www.fastbet.com
 
   comeon:
     id: comeon
@@ -348,10 +398,13 @@ providers:
     domain: comeon.com
     retriever_type: custom  # Multi-league WebSocket implementation
     site_url: https://www.comeon.com
+    bonus:
+      type: doubledeposit
+      amount: 500
 
-    # Breadth controls
-    max_leagues: 50  # Limit leagues for faster extraction
-    concurrent_leagues: 5  # Number of parallel league extractions
+    # Breadth controls - optimized for faster extraction
+    max_leagues: 30  # Reduced from 50 for faster extraction (~40s target)
+    concurrent_leagues: 8  # Increased from 5 for better parallelism
 
     # Depth controls (DISABLED for validation - causes timeouts)
     extract_full_markets: false  # Disable event detail page extraction
@@ -385,10 +438,13 @@ providers:
     domain: hajper.com
     retriever_type: custom  # Multi-league WebSocket extraction (ComeOn Group)
     site_url: https://www.hajper.com
+    bonus:
+      type: freebet
+      amount: 500
 
-    # Breadth controls
-    max_leagues: 999  # Number of leagues to extract (999 = all available leagues)
-    concurrent_leagues: 8  # Number of parallel league extractions (optimized from 5)
+    # Breadth controls - optimized for faster extraction
+    max_leagues: 30  # Reduced from 999 for faster extraction (~40s target)
+    concurrent_leagues: 8  # Number of parallel league extractions
 
     supported_sports:
       - football
@@ -406,6 +462,9 @@ providers:
     name: Betinia
     domain: betinia.se
     retriever_type: altenar  # REST API extraction (Altenar platform)
+    bonus:
+      type: doubledeposit
+      amount: 1000
 
     # Altenar API configuration
     api_base: https://sb2frontend-altenar2.biahosted.com/api
@@ -421,8 +480,111 @@ providers:
       - volleyball
       - esports
 
+  # --- NEW PROVIDERS (need extractors) ---
+  # These have bonuses but no extractor implemented yet
+
+  bet365:
+    id: bet365
+    name: Bet365
+    domain: bet365.com
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 1500  # Highest bonus
+
+  interwetten:
+    id: interwetten
+    name: Interwetten
+    domain: interwetten.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 1000
+
+  tipwin:
+    id: tipwin
+    name: Tipwin
+    domain: tipwin.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 1000
+
+  vbet:
+    id: vbet
+    name: VBet
+    domain: vbet.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 800
+
+  10bet:
+    id: 10bet
+    name: 10Bet
+    domain: 10bet.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 1000
+
+  swiper:
+    id: swiper
+    name: Swiper
+    domain: swiper.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 1000
+
+  spelklubben:
+    id: spelklubben
+    name: Spelklubben
+    domain: spelklubben.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 500
+
+  dbet:
+    id: dbet
+    name: DBet
+    domain: dbet.com
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: freebet
+      amount: 500
+
+  quickcasino:
+    id: quickcasino
+    name: Quick Casino
+    domain: quickcasino.se
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: doubledeposit
+      amount: 500
+
+  betsbk:
+    id: betsbk
+    name: BetsBK
+    domain: betsbk.com
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: freebet
+      amount: 100
+
+  lyllocasino:
+    id: lyllocasino
+    name: Lyllo Casino
+    domain: lyllocasino.com
+    retriever_type: null  # TODO: implement
+    bonus:
+      type: freebet
+      amount: 100
+
 # Active providers (subset of above to use)
 active:
+  # Kambi API providers (same backend, run sequentially to avoid 429s)
   - unibet
   - leovegas
   - expekt
@@ -431,24 +593,20 @@ active:
   - paf
   - atg
   - betmgm
-  - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
-  - comeon
-  - betinia  # REST API (Altenar platform) - 807 football events
   - speedybet
   - x3000
-  - goldenbull
-  - 1x2
-  - flaxcasino
+  # DISABLED: goldenbull, 1x2, flaxcasino - redundant Kambi data, causes rate limits
+  # Browser-based providers
+  - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
+  - comeon
   - mrgreen
   - 888sport
   - snabbare
-  # Gecko providers now enabled with gecko_v2 (stealth + API interception)
-  - betsson
-  - betsafe
-  - nordicbet
-  # Public API providers
-  - pinnacle
+  # DISABLED: bethard - fails under concurrent browser load
+  # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load
+  # REST API providers (fast, reliable)
+  - betinia  # Altenar platform - 1989 events
+  - pinnacle  # Sharp lines - 638 events
+  # DOM scraper
+  - fastbet
   # DISABLED: polymarket - needs league-level extraction (architecture rework)
-  # DISABLED: fastbet - uses SpringBuilder/YoSpace (not SBTech)
-  # SBTech providers (browser automation)
-  - bethard
