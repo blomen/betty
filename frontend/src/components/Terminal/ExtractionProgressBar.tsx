@@ -21,7 +21,7 @@ export function ExtractionProgressBar({
     // Poll extraction status
     const pollInterval = setInterval(async () => {
       try {
-        const extractionStatus = await api.getExtractionStatus();
+        const extractionStatus = await api.getExtractionProgress();
         setStatus(extractionStatus);
 
         // Check if complete
@@ -47,8 +47,8 @@ export function ExtractionProgressBar({
 
   if (!isExtracting || !status) return null;
 
-  // Calculate progress percentage (estimate based on events)
-  const progress = status.events > 0 ? Math.min(100, (status.events / 50) * 100) : 0;
+  // Calculate progress percentage (from API)
+  const progress = status.progress_pct;
 
   // ASCII progress bar
   const barWidth = 50;
@@ -81,8 +81,8 @@ export function ExtractionProgressBar({
 
           {/* Right: Stats */}
           <div className="flex items-center gap-4 text-terminal-text">
-            <span>Events: <span className="text-terminal-accent">{status.events}</span></span>
-            <span>Odds: <span className="text-terminal-accent">{status.odds}</span></span>
+            <span>Events: <span className="text-terminal-accent">{status.total_events}</span></span>
+            <span>Odds: <span className="text-terminal-accent">{status.total_odds}</span></span>
             <span>Time: <span className="text-terminal-yellow">{timeStr}</span></span>
           </div>
         </div>

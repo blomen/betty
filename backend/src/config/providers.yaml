@@ -353,17 +353,6 @@ providers:
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true  # No margin, use as truth source
 
-  # Coolbet (browser automation with API interception)
-  coolbet:
-    id: coolbet
-    name: Coolbet
-    domain: coolbet.com
-    retriever_type: coolbet
-    site_url: https://www.coolbet.com
-    bonus:
-      type: doubledeposit
-      amount: 1000
-
   # Polymarket (truth source)
   polymarket:
     id: polymarket
@@ -480,123 +469,18 @@ providers:
       - volleyball
       - esports
 
-  # --- NEW PROVIDERS (need extractors) ---
-  # These have bonuses but no extractor implemented yet
-
-  bet365:
-    id: bet365
-    name: Bet365
-    domain: bet365.com
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 1500  # Highest bonus
-
-  interwetten:
-    id: interwetten
-    name: Interwetten
-    domain: interwetten.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 1000
-
-  tipwin:
-    id: tipwin
-    name: Tipwin
-    domain: tipwin.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 1000
-
-  vbet:
-    id: vbet
-    name: VBet
-    domain: vbet.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 800
-
-  10bet:
-    id: 10bet
-    name: 10Bet
-    domain: 10bet.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 1000
-
-  swiper:
-    id: swiper
-    name: Swiper
-    domain: swiper.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 1000
-
-  spelklubben:
-    id: spelklubben
-    name: Spelklubben
-    domain: spelklubben.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 500
-
-  dbet:
-    id: dbet
-    name: DBet
-    domain: dbet.com
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: freebet
-      amount: 500
-
-  quickcasino:
-    id: quickcasino
-    name: Quick Casino
-    domain: quickcasino.se
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: doubledeposit
-      amount: 500
-
-  betsbk:
-    id: betsbk
-    name: BetsBK
-    domain: betsbk.com
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: freebet
-      amount: 100
-
-  lyllocasino:
-    id: lyllocasino
-    name: Lyllo Casino
-    domain: lyllocasino.com
-    retriever_type: null  # TODO: implement
-    bonus:
-      type: freebet
-      amount: 100
-
 # Active providers (subset of above to use)
 active:
-  # Kambi API providers (same backend, run sequentially to avoid 429s)
+  # Kambi API providers (with bonus)
   - unibet
   - leovegas
   - expekt
-  - casumo
-  - svenskaspel
-  - paf
-  - atg
   - betmgm
   - speedybet
   - x3000
+  # DISABLED: casumo, svenskaspel, paf, atg - no bonus
   # DISABLED: goldenbull, 1x2, flaxcasino - redundant Kambi data, causes rate limits
-  # Browser-based providers
+  # Browser-based providers (with bonus)
   - hajper  # Multi-league WebSocket (ComeOn Group) - 289 events from 57 football leagues
   - comeon
   - mrgreen
@@ -604,9 +488,8 @@ active:
   - snabbare
   # DISABLED: bethard - fails under concurrent browser load
   # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load
-  # REST API providers (fast, reliable)
-  - betinia  # Altenar platform - 1989 events
-  - pinnacle  # Sharp lines - 638 events
-  # DOM scraper
-  - fastbet
-  # DISABLED: polymarket - needs league-level extraction (architecture rework)
+  # REST API providers
+  - betinia  # Altenar platform - has bonus
+  - pinnacle  # Sharp lines - truth source
+  - polymarket  # Prediction market - alternative sharp source
+  # DISABLED: fastbet - no bonus

@@ -12,9 +12,7 @@ from .core import Retriever
 from .providers.kambi import KambiRetriever
 from .providers.polymarket import PolymarketRetriever
 from .providers.spectate import SpectateRetriever
-from .providers.gecko import GeckoRetriever
 from .providers.gecko_v2 import GeckoV2Retriever
-from .providers.gecko_api import GeckoAPIRetriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.bethard import BethardRetriever
 from .providers.fastbet import FastbetRetriever
@@ -120,20 +118,12 @@ class ExtractorFactory:
             from .core import BrowserTransport
             transport = BrowserTransport(headless=True)
             retriever = SpectateRetriever(config, transport=transport)
-        elif retriever_type == "gecko":
-            # Gecko (Betsson/Betsafe/NordicBet) requires visible browser for security
-            from .core import BrowserTransport
-            transport = BrowserTransport(headless=False)
-            retriever = GeckoRetriever(config, transport=transport)
         elif retriever_type == "gecko_v2":
             # Gecko V2 - API interception approach (faster than DOM parsing)
             # Using headless=True for better performance (2-3s faster per sport)
             from .core import BrowserTransport
             transport = BrowserTransport(headless=True)
             retriever = GeckoV2Retriever(config, transport=transport)
-        elif retriever_type == "gecko_api":
-            # Gecko API - Direct API calls without browser (fastest)
-            retriever = GeckoAPIRetriever(config)
         elif retriever_type == "snabbare":
             from .providers.snabbare import SnabbareRetriever
             retriever = SnabbareRetriever(config)
@@ -147,10 +137,13 @@ class ExtractorFactory:
             # Select brand-specific retriever
             if provider_id == "bethard":
                 retriever = BethardRetriever(config, transport=transport)
-            elif provider_id == "fastbet":
-                retriever = FastbetRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
+        elif retriever_type == "fastbet":
+            # Fastbet uses DOM scraping (not SBTech API)
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=True)
+            retriever = FastbetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
             retriever = AltenarRetriever(config)
@@ -167,10 +160,6 @@ class ExtractorFactory:
                 retriever = HajperRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown custom provider '{provider_id}'")
-        # elif retriever_type == "coolbet":
-        #     # BLOCKED - Coolbet requires commercial services (residential proxies or scraping API)
-        #     from .providers.coolbet_nodriver import CoolbetNodriverRetriever
-        #     retriever = CoolbetNodriverRetriever(config)
         else:
             raise ValueError(f"Unknown retriever type '{retriever_type}' for {provider_id}")
 

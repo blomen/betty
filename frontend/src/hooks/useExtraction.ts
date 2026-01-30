@@ -6,15 +6,22 @@ export function useExtraction(pollInterval = 5000) {
   const [status, setStatus] = useState<ExtractionStatus>({
     running: false,
     last_run: null,
-    events: 0,
-    odds: 0,
+    start_time: null,
+    elapsed_seconds: 0,
+    progress_pct: 0,
+    total_events: 0,
+    total_odds: 0,
+    current_provider: null,
+    completed_providers: 0,
+    total_providers: 0,
+    providers: {},
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.getExtractionStatus();
+      const data = await api.getExtractionProgress();
       setStatus(data);
       setError(null);
     } catch (err) {

@@ -1,4 +1,4 @@
-# Oddopp
+# OddOpp
 
 **Odds Opportunities** - Compare betting odds against sharp bookmakers to find value.
 
@@ -6,9 +6,9 @@
 
 ```bash
 # Install
-pip install -e .
+cd backend && pip install -e .
 
-# Extract from truth sources (Polymarket + Pinnacle)
+# Extract from truth sources (Pinnacle + Polymarket)
 python -m src.extract --sources
 
 # Extract from all providers
@@ -16,29 +16,35 @@ python -m src.extract --all
 
 # Find opportunities
 python -m src.detect
+
+# Run API
+uvicorn src.api:app --reload
 ```
+
+## Documentation
+
+See [CLAUDE.md](CLAUDE.md) for detailed architecture, adding providers, and development workflow.
 
 ## Architecture
 
 ```
-oddopp/
-├── src/
-│   ├── sources/          # Truth sources (Polymarket, Pinnacle)
-│   ├── extractors/       # Provider extractors (Kambi, etc.)
-│   ├── db/               # SQLite models & repository
-│   └── utils/            # HTTP, normalization
-├── config/               # Provider configs
-├── data/                 # SQLite database
-└── tests/
+backend/src/
+├── providers/     # Bookmaker extractors (Kambi, Gecko, Spectate, etc.)
+├── pipeline/      # Orchestrator + storage
+├── analysis/      # Value detection, arbitrage, devigging
+├── matching/      # Event normalization + fuzzy matching
+├── db/            # SQLite models
+├── api.py         # FastAPI endpoints
+└── config/        # Provider configs (YAML)
+
+frontend/src/
+├── components/    # React UI
+└── hooks/         # Data fetching
 ```
 
 ## Truth Sources
 
 | Source | Method | Status |
 |--------|--------|--------|
-| Polymarket | Public API | ✅ Ready |
-
-## Extraction Priority
-
-1. **API** (found via Network tab) - fastest, most reliable
-2. **DOM Scrape** (Playwright) - fallback when API protected
+| Pinnacle | Guest API | Sharp lines (devigged) |
+| Polymarket | Public API | Prediction market |

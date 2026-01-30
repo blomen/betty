@@ -1,136 +1,119 @@
 # OddOpp - Betting Analytics Platform
 
-Sports betting analytics platform for finding value bets by comparing odds across providers against Polymarket (truth source).
+## WHAT This Project Is
 
-## Tech Stack
+OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle, Polymarket) to find value bets and arbitrage opportunities.
 
-**Backend:** Python 3.10+, FastAPI, SQLAlchemy/SQLite, aiohttp, Pydantic, thefuzz, Playwright (optional)
-
-**Frontend:** React 19, Vite 7.2, Tailwind CSS 4.1, React Router 7
-
-## Project Structure
-
+**Architecture:**
 ```
-backend/
-├── src/
-│   ├── core/           # Retriever, Transport, BrowserRetriever base classes
-│   ├── providers/      # Provider extractors (kambi.py, pinnacle.py, etc.)
-│   ├── analysis/       # value.py, arbitrage.py
-│   ├── db/models.py    # SQLAlchemy models
-│   ├── matching/       # normalizer.py, matcher.py, aliases.yaml
-│   ├── config/         # providers.yaml, sports.json
-│   ├── pipeline/       # orchestrator.py, storage.py, utils.py
-│   └── factory.py      # ExtractorFactory singleton
-├── data/               # SQLite database
-└── scripts/            # Utility scripts
+backend/src/
+├── providers/     # Bookmaker extractors (Kambi, Gecko, Spectate, Pinnacle, etc.)
+│   └── mixins/    # Shared functionality (RSocket decoding)
+├── pipeline/      # Orchestrator + storage
+├── analysis/      # Value detection, arbitrage, devigging
+├── matching/      # Event normalization + fuzzy matching
+├── bankroll/      # Kelly criterion + stake sizing
+├── db/            # SQLAlchemy models (Event, Odds, Bet, Provider)
+├── constants.py   # Shared constants (ALLOWED_MARKETS, SHARP_PROVIDERS)
+├── api.py         # FastAPI endpoints
+└── app.py         # Typer CLI
 
-frontend/src/           # React app (pages/, components/, utils/)
-tests/                  # Integration tests
+frontend/src/
+├── components/    # Terminal-style React UI
+├── hooks/         # Data fetching + WebSocket
+└── services/      # API client + Claude chat
 ```
 
-## Commands
+**Tech stack:** Python 3.10+ / FastAPI / SQLite / Playwright | React 19 / TypeScript / Vite / Tailwind
 
+## WHY It's Structured This Way
+
+- **Provider extractors are isolated** - Each bookmaker has unique API/DOM structure
+- **Sharp sources separate** - Pinnacle + Polymarket provide "fair odds" baseline
+- **Matching layer abstracts providers** - Fuzzy matching normalizes "Real Madrid CF" → canonical event
+- **Analysis is provider-agnostic** - Works on normalized events/odds
+
+## HOW To Work In This Codebase
+
+### Commands
 ```bash
-# Backend
-pip install -e .                    # Install
-pip install -e ".[dev]"             # With dev deps
-python main.py                      # Run extraction
-python main.py --providers unibet   # Specific provider
-pytest tests/ -v                    # Run tests
-uvicorn backend.src.api:app --port 8000  # Start API
+# Extract odds
+python -m src.extract --sources    # Sharp sources only (Pinnacle + Polymarket)
+python -m src.extract --all        # All providers
 
-# Frontend
-cd frontend && npm install && npm run dev  # Dev server (port 3000)
+# Find opportunities
+python -m src.detect               # Value + arbitrage detection
+
+# Run services
+uvicorn src.api:app --reload       # API on :8000
+cd frontend && npm run dev         # UI on :5173
+
+# Tests
+pytest tests/                      # Run test suite
 ```
 
-## Core Concepts
+### Adding a New Provider
+1. Check provider type in `config/providers.yaml` (Kambi, Gecko V2, Spectate, SBTech, Altenar, etc.)
+2. If existing type: add config entry only
+3. If new type: create extractor in `providers/`, register in `factory.py`
+4. For WebSocket/RSocket providers: use `RSocketMixin` from `providers/mixins/`
+5. Test with `python -m src.extract --provider <name>`
 
-### Canonical Event ID
-Format: `{sport}:{home_normalized}:{away_normalized}:{YYYYMMDD}`
-Example: `football:arsenal:chelsea:20260122`
-Source: `backend/src/pipeline/utils.py:12`
+### Key Domain Concepts
+- **Fair odds**: True probability from sharp sources (after devigging)
+- **Edge %**: `(provider_odds / fair_odds - 1) × 100`
+- **Value bet**: Single outcome with positive edge
+- **Arbitrage**: Guaranteed profit across multiple providers
 
-### StandardEvent
-All providers normalize to this dataclass: `backend/src/core/retriever.py`
-```python
-@dataclass
-class StandardEvent:
-    id, name, sport, markets, provider, url
-    start_time, home_team, away_team, league
-```
+### Extraction Scope (IMPORTANT)
+**We ONLY extract 1x2/moneyline markets. All other markets are skipped.**
 
-### Market Filtering (1x2 Only)
-Only `1x2` and `moneyline` markets are stored. All other markets (spreads, totals) are filtered out.
-Source: `backend/src/pipeline/storage.py:23`
-```python
-ALLOWED_MARKETS = {'1x2', 'moneyline'}
-```
+- **Markets extracted**: `1x2`, `moneyline` (match winner bets only)
+- **Markets skipped**: over/under, spreads, props, player markets, corners, cards, etc.
+- **Live events**: Skipped entirely - only pre-match odds
+- **Whitelist enforced in**: `constants.py` via `ALLOWED_MARKETS` (imported by `pipeline/storage.py`)
 
-### Outcomes
-Standardized to: `home`, `away`, `draw`
+This keeps the system focused on the highest-value, most comparable market type across all providers.
 
-### Polymarket as Truth Source
-Polymarket odds = fair probability (no margin). Value exists when provider odds exceed fair odds.
-Edge% = (provider_odds / fair_odds - 1) * 100
+## Configuration
 
-## Data Flow
+- `config/providers.yaml` - Provider endpoints, types, concurrency limits
+- `config/sports.json` - Sport/league mappings with provider-specific IDs
+- `backend/data/oddopp.db` - SQLite database
 
-```
-Provider API -> Extract -> Normalize teams/outcomes -> Filter (1x2 only) -> Store in DB
-```
+### Extraction Volume Audit (IMPORTANT)
 
-## Normalization Rules
+**When to audit:** After any provider changes, before marking PRODUCTION READY
 
-### Team Names
-`backend/src/matching/normalizer.py:79`
-1. Lowercase, remove accents (e.g., u -> u)
-2. Remove suffixes: FC, SC, IF, BK, SK, CF, AC, etc.
-3. Remove prefixes: Real, Sporting, Club, FC, etc.
-4. Apply aliases from `aliases.yaml`
+**Common data loss causes:**
+- Missing pagination (APIs often cap at 100-500 per request)
+- Stale category/slug mappings (APIs change yearly identifiers like `nhl-2026`)
+- Rate limiting silently dropping requests
+- Filter parameters excluding valid data
 
-Example: "Real Madrid CF" -> "madrid"
+**Audit workflow:**
+1. **Visual baseline** - Browse provider site, count events manually for 1 sport
+2. **Extract and compare** - Run extraction, compare counts
+3. **If mismatch > 10%** - Investigate pagination, mappings, filters
+4. **Log results** - Record expected vs actual in validation notes
 
-### Outcomes
-`backend/src/matching/normalizer.py:395`
-| Raw | Normalized |
-|-----|------------|
-| 1, yes, ja, hemma | home |
-| X, oavgjort | draw |
-| 2, no, nej, borta | away |
-| over, over | over |
-| under | under |
+**Pagination checklist:**
+- [ ] Check API docs for limit/offset parameters
+- [ ] Test with limit=1 to see if total_count returned
+- [ ] Implement pagination loop if API caps results
+- [ ] Log page count and total in extraction
 
-### Markets
-`backend/src/matching/normalizer.py:235`
-| Raw | Normalized |
-|-----|------------|
-| 1x2, full time, moneyline, vinnare | 1x2 |
-| over/under, totala mal | over_under |
-| spread, handicap, handikapp | spread |
+**Slug/category mapping checklist:**
+- [ ] API categories may change yearly (e.g., `nhl` → `nhl-2026`)
+- [ ] Use flexible matching (strip year suffix as fallback)
+- [ ] Log unmapped categories as warnings
 
-## Key Files
+**Audit script:** `python scripts/audit_extraction_volume.py <provider> --expected <count>`
 
-| Purpose | File |
-|---------|------|
-| Provider base classes | `backend/src/core/retriever.py` |
-| Team normalization | `backend/src/matching/normalizer.py` |
-| Team aliases | `backend/src/matching/aliases.yaml` |
-| Canonical ID generation | `backend/src/pipeline/utils.py` |
-| Market filtering | `backend/src/pipeline/storage.py` |
-| Provider configs | `backend/src/config/providers.yaml` |
-| Sports configs | `backend/src/config/sports.json` |
-| Database models | `backend/src/db/models.py` |
-| Factory singleton | `backend/src/factory.py` |
+## When Working Here
 
-## Database Models
-
-`backend/src/db/models.py`
-- **Event**: id (canonical), sport, home_team, away_team, league, start_time
-- **Odds**: event_id, provider_id, market, outcome, odds, point (unique constraint on all 5)
-- **Provider**: id, name, balance, active
-
-## Workflow Rules
-
-- No emojis - use ASCII style
-- Temp files in `/scrap` folder, delete before commit
-- Documentation files in `/docs`
+- Provider APIs return JSON - no HTML scraping needed for most
+- Playwright only for DOM-based providers (Spectate, ComeOn, Hajper, FastBet)
+- Rate limits enforced via circuit breaker in orchestrator
+- Event matching uses `thefuzz` for team name normalization
+- Shared constants in `constants.py` (ALLOWED_MARKETS, SHARP_PROVIDERS)

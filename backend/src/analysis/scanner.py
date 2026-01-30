@@ -27,11 +27,9 @@ from .devig import (
     get_fair_odds_for_outcome,
     blend_fair_odds,
 )
+from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
-
-# Sharp providers used as truth sources
-SHARP_PROVIDERS = {"pinnacle"}
 
 
 @dataclass

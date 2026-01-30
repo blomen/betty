@@ -104,10 +104,10 @@ export function TerminalWindow({
     setIsExtracting(false);
 
     try {
-      const status = await api.getExtractionStatus();
+      const status = await api.getExtractionProgress();
 
       // Send ONLY final message (1 message)
-      if (status.events === 0 && status.odds === 0) {
+      if (status.total_events === 0 && status.total_odds === 0) {
         sendMessage(
           `**[!] EXTRACTION COMPLETE - No new data**\n\n` +
           `**Possible Reasons:**\n` +
@@ -124,8 +124,8 @@ export function TerminalWindow({
         sendMessage(
           `**[+] EXTRACTION COMPLETE!**\n\n` +
           `**Results:**\n` +
-          `- Events: ${status.events}\n` +
-          `- Odds: ${status.odds}\n` +
+          `- Events: ${status.total_events}\n` +
+          `- Odds: ${status.total_odds}\n` +
           `- Completed: ${status.last_run || 'just now'}\n\n` +
           `**Next Steps:**\n` +
           `- \`/opportunities\` - View all opportunities\n` +

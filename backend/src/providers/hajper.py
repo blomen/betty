@@ -14,11 +14,12 @@ import asyncio
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
+from .mixins import RSocketMixin
 
 logger = logging.getLogger(__name__)
 
 
-class HajperRetriever(BrowserRetriever):
+class HajperRetriever(BrowserRetriever, RSocketMixin):
     """
     Multi-league Hajper retriever for comprehensive event coverage.
 
@@ -42,39 +43,9 @@ class HajperRetriever(BrowserRetriever):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        self.max_leagues = config.get("max_leagues", 50)  # Configurable limit
-
-    def _decode_rsocket_frame(self, frame_bytes: bytes) -> Optional[List[Dict]]:
-        """Decode RSocket binary frame to extract JSON payload."""
-        try:
-            frame_str = frame_bytes.decode('utf-8', errors='ignore')
-
-            # Find JSON start
-            if '[{' in frame_str:
-                json_start = frame_str.index('[{')
-                json_str = frame_str[json_start:]
-                return json.loads(json_str)
-
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Failed to decode frame: {e}")
-
-        return None
-
-    def _setup_ws_interception(self, page) -> list:
-        """Setup WebSocket interception and return message storage list."""
-        messages = []
-
-        def on_websocket(ws):
-            def on_frame_received(payload):
-                if isinstance(payload, bytes):
-                    decoded = self._decode_rsocket_frame(payload)
-                    if decoded:
-                        messages.append(decoded)
-
-            ws.on("framereceived", on_frame_received)
-
-        page.on("websocket", on_websocket)
-        return messages
+        self.max_leagues = config.get("max_leagues", 30)  # Reduced default for faster extraction
+        # Cache for league list to avoid re-fetching between runs
+        self._league_cache: Dict[str, List[Dict[str, str]]] = {}
 
     async def _extract_league_links(self, page) -> List[Dict[str, str]]:
         """Extract league links from main sport page DOM."""
@@ -488,8 +459,15 @@ class HajperRetriever(BrowserRetriever):
 
             await page.wait_for_timeout(1500)  # Optimized from 3s
 
-            # Extract league links from DOM
-            league_links = await self._extract_league_links(page)
+            # Extract league links from DOM (with caching)
+            cache_key = sport
+            if cache_key in self._league_cache:
+                league_links = self._league_cache[cache_key]
+                logger.info(f"[{self.provider_id}] Using cached league links ({len(league_links)} leagues)")
+            else:
+                league_links = await self._extract_league_links(page)
+                if league_links:
+                    self._league_cache[cache_key] = league_links
 
             if not league_links:
                 logger.warning(f"[{self.provider_id}] No league links found")

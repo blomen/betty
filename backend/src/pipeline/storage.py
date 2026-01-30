@@ -16,6 +16,7 @@ from ..matching import (
     fuzzy_match_teams,
 )
 from .utils import generate_canonical_id
+from ..constants import ALLOWED_MARKETS
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,18 @@ def store_polymarket_event(
     Returns:
         (is_new_event, odds_processed, odds_new)
     """
-    teams = parse_teams_from_title(event.name)
-    if not teams:
-        logger.warning(f"Failed to parse teams from: {event.name}")
-        return False, 0, 0
+    # Use pre-parsed team names from extractor (already cleaned of prefixes/suffixes)
+    # instead of re-parsing from raw title
+    home_team = event.home_team
+    away_team = event.away_team
 
-    home_team, away_team = teams
+    if not home_team or not away_team:
+        # Fallback to parsing from title if extractor didn't set teams
+        teams = parse_teams_from_title(event.name)
+        if not teams:
+            logger.warning(f"Failed to parse teams from: {event.name}")
+            return False, 0, 0
+        home_team, away_team = teams
     canonical_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
 
     # Cache for fuzzy matching - indexed by sport for O(1) lookup
@@ -90,6 +97,11 @@ def store_polymarket_event(
             continue
 
         market_type = normalize_market(market.get("question", "") or market.get("type", ""))
+
+        # Only store 1x2/moneyline markets (consistent with provider extraction)
+        if market_type not in ALLOWED_MARKETS:
+            continue
+
         outcomes = market.get("outcomes", [])
 
         for outcome in outcomes:
@@ -229,6 +241,8 @@ def store_provider_event(
 
     for market in event.markets:
         market_type = normalize_market(market.get('type', ''))
+        if market_type not in ALLOWED_MARKETS:
+            continue
         outcomes = market.get('outcomes', [])
 
         for outcome in outcomes:
