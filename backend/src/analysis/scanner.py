@@ -31,7 +31,7 @@ from .devig import (
 logger = logging.getLogger(__name__)
 
 # Sharp providers used as truth sources
-SHARP_PROVIDERS = {"pinnacle", "polymarket"}
+SHARP_PROVIDERS = {"pinnacle"}
 
 
 @dataclass

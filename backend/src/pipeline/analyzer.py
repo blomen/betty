@@ -22,18 +22,19 @@ from datetime import datetime, timezone
 from typing import Optional
 from collections import defaultdict
 
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds, Opportunity, Profile
 from ..analysis.arbitrage import find_arbitrage
 from ..analysis.value import find_best_value, get_fair_odds
+from ..analysis.devig import get_fair_odds_for_outcome
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity
 
 logger = logging.getLogger(__name__)
 
 # Sharp providers used as "truth" sources for value detection
-SHARP_PROVIDERS = {"polymarket", "pinnacle"}
+SHARP_PROVIDERS = {"pinnacle"}
 
 
 class OpportunityAnalyzer:
@@ -90,8 +91,8 @@ class OpportunityAnalyzer:
         """
         logger.info("[Analyzer] Starting opportunity detection...")
 
-        # Deactivate all existing opportunities (will be refreshed)
-        self._deactivate_existing()
+        # Clean up stale opportunities before detection
+        cleanup_stats = self._cleanup_stale()
 
         # Get events with odds from 2+ providers
         events = self._get_multi_provider_events()
@@ -99,7 +100,8 @@ class OpportunityAnalyzer:
         results = {
             "arbitrage": {"found": 0, "new": 0},
             "value": {"found": 0, "new": 0},
-            "events_analyzed": len(events)
+            "events_analyzed": len(events),
+            "cleanup": cleanup_stats
         }
 
         for event in events:
@@ -198,12 +200,61 @@ class OpportunityAnalyzer:
 
         return result
 
-    def _deactivate_existing(self):
-        """Mark all existing active opportunities as inactive."""
-        updated = self.session.query(Opportunity).filter(
+    def _cleanup_stale(self) -> dict:
+        """
+        Clean up stale opportunities from database.
+
+        Deletes:
+        1. Inactive opportunities (from previous runs)
+        2. Orphaned opportunities (event no longer exists)
+        3. Opportunities for past events (already started)
+
+        Also deactivates current opportunities (will be refreshed).
+
+        Returns:
+            {"inactive": int, "orphaned": int, "past_events": int, "deactivated": int}
+        """
+        stats = {"inactive": 0, "orphaned": 0, "past_events": 0, "deactivated": 0}
+        now = datetime.now(timezone.utc)
+
+        # 1. Delete inactive opportunities
+        stats["inactive"] = self.session.query(Opportunity).filter(
+            Opportunity.is_active == False
+        ).delete()
+
+        # 2. Delete orphaned opportunities (event doesn't exist)
+        valid_event_ids = [e.id for e in self.session.query(Event.id).all()]
+        if valid_event_ids:
+            stats["orphaned"] = self.session.query(Opportunity).filter(
+                ~Opportunity.event_id.in_(valid_event_ids)
+            ).delete(synchronize_session=False)
+        else:
+            # No events - delete all opportunities
+            stats["orphaned"] = self.session.query(Opportunity).delete()
+
+        # 3. Delete opportunities for past events
+        past_event_ids = [
+            e.id for e in self.session.query(Event.id).filter(Event.start_time < now).all()
+        ]
+        if past_event_ids:
+            stats["past_events"] = self.session.query(Opportunity).filter(
+                Opportunity.event_id.in_(past_event_ids)
+            ).delete(synchronize_session=False)
+
+        # 4. Deactivate remaining (will be refreshed during detection)
+        stats["deactivated"] = self.session.query(Opportunity).filter(
             Opportunity.is_active == True
         ).update({"is_active": False})
-        logger.debug(f"[Analyzer] Deactivated {updated} existing opportunities")
+
+        total_cleaned = stats["inactive"] + stats["orphaned"] + stats["past_events"]
+        if total_cleaned > 0:
+            logger.info(
+                f"[Analyzer] Cleanup: {stats['inactive']} inactive, "
+                f"{stats['orphaned']} orphaned, {stats['past_events']} past events"
+            )
+        logger.debug(f"[Analyzer] Deactivated {stats['deactivated']} existing opportunities")
+
+        return stats
 
     def _get_multi_provider_events(self) -> list[Event]:
         """Get events that have odds from 2+ providers."""
@@ -364,31 +415,46 @@ class OpportunityAnalyzer:
         """
         Detect value betting opportunities for a market.
 
-        Uses Polymarket as primary fair odds source, falls back to Pinnacle.
+        Fair odds calculation:
+        - If both Pinnacle and Polymarket exist: mean of de-vigged Pinnacle + Polymarket
+        - If only Pinnacle: de-vigged Pinnacle odds
+        - If only Polymarket: Polymarket odds (no margin)
 
         Returns:
             {"found": int, "new": int}
         """
         result = {"found": 0, "new": 0}
 
+        # Build Pinnacle market odds for de-vigging (need all outcomes)
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
         for outcome, provider_odds_list in odds_by_outcome.items():
-            # Find fair odds from sharp provider
+            # Get Pinnacle odds for this outcome (only sharp source)
+            pinnacle_odds = next(
+                (p["odds"] for p in provider_odds_list if p["provider"] == "pinnacle"),
+                None
+            )
+
+            # Calculate fair odds from de-vigged Pinnacle
             fair_odds = None
             fair_provider = None
 
-            # Priority: Polymarket > Pinnacle
-            for sharp in ["polymarket", "pinnacle"]:
-                sharp_odds = next(
-                    (p for p in provider_odds_list if p["provider"] == sharp),
-                    None
+            if pinnacle_odds is not None and len(pinnacle_market) >= 2:
+                fair_odds = get_fair_odds_for_outcome(
+                    outcome, pinnacle_market, method="multiplicative"
                 )
-                if sharp_odds:
-                    fair_odds = sharp_odds["odds"]
-                    fair_provider = sharp
-                    break
+                fair_provider = "pinnacle"
+            elif pinnacle_odds is not None:
+                fair_odds = pinnacle_odds  # Can't de-vig single outcome
+                fair_provider = "pinnacle"
 
             if not fair_odds:
-                continue  # No sharp provider for this outcome
+                continue  # No Pinnacle odds for this outcome
 
             # Filter to non-sharp providers only
             soft_providers = [
@@ -410,6 +476,14 @@ class OpportunityAnalyzer:
             )
 
             if not value:
+                continue
+
+            # Sanity check: edges > 100% are almost certainly data quality issues
+            if value.edge_pct > 100:
+                logger.debug(
+                    f"[Analyzer] Skipping suspicious value {value.edge_pct:.1f}% for "
+                    f"{event_id} {market} {outcome}"
+                )
                 continue
 
             result["found"] += 1
