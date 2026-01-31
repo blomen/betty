@@ -5,7 +5,6 @@ Centralized configuration loading with validation.
 Loads providers.yaml and sports.json with schema validation.
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,23 +18,11 @@ logger = logging.getLogger(__name__)
 # ============ Pydantic Models for Validation ============
 
 class SportConfig(BaseModel):
-    """Configuration for a sport/league."""
-    name: str
-    kambi_sport: str
-    polymarket_series_id: Optional[int] = None
-    polymarket_slug: Optional[str] = None
-    polymarket_tag_id: Optional[int] = None
-
-    @property
-    def polymarket_config(self) -> Optional[Dict]:
-        """Get Polymarket-specific config."""
-        if self.polymarket_series_id or self.polymarket_slug or self.polymarket_tag_id:
-            return {
-                "id": self.polymarket_series_id,
-                "slug": self.polymarket_slug,
-                "tag_id": self.polymarket_tag_id,
-            }
-        return None
+    """Configuration for a sport."""
+    key: str  # Canonical sport identifier (e.g., 'football', 'basketball')
+    name: str  # Display name
+    kambi_sport: str  # Kambi API sport identifier
+    pinnacle_sport_id: Optional[int] = None  # Pinnacle API sport ID
 
 
 class ProviderConfig(BaseModel):
@@ -223,7 +210,7 @@ class ConfigLoader:
 
         try:
             # Load sports config
-            sports_path = config_dir / "sports.json"
+            sports_path = config_dir / "sports.yaml"
             self._load_sports(sports_path)
 
             # Load providers config
@@ -238,38 +225,32 @@ class ConfigLoader:
             raise
 
     def _load_sports(self, sports_path: Path):
-        """Load and validate sports configuration."""
+        """Load and validate sports configuration from YAML."""
         if not sports_path.exists():
             logger.warning(f"Sports config not found: {sports_path}")
             return
 
         with open(sports_path, "r", encoding="utf-8") as f:
-            sports_data = json.load(f)
+            config = yaml.safe_load(f)
 
-        # Handle nested format with leagues
-        sport_dicts = []
-        if isinstance(sports_data, list) and sports_data and "leagues" in sports_data[0]:
-            for group in sports_data:
-                # Extract sport aliases before flattening
-                sport_key = group.get("key", "").lower()
-                if sport_key:
-                    self._sport_aliases[sport_key] = [
-                        a.lower() for a in group.get("aliases", [])
-                    ]
+        sports_data = config.get("sports", {})
 
-                defaults = group.get("defaults", {})
-                for league in group.get("leagues", []):
-                    merged = {**defaults, **league}
-                    sport_dicts.append(merged)
-        else:
-            # Flat format
-            sport_dicts = sports_data
+        for sport_key, sport_config in sports_data.items():
+            # Extract aliases
+            self._sport_aliases[sport_key] = [
+                a.lower() for a in sport_config.get("aliases", [])
+            ]
 
-        # Validate with Pydantic
-        self._sports = [SportConfig(**s) for s in sport_dicts]
+            # Create SportConfig
+            self._sports.append(SportConfig(
+                key=sport_key,
+                name=sport_config.get("name", sport_key),
+                kambi_sport=sport_config.get("kambi_sport", sport_key),
+                pinnacle_sport_id=sport_config.get("pinnacle_id"),
+            ))
 
-        # Build map for quick lookup
-        self._sports_map = {s.name: s for s in self._sports}
+        # Build lookup map by key
+        self._sports_map = {s.key: s for s in self._sports}
 
         logger.info(f"Loaded {len(self._sports)} sports from {sports_path}")
 
@@ -321,9 +302,9 @@ class ConfigLoader:
         """Get all provider configurations."""
         return self._providers
 
-    def get_sport(self, name: str) -> Optional[SportConfig]:
-        """Get sport config by name."""
-        return self._sports_map.get(name)
+    def get_sport(self, key: str) -> Optional[SportConfig]:
+        """Get sport config by key."""
+        return self._sports_map.get(key)
 
     def get_provider(self, provider_id: str) -> Optional[ProviderConfig]:
         """Get provider config by ID."""
@@ -332,19 +313,6 @@ class ConfigLoader:
     def get_enabled_providers(self) -> List[str]:
         """Get list of enabled provider IDs."""
         return list(self._providers.keys())
-
-    def get_sports_map_for_polymarket(self) -> Dict[str, Dict]:
-        """
-        Get sports mapping for Polymarket.
-
-        Returns:
-            Dictionary mapping sport name to Polymarket config
-        """
-        mapping = {}
-        for sport in self._sports:
-            if sport.polymarket_config:
-                mapping[sport.name] = sport.polymarket_config
-        return mapping
 
     def get_orchestrator_config(self) -> OrchestratorConfig:
         """Get orchestrator configuration."""

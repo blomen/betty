@@ -25,7 +25,6 @@ from .devig import (
     calculate_margin,
     devig_multiplicative,
     get_fair_odds_for_outcome,
-    blend_fair_odds,
 )
 from ..constants import SHARP_PROVIDERS
 
@@ -44,9 +43,9 @@ class BonusOpportunity:
     anchor_provider: str
     anchor_odds: float
 
-    # Fair odds from counterpart(s)
+    # Fair odds from Pinnacle (de-vigged)
     fair_odds: float
-    fair_source: str  # "pinnacle(devigged)", "polymarket", or "pinnacle(60%)+polymarket(40%)"
+    fair_source: str  # "pinnacle" or "pinnacle(raw)"
 
     # The edge (can be negative for bonus clearing)
     edge_pct: float
@@ -119,21 +118,21 @@ class OpportunityScanner:
         blend_weight: float = 0.6,
     ) -> list[ValueBet]:
         """
-        Find value bets against de-vigged sharp odds.
+        Find value bets against de-vigged Pinnacle odds.
 
-        Uses Pinnacle as primary sharp (with de-vig), blends with Polymarket
-        if both exist. Falls back to Polymarket only if no Pinnacle.
+        Uses Pinnacle as the sole sharp source. Their ~2.5% margin is
+        removed using multiplicative de-vigging.
 
         Args:
             min_edge_pct: Minimum edge percentage (default 5%)
-            sharp_priority: Sharp providers in priority order (default ["pinnacle", "polymarket"])
-            blend_weight: Pinnacle weight when blending (default 0.6 = 60%)
+            sharp_priority: Ignored (kept for backward compatibility)
+            blend_weight: Ignored (kept for backward compatibility)
 
         Returns:
             List of ValueBet sorted by edge (highest first)
         """
         if sharp_priority is None:
-            sharp_priority = ["pinnacle", "polymarket"]
+            sharp_priority = ["pinnacle"]
 
         opportunities = []
 
@@ -173,17 +172,19 @@ class OpportunityScanner:
         Unlike value scan, this has NO edge threshold - returns all matches
         sorted by edge (best first, including negative edges).
 
+        Uses Pinnacle as the sole sharp source for fair odds.
+
         Args:
             anchor_provider: Provider where bonus bet must be placed
-            counterpart_providers: Sharp providers to compare against (default ["pinnacle", "polymarket"])
-            devig: Whether to de-vig counterpart odds (default True)
-            blend_weight: Pinnacle weight when blending (default 0.6)
+            counterpart_providers: Ignored (kept for backward compatibility)
+            devig: Whether to de-vig Pinnacle odds (default True)
+            blend_weight: Ignored (kept for backward compatibility)
 
         Returns:
             List of BonusOpportunity sorted by edge (highest first, negatives last)
         """
         if counterpart_providers is None:
-            counterpart_providers = ["pinnacle", "polymarket"]
+            counterpart_providers = ["pinnacle"]
 
         opportunities = []
 
@@ -249,7 +250,7 @@ class OpportunityScanner:
         grouped = defaultdict(lambda: defaultdict(list))
 
         for odds in event.odds:
-            # Create market key that includes point for spread/totals
+            # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
             if odds.point is not None:
                 market_key = f"{odds.market}_{odds.point}"
             else:
@@ -269,8 +270,7 @@ class OpportunityScanner:
         """
         Count how many outcomes each provider has in this market.
 
-        Used to detect market type mismatches (e.g., 3-way European handicap
-        vs 2-way Asian handicap).
+        Used to detect market type mismatches (e.g., 3-way 1x2 vs 2-way moneyline).
 
         Returns:
             {provider_id: outcome_count}
@@ -365,7 +365,7 @@ class OpportunityScanner:
         opportunities = []
 
         # Count outcomes per provider to detect market type mismatch
-        # (e.g., 3-way European handicap vs 2-way Asian handicap)
+        # (e.g., 3-way 1x2 vs 2-way moneyline)
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
         anchor_outcome_count = provider_outcome_counts.get(anchor_provider, 0)
 
@@ -445,43 +445,39 @@ class OpportunityScanner:
         self,
         outcome: str,
         odds_by_outcome: dict[str, list[dict]],
-        sharp_priority: list[str],
-        blend_weight: float,
+        sharp_priority: list[str] = None,
+        blend_weight: float = 0.6,
         devig: bool = True,
     ) -> Optional[tuple[float, str]]:
         """
-        Get fair odds for an outcome using sharp providers.
+        Get fair odds for an outcome from Pinnacle (sole sharp source).
 
-        Logic:
-        1. If Pinnacle exists, de-vig it
-        2. If both Pinnacle and Polymarket exist, blend them (60/40)
-        3. If only Polymarket exists, use it directly (no margin)
+        Pinnacle's ~2.5% margin is removed using multiplicative de-vigging.
 
         Args:
             outcome: The outcome to get fair odds for
             odds_by_outcome: All market odds
-            sharp_priority: Providers in priority order
-            blend_weight: Pinnacle weight when blending
+            sharp_priority: Ignored (kept for backward compatibility)
+            blend_weight: Ignored (kept for backward compatibility)
             devig: Whether to de-vig (default True)
 
         Returns:
-            (fair_odds, source_description) or None
+            (fair_odds, "pinnacle") or None if Pinnacle not found
         """
-        pinnacle_odds = None
-        pinnacle_fair = None
-        polymarket_odds = None
-
-        # Find sharp provider odds for this outcome
+        # Find Pinnacle odds for this outcome
         outcome_providers = odds_by_outcome.get(outcome, [])
 
+        pinnacle_odds = None
         for po in outcome_providers:
             if po["provider"] == "pinnacle":
                 pinnacle_odds = po["odds"]
-            elif po["provider"] == "polymarket":
-                polymarket_odds = po["odds"]
+                break
 
-        # De-vig Pinnacle if available
-        if pinnacle_odds is not None and devig:
+        if pinnacle_odds is None:
+            return None
+
+        # De-vig Pinnacle if requested
+        if devig:
             # Need full market odds to de-vig properly
             pinnacle_market = {}
             for out, providers in odds_by_outcome.items():
@@ -491,18 +487,15 @@ class OpportunityScanner:
                         break
 
             if len(pinnacle_market) >= 2:
-                pinnacle_fair = get_fair_odds_for_outcome(
+                fair_odds = get_fair_odds_for_outcome(
                     outcome, pinnacle_market, method="multiplicative"
                 )
+                return (fair_odds, "pinnacle")
             else:
                 # Single outcome, can't de-vig properly - use raw odds
-                pinnacle_fair = pinnacle_odds
-        elif pinnacle_odds is not None:
-            # No de-vig requested
-            pinnacle_fair = pinnacle_odds
-
-        # Blend or fall back
-        return blend_fair_odds(pinnacle_fair, polymarket_odds, blend_weight)
+                return (pinnacle_odds, "pinnacle(raw)")
+        else:
+            return (pinnacle_odds, "pinnacle(raw)")
 
 
 # Quick test

@@ -846,7 +846,7 @@ python scripts/validate_provider.py gecko
 
 ## Provider Status Matrix
 
-### Validation Summary (2026-01-28)
+### Validation Summary (2026-01-29)
 
 | Provider | Score | Status | Notes |
 |----------|-------|--------|-------|
@@ -874,12 +874,12 @@ python scripts/validate_provider.py gecko
 | **Other Providers** | | | |
 | Pinnacle | 10/10 | **PRODUCTION READY** | Sharp lines, guest API |
 | Betinia | 9/10 | **PRODUCTION** | Full market coverage |
-| Hajper | 9/10 | **PRODUCTION** | Point extraction working |
-| ComeOn | 8/10 | STAGING | Limited markets from league pages |
+| Hajper | 9/10 | **PRODUCTION** | Optimized: max_leagues=30, concurrent=8 |
+| ComeOn | 9/10 | **PRODUCTION** | Optimized: max_leagues=30, concurrent=8 |
 | Snabbare | 8/10 | STAGING | DOM scraping: 1x2 only |
 | Bethard | 8/10 | STAGING | API: 1x2 only from listing page |
+| Fastbet | 7/10 | STAGING | DOM scraper rewrite (needs testing) |
 | **Disabled Providers** | | | |
-| Fastbet | N/A | DISABLED | Uses SpringBuilder (not SBTech) |
 | Coolbet | N/A | BLOCKED | Incapsula protection |
 | Polymarket | N/A | DISABLED | Needs league-level extraction arch |
 
@@ -889,17 +889,19 @@ python scripts/validate_provider.py gecko
 - All Kambi providers (13): Full market coverage, excellent performance
 - Pinnacle: Sharp lines, comprehensive markets
 
-**Tier 2 - PRODUCTION (9/10):** 5 providers
+**Tier 2 - PRODUCTION (9/10):** 7 providers
 - Gecko V2 (betsson, betsafe, nordicbet): Point values working
 - Betinia: Full Altenar API coverage
-- Hajper: Point extraction working
+- Hajper: Optimized parallel extraction (~40s target)
+- ComeOn: Optimized parallel extraction (~40s target)
 
-**Tier 3 - STAGING (8/10):** 5 providers
+**Tier 3 - STAGING (7-8/10):** 5 providers
 - 888sport, mrgreen: Use for 1x2 odds comparison
-- ComeOn, Snabbare, Bethard: Limited to main markets
+- Snabbare, Bethard: Limited to main markets
+- Fastbet: New DOM scraper (needs validation)
 
-**Tier 4 - DISABLED:** 3 providers
-- fastbet, coolbet, polymarket: Architectural issues
+**Tier 4 - DISABLED:** 2 providers
+- coolbet, polymarket: Architectural issues
 
 ### Current Providers (Detailed)
 
@@ -1117,30 +1119,46 @@ python scripts/validate_provider.py gecko
   - ✗ Performance still slow (expected for DOM)
 - **Recommendation:** Mark as STAGING - reliable but limited market coverage and slower performance
 
-#### Fastbet (SpringBuilder) - BLOCKED - INVESTIGATED 2026-01-28
+#### Fastbet (DOM Scraper) - STAGING - VALIDATED 2026-01-29
 - **Implementation:** `backend/src/providers/fastbet.py`
-- **Type:** Browser-based (SpringBuilder/YoSpace platform, NOT SBTech)
-- **Status:** BLOCKED (0 events extracted - architecture incompatible)
-- **Investigation Date:** 2026-01-28
-- **Root Cause Identified:**
-  - Fastbet uses **SpringBuilder/YoSpace** technology, not standard SBTech API
-  - API endpoint returns **HTML iframe embed**, not JSON: `https://sports-se.fastbet.com/sv/prematch/match/football`
-  - Response is 49KB HTML page with embedded sportsbook widget
-  - Fundamentally incompatible with SBTechRetriever parent class which expects JSON APIs
-- **Technical Findings:**
-  - Despite being owned by Bethard Group, uses completely different technology stack
-  - Bethard works because it uses true SBTech JSON APIs
-  - Fastbet loads sportsbook as iframe/embedded page (SpringBuilder pattern)
-  - API calls captured but return `Content-Type: text/html` instead of `application/json`
-- **Attempted Fixes:**
-  - Updated API patterns to match SpringBuilder endpoints (`/prematch/match/`)
-  - Updated URL structure to `/sv/sports/` path
-  - Neither fix worked due to HTML vs JSON response issue
-- **Required Changes for Support:**
-  1. Complete rewrite using DOM scraping approach (like Snabbare)
-  2. OR reverse-engineer SpringBuilder's internal JSON APIs (if they exist)
-  3. Estimated effort: 4-8 hours
-- **Recommendation:** Mark as BLOCKED - requires architectural redesign beyond current scope
+- **Type:** DOM scraper (Playwright) - complete rewrite from SBTech
+- **Status:** STAGING (7/10 validation score - working but limited events)
+- **Rewrite Date:** 2026-01-29
+- **Previous Issue:** Fastbet uses SpringBuilder/YoSpace (returns HTML, not JSON APIs)
+- **Solution Applied:**
+  - Complete rewrite using DOM scraping pattern (same as Snabbare)
+  - Extends `BrowserRetriever` instead of `SBTechRetriever`
+  - Navigates directly to iframe URL: `sports-se.fastbet.com`
+  - Uses SpringBuilder-specific selectors: `.comp__teamName__wrapper`, `.xOddButton__coef`
+- **Validation Results (2026-01-29):**
+  - **Sports Coverage:** PASS - Football extraction working
+  - **Event Discovery:** PASS - 18 events extracted
+  - **Market Coverage:** PARTIAL - 1x2 only (DOM scraping limitation)
+  - **Data Normalization:** PASS - Team names properly normalized
+  - **Database Compliance:** PASS - All odds > 1.0
+  - **Performance:** PASS - 21.4s extraction time
+  - **Error Handling:** PASS - Graceful error handling
+- **Test Results:**
+  - Events: 18 (football)
+  - Market types: 1x2 (100%)
+  - Sample: "pfc ludogorets vs nice" (1.76, 4.00, 4.20)
+  - Time: 21.4s per sport
+- **Implementation Details:**
+  - Iframe URL: `https://sports-se.fastbet.com/sv/prematch/match/{sport}?odds_type=decimal`
+  - Team selector: `.comp__teamName__wrapper, .comp__team-name`
+  - Odds selector: `.xOddButton__coef`
+  - Swedish time format parsing (idag, imorgon, month names)
+- **Known Limitations:**
+  - Limited event count (18 vs expected 50+) - SpringBuilder pagination
+  - Only 1x2 markets extracted (DOM limitation)
+  - League names not available from DOM
+- **Configuration:**
+  - `retriever_type`: fastbet (new type in factory.py)
+  - `site_url`: https://www.fastbet.com
+- **Notes:**
+  - Swedish-licensed Pay N Play bookmaker
+  - Owned by Bethard Group Limited (but different tech stack)
+  - Now active in providers.yaml
 
 #### Pinnacle - PRODUCTION READY - VALIDATED 2026-01-26
 - **Implementation:** `backend/src/providers/pinnacle.py`
@@ -1596,6 +1614,35 @@ Use this checklist when implementing a new provider:
 - [ ] Invalid markets skipped (not crashed)
 - [ ] Invalid odds skipped (not crashed)
 - [ ] Logging present for debug/errors
+
+#### 8. Extraction Volume Audit
+
+**Requirement:** Extracted event count must match expected volume from provider site.
+
+**Audit Steps:**
+1. Browse provider site manually, count events for primary sport (e.g., football)
+2. Run extraction for same sport
+3. Compare counts - difference should be < 10%
+4. If mismatch: check pagination, rate limits, category mappings
+
+**Common Issues:**
+| Symptom | Root Cause | Fix |
+|---------|-----------|-----|
+| Getting exactly 100/500 events | Missing pagination | Implement offset loop |
+| Some leagues missing | Stale slug mappings | Add year variants, flexible matching |
+| Intermittent low counts | Rate limiting | Add delays, reduce concurrency |
+| Wrong sport counts | Category filter issues | Check sport ID mappings |
+
+**Audit Command:**
+```bash
+python scripts/audit_extraction_volume.py <provider> --expected <count> --sport football
+```
+
+**Pass Criteria:**
+- [ ] Visual count from site recorded
+- [ ] Extraction count within 10% of visual count
+- [ ] Pagination implemented if API caps results
+- [ ] Category mappings include current year variants
 
 ### Testing
 - [ ] Manual extraction test successful

@@ -1,4 +1,5 @@
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
+import asyncio
 import logging
 from datetime import datetime
 
@@ -7,6 +8,9 @@ from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
+# Max concurrent league fetches (Pinnacle API handles high concurrency well)
+MAX_CONCURRENT_LEAGUES = 50
+
 
 class PinnacleRetriever(Retriever):
     """
@@ -14,21 +18,18 @@ class PinnacleRetriever(Retriever):
     Uses guest.api.arcadia.pinnacle.com which requires NO authentication
     """
 
-    # Sport ID mapping (Pinnacle -> OddOpp canonical)
-    SPORT_MAP = {
-        "football": 29,      # Soccer
-        "basketball": 4,
-        "american_football": 15,
-        "ice_hockey": 19,
-        "tennis": 33,
-        "baseball": 3,
-        "mma": 22,
-        "esports": 12,
-    }
-
     def __init__(self, config: dict, transport=None):
         super().__init__(config, transport)
         self.base_url = config.get("api_base", "https://guest.api.arcadia.pinnacle.com/0.1")
+
+        # Build sport ID map from config
+        from ..config import ConfigLoader
+        config_loader = ConfigLoader.get_instance()
+        self._sport_map = {
+            s.key: s.pinnacle_sport_id
+            for s in config_loader.sports
+            if s.pinnacle_sport_id
+        }
 
     def _get_sport_url(self, sport: str) -> str:
         """Not used - we implement custom extract logic"""
@@ -38,19 +39,22 @@ class PinnacleRetriever(Retriever):
         """Not used - we override extract() completely"""
         return []
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = None) -> List[StandardEvent]:
         """
-        Extract events and odds for a sport
+        Extract events and odds for a sport using parallel fetching.
 
         Flow:
         1. Get sport ID
         2. Get active leagues for that sport
-        3. Get matchups for each league
-        4. Get odds for each league
-        5. Combine matchups + odds into StandardEvent
+        3. Parallel fetch matchups + markets for all leagues
+        4. Parse and deduplicate into StandardEvents
+
+        Args:
+            sport: Sport key (e.g., 'football', 'basketball')
+            limit: Max events to return (None for all)
         """
         # Get Pinnacle sport ID
-        sport_id = self.SPORT_MAP.get(sport)
+        sport_id = self._sport_map.get(sport)
         if not sport_id:
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not mapped for Pinnacle")
             return []
@@ -74,61 +78,81 @@ class PinnacleRetriever(Retriever):
 
         logger.info(f"[{self.provider_id}] Found {len(active_leagues)} active leagues")
 
-        # Limit leagues if needed
-        if limit and len(active_leagues) > limit:
-            active_leagues = active_leagues[:limit]
+        # Parallel fetch all leagues with semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_LEAGUES)
+        league_results = await asyncio.gather(
+            *[self._fetch_league(league, semaphore) for league in active_leagues],
+            return_exceptions=True
+        )
 
-        # Fetch matchups and odds for all leagues
-        all_events = []
+        # Parse all results and deduplicate
+        seen_ids: set = set()
+        all_events: List[StandardEvent] = []
 
-        for league in active_leagues:
-            league_id = league["id"]
-            league_name = league.get("name", "Unknown")
-
-            try:
-                # Fetch matchups (events)
-                matchups_url = f"{self.base_url}/leagues/{league_id}/matchups"
-                matchups = await self.transport.get(matchups_url)
-
-                if not matchups:
-                    continue
-
-                # Fetch odds (markets)
-                markets_url = f"{self.base_url}/leagues/{league_id}/markets/straight"
-                markets = await self.transport.get(markets_url)
-
-                if not markets:
-                    markets = []
-
-                # Build matchup -> markets mapping
-                markets_by_matchup = {}
-                for market in markets:
-                    matchup_id = market.get("matchupId")
-                    if matchup_id:
-                        if matchup_id not in markets_by_matchup:
-                            markets_by_matchup[matchup_id] = []
-                        markets_by_matchup[matchup_id].append(market)
-
-                # Convert to StandardEvent
-                for matchup in matchups:
-                    event = self._parse_matchup(matchup, sport, league_name, markets_by_matchup)
-                    if event:
-                        all_events.append(event)
-
-            except Exception as e:
-                logger.error(f"[{self.provider_id}] Error fetching league {league_name}: {e}")
+        for result in league_results:
+            if isinstance(result, Exception):
+                logger.debug(f"[{self.provider_id}] League fetch failed: {result}")
+                continue
+            if not result:
                 continue
 
-        # Deduplicate events by ID (same event can appear in multiple matchup types)
-        seen_ids = set()
-        unique_events = []
-        for event in all_events:
-            if event.id not in seen_ids:
-                seen_ids.add(event.id)
-                unique_events.append(event)
+            league_name, matchups, markets = result
 
-        logger.info(f"[{self.provider_id}] Extracted {len(unique_events)} events for {sport}")
-        return unique_events
+            # Build matchup -> markets mapping
+            markets_by_matchup: Dict[int, List[dict]] = {}
+            for market in markets:
+                matchup_id = market.get("matchupId")
+                if matchup_id:
+                    markets_by_matchup.setdefault(matchup_id, []).append(market)
+
+            # Convert to StandardEvent
+            for matchup in matchups:
+                event = self._parse_matchup(matchup, sport, league_name, markets_by_matchup)
+                if event and event.id not in seen_ids:
+                    seen_ids.add(event.id)
+                    all_events.append(event)
+
+        # Apply limit if specified
+        if limit and len(all_events) > limit:
+            all_events = all_events[:limit]
+
+        logger.info(f"[{self.provider_id}] Extracted {len(all_events)} events for {sport}")
+        return all_events
+
+    async def _fetch_league(
+        self,
+        league: dict,
+        semaphore: asyncio.Semaphore
+    ) -> Optional[Tuple[str, List[dict], List[dict]]]:
+        """
+        Fetch matchups and markets for a single league.
+
+        Returns:
+            Tuple of (league_name, matchups, markets) or None on error
+        """
+        league_id = league["id"]
+        league_name = league.get("name", "Unknown")
+
+        async with semaphore:
+            try:
+                # Fetch matchups and markets in parallel
+                matchups_url = f"{self.base_url}/leagues/{league_id}/matchups"
+                markets_url = f"{self.base_url}/leagues/{league_id}/markets/straight"
+
+                matchups_task = self.transport.get(matchups_url)
+                markets_task = self.transport.get(markets_url)
+
+                matchups, markets = await asyncio.gather(matchups_task, markets_task)
+
+                return (
+                    league_name,
+                    matchups if matchups else [],
+                    markets if markets else []
+                )
+
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Error fetching league {league_name}: {e}")
+                return None
 
     def _parse_matchup(
         self,
@@ -141,8 +165,8 @@ class PinnacleRetriever(Retriever):
         try:
             # Check if this is a special/derivative matchup with parent
             # Parent contains the actual home/away participants
-            if "parent" in matchup and "participants" in matchup["parent"]:
-                parent = matchup["parent"]
+            parent = matchup.get("parent")
+            if parent and isinstance(parent, dict) and "participants" in parent:
                 matchup_id = parent.get("id")  # Use parent ID for market matching
                 participants = parent.get("participants", [])
                 start_time_str = parent.get("startTime")
@@ -204,12 +228,10 @@ class PinnacleRetriever(Retriever):
 
     def _parse_markets(self, raw_markets: List[dict]) -> List[dict]:
         """
-        Parse all market types from Pinnacle API response.
+        Parse moneyline/1x2 markets from Pinnacle API response.
 
-        Handles:
-        - moneyline: Winner market (2-way or 3-way with draw)
-        - spread: Point spread / handicap
-        - total: Over/under totals
+        Only extracts winner markets (moneyline). Other markets (spread, total)
+        are skipped as per project scope - only 1x2/moneyline markets stored.
         """
         parsed = []
 
@@ -222,18 +244,13 @@ class PinnacleRetriever(Retriever):
             if market.get("status") != "open":
                 continue
 
-            market_type = market.get("type")
-            prices = market.get("prices", [])
-
-            if not prices:
+            # Only parse moneyline (1x2/moneyline) - skip spread/total
+            if market.get("type") != "moneyline":
                 continue
 
-            if market_type == "moneyline":
+            prices = market.get("prices", [])
+            if prices:
                 parsed.extend(self._parse_moneyline(prices))
-            elif market_type == "spread":
-                parsed.extend(self._parse_spread(prices))
-            elif market_type == "total":
-                parsed.extend(self._parse_total(prices))
 
         return parsed
 
@@ -263,86 +280,6 @@ class PinnacleRetriever(Retriever):
             "type": market_type,
             "outcomes": outcomes
         }]
-
-    def _parse_spread(self, prices: List[dict]) -> List[dict]:
-        """
-        Parse spread (handicap) market.
-
-        Pinnacle spread prices have:
-        - designation: "home" or "away"
-        - points: The spread value (e.g., -6.5, +6.5)
-        - price: American odds
-        """
-        # Group by point value to handle multiple lines
-        by_points = {}
-
-        for price_obj in prices:
-            designation = price_obj.get("designation")
-            points = price_obj.get("points")
-            american_odds = price_obj.get("price")
-
-            if designation and points is not None and american_odds is not None:
-                # Use absolute point value as key (home and away are opposite)
-                key = abs(points)
-                if key not in by_points:
-                    by_points[key] = []
-
-                decimal_odds = self._american_to_decimal(american_odds)
-                by_points[key].append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "point": points
-                })
-
-        # Create market for each spread line
-        markets = []
-        for point_key, outcomes in by_points.items():
-            if len(outcomes) >= 2:  # Need both sides
-                markets.append({
-                    "type": "spread",
-                    "outcomes": outcomes
-                })
-
-        return markets
-
-    def _parse_total(self, prices: List[dict]) -> List[dict]:
-        """
-        Parse total (over/under) market.
-
-        Pinnacle total prices have:
-        - designation: "over" or "under"
-        - points: The total line (e.g., 2.5, 42.5)
-        - price: American odds
-        """
-        # Group by point value to handle multiple lines
-        by_points = {}
-
-        for price_obj in prices:
-            designation = price_obj.get("designation")
-            points = price_obj.get("points")
-            american_odds = price_obj.get("price")
-
-            if designation and points is not None and american_odds is not None:
-                if points not in by_points:
-                    by_points[points] = []
-
-                decimal_odds = self._american_to_decimal(american_odds)
-                by_points[points].append({
-                    "name": designation,
-                    "odds": decimal_odds,
-                    "point": points
-                })
-
-        # Create market for each total line
-        markets = []
-        for point_val, outcomes in by_points.items():
-            if len(outcomes) >= 2:  # Need both over and under
-                markets.append({
-                    "type": "over_under",
-                    "outcomes": outcomes
-                })
-
-        return markets
 
     def _american_to_decimal(self, american_odds: int) -> float:
         """Convert American odds to decimal format"""

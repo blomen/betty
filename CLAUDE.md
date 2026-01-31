@@ -60,10 +60,11 @@ pytest tests/                      # Run test suite
 5. Test with `python -m src.extract --provider <name>`
 
 ### Key Domain Concepts
-- **Fair odds**: True probability from sharp sources (after devigging)
+- **Fair odds**: True probability from Pinnacle (after devigging)
 - **Edge %**: `(provider_odds / fair_odds - 1) × 100`
 - **Value bet**: Single outcome with positive edge
 - **Arbitrage**: Guaranteed profit across multiple providers
+- **Sharp source**: Pinnacle ONLY (Polymarket is NOT used as sharp)
 
 ### Extraction Scope (IMPORTANT)
 **We ONLY extract 1x2/moneyline markets. All other markets are skipped.**
@@ -117,3 +118,166 @@ This keeps the system focused on the highest-value, most comparable market type 
 - Rate limits enforced via circuit breaker in orchestrator
 - Event matching uses `thefuzz` for team name normalization
 - Shared constants in `constants.py` (ALLOWED_MARKETS, SHARP_PROVIDERS)
+
+### Code Cleanup Rule (IMPORTANT)
+**If you find any redundant code handling markets other than 1x2/moneyline, remove it immediately.**
+
+We only support 1x2/moneyline markets. Any code for over/under, spreads, props, player markets, corners, cards, etc. is dead code and should be deleted. This includes:
+- Normalization logic for non-1x2 market types
+- Storage logic for non-1x2 markets
+- Analysis logic for non-1x2 markets
+- UI components for non-1x2 markets
+
+Keep the codebase lean - delete, don't comment out.
+
+## Provider Pipeline Workflow
+
+### Pipeline Data Flow
+```
+Provider API → StandardEvent
+    ↓
+normalize_team_name() + normalize_market()
+    ↓
+generate_canonical_id() → Event (deduplicated)
+    ↓
+Fuzzy match against Polymarket cache
+    ↓
+store_odds() → Odds table
+    ↓
+OpportunityScanner.scan_value() / scan_arbitrage()
+```
+
+### Running Extractions
+
+**Sharp sources first (recommended workflow):**
+```bash
+# Via CLI
+cd backend
+python -m src.app extract polymarket
+python -m src.app extract pinnacle
+
+# Or via API
+curl -X POST "http://localhost:8000/api/extraction/run?providers=pinnacle"
+```
+
+**Adding soft providers incrementally:**
+```bash
+python -m src.app extract leovegas   # Single provider
+python -m src.app extract             # All enabled providers
+```
+
+### Validation Steps After Extraction
+
+1. **Check event counts:**
+   ```sql
+   SELECT sport, COUNT(*) FROM events GROUP BY sport;
+   ```
+
+2. **Check cross-provider matches:**
+   ```sql
+   SELECT event_id, COUNT(DISTINCT provider_id) as providers
+   FROM odds GROUP BY event_id HAVING providers > 1;
+   ```
+
+3. **Run opportunity detection:**
+   ```bash
+   python -m src.app value   # Show value bets
+   python -m src.app arbs    # Show arbitrage
+   ```
+
+### Benchmarking Metrics
+
+Track these per provider during extraction:
+- **Extraction time** (seconds) - logged at `[provider] sport: N events in X.Xs`
+- **Events extracted** (count per sport)
+- **API errors** (rate limits, timeouts)
+- **Cross-provider matches** (events matched with Pinnacle)
+
+### Known Data Quality Issues
+
+1. **Kambi correct score outcomes** - Some Kambi providers return correct score outcomes (0-1, 1-2, etc.) labeled as '1x2' market. These inflate arbitrage counts. Fix: filter by `betOfferType.id` in Kambi extractor (ID 2 = Match Winner).
+
+2. **Polymarket player name outcomes** - Tennis/esports outcomes stored as player names instead of normalized 'home'/'away'. Fix: enhance outcome normalization for Polymarket.
+
+3. **High edge/profit warnings** - Scanner logs "Suspicious arb" for opportunities with >10% profit, indicating data issues (mismatched events or incorrect markets).
+
+### Data Quality Validation (REQUIRED)
+
+**After any provider changes, run this validation to ensure data quality:**
+
+```bash
+cd backend
+rm -f data/oddopp.db  # Clear database
+python -m src.app extract polymarket pinnacle <provider>
+```
+
+**Then run this SQL validation script:**
+```python
+import sqlite3
+conn = sqlite3.connect('data/oddopp.db')
+cursor = conn.cursor()
+
+# 1. ODDS/EVENT RATIO (expected: 2.4-3.0 for 1x2 markets)
+cursor.execute('''
+    SELECT p.name, COUNT(o.id) as odds, COUNT(DISTINCT o.event_id) as events,
+           ROUND(CAST(COUNT(o.id) AS FLOAT) / COUNT(DISTINCT o.event_id), 2) as ratio
+    FROM odds o JOIN providers p ON o.provider_id = p.id
+    GROUP BY p.name
+''')
+print("Provider         | Odds | Events | Ratio")
+for row in cursor.fetchall():
+    print(f"{row[0]:16} | {row[1]:4} | {row[2]:6} | {row[3]}")
+
+# 2. OUTCOME NORMALIZATION (expected: 100% for Kambi, >97% for Polymarket)
+cursor.execute('''
+    SELECT provider_id,
+           ROUND(100.0 * SUM(CASE WHEN outcome IN ('home','away','draw') THEN 1 ELSE 0 END) / COUNT(*), 1) as pct
+    FROM odds GROUP BY provider_id
+''')
+print("\nOutcome normalization rate:")
+for row in cursor.fetchall():
+    print(f"  {row[0]}: {row[1]}%")
+
+# 3. SCORE-LIKE OUTCOMES (expected: 0 for all providers)
+cursor.execute("SELECT provider_id, COUNT(*) FROM odds WHERE outcome LIKE '%-%' GROUP BY provider_id")
+print("\nScore-like outcomes (should be 0):")
+for row in cursor.fetchall():
+    print(f"  {row[0]}: {row[1]}")
+
+# 4. CROSS-PROVIDER MATCHING (higher = better data quality)
+cursor.execute('''
+    SELECT COUNT(DISTINCT event_id) as total,
+           SUM(CASE WHEN cnt > 1 THEN 1 ELSE 0 END) as matched
+    FROM (SELECT event_id, COUNT(DISTINCT provider_id) as cnt FROM odds GROUP BY event_id)
+''')
+row = cursor.fetchone()
+print(f"\nCross-provider: {row[1]}/{row[0]} events ({100*row[1]/row[0]:.1f}%)")
+```
+
+**Expected benchmarks:**
+
+| Metric | Pinnacle | Polymarket | Kambi (LeoVegas, etc.) |
+|--------|----------|------------|------------------------|
+| Odds/event ratio | 2.5-2.7 | 2.3-2.5 | 2.9-3.1 |
+| Outcome normalization | 100% | >97% | 100% |
+| Score-like outcomes | 0 | 0 | 0 |
+| Market types | 1x2 only | 1x2 only | 1x2 only |
+
+**Red flags to investigate:**
+- Ratio > 4.0: Non-1x2 markets leaking through (check `betOfferType.id` filter)
+- Ratio < 2.0: Missing outcomes (check market parsing)
+- Normalization < 95%: Team name matching failing (check `normalize_outcome()`)
+- Score-like > 0: Correct score markets not filtered (check market type filter)
+
+**Sample data spot-check:**
+```sql
+-- Verify matched events have correct odds structure
+SELECT e.id, e.home_team, e.away_team, o.provider_id, o.outcome, o.odds
+FROM events e
+JOIN odds o ON e.id = o.event_id
+WHERE e.id IN (
+    SELECT event_id FROM odds GROUP BY event_id HAVING COUNT(DISTINCT provider_id) > 1
+)
+ORDER BY e.id, o.provider_id, o.outcome
+LIMIT 30;
+```

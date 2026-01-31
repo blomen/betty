@@ -102,21 +102,28 @@ class PolymarketRetriever(Retriever):
     Uses tag_id=100639 (Game Bets) to get all sports events in one call,
     instead of per-league series_id fetching which misses events due to
     incorrect/missing series ID mappings.
+
+    Data Quality Filters:
+    - MIN_VOLUME: Skip markets with < $1000 volume (no real trading activity)
+    - 50/50 Filter: Skip markets where prices are 0.45-0.55 (no price discovery)
     """
 
-    def __init__(self, config: dict, transport=None, sports_map: dict = None):
+    # Minimum volume in USD for a market to be considered valid
+    # Markets below this threshold likely have no real price discovery
+    MIN_VOLUME = 1000
+
+    def __init__(self, config: dict, transport=None):
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.game_bets_tag_id = config.get("params", {}).get("game_bets_tag_id", 100639)
-        self.sports_map = sports_map or {}
         self._cached_events = None  # Cache to avoid re-fetching
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Required by base class. Use _parse_all or _parse_league instead."""
-        return self._parse_league(data, sport) if data else []
+        """Required by base class."""
+        return self._parse_all(data) if data else []
 
     async def extract_all(self, limit: int = 500) -> List[StandardEvent]:
         """
@@ -175,38 +182,10 @@ class PolymarketRetriever(Retriever):
         Extract events for a specific sport/league.
 
         For backwards compatibility with orchestrator's per-sport iteration.
-        Uses cached data from extract_all() if available.
+        Delegates to extract_all() since we use tag_id for all games.
         """
-        # Special case: fetch all events
-        if sport == "__all__":
-            return await self.extract_all(limit)
-
-        # Try series_id approach for specific league (legacy)
-        config = self.sports_map.get(sport)
-        if not config:
-            logger.debug(f"[{self.provider_id}] No config for '{sport}'")
-            return []
-
-        series_id = config.get("id")
-        if not series_id:
-            return []
-
-        params = {
-            "active": "true",
-            "closed": "false",
-            "series_id": series_id,
-            "order": "startTime",
-            "ascending": "true",
-            "limit": limit
-        }
-
-        url = f"{self.base_url}/events"
-        data = await self.transport.get(url, params=params)
-
-        if not data:
-            return []
-
-        return self._parse_league(data, sport)
+        # Always use extract_all - tag_id fetches all sports at once
+        return await self.extract_all(limit)
 
     def _parse_all(self, data: List[dict]) -> List[StandardEvent]:
         """Parse all events, determining sport from series info."""
@@ -222,21 +201,7 @@ class PolymarketRetriever(Retriever):
 
         return events
 
-    def _parse_league(self, data: List[dict], league: str) -> List[StandardEvent]:
-        """Parse events for a specific league."""
-        events = []
-
-        for item in data:
-            try:
-                event = self._parse_event(item, override_league=league)
-                if event:
-                    events.append(event)
-            except Exception as e:
-                logger.debug(f"Failed to parse Polymarket event: {e}")
-
-        return events
-
-    def _parse_event(self, item: dict, override_league: str = None) -> Optional[StandardEvent]:
+    def _parse_event(self, item: dict) -> Optional[StandardEvent]:
         """Parse a single Polymarket event."""
         title = item.get("title", "")
         event_id = str(item.get("id", ""))
@@ -253,8 +218,6 @@ class PolymarketRetriever(Retriever):
 
         # Determine sport and league from series
         sport, league = self._get_sport_league(item)
-        if override_league:
-            league = override_league
 
         # Parse markets - for football, combine home/draw/away into single 1x2
         if sport == "football":
@@ -400,8 +363,26 @@ class PolymarketRetriever(Retriever):
         return None
 
     def _parse_market(self, data: dict) -> Optional[dict]:
-        """Parse a single market."""
+        """Parse a single market (moneyline only - skips totals/spreads)."""
         try:
+            # Skip non-moneyline markets based on question text
+            question = data.get("question", "").lower()
+            if any(kw in question for kw in [
+                "over", "under", "total", "spread", "handicap",
+                "points", "goals scored", "combined"
+            ]):
+                return None
+
+            # Volume filter: Skip low-volume markets (no real trading activity)
+            volume = data.get("volume", 0)
+            try:
+                volume = float(volume) if volume else 0
+            except (ValueError, TypeError):
+                volume = 0
+
+            if volume < self.MIN_VOLUME:
+                return None
+
             # Parse outcome prices
             prices_raw = data.get("outcomePrices", "[]")
             prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
@@ -413,14 +394,22 @@ class PolymarketRetriever(Retriever):
             if not outcomes or not prices:
                 return None
 
+            # Skip 50/50 markets (no price discovery - prices between 0.45-0.55)
+            if all(0.45 < p < 0.55 for p in prices if p > 0):
+                return None
+
             # Check active (liquidity check)
             if not any(0.02 < p < 0.98 for p in prices):
                 return None
 
-            # Convert to odds
+            # Convert to odds (skip over/under outcomes - these are totals markets)
             formatted_outcomes = []
             for name, p in zip(outcomes, prices):
                 if p > 0.02:
+                    name_lower = name.lower()
+                    # Skip over/under outcomes (totals markets that slipped through)
+                    if name_lower in ("over", "under"):
+                        continue
                     formatted_outcomes.append({
                         "name": name,
                         "odds": round(1 / p, 3)
@@ -429,8 +418,10 @@ class PolymarketRetriever(Retriever):
             if not formatted_outcomes:
                 return None
 
+            # For non-football markets (parsed via _parse_market), it's always moneyline
+            # Football markets go through _combine_football_markets which sets type='1x2'
             return {
-                "type": data.get("question", ""),
+                "type": "moneyline",
                 "outcomes": formatted_outcomes
             }
         except Exception:
@@ -446,6 +437,8 @@ class PolymarketRetriever(Retriever):
         - "Will Team B win?" (away)
 
         This combines them into one 1x2 market with home/draw/away outcomes.
+
+        Data Quality: Only includes markets with sufficient volume and price discovery.
         """
         home_odds = None
         draw_odds = None
@@ -457,6 +450,16 @@ class PolymarketRetriever(Retriever):
         for m in raw_markets:
             question = m.get("question", "").lower()
 
+            # Volume filter: Skip low-volume markets
+            volume = m.get("volume", 0)
+            try:
+                volume = float(volume) if volume else 0
+            except (ValueError, TypeError):
+                volume = 0
+
+            if volume < self.MIN_VOLUME:
+                continue
+
             # Parse outcomes and prices
             outcomes_raw = m.get("outcomes", "[]")
             prices_raw = m.get("outcomePrices", "[]")
@@ -465,6 +468,11 @@ class PolymarketRetriever(Retriever):
             prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
 
             if not outcomes or not prices:
+                continue
+
+            # Skip 50/50 markets (no price discovery)
+            float_prices = [float(p) for p in prices if p]
+            if all(0.45 < p < 0.55 for p in float_prices if p > 0):
                 continue
 
             # Get "Yes" price (probability of the event happening)
@@ -505,80 +513,3 @@ class PolymarketRetriever(Retriever):
             }]
 
         return []
-
-    def _add_draw_for_football(self, markets: list, home: str, away: str) -> list:
-        """
-        Add imputed draw odds for football markets.
-
-        Polymarket only provides binary outcomes (home/away), but football
-        1x2 markets need a draw option. This method imputes draw odds using
-        an empirical model based on historical football statistics.
-
-        Model: draw_prob = base_rate * (1 - 0.5 * |home_prob - away_prob|)
-        - Base rate: ~27% (average draw rate in top leagues)
-        - Adjustment: Higher draw probability when teams are evenly matched
-
-        Args:
-            markets: List of market dicts from _parse_market
-            home: Home team name (for matching)
-            away: Away team name (for matching)
-
-        Returns:
-            Markets with draw outcomes added where applicable
-        """
-        BASE_DRAW_RATE = 0.27  # Average draw rate in top football leagues
-
-        for market in markets:
-            outcomes = market.get("outcomes", [])
-
-            # Only add draw if we have exactly 2 outcomes (home/away)
-            if len(outcomes) != 2:
-                continue
-
-            # Get home and away odds
-            home_odds = None
-            away_odds = None
-
-            for o in outcomes:
-                name = o.get("name", "").lower()
-                # Match outcome to home/away
-                if home.lower() in name or name in home.lower():
-                    home_odds = o.get("odds")
-                elif away.lower() in name or name in away.lower():
-                    away_odds = o.get("odds")
-
-            # If we couldn't match, try by position (first=home, second=away)
-            if home_odds is None or away_odds is None:
-                home_odds = outcomes[0].get("odds")
-                away_odds = outcomes[1].get("odds")
-
-            if not home_odds or not away_odds:
-                continue
-
-            # Calculate probabilities
-            home_prob = 1 / home_odds
-            away_prob = 1 / away_odds
-
-            # Skip if probabilities don't make sense (should sum to ~100%)
-            total_prob = home_prob + away_prob
-            if total_prob < 0.90 or total_prob > 1.10:
-                continue
-
-            # Calculate draw probability using empirical model
-            prob_diff = abs(home_prob - away_prob)
-            draw_prob = BASE_DRAW_RATE * (1 - 0.5 * prob_diff)
-
-            # Ensure draw probability is reasonable (15-35%)
-            draw_prob = max(0.15, min(0.35, draw_prob))
-
-            # Convert to odds
-            draw_odds = round(1 / draw_prob, 3)
-
-            # Add draw outcome
-            outcomes.append({
-                "name": "Draw",
-                "odds": draw_odds,
-                "imputed": True  # Mark as imputed for transparency
-            })
-
-        return markets

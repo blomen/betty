@@ -1,10 +1,9 @@
 """
 Value Bet Detection
 
-Finds +EV bets where provider odds exceed fair odds from sharp sources.
+Finds +EV bets where provider odds exceed fair odds from Pinnacle.
 
-Primary sharp: Pinnacle (de-vigged) > Polymarket
-If both exist, blend 60% Pinnacle + 40% Polymarket.
+Sharp source: Pinnacle ONLY (de-vigged to remove ~2.5% margin)
 
 Formula:
     edge = (provider_odds / fair_odds) - 1
@@ -17,7 +16,7 @@ from dataclasses import dataclass
 from typing import Optional
 import logging
 
-from .devig import get_fair_odds_for_outcome, blend_fair_odds
+from .devig import get_fair_odds_for_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +32,9 @@ class ValueBet:
     provider: str
     provider_odds: float
     
-    # The truth
-    fair_odds: float          # From Polymarket
-    fair_probability: float   # Implied probability
+    # The truth (from Pinnacle de-vigged)
+    fair_odds: float
+    fair_probability: float
     
     # The edge
     edge_pct: float
@@ -64,7 +63,7 @@ def find_value(
         outcome: Outcome name ("home", "over", etc.)
         provider: Provider offering the odds
         provider_odds: Decimal odds from provider
-        fair_odds: Fair decimal odds from Polymarket
+        fair_odds: Fair decimal odds (from Pinnacle de-vigged)
         min_edge_pct: Minimum edge to consider (default 2%)
     
     Returns:
@@ -109,7 +108,7 @@ def scan_for_value(
         event_id: Canonical event ID
         market: Market type
         outcome: Outcome name
-        fair_odds: Fair odds from Polymarket
+        fair_odds: Fair odds (from Pinnacle de-vigged)
         provider_odds_list: [{provider, odds}, ...]
         min_edge_pct: Minimum edge threshold
     
@@ -161,98 +160,84 @@ def find_best_value(
 def get_fair_odds(
     outcome: str,
     market_odds: dict[str, list[dict]],
-    sharp_priority: list[str] = None,
-    blend_weight: float = 0.6,
 ) -> Optional[tuple[float, str]]:
     """
-    Get de-vigged fair odds for an outcome.
+    Get de-vigged fair odds for an outcome from Pinnacle.
 
-    - De-vigs Pinnacle if available
-    - Blends Pinnacle (60%) + Polymarket (40%) if both exist
-    - Falls back to Polymarket only
+    Pinnacle is the sole sharp source. Their ~2.5% margin is removed
+    using multiplicative de-vigging.
 
     Args:
         outcome: The outcome to get fair odds for ("home", "away", etc.)
         market_odds: All odds for this market {outcome: [{provider, odds}, ...]}
-        sharp_priority: Sharp providers in priority order (default ["pinnacle", "polymarket"])
-        blend_weight: Pinnacle weight when blending (default 0.6 = 60%)
 
     Returns:
-        (fair_odds, source_description) or None if no sharp found
+        (fair_odds, "pinnacle") or None if Pinnacle not found
 
     Example:
         >>> market = {
-        ...     "home": [{"provider": "pinnacle", "odds": 2.10}, {"provider": "polymarket", "odds": 2.05}],
+        ...     "home": [{"provider": "pinnacle", "odds": 2.10}],
         ...     "draw": [{"provider": "pinnacle", "odds": 3.40}],
         ...     "away": [{"provider": "pinnacle", "odds": 3.50}],
         ... }
         >>> get_fair_odds("home", market)
-        (2.16, "pinnacle(60%)+polymarket(40%)")
+        (2.16, "pinnacle")
     """
-    if sharp_priority is None:
-        sharp_priority = ["pinnacle", "polymarket"]
-
-    # Find sharp provider odds for this outcome
+    # Find Pinnacle odds for this outcome
     outcome_providers = market_odds.get(outcome, [])
     if not outcome_providers:
         return None
 
     pinnacle_odds = None
-    polymarket_odds = None
-
     for po in outcome_providers:
-        provider = po.get("provider", "")
-        if provider == "pinnacle":
+        if po.get("provider") == "pinnacle":
             pinnacle_odds = po["odds"]
-        elif provider == "polymarket":
-            polymarket_odds = po["odds"]
+            break
 
-    # De-vig Pinnacle if available
-    pinnacle_fair = None
-    if pinnacle_odds is not None:
-        # Build Pinnacle market odds for de-vigging
-        pinnacle_market = {}
-        for out, providers in market_odds.items():
-            for p in providers:
-                if p.get("provider") == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+    if pinnacle_odds is None:
+        return None
 
-        if len(pinnacle_market) >= 2:
-            # Full market available, de-vig properly
-            pinnacle_fair = get_fair_odds_for_outcome(
-                outcome, pinnacle_market, method="multiplicative"
-            )
-        else:
-            # Single outcome, can't de-vig - use raw
-            pinnacle_fair = pinnacle_odds
+    # Build Pinnacle market odds for de-vigging
+    pinnacle_market = {}
+    for out, providers in market_odds.items():
+        for p in providers:
+            if p.get("provider") == "pinnacle":
+                pinnacle_market[out] = p["odds"]
+                break
 
-    # Blend or fall back
-    return blend_fair_odds(pinnacle_fair, polymarket_odds, blend_weight)
+    if len(pinnacle_market) >= 2:
+        # Full market available, de-vig properly
+        fair_odds = get_fair_odds_for_outcome(
+            outcome, pinnacle_market, method="multiplicative"
+        )
+        return (fair_odds, "pinnacle")
+    else:
+        # Single outcome, can't de-vig - use raw (not ideal)
+        return (pinnacle_odds, "pinnacle(raw)")
 
 
 # Quick test
 if __name__ == "__main__":
-    # Example: Polymarket says 45% chance of home win (fair odds = 2.22)
-    # Unibet offers 2.40 - is this value?
-    
-    fair_odds = 1 / 0.45  # 2.22
-    
+    # Example: Pinnacle fair odds = 2.22 (45% implied probability)
+    # Provider offers 2.40 - is this value?
+
+    fair_odds = 2.22  # From Pinnacle de-vigged
+
     providers = [
         {"provider": "unibet", "odds": 2.40},    # +8% edge
         {"provider": "bet365", "odds": 2.25},    # +1% edge (below threshold)
         {"provider": "betsson", "odds": 2.15},   # -3% edge (no value)
     ]
-    
-    print(f"Fair odds: {fair_odds:.2f} (45% probability)")
+
+    print(f"Pinnacle fair odds: {fair_odds:.2f}")
     print()
-    
+
     for p in providers:
         edge = (p["odds"] / fair_odds - 1) * 100
-        print(f"{p['provider']}: {p['odds']} → {edge:+.1f}% edge")
-    
+        print(f"{p['provider']}: {p['odds']} -> {edge:+.1f}% edge")
+
     print()
-    
+
     best = find_best_value("test", "1x2", "home", fair_odds, providers, min_edge_pct=2.0)
     if best:
         print(f"Best value: {best.provider} @ {best.provider_odds} (+{best.edge_pct}%)")

@@ -2,15 +2,24 @@
 Event Matching Logic
 
 Fuzzy matching for team names and event matching across providers.
+
+MATCHING PHILOSOPHY:
+- Better to miss a match than to create a false positive
+- Both teams must match individually (not just average)
+- Short team names need higher thresholds
+- Cross-validate with multiple metrics
 """
 
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List
+import logging
 
 from thefuzz import fuzz
 
 from .normalizer import normalize_team_name, generate_canonical_id
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,9 +30,45 @@ class MatchResult:
     confidence: float  # 0-100
     home_team_normalized: str
     away_team_normalized: str
+    home_score: float = 0  # Individual team scores for debugging
+    away_score: float = 0
 
 
-def fuzzy_match_teams(team1: str, team2: str, threshold: int = 85) -> bool:
+def get_team_match_score(team1: str, team2: str) -> float:
+    """
+    Get the best matching score between two team names.
+
+    Uses multiple fuzzy matching strategies and returns the best score.
+    """
+    norm1 = normalize_team_name(team1)
+    norm2 = normalize_team_name(team2)
+
+    # Exact match after normalization
+    if norm1 == norm2:
+        return 100.0
+
+    # Empty strings shouldn't match
+    if not norm1 or not norm2:
+        return 0.0
+
+    # Multiple fuzzy strategies
+    scores = [
+        fuzz.ratio(norm1, norm2),
+        fuzz.token_sort_ratio(norm1, norm2),
+        fuzz.token_set_ratio(norm1, norm2),
+    ]
+
+    # Partial ratio for cases like "Brighton" vs "Brighton Hove Albion"
+    # But only if one is significantly shorter
+    if len(norm1) > 3 and len(norm2) > 3:
+        len_ratio = min(len(norm1), len(norm2)) / max(len(norm1), len(norm2))
+        if len_ratio < 0.7:  # One name is much shorter
+            scores.append(fuzz.partial_ratio(norm1, norm2))
+
+    return max(scores)
+
+
+def fuzzy_match_teams(team1: str, team2: str, threshold: int = 85) -> int:
     """
     Check if two team names match using fuzzy matching.
 
@@ -33,26 +78,26 @@ def fuzzy_match_teams(team1: str, team2: str, threshold: int = 85) -> bool:
         threshold: Minimum similarity score (0-100)
 
     Returns:
-        True if teams match
+        Match score (0-100), or 0 if below threshold
     """
+    score = get_team_match_score(team1, team2)
+
+    # Short team names need stricter matching
+    # e.g., "PSG" vs "PSV" would score high but are different teams
     norm1 = normalize_team_name(team1)
     norm2 = normalize_team_name(team2)
+    min_len = min(len(norm1), len(norm2))
 
-    # Exact match after normalization
-    if norm1 == norm2:
-        return True
+    if min_len <= 3:
+        # Very short names: require exact or near-exact match
+        effective_threshold = max(threshold, 95)
+    elif min_len <= 5:
+        # Short names: require higher threshold
+        effective_threshold = max(threshold, 90)
+    else:
+        effective_threshold = threshold
 
-    # Fuzzy match
-    ratio = fuzz.ratio(norm1, norm2)
-    if ratio >= threshold:
-        return True
-
-    # Token sort ratio (handles word order differences)
-    token_ratio = fuzz.token_sort_ratio(norm1, norm2)
-    if token_ratio >= threshold:
-        return True
-
-    return False
+    return int(score) if score >= effective_threshold else 0
 
 
 def find_best_team_match(team: str, candidates: List[str], threshold: int = 80) -> Optional[str]:
@@ -61,23 +106,14 @@ def find_best_team_match(team: str, candidates: List[str], threshold: int = 80) 
 
     Returns the best match or None if no match meets threshold.
     """
-    norm_team = normalize_team_name(team)
-
     best_match = None
     best_score = 0
 
     for candidate in candidates:
-        norm_candidate = normalize_team_name(candidate)
+        score = get_team_match_score(team, candidate)
 
-        # Exact match
-        if norm_team == norm_candidate:
+        if score == 100:  # Exact match
             return candidate
-
-        # Fuzzy score
-        score = max(
-            fuzz.ratio(norm_team, norm_candidate),
-            fuzz.token_sort_ratio(norm_team, norm_candidate),
-        )
 
         if score > best_score and score >= threshold:
             best_score = score
@@ -94,13 +130,31 @@ def match_events(
     event2_away: str,
     event2_date: str,
     sport: str,
-    threshold: int = 80,
+    threshold: int = 85,
+    min_individual_score: int = 75,
 ) -> MatchResult:
     """
-    Try to match two events.
+    Try to match two events with strict validation.
 
-    Returns a MatchResult with match status and confidence.
+    BULLETPROOF MATCHING RULES:
+    1. Date must match (or be within 1 day)
+    2. BOTH teams must match individually above min_individual_score
+    3. Average score must be above threshold
+    4. Cross-validate: reject if one team matches perfectly but other doesn't
+
+    Args:
+        threshold: Minimum average score for match (default 85)
+        min_individual_score: Minimum score for EACH team (default 75)
+
+    Returns:
+        MatchResult with match status and confidence.
     """
+    # Normalize team names
+    home1 = normalize_team_name(event1_home)
+    away1 = normalize_team_name(event1_away)
+    home2 = normalize_team_name(event2_home)
+    away2 = normalize_team_name(event2_away)
+
     # Check date match (allow +/- 1 day for timezones)
     date_match = False
     if event1_date == event2_date:
@@ -120,54 +174,88 @@ def match_events(
             matched=False,
             canonical_id="",
             confidence=0,
-            home_team_normalized=normalize_team_name(event1_home),
-            away_team_normalized=normalize_team_name(event1_away),
-        )
-
-    # Normalize team names
-    home1 = normalize_team_name(event1_home)
-    away1 = normalize_team_name(event1_away)
-    home2 = normalize_team_name(event2_home)
-    away2 = normalize_team_name(event2_away)
-
-    # Check home/away match
-    home_score = max(fuzz.ratio(home1, home2), fuzz.token_sort_ratio(home1, home2))
-    away_score = max(fuzz.ratio(away1, away2), fuzz.token_sort_ratio(away1, away2))
-
-    # Also check swapped (in case home/away is reversed)
-    home_swap_score = max(fuzz.ratio(home1, away2), fuzz.token_sort_ratio(home1, away2))
-    away_swap_score = max(fuzz.ratio(away1, home2), fuzz.token_sort_ratio(away1, home2))
-
-    # Best match
-    direct_score = (home_score + away_score) / 2
-    swapped_score = (home_swap_score + away_swap_score) / 2
-
-    if direct_score >= swapped_score and direct_score >= threshold:
-        canonical_id = generate_canonical_id(sport, home1, away1, event1_date)
-        return MatchResult(
-            matched=True,
-            canonical_id=canonical_id,
-            confidence=direct_score,
-            home_team_normalized=home1,
-            away_team_normalized=away1,
-        )
-    elif swapped_score >= threshold:
-        # Use event1's order as canonical
-        canonical_id = generate_canonical_id(sport, home1, away1, event1_date)
-        return MatchResult(
-            matched=True,
-            canonical_id=canonical_id,
-            confidence=swapped_score,
             home_team_normalized=home1,
             away_team_normalized=away1,
         )
 
+    # Get individual team scores for DIRECT match (home1↔home2, away1↔away2)
+    home_direct = get_team_match_score(home1, home2)
+    away_direct = get_team_match_score(away1, away2)
+
+    # Get individual team scores for SWAPPED match (home1↔away2, away1↔home2)
+    home_swapped = get_team_match_score(home1, away2)
+    away_swapped = get_team_match_score(away1, home2)
+
+    # Calculate average scores
+    direct_avg = (home_direct + away_direct) / 2
+    swapped_avg = (home_swapped + away_swapped) / 2
+
+    # Determine best match type
+    is_swapped = swapped_avg > direct_avg
+    if is_swapped:
+        team1_score, team2_score = home_swapped, away_swapped
+        avg_score = swapped_avg
+    else:
+        team1_score, team2_score = home_direct, away_direct
+        avg_score = direct_avg
+
+    # BULLETPROOF VALIDATION
+    # Rule 1: Average must meet threshold
+    if avg_score < threshold:
+        return MatchResult(
+            matched=False,
+            canonical_id=generate_canonical_id(sport, home1, away1, event1_date),
+            confidence=avg_score,
+            home_team_normalized=home1,
+            away_team_normalized=away1,
+            home_score=team1_score,
+            away_score=team2_score,
+        )
+
+    # Rule 2: BOTH teams must meet minimum individual score
+    if team1_score < min_individual_score or team2_score < min_individual_score:
+        logger.debug(
+            f"Match rejected: individual scores too low. "
+            f"'{home1}' vs '{home2}' ({team1_score}), '{away1}' vs '{away2}' ({team2_score})"
+        )
+        return MatchResult(
+            matched=False,
+            canonical_id=generate_canonical_id(sport, home1, away1, event1_date),
+            confidence=avg_score,
+            home_team_normalized=home1,
+            away_team_normalized=away1,
+            home_score=team1_score,
+            away_score=team2_score,
+        )
+
+    # Rule 3: Reject suspicious asymmetric matches
+    # If one team is 100% but other is below 85%, likely wrong event
+    score_diff = abs(team1_score - team2_score)
+    if score_diff > 25 and min(team1_score, team2_score) < 85:
+        logger.debug(
+            f"Match rejected: asymmetric scores ({team1_score} vs {team2_score}). "
+            f"Likely partial team name collision."
+        )
+        return MatchResult(
+            matched=False,
+            canonical_id=generate_canonical_id(sport, home1, away1, event1_date),
+            confidence=avg_score,
+            home_team_normalized=home1,
+            away_team_normalized=away1,
+            home_score=team1_score,
+            away_score=team2_score,
+        )
+
+    # Match successful
+    canonical_id = generate_canonical_id(sport, home1, away1, event1_date)
     return MatchResult(
-        matched=False,
-        canonical_id=generate_canonical_id(sport, home1, away1, event1_date),
-        confidence=max(direct_score, swapped_score),
+        matched=True,
+        canonical_id=canonical_id,
+        confidence=avg_score,
         home_team_normalized=home1,
         away_team_normalized=away1,
+        home_score=team1_score,
+        away_score=team2_score,
     )
 
 

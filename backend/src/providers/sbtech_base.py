@@ -364,22 +364,6 @@ class SBTechRetriever(BrowserRetriever):
                             "name": selection.get('label', ''),
                             "odds": selection.get('odds', 0.0)
                         }
-
-                        # Extract point value for spread/over_under markets
-                        point_value = selection.get('line') or selection.get('handicap') or selection.get('points')
-                        if point_value is None and market_type in ['over_under', 'spread']:
-                            # Try to extract from selection label (e.g., "Over 2.5")
-                            import re
-                            match = re.search(r'([+-]?\d+\.?\d*)', selection.get('label', ''))
-                            if match:
-                                try:
-                                    point_value = float(match.group(1))
-                                except:
-                                    pass
-
-                        if point_value is not None and market_type in ['over_under', 'spread']:
-                            outcome_dict['point'] = float(point_value)
-
                         outcomes.append(outcome_dict)
 
                 if outcomes:
@@ -409,27 +393,15 @@ class SBTechRetriever(BrowserRetriever):
             return None
 
     def _normalize_market_type(self, market_label: str) -> str:
-        """Normalize market labels to standard types."""
+        """Normalize market labels to standard types (1x2/moneyline only)."""
         label_lower = market_label.lower()
 
-        # 1x2/Match result patterns (most common)
+        # 1x2/Match result patterns
         if any(kw in label_lower for kw in ['matchresultat', 'match result', '1x2', 'full time result',
-                                             'vinnare', 'winner', 'slutresultat', 'matchodds']):
+                                             'vinnare', 'winner', 'slutresultat', 'matchodds', 'moneyline']):
             return "1x2"
-        # Over/under patterns
-        elif any(kw in label_lower for kw in ['over/under', 'total goals', 'totalt antal mål', 'över/under',
-                                               'totalt', 'total points', 'antal mål', 'o/u']):
-            return "over_under"
-        # Spread/Handicap patterns
-        elif any(kw in label_lower for kw in ['handicap', 'asian handicap', 'asian spread', 'handikapp',
-                                               'spread', 'point spread', 'pucklinje']):
-            return "spread"
-        # Both teams to score
-        elif any(kw in label_lower for kw in ['both teams to score', 'båda lagen gör mål', 'btts']):
-            return "both_teams_to_score"
-        # Fallback: check if it looks like a 3-way market by structure (has draw option)
-        else:
-            return "1x2"  # Default to 1x2 for unrecognized markets with 3 outcomes
+
+        return "other"
 
     def _parse_datetime(self, dt_str: Any) -> Optional[datetime]:
         """Parse datetime from various formats."""

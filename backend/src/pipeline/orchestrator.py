@@ -40,10 +40,11 @@ class ExtractionPipeline:
         self.engine = ExtractorFactory.get_instance()
         self._ensure_providers()
 
-        # Cache for Polymarket events to enable fuzzy matching
+        # Cache for ALL events to enable cross-provider fuzzy matching
         # Dict indexed by sport for O(1) sport lookup
         # {sport: [(id, home, away, date_str), ...]}
-        self.polymarket_events = {}
+        # Events from Polymarket, Pinnacle, and all providers are added here
+        self.event_cache = {}
 
         # Get orchestrator config
         orchestrator_config = self.engine.config_loader.get_orchestrator_config()
@@ -513,10 +514,13 @@ class ExtractionPipeline:
 
     async def _extract_polymarket(self, max_per_sport: int = 100) -> dict:
         """
-        Extract from Polymarket using sports config.
+        Extract from Polymarket using tag-based fetching.
+
+        Fetches ALL game events in one API call using tag_id=100639,
+        instead of per-league series_id fetching which misses events.
 
         Args:
-            max_per_sport: Maximum events per sport
+            max_per_sport: Not used (kept for API compatibility)
 
         Returns:
             Dictionary with extraction statistics
@@ -530,39 +534,38 @@ class ExtractionPipeline:
         BATCH_SIZE = 100
         event_count = 0
 
-        # Use the generic extractor factory for Polymarket too
         extractor = self.engine.get_extractor("polymarket")
 
         async with extractor as source:
-            # Iterate through configured sports and extract
-            for sport_config in self.engine.sports:
-                try:
-                    events = await source.extract(sport_config.name, limit=max_per_sport)
+            try:
+                # Fetch ALL game events in one call (limit=1000)
+                events = await source.extract_all(limit=1000)
+                logger.info(f"[polymarket] Fetched {len(events)} events")
 
-                    for event in events:
-                        # event is now StandardEvent
-                        ev_new, ev_processed_odds, ev_new_odds = store_polymarket_event(
-                            self.session,
-                            event,
-                            sport_config.kambi_sport,
-                            self.polymarket_events,
-                        )
+                for event in events:
+                    # Sport is now determined by extractor from series info
+                    ev_new, ev_processed_odds, ev_new_odds = store_polymarket_event(
+                        self.session,
+                        event,
+                        event.sport,  # Use sport from event (determined from series)
+                        self.event_cache,
+                    )
 
-                        events_processed += 1
-                        event_count += 1
-                        if ev_new:
-                            events_new += 1
+                    events_processed += 1
+                    event_count += 1
+                    if ev_new:
+                        events_new += 1
 
-                        odds_processed += ev_processed_odds
-                        odds_new += ev_new_odds
+                    odds_processed += ev_processed_odds
+                    odds_new += ev_new_odds
 
-                        # Batch commit every BATCH_SIZE events
-                        if event_count % BATCH_SIZE == 0:
-                            self.session.commit()
-                            logger.debug(f"[polymarket] Batch committed {event_count} events")
+                    # Batch commit every BATCH_SIZE events
+                    if event_count % BATCH_SIZE == 0:
+                        self.session.commit()
+                        logger.debug(f"[polymarket] Batch committed {event_count} events")
 
-                except Exception as e:
-                    logger.debug(f"Polymarket {sport_config.name}: {e}")
+            except Exception as e:
+                logger.error(f"Polymarket extraction failed: {e}")
 
             # Final commit for any remaining events
             self.session.commit()
@@ -578,7 +581,10 @@ class ExtractionPipeline:
 
     async def _extract_provider(self, provider_id: str, sports: list[str], limit: int) -> dict:
         """
-        Extract from a specific provider across multiple sports (PARALLEL).
+        Extract from a specific provider across multiple sports.
+
+        Uses SEQUENTIAL extraction for Kambi providers (shared rate limit)
+        and PARALLEL extraction for all other providers.
 
         Args:
             provider_id: Provider identifier
@@ -590,7 +596,12 @@ class ExtractionPipeline:
         """
         # Get provider config for concurrency settings
         provider_config = self.engine.get_provider(provider_id)
-        concurrent_sports = getattr(
+
+        # Check if this is a Kambi provider (needs sequential extraction)
+        is_kambi = getattr(provider_config, 'retriever_type', '') == 'kambi'
+
+        # Kambi: sequential (1), Others: parallel (up to 4)
+        concurrent_sports = 1 if is_kambi else getattr(
             provider_config,
             'concurrent_leagues',
             self.orchestrator_config.max_concurrent_sports_per_provider
@@ -602,10 +613,18 @@ class ExtractionPipeline:
         # Get or create extractor
         extractor = self.engine.get_extractor(provider_id)
 
+        # Delay between sports for rate-limited APIs (seconds)
+        sport_delay = 3.0 if is_kambi else 0.0
+
         # Define per-sport extraction function
-        async def extract_sport(sport: str):
+        async def extract_sport(sport: str, sport_index: int):
             """Extract single sport with error handling."""
             async with sport_semaphore:
+                # Add delay between sports for Kambi (rate limit recovery)
+                if sport_delay > 0 and sport_index > 0:
+                    logger.debug(f"[{provider_id}] Waiting {sport_delay}s before {sport}...")
+                    await asyncio.sleep(sport_delay)
+
                 sport_start_time = time.time()
 
                 try:
@@ -625,7 +644,7 @@ class ExtractionPipeline:
                                 session=self.session,
                                 provider=provider_id,
                                 event=event,
-                                polymarket_cache=self.polymarket_events,
+                                polymarket_cache=self.event_cache,
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,
@@ -664,8 +683,8 @@ class ExtractionPipeline:
                     }
 
         try:
-            # PARALLEL sport extraction
-            sport_tasks = [extract_sport(sport) for sport in sports]
+            # Sport extraction (sequential for Kambi, parallel for others)
+            sport_tasks = [extract_sport(sport, i) for i, sport in enumerate(sports)]
             sport_results = await asyncio.gather(*sport_tasks)
 
             # Aggregate results

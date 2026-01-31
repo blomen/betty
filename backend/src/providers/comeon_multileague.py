@@ -115,61 +115,28 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         return list(events_data.items())
 
     def _normalize_market_type(self, market_name: str) -> str:
-        """Normalize ComeOn market names (Swedish/English) to standard types."""
+        """Normalize ComeOn market names (Swedish/English) to standard types (1x2/moneyline only)."""
         name_lower = market_name.lower()
 
         # 1x2 / Moneyline
-        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat']):
+        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'moneyline']):
             return '1x2'
-
-        # Over/Under / Totals
-        if any(kw in name_lower for kw in ['över/under', 'over/under', 'o/u', 'total', 'mål över', 'mål under']):
-            return 'over_under'
-
-        # Spread / Handicap
-        if any(kw in name_lower for kw in ['handikapp', 'handicap', 'asian', 'europeiskt', 'spread']):
-            return 'spread'
-
-        # Both Teams to Score
-        if any(kw in name_lower for kw in ['båda lagen', 'both teams', 'btts']):
-            return 'both_teams_to_score'
 
         return 'other'
 
     def _normalize_outcome(self, outcome_name: str, outcome_type: str, market_type: str) -> str:
-        """Normalize outcome names based on market type and context."""
+        """Normalize outcome names for 1x2/moneyline markets."""
         name_lower = outcome_name.lower()
         type_lower = outcome_type.lower() if outcome_type else ''
 
-        # 1x2 markets
-        if market_type == '1x2':
+        # 1x2/moneyline markets
+        if market_type in ('1x2', 'moneyline'):
             if 'home' in type_lower or any(kw in name_lower for kw in ['hemma', 'home', '1']):
                 return 'home'
             if 'away' in type_lower or any(kw in name_lower for kw in ['borta', 'away', '2']):
                 return 'away'
             if 'draw' in type_lower or any(kw in name_lower for kw in ['oavgjort', 'draw', 'x']):
                 return 'draw'
-
-        # Over/Under markets
-        if market_type == 'over_under':
-            if 'over' in type_lower or 'över' in name_lower or 'over' in name_lower:
-                return 'over'
-            if 'under' in type_lower or 'under' in name_lower:
-                return 'under'
-
-        # Spread markets
-        if market_type == 'spread':
-            if 'home' in type_lower or '1' in outcome_type:
-                return 'home'
-            if 'away' in type_lower or '2' in outcome_type:
-                return 'away'
-
-        # Both teams to score
-        if market_type == 'both_teams_to_score':
-            if any(kw in name_lower for kw in ['yes', 'ja', 'båda']):
-                return 'yes'
-            if any(kw in name_lower for kw in ['no', 'nej', 'minst ett']):
-                return 'no'
 
         # Fallback to original name (cleaned)
         return outcome_name.lower().strip()
@@ -201,7 +168,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         Navigate to event detail page and extract full market data.
 
         Returns:
-            List of market dictionaries with complete data (over/under, spreads, props)
+            List of market dictionaries with 1x2/moneyline data
         """
         event_url = self._construct_event_detail_url(event_id, home_team, away_team)
 
@@ -367,20 +334,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
         Filters based on configuration.
         """
-        # OPTIMIZATION: Skip events that already have over/under markets with point values
-        # This avoids unnecessary detail page loads for events with complete data
-        has_over_under_with_points = False
-        for market in event.markets:
-            if market['type'] == 'over_under':
-                for outcome in market['outcomes']:
-                    if 'point' in outcome:
-                        has_over_under_with_points = True
-                        break
-
-        if has_over_under_with_points:
-            logger.debug(f"[{self.provider_id}] Skipping {event.id} - already has over/under with points")
-            return False
-
         # Apply filter mode
         filter_mode = self.config.get('detail_extraction_filter', 'all')
 
@@ -743,15 +696,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                                 'type': market_type_normalized,
                                 'outcomes': outcomes
                             }
-
-                            # Skip markets without required data
-                            if market_type_normalized in ['over_under', 'spread']:
-                                # Verify at least one outcome has a point value
-                                has_point = any(o.get('point') is not None for o in outcomes)
-                                if not has_point:
-                                    logger.debug(f"[{self.provider_id}] Skipping {market_type_normalized} without point values")
-                                    continue
-
                             event_markets.append(market_dict)
 
                     # Extract teams from event structure

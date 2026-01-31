@@ -405,39 +405,6 @@ class GeckoV2Retriever(BrowserRetriever):
             if not outcomes:
                 return None
 
-            # Extract point value (renamed from line for DB schema compatibility)
-            # Try lineValueRaw first (numeric), then lineValue (may be string)
-            line_value = market.get('lineValueRaw')
-            if line_value is None or line_value == 0:
-                line_value = market.get('lineValue')
-
-            point_value = None
-            if line_value:
-                try:
-                    # Handle both numeric and string values
-                    if isinstance(line_value, str):
-                        line_value = line_value.strip()
-                        if not line_value:
-                            line_value = None
-
-                    if line_value:
-                        point_float = float(line_value)
-                        # Only use non-zero points
-                        if point_float != 0:
-                            point_value = point_float
-                except (ValueError, TypeError):
-                    pass
-
-            # Skip over_under and spread markets without points (per validation guide)
-            if market_type_normalized in ['over_under', 'spread'] and point_value is None:
-                logger.debug(f"[{self.provider_id}] Skipping {market_type_normalized} market without point value")
-                return None
-
-            # Add point to each outcome for spread/over_under markets
-            if point_value is not None:
-                for outcome in outcomes:
-                    outcome["point"] = point_value
-
             market_dict = {
                 "type": market_type_normalized,
                 "outcomes": outcomes
@@ -471,48 +438,18 @@ class GeckoV2Retriever(BrowserRetriever):
             return None
 
     def _normalize_market_type(self, market_type: str) -> str:
-        """Normalize market type to standard names."""
+        """Normalize market type to standard names (1x2/moneyline only)."""
         mt_lower = market_type.lower()
 
-        # Template IDs (direct mapping)
-        template_map = {
-            'ftcsr': '1x2',           # Full Time Correct Score Result
-            'dc': '1x2',              # Double Chance
-            'mgt': '1x2',             # Match Going To (which team wins)
-            'ou': 'over_under',       # Over/Under
-            'mwou': 'over_under',     # Match Winner Over/Under
-            'tgou': 'over_under',     # Total Goals Over/Under
-            'htg': 'over_under',      # Home Team Goals
-            'atg': 'over_under',      # Away Team Goals
-            'ahcp': 'spread',         # Asian Handicap
-            'ehcp': 'spread',         # European Handicap
-        }
-
-        # Check template ID first
-        if mt_lower in template_map:
-            return template_map[mt_lower]
-
-        # 1x2 / Three-way moneyline (Swedish: matchodds, ratt resultat for correct score)
+        # 1x2 / Three-way moneyline (Swedish: matchodds)
         if any(x in mt_lower for x in ['1x2', 'full time result', 'matchodds', 'match odds', 'helresultat', 'ftcsr']):
             return '1x2'
-
-        # Double chance is a variant of 1x2 (Swedish: dubbelchans)
-        if 'dubbelchans' in mt_lower or 'double chance' in mt_lower or mt_lower == 'dc':
-            return '1x2'
-
-        # Over/under totals (Swedish: totalt, mål, över/under)
-        if any(x in mt_lower for x in ['over/under', 'totalt', 'total', 'mål', 'över', 'ou', 'tg']):
-            return 'over_under'
-
-        # Handicap/Spread (Swedish: handikapp)
-        if any(x in mt_lower for x in ['handicap', 'handikapp', 'spread', 'asian', 'ahcp', 'ehcp']):
-            return 'spread'
 
         # Two-way moneyline (Swedish: vinnare)
         if any(x in mt_lower for x in ['moneyline', 'match winner', 'vinnare', 'matchwinner', 'mgt']):
             return 'moneyline'
 
-        return market_type.lower()
+        return 'other'
 
     def _normalize_outcome_label(self, label: str) -> str:
         """Normalize outcome label to standard names."""

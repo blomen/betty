@@ -17,8 +17,8 @@ orchestrator:
       retriever_types: [kambi]
       max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
-      health_check_delay_ms: 2000      # 2s between Kambi health checks to avoid rate limits
-      post_extraction_delay_ms: 30000  # 30s delay between providers to let rate limit recover
+      health_check_delay_ms: 3000      # 3s between Kambi health checks to avoid rate limits
+      post_extraction_delay_ms: 60000  # 60s delay between providers to let rate limit recover
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
@@ -429,14 +429,16 @@ providers:
 
 # Active providers (subset of above to use)
 active:
-  # Kambi API providers (6 max - Kambi global rate limit caps at 6 brands per run)
+  # Kambi API providers (8 total - all with bonuses)
+  # Note: Kambi rate limits aggressively, run sequentially with 30s delays
   - unibet
   - leovegas
   - expekt
   - betmgm
   - speedybet
   - x3000
-  # DISABLED: goldenbull, 1x2 - Kambi rate limit reached after 6 providers (same odds anyway)
+  - goldenbull
+  - 1x2
   # Browser-based providers (with bonus)
   - hajper
   - comeon

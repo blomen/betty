@@ -60,22 +60,10 @@ class AltenarRetriever(Retriever):
     }
 
     # Market type mapping from Altenar typeId to our market types
+    # Only 1x2/moneyline markets are supported
     MARKET_TYPE_MAPPING = {
-        # Football/Soccer
-        1: '1x2',              # Match result
-        2: 'over_under',       # Total goals
-        3: 'spread',           # Handicap
-        18: 'over_under',      # Total (alternative)
-        29: 'both_teams_to_score',  # Both teams to score (GG/NG)
-        52: 'both_teams_to_score',
-        60: 'double_chance',
-
-        # Basketball
-        219: 'moneyline',      # Winner (incl. overtime)
-        223: 'spread',         # Spread (incl. overtime)
-        225: 'over_under',     # Total (incl. overtime)
-
-        # Add more as discovered
+        1: '1x2',              # Match result (football)
+        219: 'moneyline',      # Winner (basketball, incl. overtime)
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -106,12 +94,12 @@ class AltenarRetriever(Retriever):
 
         Args:
             outcome_name: Raw outcome name from API
-            market_type: Market type (1x2, over_under, spread, etc.)
+            market_type: Market type (1x2, moneyline)
             raw_home: Raw home team name (before normalization)
             raw_away: Raw away team name (before normalization)
 
         Returns:
-            Standardized outcome name (home, away, draw, over, under)
+            Standardized outcome name (home, away, draw)
         """
         outcome_lower = outcome_name.lower().strip()
 
@@ -178,46 +166,6 @@ class AltenarRetriever(Retriever):
                 return 'home'
             if away_words & outcome_words:
                 return 'away'
-
-        # For over/under
-        if market_type == 'over_under':
-            if 'over' in outcome_lower:
-                return 'over'
-            if 'under' in outcome_lower:
-                return 'under'
-
-        # For spread/handicap
-        if market_type == 'spread':
-            def extract_base_name(team_name):
-                import re
-                base = re.sub(r'\([^)]*\)', '', team_name).strip()
-                return normalize_team_name(base)
-
-            home_base = extract_base_name(raw_home)
-            away_base = extract_base_name(raw_away)
-            outcome_base = extract_base_name(outcome_name)
-
-            if outcome_base == home_base or any(word in outcome_base for word in home_base.split()):
-                return 'home'
-            if outcome_base == away_base or any(word in outcome_base for word in away_base.split()):
-                return 'away'
-
-        # For both teams to score
-        if market_type == 'both_teams_to_score':
-            if 'yes' in outcome_lower or 'both' in outcome_lower:
-                return 'yes'
-            if 'no' in outcome_lower or 'not' in outcome_lower:
-                return 'no'
-
-        # For double chance
-        if market_type == 'double_chance':
-            outcome_lower_clean = outcome_lower.replace(' ', '')
-            if '1x' in outcome_lower_clean or ('home' in outcome_lower and 'draw' in outcome_lower):
-                return 'home_or_draw'
-            if '12' in outcome_lower_clean or ('home' in outcome_lower and 'away' in outcome_lower):
-                return 'home_or_away'
-            if '2x' in outcome_lower_clean or ('away' in outcome_lower and 'draw' in outcome_lower):
-                return 'away_or_draw'
 
         # If no match found, return original (will be logged as 'other')
         return outcome_name
@@ -339,17 +287,6 @@ class AltenarRetriever(Retriever):
                 odd_ids = market.get('oddIds', [])
                 outcomes = []
 
-                # Extract point value from market name if present (e.g., "Over/Under 2.5")
-                point = None
-                if market_type in ['over_under', 'spread']:
-                    import re
-                    match = re.search(r'(\d+\.?\d*)', market_name)
-                    if match:
-                        try:
-                            point = float(match.group(1))
-                        except ValueError:
-                            pass
-
                 for odd_id in odd_ids:
                     odd = self._find_by_id(reference_data.get('odds', []), odd_id)
                     if odd:
@@ -361,16 +298,6 @@ class AltenarRetriever(Retriever):
                             raw_away
                         )
 
-                        # Extract point from outcome name if not found in market name
-                        if point is None and market_type in ['over_under', 'spread']:
-                            import re
-                            match = re.search(r'(\d+\.?\d*)', raw_outcome)
-                            if match:
-                                try:
-                                    point = float(match.group(1))
-                                except ValueError:
-                                    pass
-
                         outcomes.append({
                             'name': standardized_outcome,
                             'odds': odd.get('price', 0.0)
@@ -381,11 +308,6 @@ class AltenarRetriever(Retriever):
                         'type': market_type,
                         'outcomes': outcomes
                     }
-
-                    # Add point value for spreads and totals
-                    if point is not None and market_type in ['over_under', 'spread']:
-                        market_dict['point'] = point
-
                     markets.append(market_dict)
 
                     # Log unmapped market types for future improvement

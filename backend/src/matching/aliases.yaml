@@ -1,5 +1,8 @@
 # Team Name Aliases
 # Format: canonical_name: [alias1, alias2, ...]
+#
+# IMPORTANT: Add new aliases when matching fails due to naming differences.
+# Check logs for "Rejected match" to find candidates.
 
 # English Premier League
 manchester united:
@@ -34,14 +37,16 @@ nottingham forest:
 atletico madrid:
   - atl madrid
   - atletico de madrid
-real madrid:
+madrid:
+  - real madrid
   - r madrid
   - rmcf
 barcelona:
   - fc barcelona
   - barca
   - fcb
-real sociedad:
+sociedad:
+  - real sociedad
   - r sociedad
   - la real
 athletic club:
@@ -461,3 +466,233 @@ ducks:
   - anaheim ducks
 coyotes:
   - arizona coyotes
+
+# Additional European Teams
+chelsea:
+  - chelsea fc
+  - cfc
+everton:
+  - everton fc
+liverpool:
+  - liverpool fc
+  - lfc
+arsenal:
+  - arsenal fc
+  - afc
+  - the gunners
+aston villa:
+  - aston villa fc
+  - avfc
+leicester:
+  - leicester city
+  - lcfc
+crystal palace:
+  - cpfc
+
+# Turkish Super Lig
+galatasaray:
+  - galatasaray sk
+fenerbahce:
+  - fenerbahce sk
+besiktas:
+  - besiktas jk
+trabzonspor:
+  - trabzonspor fk
+basaksehir:
+  - istanbul basaksehir
+  - medipol basaksehir
+alanyaspor:
+  - alanyaspor fk
+eyupspor:
+  - eyup fk
+  - eyupspor fk
+antalyaspor:
+  - antalyaspor fk
+kayserispor:
+  - kayserispor fk
+konyaspor:
+  - konyaspor fk
+
+# Mexican Liga MX
+cruz azul:
+  - cd cruz azul
+pumas:
+  - pumas unam
+  - club universidad nacional
+america:
+  - club america
+  - cf america
+chivas:
+  - cd guadalajara
+  - chivas guadalajara
+tigres:
+  - tigres uanl
+monterrey:
+  - cf monterrey
+santos laguna:
+  - santos
+atlas:
+  - atlas fc
+  - atlas guadalajara
+mazatlan:
+  - mazatlan fc
+
+# Argentinian Primera Division
+boca juniors:
+  - boca
+river plate:
+  - river
+racing:
+  - racing club
+  - racing club de avellaneda
+independiente:
+  - ca independiente
+san lorenzo:
+  - ca san lorenzo
+newells:
+  - newells old boys
+  - newell's old boys
+
+# Brazilian Serie A
+flamengo:
+  - cr flamengo
+palmeiras:
+  - se palmeiras
+sao paulo:
+  - sao paulo fc
+  - spfc
+corinthians:
+  - sc corinthians
+santos:
+  - santos fc
+gremio:
+  - gremio fbpa
+internacional:
+  - sc internacional
+cruzeiro:
+  - cruzeiro ec
+
+# Scottish Premiership
+celtic:
+  - celtic fc
+  - celtic glasgow
+rangers:
+  - rangers fc
+  - glasgow rangers
+hearts:
+  - heart of midlothian
+  - hearts fc
+hibernian:
+  - hibs
+aberdeen:
+  - aberdeen fc
+dundee:
+  - dundee fc
+
+# Swiss Super League
+basel:
+  - fc basel
+  - fc basel 1893
+young boys:
+  - bsc young boys
+zurich:
+  - fc zurich
+  - fc zuerich
+servette:
+  - servette fc
+  - servette geneve
+st gallen:
+  - fc st gallen
+  - fc st. gallen
+sion:
+  - fc sion
+luzern:
+  - fc luzern
+  - fc lucerne
+
+# Czech First League
+slavia prague:
+  - sk slavia prague
+  - slavia praha
+sparta prague:
+  - ac sparta prague
+  - sparta praha
+viktoria plzen:
+  - fc viktoria plzen
+
+# Belgian Pro League
+club brugge:
+  - club bruges
+  - fc brugge
+anderlecht:
+  - rsc anderlecht
+  - rsca
+gent:
+  - kaa gent
+  - gent fc
+standard liege:
+  - standard de liege
+  - standard
+antwerp:
+  - royal antwerp
+  - royal antwerp fc
+
+# Australian A-League
+sydney fc:
+  - sydney
+melbourne victory:
+  - victory
+melbourne city:
+  - city fc
+western sydney:
+  - western sydney wanderers
+  - wsw
+perth glory:
+  - perth
+brisbane roar:
+  - brisbane
+newcastle jets:
+  - newcastle
+adelaide united:
+  - adelaide
+central coast:
+  - central coast mariners
+  - mariners
+wellington phoenix:
+  - wellington
+  - phoenix
+
+# Darts (common name variations)
+luke littler:
+  - littler
+luke humphries:
+  - humphries
+michael van gerwen:
+  - van gerwen
+  - mvg
+gerwyn price:
+  - price
+peter wright:
+  - wright
+gary anderson:
+  - anderson
+nathan aspinall:
+  - aspinall
+danny noppert:
+  - noppert
+daryl gurney:
+  - gurney
+dave chisnall:
+  - chisnall
+chris dobey:
+  - dobey
+damon heta:
+  - heta
+josh rock:
+  - rock
+stephen bunting:
+  - bunting
+james wade:
+  - wade
+ross smith:
+  - smith

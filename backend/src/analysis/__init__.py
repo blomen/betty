@@ -8,6 +8,5 @@ from .devig import (
     devig_additive,
     devig_power,
     get_fair_odds_for_outcome,
-    blend_fair_odds,
 )
 from .scanner import OpportunityScanner, BonusOpportunity

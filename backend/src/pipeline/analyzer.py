@@ -57,7 +57,7 @@ class OpportunityAnalyzer:
         Args:
             session: SQLAlchemy session
             min_arb_pct: Minimum arbitrage profit % (default from profile or 0.5)
-            min_edge_pct: Minimum value edge % (default from profile or 2.0)
+            min_edge_pct: Minimum value edge % (default from profile or 5.0)
         """
         self.session = session
         self.scanner = OpportunityScanner(session)
@@ -74,7 +74,7 @@ class OpportunityAnalyzer:
             getattr(profile, 'min_arb_pct', 0.5) if profile else 0.5
         )
         self.min_edge_pct = min_edge_pct if min_edge_pct is not None else (
-            getattr(profile, 'min_edge_pct', 2.0) if profile else 2.0
+            getattr(profile, 'min_edge_pct', 5.0) if profile else 5.0
         )
 
     def run(self) -> dict:
@@ -277,16 +277,16 @@ class OpportunityAnalyzer:
                     "draw": [...],
                     "away": [...]
                 },
-                "over_under": {
-                    "over": [{"provider": "bet365", "odds": 1.95, "point": 2.5}, ...],
-                    "under": [...]
+                "moneyline": {
+                    "home": [{"provider": "bet365", "odds": 1.95, "point": None}, ...],
+                    "away": [...]
                 }
             }
         """
         grouped = defaultdict(lambda: defaultdict(list))
 
         for odds in event.odds:
-            # Create market key that includes point for spread/totals
+            # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
             if odds.point is not None:
                 market_key = f"{odds.market}_{odds.point}"
             else:

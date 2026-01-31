@@ -332,6 +332,7 @@ class SpectateRetriever(BrowserRetriever):
         MARKET_MAP = {
             "match winner": "moneyline",
             "vinnare": "moneyline",
+            # Only 1x2/moneyline markets
             "utdelningsrader": "moneyline", # "Payout lines" (1X2)
             "1x2": "moneyline",
             "matchresultat": "moneyline",
@@ -341,45 +342,22 @@ class SpectateRetriever(BrowserRetriever):
             "matchvinnare tvåvägs": "moneyline",
             "matchvinnare (3-vägs)": "moneyline",
             "fightodds": "moneyline",
-            
-            "över/under": "over_under",
-            "over/under": "over_under",
-            "totalt antal poäng": "over_under", # "Total points"
-            "totalt antal mål": "over_under",   # "Total goals"
-            "totalt antal poäng, över/under": "over_under",
-            "totalt antal mål i match, över/under": "over_under",
-            "totalt antal runs, över/under": "over_under",
-            
-            "poänghandikapp": "spread",         # "Point handicap"
-            "handikapp": "spread",
-            "spread": "spread",
-            "pucklinje": "spread"               # Hockey Puck Line
         }
 
         for m in items:
             if not isinstance(m, dict): continue
             raw_name = m.get("name", "").lower().strip()
 
-            # Direct Map Check
+            # Direct Map Check - only 1x2/moneyline
             m_type = MARKET_MAP.get(raw_name)
 
-            # Fuzzy / Contains Checks if not exact match
-            if not m_type:
-                if "över/under" in raw_name or "over/under" in raw_name:
-                    m_type = "over_under"
-                elif "handikapp" in raw_name or "handicap" in raw_name or "spread" in raw_name:
-                    m_type = "spread"
-
-            # If still no type, skip or tag as unknown (we skip for now)
+            # If no type match, skip (we only support 1x2/moneyline)
             if not m_type:
                 continue
 
-            # Get market-level line (some APIs put it here)
-            market_line = m.get("line") or m.get("handicap") or m.get("points")
-
             s_data = m.get("selections", {})
             s_items = s_data.values() if isinstance(s_data, dict) else s_data if isinstance(s_data, list) else []
-            
+
             outcomes: List[dict] = []
             for s in s_items:
                 if not isinstance(s, dict) or not s.get("active", True): continue
@@ -387,33 +365,12 @@ class SpectateRetriever(BrowserRetriever):
                     price = s.get("decimal_price") or s.get("price")
                     if price:
                         outcome = {
-                            "name": s.get("name", ""), 
+                            "name": s.get("name", ""),
                             "odds": round(float(price), 3)
                         }
-                        # Capture line/handicap from selection
-                        line = s.get("line") or s.get("handicap") or s.get("points")
-
-                        # Fallback 1: Use market-level line
-                        if line is None:
-                            line = market_line
-
-                        # Fallback 2: Extract from name (e.g., "Over 2.5", "Under 2.5")
-                        if line is None:
-                            name_val = s.get("name", "")
-                            # Match numbers like "2.5", "+1.5", "-1.5" in strings
-                            match = re.search(r'([+-]?\d+[.,]?\d*)', name_val)
-                            if match:
-                                val_str = match.group(1).replace(',', '.')
-                                try:
-                                    line = float(val_str)
-                                except:
-                                    pass
-
-                        if line is not None and m_type in ['over_under', 'spread']:
-                            outcome["point"] = float(line)
                         outcomes.append(outcome)
                 except: continue
-            
+
             if outcomes:
                 markets.append({"type": m_type, "outcomes": outcomes})
                 

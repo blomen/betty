@@ -88,10 +88,10 @@ class Odds(Base):
     event_id = Column(String, ForeignKey("events.id"), nullable=False)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     
-    market = Column(String, nullable=False)     # "1x2", "over_under_2.5"
-    outcome = Column(String, nullable=False)    # "home", "away", "draw", "over", "under"
+    market = Column(String, nullable=False)     # "1x2", "moneyline"
+    outcome = Column(String, nullable=False)    # "home", "away", "draw"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
-    point = Column(Float, nullable=True)        # Line/Point (e.g. 2.5, -6.5) for Spread/Total
+    point = Column(Float, nullable=True)        # Reserved for future use
     
     updated_at = Column(DateTime, default=datetime.utcnow)
     
@@ -231,7 +231,7 @@ class Opportunity(Base):
     # Format: [{"provider": "...", "outcome": "...", "odds": ..., "stake": ..., "return": ...}]
     outcomes = Column(JSON, nullable=True)
 
-    # NEW: Line/point value for spread and total markets (e.g., 2.5, -6.5)
+    # Reserved for future use
     point = Column(Float, nullable=True)
 
     # NEW: Recommended total stake for the opportunity

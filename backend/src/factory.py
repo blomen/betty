@@ -109,9 +109,7 @@ class ExtractorFactory:
                 rate_limit_config=rate_limit_config
             )
         elif retriever_type == "polymarket":
-            # Inject sports map from config loader
-            sports_map = self._config_loader.get_sports_map_for_polymarket()
-            retriever = PolymarketRetriever(config, sports_map=sports_map)
+            retriever = PolymarketRetriever(config)
         elif retriever_type == "spectate":
             # Spectate providers (888sport, MrGreen) - headless mode works
             from .core import BrowserTransport

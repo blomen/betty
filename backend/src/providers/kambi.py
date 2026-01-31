@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 # Kambi Specific Logic adapted from APIExtractor
 from ..core import Retriever, StandardEvent
-from ..matching.normalizer import normalize_team_name, normalize_market
+from ..matching.normalizer import normalize_team_name, normalize_market, normalize_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,8 @@ class KambiRetriever(Retriever):
         all_events = []
 
         # Use semaphore to limit concurrent requests (avoid overwhelming the API)
-        sem = asyncio.Semaphore(5)
+        # Reduced from 5 to 2 to prevent rate limiting on Kambi's shared backend
+        sem = asyncio.Semaphore(2)
 
         async def fetch_with_limit(group):
             async with sem:
@@ -127,18 +128,41 @@ class KambiRetriever(Retriever):
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         # Logic from APIExtractor._kambi_parse_event
         if not data: return []
-        
+
         events_raw = data.get("events", [])
         betoffers = data.get("betOffers", [])
         outcomes = data.get("outcomes", [])
-        
+
         outcome_map = {o.get("id"): o for o in outcomes}
-        
+
+        # Extraction metrics
+        parsed_count = 0
+        skipped_live = 0
+        skipped_no_teams = 0
+        skipped_no_markets = 0
+        skipped_error = 0
+
         events = []
         for event_raw in events_raw:
-            if event_raw.get("state") == "STARTED": continue
+            if event_raw.get("state") == "STARTED":
+                skipped_live += 1
+                continue
             event = self._parse_single_event(event_raw, betoffers, outcome_map, sport)
-            if event: events.append(event)
+            if event:
+                events.append(event)
+                parsed_count += 1
+            elif event is None:
+                # Track why events were skipped (logged in _parse_single_event)
+                pass
+
+        # Log extraction summary
+        total = len(events_raw)
+        if total > 0:
+            logger.debug(
+                f"[{self.provider_id}] {sport}: parsed {parsed_count}/{total} events, "
+                f"skipped: {skipped_live} live"
+            )
+
         return events
 
     def _parse_single_event(self, event_raw: dict, betoffers: list, outcome_map: dict, sport: str) -> StandardEvent | None:
@@ -164,7 +188,7 @@ class KambiRetriever(Retriever):
             markets = []
             for betoffer in betoffers:
                 if betoffer.get("eventId") != event_raw.get("id"): continue
-                market = self._parse_market(betoffer, outcome_map)
+                market = self._parse_market(betoffer, outcome_map, home_team_normalized, away_team_normalized)
                 if market: markets.append(market)
 
             if not markets: return None
@@ -183,12 +207,37 @@ class KambiRetriever(Retriever):
                 markets=markets,
                 provider=self.provider_id,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] Failed to parse event {event_raw.get('id', 'unknown')}: {e}")
             return None
 
-    def _parse_market(self, betoffer: dict, outcome_map: dict) -> dict | None:
+    def _parse_market(self, betoffer: dict, outcome_map: dict, home_team: str = "", away_team: str = "") -> dict | None:
         try:
-            raw_market_type = betoffer.get("criterion", {}).get("label", "")
+            # Filter by betOfferType.id FIRST (most reliable)
+            # 2 = Match (1x2/moneyline)
+            # Other IDs: 3=Correct Score, 6=Over/Under, 7=Asian Handicap, 127=Player Props
+            ALLOWED_BET_OFFER_TYPE_IDS = {2}
+            bet_offer_type_id = betoffer.get("betOfferType", {}).get("id", 0)
+            if bet_offer_type_id not in ALLOWED_BET_OFFER_TYPE_IDS:
+                return None  # Skip non-1x2 markets early
+
+            # Filter by criterion label - only full match result
+            # Accept: Full Time (football), Moneyline (basketball/hockey), Match Odds (tennis)
+            # Skips: 1st Half, 2nd Half, Draw No Bet, Most Corners, etc.
+            criterion = betoffer.get("criterion", {})
+            label = (criterion.get("englishLabel") or criterion.get("label") or "").lower()
+
+            # Accept labels containing these keywords for match winner bets
+            MATCH_KEYWORDS = ("full time", "fulltid", "heltid", "match", "moneyline")
+            if not any(kw in label for kw in MATCH_KEYWORDS):
+                return None
+
+            # Exclude partial markets (quarters, halves, periods) - they contain keywords but aren't full match
+            EXCLUDE_PATTERNS = ("quarter", "period", "half", "1st", "2nd", "3rd", "4th")
+            if any(pat in label for pat in EXCLUDE_PATTERNS):
+                return None
+
+            raw_market_type = criterion.get("label", "")
             # Normalize market type to standard format (1x2, over_under, spread, etc.)
             market_type = normalize_market(raw_market_type)
 
@@ -202,14 +251,26 @@ class KambiRetriever(Retriever):
                 if point is not None:
                     point = float(point) / 1000
 
+                # Normalize outcome name (maps team names to home/away, Swedish ja/nej, etc.)
+                raw_name = outcome.get("label", "")
+                normalized_name = normalize_outcome(raw_name, home_team, away_team)
+
                 outcomes.append({
-                    "name": outcome.get("label", ""),
+                    "name": normalized_name,
                     "odds": round(odds, 3),
                     "point": point
                 })
             if not outcomes: return None
+
+            # Determine market type from outcome structure:
+            # - 3 outcomes with draw = 1x2 (football)
+            # - 2 outcomes (home/away only) = moneyline (basketball, hockey, tennis)
+            has_draw = any(o["name"] == "draw" for o in outcomes)
+            market_type = "1x2" if has_draw else "moneyline"
+
             return {"type": market_type, "outcomes": outcomes}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] Failed to parse market: {e}")
             return None
 
     def _extract_groups_recursive(self, obj: Any, groups: list, depth: int = 0):
@@ -230,13 +291,16 @@ class KambiRetriever(Retriever):
                 self._extract_groups_recursive(item, groups, depth)
 
     def _match_sport(self, group_sport: str, target_sport: str) -> bool:
-        # Copied helper
+        """Match sport name against target, using config-driven aliases."""
         group_sport = group_sport.lower()
         target_sport = target_sport.lower()
-        if group_sport == target_sport: return True
-        # Simplified aliases for PoC
-        if target_sport == "football" and group_sport in ["soccer", "fotboll", "football"]: return True
-        if target_sport == "ice_hockey" and group_sport in ["ice_hockey", "ishockey"]: return True
-        if target_sport == "mma" and group_sport in ["martial_arts", "ufc/mma"]: return True
-        if target_sport == "rugby" and group_sport in ["rugby_union", "rugby_league", "rugby"]: return True
-        return False
+
+        if group_sport == target_sport:
+            return True
+
+        # Load aliases from config
+        from ..config import ConfigLoader
+        config_loader = ConfigLoader.get_instance()
+        aliases = config_loader.get_sport_aliases(target_sport)
+
+        return group_sport in aliases

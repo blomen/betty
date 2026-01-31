@@ -46,7 +46,7 @@ def find_arbitrage(
 
     Args:
         event_id: Canonical event ID
-        market: Market type ("1x2", "over_under_2.5", etc.)
+        market: Market type ("1x2", "moneyline")
         odds_by_outcome: {outcome: [{provider, odds}, ...]}
         min_profit_pct: Minimum profit to consider (default 0.5%)
 
@@ -141,34 +141,12 @@ def _is_valid_market(market: str, odds_by_outcome: dict) -> bool:
             num_required.issubset(outcomes)
         )
 
-    # Over/under markets require both over and under
-    if "over_under" in market_lower or "totals" in market_lower:
-        # Must have matching over/under pair
-        has_over = any("over" in o or "över" in o for o in outcomes)
-        has_under = any("under" in o for o in outcomes)
-        return has_over and has_under and len(outcomes) == 2
-
-    # Spread/handicap markets require both sides
-    if "spread" in market_lower or "handicap" in market_lower:
-        required = {"home", "away"}
-        return required.issubset(outcomes) and len(outcomes) == 2
-
     # Moneyline (2-way) requires exactly 2 outcomes
     if market_lower in ("moneyline", "winner", "h2h", "head_to_head"):
         return len(outcomes) == 2
 
-    # For unknown markets, require exactly 2 or 3 outcomes (no fragments)
-    # and outcomes must be from different providers
-    if len(outcomes) < 2 or len(outcomes) > 3:
-        return False
-
-    # Check that at least 2 different providers have odds
-    all_providers = set()
-    for odds_list in odds_by_outcome.values():
-        for o in odds_list:
-            all_providers.add(o.get("provider", ""))
-
-    return len(all_providers) >= 2
+    # We only support 1x2/moneyline - reject all other markets
+    return False
 
 
 def calculate_arb_stakes(

@@ -138,45 +138,22 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         return events_data
 
     def _normalize_market_type(self, market_name: str) -> str:
-        """Normalize Hajper market names to standard types."""
+        """Normalize Hajper market names to standard types (1x2/moneyline only)."""
         name_lower = market_name.lower()
 
-        # 1x2 / Match result
-        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'matchresultat', 'vinnare', 'winner']):
+        # 1x2 / Match result / Moneyline
+        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'matchresultat', 'vinnare', 'winner', 'moneyline']):
             return '1x2'
-
-        # Over/Under / Totals
-        if any(kw in name_lower for kw in ['över/under', 'over/under', 'o/u', 'total', 'mål över', 'mål under',
-                                             'totalt antal', 'total goals', 'antal mål', 'poäng över', 'poäng under',
-                                             'points over', 'points under']):
-            return 'over_under'
-
-        # Spread / Handicap
-        if any(kw in name_lower for kw in ['handikapp', 'handicap', 'asian', 'europeiskt', 'spread', 'point spread',
-                                             'asiatiskt', 'europeisk']):
-            return 'spread'
-
-        # Both Teams to Score
-        if any(kw in name_lower for kw in ['båda lagen', 'both teams', 'btts', 'bägge lagen', 'both teams score']):
-            return 'both_teams_to_score'
-
-        # Double Chance
-        if any(kw in name_lower for kw in ['dubbel chans', 'double chance']):
-            return 'double_chance'
-
-        # Draw No Bet
-        if any(kw in name_lower for kw in ['oavgjort återbetalas', 'draw no bet', 'dnb']):
-            return 'draw_no_bet'
 
         return 'other'
 
     def _normalize_outcome(self, outcome_name: str, outcome_type: str, market_type: str) -> str:
-        """Normalize outcome names."""
+        """Normalize outcome names for 1x2/moneyline markets."""
         name_lower = outcome_name.lower()
         type_lower = outcome_type.lower() if outcome_type else ''
 
-        # 1x2 markets
-        if market_type == '1x2':
+        # 1x2/moneyline markets
+        if market_type in ('1x2', 'moneyline'):
             if 'home' in type_lower or any(kw in name_lower for kw in ['hemma', 'home', '1']):
                 return 'home'
             if 'away' in type_lower or any(kw in name_lower for kw in ['borta', 'away', '2']):
@@ -184,120 +161,14 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             if 'draw' in type_lower or any(kw in name_lower for kw in ['oavgjort', 'draw', 'x', 'lika']):
                 return 'draw'
 
-        # Over/Under
-        if market_type == 'over_under':
-            if 'over' in type_lower or 'över' in name_lower:
-                return 'over'
-            if 'under' in type_lower or 'under' in name_lower:
-                return 'under'
-
-        # Both Teams to Score
-        if market_type == 'both_teams_to_score':
-            if any(kw in name_lower for kw in ['ja', 'yes', 'båda']):
-                return 'yes'
-            if any(kw in name_lower for kw in ['nej', 'no', 'inte båda']):
-                return 'no'
-
-        # Double Chance
-        if market_type == 'double_chance':
-            if any(kw in name_lower for kw in ['1x', 'hemma eller lika', 'home or draw']):
-                return '1X'
-            if any(kw in name_lower for kw in ['12', 'hemma eller borta', 'home or away']):
-                return '12'
-            if any(kw in name_lower for kw in ['x2', 'lika eller borta', 'draw or away']):
-                return 'X2'
-
         return outcome_name
 
     def _get_sport_market_type_map(self, sport: str) -> Dict[str, str]:
-        """Get sport-specific market type mapping."""
-        # Football/soccer markets
-        football_markets = {
-            '1': '1x2',           # Match result
-            '2': 'over_under',    # Goals over/under
-            '3': 'both_teams_to_score',  # BTTS
-            '4': 'double_chance',  # Double chance 1X
-            '5': 'double_chance',  # Double chance 12
-            '6': 'double_chance',  # Double chance X2
-            '7': 'double_chance',  # Double chance (generic)
-            '8': 'other',         # First goal
-            '9': 'draw_no_bet',   # Draw no bet
-            '10': 'spread',       # Asian handicap
-            '11': 'draw_no_bet',  # Draw no bet (alternative)
-            '12': 'over_under',   # Alternative totals
-            '13': 'over_under',   # Goals over/under (alternative)
-            '14': 'other',        # Corners
-            '15': 'other',        # Cards/bookings
-            '16': 'other',        # Props (penalties/free kicks)
-            '17': 'other',        # Team props
-            '18': 'other',        # Correct score
-            '19': 'over_under',   # Team totals
-            '20': 'over_under',   # Half totals
-            '52': 'other',        # Half time result
-            '60': 'other',        # Half time/Full time
-            '103': 'over_under',  # Total goals
-            '186': 'spread',      # Handicap
-            '342': 'other',       # Anytime goalscorer
-            '1100': 'over_under', # Alternative totals (common unmapped ID)
-            '1781': 'spread',     # European handicap
-            '2718': 'other',      # First/last goalscorer
+        """Get sport-specific market type mapping (1x2/moneyline only)."""
+        # All sports use the same mapping - only 1x2/moneyline is supported
+        return {
+            '1': '1x2',           # Match result / Match winner
         }
-
-        # Basketball markets (moneyline, spread, totals)
-        basketball_markets = {
-            '1': '1x2',           # Match winner (no draw)
-            '2': 'over_under',    # Points over/under
-            '10': 'spread',       # Point spread
-            '103': 'over_under',  # Total points
-            '186': 'spread',      # Handicap
-            **football_markets    # Include football markets as fallback
-        }
-
-        # Tennis markets (match winner, set betting, totals)
-        tennis_markets = {
-            '1': '1x2',           # Match winner (no draw)
-            '2': 'over_under',    # Games over/under
-            '10': 'spread',       # Game handicap
-            '103': 'over_under',  # Total games
-            '186': 'spread',      # Handicap
-            **football_markets    # Include football markets as fallback
-        }
-
-        # Ice hockey markets (similar to football)
-        ice_hockey_markets = football_markets.copy()
-
-        # American football markets (similar to basketball)
-        american_football_markets = basketball_markets.copy()
-
-        # Baseball markets
-        baseball_markets = {
-            '1': '1x2',           # Match winner (no draw)
-            '2': 'over_under',    # Runs over/under
-            '10': 'spread',       # Run line
-            '103': 'over_under',  # Total runs
-            '186': 'spread',      # Handicap
-            **football_markets    # Include football markets as fallback
-        }
-
-        # MMA markets
-        mma_markets = {
-            '1': '1x2',           # Fight winner (no draw)
-            **football_markets    # Include football markets as fallback
-        }
-
-        # Map sports to their market configurations
-        sport_maps = {
-            'football': football_markets,
-            'basketball': basketball_markets,
-            'tennis': tennis_markets,
-            'ice_hockey': ice_hockey_markets,
-            'american_football': american_football_markets,
-            'baseball': baseball_markets,
-            'mma': mma_markets,
-            'esports': football_markets,  # Use football as default
-        }
-
-        return sport_maps.get(sport, football_markets)
 
     def _parse_event(self, event_data: Dict, sport: str, all_selections: list) -> Optional[StandardEvent]:
         """Parse event data from WebSocket message."""
@@ -378,22 +249,6 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     "name": normalized_outcome,
                     "odds": odds
                 }
-
-                # Extract point value for spread/over_under markets
-                # Try multiple possible field names from selection data
-                point_value = selection.get('line') or selection.get('handicap') or selection.get('points')
-                if point_value is None:
-                    # Try to extract from outcome name (e.g., "Over 2.5", "Under 2.5", "-1.5", "+1.5")
-                    import re
-                    match = re.search(r'([+-]?\d+\.?\d*)', outcome_name)
-                    if match:
-                        try:
-                            point_value = float(match.group(1))
-                        except:
-                            pass
-
-                if point_value is not None and market_type in ['over_under', 'spread']:
-                    outcome_dict['point'] = float(point_value)
 
                 markets_dict[market_id]['outcomes'].append(outcome_dict)
 

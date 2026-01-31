@@ -29,6 +29,11 @@ TEAM_SUFFIXES = [
     ' calcio', ' gf', ' bf', ' scc', ' jsc', ' sdc',
     ' de futbol', ' football', ' futbol', ' club', ' united',
     ' kv', ' alsace',
+    # Reserve/women's/development team suffixes
+    ' fc d', ' fc w', ' fc b',
+    ' (w)', ' (d)', ' (b)',
+    ' women', ' womens', " women's",
+    ' reserves', ' ii', ' iii',
 ]
 
 # Common prefixes to remove
@@ -231,148 +236,73 @@ def normalize_market(market: str) -> str:
     """
     Normalize market type to standard format.
 
-    Maps various market names to canonical types:
-    - "1x2", "full time result", "helmatchen" -> "1x2"
-    - "over/under", "totals", "över/under" -> "over_under"
-    - "spread", "handicap", "handikapp" -> "spread"
-    - "both teams to score", "båda lagen" -> "both_teams_to_score"
+    We ONLY support 1x2/moneyline markets. Everything else returns 'other'
+    which gets filtered out by ALLOWED_MARKETS in storage.
 
-    Supports both English and Swedish market names.
+    Returns:
+    - '1x2' for 3-way markets (home/draw/away) - football
+    - 'moneyline' for 2-way markets (home/away) - basketball, hockey, tennis
+    - 'other' for everything else (filtered out)
+
+    Note: Market type is best determined from outcome structure (has draw or not).
+    This function handles text-based detection as fallback.
     """
     market = market.lower().strip()
 
-    # 1x2 / Moneyline / Match Winner (including team-specific win markets)
-    # Swedish: "X vinner matchen", "X att vinna", "vinnare"
+    # Pass through if already normalized
+    if market in ('1x2', 'moneyline'):
+        return market
+
+    # Early exit for markets that are definitely NOT 1x2/moneyline
+    # This avoids false positives from keywords like "förlängning" in handicap markets
     if any(kw in market for kw in [
-        '1x2', 'full time', 'match result', 'helmatchen', 'slutresultat',
+        # Spreads/handicaps
+        'spread', 'handicap', 'handikapp', 'europeiskt', 'run line', 'puck line',
+        # Totals
+        'total', 'totalt', 'over/under', 'o/u', 'över/under',
+        # Props and other markets
+        'corner', 'card', 'kort', 'shot', 'skott', 'foul', 'booking',
+        'player', 'spelare', 'scorer', 'målskytt',
+        'both teams', 'btts', 'båda lagen',
+        'correct score', 'rätt resultat', 'korrekt resultat',
+        'double chance', 'dubbelchans',
+        'draw no bet', 'dnb',
+        'half time', 'halvtid', 'ht/ft',
+        # Margin and race-to markets
+        'marginal', 'margin', 'först till', 'race to', 'first to',
+        # Period/quarter specific
+        'quarter', 'period', '1st half', '2nd half', 'första halvlek', 'andra halvlek',
+        # NFL props
+        'safety', 'field goal', 'touchdown',
+    ]):
+        return 'other'
+
+    # 1x2 / Moneyline / Match Winner detection
+    # Polymarket "Will X win..." format
+    is_polymarket_win = market.startswith('will ') and (' win on ' in market or ' win?' in market)
+
+    # Polymarket "Team A vs. Team B" format (simple match winner)
+    is_simple_vs_market = ' vs. ' in market or ' vs ' in market
+
+    # Standard 1x2/moneyline keywords
+    is_match_winner = any(kw in market for kw in [
+        '1x2', 'full time', 'fulltid', 'heltid',  # Swedish: fulltid/heltid = full time
+        'match result', 'helmatchen', 'slutresultat',
         'will win', 'to win', 'vinnare', 'match winner', 'moneyline',
         'money line', 'att vinna', 'vinner matchen', 'vinner match',
-        ' vinner', ' wins', 'winner'
-    ]):
+        ' vinner', ' wins', 'winner',
+        'förlängning', 'forlangning',  # Swedish "including overtime"
+        'ordinarie tid', 'match_odds',  # Swedish "regular time"
+    ])
+
+    if is_polymarket_win or is_simple_vs_market or is_match_winner:
+        # Return '1x2' as default - actual type should be determined
+        # by outcome structure (has draw = 1x2, no draw = moneyline)
+        # Providers should set this correctly at extraction time
         return '1x2'
 
-    # Team-specific totals/props (MUST check BEFORE general over/under)
-    # Swedish patterns:
-    #   - "Totala mål för X" (Total goals for X)
-    #   - "Totala kort - Brighton" (Total cards - Brighton)
-    #   - "Totala utförda fouls av Brighton" (Total fouls by Brighton)
-    # English patterns:
-    #   - "Total Goals by Brighton"
-    #   - "Brighton total points"
-    if any(kw in market for kw in [
-        # Swedish team-specific patterns
-        'mål för', 'poäng för', 'totalt för', 'total för',  # goals/points for
-        ' av ',  # "fouls av Brighton" (fouls by)
-        'kort -', 'kort–',  # "kort - Brighton" (cards -)
-        # English team-specific patterns
-        ' for ', ' by ',  # "goals by Brighton", "total for Brighton"
-        'team total', 'lag totalt',  # explicit team total
-    ]):
-        return 'team_total'
-
-    # Other stat-specific totals (corners, shots, cards, fouls, saves, etc.)
-    # These should NOT match against match goals from Pinnacle
-    if any(kw in market for kw in [
-        'corner', 'hörn',  # Corners
-        'shot', 'skott',  # Shots
-        'card', 'kort',  # Cards
-        'foul',  # Fouls
-        'booking', 'varning',  # Bookings
-        'offside',  # Offsides
-        'throw', 'inkast',  # Throw-ins
-        'save', 'räddning',  # Saves (goalkeeper)
-        'målvakt', 'keeper', 'goalkeeper',  # Goalkeeper stats
-        'pass', 'passning',  # Passes
-        'tackle', 'tackling',  # Tackles
-        'clearance', 'rensning',  # Clearances
-        'cross', 'inlägg',  # Crosses
-    ]):
-        return 'other_total'  # Separate market type for non-goal totals
-
-    # First Half totals - must check BEFORE full match
-    if any(kw in market for kw in [
-        '1st half', 'first half', 'första halvlek', '1:a halvlek', '- 1h',
-    ]):
-        return 'over_under_1h'
-
-    # Second Half totals - must check BEFORE full match
-    if any(kw in market for kw in [
-        '2nd half', 'second half', 'andra halvlek', '2:a halvlek', '- 2h',
-    ]):
-        return 'over_under_2h'
-
-    # Over/Under / Totals (Swedish: över/under) - FULL MATCH GOALS ONLY
-    # This should only match "Total Goals", "Totala mål", etc.
-    if any(kw in market for kw in [
-        'over/under', 'o/u', 'över/under',  # Generic over/under
-        'totala mål', 'total goals', 'goals total',  # Match goals explicitly
-        'antal mål', 'mål över', 'mål under',  # Swedish match goals
-        'runs total',  # Baseball
-        'points total', 'poäng totalt',  # Basketball
-        'asian totalt', 'asian total',  # Asian total (goals)
-    ]):
-        return 'over_under'
-
-    # Catch-all for other "total" markets - be careful, only if clearly generic
-    if 'total' in market or 'totalt' in market:
-        # If we get here, it's an unrecognized total - might be stat-specific
-        return 'other_total'
-
-    # Spread / Handicap (Swedish: handikapp)
-    if any(kw in market for kw in [
-        'spread', 'handicap', 'asian handicap', 'handikapp', 'europeiskt',
-        'point spread', 'run line', 'puck line'
-    ]):
-        return 'spread'
-
-    # Both Teams to Score (Swedish: båda lagen)
-    if any(kw in market for kw in ['both teams', 'btts', 'båda lagen', 'båda lag']):
-        return 'both_teams_to_score'
-
-    # Draw No Bet
-    if 'draw no bet' in market or 'dnb' in market or 'oavgjort ingen insats' in market:
-        return 'draw_no_bet'
-
-    # Double Chance (Swedish: dubbelchans)
-    if 'double chance' in market or 'dubbel chans' in market or 'dubbelchans' in market:
-        return 'double_chance'
-
-    # Correct Score
-    if 'correct score' in market or 'rätt resultat' in market or 'exakt resultat' in market:
-        return 'correct_score'
-
-    # Half Time / First Half
-    if any(kw in market for kw in [
-        'half time', 'första halvlek', '1st half', 'first half',
-        'halvtid', '1:a halvlek'
-    ]):
-        return 'first_half'
-
-    # Second Half (Swedish: andra halvlek)
-    if any(kw in market for kw in ['second half', '2nd half', 'andra halvlek', '2:a halvlek']):
-        return 'second_half'
-
-    # Player props - goals/points/assists/rebounds/3-pointers
-    if any(kw in market for kw in [
-        'player', 'spelare', 'målskytt', 'poäng av', 'assists av',
-        'returer av', 'trepoängare', '3-pointers', 'rebounds',
-        'blockering', 'steals', 'stölder'
-    ]):
-        return 'player_prop'
-
-    # Team to score / Goal scorer markets (Swedish: "X gör mål")
-    if any(kw in market for kw in ['gör mål', 'to score', 'anytime scorer', 'first scorer']):
-        return 'team_to_score'
-
-    # Team props - other team-specific markets (hits, etc.)
-    # Note: team totals are handled earlier as 'team_total'
-    if 'träffar' in market:
-        return 'team_prop'
-
-    # Fallback: clean and truncate
-    cleaned = re.sub(r'[^\w\s]', '', market)
-    cleaned = '_'.join(cleaned.split())
-    return cleaned[:30] if cleaned else 'other'
+    # Everything else is filtered out
+    return 'other'
 
 
 def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
@@ -405,16 +335,11 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     if away_norm and outcome_norm == away_norm:
         return 'away'
 
-    if outcome in ['1', 'home', 'hemma', 'yes']:
+    if outcome in ['1', 'home', 'hemma', 'yes', 'ja']:
         return 'home'
     if outcome in ['x', 'draw', 'oavgjort']:
         return 'draw'
-    if outcome in ['2', 'away', 'borta', 'no']:
+    if outcome in ['2', 'away', 'borta', 'no', 'nej']:
         return 'away'
-    # Over/under - handle Swedish "över"
-    if 'over' in outcome or 'över' in outcome:
-        return 'over'
-    if 'under' in outcome:
-        return 'under'
 
     return outcome[:20]

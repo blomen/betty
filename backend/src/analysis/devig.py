@@ -186,51 +186,6 @@ def get_fair_odds_for_outcome(
     return fair_list[outcome_idx]
 
 
-def blend_fair_odds(
-    pinnacle_fair: Optional[float],
-    polymarket_odds: Optional[float],
-    pinnacle_weight: float = 0.6
-) -> Optional[tuple[float, str]]:
-    """
-    Blend fair odds from Pinnacle and Polymarket.
-
-    Pinnacle is generally more accurate for sports betting,
-    while Polymarket provides market consensus.
-
-    Args:
-        pinnacle_fair: De-vigged Pinnacle fair odds
-        polymarket_odds: Polymarket odds (already fair, no margin)
-        pinnacle_weight: Weight for Pinnacle (0.6 = 60% Pinnacle, 40% Polymarket)
-
-    Returns:
-        (blended_fair_odds, source_description) or None
-
-    Example:
-        >>> blend_fair_odds(2.20, 2.10, 0.6)
-        (2.16, "pinnacle(60%)+polymarket(40%)")
-    """
-    if pinnacle_fair is None and polymarket_odds is None:
-        return None
-
-    if pinnacle_fair is None:
-        return (polymarket_odds, "polymarket")
-
-    if polymarket_odds is None:
-        return (pinnacle_fair, "pinnacle(devigged)")
-
-    # Blend in probability space (more accurate than odds space)
-    pinn_prob = 1 / pinnacle_fair
-    poly_prob = 1 / polymarket_odds
-
-    blended_prob = (pinn_prob * pinnacle_weight) + (poly_prob * (1 - pinnacle_weight))
-    blended_odds = 1 / blended_prob
-
-    pinn_pct = int(pinnacle_weight * 100)
-    poly_pct = 100 - pinn_pct
-
-    return (round(blended_odds, 3), f"pinnacle({pinn_pct}%)+polymarket({poly_pct}%)")
-
-
 # Quick test
 if __name__ == "__main__":
     print("=== De-vig Examples ===\n")
@@ -250,11 +205,3 @@ if __name__ == "__main__":
     # Verify fair odds sum to 100%
     fair_sum = sum(1/o for o in fair_mult)
     print(f"Fair implied sum: {fair_sum:.4f} (should be ~1.0)")
-
-    print("\n=== Blending Example ===\n")
-    pinn_fair = 2.20
-    poly_odds = 2.10
-    result = blend_fair_odds(pinn_fair, poly_odds, 0.6)
-    print(f"Pinnacle (de-vigged): {pinn_fair}")
-    print(f"Polymarket: {poly_odds}")
-    print(f"Blended: {result[0]} ({result[1]})")
