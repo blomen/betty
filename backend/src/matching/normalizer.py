@@ -45,6 +45,11 @@ TEAM_PREFIXES = [
     'fc ', 'cf ', 'ac ', 'as ', 'us ', 'ss ', 'sk ', 'fk ',
     'real ', 'sporting ', 'atletico ', 'athletic ', 'olympique ',
     'afc ', 'rsc ', 'krc ', 'kv ', 'kaa ', 'rsca ', 'rc ', 'ca ',
+    # Basketball clubs (various languages)
+    'kk ', 'bk ', 'bc ', 'hc ', 'hk ',  # kk = kosarkaski klub (Serbian/Croatian)
+    'cb ', 'ck ',  # cb = club baloncesto (Spanish)
+    # Arabic article
+    'al ', 'al-',
     # Gender/Age
     'mens ', 'womens ', "men's ", "women's ", "men's: ", "women's: ",
     'u21 ', 'u19 ', 'u23 ',
@@ -52,6 +57,8 @@ TEAM_PREFIXES = [
     'shl: ', 'cehl: ', 'ahl: ', 'del: ', 'nhl: ', 'khl: ',
     'epl: ', 'laliga: ', 'bundesliga: ', 'serie a: ', 'ligue 1: ',
     'club ',
+    # Country prefixes sometimes used
+    'cd ', 'ud ',  # club deportivo, union deportiva (Spanish)
 ]
 
 
@@ -310,12 +317,10 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     Normalize outcome name to standard format.
 
     Maps various outcome names to canonical types:
-    - Team names -> "home" or "away"
+    - Team names -> "home" or "away" (using fuzzy matching)
     - "1", "yes" -> "home"
     - "x", "draw" -> "draw"
     - "2", "no" -> "away"
-    - "over" -> "over"
-    - "under" -> "under"
 
     Args:
         outcome: Raw outcome string
@@ -325,21 +330,48 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     Returns:
         Normalized outcome string (max 20 chars)
     """
-    outcome = outcome.lower().strip()
+    from thefuzz import fuzz
+
+    outcome_lower = outcome.lower().strip()
     home_norm = normalize_team_name(home)
     away_norm = normalize_team_name(away)
     outcome_norm = normalize_team_name(outcome)
 
+    # Exact match after normalization
     if home_norm and outcome_norm == home_norm:
         return 'home'
     if away_norm and outcome_norm == away_norm:
         return 'away'
 
-    if outcome in ['1', 'home', 'hemma', 'yes', 'ja']:
+    # Fuzzy match for cases like "chattanooga mocs" vs "chattanooga"
+    if home_norm and away_norm and outcome_norm:
+        # Use multiple fuzzy strategies
+        home_scores = [
+            fuzz.ratio(outcome_norm, home_norm),
+            fuzz.token_set_ratio(outcome_norm, home_norm),
+            fuzz.partial_ratio(outcome_norm, home_norm) if len(home_norm) >= 4 else 0,
+        ]
+        away_scores = [
+            fuzz.ratio(outcome_norm, away_norm),
+            fuzz.token_set_ratio(outcome_norm, away_norm),
+            fuzz.partial_ratio(outcome_norm, away_norm) if len(away_norm) >= 4 else 0,
+        ]
+
+        home_score = max(home_scores)
+        away_score = max(away_scores)
+
+        # Require clear winner with minimum threshold
+        if home_score >= 80 and home_score > away_score + 10:
+            return 'home'
+        if away_score >= 80 and away_score > home_score + 10:
+            return 'away'
+
+    # Standard outcome keywords
+    if outcome_lower in ['1', 'home', 'hemma', 'yes', 'ja']:
         return 'home'
-    if outcome in ['x', 'draw', 'oavgjort']:
+    if outcome_lower in ['x', 'draw', 'oavgjort', 'tie']:
         return 'draw'
-    if outcome in ['2', 'away', 'borta', 'no', 'nej']:
+    if outcome_lower in ['2', 'away', 'borta', 'no', 'nej']:
         return 'away'
 
     return outcome[:20]

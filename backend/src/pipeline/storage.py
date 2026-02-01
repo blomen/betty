@@ -31,19 +31,22 @@ def detect_and_fix_inversion(
     Detect if provider odds are inverted vs sharp and return True if swap needed.
 
     Silent operation - no warnings, just fixes the data.
-    Only triggers for clear inversions (odds ratio > 2.0).
+    Only triggers when sharp (Pinnacle) shows a clear favorite (odds ratio > 1.5).
 
     This catches cases where providers list teams in opposite home/away order
     for neutral venue games (e.g., Super Bowl), resulting in odds being stored
-    under the wrong team.
+    under the wrong team. Even if the incoming provider's odds are close to 50/50,
+    if Pinnacle has a clear favorite, disagreement on which team is favored
+    indicates an inversion.
     """
     if home_odds is None or away_odds is None or home_odds <= 1 or away_odds <= 1:
         return False
 
-    # Get sharp odds (Pinnacle only)
+    # Get sharp odds (Pinnacle only) - use case-insensitive match for provider ID
+    from sqlalchemy import func
     sharp_odds = session.query(Odds).filter(
         Odds.event_id == event_id,
-        Odds.provider_id == 'pinnacle',
+        func.lower(Odds.provider_id).like('pinnacle%'),
         Odds.outcome.in_(['home', 'away']),
     ).all()
 
@@ -61,10 +64,13 @@ def detect_and_fix_inversion(
     if new_fav == sharp_fav:
         return False  # Same favorite, no inversion
 
-    # Only trigger for significant odds skew (ratio > 2.0)
-    new_ratio = max(home_odds, away_odds) / min(home_odds, away_odds)
-    if new_ratio < 2.0:
-        return False  # Close odds, could be legitimate difference
+    # Only trigger if SHARP shows a clear favorite (ratio > 1.3)
+    # This catches cases where Pinnacle shows clear favorite but provider shows opposite
+    # e.g., Pinnacle home=7.38/away=1.11 (away fav) vs Polymarket home=1.94/away=2.06 (home fav)
+    # Lower threshold (1.3) catches more edge cases like Pinnacle 1.63/2.29 (ratio 1.4)
+    sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
+    if sharp_ratio < 1.3:
+        return False  # Sharp odds are close, could be legitimate difference
 
     # Log at DEBUG level (silent in normal operation)
     logger.debug(
@@ -96,19 +102,25 @@ def store_polymarket_event(
     event: StandardEvent,
     kambi_sport: str,
     polymarket_cache: dict,
+    fuzzy_threshold: int = 90,
+    min_individual_score: int = 80,
 ) -> tuple[bool, int, int]:
     """
-    Store Polymarket event in database.
+    Store Polymarket event in database with fuzzy matching.
 
     Args:
         session: SQLAlchemy session
         event: StandardEvent from Polymarket
         kambi_sport: Normalized sport name
         polymarket_cache: Dict {sport: [(id, home, away, date), ...]} for fuzzy matching
+        fuzzy_threshold: Minimum average match score (default 90)
+        min_individual_score: Minimum score for EACH team (default 80)
 
     Returns:
         (is_new_event, odds_processed, odds_new)
     """
+    from ..matching.matcher import get_team_match_score
+
     # Use pre-parsed team names from extractor (already cleaned of prefixes/suffixes)
     # instead of re-parsing from raw title
     home_team = event.home_team
@@ -121,7 +133,8 @@ def store_polymarket_event(
             logger.warning(f"Failed to parse teams from: {event.name}")
             return False, 0, 0
         home_team, away_team = teams
-    canonical_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
+
+    default_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
 
     # Cache for fuzzy matching - indexed by sport for O(1) lookup
     if isinstance(event.start_time, datetime):
@@ -129,13 +142,101 @@ def store_polymarket_event(
     else:
         date_str = str(event.start_time)[:10].replace('-', '') if event.start_time else "00000000"
 
-    # Add to sport-indexed cache
+    # Fuzzy match against existing events in cache (e.g., from Pinnacle)
+    matched_id = None
+    teams_swapped = False
+
+    # 1. Check if default ID exists (exact match)
+    if session.query(Event.id).filter(Event.id == default_id).first():
+        matched_id = default_id
+    else:
+        # 2. Check swapped team order
+        swapped_id = generate_canonical_id(kambi_sport, away_team, home_team, event.start_time)
+        if session.query(Event.id).filter(Event.id == swapped_id).first():
+            matched_id = swapped_id
+            teams_swapped = True
+            logger.info(
+                f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
+                f"canonical event with swapped teams"
+            )
+        else:
+            # 3. Fuzzy match against cache (in case of different name normalization)
+            sport_events = polymarket_cache.get(kambi_sport, [])
+
+            # Filter by date (allow +/- 1 day for timezone issues)
+            candidates = []
+            for pid, cached_home, cached_away, cached_date in sport_events:
+                if cached_date == date_str:
+                    candidates.append((pid, cached_home, cached_away))
+                else:
+                    try:
+                        if cached_date and date_str:
+                            d1 = datetime.strptime(date_str, "%Y%m%d")
+                            d2 = datetime.strptime(cached_date, "%Y%m%d")
+                            if abs((d1 - d2).days) <= 1:
+                                candidates.append((pid, cached_home, cached_away))
+                    except (ValueError, TypeError):
+                        pass
+
+            best_score = 0
+            best_match_id = None
+            best_is_swapped = False
+
+            for pid, cached_home, cached_away in candidates:
+                # Skip if this is the same ID we'd generate (already checked)
+                if pid == default_id:
+                    continue
+
+                # Get individual scores for DIRECT match
+                home_direct = get_team_match_score(home_team, cached_home)
+                away_direct = get_team_match_score(away_team, cached_away)
+
+                # Get individual scores for SWAPPED match
+                home_swapped = get_team_match_score(home_team, cached_away)
+                away_swapped = get_team_match_score(away_team, cached_home)
+
+                # Choose best orientation
+                direct_avg = (home_direct + away_direct) / 2
+                swapped_avg = (home_swapped + away_swapped) / 2
+
+                is_swapped = swapped_avg > direct_avg
+                if is_swapped:
+                    team1_score, team2_score = home_swapped, away_swapped
+                    avg_score = swapped_avg
+                else:
+                    team1_score, team2_score = home_direct, away_direct
+                    avg_score = direct_avg
+
+                # Skip if below thresholds
+                if avg_score < fuzzy_threshold:
+                    continue
+                if team1_score < min_individual_score or team2_score < min_individual_score:
+                    continue
+
+                if avg_score > best_score:
+                    best_score = avg_score
+                    best_match_id = pid
+                    best_is_swapped = is_swapped
+
+            if best_match_id and session.query(Event.id).filter(Event.id == best_match_id).first():
+                matched_id = best_match_id
+                teams_swapped = best_is_swapped
+                logger.info(
+                    f"[polymarket] Fuzzy matched '{home_team} vs {away_team}' -> "
+                    f"existing event (score: {best_score:.0f}, swapped: {best_is_swapped})"
+                )
+
+    # If no match found, use default ID
+    if not matched_id:
+        matched_id = default_id
+
+    # Add to sport-indexed cache (use Polymarket's team order for cache key)
     if kambi_sport not in polymarket_cache:
         polymarket_cache[kambi_sport] = []
-    polymarket_cache[kambi_sport].append((canonical_id, home_team, away_team, date_str))
+    polymarket_cache[kambi_sport].append((matched_id, home_team, away_team, date_str))
 
     # Create/get event
-    db_event = session.query(Event).filter(Event.id == canonical_id).first()
+    db_event = session.query(Event).filter(Event.id == matched_id).first()
     is_new_event = False
 
     if not db_event:
@@ -148,7 +249,7 @@ def store_polymarket_event(
                 start_dt = None
 
         db_event = Event(
-            id=canonical_id,
+            id=matched_id,
             sport=kambi_sport,
             league=event.sport,
             home_team=home_team,
@@ -157,6 +258,55 @@ def store_polymarket_event(
         )
         session.add(db_event)
         is_new_event = True
+
+    # Use canonical event's home/away for outcome normalization
+    # This ensures consistent home/away mapping when Polymarket lists teams in different order
+    canonical_home = db_event.home_team
+    canonical_away = db_event.away_team
+
+    # Extract home/away odds from Polymarket outcomes for inversion detection
+    poly_home_odds, poly_away_odds = None, None
+    for market in event.markets:
+        market_type = normalize_market(market.get("question", "") or market.get("type", ""))
+        if market_type in ALLOWED_MARKETS:
+            for outcome in market.get("outcomes", []):
+                norm = normalize_outcome(
+                    outcome.get("name", ""),
+                    home_team,  # Use Polymarket's team order for normalization
+                    away_team
+                )
+                if norm == "home":
+                    poly_home_odds = outcome.get("odds")
+                elif norm == "away":
+                    poly_away_odds = outcome.get("odds")
+
+    # Track odds inversion (separate from team order swap)
+    odds_inverted = False
+
+    # Check for odds-based inversion against sharp source (Pinnacle)
+    if matched_id and poly_home_odds and poly_away_odds:
+        # Convert to canonical order if teams were swapped
+        if teams_swapped:
+            canonical_home_odds = poly_away_odds
+            canonical_away_odds = poly_home_odds
+        else:
+            canonical_home_odds = poly_home_odds
+            canonical_away_odds = poly_away_odds
+
+        inversion_result = detect_and_fix_inversion(
+            session, matched_id, "polymarket", canonical_home_odds, canonical_away_odds
+        )
+        if inversion_result:
+            odds_inverted = True
+            logger.debug(
+                f"[polymarket] Detected inverted odds for {matched_id}: "
+                f"canonical H={canonical_home_odds:.2f}/A={canonical_away_odds:.2f}"
+            )
+
+    # Determine if we need to swap during storage
+    # For Polymarket, team order is already handled by using canonical teams in normalization
+    # So we ONLY need to swap if odds are inverted vs sharp (Pinnacle)
+    should_swap_outcomes = odds_inverted
 
     # Store odds
     odds_processed = 0
@@ -182,8 +332,19 @@ def store_polymarket_event(
                 continue
 
             odds_processed += 1
-            outcome_norm = normalize_outcome(outcome_name, home_team, away_team)
-            odds_new += upsert_odds(session, canonical_id, "polymarket", market_type, outcome_norm, odds)
+            outcome_norm = normalize_outcome(outcome_name, canonical_home, canonical_away)
+
+            # Swap home/away based on XOR of team swap and odds inversion
+            # - teams_swapped only: swap (team order different from canonical)
+            # - odds_inverted only: swap (odds favor wrong team)
+            # - both: don't swap (they cancel out)
+            if should_swap_outcomes:
+                if outcome_norm == "home":
+                    outcome_norm = "away"
+                elif outcome_norm == "away":
+                    outcome_norm = "home"
+
+            odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds)
 
     return is_new_event, odds_processed, odds_new
 
@@ -391,31 +552,44 @@ def store_provider_event(
         if cache_entry not in polymarket_cache[event.sport]:
             polymarket_cache[event.sport].append(cache_entry)
 
-    # If we matched to an existing event and fuzzy matching didn't detect a swap,
-    # check for odds-based inversion against sharp source
-    if matched_id and not fuzzy_swapped:
-        # Extract home/away odds from event markets
-        home_odds, away_odds = None, None
-        for market in event.markets:
-            if normalize_market(market.get('type', '')) in ALLOWED_MARKETS:
-                for outcome in market.get('outcomes', []):
-                    norm = normalize_outcome(
-                        outcome.get('name', ''),
-                        event.home_team,
-                        event.away_team
-                    )
-                    if norm == 'home':
-                        home_odds = outcome.get('odds')
-                    elif norm == 'away':
-                        away_odds = outcome.get('odds')
+    # Extract home/away odds from event markets for inversion detection
+    home_odds, away_odds = None, None
+    for market in event.markets:
+        if normalize_market(market.get('type', '')) in ALLOWED_MARKETS:
+            for outcome in market.get('outcomes', []):
+                norm = normalize_outcome(
+                    outcome.get('name', ''),
+                    event.home_team,
+                    event.away_team
+                )
+                if norm == 'home':
+                    home_odds = outcome.get('odds')
+                elif norm == 'away':
+                    away_odds = outcome.get('odds')
 
-        # Check for inversion against sharp odds
-        if detect_and_fix_inversion(session, matched_id, provider, home_odds, away_odds):
-            fuzzy_swapped = True  # Trigger swap
+    # Track if we need an odds inversion swap (separate from team order swap)
+    odds_inverted = False
 
-    # Swap outcomes if team order was detected as different from canonical event
-    # (either via fuzzy matching, swapped-ID check, or odds-based inversion)
-    should_swap = fuzzy_swapped
+    if matched_id and home_odds and away_odds:
+        # If teams were already swapped, the extracted odds are in the provider's order.
+        # To check inversion against canonical (Pinnacle), we need to map to canonical order.
+        if fuzzy_swapped:
+            # Provider's home→canonical away, provider's away→canonical home
+            canonical_home_odds = away_odds
+            canonical_away_odds = home_odds
+        else:
+            canonical_home_odds = home_odds
+            canonical_away_odds = away_odds
+
+        # Check for odds inversion against sharp source
+        if detect_and_fix_inversion(session, matched_id, provider, canonical_home_odds, canonical_away_odds):
+            odds_inverted = True
+
+    # Swap outcomes if:
+    # - Team order is different from canonical (fuzzy_swapped), OR
+    # - Odds are inverted vs sharp (odds_inverted)
+    # Note: if BOTH are true, they cancel out (double swap = no swap)
+    should_swap = fuzzy_swapped != odds_inverted  # XOR: swap if exactly one is true
 
     if should_swap:
         logger.debug(
@@ -425,6 +599,16 @@ def store_provider_event(
     # Store odds
     odds_processed = 0
     odds_new = 0
+
+    # Determine teams for normalization
+    # When team order differs from canonical, use swapped teams so team name outcomes
+    # (e.g., "Manhattan") normalize correctly to the canonical home/away
+    if should_swap:
+        norm_home = event.away_team  # Provider's away = canonical home
+        norm_away = event.home_team  # Provider's home = canonical away
+    else:
+        norm_home = event.home_team
+        norm_away = event.away_team
 
     for market in event.markets:
         market_type = normalize_market(market.get('type', ''))
@@ -437,7 +621,7 @@ def store_provider_event(
             outcomes = swap_home_away_outcomes(outcomes)
 
         for outcome in outcomes:
-            outcome_name = normalize_outcome(outcome.get('name', ''), event.home_team, event.away_team)
+            outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
             odds_value = outcome.get('odds', 0)
             point_value = outcome.get('point')
 
