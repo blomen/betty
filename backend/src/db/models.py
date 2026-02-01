@@ -14,7 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float,
-    DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON
+    DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -99,6 +99,8 @@ class Odds(Base):
     # Includes point to allow multiple lines per market (e.g., over 2.5 vs over 3.0)
     __table_args__ = (
         UniqueConstraint('event_id', 'provider_id', 'market', 'outcome', 'point', name='uq_odds_with_point'),
+        # Performance index for common query patterns (arbitrage/value detection)
+        Index('ix_odds_event_provider_outcome', 'event_id', 'provider_id', 'outcome'),
     )
     
     # Relationships

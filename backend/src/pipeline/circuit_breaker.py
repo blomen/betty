@@ -61,6 +61,13 @@ class CircuitBreaker:
     - HALF_OPEN -> OPEN: On failure
 
     Thread-safe for concurrent provider calls.
+
+    Note on threading.Lock vs asyncio.Lock:
+    We use threading.Lock here intentionally. While this is called from async
+    contexts, the operations are fast in-memory dict updates (microseconds).
+    Using asyncio.Lock would require making all methods async, complicating
+    the API. The lock is held for such a short time that event loop blocking
+    is negligible.
     """
 
     def __init__(

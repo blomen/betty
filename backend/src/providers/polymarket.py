@@ -103,20 +103,27 @@ class PolymarketRetriever(Retriever):
     instead of per-league series_id fetching which misses events due to
     incorrect/missing series ID mappings.
 
-    Data Quality Filters:
-    - MIN_VOLUME: Skip markets with < $1000 volume (no real trading activity)
-    - 50/50 Filter: Skip markets where prices are 0.45-0.55 (no price discovery)
+    Filters:
+    - Volume: Skip markets with < $100 volume (92% of zero-volume are untraded 50/50)
+    - Exact 50/50: Skip markets where all prices are exactly 0.50 (no trading yet)
+    - Derivative: Skip "More Markets" events (only spreads/totals/props)
+    - Non-match: Skip events that can't be parsed into home vs away
+
+    Optimization:
+    - Caches extract_all() results and filters by sport on subsequent calls
+    - Prevents redundant API calls when orchestrator iterates through sports
     """
 
-    # Minimum volume in USD for a market to be considered valid
-    # Markets below this threshold likely have no real price discovery
-    MIN_VOLUME = 1000
+    # Minimum market volume in USD to filter untraded markets
+    # Analysis shows: $0 = 92% untraded, $1-100 = 41% untraded, $100+ = 20% untraded
+    MIN_VOLUME = 100
 
     def __init__(self, config: dict, transport=None):
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.game_bets_tag_id = config.get("params", {}).get("game_bets_tag_id", 100639)
-        self._cached_events = None  # Cache to avoid re-fetching
+        self._cached_events: list = None  # Cache all events to avoid re-fetching
+        self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
@@ -181,11 +188,33 @@ class PolymarketRetriever(Retriever):
         """
         Extract events for a specific sport/league.
 
-        For backwards compatibility with orchestrator's per-sport iteration.
-        Delegates to extract_all() since we use tag_id for all games.
+        Optimization: Caches extract_all() results and filters by sport.
+        This prevents redundant API calls when orchestrator iterates through sports.
+
+        Args:
+            sport: Sport to filter by (e.g., 'football', 'basketball')
+            limit: Events per page for initial fetch (capped at 500)
+
+        Returns:
+            List of StandardEvent for the requested sport only
         """
-        # Always use extract_all - tag_id fetches all sports at once
-        return await self.extract_all(limit)
+        # Populate cache on first call
+        if self._cached_events is None:
+            self._cached_events = await self.extract_all(limit)
+            # Pre-index by sport for O(1) lookup
+            self._events_by_sport = {}
+            for event in self._cached_events:
+                event_sport = event.sport or "unknown"
+                if event_sport not in self._events_by_sport:
+                    self._events_by_sport[event_sport] = []
+                self._events_by_sport[event_sport].append(event)
+            logger.info(
+                f"[{self.provider_id}] Cached {len(self._cached_events)} events across "
+                f"{len(self._events_by_sport)} sports"
+            )
+
+        # Return only events for requested sport
+        return self._events_by_sport.get(sport, [])
 
     def _parse_all(self, data: List[dict]) -> List[StandardEvent]:
         """Parse all events, determining sport from series info."""
@@ -225,7 +254,7 @@ class PolymarketRetriever(Retriever):
         else:
             markets = []
             for m_data in item.get("markets", []):
-                m = self._parse_market(m_data)
+                m = self._parse_market(m_data, home, away)
                 if m:
                     markets.append(m)
 
@@ -362,12 +391,15 @@ class PolymarketRetriever(Retriever):
 
         return None
 
-    def _parse_market(self, data: dict) -> Optional[dict]:
+    def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
         """Parse a single market (moneyline only - skips totals/spreads)."""
         try:
+            import re
+
             # Skip non-moneyline markets based on question text
-            question = data.get("question", "").lower()
-            if any(kw in question for kw in [
+            question = data.get("question", "")
+            question_lower = question.lower()
+            if any(kw in question_lower for kw in [
                 "over", "under", "total", "spread", "handicap",
                 "points", "goals scored", "combined"
             ]):
@@ -394,12 +426,52 @@ class PolymarketRetriever(Retriever):
             if not outcomes or not prices:
                 return None
 
-            # Skip 50/50 markets (no price discovery - prices between 0.45-0.55)
-            if all(0.45 < p < 0.55 for p in prices if p > 0):
+            # Skip exact 50/50 markets (no trading activity yet)
+            if all(p == 0.5 for p in prices if p > 0):
                 return None
 
             # Check active (liquidity check)
             if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            # Handle binary "Yes/No" markets - convert to team names if we can parse the question
+            # Pattern: "Will [Team] win on [date]?" or "Will [Team] win?"
+            outcome_names_lower = [o.lower() for o in outcomes]
+            if set(outcome_names_lower) == {"yes", "no"} and home and away:
+                # Try to extract team name from "Will X win" pattern
+                match = re.search(r"will\s+(.+?)\s+win", question_lower)
+                if match:
+                    team_in_question = match.group(1).strip()
+                    home_lower = home.lower()
+                    away_lower = away.lower()
+
+                    # Check if team in question matches home or away
+                    # Use substring matching for flexibility (e.g., "Lakers" vs "Los Angeles Lakers")
+                    matched_team = None
+                    other_team = None
+
+                    if team_in_question in home_lower or home_lower in team_in_question:
+                        matched_team = home
+                        other_team = away
+                    elif team_in_question in away_lower or away_lower in team_in_question:
+                        matched_team = away
+                        other_team = home
+
+                    if matched_team:
+                        # Map Yes → matched_team, No → other_team
+                        yes_idx = outcome_names_lower.index("yes")
+                        no_idx = outcome_names_lower.index("no")
+
+                        if prices[yes_idx] > 0.02 and prices[no_idx] > 0.02:
+                            return {
+                                "type": "moneyline",
+                                "outcomes": [
+                                    {"name": matched_team, "odds": round(1 / prices[yes_idx], 3)},
+                                    {"name": other_team, "odds": round(1 / prices[no_idx], 3)},
+                                ]
+                            }
+
+                # Couldn't parse team from question - skip this Yes/No market
                 return None
 
             # Convert to odds (skip over/under outcomes - these are totals markets)
@@ -470,9 +542,9 @@ class PolymarketRetriever(Retriever):
             if not outcomes or not prices:
                 continue
 
-            # Skip 50/50 markets (no price discovery)
+            # Skip exact 50/50 markets (no trading activity yet)
             float_prices = [float(p) for p in prices if p]
-            if all(0.45 < p < 0.55 for p in float_prices if p > 0):
+            if all(p == 0.5 for p in float_prices if p > 0):
                 continue
 
             # Get "Yes" price (probability of the event happening)

@@ -112,7 +112,7 @@ def store_polymarket_event(
         session: SQLAlchemy session
         event: StandardEvent from Polymarket
         kambi_sport: Normalized sport name
-        polymarket_cache: Dict {sport: [(id, home, away, date), ...]} for fuzzy matching
+        polymarket_cache: Dict {sport: {event_id: (home, away, date)}} for O(1) lookup
         fuzzy_threshold: Minimum average match score (default 90)
         min_individual_score: Minimum score for EACH team (default 80)
 
@@ -161,11 +161,12 @@ def store_polymarket_event(
             )
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
-            sport_events = polymarket_cache.get(kambi_sport, [])
+            # Cache structure: {sport: {event_id: (home, away, date)}}
+            sport_events = polymarket_cache.get(kambi_sport, {})
 
             # Filter by date (allow +/- 1 day for timezone issues)
             candidates = []
-            for pid, cached_home, cached_away, cached_date in sport_events:
+            for pid, (cached_home, cached_away, cached_date) in sport_events.items():
                 if cached_date == date_str:
                     candidates.append((pid, cached_home, cached_away))
                 else:
@@ -231,9 +232,12 @@ def store_polymarket_event(
         matched_id = default_id
 
     # Add to sport-indexed cache (use Polymarket's team order for cache key)
+    # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup
     if kambi_sport not in polymarket_cache:
-        polymarket_cache[kambi_sport] = []
-    polymarket_cache[kambi_sport].append((matched_id, home_team, away_team, date_str))
+        polymarket_cache[kambi_sport] = {}
+    # O(1) dict update instead of O(N) list append with duplicate check
+    if matched_id not in polymarket_cache[kambi_sport]:
+        polymarket_cache[kambi_sport][matched_id] = (home_team, away_team, date_str)
 
     # Create/get event
     db_event = session.query(Event).filter(Event.id == matched_id).first()
@@ -371,7 +375,7 @@ def store_provider_event(
         session: SQLAlchemy session
         event: StandardEvent from provider
         provider: Provider ID
-        polymarket_cache: Dict {sport: [(id, home, away, date), ...]} for fuzzy matching
+        polymarket_cache: Dict {sport: {event_id: (home, away, date)}} for O(1) lookup
         fuzzy_threshold: Minimum average match score (default 90)
         min_individual_score: Minimum score for EACH team (default 80)
 
@@ -398,11 +402,12 @@ def store_provider_event(
             event_date = "00000000"
 
         # Get candidates for this sport only (O(1) lookup)
-        sport_events = polymarket_cache.get(event.sport, [])
+        # Cache structure: {sport: {event_id: (home, away, date)}}
+        sport_events = polymarket_cache.get(event.sport, {})
 
         # Filter by date (allow +/- 1 day for timezone issues)
         candidates = []
-        for pid, home, away, date in sport_events:
+        for pid, (home, away, date) in sport_events.items():
             if date == event_date:
                 candidates.append((pid, home, away, date))
             else:
@@ -541,16 +546,17 @@ def store_provider_event(
 
         # Add to cache for subsequent providers to match against
         # This enables cross-provider matching (e.g., LeoVegas ↔ Pinnacle)
+        # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup
         if isinstance(event.start_time, str):
             date_str = event.start_time.split('T')[0].replace('-', '')
         else:
             date_str = "00000000"
 
         if event.sport not in polymarket_cache:
-            polymarket_cache[event.sport] = []
-        cache_entry = (final_id, db_event.home_team, db_event.away_team, date_str)
-        if cache_entry not in polymarket_cache[event.sport]:
-            polymarket_cache[event.sport].append(cache_entry)
+            polymarket_cache[event.sport] = {}
+        # O(1) dict lookup instead of O(N) list scan
+        if final_id not in polymarket_cache[event.sport]:
+            polymarket_cache[event.sport][final_id] = (db_event.home_team, db_event.away_team, date_str)
 
     # Extract home/away odds from event markets for inversion detection
     home_odds, away_odds = None, None
