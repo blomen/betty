@@ -26,7 +26,7 @@ from .devig import (
     devig_multiplicative,
     get_fair_odds_for_outcome,
 )
-from ..constants import SHARP_PROVIDERS
+from ..constants import SHARP_PROVIDERS, EXCLUDED_FROM_SCANS
 
 logger = logging.getLogger(__name__)
 
@@ -234,9 +234,15 @@ class OpportunityScanner:
             .all()
         )
 
-    def _group_odds(self, event: Event) -> dict[str, dict[str, list[dict]]]:
+    def _group_odds(
+        self, event: Event, exclude_providers: set[str] = None
+    ) -> dict[str, dict[str, list[dict]]]:
         """
         Group event odds by market -> outcome -> provider list.
+
+        Args:
+            event: The event to group odds for
+            exclude_providers: Set of provider IDs to exclude (default: EXCLUDED_FROM_SCANS)
 
         Returns:
             {
@@ -247,9 +253,16 @@ class OpportunityScanner:
                 }
             }
         """
+        if exclude_providers is None:
+            exclude_providers = EXCLUDED_FROM_SCANS
+
         grouped = defaultdict(lambda: defaultdict(list))
 
         for odds in event.odds:
+            # Skip excluded providers (e.g., polymarket - has its own dedicated view)
+            if odds.provider_id in exclude_providers:
+                continue
+
             # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
             if odds.point is not None:
                 market_key = f"{odds.market}_{odds.point}"

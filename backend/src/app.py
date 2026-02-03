@@ -5,6 +5,7 @@ A Rich + Typer based terminal UI for betting analytics.
 """
 
 import asyncio
+import sys
 from datetime import datetime
 from typing import Optional
 
@@ -18,10 +19,14 @@ from rich.table import Table
 from .db.models import init_db, get_session, Event, Odds, Provider, Bet, Profile
 from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
-from .analysis import find_arbitrage, find_best_value
+from .analysis.scanner import OpportunityScanner
 
-# Force UTF-8 encoding for Windows console to support Unicode characters
-console = Console(force_terminal=True, legacy_windows=False)
+# Fix Windows console encoding for Unicode support
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+console = Console(force_terminal=True)
 app = typer.Typer(help="OddOpp - Betting Analytics Platform")
 
 
@@ -66,42 +71,34 @@ def show_stats():
 def show_arbitrage():
     """Show arbitrage opportunities."""
     session = get_session()
+    scanner = OpportunityScanner(session)
 
-    # Get events with multiple providers
-    from sqlalchemy import func
-    matched_events = session.query(Event).join(Odds).group_by(Event.id).having(
-        func.count(func.distinct(Odds.provider_id)) > 1
-    ).limit(50).all()
-
-    if not matched_events:
-        console.print("[yellow]No matched events found. Run 'extract' first.[/yellow]")
-        return
-
-    # Find arbitrage opportunities
-    arbs = []
-    for event in matched_events:
-        result = find_arbitrage(event, session)
-        if result and result.get("profit_pct", 0) > 0:
-            arbs.append(result)
+    arbs = scanner.scan_arbitrage(min_profit_pct=0.5)
 
     if not arbs:
         console.print("[yellow]No arbitrage opportunities found.[/yellow]")
+        session.close()
         return
 
-    table = Table(title="Arbitrage Opportunities")
+    table = Table(title=f"Arbitrage Opportunities ({len(arbs)} found)")
     table.add_column("Event", style="cyan")
     table.add_column("Market", style="white")
-    table.add_column("Provider 1", style="green")
-    table.add_column("Provider 2", style="green")
+    table.add_column("Outcomes", style="green")
     table.add_column("Profit %", style="yellow")
 
-    for arb in sorted(arbs, key=lambda x: x.get("profit_pct", 0), reverse=True)[:10]:
+    for arb in arbs[:15]:
+        # Format outcomes as "home@provider1, away@provider2"
+        outcomes_str = ", ".join(
+            f"{o['outcome']}@{o['provider'][:8]}" for o in arb.outcomes[:2]
+        )
+        event = session.query(Event).filter(Event.id == arb.event_id).first()
+        event_name = f"{event.home_team} vs {event.away_team}"[:30] if event else arb.event_id[:30]
+
         table.add_row(
-            f"{arb['home']} vs {arb['away']}"[:30],
-            arb.get("market", "-"),
-            arb.get("provider1", "-"),
-            arb.get("provider2", "-"),
-            f"{arb.get('profit_pct', 0):.2f}%",
+            event_name,
+            arb.market,
+            outcomes_str[:35],
+            f"+{arb.profit_pct:.2f}%",
         )
 
     session.close()
@@ -111,43 +108,36 @@ def show_arbitrage():
 def show_value_bets():
     """Show value betting opportunities."""
     session = get_session()
+    scanner = OpportunityScanner(session)
 
-    # Get events with Polymarket odds
-    poly_events = session.query(Event).join(Odds).filter(
-        Odds.provider_id == "polymarket"
-    ).distinct().limit(50).all()
-
-    if not poly_events:
-        console.print("[yellow]No Polymarket events found. Run 'extract' first.[/yellow]")
-        return
-
-    # Find value bets
-    values = []
-    for event in poly_events:
-        result = find_best_value(event, session)
-        if result and result.get("edge_pct", 0) > 2:  # Min 2% edge
-            values.append(result)
+    # Find value bets with minimum 3% edge
+    values = scanner.scan_value(min_edge_pct=3.0)
 
     if not values:
-        console.print("[yellow]No value bets found (min 2% edge).[/yellow]")
+        console.print("[yellow]No value bets found (min 3% edge).[/yellow]")
+        session.close()
         return
 
-    table = Table(title="Value Bets (vs Polymarket)")
+    table = Table(title=f"Value Bets vs Pinnacle ({len(values)} found)")
     table.add_column("Event", style="cyan")
     table.add_column("Outcome", style="white")
     table.add_column("Provider", style="green")
     table.add_column("Odds", style="yellow")
-    table.add_column("Fair Odds", style="blue")
-    table.add_column("Edge %", style="magenta")
+    table.add_column("Fair", style="blue")
+    table.add_column("Edge", style="magenta")
 
-    for val in sorted(values, key=lambda x: x.get("edge_pct", 0), reverse=True)[:10]:
+    for val in values[:15]:
+        # Get event details
+        event = session.query(Event).filter(Event.id == val.event_id).first()
+        event_name = f"{event.home_team} vs {event.away_team}"[:25] if event else val.event_id[:25]
+
         table.add_row(
-            f"{val['home']} vs {val['away']}"[:25],
-            val.get("outcome", "-"),
-            val.get("provider", "-"),
-            f"{val.get('odds', 0):.2f}",
-            f"{val.get('fair_odds', 0):.2f}",
-            f"{val.get('edge_pct', 0):.1f}%",
+            event_name,
+            val.outcome,
+            val.provider[:10],
+            f"{val.provider_odds:.2f}",
+            f"{val.fair_odds:.2f}",
+            f"+{val.edge_pct:.1f}%",
         )
 
     session.close()
@@ -175,8 +165,12 @@ def show_providers():
     console.print(table)
 
 
-async def run_extraction(providers: Optional[list] = None, skip_poly: bool = False):
-    """Run the extraction pipeline."""
+async def run_extraction(providers: Optional[list] = None):
+    """Run the extraction pipeline.
+
+    Polymarket is only extracted when explicitly included in providers list.
+    Example: extract polymarket pinnacle leovegas
+    """
     init_db()
     pipeline = ExtractionPipeline()
 
@@ -191,7 +185,6 @@ async def run_extraction(providers: Optional[list] = None, skip_poly: bool = Fal
             progress.update(task, description=msg)
 
         results = await pipeline.run(
-            polymarket=not skip_poly,
             providers=providers,
             on_progress=on_progress,
         )
@@ -204,8 +197,9 @@ async def run_extraction(providers: Optional[list] = None, skip_poly: bool = Fal
     table.add_column("Events", style="white")
     table.add_column("New Odds", style="green")
 
-    if not skip_poly:
-        poly = results.get("polymarket", {})
+    # Show Polymarket results if extracted
+    poly = results.get("polymarket", {})
+    if poly.get("events_processed", 0) > 0:
         table.add_row(
             "Polymarket",
             str(poly.get("events_processed", 0)),
@@ -291,11 +285,7 @@ def interactive_loop():
         elif cmd.startswith("extract"):
             parts = cmd.split()
             providers = parts[1:] if len(parts) > 1 else None
-            skip_poly = "--no-poly" in parts
-            if skip_poly and providers:
-                providers = [p for p in providers if p != "--no-poly"]
-
-            asyncio.run(run_extraction(providers or None, skip_poly))
+            asyncio.run(run_extraction(providers or None))
         else:
             console.print(f"[red]Unknown command: {cmd}[/red]")
             console.print("[dim]Type 'help' for available commands[/dim]")
@@ -309,11 +299,16 @@ def run():
 
 @app.command()
 def extract(
-    providers: Optional[list[str]] = typer.Argument(None, help="Providers to extract from"),
-    no_poly: bool = typer.Option(False, "--no-poly", help="Skip Polymarket extraction"),
+    providers: Optional[list[str]] = typer.Argument(None, help="Providers to extract from (include 'polymarket' to extract from Polymarket)"),
 ):
-    """Run extraction without interactive mode."""
-    asyncio.run(run_extraction(providers, no_poly))
+    """Run extraction without interactive mode.
+
+    Polymarket is only extracted when explicitly included:
+    - extract pinnacle leovegas  -> Only bookmakers
+    - extract polymarket         -> Only Polymarket
+    - extract polymarket pinnacle leovegas -> All three
+    """
+    asyncio.run(run_extraction(providers))
 
 
 @app.command()

@@ -347,19 +347,61 @@ class SportRunMetrics(Base):
 
 # ============ Database Functions ============
 
+# Singleton engine with connection pooling
+_engine = None
+
+
+def get_engine():
+    """
+    Get or create the singleton database engine.
+
+    Uses connection pooling with:
+    - pool_size=5: Keep 5 connections ready
+    - pool_recycle=3600: Recycle connections after 1 hour
+    - pool_pre_ping=True: Verify connections before use
+    """
+    global _engine
+    if _engine is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _engine = create_engine(
+            f"sqlite:///{DB_PATH}",
+            pool_size=5,
+            pool_recycle=3600,
+            pool_pre_ping=True,
+            # SQLite-specific: enable WAL mode for better concurrency
+            connect_args={"check_same_thread": False},
+        )
+        # Create tables on first engine creation
+        Base.metadata.create_all(_engine)
+    return _engine
+
+
 def init_db() -> None:
     """Initialize database and create tables."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(f"sqlite:///{DB_PATH}")
-    Base.metadata.create_all(engine)
-    return engine
+    return get_engine()
+
+
+# Session factory - created once, reused
+_SessionFactory = None
+
+
+def get_session_factory():
+    """Get or create the session factory."""
+    global _SessionFactory
+    if _SessionFactory is None:
+        _SessionFactory = sessionmaker(bind=get_engine())
+    return _SessionFactory
 
 
 def get_session():
-    """Get a database session."""
-    engine = init_db()
-    Session = sessionmaker(bind=engine)
-    return Session()
+    """
+    Get a database session.
+
+    Note: Caller is responsible for closing the session.
+    For FastAPI, use the get_db() dependency from api/deps.py instead.
+    """
+    factory = get_session_factory()
+    return factory()
 
 
 if __name__ == "__main__":

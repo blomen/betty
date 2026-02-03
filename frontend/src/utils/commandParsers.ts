@@ -83,63 +83,6 @@ export function parseBetFilters(args: string): BetFilters {
   return filters;
 }
 
-export interface SettleBetArgs {
-  betId: number;
-  result: 'won' | 'lost' | 'void';
-}
-
-/**
- * Parse /settle-bet command arguments
- * Examples:
- * - /settle-bet 123 won
- * - /settle-bet 45 lost
- */
-export function parseSettleBetArgs(args: string): SettleBetArgs | null {
-  const match = args.match(/^(\d+)\s+(won|lost|void)$/i);
-  if (!match) return null;
-
-  return {
-    betId: parseInt(match[1], 10),
-    result: match[2].toLowerCase() as 'won' | 'lost' | 'void',
-  };
-}
-
-export interface PlaceBetArgs {
-  opportunityNumber?: number;
-  stake?: number;
-  provider?: string;
-  isBonus?: boolean;
-}
-
-/**
- * Parse /place-bet command arguments
- * Examples:
- * - /place-bet 3 100 - Place $100 on opportunity #3
- * - /place-bet 5 50 unibet - Place $50 on opportunity #5 via unibet
- * - /place-bet 2 75 --bonus - Place $75 bonus bet on opportunity #2
- */
-export function parsePlaceBetArgs(args: string): PlaceBetArgs | null {
-  if (!args.trim()) return null;
-
-  const parsed: PlaceBetArgs = {};
-
-  // Check for --bonus flag
-  parsed.isBonus = /--bonus/i.test(args);
-  const cleanArgs = args.replace(/--bonus/gi, '').trim();
-
-  // Parse: <number> <stake> [provider]
-  const match = cleanArgs.match(/^(\d+)\s+([\d.]+)(?:\s+(\w+))?$/);
-  if (!match) return null;
-
-  parsed.opportunityNumber = parseInt(match[1], 10);
-  parsed.stake = parseFloat(match[2]);
-  if (match[3]) {
-    parsed.provider = match[3].toLowerCase();
-  }
-
-  return parsed;
-}
-
 export interface ProfileCommand {
   action: 'list' | 'switch' | 'create' | 'delete' | 'set';
   name?: string;
@@ -177,3 +120,4 @@ export function parseProfileCommand(args: string): ProfileCommand {
       return { action: 'list' };
   }
 }
+

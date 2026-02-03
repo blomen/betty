@@ -2,26 +2,31 @@
 
 ## WHAT This Project Is
 
-OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle, Polymarket) to find value bets and arbitrage opportunities.
+OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets and arbitrage opportunities.
 
 **Architecture:**
 ```
 backend/src/
-├── providers/     # Bookmaker extractors (Kambi, Gecko, Spectate, Pinnacle, etc.)
-│   └── mixins/    # Shared functionality (RSocket decoding)
-├── pipeline/      # Orchestrator + storage
-├── analysis/      # Value detection, arbitrage, devigging
-├── matching/      # Event normalization + fuzzy matching
-├── bankroll/      # Kelly criterion + stake sizing
-├── db/            # SQLAlchemy models (Event, Odds, Bet, Provider)
-├── constants.py   # Shared constants (ALLOWED_MARKETS, SHARP_PROVIDERS)
-├── api.py         # FastAPI endpoints
-└── app.py         # Typer CLI
+├── providers/        # 11 extractors (Kambi, SBTech, Gecko V2, Spectate, Pinnacle, Polymarket)
+│   └── mixins/       # RSocket decoding
+├── pipeline/         # orchestrator, storage, pool_manager, circuit_breaker, cache, health, metrics
+├── analysis/         # scanner, arbitrage, value, bonus, devig
+├── matching/         # Event normalization + fuzzy matching
+├── bankroll/         # Kelly criterion + stake sizing
+├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile)
+├── api/              # FastAPI application
+│   └── routes/       # 11 routes: providers, bankroll, events, opportunities, bets, profiles, extraction, metrics, monitoring, chat, polymarket
+├── core/             # Transport, exceptions
+├── constants.py      # ALLOWED_MARKETS, SHARP_PROVIDERS
+└── app.py            # Typer CLI
 
 frontend/src/
-├── components/    # Terminal-style React UI
-├── hooks/         # Data fetching + WebSocket
-└── services/      # API client + Claude chat
+├── components/
+│   ├── Terminal/     # TerminalWindow, TerminalInput, ChatMessage, StreamingText, WelcomeMessage, ExtractionProgressMessage, CommandPanel, WorkflowPanel
+│   └── ErrorBoundary.tsx
+├── contexts/         # WorkflowContext
+├── hooks/            # useBettingContext, useChat, useExtraction, useBankroll, useProfiles, useBonusWorkflow, useDropdownWorkflow, useBankrollWorkflow
+└── services/         # api.ts
 ```
 
 **Tech stack:** Python 3.10+ / FastAPI / SQLite / Playwright | React 19 / TypeScript / Vite / Tailwind
@@ -29,7 +34,7 @@ frontend/src/
 ## WHY It's Structured This Way
 
 - **Provider extractors are isolated** - Each bookmaker has unique API/DOM structure
-- **Sharp sources separate** - Pinnacle + Polymarket provide "fair odds" baseline
+- **Sharp sources separate** - Pinnacle provides "fair odds" baseline (Polymarket for event matching only)
 - **Matching layer abstracts providers** - Fuzzy matching normalizes "Real Madrid CF" → canonical event
 - **Analysis is provider-agnostic** - Works on normalized events/odds
 

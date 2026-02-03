@@ -4,3 +4,6 @@ export { useChat } from './useChat';
 export { useExtraction } from './useExtraction';
 export { useBankroll } from './useBankroll';
 export { useProfiles } from './useProfiles';
+export { useBonusWorkflow } from './useBonusWorkflow';
+export { useDropdownWorkflow } from './useDropdownWorkflow';
+export { useBankrollWorkflow } from './useBankrollWorkflow';

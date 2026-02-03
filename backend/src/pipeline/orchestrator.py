@@ -45,6 +45,18 @@ class ExtractionPipeline:
         # {sport: [(id, home, away, date_str), ...]}
         # Events from Polymarket, Pinnacle, and all providers are added here
         self.event_cache = {}
+        # Thread-safe lock for async access to event_cache
+        self._cache_lock = asyncio.Lock()
+
+    async def get_cached_sports(self) -> set:
+        """Get set of sports with cached events (thread-safe)."""
+        async with self._cache_lock:
+            return set(self.event_cache.keys())
+
+    async def clear_cache(self):
+        """Clear the event cache (thread-safe)."""
+        async with self._cache_lock:
+            self.event_cache.clear()
 
         # Get orchestrator config
         orchestrator_config = self.engine.config_loader.get_orchestrator_config()
@@ -240,7 +252,7 @@ class ExtractionPipeline:
 
     async def run(
         self,
-        polymarket: bool = True,
+        polymarket: bool | None = None,
         providers: list[str] | None = None,
         max_events_per_sport: int = 9999,
         on_progress: Callable[[str], None] | None = None,
@@ -249,8 +261,8 @@ class ExtractionPipeline:
         Run extraction from all sources.
 
         Args:
-            polymarket: Extract from Polymarket (default: True)
-            providers: List of provider IDs to extract (default: all enabled)
+            polymarket: Extract from Polymarket (default: None, auto-detect from providers list)
+            providers: List of provider IDs to extract (default: all enabled, excluding polymarket)
             max_events_per_sport: Limit events per sport (default: 9999, effectively unlimited)
             on_progress: Optional callback for progress updates
 
@@ -265,6 +277,14 @@ class ExtractionPipeline:
                 "cache_stats": {...} (if enabled)
             }
         """
+        # Polymarket is a separate source - only extract when explicitly requested
+        # Auto-detect: if "polymarket" is in providers list, extract it and remove from providers
+        if providers and "polymarket" in providers:
+            if polymarket is None:
+                polymarket = True
+            providers = [p for p in providers if p != "polymarket"]
+        elif polymarket is None:
+            polymarket = False  # Default: don't extract polymarket in main pipeline
         # Start timing
         pipeline_start_time = time.time()
 
@@ -302,7 +322,46 @@ class ExtractionPipeline:
                 log_progress("Shutdown signal detected, aborting pipeline")
                 return results
 
-            # Extract from Polymarket
+            # Determine target providers
+            target_providers = providers if providers is not None else self.engine.get_enabled_providers()
+
+            # Extract Pinnacle FIRST (primary sharp source for canonical events)
+            # This ensures other sources can match against Pinnacle's team order
+            if "pinnacle" in target_providers:
+                log_progress("Extracting Pinnacle (sharp source, establishing canonical events)...")
+                pinnacle_start = time.time()
+
+                if self.metrics:
+                    self.metrics.start_provider("pinnacle")
+
+                try:
+                    pinnacle_result = await self._extract_provider(
+                        "pinnacle",
+                        sorted(list(set(s.kambi_sport for s in self.engine.sports))),
+                        max_events_per_sport
+                    )
+                    results["providers"]["pinnacle"] = pinnacle_result
+
+                    if self.metrics:
+                        self.metrics.end_provider("pinnacle", success=True)
+
+                    pinnacle_elapsed = time.time() - pinnacle_start
+                    log_progress(
+                        f"Pinnacle done: {pinnacle_result.get('events_processed', 0)} events in {pinnacle_elapsed:.1f}s"
+                    )
+                except Exception as e:
+                    logger.error(f"Pinnacle extraction failed: {e}")
+                    results["providers"]["pinnacle"] = {"error": str(e)}
+                    if self.metrics:
+                        self.metrics.end_provider("pinnacle", success=False, error=str(e))
+
+                # Remove pinnacle from target_providers to avoid re-extraction
+                target_providers = [p for p in target_providers if p != "pinnacle"]
+
+                # Commit Pinnacle data so Polymarket can query it for inversion detection
+                self.session.commit()
+
+            # Extract from Polymarket (will fuzzy match against Pinnacle events)
             if polymarket:
                 log_progress("Extracting Polymarket (truth source)...")
                 poly_start = time.time()
@@ -323,7 +382,6 @@ class ExtractionPipeline:
                 )
 
             # Extract from other providers in parallel
-            target_providers = providers if providers is not None else self.engine.get_enabled_providers()
             kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
             if target_providers:
@@ -614,7 +672,18 @@ class ExtractionPipeline:
         extractor = self.engine.get_extractor(provider_id)
 
         # Delay between sports for rate-limited APIs (seconds)
-        sport_delay = 3.0 if is_kambi else 0.0
+        # 1.5s balances speed vs rate limit safety
+        sport_delay = 1.5 if is_kambi else 0.0
+
+        # Filter sports to only those with sharp data (Pinnacle/Polymarket)
+        # No point extracting sports we can't match against
+        sharp_sports = set(self.event_cache.keys())
+        if sharp_sports:
+            original_count = len(sports)
+            sports = [s for s in sports if s in sharp_sports]
+            skipped = original_count - len(sports)
+            if skipped > 0:
+                logger.info(f"[{provider_id}] Skipping {skipped} sports without sharp data")
 
         # Define per-sport extraction function
         async def extract_sport(sport: str, sport_index: int):

@@ -5,6 +5,7 @@
 
 export interface Command {
   name: string;
+  aliases?: string[];
   description: string;
   execute: () => Promise<void> | void;
   category?: string;
@@ -15,168 +16,55 @@ export interface CommandRegistry {
 }
 
 export function createCommandRegistry(handlers: {
-  onShowOpportunities: (args: string) => Promise<void>;
-  onShowBets: (args: string) => Promise<void>;
-  onShowBalanceBreakdown: () => Promise<void>;
   onShowStats: () => Promise<void>;
-  onRefresh: () => void;
   onClear: () => void;
-  onRunExtraction: (providers?: string) => Promise<void>;
-  onShowProviders: () => void;
-  onShowHealth: () => void;
-  onSettleBet: (args: string) => Promise<void>;
-  onPlaceBet: (args: string) => Promise<void>;
-  onProfileCommand: (args: string) => Promise<void>;
+  onBonusCommand: () => void;
+  onExtractWorkflow: () => void;
+  onArbWorkflow: () => void;
+  onValueWorkflow: () => void;
+  onBetsWorkflow: () => void;
+  onBankrollWorkflow: () => void;
 }): CommandRegistry {
   return {
-    // Data & Extraction
     extract: {
       name: 'extract',
-      description: 'Extract ALL sports/leagues from configured providers (or specify: /extract unibet,leovegas)',
-      category: 'Extraction',
-      execute: async () => {
-        await handlers.onRunExtraction();
-      },
-    },
-
-    // Opportunities & Bets
-    opportunities: {
-      name: 'opportunities',
-      description: 'List opportunities with filters (e.g., --type arb --sport football)',
-      category: 'Betting',
-      execute: async () => {
-        await handlers.onShowOpportunities('');
-      },
+      description: 'Run extraction',
+      execute: () => handlers.onExtractWorkflow(),
     },
     arb: {
       name: 'arb',
-      description: 'Show arbitrage opportunities',
-      category: 'Betting',
-      execute: async () => {
-        await handlers.onShowOpportunities('--type arb');
-      },
+      description: 'Find arbitrage',
+      execute: () => handlers.onArbWorkflow(),
     },
     value: {
       name: 'value',
-      description: 'Show value bets',
-      category: 'Betting',
-      execute: async () => {
-        await handlers.onShowOpportunities('--type value');
-      },
+      description: 'Find value bets',
+      execute: () => handlers.onValueWorkflow(),
+    },
+    bonus: {
+      name: 'bonus',
+      description: 'Bonus arbitrage',
+      execute: () => handlers.onBonusCommand(),
     },
     bets: {
       name: 'bets',
-      description: 'Show bets with filters (e.g., --status pending)',
-      category: 'Betting',
-      execute: async () => {
-        await handlers.onShowBets('');
-      },
+      description: 'View/settle bets',
+      execute: () => handlers.onBetsWorkflow(),
     },
-
-    // Bankroll
     bankroll: {
       name: 'bankroll',
-      description: 'Show bankroll breakdown table',
-      category: 'Bankroll',
-      execute: async () => {
-        await handlers.onShowBalanceBreakdown();
-      },
-    },
-    balance: {
-      name: 'balance',
-      description: 'Show balance breakdown (alias for /bankroll)',
-      category: 'Bankroll',
-      execute: async () => {
-        await handlers.onShowBalanceBreakdown();
-      },
+      description: 'Bankroll management',
+      execute: () => handlers.onBankrollWorkflow(),
     },
     stats: {
       name: 'stats',
-      description: 'Show betting statistics',
-      category: 'Analytics',
-      execute: async () => {
-        await handlers.onShowStats();
-      },
-    },
-
-    // Actions
-    'place-bet': {
-      name: 'place-bet',
-      description: 'Place bet on opportunity (usage: /place-bet <opp#> <stake> [provider])',
-      category: 'Actions',
-      execute: async () => {
-        // Will be handled with args
-      },
-    },
-    'settle-bet': {
-      name: 'settle-bet',
-      description: 'Settle pending bet (usage: /settle-bet <id> won/lost/void)',
-      category: 'Actions',
-      execute: async () => {
-        // Will be handled with args
-      },
-    },
-
-    // System
-    providers: {
-      name: 'providers',
-      description: 'List all providers',
-      category: 'System',
-      execute: () => {
-        handlers.onShowProviders();
-      },
-    },
-    health: {
-      name: 'health',
-      description: 'Check system health',
-      category: 'System',
-      execute: () => {
-        handlers.onShowHealth();
-      },
-    },
-    refresh: {
-      name: 'refresh',
-      description: 'Refresh all data',
-      category: 'System',
-      execute: () => {
-        handlers.onRefresh();
-      },
+      description: 'Betting stats',
+      execute: async () => await handlers.onShowStats(),
     },
     clear: {
       name: 'clear',
-      description: 'Clear chat history',
-      category: 'System',
-      execute: () => {
-        handlers.onClear();
-      },
-    },
-
-    // Profile Management
-    profile: {
-      name: 'profile',
-      description: 'Manage profiles (usage: /profile list|switch|create|delete <name>)',
-      category: 'Profile',
-      execute: async () => {
-        // Will be handled with args
-      },
-    },
-
-    // Help
-    help: {
-      name: 'help',
-      description: 'Show all available commands',
-      category: 'Help',
-      execute: () => {
-        // Will be handled specially to show command list
-      },
-    },
-    commands: {
-      name: 'commands',
-      description: 'Show all available commands (alias for /help)',
-      category: 'Help',
-      execute: () => {
-        // Will be handled specially
-      },
+      description: 'Clear terminal',
+      execute: () => handlers.onClear(),
     },
   };
 }
@@ -195,32 +83,12 @@ export function parseCommand(input: string): { command: string; args: string } |
 export function filterCommands(query: string, commands: CommandRegistry): Command[] {
   const lowerQuery = query.toLowerCase();
   return Object.values(commands).filter(
-    (cmd) =>
-      cmd.name.toLowerCase().includes(lowerQuery) ||
-      cmd.description.toLowerCase().includes(lowerQuery)
+    (cmd) => cmd.name.toLowerCase().includes(lowerQuery)
   );
 }
 
 export function formatCommandHelp(commands: CommandRegistry): string {
-  const categories = new Map<string, Command[]>();
-
-  Object.values(commands).forEach((cmd) => {
-    const category = cmd.category || 'Other';
-    if (!categories.has(category)) {
-      categories.set(category, []);
-    }
-    categories.get(category)!.push(cmd);
-  });
-
-  let help = '**Available Commands:**\n\n';
-
-  categories.forEach((cmds, category) => {
-    help += `**[${category}]**\n`;
-    cmds.forEach((cmd) => {
-      help += `- \`/${cmd.name}\` - ${cmd.description}\n`;
-    });
-    help += '\n';
-  });
-
-  return help;
+  return Object.values(commands)
+    .map((cmd) => `/${cmd.name}`)
+    .join('  ');
 }

@@ -7,10 +7,21 @@ _pipeline_instance = None
 
 
 def get_db():
-    """Database session dependency."""
+    """
+    Database session dependency with proper lifecycle management.
+
+    - Creates a new session per request
+    - Commits on success (no exceptions)
+    - Rolls back on error
+    - Always closes the session
+    """
     db = get_session()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

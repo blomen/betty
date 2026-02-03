@@ -21,16 +21,181 @@ import type {
   ProviderHealth,
   BonusMatchRequest,
   BonusMatch,
+  PolymarketMatchedResponse,
+  BonusScanResponse,
+  ArbitrageScanResponse,
 } from '@/types';
 
 const API_BASE = '/api';
 
-async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, options);
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status} ${response.statusText}`);
+// Configuration for fetch with retry
+const DEFAULT_TIMEOUT_MS = 30000; // 30 seconds
+const DEFAULT_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 1000; // 1 second
+
+// Structured error classes
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public statusText: string,
+    public endpoint: string,
+    public isRetryable: boolean = false
+  ) {
+    super(message);
+    this.name = 'ApiError';
   }
-  return response.json();
+}
+
+export class NetworkError extends Error {
+  constructor(
+    message: string,
+    public endpoint: string,
+    public isRetryable: boolean = true
+  ) {
+    super(message);
+    this.name = 'NetworkError';
+  }
+}
+
+export class TimeoutError extends Error {
+  constructor(
+    message: string = 'Request timed out',
+    public endpoint: string,
+    public timeoutMs: number
+  ) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+// Determine if an error is retryable
+function isRetryableStatus(status: number): boolean {
+  // Retry on server errors and rate limits
+  return status >= 500 || status === 429 || status === 408;
+}
+
+// Sleep helper for retry backoff
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry<T>(
+  endpoint: string,
+  options?: RequestInit,
+  retries: number = DEFAULT_RETRIES,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const isRetryable = isRetryableStatus(response.status);
+
+        // If not retryable or last attempt, throw immediately
+        if (!isRetryable || attempt === retries) {
+          // Try to extract error detail from response body
+          let errorDetail = '';
+          try {
+            const errorBody = await response.json();
+            errorDetail = errorBody.detail || errorBody.message || errorBody.error || '';
+          } catch {
+            // Ignore JSON parse errors
+          }
+
+          const errorMessage = errorDetail
+            ? `${errorDetail}`
+            : `API error: ${response.status} ${response.statusText}`;
+
+          throw new ApiError(
+            errorMessage,
+            response.status,
+            response.statusText,
+            endpoint,
+            isRetryable
+          );
+        }
+
+        // Retryable error - calculate backoff and retry
+        const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        console.warn(
+          `API request failed (attempt ${attempt + 1}/${retries + 1}): ${response.status}, retrying in ${backoffMs}ms`
+        );
+        await sleep(backoffMs);
+        continue;
+      }
+
+      return response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      // Handle abort/timeout
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        lastError = new TimeoutError(
+          `Request to ${endpoint} timed out after ${timeoutMs}ms`,
+          endpoint,
+          timeoutMs
+        );
+
+        // Retry on timeout
+        if (attempt < retries) {
+          const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+          console.warn(
+            `Request timed out (attempt ${attempt + 1}/${retries + 1}), retrying in ${backoffMs}ms`
+          );
+          await sleep(backoffMs);
+          continue;
+        }
+      }
+
+      // Handle network errors
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        lastError = new NetworkError(
+          `Network error: ${error.message}`,
+          endpoint
+        );
+
+        // Retry on network errors
+        if (attempt < retries) {
+          const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+          console.warn(
+            `Network error (attempt ${attempt + 1}/${retries + 1}), retrying in ${backoffMs}ms`
+          );
+          await sleep(backoffMs);
+          continue;
+        }
+      }
+
+      // Re-throw ApiError or save for later
+      if (error instanceof ApiError) {
+        lastError = error;
+        if (!error.isRetryable) {
+          throw error;
+        }
+      } else {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  }
+
+  // All retries exhausted
+  throw lastError || new Error(`Request failed after ${retries + 1} attempts`);
+}
+
+// Legacy fetchJson for backward compatibility (uses retry internally)
+async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  return fetchWithRetry<T>(endpoint, options);
 }
 
 export const api = {
@@ -166,6 +331,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
+  },
+
+  async getBonusArbitrage(
+    anchorProvider: string,
+    limit = 50
+  ): Promise<BonusScanResponse> {
+    const params = new URLSearchParams();
+    params.set('anchor_provider', anchorProvider);
+    params.set('limit', limit.toString());
+    return fetchJson<BonusScanResponse>(`/opportunities/bonus/scan?${params}`);
+  },
+
+  async scanArbitrage(
+    minProfitPct = 0.5,
+    limit = 50
+  ): Promise<ArbitrageScanResponse> {
+    const params = new URLSearchParams();
+    params.set('min_profit_pct', minProfitPct.toString());
+    params.set('limit', limit.toString());
+    return fetchJson<ArbitrageScanResponse>(`/opportunities/arbitrage/scan?${params}`);
   },
 
   // ============ Bets ============
@@ -366,6 +551,17 @@ export const api = {
   // ============ Health ============
   async getHealth(): Promise<{ status: string; time: string }> {
     return fetchJson('/health');
+  },
+
+  // ============ Polymarket ============
+  async getPolymarketMatched(
+    sport?: string,
+    limit = 50
+  ): Promise<PolymarketMatchedResponse> {
+    const params = new URLSearchParams();
+    if (sport) params.set('sport', sport);
+    params.set('limit', limit.toString());
+    return fetchJson(`/polymarket/matched?${params}`);
   },
 
   // ============ Profiles ============

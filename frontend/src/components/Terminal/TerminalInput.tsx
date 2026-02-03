@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
 import type { Command } from '@/utils/commands';
+import type { BonusWorkflowState, BonusDropdownOption, DropdownWorkflowState, DropdownOption, BankrollWorkflowState, BankrollOption } from '@/types';
 
 interface TerminalInputProps {
   onSend: (message: string) => void;
@@ -9,40 +10,128 @@ interface TerminalInputProps {
   isLoading?: boolean;
   disabled?: boolean;
   placeholder?: string;
+  onSlashTyped?: () => void;
+  onInputChange?: (value: string) => void;
+  autofillValue?: string;
+  // Bonus workflow props
+  bonusWorkflow?: BonusWorkflowState;
+  bonusOptions?: BonusDropdownOption[];
+  onBonusSelect?: (option: BonusDropdownOption) => void;
+  onBonusCancel?: () => void;
+  // Generic dropdown workflow props (extract, arb, value)
+  dropdownWorkflow?: DropdownWorkflowState;
+  dropdownOptions?: DropdownOption[];
+  onDropdownSelect?: (option: DropdownOption) => void;
+  onDropdownCancel?: () => void;
+  // Bankroll workflow props
+  bankrollWorkflow?: BankrollWorkflowState;
+  bankrollOptions?: BankrollOption[];
+  onBankrollSelect?: (option: BankrollOption) => void;
+  onBankrollCancel?: () => void;
+  // Selected indices (controlled by parent for inline panel sync)
+  selectedDropdownIndex?: number;
+  selectedBonusIndex?: number;
+  selectedBankrollIndex?: number;
+  onSelectedDropdownIndexChange?: (index: number) => void;
+  onSelectedBonusIndexChange?: (index: number) => void;
+  onSelectedBankrollIndexChange?: (index: number) => void;
 }
 
 export function TerminalInput({
   onSend,
   onCommand,
-  commands = [],
+  commands: _commands = [],
   onStop,
   isLoading = false,
   disabled = false,
-  placeholder = 'Ask a question or type / for commands...',
+  placeholder = 'Type / for commands...',
+  onSlashTyped,
+  onInputChange,
+  autofillValue,
+  bonusWorkflow,
+  bonusOptions = [],
+  onBonusSelect,
+  onBonusCancel,
+  dropdownWorkflow,
+  dropdownOptions = [],
+  onDropdownSelect,
+  onDropdownCancel,
+  bankrollWorkflow,
+  bankrollOptions = [],
+  onBankrollSelect,
+  onBankrollCancel,
+  selectedDropdownIndex: controlledDropdownIndex,
+  selectedBonusIndex: controlledBonusIndex,
+  selectedBankrollIndex: controlledBankrollIndex,
+  onSelectedDropdownIndexChange,
+  onSelectedBonusIndexChange,
+  onSelectedBankrollIndexChange,
 }: TerminalInputProps) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [showCommandSuggestions, setShowCommandSuggestions] = useState(false);
-  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [internalBonusIndex, setInternalBonusIndex] = useState(0);
+  const [internalDropdownIndex, setInternalDropdownIndex] = useState(0);
+  const [internalBankrollIndex, setInternalBankrollIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Filter commands based on input
-  const filteredCommands = useCallback(() => {
-    if (!input.startsWith('/')) return [];
-    const query = input.slice(1).toLowerCase().split(/\s+/)[0];
-    return commands.filter((cmd) =>
-      cmd.name.toLowerCase().startsWith(query)
-    ).slice(0, 8); // Max 8 suggestions
-  }, [input, commands]);
+  // Use controlled or internal state
+  const selectedBonusIndex = controlledBonusIndex ?? internalBonusIndex;
+  const selectedDropdownIndex = controlledDropdownIndex ?? internalDropdownIndex;
+  const selectedBankrollIndex = controlledBankrollIndex ?? internalBankrollIndex;
 
-  const commandSuggestions = filteredCommands();
+  const setSelectedBonusIndex = (value: number | ((prev: number) => number)) => {
+    const newValue = typeof value === 'function' ? value(selectedBonusIndex) : value;
+    setInternalBonusIndex(newValue);
+    onSelectedBonusIndexChange?.(newValue);
+  };
 
-  // Show/hide command suggestions
+  const setSelectedDropdownIndex = (value: number | ((prev: number) => number)) => {
+    const newValue = typeof value === 'function' ? value(selectedDropdownIndex) : value;
+    setInternalDropdownIndex(newValue);
+    onSelectedDropdownIndexChange?.(newValue);
+  };
+
+  const setSelectedBankrollIndex = (value: number | ((prev: number) => number)) => {
+    const newValue = typeof value === 'function' ? value(selectedBankrollIndex) : value;
+    setInternalBankrollIndex(newValue);
+    onSelectedBankrollIndexChange?.(newValue);
+  };
+
+  // Check if bonus workflow is active
+  const isBonusActive = bonusWorkflow?.step !== 'idle' && bonusWorkflow?.step !== undefined;
+
+  // Check if generic dropdown workflow is active
+  const isDropdownActive = dropdownWorkflow?.type !== 'idle' && dropdownWorkflow?.type !== undefined;
+
+  // Check if bankroll workflow is active (and has options to navigate)
+  const isBankrollActive = bankrollWorkflow?.step !== 'idle' && bankrollWorkflow?.step !== undefined &&
+    bankrollWorkflow?.step !== 'enter-amount' && bankrollWorkflow?.step !== 'confirm-reset';
+
+  // Reset bonus selection when options change
   useEffect(() => {
-    setShowCommandSuggestions(input.startsWith('/') && input.length > 0 && commandSuggestions.length > 0);
-    setSelectedCommandIndex(0);
-  }, [input, commandSuggestions.length]);
+    setSelectedBonusIndex(0);
+  }, [bonusOptions]);
+
+  // Reset dropdown selection when options change
+  useEffect(() => {
+    setSelectedDropdownIndex(0);
+  }, [dropdownOptions]);
+
+  // Reset bankroll selection when options change
+  useEffect(() => {
+    setSelectedBankrollIndex(0);
+  }, [bankrollOptions]);
+
+  // Handle autofill from command panel (value includes counter suffix like "/bankroll#1")
+  useEffect(() => {
+    if (autofillValue !== undefined) {
+      const value = autofillValue.split('#')[0];
+      setInput(value);
+      onInputChange?.(value);
+      textareaRef.current?.focus();
+    }
+  }, [autofillValue]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -58,67 +147,125 @@ export function TerminalInput({
     textareaRef.current?.focus();
   }, []);
 
+  // Handle input changes
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value);
+    onInputChange?.(value);
+
+    // Notify parent when / is typed
+    if (value === '/') {
+      onSlashTyped?.();
+    }
+  }, [onInputChange, onSlashTyped]);
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || isLoading || disabled) return;
-
-    console.log('[DEBUG] handleSend called with:', trimmed);
-    console.log('[DEBUG] isLoading:', isLoading, 'disabled:', disabled);
-    console.log('[DEBUG] onSend:', typeof onSend, 'onCommand:', typeof onCommand);
 
     setHistory((prev) => [...prev, trimmed]);
     setHistoryIndex(-1);
 
     // Check if it's a slash command
     if (trimmed.startsWith('/') && onCommand) {
-      console.log('[DEBUG] Executing slash command');
       const parts = trimmed.slice(1).split(/\s+/);
       const command = parts[0].toLowerCase();
       const args = parts.slice(1).join(' ');
       onCommand(command, args);
     } else {
-      console.log('[DEBUG] Sending message to chat');
       onSend(trimmed);
     }
 
     setInput('');
-    setShowCommandSuggestions(false);
-  }, [input, isLoading, disabled, onSend, onCommand]);
-
-  const handleCommandSelect = useCallback((cmd: Command) => {
-    setInput(`/${cmd.name} `);
-    setShowCommandSuggestions(false);
-    textareaRef.current?.focus();
-  }, []);
+    onInputChange?.('');
+  }, [input, isLoading, disabled, onSend, onCommand, onInputChange]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // Command suggestions navigation
-      if (showCommandSuggestions && commandSuggestions.length > 0) {
+      // Generic dropdown navigation (extract, arb, value - takes highest priority)
+      if (isDropdownActive && dropdownOptions.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setSelectedCommandIndex((prev) =>
-            prev < commandSuggestions.length - 1 ? prev + 1 : 0
+          setSelectedDropdownIndex((prev) =>
+            prev < dropdownOptions.length - 1 ? prev + 1 : 0
           );
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
-          setSelectedCommandIndex((prev) =>
-            prev > 0 ? prev - 1 : commandSuggestions.length - 1
+          setSelectedDropdownIndex((prev) =>
+            prev > 0 ? prev - 1 : dropdownOptions.length - 1
           );
           return;
         }
-        if (e.key === 'Tab') {
+        if (e.key === 'Enter') {
           e.preventDefault();
-          handleCommandSelect(commandSuggestions[selectedCommandIndex]);
+          onDropdownSelect?.(dropdownOptions[selectedDropdownIndex]);
           return;
         }
         if (e.key === 'Escape') {
           e.preventDefault();
-          setShowCommandSuggestions(false);
+          onDropdownCancel?.();
           return;
         }
+        return;
+      }
+
+      // Bonus dropdown navigation (takes priority)
+      if (isBonusActive && bonusOptions.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedBonusIndex((prev) =>
+            prev < bonusOptions.length - 1 ? prev + 1 : 0
+          );
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedBonusIndex((prev) =>
+            prev > 0 ? prev - 1 : bonusOptions.length - 1
+          );
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onBonusSelect?.(bonusOptions[selectedBonusIndex]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onBonusCancel?.();
+          return;
+        }
+        return;
+      }
+
+      // Bankroll dropdown navigation
+      if (isBankrollActive && bankrollOptions.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSelectedBankrollIndex((prev) =>
+            prev < bankrollOptions.length - 1 ? prev + 1 : 0
+          );
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSelectedBankrollIndex((prev) =>
+            prev > 0 ? prev - 1 : bankrollOptions.length - 1
+          );
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onBankrollSelect?.(bankrollOptions[selectedBankrollIndex]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onBankrollCancel?.();
+          return;
+        }
+        return;
       }
 
       // Enter to send (Shift+Enter for newline)
@@ -128,130 +275,57 @@ export function TerminalInput({
         return;
       }
 
-      // Escape to stop generation or close suggestions
+      // Escape to stop generation
       if (e.key === 'Escape') {
         if (isLoading && onStop) {
           e.preventDefault();
           onStop();
-        } else if (showCommandSuggestions) {
-          e.preventDefault();
-          setShowCommandSuggestions(false);
         }
         return;
       }
 
-      // Up/Down for history navigation (only when not showing command suggestions)
-      if (!showCommandSuggestions) {
-        if (e.key === 'ArrowUp' && input === '' && history.length > 0) {
-          e.preventDefault();
-          const newIndex = historyIndex === -1 ? history.length - 1 : Math.max(0, historyIndex - 1);
+      // Up/Down for history navigation
+      if (e.key === 'ArrowUp' && input === '' && history.length > 0) {
+        e.preventDefault();
+        const newIndex = historyIndex === -1 ? history.length - 1 : Math.max(0, historyIndex - 1);
+        setHistoryIndex(newIndex);
+        setInput(history[newIndex]);
+        return;
+      }
+
+      if (e.key === 'ArrowDown' && historyIndex !== -1) {
+        e.preventDefault();
+        const newIndex = historyIndex + 1;
+        if (newIndex >= history.length) {
+          setHistoryIndex(-1);
+          setInput('');
+        } else {
           setHistoryIndex(newIndex);
           setInput(history[newIndex]);
-          return;
         }
-
-        if (e.key === 'ArrowDown' && historyIndex !== -1) {
-          e.preventDefault();
-          const newIndex = historyIndex + 1;
-          if (newIndex >= history.length) {
-            setHistoryIndex(-1);
-            setInput('');
-          } else {
-            setHistoryIndex(newIndex);
-            setInput(history[newIndex]);
-          }
-          return;
-        }
+        return;
       }
     },
-    [input, history, historyIndex, isLoading, handleSend, onStop, showCommandSuggestions, commandSuggestions, selectedCommandIndex, handleCommandSelect]
+    [input, history, historyIndex, isLoading, handleSend, onStop, isBonusActive, bonusOptions, selectedBonusIndex, onBonusSelect, onBonusCancel, isDropdownActive, dropdownOptions, selectedDropdownIndex, onDropdownSelect, onDropdownCancel, isBankrollActive, bankrollOptions, selectedBankrollIndex, onBankrollSelect, onBankrollCancel]
   );
 
   return (
-    <div className="border-t border-terminal-border bg-terminal-surface relative">
-      {/* Command Suggestions Dropdown */}
-      {showCommandSuggestions && commandSuggestions.length > 0 && (
-        <div className="absolute bottom-full left-0 right-0 bg-terminal-bg border-l border-r border-t border-terminal-accent/30 max-h-64 overflow-y-auto">
-          <div className="px-3 py-1.5 border-b border-terminal-border/50 text-[10px] text-terminal-muted uppercase tracking-wider">
-            [commands] Tab to select | Up/Down to navigate
-          </div>
-          {commandSuggestions.map((cmd, index) => (
-            <button
-              key={cmd.name}
-              onClick={() => handleCommandSelect(cmd)}
-              className={`w-full text-left px-3 py-2 flex items-start gap-3 border-b border-terminal-border/30 last:border-b-0
-                         transition-colors font-mono text-sm ${
-                           index === selectedCommandIndex
-                             ? 'bg-terminal-accent/10 text-terminal-accent'
-                             : 'text-terminal-text hover:bg-terminal-border/30'
-                         }`}
-            >
-              <span className="font-medium whitespace-nowrap text-terminal-accent">
-                /{cmd.name}
-              </span>
-              <span className="text-xs text-terminal-muted flex-1 mt-0.5">
-                {cmd.description}
-              </span>
-              {cmd.category && (
-                <span className="text-[10px] text-terminal-muted/60 uppercase tracking-wide">
-                  [{cmd.category}]
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+    <div className="flex items-start gap-2 p-4 border-t border-terminal-border">
+      <span className="text-terminal-accent py-1 select-none">&gt;</span>
+      <textarea
+        ref={textareaRef}
+        value={input}
+        onChange={(e) => handleInputChange(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        disabled={disabled}
+        rows={1}
+        className="flex-1 bg-transparent text-terminal-text placeholder-terminal-muted/50 caret-terminal-cursor
+                   resize-none outline-none py-1 min-h-[24px] max-h-[200px]"
+      />
+      {isLoading && (
+        <span className="text-terminal-muted text-xs py-1 animate-pulse">...</span>
       )}
-
-      {/* Input Box */}
-      <div className="flex items-start gap-2 p-3 font-mono">
-        {/* Input area */}
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          disabled={disabled}
-          rows={1}
-          className="flex-1 bg-transparent text-terminal-text placeholder-terminal-muted/40
-                     resize-none outline-none py-1.5 min-h-[28px] max-h-[200px] font-mono"
-        />
-
-        {/* Action button - Enhanced style */}
-        {isLoading ? (
-          <button
-            onClick={onStop}
-            className="flex-shrink-0 px-3 py-1.5 text-terminal-red hover:bg-terminal-red/10
-                       transition-colors text-xs font-mono font-bold border border-terminal-red/30 rounded"
-            title="Stop generation (Esc)"
-          >
-            [STOP]
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || disabled}
-            className="flex-shrink-0 px-3 py-1.5 bg-terminal-accent/10 hover:bg-terminal-accent/20 text-terminal-accent
-                       transition-all text-xs font-mono font-bold border border-terminal-accent rounded
-                       disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-terminal-accent/10"
-            title="Send message (Enter)"
-          >
-            [ASK]
-          </button>
-        )}
-      </div>
-
-      {/* Terminal hints bar */}
-      <div className="px-3 pb-2 border-t border-terminal-border/30 pt-1.5 bg-terminal-bg/50">
-        <div className="flex items-center gap-4 text-[10px] text-terminal-muted/50 font-mono">
-          <span>[Enter] send</span>
-          <span>[/] commands</span>
-          <span>[Shift+Enter] newline</span>
-          {isLoading && <span className="text-terminal-yellow">[Esc] stop</span>}
-          {!showCommandSuggestions && history.length > 0 && <span>[Up/Down] history</span>}
-          {showCommandSuggestions && <span className="text-terminal-accent">[Tab] select</span>}
-        </div>
-      </div>
     </div>
   );
 }

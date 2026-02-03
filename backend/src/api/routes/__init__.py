@@ -10,6 +10,7 @@ from .extraction import router as extraction_router
 from .metrics import router as metrics_router
 from .monitoring import router as monitoring_router
 from .chat import router as chat_router
+from .polymarket import router as polymarket_router
 
 __all__ = [
     'providers_router',
@@ -22,4 +23,5 @@ __all__ = [
     'metrics_router',
     'monitoring_router',
     'chat_router',
+    'polymarket_router',
 ]

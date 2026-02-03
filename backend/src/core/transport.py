@@ -34,9 +34,14 @@ class HttpTransport(Transport):
     """
     Lightweight HTTP Transport using aiohttp.
     Best for APIs.
+
+    Supports async context manager for proper resource cleanup:
+        async with HttpTransport() as transport:
+            data = await transport.get(url)
     """
     def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None):
         self.session = None
+        self._owns_session = True  # Track if we created the session
         self.headers = headers or {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
@@ -44,6 +49,16 @@ class HttpTransport(Transport):
         self.rate_limit_config = rate_limit_config
         # Track consecutive 429s per provider for circuit breaker notification
         self._consecutive_429s: Dict[str, int] = {}
+
+    async def __aenter__(self):
+        """Async context manager entry - ensures session is created."""
+        await self._ensure_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - ensures session is closed."""
+        await self.close()
+        return False
 
     async def _ensure_session(self):
         if not self.session:

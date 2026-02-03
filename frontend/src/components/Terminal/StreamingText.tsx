@@ -11,8 +11,16 @@ export const StreamingText = memo(function StreamingText({
   content,
   isStreaming = false,
 }: StreamingTextProps) {
+  // Check if content looks like an ASCII table (contains | and multiple lines)
+  const isAsciiTable = content.includes('|') && content.includes('\n') && content.split('\n').filter(l => l.includes('|')).length > 1;
+
   return (
-    <div className="prose prose-invert prose-sm max-w-none">
+    <div className="prose prose-invert prose-sm max-w-none overflow-x-auto">
+      {isAsciiTable ? (
+        <pre className="bg-transparent border-0 p-0 m-0 whitespace-pre overflow-x-auto text-terminal-text font-mono text-sm">
+          {content}
+        </pre>
+      ) : (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -74,7 +82,7 @@ export const StreamingText = memo(function StreamingText({
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-terminal-link hover:underline"
+              className="text-terminal-accent hover:underline"
             >
               {children}
             </a>
@@ -83,6 +91,7 @@ export const StreamingText = memo(function StreamingText({
       >
         {content}
       </ReactMarkdown>
+      )}
       {isStreaming && (
         <span className="inline-block w-2 h-4 bg-terminal-accent animate-blink ml-0.5" />
       )}

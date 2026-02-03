@@ -1,0 +1,31 @@
+{
+  "captured_at": "2026-02-01",
+  "description": "Baseline metrics for provider pipeline validation",
+  "providers": {
+    "Pinnacle.Com": {
+      "min_ratio": 2.4,
+      "max_ratio": 2.8,
+      "min_norm": 100,
+      "description": "Sharp source - should have clean 1x2 data"
+    },
+    "Polymarket": {
+      "min_ratio": 2.2,
+      "max_ratio": 2.6,
+      "min_norm": 90,
+      "description": "Prediction market - user reviews data quality manually"
+    },
+    "Leovegas.Com": {
+      "min_ratio": 2.8,
+      "max_ratio": 3.2,
+      "min_norm": 100,
+      "description": "Kambi-powered soft bookmaker"
+    }
+  },
+  "thresholds": {
+    "min_cross_match_pct": 15,
+    "max_score_outcomes": 5,
+    "default_min_ratio": 2.0,
+    "default_max_ratio": 3.2,
+    "default_min_norm": 90
+  }
+}

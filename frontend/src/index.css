@@ -13,58 +13,61 @@ html, body, #root {
 }
 
 body {
-  font-family: 'JetBrains Mono', monospace;
-  background-color: #0a0a0a;
-  color: #e0e0e0;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: 0;
+  background-color: #0F1115;
+  color: #E6E8EB;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: #161A20;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a2a2a;
-  border-radius: 4px;
+  background: #2A2F36;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #d4af37;
+  background: #3A4046;
 }
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(212, 175, 55, 0.3);
-  color: #0a0a0a;
+  background-color: rgba(79, 195, 247, 0.3);
+  color: #ffffff;
 }
 
 /* Markdown code blocks */
 pre {
-  background-color: #1a1a1a !important;
-  border: 1px solid #2a2a2a;
-  border-radius: 6px;
+  background-color: #161A20 !important;
+  border: 1px solid #2A2F36;
+  border-radius: 4px;
   padding: 12px;
   overflow-x: auto;
 }
 
 code {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, monospace;
   font-size: 0.9em;
-  color: #e0e0e0;
+  color: #E6E8EB;
 }
 
 :not(pre) > code {
-  background-color: rgba(212, 175, 55, 0.1);
+  background-color: rgba(79, 195, 247, 0.1);
   padding: 2px 6px;
   border-radius: 4px;
-  border: 1px solid rgba(212, 175, 55, 0.2);
 }
 
 /* Markdown tables */
@@ -75,35 +78,27 @@ table {
 }
 
 th, td {
-  border: 1px solid #2a2a2a;
+  border: 1px solid #2A2F36;
   padding: 8px 12px;
   text-align: left;
 }
 
 th {
-  background-color: #1a1a1a;
-  color: #d4af37;
-  font-weight: 600;
+  background-color: #161A20;
+  color: #4FC3F7;
+  font-weight: 500;
 }
 
 tr:nth-child(even) {
-  background-color: rgba(26, 26, 26, 0.5);
+  background-color: rgba(22, 26, 32, 0.5);
 }
 
 /* Links */
 a {
-  color: #00aaff;
+  color: #4FC3F7;
   text-decoration: none;
 }
 
 a:hover {
   text-decoration: underline;
-  color: #d4af37;
-}
-
-/* Dotted grid background pattern */
-.dotted-grid {
-  background-image: radial-gradient(circle, rgba(42, 42, 42, 0.6) 1px, transparent 1px);
-  background-size: 24px 24px;
-  background-position: 0 0;
 }

@@ -179,6 +179,8 @@ olympique marseille:
 olympique lyon:
   - lyon
   - ol
+  - olympique lyonnais
+  - lyonnais
 nice:
   - ogc nice
 nantes:
@@ -255,6 +257,14 @@ nordsjaelland:
   - nordsjalland
   - "nordsjælland"
   - "fc nordsjælland"
+copenhagen:
+  - fc copenhagen
+  - fc kobenhavn
+  - kopenhamn
+  - "fc københavn"
+  - "københavn"
+midtjylland:
+  - fc midtjylland
 
 # NBA
 lakers:
@@ -661,6 +671,53 @@ central coast:
 wellington phoenix:
   - wellington
   - phoenix
+
+# International Cricket Teams
+new zealand:
+  - nya zeeland
+  - nz
+  - black caps
+australia:
+  - australien
+india:
+  - indien
+england:
+  - england cricket
+pakistan:
+  - pakistan cricket
+south africa:
+  - sydafrika
+  - proteas
+west indies:
+  - windies
+  - wi
+bangladesh:
+  - bangladesh cricket
+sri lanka:
+  - sri lanka cricket
+afghanistan:
+  - afghanistan cricket
+
+# Serbian/Balkan Basketball
+fmp beograd:
+  - kk fmp beograd
+  - fmp
+borac cacak:
+  - kk borac cacak
+  - borac
+
+# Central American Football
+espana:
+  - cd espana
+  - real espana
+motagua:
+  - cd motagua
+
+# South American Football
+grau:
+  - ca grau
+sport huancayo:
+  - cs huancayo
 
 # Darts (common name variations)
 luke littler:

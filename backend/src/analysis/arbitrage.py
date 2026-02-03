@@ -100,8 +100,8 @@ def find_arbitrage(
     if profit_pct < min_profit_pct:
         return None
 
-    # Sanity check: unrealistic arb (>10%) usually means bad data or event mismatch
-    if profit_pct > 10:
+    # Sanity check: unrealistic arb (>25%) usually means bad data or event mismatch
+    if profit_pct > 25:
         logger.warning(
             f"Suspicious arb {event_id} {market}: {profit_pct:.1f}% profit - possible data issue"
         )

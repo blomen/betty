@@ -82,13 +82,24 @@ async def poll_metrics_and_update_state(pipeline, stop_event):
 
 
 async def run_extraction_task(providers: list[str] | None):
-    """Background task to run extraction from ALL sports."""
+    """Background task to run extraction from ALL sports.
+
+    Polymarket is only extracted when explicitly included in providers list:
+    - providers=["pinnacle", "leovegas"] -> Only bookmakers
+    - providers=["polymarket"] -> Only Polymarket
+    - providers=["polymarket", "pinnacle"] -> Both
+    """
     from ..deps import get_pipeline
     from ...pipeline.orchestrator import ExtractionPipeline
 
     pipeline = ExtractionPipeline()
     provider_list = providers if providers else pipeline.engine.get_enabled_providers()
-    total_providers = len(provider_list) + 1  # +1 for Polymarket
+
+    # Count includes polymarket only if explicitly requested
+    includes_polymarket = providers and "polymarket" in providers
+    total_providers = len(provider_list)
+    if includes_polymarket:
+        total_providers = len(provider_list)  # polymarket counted as one provider
 
     # Initialize state
     update_extraction_state(
@@ -110,9 +121,8 @@ async def run_extraction_task(providers: list[str] | None):
         )
 
         try:
-            # Extract ALL sports, filtered providers
+            # Extract - polymarket auto-detected from providers list
             results = await pipeline.run(
-                polymarket=True,
                 providers=provider_list if provider_list else None,
             )
 
@@ -182,15 +192,17 @@ async def get_extraction_progress():
 @router.post("/run")
 async def run_extraction(
     background_tasks: BackgroundTasks,
-    providers: str | None = None,  # Optional: "unibet,leovegas" or None for all
+    providers: str | None = None,  # Optional: "unibet,leovegas,polymarket" or None for all bookmakers
 ):
     """
     Trigger extraction from all configured sports and providers.
 
-    Always extracts:
-    - ALL sports/leagues from sports.json (113 leagues)
-    - ALL enabled providers (or filtered subset if providers specified)
-    - Polymarket as truth source
+    Polymarket is a separate source and only extracted when explicitly requested:
+    - providers=pinnacle,leovegas -> Only bookmakers
+    - providers=polymarket -> Only Polymarket
+    - providers=polymarket,pinnacle,leovegas -> All three
+
+    Without providers parameter, extracts from all enabled bookmakers (not Polymarket).
     """
     if extraction_state["running"]:
         raise HTTPException(400, "Extraction already running")
