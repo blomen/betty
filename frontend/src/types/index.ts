@@ -34,7 +34,14 @@ export interface Opportunity {
   outcome2: string | null;
   profit_pct: number | null;
   edge_pct: number | null;
+  fair_odds: number | null;
   detected_at: string;
+  // Event details
+  sport?: string;
+  league?: string;
+  home_team?: string;
+  away_team?: string;
+  starts_at?: string;
 }
 
 // Events
@@ -319,35 +326,187 @@ export interface BetPlacementData {
   bonus_type?: string;
 }
 
-export interface Profile {
-  id: number;
-  name: string;
-  bankroll: number;
-  currency: string;
-  kelly_fraction: number;
-  min_edge_pct: number;
-  min_arb_pct: number;
-  max_stake_pct: number;
-  is_active: boolean;
-  created_at: string | null;
+// Polymarket Matched Events
+export interface PolymarketOddsEntry {
+  outcome: string;
+  odds: number;
 }
 
-export interface ProfileCreate {
-  name: string;
-  bankroll?: number;
-  currency?: string;
-  kelly_fraction?: number;
-  min_edge_pct?: number;
-  min_arb_pct?: number;
-  max_stake_pct?: number;
+export interface PolymarketEdge {
+  outcome: string;
+  provider: string;
+  edge_pct: number;
+  provider_odds: number;
+  polymarket_odds: number;
 }
 
-export interface ProfileUpdate {
-  name?: string;
-  bankroll?: number;
-  currency?: string;
-  kelly_fraction?: number;
-  min_edge_pct?: number;
-  min_arb_pct?: number;
-  max_stake_pct?: number;
+export interface PolymarketMatchedEvent {
+  id: string;
+  sport: string;
+  league: string | null;
+  home_team: string;
+  away_team: string;
+  start_time: string | null;
+  polymarket_odds: PolymarketOddsEntry[];
+  other_providers: Record<string, PolymarketOddsEntry[]>;
+  edges: PolymarketEdge[];
+  best_edge: number;
 }
+
+export interface PolymarketMatchedResponse {
+  events: PolymarketMatchedEvent[];
+  count: number;
+}
+
+// Bonus Arbitrage Types
+export interface BonusArb {
+  event_id: string;
+  market: string;
+  outcome: string;
+  anchor_provider: string;
+  anchor_odds: number;
+  fair_odds: number;
+  edge_pct: number;
+  home_team: string | null;
+  away_team: string | null;
+  sport: string | null;
+  // Kelly-based stake suggestions
+  suggested_stake: number;
+  kelly_stake: number;
+  max_stake: number;
+}
+
+export interface BonusScanResponse {
+  opportunities: BonusArb[];
+  count: number;
+  anchor_provider: string;
+  total_bankroll: number;
+  anchor_balance: number;
+}
+
+export type BonusWorkflowStep =
+  | 'idle'
+  | 'select-provider'
+  | 'select-opportunity'
+  | 'select-stake'
+  | 'manual-stake'
+  | 'confirm';
+
+export interface BonusWorkflowState {
+  step: BonusWorkflowStep;
+  anchorProvider?: string;
+  opportunities?: BonusArb[];
+  selectedOpp?: number;
+  suggestedStake?: number;
+  totalBankroll?: number;
+  anchorBalance?: number;
+}
+
+export interface BonusDropdownOption {
+  id: string | number;
+  label: string;
+  sublabel?: string;
+  type: 'provider' | 'opportunity' | 'stake' | 'action';
+}
+
+// Full Arbitrage with all legs
+export interface ArbitrageLeg {
+  outcome: string;
+  provider: string;
+  odds: number;
+  stake: number;
+  return: number;
+}
+
+export interface FullArbitrage {
+  event_id: string;
+  market: string;
+  profit_pct: number;
+  home_team: string | null;
+  away_team: string | null;
+  sport: string | null;
+  start_time: string | null;
+  legs: ArbitrageLeg[];
+}
+
+export interface ArbitrageScanResponse {
+  opportunities: FullArbitrage[];
+  count: number;
+}
+
+// Bankroll Workflow Types
+export type BankrollWorkflowStep =
+  | 'idle'
+  | 'select-action'      // Deposit, Withdraw, Settings, Reset
+  | 'select-provider'    // For deposit/withdraw
+  | 'enter-amount'       // Manual input
+  | 'select-setting'     // Kelly fraction, max stake, etc.
+  | 'select-value'       // Setting values
+  | 'confirm-reset';     // Type RESET
+
+export interface BankrollWorkflowState {
+  step: BankrollWorkflowStep;
+  action?: 'deposit' | 'withdraw' | 'settings' | 'reset';
+  selectedProvider?: string;
+  amount?: number;
+  selectedSetting?: string;
+}
+
+export interface BankrollOption {
+  id: string | number;
+  label: string;
+  sublabel?: string;
+  type: 'action' | 'provider' | 'setting' | 'value';
+}
+
+// Generic Dropdown Workflow Types (used by extract, arb, value, bets commands)
+export type DropdownWorkflowType = 'idle' | 'extract' | 'arb' | 'value' | 'bets';
+
+export type DropdownWorkflowStep =
+  | 'idle'
+  | 'select-provider'
+  | 'select-opportunity'
+  | 'select-stake'
+  | 'manual-stake'
+  | 'select-bet'
+  | 'settle-bet'
+  | 'select-event'
+  | 'select-event-outcome'
+  | 'confirm';
+
+// Event with pending bets grouped together
+export interface EventWithBets {
+  event_id: string;
+  home_team: string;
+  away_team: string;
+  sport?: string;
+  bets: Bet[];
+  total_stake: number;
+}
+
+export interface DropdownWorkflowState {
+  type: DropdownWorkflowType;
+  step: DropdownWorkflowStep;
+  // Extract workflow
+  selectedProviders?: string[];
+  // Arb/Value workflow
+  opportunities?: OpportunityWithEvent[];
+  fullArbs?: FullArbitrage[];  // Full arbitrage with all legs
+  selectedOpp?: number;
+  suggestedStake?: number;
+  selectedProvider?: string;  // Provider for bet placement
+  // Bets workflow
+  bets?: Bet[];
+  selectedBet?: number;
+  eventsWithBets?: EventWithBets[];
+  selectedEventId?: string;
+}
+
+export interface DropdownOption {
+  id: string | number;
+  label: string;
+  sublabel?: string;
+  selected?: boolean;  // For multi-select (extract)
+  type: 'provider' | 'opportunity' | 'stake' | 'action';
+}
+
