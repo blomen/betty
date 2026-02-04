@@ -17,8 +17,8 @@ orchestrator:
       retriever_types: [kambi]
       max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
-      health_check_delay_ms: 3000      # 3s between Kambi health checks to avoid rate limits
-      post_extraction_delay_ms: 60000  # 60s delay between providers to let rate limit recover
+      health_check_delay_ms: 1000      # 1s between Kambi health checks (reduced from 3s)
+      post_extraction_delay_ms: 15000  # 15s delay between providers (reduced from 60s)
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
@@ -221,22 +221,24 @@ providers:
       type: doubledeposit
       amount: 500
 
+  # PRODUCTION_READY: goldenbull (2026-02-04) - ratio 2.74, 100% normalization
   goldenbull:
     <<: *kambi_defaults
     id: goldenbull
     name: Golden Bull
     domain: goldenbull.se
-    brand: goldenbullse
+    brand: pafgoldense  # Discovered via browser interception (Paf-branded Kambi)
     bonus:
       type: doubledeposit
       amount: 500
 
+  # PRODUCTION_READY: 1x2 (2026-02-04) - ratio 2.74, 100% normalization
   1x2:
     <<: *kambi_defaults
     id: 1x2
     name: 1X2
     domain: 1x2.se
-    brand: 1x2se
+    brand: pafpre1x2se  # Discovered via browser interception (Paf-branded Kambi)
     bonus:
       type: doubledeposit
       amount: 500
@@ -446,15 +448,15 @@ active:
   - x3000
   - goldenbull
   - 1x2
-  # Browser-based providers (with bonus)
-  - hajper
-  - comeon
-  - mrgreen
-  - 888sport
-  - snabbare
+  # Sharp source
+  - pinnacle  # Sharp lines - truth source
+  # DISABLED for validation:
+  # - hajper
+  # - comeon
+  # - mrgreen
+  # - 888sport
+  # - snabbare
+  # - betinia
+  # - polymarket
   # DISABLED: bethard - fails under concurrent browser load
   # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load
-  # REST API providers
-  - betinia
-  - pinnacle  # Sharp lines - truth source
-  - polymarket  # Prediction market

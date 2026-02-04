@@ -48,6 +48,9 @@ class ExtractionPipeline:
         # Thread-safe lock for async access to event_cache
         self._cache_lock = asyncio.Lock()
 
+        # Initialize orchestrator components
+        self._init_orchestrator()
+
     async def get_cached_sports(self) -> set:
         """Get set of sports with cached events (thread-safe)."""
         async with self._cache_lock:
@@ -58,6 +61,8 @@ class ExtractionPipeline:
         async with self._cache_lock:
             self.event_cache.clear()
 
+    def _init_orchestrator(self):
+        """Initialize orchestrator components (called from __init__)."""
         # Get orchestrator config
         orchestrator_config = self.engine.config_loader.get_orchestrator_config()
         self.orchestrator_config = orchestrator_config
@@ -147,8 +152,14 @@ class ExtractionPipeline:
         ]
 
         for pid, name in providers:
-            if not self.session.query(Provider).filter(Provider.id == pid).first():
-                self.session.add(Provider(id=pid, name=name, balance=0))
+            existing = self.session.query(Provider).filter(Provider.id == pid).first()
+            if not existing:
+                # Note: bonus_status is now tracked per-profile in ProfileProviderBonus table
+                self.session.add(Provider(
+                    id=pid,
+                    name=name,
+                    balance=0,
+                ))
         self.session.commit()
 
     def _register_signal_handlers(self):
@@ -167,7 +178,8 @@ class ExtractionPipeline:
         self,
         provider_id: str,
         kambi_sports: list[str],
-        limit: int
+        limit: int,
+        sharp_sports: set | None = None
     ) -> dict:
         """
         Wrapper for provider extraction with retry logic.
@@ -176,6 +188,7 @@ class ExtractionPipeline:
             provider_id: Provider identifier
             kambi_sports: List of sports to extract
             limit: Max events per sport
+            sharp_sports: Pre-computed set of sports with sharp data (optional)
 
         Returns:
             Dictionary with extraction results
@@ -186,7 +199,7 @@ class ExtractionPipeline:
         retry_config = self.orchestrator_config.retry
 
         if not retry_config.enabled:
-            return await self._extract_provider(provider_id, kambi_sports, limit)
+            return await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports)
 
         last_error = None
 
@@ -197,7 +210,7 @@ class ExtractionPipeline:
                 raise asyncio.CancelledError("Shutdown requested")
 
             try:
-                result = await self._extract_provider(provider_id, kambi_sports, limit)
+                result = await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports)
 
                 # Success - record in circuit breaker
                 if self.circuit_breaker:
@@ -316,6 +329,9 @@ class ExtractionPipeline:
 
         log_progress("Pipeline started")
 
+        # Clear stale events from previous runs
+        await self.clear_cache()
+
         try:
             # Check for shutdown at start
             if self._shutdown_event and self._shutdown_event.is_set():
@@ -384,6 +400,10 @@ class ExtractionPipeline:
             # Extract from other providers in parallel
             kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
 
+            # Pre-compute sharp sports once (thread-safe) before provider loop
+            # This avoids repeated lock acquisition inside _extract_provider()
+            sharp_sports = await self.get_cached_sports()
+
             if target_providers:
                 # Filter providers by circuit breaker status and health checks
                 available_providers = []
@@ -435,9 +455,9 @@ class ExtractionPipeline:
                         if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
                             raise Exception("Circuit breaker open")
 
-                        # Use retry wrapper
+                        # Use retry wrapper (pass pre-computed sharp_sports)
                         provider_results = await self._extract_provider_with_retry(
-                            provider_id, kambi_sports, max_events_per_sport
+                            provider_id, kambi_sports, max_events_per_sport, sharp_sports
                         )
 
                         # End provider metrics on success
@@ -637,7 +657,13 @@ class ExtractionPipeline:
             "odds_new": odds_new
         }
 
-    async def _extract_provider(self, provider_id: str, sports: list[str], limit: int) -> dict:
+    async def _extract_provider(
+        self,
+        provider_id: str,
+        sports: list[str],
+        limit: int,
+        sharp_sports: set | None = None
+    ) -> dict:
         """
         Extract from a specific provider across multiple sports.
 
@@ -648,6 +674,7 @@ class ExtractionPipeline:
             provider_id: Provider identifier
             sports: List of sport names to extract
             limit: Maximum events per sport
+            sharp_sports: Pre-computed set of sports with sharp data (optional)
 
         Returns:
             Dictionary with extraction statistics
@@ -672,12 +699,14 @@ class ExtractionPipeline:
         extractor = self.engine.get_extractor(provider_id)
 
         # Delay between sports for rate-limited APIs (seconds)
-        # 1.5s balances speed vs rate limit safety
-        sport_delay = 1.5 if is_kambi else 0.0
+        # 0.5s is sufficient - Kambi rate limits at request level, not sport level
+        sport_delay = 0.5 if is_kambi else 0.0
 
         # Filter sports to only those with sharp data (Pinnacle/Polymarket)
         # No point extracting sports we can't match against
-        sharp_sports = set(self.event_cache.keys())
+        # Use pre-computed sharp_sports if provided (thread-safe), otherwise compute now
+        if sharp_sports is None:
+            sharp_sports = await self.get_cached_sports()
         if sharp_sports:
             original_count = len(sports)
             sports = [s for s in sports if s in sharp_sports]

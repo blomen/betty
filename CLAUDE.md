@@ -49,9 +49,14 @@ python -m src.extract --all        # All providers
 # Find opportunities
 python -m src.detect               # Value + arbitrage detection
 
-# Run services
+# Run services (ALWAYS use these ports - terminals already running)
 uvicorn src.api:app --reload       # API on :8000
 cd frontend && npm run dev         # UI on :5173
+
+# NOTE: Backend runs on port 8000, frontend on port 5173
+# User has terminals already running these servers
+# If you need to test, just refresh browser - don't start new servers
+# If server crashed, kill process on port first then restart
 
 # Tests
 pytest tests/                      # Run test suite
@@ -286,3 +291,126 @@ WHERE e.id IN (
 ORDER BY e.id, o.provider_id, o.outcome
 LIMIT 30;
 ```
+
+### Extraction Review & Optimization (STANDARD PROCEDURE)
+
+**When to run:** After any pipeline changes, provider additions, or performance issues.
+
+**Standard workflow:**
+
+1. **Clear database and run extraction:**
+   ```bash
+   cd backend
+   rm -f data/oddopp.db
+   python -m src.app extract
+   ```
+
+2. **Review extraction results:**
+   - Check total time (target: <300s for 9 providers)
+   - Verify all providers extracted (check event counts)
+   - Note any rate limit errors (429s) or timeouts
+
+3. **Run data quality validation:**
+   ```bash
+   python -c "
+   import sqlite3
+   conn = sqlite3.connect('data/oddopp.db')
+   c = conn.cursor()
+
+   print('=== Provider Odds Count ===')
+   c.execute('SELECT provider_id, COUNT(*) FROM odds GROUP BY provider_id ORDER BY COUNT(*) DESC')
+   for row in c.fetchall(): print(f'{row[0]:15}: {row[1]} odds')
+
+   print('\n=== Odds/Event Ratio ===')
+   c.execute('''
+       SELECT provider_id, COUNT(id) as odds, COUNT(DISTINCT event_id) as events,
+              ROUND(CAST(COUNT(id) AS FLOAT) / COUNT(DISTINCT event_id), 2) as ratio
+       FROM odds GROUP BY provider_id
+   ''')
+   for row in c.fetchall(): print(f'{row[0]:16} | {row[1]:5} | {row[2]:6} | {row[3]}')
+
+   print('\n=== Outcome Normalization ===')
+   c.execute('''
+       SELECT provider_id,
+              ROUND(100.0 * SUM(CASE WHEN outcome IN (\"home\",\"away\",\"draw\") THEN 1 ELSE 0 END) / COUNT(*), 1) as pct
+       FROM odds GROUP BY provider_id
+   ''')
+   for row in c.fetchall(): print(f'  {row[0]:15}: {row[1]}%')
+   "
+   ```
+
+4. **Check for suspicious arbs:**
+   - Any "Suspicious arb" warnings indicate data quality issues
+   - Common causes: fuzzy match failures, timing mismatches, incomplete markets
+
+5. **Performance tuning parameters** (in `config/providers.yaml`):
+   ```yaml
+   kambi_api:
+     health_check_delay_ms: 1000    # Delay between health checks
+     post_extraction_delay_ms: 15000 # Delay between Kambi providers
+   ```
+
+   And in `pipeline/orchestrator.py`:
+   ```python
+   sport_delay = 0.5 if is_kambi else 0.0  # Delay between sports
+   ```
+
+**Expected benchmarks (Kambi-only validation):**
+
+| Metric | Target | Red Flag |
+|--------|--------|----------|
+| Total extraction time | <300s | >500s |
+| Kambi odds/event ratio | 2.7-2.8 | <2.5 or >3.0 |
+| Outcome normalization | 100% | <99% |
+| Cross-provider matches | >50% | <30% |
+
+**If extraction fails or data quality degrades:**
+1. Check circuit breaker status (rate limits)
+2. Review provider API responses for schema changes
+3. Verify `betOfferType.id` filter for Kambi (ID 2 = Match Winner)
+4. Check fuzzy match threshold (default: 85)
+
+### Scanner Validation (STANDARD PROCEDURE)
+
+**After extraction, validate scanner results:**
+
+```bash
+cd backend && python -c "
+from src.db.models import get_session
+from src.analysis.scanner import OpportunityScanner
+
+db = get_session()
+scanner = OpportunityScanner(db)
+
+# Value bets
+vb = scanner.scan_value(min_edge_pct=5.0)
+suspicious = [v for v in vb if v.edge_pct > 25]
+print(f'VALUE BETS: {len(vb)} total, {len(suspicious)} suspicious (>25%)')
+
+# Arbitrage
+arbs = scanner.scan_arbitrage()
+print(f'ARBITRAGE: {len(arbs)} opportunities')
+
+# Bonus arbitrage (top 10)
+bonus = scanner.scan_bonus_arbitrage('unibet', 1000.0, limit=10)
+print(f'BONUS ARB: {len(bonus)} opportunities')
+for b in bonus[:5]:
+    print(f'  {b.anchor_outcome}@{b.anchor_odds:.2f} = {b.profit_pct:+.1f}%')
+
+db.close()
+"
+```
+
+**Expected benchmarks:**
+
+| Metric | Target | Red Flag |
+|--------|--------|----------|
+| Value bets (>5% edge) | 300-500 | <100 or >1000 |
+| Suspicious (>25% edge) | <10 | >50 |
+| Arbitrage opportunities | 0-10 | >50 |
+| Bonus arb profit range | -5% to +5% | >15% |
+
+**Data quality filters in `scanner.py`:**
+- `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
+- `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
+- Profit cap 15% for bonus arb - Filter data quality issues
