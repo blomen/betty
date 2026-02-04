@@ -141,8 +141,8 @@ class GeckoV2Retriever(BrowserRetriever):
             logger.warning(f"[{self.provider_id}] Failed to parse response: {e}")
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Not used - we override extract() completely."""
-        return []
+        """Not used - extract() is overridden."""
+        raise NotImplementedError("GeckoV2Retriever uses extract() directly")
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
         """
@@ -220,16 +220,6 @@ class GeckoV2Retriever(BrowserRetriever):
 
             # Parse captured responses
             logger.info(f"[{self.provider_id}] Captured {len(self._api_responses)} API responses")
-
-            # DEBUG: Save first response for inspection
-            if self._api_responses:
-                import json
-                try:
-                    with open('scrap/gecko_v2_response_sample.json', 'w', encoding='utf-8') as f:
-                        json.dump(self._api_responses[0], f, indent=2, ensure_ascii=False)
-                    logger.debug(f"[{self.provider_id}] Saved first response for inspection")
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Could not save response: {e}")
 
             events = []
             for i, api_data in enumerate(self._api_responses):
@@ -452,7 +442,7 @@ class GeckoV2Retriever(BrowserRetriever):
         return 'other'
 
     def _normalize_outcome_label(self, label: str) -> str:
-        """Normalize outcome label to standard names."""
+        """Normalize outcome label to standard names (1x2/moneyline only)."""
         label_lower = label.lower()
 
         # Home outcomes
@@ -466,21 +456,5 @@ class GeckoV2Retriever(BrowserRetriever):
         # Away outcomes
         if label in ['2', 'away', 'borta'] or label_lower in ['2', 'away', 'borta']:
             return 'away'
-
-        # Over outcomes
-        if 'över' in label_lower or 'over' in label_lower or label_lower == 'ja':
-            return 'over'
-
-        # Under outcomes
-        if 'under' in label_lower or label_lower == 'nej':
-            return 'under'
-
-        # Double chance outcomes (combine into main outcomes)
-        if '1x' in label_lower or 'homeordraw' in label_lower:
-            return 'home'  # Treat 1X as home bias
-        if '12' in label_lower or 'homeoraway' in label_lower:
-            return 'home'  # Treat 12 as home bias
-        if 'x2' in label_lower or 'draworaway' in label_lower:
-            return 'away'  # Treat X2 as away bias
 
         return label.lower()

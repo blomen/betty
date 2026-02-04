@@ -14,7 +14,7 @@ from ..matching import (
     normalize_market,
     normalize_outcome,
 )
-from .utils import generate_canonical_id
+from ..matching.normalizer import generate_canonical_id
 from ..constants import ALLOWED_MARKETS
 
 logger = logging.getLogger(__name__)

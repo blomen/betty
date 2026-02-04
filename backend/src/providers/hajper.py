@@ -275,8 +275,8 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             return None
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Not used - we override extract() completely."""
-        return []
+        """Not used - extract() is overridden."""
+        raise NotImplementedError("HajperRetriever uses extract() directly")
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
         """Extract events using multi-league approach for comprehensive coverage."""

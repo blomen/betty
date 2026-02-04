@@ -1,13 +1,31 @@
 from typing import List, Any
 import logging
 import asyncio
+import time
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 # Kambi Specific Logic adapted from APIExtractor
 from ..core import Retriever, StandardEvent
 from ..matching.normalizer import normalize_team_name, normalize_market, normalize_outcome
+from .shared.metrics import ExtractionMetrics
 
 logger = logging.getLogger(__name__)
+
+# TTL for shared group cache (1 hour)
+GROUP_CACHE_TTL_SECONDS = 3600
+
+
+@dataclass
+class CachedGroupData:
+    """Cache entry with TTL for group data."""
+    data: Any
+    created_at: float
+
+    def is_expired(self) -> bool:
+        """Check if entry has expired (default 1 hour TTL)."""
+        return time.time() - self.created_at > GROUP_CACHE_TTL_SECONDS
+
 
 class KambiRetriever(Retriever):
     """
@@ -17,7 +35,8 @@ class KambiRetriever(Retriever):
     # Shared class-level cache for group data across all Kambi providers
     # This avoids fetching the same group tree multiple times
     # Key format: "{base_url}/{brand}/group.json"
-    _SHARED_GROUP_CACHE = {}
+    # Now uses TTL-based caching to prevent stale data
+    _SHARED_GROUP_CACHE: Dict[str, CachedGroupData] = {}
 
     # We might need to fetch the groups first, then the events.
     # The Retriever interface assumes a single URL per sport usually,
@@ -47,14 +66,19 @@ class KambiRetriever(Retriever):
         return "" 
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
-        # 1. Get Groups (using shared cache)
+        metrics = ExtractionMetrics()
+
+        # 1. Get Groups (using shared cache with TTL)
         groups_url = f"{self.base_url}/{self.brand}/group.json"
 
-        # Check shared cache first
-        if groups_url in self._SHARED_GROUP_CACHE:
+        # Check shared cache first (with TTL expiration)
+        cached_entry = self._SHARED_GROUP_CACHE.get(groups_url)
+        if cached_entry and not cached_entry.is_expired():
             logger.debug(f"[{self.provider_id}] Using cached groups for {groups_url}")
-            group_data = self._SHARED_GROUP_CACHE[groups_url]
+            group_data = cached_entry.data
         else:
+            if cached_entry and cached_entry.is_expired():
+                logger.debug(f"[{self.provider_id}] Cache expired for {groups_url}, refetching")
             logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
             group_data = await self.transport.get(
                 groups_url,
@@ -62,23 +86,28 @@ class KambiRetriever(Retriever):
                 provider_id=self.provider_id
             )
             if group_data:
-                self._SHARED_GROUP_CACHE[groups_url] = group_data
-                logger.debug(f"[{self.provider_id}] Cached groups for {groups_url}")
+                self._SHARED_GROUP_CACHE[groups_url] = CachedGroupData(
+                    data=group_data,
+                    created_at=time.time()
+                )
+                logger.debug(f"[{self.provider_id}] Cached groups for {groups_url} (TTL={GROUP_CACHE_TTL_SECONDS}s)")
 
         if not group_data:
             return []
-            
+
         # 2. Find target sport group
         groups = []
         self._extract_groups_recursive(group_data, groups)
-        
+
         target_groups = [g for g in groups if self._match_sport(g.get("sport", ""), sport)]
         if not target_groups:
-             logger.warning(f"[{self.provider_id}] No groups found for {sport}")
-             return []
-             
+            logger.warning(f"[{self.provider_id}] No groups found for {sport}")
+            return []
+
         if limit and len(target_groups) > limit:
             target_groups = target_groups[:limit]
+
+        metrics.groups_fetched = len(target_groups)
 
         # 3. Fetch Events for each group in parallel (with concurrency limit)
         all_events = []
@@ -89,7 +118,7 @@ class KambiRetriever(Retriever):
 
         async def fetch_with_limit(group):
             async with sem:
-                return await self._fetch_group_events(group)
+                return await self._fetch_group_events(group, metrics)
 
         # Fetch all groups in parallel
         tasks = [fetch_with_limit(group) for group in target_groups]
@@ -101,6 +130,7 @@ class KambiRetriever(Retriever):
                 all_events.extend(result)
             elif isinstance(result, Exception):
                 logger.debug(f"[{self.provider_id}] Group fetch error: {result}")
+                metrics.groups_failed += 1
 
         # Deduplicate events by ID (same event can appear in multiple groups)
         seen_ids = set()
@@ -110,24 +140,105 @@ class KambiRetriever(Retriever):
                 seen_ids.add(event.id)
                 unique_events.append(event)
 
+        # Log extraction summary
+        metrics.log_summary(self.provider_id, sport, len(all_events))
+
         return unique_events
+
+    @classmethod
+    def clear_group_cache(cls):
+        """Clear the shared group cache. Useful for testing or forced refresh."""
+        cls._SHARED_GROUP_CACHE.clear()
+        logger.info("Kambi group cache cleared")
+
+    @classmethod
+    def get_cache_stats(cls) -> Dict:
+        """Get statistics about the shared group cache."""
+        now = time.time()
+        stats = {
+            "total_entries": len(cls._SHARED_GROUP_CACHE),
+            "expired_entries": 0,
+            "active_entries": 0,
+            "oldest_age_seconds": 0,
+        }
+
+        for url, entry in cls._SHARED_GROUP_CACHE.items():
+            age = now - entry.created_at
+            if entry.is_expired():
+                stats["expired_entries"] += 1
+            else:
+                stats["active_entries"] += 1
+            if age > stats["oldest_age_seconds"]:
+                stats["oldest_age_seconds"] = age
+
+        return stats
         
-    async def _fetch_group_events(self, group: dict) -> List[StandardEvent]:
-        endpoint = "betoffer/group/{group_id}.json" # Default
+    async def _fetch_group_events(self, group: dict, metrics: ExtractionMetrics) -> List[StandardEvent]:
+        endpoint = "betoffer/group/{group_id}.json"  # Default
         if "endpoints" in self.config and "events" in self.config["endpoints"]:
             endpoint = self.config["endpoints"]["events"]
-            
+
         endpoint = endpoint.format(group_id=group["id"])
         url = f"{self.base_url}/{self.brand}/{endpoint}"
 
         data = await self.transport.get(url, params=self.default_params, provider_id=self.provider_id)
-        if not data: return []
-        
-        return self.parse(data, group.get("sport", "").lower())
+        if not data:
+            return []
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+        # Check for pagination indicators
+        self._check_pagination(data, group.get("name", "unknown"), metrics)
+
+        return self.parse(data, group.get("sport", "").lower(), metrics)
+
+    def _check_pagination(self, data: Any, group_name: str, metrics: ExtractionMetrics):
+        """
+        Check API response for pagination indicators that might indicate truncated results.
+
+        Kambi API may paginate results. We check for common pagination patterns.
+        """
+        if not isinstance(data, dict):
+            return
+
+        # Check for pagination metadata in Kambi responses
+        # Kambi typically uses: "pagination", "total", "limit", "offset"
+        pagination = data.get("pagination", {})
+        total = pagination.get("total") or data.get("total") or data.get("totalCount")
+        limit = pagination.get("limit") or data.get("limit")
+        offset = pagination.get("offset") or data.get("offset", 0)
+
+        events = data.get("events", [])
+        betoffers = data.get("betOffers", [])
+        event_count = len(events)
+        betoffer_count = len(betoffers)
+
+        # Check if total indicates more data exists
+        if total and event_count < total:
+            metrics.pagination_warnings.append(
+                f"Group '{group_name}': returned {event_count} of {total} total events (data truncated!)"
+            )
+
+        # Check if we hit the limit
+        if limit and event_count >= limit:
+            metrics.pagination_warnings.append(
+                f"Group '{group_name}': returned {event_count} events matching limit={limit} - may be truncated"
+            )
+
+        # Check for common API caps (events hitting exact round numbers)
+        common_limits = [50, 100, 200, 250, 500]
+        if event_count in common_limits:
+            logger.debug(
+                f"[{self.provider_id}] Group '{group_name}': returned exactly {event_count} events "
+                f"(common API limit - verify not truncated)"
+            )
+
+    def parse(self, data: Any, sport: str, metrics: ExtractionMetrics = None) -> List[StandardEvent]:
         # Logic from APIExtractor._kambi_parse_event
-        if not data: return []
+        if not data:
+            return []
+
+        # Create local metrics if not provided (for backwards compatibility)
+        if metrics is None:
+            metrics = ExtractionMetrics()
 
         events_raw = data.get("events", [])
         betoffers = data.get("betOffers", [])
@@ -135,37 +246,34 @@ class KambiRetriever(Retriever):
 
         outcome_map = {o.get("id"): o for o in outcomes}
 
-        # Extraction metrics
-        parsed_count = 0
-        skipped_live = 0
-        skipped_no_teams = 0
-        skipped_no_markets = 0
-        skipped_error = 0
-
         events = []
         for event_raw in events_raw:
             if event_raw.get("state") == "STARTED":
-                skipped_live += 1
+                metrics.events_skipped_live += 1
                 continue
-            event = self._parse_single_event(event_raw, betoffers, outcome_map, sport)
+            event = self._parse_single_event(event_raw, betoffers, outcome_map, sport, metrics)
             if event:
                 events.append(event)
-                parsed_count += 1
-            elif event is None:
-                # Track why events were skipped (logged in _parse_single_event)
-                pass
+                metrics.events_parsed += 1
 
-        # Log extraction summary
+        # Log extraction summary at debug level (main summary logged by extract())
         total = len(events_raw)
         if total > 0:
             logger.debug(
-                f"[{self.provider_id}] {sport}: parsed {parsed_count}/{total} events, "
-                f"skipped: {skipped_live} live"
+                f"[{self.provider_id}] {sport}: parsed {len(events)}/{total} events, "
+                f"skipped: {metrics.events_skipped_live} live"
             )
 
         return events
 
-    def _parse_single_event(self, event_raw: dict, betoffers: list, outcome_map: dict, sport: str) -> StandardEvent | None:
+    def _parse_single_event(
+        self,
+        event_raw: dict,
+        betoffers: list,
+        outcome_map: dict,
+        sport: str,
+        metrics: ExtractionMetrics
+    ) -> StandardEvent | None:
         try:
             event_id = str(event_raw.get("id", ""))
             home_team = event_raw.get("homeName", "")
@@ -174,10 +282,14 @@ class KambiRetriever(Retriever):
             if not home_team or not away_team:
                 participants = event_raw.get("participants", [])
                 for p in participants:
-                    if p.get("home"): home_team = p.get("name", "")
-                    else: away_team = p.get("name", "")
+                    if p.get("home"):
+                        home_team = p.get("name", "")
+                    else:
+                        away_team = p.get("name", "")
 
-            if not home_team or not away_team: return None
+            if not home_team or not away_team:
+                metrics.events_skipped_no_teams += 1
+                return None
 
             # Normalize team names to lowercase for consistent matching
             home_team_normalized = normalize_team_name(home_team)
@@ -187,11 +299,15 @@ class KambiRetriever(Retriever):
 
             markets = []
             for betoffer in betoffers:
-                if betoffer.get("eventId") != event_raw.get("id"): continue
+                if betoffer.get("eventId") != event_raw.get("id"):
+                    continue
                 market = self._parse_market(betoffer, outcome_map, home_team_normalized, away_team_normalized)
-                if market: markets.append(market)
+                if market:
+                    markets.append(market)
 
-            if not markets: return None
+            if not markets:
+                metrics.events_skipped_no_markets += 1
+                return None
 
             path = event_raw.get("path", [])
             league = path[-1].get("name", "") if path else ""
@@ -209,6 +325,7 @@ class KambiRetriever(Retriever):
             )
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Failed to parse event {event_raw.get('id', 'unknown')}: {e}")
+            metrics.events_skipped_error += 1
             return None
 
     def _parse_market(self, betoffer: dict, outcome_map: dict, home_team: str = "", away_team: str = "") -> dict | None:

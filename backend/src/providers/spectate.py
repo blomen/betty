@@ -1,4 +1,4 @@
-from typing import List, Any, Optional, Dict, Set, Union
+from typing import List, Any, Optional, Dict, Set
 import logging
 import re
 import json
@@ -238,6 +238,7 @@ class SpectateRetriever(BrowserRetriever):
             return {}
 
     def parse(self, data: Any, sport: str, league: str = "") -> List[StandardEvent]:
+        """Parse API response data into StandardEvents."""
         events: List[StandardEvent] = []
         if not data: return events
 

@@ -127,8 +127,8 @@ class SBTechRetriever(BrowserRetriever):
         return any(pattern in url for pattern in self.API_PATTERNS)
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Not used - we override extract() completely."""
-        return []
+        """Not used - extract() is overridden."""
+        raise NotImplementedError("SBTechRetriever uses extract() directly")
 
     async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
         """
@@ -200,16 +200,6 @@ class SBTechRetriever(BrowserRetriever):
 
             # Parse captured responses
             logger.info(f"[{self.provider_id}] Captured {len(self._api_responses)} API responses")
-
-            # DEBUG: Save first response for inspection (disabled in production)
-            # if self._api_responses:
-            #     import json
-            #     try:
-            #         with open(f'scrap/{self.provider_id}_sbtech_sample.json', 'w', encoding='utf-8') as f:
-            #             json.dump(self._api_responses[0], f, indent=2, ensure_ascii=False)
-            #         logger.debug(f"[{self.provider_id}] Saved sample response")
-            #     except Exception as e:
-            #         logger.debug(f"[{self.provider_id}] Could not save response: {e}")
 
             events = []
             for i, api_data in enumerate(self._api_responses):

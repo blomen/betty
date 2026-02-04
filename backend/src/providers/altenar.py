@@ -103,17 +103,14 @@ class AltenarRetriever(Retriever):
         """
         outcome_lower = outcome_name.lower().strip()
 
-        # For 1x2 markets
-        if market_type == '1x2':
-            # Check for draw first (most specific)
-            if outcome_lower in ['x', 'draw', 'tie', 'x2']:
+        # Handle 1x2 and moneyline markets (only difference is draw for 1x2)
+        if market_type in ('1x2', 'moneyline'):
+            # Check for draw first (1x2 only)
+            if market_type == '1x2' and outcome_lower in ['x', 'draw', 'tie', 'x2']:
                 return 'draw'
 
-            # Check if outcome contains home or away team name
-            # Need to match against RAW team names from API
             # Extract team name without parentheses and extra text
             def extract_base_name(team_name):
-                # Remove content in parentheses and normalize
                 import re
                 base = re.sub(r'\([^)]*\)', '', team_name).strip()
                 return normalize_team_name(base)
@@ -133,7 +130,7 @@ class AltenarRetriever(Retriever):
             away_words = set(away_base.split())
             outcome_words = set(outcome_base.split())
 
-            if home_words & outcome_words:  # Intersection not empty
+            if home_words & outcome_words:
                 return 'home'
             if away_words & outcome_words:
                 return 'away'
@@ -141,31 +138,6 @@ class AltenarRetriever(Retriever):
             # Simple numeric markers
             if outcome_lower in ['1', '2']:
                 return 'home' if outcome_lower == '1' else 'away'
-
-        # For moneyline (no draw)
-        if market_type == 'moneyline':
-            def extract_base_name(team_name):
-                import re
-                base = re.sub(r'\([^)]*\)', '', team_name).strip()
-                return normalize_team_name(base)
-
-            home_base = extract_base_name(raw_home)
-            away_base = extract_base_name(raw_away)
-            outcome_base = extract_base_name(outcome_name)
-
-            if outcome_base == home_base:
-                return 'home'
-            if outcome_base == away_base:
-                return 'away'
-
-            home_words = set(home_base.split())
-            away_words = set(away_base.split())
-            outcome_words = set(outcome_base.split())
-
-            if home_words & outcome_words:
-                return 'home'
-            if away_words & outcome_words:
-                return 'away'
 
         # If no match found, return original (will be logged as 'other')
         return outcome_name

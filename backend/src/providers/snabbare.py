@@ -44,7 +44,6 @@ class SnabbareRetriever(BrowserRetriever):
         }
 
     async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
-        from datetime import datetime
         # Initialize session by visiting the odds page
         await self._ensure_init(url=f"{self.site_url}/sv/odds", page_key="odds_page")
         all_events = []
@@ -59,7 +58,6 @@ class SnabbareRetriever(BrowserRetriever):
         params = self.default_params.copy()
         params.update({
             "filter.sportId": sport_id,
-            "page": 1,
             "page": 1,
             "pageSize": 50
         })
@@ -350,8 +348,5 @@ class SnabbareRetriever(BrowserRetriever):
             return None
 
     def parse(self, events_data: List[Dict], sport: str) -> List[StandardEvent]:
-        """
-        Required by abstract base class.
-        Not used by DOM scraper which parses data during extraction.
-        """
-        return []
+        """Not used - extract() is overridden."""
+        raise NotImplementedError("SnabbareRetriever uses extract() directly")

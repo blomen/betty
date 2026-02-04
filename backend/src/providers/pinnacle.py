@@ -1,10 +1,11 @@
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any
 import asyncio
 import logging
 from datetime import datetime
 
 from ..core import Retriever, StandardEvent
 from ..matching.normalizer import normalize_team_name
+from .shared.metrics import ExtractionMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,8 @@ class PinnacleRetriever(Retriever):
             sport: Sport key (e.g., 'football', 'basketball')
             limit: Max events to return (None for all)
         """
+        metrics = ExtractionMetrics()
+
         # Get Pinnacle sport ID
         sport_id = self._sport_map.get(sport)
         if not sport_id:
@@ -69,6 +72,9 @@ class PinnacleRetriever(Retriever):
             logger.warning(f"[{self.provider_id}] No leagues data for sport {sport_id}")
             return []
 
+        # Check for pagination indicators in leagues response
+        self._check_pagination(leagues_data, "leagues", metrics)
+
         # Filter leagues with active matchups
         active_leagues = [l for l in leagues_data if l.get("matchupCount", 0) > 0]
 
@@ -77,11 +83,12 @@ class PinnacleRetriever(Retriever):
             return []
 
         logger.info(f"[{self.provider_id}] Found {len(active_leagues)} active leagues")
+        metrics.leagues_fetched = len(active_leagues)
 
         # Parallel fetch all leagues with semaphore to limit concurrency
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_LEAGUES)
         league_results = await asyncio.gather(
-            *[self._fetch_league(league, semaphore) for league in active_leagues],
+            *[self._fetch_league(league, semaphore, metrics) for league in active_leagues],
             return_exceptions=True
         )
 
@@ -92,8 +99,10 @@ class PinnacleRetriever(Retriever):
         for result in league_results:
             if isinstance(result, Exception):
                 logger.debug(f"[{self.provider_id}] League fetch failed: {result}")
+                metrics.leagues_failed += 1
                 continue
             if not result:
+                metrics.leagues_failed += 1
                 continue
 
             league_name, matchups, markets = result
@@ -107,23 +116,82 @@ class PinnacleRetriever(Retriever):
 
             # Convert to StandardEvent
             for matchup in matchups:
-                event = self._parse_matchup(matchup, sport, league_name, markets_by_matchup)
+                event = self._parse_matchup(matchup, sport, league_name, markets_by_matchup, metrics)
                 if event and event.id not in seen_ids:
                     seen_ids.add(event.id)
                     all_events.append(event)
+                    metrics.events_parsed += 1
 
         # Apply limit if specified
         if limit and len(all_events) > limit:
             all_events = all_events[:limit]
 
         logger.info(f"[{self.provider_id}] Extracted {len(all_events)} events for {sport}")
+
+        # Log extraction summary with any warnings
+        metrics.log_summary(self.provider_id, sport)
+
         return all_events
+
+    def _check_pagination(self, data: Any, endpoint: str, metrics: ExtractionMetrics):
+        """
+        Check API response for pagination indicators that might indicate truncated results.
+
+        Pinnacle API may paginate results. We check for common pagination patterns:
+        - totalCount / total field
+        - hasMore / has_more field
+        - nextPage / next field
+        - limit/offset in response metadata
+        """
+        if isinstance(data, dict):
+            # Check for pagination metadata
+            total_count = data.get("totalCount") or data.get("total") or data.get("totalElements")
+            has_more = data.get("hasMore") or data.get("has_more") or data.get("more")
+            next_page = data.get("nextPage") or data.get("next") or data.get("cursor")
+            limit = data.get("limit") or data.get("pageSize")
+
+            # Get actual result count
+            results = data.get("data") or data.get("items") or data.get("results")
+            actual_count = len(results) if isinstance(results, list) else None
+
+            if total_count and actual_count and actual_count < total_count:
+                metrics.pagination_warnings.append(
+                    f"{endpoint}: returned {actual_count} of {total_count} total (data truncated!)"
+                )
+
+            if has_more:
+                metrics.pagination_warnings.append(
+                    f"{endpoint}: hasMore=true indicates additional pages exist"
+                )
+
+            if next_page:
+                metrics.pagination_warnings.append(
+                    f"{endpoint}: nextPage cursor present - pagination not fully traversed"
+                )
+
+            if limit and actual_count and actual_count >= limit:
+                metrics.pagination_warnings.append(
+                    f"{endpoint}: returned {actual_count} results matching limit={limit} - may be truncated"
+                )
+
+        elif isinstance(data, list):
+            # For list responses, check if count hits common API limits
+            count = len(data)
+            common_limits = [50, 100, 200, 250, 500, 1000]
+
+            if count in common_limits:
+                # Log as info, not warning - could be coincidence
+                logger.debug(
+                    f"[{self.provider_id}] {endpoint}: returned exactly {count} results "
+                    f"(common API limit - verify not truncated)"
+                )
 
     async def _fetch_league(
         self,
         league: dict,
-        semaphore: asyncio.Semaphore
-    ) -> Optional[Tuple[str, List[dict], List[dict]]]:
+        semaphore: asyncio.Semaphore,
+        metrics: ExtractionMetrics
+    ) -> Optional[tuple[str, List[dict], List[dict]]]:
         """
         Fetch matchups and markets for a single league.
 
@@ -132,6 +200,7 @@ class PinnacleRetriever(Retriever):
         """
         league_id = league["id"]
         league_name = league.get("name", "Unknown")
+        expected_matchups = league.get("matchupCount", 0)
 
         async with semaphore:
             try:
@@ -144,10 +213,24 @@ class PinnacleRetriever(Retriever):
 
                 matchups, markets = await asyncio.gather(matchups_task, markets_task)
 
+                matchups = matchups if matchups else []
+                markets = markets if markets else []
+
+                # Check for pagination in matchups/markets
+                self._check_pagination(matchups, f"matchups/{league_name}", metrics)
+                self._check_pagination(markets, f"markets/{league_name}", metrics)
+
+                # Validate expected vs actual matchup count
+                if expected_matchups > 0 and len(matchups) < expected_matchups * 0.5:
+                    # Significant discrepancy - may indicate pagination or filtering issue
+                    metrics.pagination_warnings.append(
+                        f"League '{league_name}': expected ~{expected_matchups} matchups, got {len(matchups)}"
+                    )
+
                 return (
                     league_name,
-                    matchups if matchups else [],
-                    markets if markets else []
+                    matchups,
+                    markets
                 )
 
             except Exception as e:
@@ -159,7 +242,8 @@ class PinnacleRetriever(Retriever):
         matchup: dict,
         sport: str,
         league_name: str,
-        markets_by_matchup: Dict[int, List[dict]]
+        markets_by_matchup: Dict[int, List[dict]],
+        metrics: ExtractionMetrics
     ) -> Optional[StandardEvent]:
         """Parse a Pinnacle matchup + markets into StandardEvent"""
         try:
@@ -176,6 +260,7 @@ class PinnacleRetriever(Retriever):
                 start_time_str = matchup.get("startTime")
 
             if len(participants) < 2:
+                metrics.events_skipped_no_participants += 1
                 return None
 
             # Extract teams
@@ -183,6 +268,7 @@ class PinnacleRetriever(Retriever):
             away_participant = next((p for p in participants if p.get("alignment") == "away"), None)
 
             if not home_participant or not away_participant:
+                metrics.events_skipped_no_teams += 1
                 return None
 
             home_team_raw = home_participant.get("name", "")
@@ -206,6 +292,10 @@ class PinnacleRetriever(Retriever):
             # Parse all market types
             parsed_markets = self._parse_markets(raw_markets)
 
+            if not parsed_markets:
+                metrics.events_skipped_no_markets += 1
+                return None
+
             # Build StandardEvent
             event = StandardEvent(
                 id=f"{self.provider_id}_{matchup_id}",
@@ -224,6 +314,7 @@ class PinnacleRetriever(Retriever):
 
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Error parsing matchup: {e}")
+            metrics.events_skipped_error += 1
             return None
 
     def _parse_markets(self, raw_markets: List[dict]) -> List[dict]:

@@ -129,7 +129,7 @@ class PolymarketRetriever(Retriever):
         return ""
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Required by base class."""
+        """Parse API response - delegates to _parse_all."""
         return self._parse_all(data) if data else []
 
     async def extract_all(self, limit: int = 500) -> List[StandardEvent]:

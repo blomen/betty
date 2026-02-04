@@ -7,6 +7,7 @@ Contains all normalization logic:
 - Market and outcome normalization
 """
 
+import logging
 import re
 import unicodedata
 from functools import lru_cache
@@ -14,6 +15,13 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+# Precompiled regex patterns for performance
+_RANKING_PATTERN = re.compile(r'^\(\d+\)\s*')
+_STATE_SUFFIX_PATTERN = re.compile(r'-[a-z]{2}$')
+_PUNCTUATION_PATTERN = re.compile(r'[^\w\s]')
 
 # Common suffixes to remove (order matters - longer first)
 TEAM_SUFFIXES = [
@@ -110,10 +118,10 @@ def normalize_team_name(name: str) -> str:
     name = name.replace('ß', 'ss')
 
     # Remove rankings: (12) Team -> Team
-    name = re.sub(r'^\(\d+\)\s*', '', name)
+    name = _RANKING_PATTERN.sub('', name)
 
     # Remove state suffixes: Team-RJ -> Team
-    name = re.sub(r'-[a-z]{2}$', '', name)
+    name = _STATE_SUFFIX_PATTERN.sub('', name)
 
     # Remove suffixes
     for suffix in TEAM_SUFFIXES:
@@ -128,7 +136,7 @@ def normalize_team_name(name: str) -> str:
             break
 
     # Remove punctuation
-    name = re.sub(r'[^\w\s]', '', name)
+    name = _PUNCTUATION_PATTERN.sub('', name)
     name = ' '.join(name.split())
 
     # Try alias lookup
@@ -152,17 +160,40 @@ def generate_canonical_id(
     sport: str,
     home_team: str,
     away_team: str,
-    start_date: str,
+    start_time,
 ) -> str:
     """
-    Generate a canonical event ID.
+    Generate canonical event ID for cross-provider matching.
 
     Format: {sport}:{home_normalized}:{away_normalized}:{date}
+    Example: "football:manchester_united:liverpool:20250122"
+
+    Args:
+        sport: Sport name (e.g., "football", "basketball")
+        home_team: Home team name
+        away_team: Away team name
+        start_time: Event start time (datetime or ISO string)
+
+    Returns:
+        Canonical ID string
     """
+    from datetime import datetime
+
     home_norm = normalize_team_name(home_team)
     away_norm = normalize_team_name(away_team)
 
-    return f"{sport}:{home_norm}:{away_norm}:{start_date}"
+    if isinstance(start_time, datetime):
+        date_str = start_time.strftime('%Y%m%d')
+    elif isinstance(start_time, str):
+        try:
+            dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            date_str = dt.strftime('%Y%m%d')
+        except ValueError:
+            date_str = 'unknown'
+    else:
+        date_str = 'unknown'
+
+    return f"{sport}:{home_norm}:{away_norm}:{date_str}"
 
 
 # ============ Event Title Parsing ============
@@ -374,4 +405,9 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     if outcome_lower in ['2', 'away', 'borta', 'no', 'nej']:
         return 'away'
 
+    # Log normalization failure for debugging
+    logger.debug(
+        f"Outcome normalization failed: '{outcome}' did not match "
+        f"home='{home}' or away='{away}', returning truncated raw value"
+    )
     return outcome[:20]
