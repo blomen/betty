@@ -7,16 +7,26 @@ SQLite schema for:
 - Provider balances
 - Manual bet tracking
 - User profile settings
+- Risk management profiles
 """
 
 from datetime import datetime
 from pathlib import Path
+from enum import Enum
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+
+class RiskLevel(str, Enum):
+    """Risk level classification for providers."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 # Database file location
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "oddopp.db"
@@ -55,21 +65,25 @@ class Event(Base):
 class Provider(Base):
     """
     A betting provider (bookmaker).
-    
+
     Stores runtime state only - extraction logic lives in code.
     """
     __tablename__ = "providers"
-    
+
     id = Column(String, primary_key=True)       # "unibet"
     name = Column(String, nullable=False)       # "Unibet"
     url = Column(String)                        # "unibet.se"
-    
+
     is_enabled = Column(Boolean, default=True)  # Can toggle off
     balance = Column(Float, default=0.0)        # Your current balance
-    
+
+    # DEPRECATED: Bonus status is now tracked per-profile in ProfileProviderBonus table
+    # This column is kept for backwards compatibility but should not be used
+    bonus_status = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     odds = relationship("Odds", back_populates="provider")
     bets = relationship("Bet", back_populates="provider")
@@ -113,39 +127,58 @@ class Odds(Base):
 class Bet(Base):
     """
     A placed bet (manual entry).
-    
+
     User enters bets manually, system auto-calculates profit/ROI.
+    Extended with behavioral tracking for risk management.
     """
     __tablename__ = "bets"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    
+
     # What you bet on
     event_id = Column(String, ForeignKey("events.id"))
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     market = Column(String)                     # "1x2"
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
-    
+
     # Stake
     stake = Column(Float, nullable=False)       # 100.00
-    
+
     # Bonus tracking
     is_bonus = Column(Boolean, default=False)
     bonus_type = Column(String)                 # "free_bet", "deposit_match", "risk_free"
-    
+
     # Result (updated when settled)
     result = Column(String, default="pending")  # "pending", "won", "lost", "void"
     payout = Column(Float, default=0.0)         # What you got back
-    
+
     # Timestamps
     placed_at = Column(DateTime, default=datetime.utcnow)
     settled_at = Column(DateTime)
-    
+
+    # === BEHAVIORAL TRACKING (for risk management) ===
+    # Timing patterns
+    hour_of_day = Column(Integer, nullable=True)      # 0-23
+    day_of_week = Column(Integer, nullable=True)      # 0=Monday, 6=Sunday
+
+    # Stake patterns
+    stake_rounded = Column(Boolean, nullable=True)    # Was stake a round number?
+    stake_noise_applied = Column(Float, nullable=True)  # Noise amount added
+
+    # Risk metrics at bet time
+    risk_score_at_bet = Column(Float, nullable=True)  # Provider risk score (0-1)
+    utility_score = Column(Float, nullable=True)      # EV - λ*RiskPenalty
+    selection_probability = Column(Float, nullable=True)  # Softmax selection prob
+
+    # CLV tracking (filled post-event)
+    closing_odds = Column(Float, nullable=True)       # Odds at event start
+    clv_pct = Column(Float, nullable=True)            # Closing line value %
+
     # Relationships
     event = relationship("Event", back_populates="bets")
     provider = relationship("Provider", back_populates="bets")
-    
+
     @property
     def profit(self) -> float:
         """Net profit/loss from this bet."""
@@ -155,7 +188,7 @@ class Bet(Base):
             # Free bets don't lose stake
             return 0.0 if self.is_bonus else -self.stake
         return 0.0
-    
+
     @property
     def roi_pct(self) -> float:
         """Return on investment percentage."""
@@ -191,12 +224,46 @@ class Profile(Base):
     min_retention_pct = Column(Float, default=80.0)  # Min % for free bet value
     preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
+    double_deposit = Column(Float, default=0.0)      # Max deposit match (0 = none)
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
+
+
+class ProfileProviderBonus(Base):
+    """
+    Per-profile bonus status tracking.
+
+    Each profile tracks bonus status independently per provider.
+    When switching profiles, the bonus_status shown is from this table,
+    not the global Provider.bonus_status field.
+    """
+    __tablename__ = "profile_provider_bonuses"
+
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+
+    # 'available' = bonus ready to use
+    # 'in_progress' = deposited with double deposit, needs wagering
+    # 'completed' = bonus fully used
+    bonus_status = Column(String, default="available")
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
+    )
+
+    # Relationships
+    profile = relationship("Profile", back_populates="bonus_statuses")
+    provider = relationship("Provider")
 
 
 # ============ Opportunities ============
@@ -343,6 +410,92 @@ class SportRunMetrics(Base):
     # Relationships
     extraction_run = relationship("ExtractionRun", back_populates="sport_metrics")
     provider_metrics = relationship("ProviderRunMetrics", back_populates="sport_errors")
+
+
+# ============ Risk Management ============
+
+class ProviderRiskProfile(Base):
+    """
+    Tracks behavioral risk metrics per provider.
+
+    Risk scores are computed from betting patterns that may trigger
+    bookmaker detection algorithms.
+    """
+    __tablename__ = "provider_risk_profiles"
+
+    id = Column(Integer, primary_key=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, unique=True)
+
+    # Overall risk score (0.0 = safe, 1.0 = high risk)
+    risk_score = Column(Float, default=0.0)
+    risk_level = Column(String, default="low")  # "low", "medium", "high", "critical"
+
+    # Individual feature scores (0.0-1.0, higher = more suspicious)
+    stake_entropy = Column(Float, default=0.0)        # CV of stakes + round number ratio
+    market_diversity = Column(Float, default=0.0)     # Sports/leagues spread
+    timing_regularity = Column(Float, default=0.0)    # Hour/day concentration
+    outcome_correlation = Column(Float, default=0.0)  # Hedge detection
+    bonus_usage_ratio = Column(Float, default=0.0)    # Bonus bet percentage
+    clv_score = Column(Float, default=0.0)            # Average closing line value
+    win_rate_deviation = Column(Float, default=0.0)   # Actual vs expected
+
+    # Brier score for calibration tracking (lower = better)
+    brier_score = Column(Float, nullable=True)
+
+    # Cooldown tracking
+    is_on_cooldown = Column(Boolean, default=False)
+    cooldown_until = Column(DateTime, nullable=True)
+    cooldown_reason = Column(String, nullable=True)
+
+    # Metadata
+    last_calculated_at = Column(DateTime, default=datetime.utcnow)
+    bets_analyzed = Column(Integer, default=0)  # Number of bets in calculation window
+
+    # Relationships
+    provider = relationship("Provider")
+
+
+class RiskConfig(Base):
+    """
+    Configurable risk parameters per profile.
+
+    These control how aggressively the system penalizes risky behavior.
+    """
+    __tablename__ = "risk_configs"
+
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False, unique=True)
+
+    # Core parameters
+    lambda_coefficient = Column(Float, default=0.3)      # Risk aversion (0=ignore, 1=very conservative)
+    stake_noise_pct = Column(Float, default=5.0)         # Max % noise on stakes
+    softmax_temperature = Column(Float, default=1.0)     # Selection randomness (T=0 deterministic)
+
+    # Feature weights (must sum to 1.0 for normalized scoring)
+    weight_stake_entropy = Column(Float, default=0.15)
+    weight_market_diversity = Column(Float, default=0.10)
+    weight_timing_regularity = Column(Float, default=0.15)
+    weight_outcome_correlation = Column(Float, default=0.20)
+    weight_bonus_usage = Column(Float, default=0.15)
+    weight_clv = Column(Float, default=0.15)
+    weight_win_rate = Column(Float, default=0.10)
+
+    # Risk level thresholds
+    threshold_low = Column(Float, default=0.3)           # < this = low risk
+    threshold_medium = Column(Float, default=0.5)        # < this = medium risk
+    threshold_high = Column(Float, default=0.7)          # < this = high risk
+    # >= threshold_high = critical
+
+    # Behavioral parameters
+    rolling_window_days = Column(Integer, default=30)    # Feature calculation window
+    cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
+    cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
+
+    # Updated timestamp
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    profile = relationship("Profile")
 
 
 # ============ Database Functions ============

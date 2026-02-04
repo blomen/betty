@@ -66,12 +66,19 @@ export interface OddsEntry {
 }
 
 // Providers
+export interface ProviderBonus {
+  type: 'freebet' | 'doubledeposit';
+  amount: number;
+}
+
 export interface Provider {
   id: string;
   name: string;
   url: string | null;
   is_enabled: boolean;
   balance: number;
+  bonus?: ProviderBonus | null;
+  bonus_status?: 'available' | 'in_progress' | 'completed' | null;
 }
 
 export interface ProvidersResponse {
@@ -358,30 +365,39 @@ export interface PolymarketMatchedResponse {
   count: number;
 }
 
-// Bonus Arbitrage Types
-export interface BonusArb {
+// Bonus Arbitrage Types (True Arb with Hedges)
+export interface BonusArbLeg {
+  outcome: string;
+  provider: string;
+  odds: number;
+  stake: number;
+  return: number;
+  is_anchor: boolean;
+  bonus_type: string | null;
+  bonus_amount: number | null;
+}
+
+export interface BonusArbOpportunity {
   event_id: string;
   market: string;
-  outcome: string;
-  anchor_provider: string;
-  anchor_odds: number;
-  fair_odds: number;
-  edge_pct: number;
+  profit_pct: number;
+  profit_amount: number;
   home_team: string | null;
   away_team: string | null;
   sport: string | null;
-  // Kelly-based stake suggestions
-  suggested_stake: number;
-  kelly_stake: number;
-  max_stake: number;
+  start_time: string | null;
+  anchor_outcome: string;
+  legs: BonusArbLeg[];
 }
 
-export interface BonusScanResponse {
-  opportunities: BonusArb[];
+export interface BonusArbResponse {
+  opportunities: BonusArbOpportunity[];
   count: number;
   anchor_provider: string;
-  total_bankroll: number;
+  anchor_bonus: { type: string; amount: number };
   anchor_balance: number;
+  total_bankroll: number;
+  valid_counterparts: string[];
 }
 
 export type BonusWorkflowStep =
@@ -395,7 +411,7 @@ export type BonusWorkflowStep =
 export interface BonusWorkflowState {
   step: BonusWorkflowStep;
   anchorProvider?: string;
-  opportunities?: BonusArb[];
+  opportunities?: BonusArbOpportunity[];
   selectedOpp?: number;
   suggestedStake?: number;
   totalBankroll?: number;
@@ -508,5 +524,143 @@ export interface DropdownOption {
   sublabel?: string;
   selected?: boolean;  // For multi-select (extract)
   type: 'provider' | 'opportunity' | 'stake' | 'action';
+}
+
+// ============ Risk Management Types ============
+
+export interface RiskFeatures {
+  stake_entropy: number;
+  market_diversity: number;
+  timing_regularity: number;
+  outcome_correlation: number;
+  bonus_usage_ratio: number;
+  clv_score: number;
+  win_rate_deviation: number;
+  bets_analyzed: number;
+  calculation_window_days: number;
+  calculated_at: string;
+}
+
+export interface ProviderRiskProfile {
+  provider_id: string;
+  risk_score: number;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  features: RiskFeatures;
+  recommendations: string[];
+  is_on_cooldown: boolean;
+  cooldown_until: string | null;
+  cooldown_reason: string | null;
+  brier_score: number | null;
+}
+
+export interface RiskSummary {
+  total_providers: number;
+  low_risk: number;
+  medium_risk: number;
+  high_risk: number;
+  critical_risk: number;
+  on_cooldown: number;
+  avg_risk_score: number;
+}
+
+export interface AllRiskResponse {
+  providers: Record<string, ProviderRiskProfile>;
+  summary: RiskSummary;
+}
+
+export interface RiskConfig {
+  lambda_coefficient: number;
+  stake_noise_pct: number;
+  softmax_temperature: number;
+  weight_stake_entropy: number;
+  weight_market_diversity: number;
+  weight_timing_regularity: number;
+  weight_outcome_correlation: number;
+  weight_bonus_usage: number;
+  weight_clv: number;
+  weight_win_rate: number;
+  threshold_low: number;
+  threshold_medium: number;
+  threshold_high: number;
+  rolling_window_days: number;
+  cooldown_trigger_score: number;
+  cooldown_duration_hours: number;
+}
+
+export interface RiskConfigUpdate {
+  lambda_coefficient?: number;
+  stake_noise_pct?: number;
+  softmax_temperature?: number;
+  weight_stake_entropy?: number;
+  weight_market_diversity?: number;
+  weight_timing_regularity?: number;
+  weight_outcome_correlation?: number;
+  weight_bonus_usage?: number;
+  weight_clv?: number;
+  weight_win_rate?: number;
+  threshold_low?: number;
+  threshold_medium?: number;
+  threshold_high?: number;
+  rolling_window_days?: number;
+  cooldown_trigger_score?: number;
+  cooldown_duration_hours?: number;
+}
+
+export interface OpportunityInput {
+  event_id: string;
+  provider_id: string;
+  outcome: string;
+  odds: number;
+  fair_odds: number;
+}
+
+export interface RankedOpportunity {
+  event_id: string;
+  provider_id: string;
+  outcome: string;
+  odds: number;
+  fair_odds: number;
+  expected_value: number;
+  edge_pct: number;
+  risk_score: number;
+  risk_penalty: number;
+  utility: number;
+  base_stake: number;
+  risk_adjusted_stake: number;
+  stake_multiplier: number;
+  selection_probability: number;
+  rank: number;
+}
+
+export interface SelectOpportunityResponse {
+  selected: RankedOpportunity | null;
+  all_ranked: RankedOpportunity[];
+  selection_entropy: number;
+}
+
+export interface RiskAwareStake {
+  base_stake: number;
+  risk_adjusted_stake: number;
+  final_stake: number;
+  max_stake: number;
+  risk_score: number;
+  risk_level: 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+  expected_value: number;
+  risk_penalty: number;
+  utility: number;
+  noise_applied: number;
+  noise_pct: number;
+  provider_balance: number;
+  reason: string;
+  skip_reason: string | null;
+}
+
+export interface StakeNoiseResult {
+  original_stake: number;
+  final_stake: number;
+  noise_applied: number;
+  noise_pct: number;
+  was_rounded: boolean;
+  reason: string;
 }
 
