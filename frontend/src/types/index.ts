@@ -388,6 +388,8 @@ export interface BonusArbOpportunity {
   start_time: string | null;
   anchor_outcome: string;
   legs: BonusArbLeg[];
+  // Quality classification: "verified" (normal) or "suspect" (needs validation)
+  quality?: 'verified' | 'suspect';
 }
 
 export interface BonusArbResponse {
@@ -443,6 +445,9 @@ export interface FullArbitrage {
   sport: string | null;
   start_time: string | null;
   legs: ArbitrageLeg[];
+  // Quality classification: "verified" (normal) or "suspect" (needs validation)
+  // Suspect arbs have unusually high profit (>7%) indicating possible data issues
+  quality?: 'verified' | 'suspect';
 }
 
 export interface ArbitrageScanResponse {

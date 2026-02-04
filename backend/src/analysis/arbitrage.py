@@ -23,16 +23,24 @@ class ArbitrageOpportunity:
     event_id: str
     market: str
     profit_pct: float
-    
+
     # Best odds per outcome
     outcomes: list[dict]  # [{outcome, provider, odds}]
-    
+
     # Recommended stakes for $100 total
     stakes: list[dict]    # [{outcome, provider, stake, return}]
-    
+
+    # Quality classification: "verified" (normal), "suspect" (needs validation)
+    # Suspect arbs have unusually high profit (>7%) indicating possible data issues
+    quality: str = "verified"
+
     @property
     def total_stake(self) -> float:
         return sum(s["stake"] for s in self.stakes)
+
+    @property
+    def is_suspect(self) -> bool:
+        return self.quality == "suspect"
 
 
 def find_arbitrage(
@@ -98,13 +106,6 @@ def find_arbitrage(
     profit_pct = (1 - implied_sum) * 100
 
     if profit_pct < min_profit_pct:
-        return None
-
-    # Sanity check: unrealistic arb (>25%) usually means bad data or event mismatch
-    if profit_pct > 25:
-        logger.warning(
-            f"Suspicious arb {event_id} {market}: {profit_pct:.1f}% profit - possible data issue"
-        )
         return None
 
     # Calculate stakes for $100 total stake

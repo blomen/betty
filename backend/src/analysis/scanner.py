@@ -39,6 +39,14 @@ MIN_VALID_PROB_SUM = 0.90
 # Real odds rarely differ more than 35% across providers for same event
 MAX_ODDS_RATIO = 1.35
 
+# Arbitrage profit thresholds
+# Below 2%: transaction costs eat profit, not worth execution risk
+MIN_ARB_PROFIT_PCT = 2.0
+
+# Above 7%: almost certainly data error, stale odds, or palpable error
+# Real arbitrage rarely exceeds 5% profit
+MAX_ARB_PROFIT_PCT = 7.0
+
 
 @dataclass
 class BonusOpportunity:
@@ -93,6 +101,13 @@ class BonusArbitrage:
     away_team: Optional[str] = None
     sport: Optional[str] = None
 
+    # Quality classification: "verified" (normal), "suspect" (needs validation)
+    quality: str = "verified"
+
+    @property
+    def is_suspect(self) -> bool:
+        return self.quality == "suspect"
+
 
 class OpportunityScanner:
     """
@@ -102,29 +117,46 @@ class OpportunityScanner:
         scanner = OpportunityScanner(session)
 
         # Standard analysis
-        arbs = scanner.scan_arbitrage(min_profit_pct=0.5)
+        arbs = scanner.scan_arbitrage()  # 2-7% profit range
         values = scanner.scan_value(min_edge_pct=5.0)
 
         # Bonus mode (no threshold, all opportunities)
         bonus = scanner.scan_bonus("unibet", ["pinnacle", "polymarket"])
+
+    Quality classification:
+        Arbs with profit >7% are flagged as quality="suspect" (not discarded).
+        These likely indicate data errors and should be validated before execution:
+        - Verify odds are current (timestamps within X seconds)
+        - Verify market mapping is exact (same event/line)
+        - Re-fetch prices before acting
+
+        Use arb.is_suspect property to filter: [a for a in arbs if not a.is_suspect]
     """
 
     def __init__(self, session: Session):
         self.session = session
 
-    def scan_arbitrage(self, min_profit_pct: float = 0.5) -> list[ArbitrageOpportunity]:
+    def scan_arbitrage(
+        self,
+        min_profit_pct: float = MIN_ARB_PROFIT_PCT,
+        suspect_threshold_pct: float = MAX_ARB_PROFIT_PCT,
+    ) -> list[ArbitrageOpportunity]:
         """
         Find arbitrage opportunities across providers.
 
         Requires different providers for different outcomes (true arb).
 
         Args:
-            min_profit_pct: Minimum profit percentage (default 0.5%)
+            min_profit_pct: Minimum profit percentage (default 2.0%)
+            suspect_threshold_pct: Profit % above which arbs are flagged as "suspect"
+                                   (default 7.0%) - likely data errors, verify before acting
 
         Returns:
             List of ArbitrageOpportunity sorted by profit (highest first)
+            Opportunities with quality="suspect" should be validated before execution
         """
         opportunities = []
+        suspect_count = 0
 
         # Get events with odds from 2+ providers
         events = self._get_multi_provider_events(min_providers=2)
@@ -140,12 +172,25 @@ class OpportunityScanner:
                     min_profit_pct=min_profit_pct,
                 )
                 if arb:
+                    # Flag high-profit arbs as suspect (likely data errors)
+                    # Keep them for verification rather than discarding
+                    if arb.profit_pct > suspect_threshold_pct:
+                        arb.quality = "suspect"
+                        suspect_count += 1
+                        logger.warning(
+                            f"Suspect arb {arb.profit_pct:.1f}% for {event.id} "
+                            f"(exceeds {suspect_threshold_pct}% threshold) - needs verification"
+                        )
                     opportunities.append(arb)
 
         # Sort by profit (highest first)
         opportunities.sort(key=lambda x: x.profit_pct, reverse=True)
 
-        logger.info(f"[Scanner] Found {len(opportunities)} arbitrage opportunities")
+        verified_count = len(opportunities) - suspect_count
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} arbitrage opportunities "
+            f"({verified_count} verified, {suspect_count} suspect)"
+        )
         return opportunities
 
     def scan_value(
@@ -367,10 +412,13 @@ class OpportunityScanner:
                     profit = target_return - total_stake
                     profit_pct = (profit / anchor_stake) * 100
 
-                    # Sanity check: profit > 15% is almost certainly data issue
-                    # Real arbitrage rarely exceeds 5-10% profit
-                    if profit_pct > 15:
-                        continue
+                    # Flag high-profit arbs as suspect (likely data errors)
+                    quality = "verified"
+                    if profit_pct > MAX_ARB_PROFIT_PCT:
+                        quality = "suspect"
+                        logger.warning(
+                            f"Suspect bonus arb {profit_pct:.1f}% for {event.id} - needs verification"
+                        )
 
                     opportunities.append(BonusArbitrage(
                         event_id=event.id,
@@ -387,13 +435,17 @@ class OpportunityScanner:
                         home_team=event.home_team,
                         away_team=event.away_team,
                         sport=event.sport,
+                        quality=quality,
                     ))
 
         # Sort by profit_pct (highest first, including negative)
         opportunities.sort(key=lambda x: x.profit_pct, reverse=True)
 
+        suspect_count = sum(1 for o in opportunities if o.is_suspect)
+        verified_count = len(opportunities) - suspect_count
         logger.info(
-            f"[Scanner] Found {len(opportunities)} bonus arb opportunities for {anchor_provider}"
+            f"[Scanner] Found {len(opportunities)} bonus arb opportunities for {anchor_provider} "
+            f"({verified_count} verified, {suspect_count} suspect)"
         )
         return opportunities[:limit]
 

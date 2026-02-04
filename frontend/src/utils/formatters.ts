@@ -17,8 +17,8 @@ export function formatProviderName(name: string): string {
   return name.replace(/\.(se|com|no|dk|fi|de|uk|eu|net|org|io|co)$/i, '');
 }
 
-export function formatCurrency(value: number, currency = '$'): string {
-  return `${currency}${value.toFixed(2)}`;
+export function formatCurrency(value: number, currency = 'kr'): string {
+  return `${value.toFixed(2)} ${currency}`;
 }
 
 export function formatPercentage(value: number, decimals = 2): string {
@@ -181,7 +181,7 @@ export function formatRetention(retention: number): { text: string; color: strin
 
 // ============ Markdown Table Formatters for Terminal Output ============
 
-import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArb, FullArbitrage } from '@/types';
+import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArbOpportunity, FullArbitrage } from '@/types';
 
 /**
  * Format bankroll exposure as compact table
@@ -191,7 +191,7 @@ export function formatBankrollTable(exposure: BankrollExposure): string {
     return 'No bankroll data. Configure providers first.';
   }
 
-  const fmt = (n: number) => n % 1 === 0 ? `$${n}` : `$${n.toFixed(0)}`;
+  const fmt = (n: number) => n % 1 === 0 ? `${n} kr` : `${n.toFixed(0)} kr`;
 
   // Find max provider name length for dynamic column width (after stripping suffixes)
   const maxNameLen = Math.max(
@@ -318,10 +318,10 @@ export function formatBetsTable(bets: Bet[], status?: string): string {
       const id = String(bet.id).padStart(2);
       const provider = truncate(bet.provider, 15).padEnd(15);
       const odds = bet.odds.toFixed(2).padStart(5);
-      const stake = `$${bet.stake.toFixed(0)}`.padStart(6);
+      const stake = `${bet.stake.toFixed(0)}kr`.padStart(6);
       const pl = bet.result === 'pending' ? '-'.padStart(7)
-        : bet.profit >= 0 ? `+$${bet.profit.toFixed(0)}`.padStart(7)
-        : `-$${Math.abs(bet.profit).toFixed(0)}`.padStart(7);
+        : bet.profit >= 0 ? `+${bet.profit.toFixed(0)}kr`.padStart(7)
+        : `-${Math.abs(bet.profit).toFixed(0)}kr`.padStart(7);
       return `${id} | ${st}  | ${provider} | ${odds} | ${stake} | ${pl}`;
     })
     .join('\n');
@@ -339,11 +339,11 @@ ${rows}
 export function formatStatsReport(stats: BankrollStats): string {
   const winRate = stats.total_bets > 0 ? ((stats.wins / stats.total_bets) * 100).toFixed(0) : '0';
   const profit = stats.total_profit || 0;
-  const profitStr = profit >= 0 ? `+$${profit.toFixed(0)}` : `-$${Math.abs(profit).toFixed(0)}`;
+  const profitStr = profit >= 0 ? `+${profit.toFixed(0)} kr` : `-${Math.abs(profit).toFixed(0)} kr`;
   const roi = stats.roi_pct || 0;
 
   return `Bets: ${stats.total_bets} | W/L: ${stats.wins}/${stats.losses} | Win: ${winRate}%
-Staked: $${(stats.total_staked || 0).toFixed(0)} | Profit: ${profitStr} | ROI: ${roi.toFixed(1)}%`;
+Staked: ${(stats.total_staked || 0).toFixed(0)} kr | Profit: ${profitStr} | ROI: ${roi.toFixed(1)}%`;
 }
 
 
@@ -374,7 +374,7 @@ export function formatArbitrageList(arbs: FullArbitrage[]): string {
     return `${num} | ${profit} | ${match} | ${sport} | ${time} | ${legs}`;
   }).join('\n');
 
-  return `\`\`\`
+  return `Found ${arbs.length} arbitrage opportunities\n\`\`\`
 # |    %   | Match                    | Sport      | Time         | Legs
 --|--------|--------------------------|------------|--------------|----------------------------------
 ${rows}
@@ -382,10 +382,10 @@ ${rows}
 }
 
 /**
- * Format bonus arbitrage opportunities - compact
+ * Format bonus arbitrage opportunities - compact (true arb with hedges)
  */
 export function formatBonusArbitrage(
-  opportunities: BonusArb[],
+  opportunities: BonusArbOpportunity[],
   anchorProvider: string,
   totalBankroll: number,
   anchorBalance: number
@@ -398,21 +398,25 @@ export function formatBonusArbitrage(
     .slice(0, 20)
     .map((opp, idx) => {
       const num = pad(String(idx + 1), 2, 'right');
-      const edge = pad(`+${opp.edge_pct.toFixed(1)}%`, 6, 'right');
+      const profitSign = opp.profit_pct >= 0 ? '+' : '';
+      const profit = pad(`${profitSign}${opp.profit_pct.toFixed(1)}%`, 7, 'right');
       const eventName = opp.home_team && opp.away_team
         ? `${opp.home_team} vs ${opp.away_team}`
         : 'Unknown';
-      const match = pad(truncate(eventName, 35), 35);
-      const stake = `$${opp.suggested_stake.toFixed(0)}`.padStart(6);
-      return `${num} | ${edge} | ${match} | ${stake}`;
+      const match = pad(truncate(eventName, 30), 30);
+      // Show anchor bet with team name
+      const anchorLeg = opp.legs.find(l => l.is_anchor);
+      const betOn = anchorLeg ? outcomeToTeam(anchorLeg.outcome, opp.home_team || undefined, opp.away_team || undefined) : '-';
+      const bet = pad(truncate(betOn, 15), 15);
+      return `${num} | ${profit} | ${match} | ${bet}`;
     })
     .join('\n');
 
-  return `${anchorProvider.toUpperCase()} vs Pinnacle | Bankroll: $${totalBankroll.toFixed(0)} | Balance: $${anchorBalance.toFixed(0)}
+  return `${anchorProvider.toUpperCase()} bonus arbitrage | Bankroll: ${totalBankroll.toFixed(0)} kr | Balance: ${anchorBalance.toFixed(0)} kr
 
 \`\`\`
-# | Edge   | Match                               | Stake
---|--------|-------------------------------------|-------
+# | Profit  | Match                          | Bet on
+--|---------|--------------------------------|----------------
 ${rows}
 \`\`\``;
 }

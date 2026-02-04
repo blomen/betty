@@ -303,14 +303,17 @@ export function useDropdownWorkflow({
     try {
       const result = await api.scanArbitrage(0.5, 20);
 
-      if (result.opportunities.length === 0) {
+      // Filter out suspect arbs (>7% profit likely data errors)
+      const verifiedArbs = result.opportunities.filter(a => a.quality !== 'suspect');
+
+      if (verifiedArbs.length === 0) {
         sendMessage('No arbitrage found. Run `/extract pinnacle <provider>` first.');
         return;
       }
 
-      sendMessage(formatArbitrageList(result.opportunities));
+      sendMessage(formatArbitrageList(verifiedArbs));
 
-      const opts: DropdownOption[] = result.opportunities.map((arb, idx) => ({
+      const opts: DropdownOption[] = verifiedArbs.map((arb, idx) => ({
         id: idx + 1,
         label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
         sublabel: `${arb.legs.length} legs`,
@@ -319,7 +322,7 @@ export function useDropdownWorkflow({
 
       setOptions(withBack(opts));
       setSelectedIndex(0);
-      setWorkflow({ type: 'arb', step: 'select-opportunity', fullArbs: result.opportunities });
+      setWorkflow({ type: 'arb', step: 'select-opportunity', fullArbs: verifiedArbs });
     } catch (err) {
       sendMessage(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
