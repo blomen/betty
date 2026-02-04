@@ -152,8 +152,10 @@ spectate_tournaments: &spectate_tournaments
     - league-of-legends/lec
 
 # Provider definitions
+# Validation status: PRODUCTION_READY = tested in full pipeline with metrics validated
 providers:
   # Kambi providers (same API, different brands)
+  # PRODUCTION_READY: unibet (2026-02-04) - ratio 2.75, 100% normalization, no 429s
   unibet:
     <<: *kambi_defaults
     id: unibet
@@ -164,6 +166,7 @@ providers:
       type: doubledeposit
       amount: 1000
 
+  # PRODUCTION_READY: leovegas (2026-02-04) - ratio 2.75, 100% normalization
   leovegas:
     <<: *kambi_defaults
     id: leovegas
@@ -174,6 +177,7 @@ providers:
       type: doubledeposit
       amount: 600
 
+  # PRODUCTION_READY: expekt (2026-02-04) - ratio 2.77, 100% normalization
   expekt:
     <<: *kambi_defaults
     id: expekt
@@ -184,6 +188,7 @@ providers:
       type: doubledeposit
       amount: 1000
 
+  # PRODUCTION_READY: betmgm (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
     <<: *kambi_defaults
     id: betmgm
@@ -194,6 +199,7 @@ providers:
       type: doubledeposit
       amount: 500
 
+  # PRODUCTION_READY: speedybet (2026-02-04) - ratio 2.77, 100% normalization
   speedybet:
     <<: *kambi_defaults
     id: speedybet
@@ -204,6 +210,7 @@ providers:
       type: doubledeposit
       amount: 500
 
+  # PRODUCTION_READY: x3000 (2026-02-04) - ratio 2.77, 100% normalization
   x3000:
     <<: *kambi_defaults
     id: x3000
