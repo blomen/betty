@@ -43,9 +43,31 @@ class RiskFeaturesResponse(BaseModel):
     bonus_usage_ratio: float
     clv_score: float
     win_rate_deviation: float
+    ev_quality_ratio: float
+    account_freshness_risk: float
+    account_age_days: int
+    total_bets_all_time: int
     bets_analyzed: int
     calculation_window_days: int
     calculated_at: str
+
+
+class WarmupStatusResponse(BaseModel):
+    """Account warmup status for a provider."""
+
+    provider_id: str
+    account_status: str  # "dormant", "fresh", "mature"
+    account_age_days: int
+    account_age_source: str  # "manual" or "first_bet"
+    total_bets: int
+    ev_quality_ratio: float
+    account_freshness_risk: float
+    warmup_complete: bool
+    stake_multiplier: float
+    max_edge_pct: float
+    max_daily_bets: Optional[int]
+    bets_to_graduate: Optional[int]  # For dormant accounts
+    recommendations: list[str]
 
 
 class ProviderRiskResponse(BaseModel):
@@ -94,12 +116,16 @@ class RiskConfigResponse(BaseModel):
     weight_bonus_usage: float
     weight_clv: float
     weight_win_rate: float
+    weight_ev_quality: float
+    weight_account_freshness: float
     threshold_low: float
     threshold_medium: float
     threshold_high: float
     rolling_window_days: int
     cooldown_trigger_score: float
     cooldown_duration_hours: int
+    warmup_days_threshold: int
+    warmup_bets_threshold: int
 
 
 class RiskConfigUpdate(BaseModel):
@@ -115,12 +141,16 @@ class RiskConfigUpdate(BaseModel):
     weight_bonus_usage: Optional[float] = Field(None, ge=0, le=1)
     weight_clv: Optional[float] = Field(None, ge=0, le=1)
     weight_win_rate: Optional[float] = Field(None, ge=0, le=1)
+    weight_ev_quality: Optional[float] = Field(None, ge=0, le=1)
+    weight_account_freshness: Optional[float] = Field(None, ge=0, le=1)
     threshold_low: Optional[float] = Field(None, ge=0, le=1)
     threshold_medium: Optional[float] = Field(None, ge=0, le=1)
     threshold_high: Optional[float] = Field(None, ge=0, le=1)
     rolling_window_days: Optional[int] = Field(None, ge=7, le=365)
     cooldown_trigger_score: Optional[float] = Field(None, ge=0, le=1)
     cooldown_duration_hours: Optional[int] = Field(None, ge=1, le=720)
+    warmup_days_threshold: Optional[int] = Field(None, ge=1, le=90)
+    warmup_bets_threshold: Optional[int] = Field(None, ge=1, le=100)
 
 
 class OpportunityInput(BaseModel):
@@ -228,6 +258,111 @@ async def get_provider_risk(
     )
 
 
+@router.get("/providers/{provider_id}/warmup-status", response_model=WarmupStatusResponse)
+async def get_warmup_status(
+    provider_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Get account warmup status and mug betting recommendations.
+
+    Three-tier account status system:
+    - Dormant: age 14d+ AND bets < 5 → 60% stake, 12% edge cap, 4/day limit
+    - Fresh: age < 14d → 30-100% stake ramp, 10% edge cap, 3-5/day limit
+    - Mature: age 14d+ AND bets 5+ → 100% stake, 20% edge cap, no limit
+
+    Returns account status, stake multiplier, edge caps, and recommendations.
+    """
+    from ...db.models import ProfileProviderBalance, get_active_profile
+
+    # Verify provider exists
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
+
+    calculator = RiskCalculator(db)
+    assessment = calculator.assess_provider(provider_id)
+
+    features = assessment.features
+    bets = features.total_bets_all_time
+
+    # Check for manual account_opened_at
+    profile = get_active_profile(db)
+    balance = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if balance and balance.account_opened_at:
+        age = (datetime.utcnow() - balance.account_opened_at).days
+        age_source = "manual"
+    else:
+        age = features.account_age_days
+        age_source = "first_bet"
+
+    # Determine account status (3-tier system)
+    if age >= 14 and bets >= 5:
+        status = "mature"
+        stake_multiplier = 1.0
+        max_edge_pct = 20.0
+        max_daily_bets = None
+        bets_to_graduate = None
+    elif age >= 14 and bets < 5:
+        status = "dormant"
+        stake_multiplier = 0.6
+        max_edge_pct = 12.0
+        max_daily_bets = 4
+        bets_to_graduate = 5 - bets
+    else:
+        status = "fresh"
+        stake_multiplier = 0.3 + (age / 14) * 0.7
+        max_edge_pct = 10.0
+        max_daily_bets = 3 if age < 7 else 5
+        bets_to_graduate = None
+
+    warmup_complete = status == "mature"
+
+    # Build status-specific recommendations
+    recommendations = []
+    if status == "dormant":
+        recommendations.append(
+            f"Dormant account: place {bets_to_graduate} more bets to graduate to mature status"
+        )
+        recommendations.append("Mix in recreational bets (parlays, favorites) to build history")
+    elif status == "fresh":
+        days_remaining = 14 - age
+        recommendations.append(
+            f"Fresh account: {days_remaining} days until mature status (if 5+ bets placed)"
+        )
+        recommendations.append("Place 5-10 mug bets before +EV betting")
+
+    # Add EV quality warnings
+    if features.ev_quality_ratio > 0.7:
+        recommendations.append(
+            "High +EV ratio detected - place some -EV bets to look recreational"
+        )
+    elif features.ev_quality_ratio > 0.5:
+        recommendations.append(
+            "Moderate +EV ratio - consider mixing in more mug bets (1 in 5)"
+        )
+
+    return WarmupStatusResponse(
+        provider_id=provider_id,
+        account_status=status,
+        account_age_days=age,
+        account_age_source=age_source,
+        total_bets=bets,
+        ev_quality_ratio=round(features.ev_quality_ratio, 3),
+        account_freshness_risk=round(features.account_freshness_risk, 3),
+        warmup_complete=warmup_complete,
+        stake_multiplier=round(stake_multiplier, 2),
+        max_edge_pct=max_edge_pct,
+        max_daily_bets=max_daily_bets,
+        bets_to_graduate=bets_to_graduate,
+        recommendations=recommendations,
+    )
+
+
 @router.get("/all", response_model=AllRiskResponse)
 async def get_all_risk(db: Session = Depends(get_db)):
     """Get risk assessments for all providers with bet history."""
@@ -302,12 +437,16 @@ async def get_risk_config(db: Session = Depends(get_db)):
         weight_bonus_usage=config.weight_bonus_usage,
         weight_clv=config.weight_clv,
         weight_win_rate=config.weight_win_rate,
+        weight_ev_quality=config.weight_ev_quality,
+        weight_account_freshness=config.weight_account_freshness,
         threshold_low=config.threshold_low,
         threshold_medium=config.threshold_medium,
         threshold_high=config.threshold_high,
         rolling_window_days=config.rolling_window_days,
         cooldown_trigger_score=config.cooldown_trigger_score,
         cooldown_duration_hours=config.cooldown_duration_hours,
+        warmup_days_threshold=config.warmup_days_threshold,
+        warmup_bets_threshold=config.warmup_bets_threshold,
     )
 
 
@@ -346,12 +485,16 @@ async def update_risk_config(
         weight_bonus_usage=config.weight_bonus_usage,
         weight_clv=config.weight_clv,
         weight_win_rate=config.weight_win_rate,
+        weight_ev_quality=config.weight_ev_quality,
+        weight_account_freshness=config.weight_account_freshness,
         threshold_low=config.threshold_low,
         threshold_medium=config.threshold_medium,
         threshold_high=config.threshold_high,
         rolling_window_days=config.rolling_window_days,
         cooldown_trigger_score=config.cooldown_trigger_score,
         cooldown_duration_hours=config.cooldown_duration_hours,
+        warmup_days_threshold=config.warmup_days_threshold,
+        warmup_bets_threshold=config.warmup_bets_threshold,
     )
 
 

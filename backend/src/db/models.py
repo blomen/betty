@@ -294,6 +294,10 @@ class ProfileProviderBalance(Base):
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     balance = Column(Float, default=0.0)
 
+    # Manual account opened date for pre-existing accounts
+    # Used for dormant account handling - accounts opened before +EV betting
+    account_opened_at = Column(DateTime, nullable=True)
+
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (

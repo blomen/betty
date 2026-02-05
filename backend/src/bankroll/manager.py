@@ -287,6 +287,7 @@ class RiskAwareStakeRecommendation:
     provider_balance: float     # Available at provider
     reason: str                 # Why this stake
     skip_reason: Optional[str] = None  # If provider should be skipped
+    edge_warning: Optional[str] = None  # "High edge - possible stale line"
 
 
 class RiskAwareBankrollManager:
@@ -363,6 +364,93 @@ class RiskAwareBankrollManager:
             return 0.0
         return get_total_profile_bankroll(self.db, profile.id)
 
+    def _has_active_bonus(self, provider_id: str) -> bool:
+        """Check if provider has active bonus being cleared."""
+        from ..db.models import ProfileProviderBonus
+        profile = self._get_profile()
+        if not profile:
+            return False
+        bonus = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile.id,
+            ProfileProviderBonus.provider_id == provider_id,
+            ProfileProviderBonus.bonus_status == 'in_progress'
+        ).first()
+        return bonus is not None
+
+    def _get_today_bet_count(self, provider_id: str) -> int:
+        """Get number of bets placed today for a provider."""
+        from datetime import date
+        from sqlalchemy import func
+        from ..db.models import Bet
+        profile = self._get_profile()
+        if not profile:
+            return 0
+        return self.db.query(Bet).filter(
+            Bet.profile_id == profile.id,
+            Bet.provider_id == provider_id,
+            func.date(Bet.placed_at) == date.today()
+        ).count()
+
+    def _get_account_age(self, provider_id: str) -> int:
+        """
+        Get account age in days, preferring manual date over first bet date.
+
+        Priority:
+        1. Manual account_opened_at from ProfileProviderBalance
+        2. First bet date from ProviderRiskProfile
+        3. 0 if no data available
+        """
+        from ..db.models import ProfileProviderBalance, ProviderRiskProfile
+
+        profile = self._get_profile()
+        if not profile:
+            return 0
+
+        # Check for manual account_opened_at
+        balance = self.db.query(ProfileProviderBalance).filter(
+            ProfileProviderBalance.profile_id == profile.id,
+            ProfileProviderBalance.provider_id == provider_id
+        ).first()
+
+        if balance and balance.account_opened_at:
+            return (datetime.utcnow() - balance.account_opened_at).days
+
+        # Fall back to first bet date from risk profile
+        risk_profile = self.db.query(ProviderRiskProfile).filter(
+            ProviderRiskProfile.provider_id == provider_id
+        ).first()
+
+        if risk_profile and risk_profile.first_bet_date:
+            return (datetime.utcnow() - risk_profile.first_bet_date).days
+
+        return 0
+
+    def _get_account_status(self, provider_id: str, total_bets: int) -> tuple[str, float, float, Optional[int]]:
+        """
+        Determine account status based on age and bet count.
+
+        Three-tier system:
+        - Dormant: age 14d+ AND bets < 5 → mini-warmup (5 bets to graduate)
+        - Fresh: age < 14d → full warmup ramp (0.30 → 1.00 over 14 days)
+        - Mature: age 14d+ AND bets 5+ → full stakes
+
+        Returns: (status, stake_mult, max_edge, max_daily_bets or None)
+        """
+        age_days = self._get_account_age(provider_id)
+
+        if age_days >= 14 and total_bets >= 5:
+            # Mature: established account with betting history
+            return ("mature", 1.0, 20.0, None)
+        elif age_days >= 14 and total_bets < 5:
+            # Dormant: old account, barely used - mini warmup needed
+            # Still need to place some bets to look normal, but not full 14-day ramp
+            return ("dormant", 0.6, 12.0, 4)
+        else:
+            # Fresh: new account - full warmup ramp
+            mult = 0.3 + (age_days / 14) * 0.7
+            daily = 3 if age_days < 7 else 5
+            return ("fresh", mult, 10.0, daily)
+
     def calculate_risk_aware_stake(
         self,
         odds: float,
@@ -432,15 +520,46 @@ class RiskAwareBankrollManager:
 
         # Get risk assessment for account warmup info
         assessment = self.risk_calculator.assess_provider(provider_id)
-        account_age = assessment.features.account_age_days
+        total_bets = assessment.features.total_bets_all_time
 
-        # Apply account warmup multiplier for new accounts
-        # Ramp up: day 0 = 30%, day 14 = 100%
-        warmup_multiplier = 1.0
+        # Get account status using 3-tier system (dormant/fresh/mature)
+        # This uses manual account_opened_at if set, otherwise first_bet_date
+        status, warmup_multiplier, max_edge_pct, max_daily_bets = self._get_account_status(
+            provider_id, total_bets
+        )
+        account_age = self._get_account_age(provider_id)
+
+        # Calculate edge for filtering
+        edge_pct = (odds / fair_odds - 1) * 100 if fair_odds > 1 else 0
+
+        # Check if provider has active bonus (wagering requirement not met)
+        has_active_bonus = self._has_active_bonus(provider_id)
+
+        # Bonus clearing overrides edge cap (need volume to clear wagering)
+        if has_active_bonus:
+            max_edge_pct = 15.0
+
+        if edge_pct > max_edge_pct:
+            context = "bonus clearing" if has_active_bonus else f"{status} ({account_age}d, {total_bets} bets)"
+            return self._empty_recommendation(
+                f"Edge {edge_pct:.1f}% exceeds limit ({max_edge_pct}% for {context})"
+            )
+
+        # Daily bet limit for non-mature accounts
+        if max_daily_bets is not None:
+            today_bets = self._get_today_bet_count(provider_id)
+            if today_bets >= max_daily_bets:
+                return self._empty_recommendation(
+                    f"Daily bet limit reached ({today_bets}/{max_daily_bets} for {status} account)"
+                )
+
+        # Build warmup reason for non-mature accounts
         warmup_reason = None
-        if account_age < 14:
-            warmup_multiplier = 0.3 + (account_age / 14) * 0.7
-            warmup_reason = f"Account warmup ({account_age}d old, {warmup_multiplier:.0%} stake)"
+        if status == "dormant":
+            bets_to_graduate = 5 - total_bets
+            warmup_reason = f"Dormant account ({account_age}d old, {total_bets}/5 bets, {warmup_multiplier:.0%} stake)"
+        elif status == "fresh":
+            warmup_reason = f"Fresh account ({account_age}d old, {warmup_multiplier:.0%} stake)"
 
         # Apply warmup multiplier to risk-adjusted stake
         warmup_adjusted_stake = regularized.risk_adjusted_stake * warmup_multiplier
@@ -449,12 +568,12 @@ class RiskAwareBankrollManager:
         noisy = self.noise_injector.inject_noise(
             stake=warmup_adjusted_stake,
             risk_score=regularized.risk_score,
-            max_stake=min(base_rec.max_stake, provider_balance),
+            max_stake=base_rec.max_stake,
             min_stake=1.0,
         )
 
-        # Limit to provider balance
-        final_stake = min(noisy.final_stake, provider_balance)
+        # Use noisy stake directly - user will transfer funds as needed
+        final_stake = noisy.final_stake
 
         # Determine reason (prioritize warmup reason for new accounts)
         if warmup_reason:

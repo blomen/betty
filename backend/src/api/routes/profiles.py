@@ -1,17 +1,24 @@
 """Profiles API routes."""
 
 import json
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ...db.models import (
-    Profile, Provider,
+    Profile, Provider, ProfileProviderBalance,
     get_active_profile as get_active_profile_helper,
     get_total_profile_bankroll, copy_profile_balances
 )
 from ...bankroll import kelly_stake
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
+
+
+class AccountDateUpdate(BaseModel):
+    """Request body for setting account opened date."""
+    opened_at: str  # ISO date string e.g. "2025-06-15"
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -229,4 +236,133 @@ async def calculate_stake(
         "max_stake": rec.max_stake,
         "bankroll": bankroll,
         "reason": rec.reason,
+    }
+
+
+@router.put("/providers/{provider_id}/account-date")
+async def set_account_opened_date(
+    provider_id: str,
+    data: AccountDateUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Set the account opened date for a provider.
+
+    Used for dormant account handling - accounts opened months/years ago
+    but never used for +EV betting. The manual date is used instead of
+    first bet date for account age calculations.
+
+    Args:
+        provider_id: Provider ID (e.g., "unibet")
+        data: { "opened_at": "2025-06-15" } - ISO date string
+    """
+    # Verify provider exists
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    # Parse date
+    try:
+        opened_at = datetime.fromisoformat(data.opened_at)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date format: {data.opened_at}. Use ISO format (YYYY-MM-DD)")
+
+    # Validate date is not in the future
+    if opened_at > datetime.utcnow():
+        raise HTTPException(400, "Account opened date cannot be in the future")
+
+    # Get active profile
+    profile = get_active_profile_helper(db)
+
+    # Get or create balance record
+    balance = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if balance:
+        balance.account_opened_at = opened_at
+        balance.updated_at = datetime.utcnow()
+    else:
+        balance = ProfileProviderBalance(
+            profile_id=profile.id,
+            provider_id=provider_id,
+            balance=0.0,
+            account_opened_at=opened_at
+        )
+        db.add(balance)
+
+    db.commit()
+
+    # Calculate age
+    age_days = (datetime.utcnow() - opened_at).days
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "account_opened_at": opened_at.isoformat(),
+        "account_age_days": age_days,
+        "message": f"Account opened date set to {data.opened_at} ({age_days} days ago)"
+    }
+
+
+@router.get("/providers/{provider_id}/account-date")
+async def get_account_opened_date(
+    provider_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get the account opened date for a provider."""
+    # Get active profile
+    profile = get_active_profile_helper(db)
+
+    # Get balance record
+    balance = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if not balance or not balance.account_opened_at:
+        return {
+            "provider_id": provider_id,
+            "account_opened_at": None,
+            "account_age_days": None,
+            "source": "none"
+        }
+
+    age_days = (datetime.utcnow() - balance.account_opened_at).days
+
+    return {
+        "provider_id": provider_id,
+        "account_opened_at": balance.account_opened_at.isoformat(),
+        "account_age_days": age_days,
+        "source": "manual"
+    }
+
+
+@router.delete("/providers/{provider_id}/account-date")
+async def clear_account_opened_date(
+    provider_id: str,
+    db: Session = Depends(get_db)
+):
+    """Clear the manual account opened date for a provider (revert to first bet date)."""
+    # Get active profile
+    profile = get_active_profile_helper(db)
+
+    # Get balance record
+    balance = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if not balance:
+        raise HTTPException(404, f"No balance record for {provider_id}")
+
+    balance.account_opened_at = None
+    balance.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "message": "Account opened date cleared. Will use first bet date for age calculation."
     }
