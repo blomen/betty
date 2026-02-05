@@ -17,32 +17,20 @@ const KELLY_PRESETS = [
 interface ProfileFormData {
   name: string;
   kelly_fraction: string;
-  min_edge_pct: string;
-  min_arb_pct: string;
   max_stake_pct: string;
-  min_retention_pct: string;
-  bonus_enabled: boolean;
 }
 
 const defaultFormData: ProfileFormData = {
   name: '',
   kelly_fraction: '0.25',
-  min_edge_pct: '2.0',
-  min_arb_pct: '0.5',
   max_stake_pct: '5.0',
-  min_retention_pct: '80',
-  bonus_enabled: true,
 };
 
 function profileToFormData(profile: Profile): ProfileFormData {
   return {
     name: profile.name,
     kelly_fraction: profile.kelly_fraction.toString(),
-    min_edge_pct: profile.min_edge_pct.toString(),
-    min_arb_pct: profile.min_arb_pct.toString(),
     max_stake_pct: profile.max_stake_pct.toString(),
-    min_retention_pct: profile.min_retention_pct.toString(),
-    bonus_enabled: profile.bonus_enabled,
   };
 }
 
@@ -84,8 +72,6 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       const data: ProfileCreate = {
         name: formData.name.trim(),
         kelly_fraction: parseFloat(formData.kelly_fraction) || 0.25,
-        min_edge_pct: parseFloat(formData.min_edge_pct) || 2.0,
-        min_arb_pct: parseFloat(formData.min_arb_pct) || 0.5,
         max_stake_pct: parseFloat(formData.max_stake_pct) || 5.0,
       };
       await createProfile(data);
@@ -103,11 +89,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       const data: ProfileUpdate = {
         name: formData.name.trim() || undefined,
         kelly_fraction: parseFloat(formData.kelly_fraction) || undefined,
-        min_edge_pct: parseFloat(formData.min_edge_pct) || undefined,
-        min_arb_pct: parseFloat(formData.min_arb_pct) || undefined,
         max_stake_pct: parseFloat(formData.max_stake_pct) || undefined,
-        min_retention_pct: parseFloat(formData.min_retention_pct) || undefined,
-        bonus_enabled: formData.bonus_enabled,
       };
       await updateProfile(id, data);
       setEditingId(null);
@@ -264,11 +246,8 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                    <div className="text-xs text-muted mt-1">
                       <span>Bankroll: {profile.bankroll.toLocaleString()} {profile.currency}</span>
-                      <span>Kelly: {(profile.kelly_fraction * 100).toFixed(0)}%</span>
-                      <span>Min Edge: {profile.min_edge_pct}%</span>
-                      <span>Max Stake: {profile.max_stake_pct}%</span>
                     </div>
                   </div>
                 </div>
@@ -326,13 +305,13 @@ interface ProfileFormProps {
 }
 
 function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }: ProfileFormProps) {
-  const handleChange = (field: keyof ProfileFormData, value: string | boolean) => {
+  const handleChange = (field: keyof ProfileFormData, value: string) => {
     setFormData({ ...formData, [field]: value });
   };
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Name */}
         <div>
           <label className="block text-xs text-muted mb-1">Profile Name</label>
@@ -361,70 +340,17 @@ function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }:
           </select>
         </div>
 
-        {/* Min Edge */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Min Edge (%)</label>
-          <input
-            type="number"
-            step="0.1"
-            value={formData.min_edge_pct}
-            onChange={(e) => handleChange('min_edge_pct', e.target.value)}
-            placeholder="2.0"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-        </div>
-
-        {/* Min Arb */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Min Arb Profit (%)</label>
-          <input
-            type="number"
-            step="0.1"
-            value={formData.min_arb_pct}
-            onChange={(e) => handleChange('min_arb_pct', e.target.value)}
-            placeholder="0.5"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-        </div>
-
         {/* Max Stake */}
         <div>
-          <label className="block text-xs text-muted mb-1">Max Stake (% of bankroll)</label>
+          <label className="block text-xs text-muted mb-1">Max Stake (%)</label>
           <input
             type="number"
-            step="0.1"
+            step="0.5"
             value={formData.max_stake_pct}
             onChange={(e) => handleChange('max_stake_pct', e.target.value)}
             placeholder="5.0"
             className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
           />
-        </div>
-
-        {/* Min Retention */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Min Retention (%)</label>
-          <input
-            type="number"
-            step="1"
-            value={formData.min_retention_pct}
-            onChange={(e) => handleChange('min_retention_pct', e.target.value)}
-            placeholder="80"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-        </div>
-
-        {/* Bonus Enabled */}
-        <div className="flex items-center gap-2 pt-5">
-          <input
-            type="checkbox"
-            id="bonus_enabled"
-            checked={formData.bonus_enabled}
-            onChange={(e) => handleChange('bonus_enabled', e.target.checked)}
-            className="w-4 h-4 rounded border-border bg-panel2 text-tabProfiles focus:ring-tabProfiles"
-          />
-          <label htmlFor="bonus_enabled" className="text-sm text-text">
-            Bonus features enabled
-          </label>
         </div>
       </div>
 
