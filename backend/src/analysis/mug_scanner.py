@@ -123,7 +123,6 @@ class MugBetScanner:
         # This returns positive AND negative edges
         bonus_opps = self._opp_scanner.scan_bonus(
             anchor_provider=provider_id,
-            counterpart_providers=["pinnacle"],
             devig=True,
         )
 

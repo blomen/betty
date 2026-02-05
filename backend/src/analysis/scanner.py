@@ -12,6 +12,7 @@ Storage/persistence is handled by the caller (analyzer.py).
 from dataclasses import dataclass
 from typing import Optional
 from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 import logging
 
 from sqlalchemy import func
@@ -36,6 +37,10 @@ MIN_VALID_PROB_SUM = 0.90
 # If max/min > 1.35, likely event mismatch or stale odds
 # Real odds rarely differ more than 35% across providers for same event
 MAX_ODDS_RATIO = 1.35
+
+# Maximum odds age in hours for value scanning
+# Odds older than this are considered stale and skipped
+MAX_ODDS_AGE_HOURS = 2
 
 
 @dataclass
@@ -84,29 +89,20 @@ class OpportunityScanner:
     def __init__(self, session: Session):
         self.session = session
 
-    def scan_value(
-        self,
-        min_edge_pct: float = 5.0,
-        sharp_priority: list[str] = None,
-        blend_weight: float = 0.6,
-    ) -> list[ValueBet]:
+    def scan_value(self, min_edge_pct: float = 5.0) -> list[ValueBet]:
         """
         Find value bets against de-vigged Pinnacle odds.
 
         Uses Pinnacle as the sole sharp source. Their ~2.5% margin is
-        removed using multiplicative de-vigging.
+        removed using multiplicative de-vigging. Skips odds older than
+        MAX_ODDS_AGE_HOURS (2 hours).
 
         Args:
             min_edge_pct: Minimum edge percentage (default 5%)
-            sharp_priority: Ignored (kept for backward compatibility)
-            blend_weight: Ignored (kept for backward compatibility)
 
         Returns:
             List of ValueBet sorted by edge (highest first)
         """
-        if sharp_priority is None:
-            sharp_priority = ["pinnacle"]
-
         opportunities = []
 
         # Get events with odds from 2+ providers
@@ -121,8 +117,6 @@ class OpportunityScanner:
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     min_edge_pct=min_edge_pct,
-                    sharp_priority=sharp_priority,
-                    blend_weight=blend_weight,
                 )
                 opportunities.extend(values)
 
@@ -135,9 +129,7 @@ class OpportunityScanner:
     def scan_bonus(
         self,
         anchor_provider: str,
-        counterpart_providers: list[str] = None,
         devig: bool = True,
-        blend_weight: float = 0.6,
     ) -> list[BonusOpportunity]:
         """
         Find ALL opportunities for bonus clearing at anchor provider.
@@ -149,16 +141,11 @@ class OpportunityScanner:
 
         Args:
             anchor_provider: Provider where bonus bet must be placed
-            counterpart_providers: Ignored (kept for backward compatibility)
             devig: Whether to de-vig Pinnacle odds (default True)
-            blend_weight: Ignored (kept for backward compatibility)
 
         Returns:
             List of BonusOpportunity sorted by edge (highest first, negatives last)
         """
-        if counterpart_providers is None:
-            counterpart_providers = ["pinnacle"]
-
         opportunities = []
 
         # Get events where anchor provider has odds
@@ -173,9 +160,7 @@ class OpportunityScanner:
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     anchor_provider=anchor_provider,
-                    counterpart_providers=counterpart_providers,
                     devig=devig,
-                    blend_weight=blend_weight,
                 )
                 opportunities.extend(bonus_opps)
 
@@ -208,7 +193,7 @@ class OpportunityScanner:
         )
 
     def _group_odds(
-        self, event: Event, exclude_providers: set[str] = None
+        self, event: Event, exclude_providers: set[str] = None, check_staleness: bool = True
     ) -> dict[str, dict[str, list[dict]]]:
         """
         Group event odds by market -> outcome -> provider list.
@@ -216,6 +201,7 @@ class OpportunityScanner:
         Args:
             event: The event to group odds for
             exclude_providers: Set of provider IDs to exclude (default: EXCLUDED_FROM_SCANS)
+            check_staleness: Skip odds older than MAX_ODDS_AGE_HOURS (default: True)
 
         Returns:
             {
@@ -231,10 +217,27 @@ class OpportunityScanner:
 
         grouped = defaultdict(lambda: defaultdict(list))
 
+        # Calculate staleness cutoff
+        now = datetime.now(timezone.utc)
+        staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
+
         for odds in event.odds:
-            # Skip excluded providers (e.g., polymarket - has its own dedicated view)
+            # Skip excluded providers
             if odds.provider_id in exclude_providers:
                 continue
+
+            # Skip stale odds (older than MAX_ODDS_AGE_HOURS)
+            if check_staleness and odds.updated_at:
+                # Handle naive datetime (assume UTC)
+                updated = odds.updated_at
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                if updated < staleness_cutoff:
+                    logger.debug(
+                        f"Skipping stale odds for {event.id}/{odds.provider_id}: "
+                        f"updated {updated.isoformat()}"
+                    )
+                    continue
 
             # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
             if odds.point is not None:
@@ -275,21 +278,15 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         min_edge_pct: float,
-        sharp_priority: list[str],
-        blend_weight: float,
     ) -> list[ValueBet]:
-        """Find value bets in a single market."""
+        """Find value bets in a single market using Pinnacle as sharp source."""
         values = []
 
         # Count outcomes per provider to detect market type mismatch
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
 
-        # Find which sharp has data and their outcome count
-        sharp_outcome_count = 0
-        for sharp in sharp_priority:
-            if sharp in provider_outcome_counts:
-                sharp_outcome_count = provider_outcome_counts[sharp]
-                break
+        # Find Pinnacle's outcome count (sole sharp source)
+        sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
         # Check for odds discrepancy (likely event mismatch)
         for outcome, provider_odds_list in odds_by_outcome.items():
@@ -304,12 +301,10 @@ class OpportunityScanner:
                     return []  # Skip entire market if any outcome has high discrepancy
 
         for outcome, provider_odds_list in odds_by_outcome.items():
-            # Get fair odds (de-vigged and/or blended)
+            # Get fair odds from de-vigged Pinnacle
             fair_result = self._get_fair_odds(
                 outcome=outcome,
                 odds_by_outcome=odds_by_outcome,
-                sharp_priority=sharp_priority,
-                blend_weight=blend_weight,
             )
 
             if fair_result is None:
@@ -366,11 +361,9 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         anchor_provider: str,
-        counterpart_providers: list[str],
         devig: bool,
-        blend_weight: float,
     ) -> list[BonusOpportunity]:
-        """Find bonus opportunities in a single market."""
+        """Find bonus opportunities in a single market using Pinnacle as sharp source."""
         opportunities = []
 
         # Count outcomes per provider to detect market type mismatch
@@ -378,12 +371,8 @@ class OpportunityScanner:
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
         anchor_outcome_count = provider_outcome_counts.get(anchor_provider, 0)
 
-        # Find which sharp has data and their outcome count
-        sharp_outcome_count = 0
-        for sharp in counterpart_providers:
-            if sharp in provider_outcome_counts:
-                sharp_outcome_count = provider_outcome_counts[sharp]
-                break
+        # Find Pinnacle's outcome count (sole sharp source)
+        sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
         # Skip if market types don't match (different outcome counts)
         if anchor_outcome_count > 0 and sharp_outcome_count > 0:
@@ -409,12 +398,10 @@ class OpportunityScanner:
 
             anchor_odds = anchor_odds_entry["odds"]
 
-            # Get fair odds from counterparts
+            # Get fair odds from Pinnacle (de-vigged)
             fair_result = self._get_fair_odds(
                 outcome=outcome,
                 odds_by_outcome=odds_by_outcome,
-                sharp_priority=counterpart_providers,
-                blend_weight=blend_weight,
                 devig=devig,
             )
 
@@ -462,8 +449,6 @@ class OpportunityScanner:
         self,
         outcome: str,
         odds_by_outcome: dict[str, list[dict]],
-        sharp_priority: list[str] = None,
-        blend_weight: float = 0.6,
         devig: bool = True,
     ) -> Optional[tuple[float, str]]:
         """
@@ -474,8 +459,6 @@ class OpportunityScanner:
         Args:
             outcome: The outcome to get fair odds for
             odds_by_outcome: All market odds
-            sharp_priority: Ignored (kept for backward compatibility)
-            blend_weight: Ignored (kept for backward compatibility)
             devig: Whether to de-vig (default True)
 
         Returns:

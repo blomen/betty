@@ -527,8 +527,7 @@ class ExtractionPipeline:
             analysis_results = analyzer.run()
             results["analysis"] = analysis_results
             log_progress(
-                f"Analysis complete: {analysis_results['arbitrage']['found']} arbs, "
-                f"{analysis_results['value']['found']} value bets"
+                f"Analysis complete: {analysis_results['value']['found']} value bets"
             )
 
             # Count totals
@@ -742,7 +741,7 @@ class ExtractionPipeline:
                                 session=self.session,
                                 provider=provider_id,
                                 event=event,
-                                polymarket_cache=self.event_cache,
+                                event_cache=self.event_cache,
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,

@@ -114,22 +114,18 @@ class OpportunityAnalyzer:
     def run_bonus(
         self,
         anchor_provider: str,
-        counterpart_providers: list[str] = None,
         devig: bool = True,
-        blend_weight: float = 0.6,
     ) -> dict:
         """
         Run bonus-specific analysis.
 
         Finds ALL opportunities for clearing a bonus at the anchor provider,
-        compared against sharp counterpart providers. No edge threshold -
+        compared against Pinnacle as the sole sharp source. No edge threshold -
         returns all matches sorted by edge (best first, including negative).
 
         Args:
             anchor_provider: Provider where bonus bet must be placed (e.g., "unibet")
-            counterpart_providers: Sharp providers to compare against (default ["pinnacle", "polymarket"])
-            devig: Whether to de-vig counterpart odds (default True)
-            blend_weight: Pinnacle weight when blending (default 0.6)
+            devig: Whether to de-vig Pinnacle odds (default True)
 
         Returns:
             {
@@ -139,28 +135,19 @@ class OpportunityAnalyzer:
                 "worst_edge": float,
                 "positive_count": int,  # Number with edge > 0
                 "anchor_provider": str,
-                "counterpart_providers": list[str],
             }
 
         Example:
             >>> analyzer = OpportunityAnalyzer(session)
-            >>> result = analyzer.run_bonus("unibet", ["pinnacle", "polymarket"])
+            >>> result = analyzer.run_bonus("unibet")
             >>> for opp in result["opportunities"][:5]:
             ...     print(f"{opp.edge_pct:+.1f}% {opp.event_id} {opp.outcome}")
         """
-        if counterpart_providers is None:
-            counterpart_providers = ["pinnacle", "polymarket"]
-
-        logger.info(
-            f"[Analyzer] Running bonus scan: anchor={anchor_provider}, "
-            f"counterparts={counterpart_providers}"
-        )
+        logger.info(f"[Analyzer] Running bonus scan: anchor={anchor_provider}")
 
         opportunities = self.scanner.scan_bonus(
             anchor_provider=anchor_provider,
-            counterpart_providers=counterpart_providers,
             devig=devig,
-            blend_weight=blend_weight,
         )
 
         result = {
@@ -170,7 +157,6 @@ class OpportunityAnalyzer:
             "worst_edge": min((o.edge_pct for o in opportunities), default=0),
             "positive_count": sum(1 for o in opportunities if o.edge_pct > 0),
             "anchor_provider": anchor_provider,
-            "counterpart_providers": counterpart_providers,
         }
 
         logger.info(

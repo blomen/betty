@@ -436,6 +436,47 @@ providers:
       - volleyball
       - esports
 
+# Extraction Tiers
+# Defines how frequently different provider types should be extracted
+extraction_tiers:
+  continuous:
+    # Primary betting (Polymarket) + sharp reference (Pinnacle)
+    # These run on a loop every 5 minutes
+    providers: [polymarket, pinnacle]
+    interval_minutes: 5
+
+  scheduled:
+    # Easy API soft books - less frequent extraction
+    providers: [betinia]
+    interval_minutes: 240  # Every 4 hours
+
+  manual:
+    # Rate-limited/browser-based providers - on-demand extraction only
+    providers:
+      # Kambi API (8 providers)
+      - unibet
+      - leovegas
+      - expekt
+      - betmgm
+      - speedybet
+      - x3000
+      - goldenbull
+      - 1x2
+      # Spectate (2)
+      - mrgreen
+      - 888sport
+      # Gecko V2 (3)
+      - betsson
+      - betsafe
+      - nordicbet
+      # SBTech (1)
+      - bethard
+      # Snabbare (1)
+      - snabbare
+      # ComeOn group (2)
+      - comeon
+      - hajper
+
 # Active providers (subset of above to use)
 active:
   # Kambi API providers (8 total - all with bonuses)
@@ -450,6 +491,8 @@ active:
   - 1x2
   # Sharp source
   - pinnacle  # Sharp lines - truth source
+  # Polymarket for continuous extraction
+  - polymarket
   # DISABLED for validation:
   # - hajper
   # - comeon
@@ -457,6 +500,5 @@ active:
   # - 888sport
   # - snabbare
   # - betinia
-  # - polymarket
   # DISABLED: bethard - fails under concurrent browser load
   # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load

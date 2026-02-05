@@ -216,7 +216,6 @@ async def scan_bonus_opportunities(
     scanner = OpportunityScanner(db)
     opportunities = scanner.scan_bonus(
         anchor_provider=anchor_provider,
-        counterpart_providers=["pinnacle"],
         devig=True
     )
 

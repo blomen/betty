@@ -234,3 +234,143 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# =============================================================================
+# Continuous Extraction Endpoints
+# =============================================================================
+
+@router.post("/continuous/start")
+async def start_continuous_extraction(
+    interval_seconds: int = 300,
+    providers: str = None,
+):
+    """
+    Start continuous extraction loop for Polymarket + Pinnacle.
+
+    Args:
+        interval_seconds: Seconds between runs (default: 300 = 5 min)
+        providers: Optional comma-separated providers (default: polymarket,pinnacle)
+
+    Returns:
+        Status and scheduler info
+    """
+    from ...pipeline.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+
+    if scheduler.running:
+        raise HTTPException(400, "Continuous extraction already running")
+
+    provider_list = (
+        [p.strip() for p in providers.split(",")]
+        if providers
+        else ["polymarket", "pinnacle"]
+    )
+
+    # Start the scheduler in the current event loop
+    # The scheduler creates its own task internally
+    asyncio.create_task(
+        scheduler.start_continuous(
+            providers=provider_list,
+            interval_seconds=interval_seconds,
+        )
+    )
+
+    return {
+        "status": "started",
+        "providers": provider_list,
+        "interval_seconds": interval_seconds,
+    }
+
+
+@router.post("/continuous/stop")
+async def stop_continuous_extraction():
+    """
+    Stop continuous extraction loop.
+
+    Returns:
+        Status and stats from the run
+    """
+    from ...pipeline.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+
+    if not scheduler.running:
+        raise HTTPException(400, "Continuous extraction not running")
+
+    scheduler.stop()
+
+    return {
+        "status": "stopped",
+        "run_count": scheduler.run_count,
+        "last_run": scheduler.last_run.isoformat() if scheduler.last_run else None,
+    }
+
+
+@router.get("/continuous/status")
+async def get_continuous_status():
+    """
+    Get status of continuous extraction scheduler.
+
+    Returns:
+        Running state, run count, last run timestamp
+    """
+    from ...pipeline.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+    return scheduler.get_status()
+
+
+@router.post("/soft")
+async def run_soft_extraction(
+    background_tasks: BackgroundTasks,
+    tier: str = "all",
+):
+    """
+    Run manual soft book extraction (rate-limited providers).
+
+    Args:
+        tier: Which tier to run:
+            - "all": All manual tier providers (default)
+            - "kambi": Only Kambi providers (8)
+            - "spectate": Only Spectate providers (2)
+            - "gecko": Only Gecko V2 providers (3)
+            - "comeon": Only ComeOn group (2)
+            - Or comma-separated provider names
+
+    Returns:
+        Status and provider list
+    """
+    if extraction_state["running"]:
+        raise HTTPException(400, "Extraction already running")
+
+    # Define tier mappings
+    tier_providers = {
+        "kambi": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "spectate": ["mrgreen", "888sport"],
+        "gecko": ["betsson", "betsafe", "nordicbet"],
+        "comeon": ["comeon", "hajper"],
+        "sbtech": ["bethard"],
+        "snabbare": ["snabbare"],
+    }
+
+    # Resolve tier to provider list
+    if tier == "all":
+        provider_list = []
+        for providers in tier_providers.values():
+            provider_list.extend(providers)
+    elif tier in tier_providers:
+        provider_list = tier_providers[tier]
+    elif "," in tier:
+        provider_list = [p.strip() for p in tier.split(",")]
+    else:
+        raise HTTPException(400, f"Unknown tier: {tier}. Use: all, kambi, spectate, gecko, comeon, sbtech, snabbare, or comma-separated providers")
+
+    background_tasks.add_task(run_extraction_task, provider_list)
+
+    return {
+        "status": "started",
+        "tier": tier,
+        "providers": provider_list,
+    }
