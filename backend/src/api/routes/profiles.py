@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ...db.models import (
     Profile, Provider, ProfileProviderBalance,
     get_active_profile as get_active_profile_helper,
-    get_total_profile_bankroll, copy_profile_balances
+    get_total_profile_bankroll,
 )
 from ...bankroll import kelly_stake
 from ..deps import get_db
@@ -40,7 +40,7 @@ def profile_to_dict(profile: Profile, db: Session) -> dict:
         "id": profile.id,
         "name": profile.name,
         "bankroll": real_bankroll,
-        "currency": profile.currency,
+        "currency": "SEK",  # Global currency setting
         "kelly_fraction": profile.kelly_fraction,
         "min_edge_pct": profile.min_edge_pct,
         "min_arb_pct": profile.min_arb_pct,
@@ -88,40 +88,26 @@ async def get_active_profile(db: Session = Depends(get_db)):
 
 @router.post("")
 async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
-    """Create a new profile, copying balances from active profile."""
+    """Create a new profile with fresh state (0 balance, no data copied)."""
     # Check name uniqueness
     existing = db.query(Profile).filter(Profile.name == data.name).first()
     if existing:
         raise HTTPException(400, f"Profile '{data.name}' already exists")
 
-    # Get active profile to copy balances from
-    active_profile = db.query(Profile).filter(Profile.is_active == True).first()
-
     profile = Profile(
         name=data.name,
-        bankroll=data.bankroll,
-        currency=data.currency,
-        kelly_fraction=data.kelly_fraction,
-        min_edge_pct=data.min_edge_pct,
-        min_arb_pct=data.min_arb_pct,
-        max_stake_pct=data.max_stake_pct,
+        bankroll=0.0,  # Always start fresh
+        currency="SEK",  # Global currency setting
+        kelly_fraction=data.kelly_fraction or 0.25,
+        max_stake_pct=data.max_stake_pct or 5.0,
         is_active=False,
     )
     db.add(profile)
-    db.flush()  # Get the profile ID
-
-    # Copy balances from active profile to new profile
-    balances_copied = 0
-    if active_profile:
-        balances_copied = copy_profile_balances(db, active_profile.id, profile.id)
-
     db.commit()
 
     return {
         "success": True,
         "profile": profile_to_dict(profile, db),
-        "balances_copied": balances_copied,
-        "copied_from_profile": active_profile.name if active_profile else None,
     }
 
 
