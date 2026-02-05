@@ -98,8 +98,6 @@ export function WorkflowPanel({
       switch (dropdownWorkflow.type) {
         case 'extract':
           return 'Extraction';
-        case 'arb':
-          return 'Arbitrage';
         case 'value':
           return 'Value Bets';
         default:

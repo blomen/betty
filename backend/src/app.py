@@ -70,43 +70,6 @@ def show_stats():
     console.print(table)
 
 
-def show_arbitrage():
-    """Show arbitrage opportunities."""
-    session = get_session()
-    scanner = OpportunityScanner(session)
-
-    arbs = scanner.scan_arbitrage(min_profit_pct=0.5)
-
-    if not arbs:
-        console.print("[yellow]No arbitrage opportunities found.[/yellow]")
-        session.close()
-        return
-
-    table = Table(title=f"Arbitrage Opportunities ({len(arbs)} found)")
-    table.add_column("Event", style="cyan")
-    table.add_column("Market", style="white")
-    table.add_column("Outcomes", style="green")
-    table.add_column("Profit %", style="yellow")
-
-    for arb in arbs[:15]:
-        # Format outcomes as "home@provider1, away@provider2"
-        outcomes_str = ", ".join(
-            f"{o['outcome']}@{o['provider'][:8]}" for o in arb.outcomes[:2]
-        )
-        event = session.query(Event).filter(Event.id == arb.event_id).first()
-        event_name = f"{event.home_team} vs {event.away_team}"[:30] if event else arb.event_id[:30]
-
-        table.add_row(
-            event_name,
-            arb.market,
-            outcomes_str[:35],
-            f"+{arb.profit_pct:.2f}%",
-        )
-
-    session.close()
-    console.print(table)
-
-
 def show_value_bets():
     """Show value betting opportunities."""
     session = get_session()
@@ -252,7 +215,6 @@ def interactive_loop():
     commands = {
         "extract": "Run extraction pipeline",
         "stats": "Show database statistics",
-        "arbs": "Show arbitrage opportunities",
         "value": "Show value bets",
         "providers": "List configured providers",
         "settings": "Show settings",
@@ -261,7 +223,7 @@ def interactive_loop():
     }
 
     while True:
-        console.print("\n[dim]Commands: extract, stats, arbs, value, providers, settings, help, quit[/dim]")
+        console.print("\n[dim]Commands: extract, stats, value, providers, settings, help, quit[/dim]")
         cmd = Prompt.ask("[bold cyan]oddopp[/bold cyan]").lower().strip()
 
         if cmd == "quit" or cmd == "exit" or cmd == "q":
@@ -276,8 +238,6 @@ def interactive_loop():
             console.print(table)
         elif cmd == "stats":
             show_stats()
-        elif cmd == "arbs":
-            show_arbitrage()
         elif cmd == "value":
             show_value_bets()
         elif cmd == "providers":
@@ -318,13 +278,6 @@ def stats():
     """Show database statistics."""
     init_db()
     show_stats()
-
-
-@app.command()
-def arbs():
-    """Show arbitrage opportunities."""
-    init_db()
-    show_arbitrage()
 
 
 @app.command()

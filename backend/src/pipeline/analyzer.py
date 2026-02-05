@@ -2,15 +2,13 @@
 Opportunity Analyzer
 
 Integrates analysis functions into the extraction pipeline.
-Detects arbitrage and value betting opportunities after odds are stored.
+Detects value betting opportunities after odds are stored.
 
 Architecture:
     Extraction (orchestrator.py)
         |
         v
     [Database: Events + Odds]
-        |
-        +---> scan_arbitrage() --> Arb opportunities
         |
         +---> scan_value() --> Value bets (5%+ edge, de-vigged sharps)
         |
@@ -26,7 +24,6 @@ from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds, Opportunity, Profile
-from ..analysis.arbitrage import find_arbitrage
 from ..analysis.value import find_best_value, get_fair_odds
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity
@@ -40,7 +37,6 @@ class OpportunityAnalyzer:
     Analyzes stored odds to detect opportunities.
 
     Runs after extraction to find:
-    - Arbitrage: Sum of implied probabilities < 100%
     - Value: Provider odds exceed fair odds from sharp sources
 
     Usage:
@@ -48,13 +44,12 @@ class OpportunityAnalyzer:
         results = analyzer.run()
     """
 
-    def __init__(self, session: Session, min_arb_pct: float = None, min_edge_pct: float = None):
+    def __init__(self, session: Session, min_edge_pct: float = None):
         """
         Initialize analyzer.
 
         Args:
             session: SQLAlchemy session
-            min_arb_pct: Minimum arbitrage profit % (default from profile or 0.5)
             min_edge_pct: Minimum value edge % (default from profile or 5.0)
         """
         self.session = session
@@ -68,9 +63,6 @@ class OpportunityAnalyzer:
             # Profile table may have different schema - use defaults
             logger.debug(f"[Analyzer] Could not load profile: {e}")
 
-        self.min_arb_pct = min_arb_pct if min_arb_pct is not None else (
-            getattr(profile, 'min_arb_pct', 0.5) if profile else 0.5
-        )
         self.min_edge_pct = min_edge_pct if min_edge_pct is not None else (
             getattr(profile, 'min_edge_pct', 5.0) if profile else 5.0
         )
@@ -82,7 +74,6 @@ class OpportunityAnalyzer:
         Returns:
             Dictionary with analysis results:
             {
-                "arbitrage": {"found": int, "new": int},
                 "value": {"found": int, "new": int},
                 "events_analyzed": int
             }
@@ -96,7 +87,6 @@ class OpportunityAnalyzer:
         events = self._get_multi_provider_events()
 
         results = {
-            "arbitrage": {"found": 0, "new": 0},
             "value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
             "cleanup": cleanup_stats
@@ -107,13 +97,6 @@ class OpportunityAnalyzer:
             odds_grouped = self._group_odds(event)
 
             for market, odds_by_outcome in odds_grouped.items():
-                # Detect arbitrage
-                arb_result = self._detect_arbitrage(event.id, market, odds_by_outcome)
-                if arb_result:
-                    results["arbitrage"]["found"] += 1
-                    if arb_result == "new":
-                        results["arbitrage"]["new"] += 1
-
                 # Detect value
                 value_count = self._detect_value(event.id, market, odds_by_outcome)
                 results["value"]["found"] += value_count["found"]
@@ -123,7 +106,7 @@ class OpportunityAnalyzer:
 
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
-            f"{results['arbitrage']['found']} arbs, {results['value']['found']} value bets"
+            f"{results['value']['found']} value bets"
         )
 
         return results
@@ -297,112 +280,6 @@ class OpportunityAnalyzer:
             })
 
         return dict(grouped)
-
-    def _detect_arbitrage(
-        self,
-        event_id: str,
-        market: str,
-        odds_by_outcome: dict[str, list[dict]]
-    ) -> Optional[str]:
-        """
-        Detect arbitrage opportunity for a market.
-
-        Returns:
-            "new" if new opportunity stored
-            "updated" if existing opportunity reactivated
-            None if no opportunity found
-        """
-        arb = find_arbitrage(
-            event_id=event_id,
-            market=market,
-            odds_by_outcome=odds_by_outcome,
-            min_profit_pct=self.min_arb_pct
-        )
-
-        if not arb:
-            return None
-
-        logger.info(
-            f"[Analyzer] Arb found: {event_id} {market} +{arb.profit_pct}%"
-        )
-
-        # Build outcomes JSON for storage
-        outcomes_json = [
-            {
-                "provider": o["provider"],
-                "outcome": o["outcome"],
-                "odds": o["odds"]
-            }
-            for o in arb.outcomes
-        ]
-
-        # Add stakes to outcomes
-        for i, stake in enumerate(arb.stakes):
-            outcomes_json[i]["stake"] = stake["stake"]
-            outcomes_json[i]["return"] = stake["return"]
-
-        # Extract point value from market key if present
-        point_value = None
-        if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
-            parts = market.rsplit("_", 1)
-            if len(parts) == 2:
-                try:
-                    point_value = float(parts[-1])
-                    market = parts[0]  # Remove point from market name
-                except ValueError:
-                    pass
-
-        # Check for existing opportunity (same event/market/type)
-        existing = self.session.query(Opportunity).filter(
-            Opportunity.event_id == event_id,
-            Opportunity.market == market,
-            Opportunity.type == "arbitrage"
-        ).first()
-
-        if existing:
-            # Reactivate and update
-            existing.is_active = True
-            existing.profit_pct = arb.profit_pct
-            existing.outcomes = outcomes_json
-            existing.point = point_value
-            existing.total_stake = 100.0
-            existing.detected_at = datetime.now(timezone.utc)
-
-            # Update legacy fields for backwards compat
-            if len(arb.outcomes) >= 2:
-                existing.provider1_id = arb.outcomes[0]["provider"]
-                existing.odds1 = arb.outcomes[0]["odds"]
-                existing.outcome1 = arb.outcomes[0]["outcome"]
-                existing.provider2_id = arb.outcomes[1]["provider"]
-                existing.odds2 = arb.outcomes[1]["odds"]
-                existing.outcome2 = arb.outcomes[1]["outcome"]
-
-            return "updated"
-        else:
-            # Create new opportunity
-            opp = Opportunity(
-                type="arbitrage",
-                event_id=event_id,
-                market=market,
-                profit_pct=arb.profit_pct,
-                outcomes=outcomes_json,
-                point=point_value,
-                total_stake=100.0,
-                is_active=True,
-                detected_at=datetime.now(timezone.utc)
-            )
-
-            # Set legacy fields
-            if len(arb.outcomes) >= 2:
-                opp.provider1_id = arb.outcomes[0]["provider"]
-                opp.odds1 = arb.outcomes[0]["odds"]
-                opp.outcome1 = arb.outcomes[0]["outcome"]
-                opp.provider2_id = arb.outcomes[1]["provider"]
-                opp.odds2 = arb.outcomes[1]["odds"]
-                opp.outcome2 = arb.outcomes[1]["outcome"]
-
-            self.session.add(opp)
-            return "new"
 
     def _detect_value(
         self,

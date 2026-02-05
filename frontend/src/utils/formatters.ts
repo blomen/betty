@@ -181,7 +181,7 @@ export function formatRetention(retention: number): { text: string; color: strin
 
 // ============ Markdown Table Formatters for Terminal Output ============
 
-import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArbOpportunity, FullArbitrage } from '@/types';
+import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArbOpportunity } from '@/types';
 
 /**
  * Format bankroll exposure as compact table
@@ -346,40 +346,6 @@ export function formatStatsReport(stats: BankrollStats): string {
 Staked: ${(stats.total_staked || 0).toFixed(0)} kr | Profit: ${profitStr} | ROI: ${roi.toFixed(1)}%`;
 }
 
-
-/**
- * Format full arbitrage opportunities (with all legs)
- * Already sorted by profit_pct descending from backend (scanner.scan_arbitrage)
- * Now includes: Sport, Time columns
- */
-export function formatArbitrageList(arbs: FullArbitrage[]): string {
-  if (arbs.length === 0) {
-    return 'No arbitrage found. Run /extract first.';
-  }
-
-  const rows = arbs.slice(0, 20).map((arb, idx) => {
-    const num = pad(String(idx + 1), 2, 'right');
-    const profit = pad(`${arb.profit_pct.toFixed(1)}%`, 6, 'right');
-    const eventName = arb.home_team && arb.away_team
-      ? `${arb.home_team} vs ${arb.away_team}`
-      : 'Unknown';
-    const match = pad(truncate(eventName, 24), 24);
-    const sport = pad(arb.sport || '-', 10);
-    const time = pad(formatShortDateTime(arb.start_time), 12);
-    // Convert outcome to team name in legs
-    const legs = arb.legs.map(l => {
-      const team = outcomeToTeam(l.outcome, arb.home_team || undefined, arb.away_team || undefined);
-      return `${truncate(team, 10)}@${l.provider}`;
-    }).join(' / ');
-    return `${num} | ${profit} | ${match} | ${sport} | ${time} | ${legs}`;
-  }).join('\n');
-
-  return `Found ${arbs.length} arbitrage opportunities\n\`\`\`
-# |    %   | Match                    | Sport      | Time         | Legs
---|--------|--------------------------|------------|--------------|----------------------------------
-${rows}
-\`\`\``;
-}
 
 /**
  * Format bonus arbitrage opportunities - compact (true arb with hedges)

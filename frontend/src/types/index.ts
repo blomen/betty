@@ -433,36 +433,6 @@ export interface BonusDropdownOption {
   type: 'provider' | 'opportunity' | 'stake' | 'action';
 }
 
-// Full Arbitrage with all legs
-export interface ArbitrageLeg {
-  outcome: string;
-  provider: string;
-  odds: number;
-  stake: number;
-  return: number;
-}
-
-export interface FullArbitrage {
-  event_id: string;
-  market: string;
-  profit_pct: number;
-  home_team: string | null;
-  away_team: string | null;
-  sport: string | null;
-  start_time: string | null;
-  legs: ArbitrageLeg[];
-  // Quality classification: "verified" (normal) or "suspect" (needs validation)
-  // Suspect arbs have unusually high profit (>7%) indicating possible data issues
-  quality?: 'verified' | 'suspect';
-  // Pre-calculated total stake based on profile settings
-  total_stake?: number;
-}
-
-export interface ArbitrageScanResponse {
-  opportunities: FullArbitrage[];
-  count: number;
-}
-
 // Bankroll Workflow Types
 export type BankrollWorkflowStep =
   | 'idle'
@@ -488,8 +458,8 @@ export interface BankrollOption {
   type: 'action' | 'provider' | 'setting' | 'value';
 }
 
-// Generic Dropdown Workflow Types (used by extract, arb, value, bets commands)
-export type DropdownWorkflowType = 'idle' | 'extract' | 'arb' | 'value' | 'bets';
+// Generic Dropdown Workflow Types (used by extract, value, bets commands)
+export type DropdownWorkflowType = 'idle' | 'extract' | 'value' | 'bets';
 
 export type DropdownWorkflowStep =
   | 'idle'
@@ -518,9 +488,8 @@ export interface DropdownWorkflowState {
   step: DropdownWorkflowStep;
   // Extract workflow
   selectedProviders?: string[];
-  // Arb/Value workflow
+  // Value workflow
   opportunities?: OpportunityWithEvent[];
-  fullArbs?: FullArbitrage[];  // Full arbitrage with all legs
   selectedOpp?: number;
   suggestedStake?: number;
   selectedProvider?: string;  // Provider for bet placement

@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 
-export type TabName = 'extract' | 'arb' | 'value' | 'bets' | 'bankroll' | 'profiles' | 'stats';
+export type TabName = 'extract' | 'value' | 'bets' | 'bankroll' | 'profiles' | 'stats';
 
 interface Tab {
   name: TabName;
@@ -10,7 +10,6 @@ interface Tab {
 
 const tabs: Tab[] = [
   { name: 'extract', label: 'Extract', color: '#60a5fa' },
-  { name: 'arb', label: 'Arb', color: '#22c55e' },
   { name: 'value', label: 'Value', color: '#f59e0b' },
   { name: 'bets', label: 'Bets', color: '#22d3d8' },
   { name: 'bankroll', label: 'Bankroll', color: '#ec4899' },

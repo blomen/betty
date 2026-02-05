@@ -20,7 +20,6 @@ export function createCommandRegistry(handlers: {
   onClear: () => void;
   onBonusCommand: () => void;
   onExtractWorkflow: () => void;
-  onArbWorkflow: () => void;
   onValueWorkflow: () => void;
   onBetsWorkflow: () => void;
   onBankrollWorkflow: () => void;
@@ -31,11 +30,6 @@ export function createCommandRegistry(handlers: {
       description: 'Run extraction',
       execute: () => handlers.onExtractWorkflow(),
     },
-    arb: {
-      name: 'arb',
-      description: 'Find arbitrage',
-      execute: () => handlers.onArbWorkflow(),
-    },
     value: {
       name: 'value',
       description: 'Find value bets',
@@ -43,7 +37,7 @@ export function createCommandRegistry(handlers: {
     },
     bonus: {
       name: 'bonus',
-      description: 'Bonus arbitrage',
+      description: 'Bonus opportunities',
       execute: () => handlers.onBonusCommand(),
     },
     bets: {

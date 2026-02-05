@@ -23,7 +23,6 @@ import type {
   BonusMatch,
   PolymarketMatchedResponse,
   BonusArbResponse,
-  ArbitrageScanResponse,
   ProviderRiskProfile,
   AllRiskResponse,
   RiskConfig,
@@ -370,16 +369,6 @@ export const api = {
     params.set('anchor_provider', anchorProvider);
     params.set('limit', limit.toString());
     return fetchJson<BonusArbResponse>(`/opportunities/bonus/arbitrage?${params}`);
-  },
-
-  async scanArbitrage(
-    minProfitPct = 0.5,
-    limit = 50
-  ): Promise<ArbitrageScanResponse> {
-    const params = new URLSearchParams();
-    params.set('min_profit_pct', minProfitPct.toString());
-    params.set('limit', limit.toString());
-    return fetchJson<ArbitrageScanResponse>(`/opportunities/arbitrage/scan?${params}`);
   },
 
   // ============ Bets ============

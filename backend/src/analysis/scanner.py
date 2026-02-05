@@ -2,7 +2,6 @@
 Opportunity Scanner
 
 Unified scanning interface for finding betting opportunities:
-- Arbitrage: Cross-provider guaranteed profit
 - Value: Edge vs de-vigged sharp odds
 - Bonus: Any edge for bonus clearing (no threshold)
 
@@ -19,7 +18,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds
-from .arbitrage import find_arbitrage, ArbitrageOpportunity
 from .value import find_value, ValueBet
 from .devig import (
     calculate_margin,
@@ -38,14 +36,6 @@ MIN_VALID_PROB_SUM = 0.90
 # If max/min > 1.35, likely event mismatch or stale odds
 # Real odds rarely differ more than 35% across providers for same event
 MAX_ODDS_RATIO = 1.35
-
-# Arbitrage profit thresholds
-# Below 2%: transaction costs eat profit, not worth execution risk
-MIN_ARB_PROFIT_PCT = 2.0
-
-# Above 7%: almost certainly data error, stale odds, or palpable error
-# Real arbitrage rarely exceeds 5% profit
-MAX_ARB_PROFIT_PCT = 7.0
 
 
 @dataclass
@@ -74,41 +64,6 @@ class BonusOpportunity:
     league: Optional[str] = None
 
 
-@dataclass
-class BonusArbitrage:
-    """A bonus arbitrage opportunity (hedge at counterparts)."""
-
-    event_id: str
-    market: str
-
-    # Anchor bet
-    anchor_provider: str
-    anchor_outcome: str
-    anchor_odds: float
-    anchor_stake: float  # Typically the bonus amount
-
-    # Hedge bets (list of {provider, outcome, odds, stake})
-    hedges: list
-
-    # Results
-    total_stake: float  # anchor_stake + sum of hedge stakes
-    guaranteed_return: float  # What you get regardless of outcome
-    profit: float  # guaranteed_return - total_stake (negative = loss for bonus clearing)
-    profit_pct: float  # profit / anchor_stake * 100
-
-    # Event context
-    home_team: Optional[str] = None
-    away_team: Optional[str] = None
-    sport: Optional[str] = None
-
-    # Quality classification: "verified" (normal), "suspect" (needs validation)
-    quality: str = "verified"
-
-    @property
-    def is_suspect(self) -> bool:
-        return self.quality == "suspect"
-
-
 class OpportunityScanner:
     """
     Scans database for betting opportunities.
@@ -117,81 +72,17 @@ class OpportunityScanner:
         scanner = OpportunityScanner(session)
 
         # Standard analysis
-        arbs = scanner.scan_arbitrage()  # 2-7% profit range
         values = scanner.scan_value(min_edge_pct=5.0)
 
         # Bonus mode (no threshold, all opportunities)
         bonus = scanner.scan_bonus("unibet", ["pinnacle", "polymarket"])
 
     Quality classification:
-        Arbs with profit >7% are flagged as quality="suspect" (not discarded).
-        These likely indicate data errors and should be validated before execution:
-        - Verify odds are current (timestamps within X seconds)
-        - Verify market mapping is exact (same event/line)
-        - Re-fetch prices before acting
-
-        Use arb.is_suspect property to filter: [a for a in arbs if not a.is_suspect]
+        Opportunities with edge >100% are filtered out as data errors.
     """
 
     def __init__(self, session: Session):
         self.session = session
-
-    def scan_arbitrage(
-        self,
-        min_profit_pct: float = MIN_ARB_PROFIT_PCT,
-        suspect_threshold_pct: float = MAX_ARB_PROFIT_PCT,
-    ) -> list[ArbitrageOpportunity]:
-        """
-        Find arbitrage opportunities across providers.
-
-        Requires different providers for different outcomes (true arb).
-
-        Args:
-            min_profit_pct: Minimum profit percentage (default 2.0%)
-            suspect_threshold_pct: Profit % above which arbs are flagged as "suspect"
-                                   (default 7.0%) - likely data errors, verify before acting
-
-        Returns:
-            List of ArbitrageOpportunity sorted by profit (highest first)
-            Opportunities with quality="suspect" should be validated before execution
-        """
-        opportunities = []
-        suspect_count = 0
-
-        # Get events with odds from 2+ providers
-        events = self._get_multi_provider_events(min_providers=2)
-
-        for event in events:
-            odds_grouped = self._group_odds(event)
-
-            for market, odds_by_outcome in odds_grouped.items():
-                arb = find_arbitrage(
-                    event_id=event.id,
-                    market=market,
-                    odds_by_outcome=odds_by_outcome,
-                    min_profit_pct=min_profit_pct,
-                )
-                if arb:
-                    # Flag high-profit arbs as suspect (likely data errors)
-                    # Keep them for verification rather than discarding
-                    if arb.profit_pct > suspect_threshold_pct:
-                        arb.quality = "suspect"
-                        suspect_count += 1
-                        logger.warning(
-                            f"Suspect arb {arb.profit_pct:.1f}% for {event.id} "
-                            f"(exceeds {suspect_threshold_pct}% threshold) - needs verification"
-                        )
-                    opportunities.append(arb)
-
-        # Sort by profit (highest first)
-        opportunities.sort(key=lambda x: x.profit_pct, reverse=True)
-
-        verified_count = len(opportunities) - suspect_count
-        logger.info(
-            f"[Scanner] Found {len(opportunities)} arbitrage opportunities "
-            f"({verified_count} verified, {suspect_count} suspect)"
-        )
-        return opportunities
 
     def scan_value(
         self,
@@ -295,159 +186,6 @@ class OpportunityScanner:
             f"[Scanner] Found {len(opportunities)} bonus opportunities for {anchor_provider}"
         )
         return opportunities
-
-    def scan_bonus_arbitrage(
-        self,
-        anchor_provider: str,
-        anchor_stake: float = 100.0,
-        counterpart_providers: list[str] = None,
-        limit: int = 10,
-    ) -> list[BonusArbitrage]:
-        """
-        Find bonus arbitrage opportunities (hedge at counterparts).
-
-        For each event/market:
-        1. Bet anchor_stake at anchor_provider on one outcome
-        2. Hedge all other outcomes at best counterpart odds
-        3. Calculate guaranteed profit/loss
-
-        Args:
-            anchor_provider: Provider where bonus bet must be placed
-            anchor_stake: Amount to bet at anchor (e.g., bonus amount)
-            counterpart_providers: Providers to hedge at (default: all except anchor)
-            limit: Max opportunities to return (default 10)
-
-        Returns:
-            List of BonusArbitrage sorted by profit_pct (best first)
-        """
-        if counterpart_providers is None:
-            # Use all providers except anchor as counterparts
-            all_providers = {o.provider_id for o in self.session.query(Odds.provider_id).distinct()}
-            counterpart_providers = list(all_providers - {anchor_provider})
-
-        opportunities = []
-        events = self._get_events_with_provider(anchor_provider)
-
-        for event in events:
-            odds_grouped = self._group_odds(event)
-
-            for market, odds_by_outcome in odds_grouped.items():
-                # Need at least 2 outcomes for arbitrage
-                if len(odds_by_outcome) < 2:
-                    continue
-
-                # Check odds discrepancy (skip if likely event mismatch)
-                skip_market = False
-                for outcome, provider_odds_list in odds_by_outcome.items():
-                    if len(provider_odds_list) >= 3:
-                        odds_values = [po["odds"] for po in provider_odds_list]
-                        if max(odds_values) / min(odds_values) > MAX_ODDS_RATIO:
-                            skip_market = True
-                            break
-                if skip_market:
-                    continue
-
-                # Validate anchor provider has complete market (prob_sum > 0.95)
-                anchor_prob_sum = sum(
-                    1.0 / next((p["odds"] for p in providers if p["provider"] == anchor_provider), 999)
-                    for providers in odds_by_outcome.values()
-                )
-                if anchor_prob_sum < MIN_VALID_PROB_SUM:
-                    continue  # Incomplete market at anchor
-
-                # For each outcome anchor could bet on
-                for anchor_outcome, provider_odds_list in odds_by_outcome.items():
-                    # Get anchor odds
-                    anchor_entry = next(
-                        (p for p in provider_odds_list if p["provider"] == anchor_provider),
-                        None,
-                    )
-                    if anchor_entry is None:
-                        continue
-
-                    anchor_odds = anchor_entry["odds"]
-                    target_return = anchor_stake * anchor_odds
-
-                    # Find best hedge for each other outcome
-                    hedges = []
-                    hedge_possible = True
-
-                    for other_outcome, other_odds_list in odds_by_outcome.items():
-                        if other_outcome == anchor_outcome:
-                            continue
-
-                        # Find best odds at counterpart (highest = least stake needed)
-                        best_hedge = None
-                        best_hedge_odds = 0
-                        for po in other_odds_list:
-                            if po["provider"] in counterpart_providers:
-                                if po["odds"] > best_hedge_odds:
-                                    best_hedge_odds = po["odds"]
-                                    best_hedge = po
-
-                        if best_hedge is None:
-                            hedge_possible = False
-                            break
-
-                        # Calculate hedge stake to guarantee target_return
-                        hedge_stake = target_return / best_hedge["odds"]
-                        hedges.append({
-                            "provider": best_hedge["provider"],
-                            "outcome": other_outcome,
-                            "odds": best_hedge["odds"],
-                            "stake": round(hedge_stake, 2),
-                        })
-
-                    if not hedge_possible:
-                        continue
-
-                    # Validate complete coverage (hedges for ALL other outcomes)
-                    expected_hedges = len(odds_by_outcome) - 1
-                    if len(hedges) != expected_hedges:
-                        continue  # Incomplete market - missing outcomes
-
-                    # Calculate results
-                    total_hedge_stake = sum(h["stake"] for h in hedges)
-                    total_stake = anchor_stake + total_hedge_stake
-                    profit = target_return - total_stake
-                    profit_pct = (profit / anchor_stake) * 100
-
-                    # Flag high-profit arbs as suspect (likely data errors)
-                    quality = "verified"
-                    if profit_pct > MAX_ARB_PROFIT_PCT:
-                        quality = "suspect"
-                        logger.warning(
-                            f"Suspect bonus arb {profit_pct:.1f}% for {event.id} - needs verification"
-                        )
-
-                    opportunities.append(BonusArbitrage(
-                        event_id=event.id,
-                        market=market,
-                        anchor_provider=anchor_provider,
-                        anchor_outcome=anchor_outcome,
-                        anchor_odds=anchor_odds,
-                        anchor_stake=anchor_stake,
-                        hedges=hedges,
-                        total_stake=round(total_stake, 2),
-                        guaranteed_return=round(target_return, 2),
-                        profit=round(profit, 2),
-                        profit_pct=round(profit_pct, 2),
-                        home_team=event.home_team,
-                        away_team=event.away_team,
-                        sport=event.sport,
-                        quality=quality,
-                    ))
-
-        # Sort by profit_pct (highest first, including negative)
-        opportunities.sort(key=lambda x: x.profit_pct, reverse=True)
-
-        suspect_count = sum(1 for o in opportunities if o.is_suspect)
-        verified_count = len(opportunities) - suspect_count
-        logger.info(
-            f"[Scanner] Found {len(opportunities)} bonus arb opportunities for {anchor_provider} "
-            f"({verified_count} verified, {suspect_count} suspect)"
-        )
-        return opportunities[:limit]
 
     def _get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:
         """Get events with odds from N+ providers."""

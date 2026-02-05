@@ -1,5 +1,5 @@
 /**
- * useDropdownWorkflow - Manages extract/arb/value workflow state
+ * useDropdownWorkflow - Manages extract/value workflow state
  *
  * Handles multi-step workflows for extraction and opportunity selection.
  * Stakes are now auto-calculated by the backend using risk management settings.
@@ -15,7 +15,7 @@ import type {
   EventWithBets,
 } from '@/types';
 import { api } from '@/services/api';
-import { formatArbitrageList, formatOpportunitiesList, formatBetsTable, formatProviderName, joinLines, outcomeToTeam } from '@/utils/formatters';
+import { formatOpportunitiesList, formatBetsTable, formatProviderName, joinLines, outcomeToTeam } from '@/utils/formatters';
 
 interface UseDropdownWorkflowProps {
   providers: Provider[];
@@ -57,46 +57,6 @@ export function useDropdownWorkflow({
 
   // Helper to add back button to options
   const withBack = (opts: DropdownOption[]): DropdownOption[] => [...opts, backOption];
-
-  // Place all arb bets (record them in database) - uses pre-calculated stakes from API
-  const placeArbBets = useCallback(async () => {
-    const oppIndex = (workflow.selectedOpp || 1) - 1;
-    const arb = workflow.fullArbs?.[oppIndex];
-    if (!arb || !arb.legs || arb.legs.length === 0) return;
-
-    const eventName = arb.home_team && arb.away_team
-      ? `${arb.home_team} vs ${arb.away_team}`
-      : 'Unknown';
-
-    try {
-      const betIds: number[] = [];
-
-      for (const leg of arb.legs) {
-        const result = await api.createBet({
-          event_id: arb.event_id,
-          provider_id: leg.provider,
-          market: arb.market,
-          outcome: leg.outcome,
-          odds: leg.odds,
-          stake: leg.stake,  // Pre-calculated by backend
-          is_bonus: false,
-        });
-        betIds.push(result.bet_id);
-      }
-
-      const betIdStr = betIds.join(', #');
-      sendMessage(
-        `**BETS #${betIdStr} RECORDED** ${eventName}\n` +
-        `Use \`/bets\` to settle when results are in.`
-      );
-
-      onRefresh();
-      cancel();
-    } catch (err) {
-      sendMessage(`Error recording bets: ${err instanceof Error ? err.message : 'Unknown'}`);
-      cancel();
-    }
-  }, [workflow, sendMessage, onRefresh, cancel]);
 
   // Place value bet (record in database) - uses pre-calculated stake from API
   const placeValueBet = useCallback(async () => {
@@ -178,39 +138,6 @@ export function useDropdownWorkflow({
       'Select [RUN EXTRACTION] when ready.'
     );
   }, [providers, sendMessage]);
-
-  // Start arb workflow
-  const startArb = useCallback(async () => {
-    try {
-      const result = await api.scanArbitrage(0.5, 20);
-
-      // Filter out suspect arbs (>7% profit likely data errors)
-      const verifiedArbs = result.opportunities.filter(a => a.quality !== 'suspect');
-
-      if (verifiedArbs.length === 0) {
-        sendMessage('No arbitrage found. Run `/extract pinnacle <provider>` first.');
-        return;
-      }
-
-      sendMessage(formatArbitrageList(verifiedArbs));
-
-      const opts: DropdownOption[] = verifiedArbs.map((arb, idx) => {
-        const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
-        return {
-          id: idx + 1,
-          label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
-          sublabel: `${arb.legs.length} legs | $${totalStake.toFixed(0)}`,
-          type: 'opportunity' as const,
-        };
-      });
-
-      setOptions(withBack(opts));
-      setSelectedIndex(0);
-      setWorkflow({ type: 'arb', step: 'select-opportunity', fullArbs: verifiedArbs });
-    } catch (err) {
-      sendMessage(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
-    }
-  }, [sendMessage]);
 
   // Start value workflow
   const startValue = useCallback(async () => {
@@ -352,20 +279,7 @@ export function useDropdownWorkflow({
       switch (workflow.step) {
         case 'confirm':
           // Go back to opportunity selection
-          if (workflow.type === 'arb' && workflow.fullArbs) {
-            const opts: DropdownOption[] = workflow.fullArbs.map((arb, idx) => {
-              const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
-              return {
-                id: idx + 1,
-                label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
-                sublabel: `${arb.legs.length} legs | $${totalStake.toFixed(0)}`,
-                type: 'opportunity' as const,
-              };
-            });
-            setOptions(withBack(opts));
-            setSelectedIndex(0);
-            setWorkflow((prev) => ({ ...prev, step: 'select-opportunity', selectedOpp: undefined }));
-          } else if (workflow.type === 'value' && workflow.opportunities) {
+          if (workflow.type === 'value' && workflow.opportunities) {
             const opts: DropdownOption[] = workflow.opportunities
               .filter(opp => !opp.skip_reason)
               .map((opp, idx) => {
@@ -432,61 +346,6 @@ export function useDropdownWorkflow({
           );
           return newSet;
         });
-        break;
-      }
-
-      case 'arb': {
-        if (workflow.step === 'select-opportunity') {
-          const oppIndex = (option.id as number) - 1;
-          const arb = workflow.fullArbs?.[oppIndex];
-          if (!arb) return;
-
-          const eventName = arb.home_team && arb.away_team
-            ? `${arb.home_team} vs ${arb.away_team}`
-            : 'Unknown';
-
-          // Use pre-calculated stakes from API
-          const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
-          const guaranteedReturn = arb.legs[0]?.return || (totalStake / arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0));
-          const profit = guaranteedReturn - totalStake;
-
-          // Table row format for legs with team names
-          const legRows = arb.legs
-            .map((l) => {
-              const team = outcomeToTeam(l.outcome, arb.home_team || undefined, arb.away_team || undefined);
-              const teamStr = team.length > 14 ? team.slice(0, 13) + '…' : team.padEnd(14);
-              return `${teamStr} | ${l.provider.padEnd(10)} | ${l.odds.toFixed(2)} | $${l.stake.toFixed(0)}`;
-            })
-            .join('\n');
-
-          sendMessage(
-            `**#${option.id}** ${eventName} (+${arb.profit_pct.toFixed(2)}%)\n` +
-            '```\n' +
-            `Bet on         | Provider   | Odds  | Stake\n` +
-            `---------------|------------|-------|------\n` +
-            `${legRows}\n` +
-            '```\n' +
-            `**Total**: $${totalStake.toFixed(0)} → Return: $${guaranteedReturn.toFixed(0)} (+$${profit.toFixed(0)})\n\n` +
-            `Place bets manually on each site, then confirm to record.`
-          );
-
-          // Show confirm options directly (no stake selection needed)
-          const confirmOpts: DropdownOption[] = [
-            { id: 'confirm', label: '[CONFIRM]', sublabel: 'Record bets', type: 'action' as const },
-          ];
-
-          setOptions(withBack(confirmOpts));
-          setSelectedIndex(0);
-          setWorkflow((prev) => ({
-            ...prev,
-            step: 'confirm',
-            selectedOpp: option.id as number,
-          }));
-        } else if (workflow.step === 'confirm') {
-          if (option.id === 'confirm') {
-            await placeArbBets();
-          }
-        }
         break;
       }
 
@@ -641,7 +500,7 @@ export function useDropdownWorkflow({
         break;
       }
     }
-  }, [workflow, selectedProviderIds, sendMessage, onRefresh, onRunExtraction, cancel, placeArbBets, placeValueBet]);
+  }, [workflow, selectedProviderIds, sendMessage, onRefresh, onRunExtraction, cancel, placeValueBet]);
 
   return {
     workflow,
@@ -651,7 +510,6 @@ export function useDropdownWorkflow({
     lastOpportunities,
     lastBets,
     startExtract,
-    startArb,
     startValue,
     startBets,
     cancel,

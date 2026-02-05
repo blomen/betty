@@ -2,7 +2,7 @@
 
 ## WHAT This Project Is
 
-OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets and arbitrage opportunities.
+OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
 **Architecture:**
 ```
@@ -10,7 +10,7 @@ backend/src/
 ├── providers/        # 11 extractors (Kambi, SBTech, Gecko V2, Spectate, Pinnacle, Polymarket)
 │   └── mixins/       # RSocket decoding
 ├── pipeline/         # orchestrator, storage, pool_manager, circuit_breaker, cache, health, metrics
-├── analysis/         # scanner, arbitrage, value, bonus, devig
+├── analysis/         # scanner, value, bonus, devig
 ├── matching/         # Event normalization + fuzzy matching
 ├── bankroll/         # Kelly criterion + stake sizing
 ├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile)
@@ -47,7 +47,7 @@ python -m src.extract --sources    # Sharp sources only (Pinnacle + Polymarket)
 python -m src.extract --all        # All providers
 
 # Find opportunities
-python -m src.detect               # Value + arbitrage detection
+python -m src.detect               # Value detection
 
 # Run services (ALWAYS use these ports - terminals already running)
 uvicorn src.api:app --reload       # API on :8000
@@ -73,7 +73,6 @@ pytest tests/                      # Run test suite
 - **Fair odds**: True probability from Pinnacle (after devigging)
 - **Edge %**: `(provider_odds / fair_odds - 1) × 100`
 - **Value bet**: Single outcome with positive edge
-- **Arbitrage**: Guaranteed profit across multiple providers
 - **Sharp source**: Pinnacle ONLY (Polymarket is NOT used as sharp)
 
 ### Extraction Scope (IMPORTANT)
@@ -154,7 +153,7 @@ Fuzzy match against Polymarket cache
     ↓
 store_odds() → Odds table
     ↓
-OpportunityScanner.scan_value() / scan_arbitrage()
+OpportunityScanner.scan_value()
 ```
 
 ### Running Extractions
@@ -192,7 +191,6 @@ python -m src.app extract             # All enabled providers
 3. **Run opportunity detection:**
    ```bash
    python -m src.app value   # Show value bets
-   python -m src.app arbs    # Show arbitrage
    ```
 
 ### Benchmarking Metrics
@@ -205,11 +203,9 @@ Track these per provider during extraction:
 
 ### Known Data Quality Issues
 
-1. **Kambi correct score outcomes** - Some Kambi providers return correct score outcomes (0-1, 1-2, etc.) labeled as '1x2' market. These inflate arbitrage counts. Fix: filter by `betOfferType.id` in Kambi extractor (ID 2 = Match Winner).
+1. **Kambi correct score outcomes** - Some Kambi providers return correct score outcomes (0-1, 1-2, etc.) labeled as '1x2' market. These inflate counts. Fix: filter by `betOfferType.id` in Kambi extractor (ID 2 = Match Winner).
 
 2. **Polymarket player name outcomes** - Tennis/esports outcomes stored as player names instead of normalized 'home'/'away'. Fix: enhance outcome normalization for Polymarket.
-
-3. **High edge/profit warnings** - Scanner logs "Suspicious arb" for opportunities with >10% profit, indicating data issues (mismatched events or incorrect markets).
 
 ### Data Quality Validation (REQUIRED)
 
@@ -339,11 +335,7 @@ LIMIT 30;
    "
    ```
 
-4. **Check for suspicious arbs:**
-   - Any "Suspicious arb" warnings indicate data quality issues
-   - Common causes: fuzzy match failures, timing mismatches, incomplete markets
-
-5. **Performance tuning parameters** (in `config/providers.yaml`):
+4. **Performance tuning parameters** (in `config/providers.yaml`):
    ```yaml
    kambi_api:
      health_check_delay_ms: 1000    # Delay between health checks
@@ -387,16 +379,6 @@ vb = scanner.scan_value(min_edge_pct=5.0)
 suspicious = [v for v in vb if v.edge_pct > 25]
 print(f'VALUE BETS: {len(vb)} total, {len(suspicious)} suspicious (>25%)')
 
-# Arbitrage
-arbs = scanner.scan_arbitrage()
-print(f'ARBITRAGE: {len(arbs)} opportunities')
-
-# Bonus arbitrage (top 10)
-bonus = scanner.scan_bonus_arbitrage('unibet', 1000.0, limit=10)
-print(f'BONUS ARB: {len(bonus)} opportunities')
-for b in bonus[:5]:
-    print(f'  {b.anchor_outcome}@{b.anchor_odds:.2f} = {b.profit_pct:+.1f}%')
-
 db.close()
 "
 ```
@@ -407,10 +389,7 @@ db.close()
 |--------|--------|----------|
 | Value bets (>5% edge) | 300-500 | <100 or >1000 |
 | Suspicious (>25% edge) | <10 | >50 |
-| Arbitrage opportunities | 0-10 | >50 |
-| Bonus arb profit range | -5% to +5% | >15% |
 
 **Data quality filters in `scanner.py`:**
 - `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
 - `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
-- Profit cap 15% for bonus arb - Filter data quality issues

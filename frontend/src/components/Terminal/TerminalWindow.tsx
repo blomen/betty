@@ -3,7 +3,6 @@ import type { BettingContext } from '@/types';
 import { Sidebar, type TabName } from './Sidebar';
 import {
   ExtractPage,
-  ArbPage,
   ValuePage,
   BetsPage,
   BankrollPage,
@@ -27,8 +26,6 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
     switch (activeTab) {
       case 'extract':
         return <ExtractPage providers={context.providers} onRefresh={onRefresh} />;
-      case 'arb':
-        return <ArbPage />;
       case 'value':
         return <ValuePage />;
       case 'bets':
