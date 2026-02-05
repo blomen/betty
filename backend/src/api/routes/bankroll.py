@@ -9,10 +9,12 @@ import yaml
 from ...db.models import (
     Provider, Bet, Profile, ProfileProviderBonus, ProfileProviderBalance,
     get_active_profile, get_profile_balance, set_profile_balance,
-    adjust_profile_balance, get_total_profile_bankroll
+    adjust_profile_balance, get_total_profile_bankroll,
+    get_bonus_status, record_wagering, start_bonus_wagering,
 )
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest
+from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest, StakePreviewRequest, RecordBetRequest
+from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 
 
 def load_provider_bonuses() -> dict[str, dict]:
@@ -192,19 +194,19 @@ async def deposit_with_bonus(
     new_balance = adjust_profile_balance(db, active_profile.id, provider_id, total_added)
 
     # 6. Update bonus status if bonus was claimed
-    new_bonus_status = None
+    bonus_info = None
     if bonus_amount > 0:
-        if bonus_record:
-            bonus_record.bonus_status = 'in_progress'
-            bonus_record.updated_at = datetime.utcnow()
-        else:
-            bonus_record = ProfileProviderBonus(
-                profile_id=active_profile.id,
-                provider_id=provider_id,
-                bonus_status='in_progress'
-            )
-            db.add(bonus_record)
-        new_bonus_status = 'in_progress'
+        # Get wagering multiplier from config (default 10x)
+        wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
+
+        # Start bonus wagering tracking
+        bonus_info = start_bonus_wagering(
+            db,
+            active_profile.id,
+            provider_id,
+            bonus_amount,
+            wagering_multiplier,
+        )
 
     db.commit()
 
@@ -217,8 +219,9 @@ async def deposit_with_bonus(
         "total_added": total_added,
         "old_balance": old_balance,
         "new_balance": new_balance,
-        "bonus_status": new_bonus_status,
+        "bonus_status": bonus_info.get("status") if bonus_info else None,
         "bonus_limit": bonus_limit if is_double_deposit else None,
+        "wagering_requirement": bonus_info.get("wagering_requirement") if bonus_info else None,
     }
 
 
@@ -281,4 +284,194 @@ async def get_bankroll_exposure(db: Session = Depends(get_db)):
         "total_pending": total_pending,
         "total_available": total_balance,
         "providers": exposure_data,
+    }
+
+
+# In-memory stake calculator (reset on server restart)
+# This tracks daily/event exposure across requests
+_stake_calculators: dict[int, StakeCalculator] = {}
+
+
+def get_stake_calculator(db: Session, profile_id: int) -> StakeCalculator:
+    """Get or create a StakeCalculator for a profile."""
+    if profile_id not in _stake_calculators:
+        bankroll = get_total_profile_bankroll(db, profile_id)
+        _stake_calculators[profile_id] = StakeCalculator(bankroll=bankroll)
+
+    calc = _stake_calculators[profile_id]
+
+    # Always update bankroll to current value
+    bankroll = get_total_profile_bankroll(db, profile_id)
+    calc.update_bankroll(bankroll)
+
+    # Always reload bonus statuses from DB (they may have changed)
+    calc.bonus_tracker.bonuses.clear()
+    bonuses = db.query(ProfileProviderBonus).filter(
+        ProfileProviderBonus.profile_id == profile_id,
+        ProfileProviderBonus.bonus_status == "in_progress"
+    ).all()
+
+    for bonus in bonuses:
+        if bonus.wagering_requirement and bonus.wagering_requirement > 0:
+            calc.bonus_tracker.bonuses[bonus.provider_id] = {
+                "wagered": bonus.wagered_amount or 0.0,
+                "requirement": bonus.wagering_requirement,
+                "bonus_amount": bonus.bonus_amount or 0.0,
+            }
+
+    return calc
+
+
+@router.get("/status")
+async def get_bankroll_status(db: Session = Depends(get_db)):
+    """
+    Get comprehensive bankroll status including exposures and bonus progress.
+
+    Returns:
+        - Total bankroll
+        - Daily exposure tracking
+        - Event exposures
+        - Bonus wagering progress per provider
+    """
+    profile = get_active_profile(db)
+    calc = get_stake_calculator(db, profile.id)
+
+    # Get bonus progress from DB
+    bonuses = db.query(ProfileProviderBonus).filter(
+        ProfileProviderBonus.profile_id == profile.id
+    ).all()
+
+    bonus_progress = {}
+    for bonus in bonuses:
+        bonus_progress[bonus.provider_id] = {
+            "status": bonus.bonus_status,
+            "bonus_amount": bonus.bonus_amount or 0.0,
+            "wagering_requirement": bonus.wagering_requirement or 0.0,
+            "wagered_amount": bonus.wagered_amount or 0.0,
+            "progress_pct": (
+                min(100.0, (bonus.wagered_amount or 0.0) / bonus.wagering_requirement * 100)
+                if bonus.wagering_requirement and bonus.wagering_requirement > 0
+                else 100.0
+            ),
+            "is_cleared": (
+                bonus.bonus_status == "completed" or
+                bonus.bonus_status == "available" or
+                (bonus.wagering_requirement and (bonus.wagered_amount or 0.0) >= bonus.wagering_requirement)
+            ),
+        }
+
+    status = calc.get_status()
+
+    return {
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+        "bankroll": status["bankroll"],
+        "daily_exposure": status["daily_exposure"],
+        "daily_remaining": status["daily_remaining"],
+        "daily_cap_pct": calc.daily_tracker.max_daily_exposure_pct * 100,
+        "event_exposures": status["event_exposures"],
+        "event_cap_pct": calc.event_tracker.max_event_exposure_pct * 100,
+        "bonus_progress": bonus_progress,
+        "min_odds_bonus": BONUS_MIN_ODDS,
+    }
+
+
+@router.post("/stake-preview")
+async def preview_stake(data: StakePreviewRequest, db: Session = Depends(get_db)):
+    """
+    Preview recommended stake for an opportunity.
+
+    Uses the stake calculator with current bankroll, exposure caps,
+    and bonus status to recommend a stake.
+    """
+    profile = get_active_profile(db)
+    calc = get_stake_calculator(db, profile.id)
+
+    # Convert edge percentage to decimal
+    edge_decimal = data.edge_pct / 100.0
+
+    # Calculate stake
+    result = calc.calculate(
+        edge_raw=edge_decimal,
+        odds=data.odds,
+        event_id=data.event_id,
+        provider_id=data.provider_id,
+        high_confidence=True,  # Assume high confidence for preview
+    )
+
+    # Get bonus status if provider specified
+    bonus_cleared = True
+    if data.provider_id:
+        bonus_cleared = calc.bonus_tracker.is_cleared(data.provider_id)
+
+    return {
+        "recommended_stake": result.stake,
+        "kelly_fraction": result.kelly_fraction,
+        "edge_raw": result.edge_raw,
+        "edge_used": result.edge_used,
+        "bankroll": result.bankroll,
+        "raw_kelly_stake": result.raw_kelly_stake,
+        "single_bet_cap": result.single_bet_cap,
+        "was_capped_single": result.was_capped_single,
+        "was_capped_event": result.was_capped_event,
+        "was_capped_daily": result.was_capped_daily,
+        "skip_reason": result.skip_reason,
+        "bonus_cleared": bonus_cleared,
+        "min_odds_applied": 0.0 if bonus_cleared else BONUS_MIN_ODDS,
+    }
+
+
+@router.post("/record-bet")
+async def record_bet_exposure(data: RecordBetRequest, db: Session = Depends(get_db)):
+    """
+    Record a placed bet for exposure tracking.
+
+    Updates the stake calculator's event and daily exposure trackers,
+    as well as bonus wagering progress.
+
+    Note: This does NOT create a Bet record - use /api/bets for that.
+    This endpoint is for exposure tracking when you want to track
+    without creating a full bet record.
+    """
+    profile = get_active_profile(db)
+    calc = get_stake_calculator(db, profile.id)
+
+    # Record in calculator
+    calc.record_bet(
+        event_id=data.event_id,
+        provider_id=data.provider_id,
+        stake=data.stake,
+        odds=data.odds,
+    )
+
+    # Also update DB bonus wagering
+    wagering_status = record_wagering(
+        db, profile.id, data.provider_id, data.stake, data.odds
+    )
+    db.commit()
+
+    return {
+        "success": True,
+        "event_exposure": calc.event_tracker.get_exposure(data.event_id),
+        "daily_exposure": calc.daily_tracker.get_daily_exposure(),
+        "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
+    }
+
+
+@router.post("/reset-calculator")
+async def reset_calculator(db: Session = Depends(get_db)):
+    """
+    Reset the stake calculator's exposure tracking.
+
+    Useful after events settle or at start of new day.
+    """
+    profile = get_active_profile(db)
+
+    if profile.id in _stake_calculators:
+        _stake_calculators[profile.id].reset_event_exposures()
+        _stake_calculators[profile.id].reset_daily_exposure()
+
+    return {
+        "success": True,
+        "message": "Exposure tracking reset",
     }

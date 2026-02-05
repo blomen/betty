@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds
 from .value import find_value, ValueBet
+from ..bankroll.stake_calculator import StakeCalculator, StakeResult
 from .devig import (
     calculate_margin,
     devig_multiplicative,
@@ -125,6 +126,112 @@ class OpportunityScanner:
 
         logger.info(f"[Scanner] Found {len(opportunities)} value bets (>={min_edge_pct}% edge)")
         return opportunities
+
+    def scan_value_with_stakes(
+        self,
+        stake_calculator: StakeCalculator,
+        min_edge_pct: float = 5.0,
+        confidence_threshold: int = 90,
+    ) -> list[ValueBet]:
+        """
+        Find value bets with stake recommendations.
+
+        Uses the StakeCalculator to compute recommended stakes for each
+        opportunity, taking into account:
+        - Dynamic Kelly sizing based on edge
+        - Event/daily exposure caps
+        - Bonus wagering requirements
+        - Confidence scoring based on match quality
+
+        Args:
+            stake_calculator: Configured StakeCalculator instance
+            min_edge_pct: Minimum edge percentage (default 5%)
+            confidence_threshold: Match score threshold for high confidence (default 90)
+
+        Returns:
+            List of ValueBet with stake recommendations, sorted by edge
+        """
+        # Get base value bets
+        raw_bets = self.scan_value(min_edge_pct=min_edge_pct)
+
+        # Enrich with stakes and event context
+        enriched_bets = []
+        for vb in raw_bets:
+            # Get event for context
+            event = self.session.query(Event).filter(Event.id == vb.event_id).first()
+
+            # Determine confidence based on match quality
+            # High confidence = strong match score AND odds ratio within bounds
+            is_high_confidence = self._assess_confidence(vb, confidence_threshold)
+
+            # Calculate stake
+            edge_decimal = vb.edge_pct / 100.0
+            result = stake_calculator.calculate(
+                edge_raw=edge_decimal,
+                odds=vb.provider_odds,
+                event_id=vb.event_id,
+                provider_id=vb.provider,
+                high_confidence=is_high_confidence,
+            )
+
+            # Create enriched ValueBet
+            enriched = ValueBet(
+                event_id=vb.event_id,
+                market=vb.market,
+                outcome=vb.outcome,
+                provider=vb.provider,
+                provider_odds=vb.provider_odds,
+                fair_odds=vb.fair_odds,
+                fair_probability=vb.fair_probability,
+                edge_pct=vb.edge_pct,
+                recommended_stake=result.stake if result.stake > 0 else None,
+                kelly_fraction=result.kelly_fraction,
+                is_high_confidence=is_high_confidence,
+                skip_reason=result.skip_reason,
+                home_team=event.home_team if event else None,
+                away_team=event.away_team if event else None,
+                sport=event.sport if event else None,
+                start_time=event.start_time.isoformat() if event and event.start_time else None,
+            )
+            enriched_bets.append(enriched)
+
+        # Sort by edge (highest first), then by stake
+        enriched_bets.sort(key=lambda x: (x.edge_pct, x.recommended_stake or 0), reverse=True)
+
+        # Count actionable bets
+        actionable = sum(1 for b in enriched_bets if b.recommended_stake and b.recommended_stake > 0)
+        logger.info(
+            f"[Scanner] {actionable}/{len(enriched_bets)} value bets have stake recommendations"
+        )
+
+        return enriched_bets
+
+    def _assess_confidence(self, vb: ValueBet, threshold: int = 90) -> bool:
+        """
+        Assess confidence level for a value bet.
+
+        High confidence criteria:
+        - Odds difference from Pinnacle is reasonable (not likely mismatch)
+        - Edge is not suspiciously high (< 25%)
+
+        Args:
+            vb: The value bet to assess
+            threshold: Fuzzy match threshold (not used currently, reserved for future)
+
+        Returns:
+            True if high confidence, False otherwise
+        """
+        # Suspiciously high edge = likely data quality issue
+        if vb.edge_pct > 25:
+            return False
+
+        # Odds ratio check (already filtered in scan_value, but double-check)
+        if vb.fair_odds > 0:
+            odds_ratio = vb.provider_odds / vb.fair_odds
+            if odds_ratio > MAX_ODDS_RATIO:
+                return False
+
+        return True
 
     def scan_bonus(
         self,

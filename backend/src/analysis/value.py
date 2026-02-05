@@ -27,18 +27,30 @@ class ValueBet:
     event_id: str
     market: str
     outcome: str
-    
+
     # The bet
     provider: str
     provider_odds: float
-    
+
     # The truth (from Pinnacle de-vigged)
     fair_odds: float
     fair_probability: float
-    
+
     # The edge
     edge_pct: float
-    
+
+    # Optional stake recommendation (filled by StakeCalculator integration)
+    recommended_stake: Optional[float] = None
+    kelly_fraction: Optional[float] = None
+    is_high_confidence: Optional[bool] = None
+    skip_reason: Optional[str] = None
+
+    # Event context (optional, for display)
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    sport: Optional[str] = None
+    start_time: Optional[str] = None
+
     @property
     def expected_value(self) -> float:
         """Expected value per $1 bet."""

@@ -5,10 +5,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...db.models import Event, Odds, Opportunity, Provider, Profile
+from ...db.models import Event, Odds, Opportunity, Provider, Profile, get_active_profile, get_total_profile_bankroll, get_bonus_status
 from ...analysis import find_best_hedge
 from ...analysis.scanner import OpportunityScanner
-from ...bankroll.manager import kelly_stake, RiskAwareBankrollManager
+from ...bankroll.manager import kelly_stake
+from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
 
@@ -64,13 +65,16 @@ async def list_opportunities(
     # Sort by edge (highest first)
     opps = query.order_by(Opportunity.edge_pct.desc().nullslast()).limit(50).all()
 
-    # Initialize risk-aware manager for stake calculations (value bets only)
-    risk_manager = None
+    # Initialize stake calculator for value bets
+    stake_calculator = None
+    profile = None
     if type == 'value' and opps:
         try:
-            risk_manager = RiskAwareBankrollManager(db)
+            profile = get_active_profile(db)
+            bankroll = get_total_profile_bankroll(db, profile.id)
+            stake_calculator = StakeCalculator(bankroll=bankroll)
         except Exception as e:
-            logger.warning(f"Could not initialize risk manager: {e}")
+            logger.warning(f"Could not initialize stake calculator: {e}")
 
     # Build response with event details and stake recommendations
     results = []
@@ -102,25 +106,34 @@ async def list_opportunities(
         }
 
         # Add stake recommendations for value bets
-        if type == 'value' and risk_manager and o.odds1 and o.odds2:
+        if type == 'value' and stake_calculator and profile and o.odds1 and o.odds2:
             try:
-                stake_rec = risk_manager.calculate_risk_aware_stake(
+                # Calculate edge
+                edge_raw = (o.odds1 / o.odds2 - 1) if o.odds2 > 1 else 0
+
+                # Check bonus status for min odds
+                bonus_status = get_bonus_status(db, profile.id, o.provider1_id)
+                min_odds = 0.0 if bonus_status.get("is_cleared", True) else BONUS_MIN_ODDS
+
+                stake_rec = stake_calculator.calculate(
+                    edge_raw=edge_raw,
                     odds=o.odds1,
-                    fair_odds=o.odds2,
+                    event_id=o.event_id,
                     provider_id=o.provider1_id,
+                    min_odds=min_odds,
                 )
-                result["suggested_stake"] = round(stake_rec.base_stake, 2)
-                result["risk_adjusted_stake"] = round(stake_rec.risk_adjusted_stake, 2)
-                result["final_stake"] = round(stake_rec.final_stake, 2)
-                result["risk_level"] = stake_rec.risk_level
+                result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+                result["final_stake"] = round(stake_rec.stake, 2)
+                result["kelly_fraction"] = stake_rec.kelly_fraction
                 result["skip_reason"] = stake_rec.skip_reason
+                result["bonus_cleared"] = bonus_status.get("is_cleared", True)
             except Exception as e:
                 logger.debug(f"Stake calculation failed for opp {o.id}: {e}")
                 result["suggested_stake"] = None
-                result["risk_adjusted_stake"] = None
                 result["final_stake"] = None
-                result["risk_level"] = "unknown"
+                result["kelly_fraction"] = None
                 result["skip_reason"] = None
+                result["bonus_cleared"] = None
 
         results.append(result)
 

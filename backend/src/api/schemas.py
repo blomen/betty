@@ -37,6 +37,22 @@ class DepositRequest(BaseModel):
     amount: float  # Deposit amount (positive)
 
 
+class StakePreviewRequest(BaseModel):
+    """Request to preview stake for an opportunity."""
+    edge_pct: float  # Edge percentage (e.g., 5.0 for 5%)
+    odds: float  # Decimal odds
+    event_id: Optional[str] = None  # For exposure tracking
+    provider_id: Optional[str] = None  # For bonus status checking
+
+
+class RecordBetRequest(BaseModel):
+    """Request to record a bet for exposure tracking."""
+    event_id: str
+    provider_id: str
+    stake: float
+    odds: float
+
+
 # ============ Bet Schemas ============
 
 class BetCreate(BaseModel):

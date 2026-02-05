@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from ...db.models import (
     Provider, Bet,
-    get_active_profile, get_profile_balance, adjust_profile_balance
+    get_active_profile, get_profile_balance, adjust_profile_balance,
+    record_wagering,
 )
 from ..deps import get_db
 from ..schemas import BetCreate, BetUpdate
@@ -91,8 +92,17 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
     if not bet.is_bonus:
         adjust_profile_balance(db, profile.id, bet.provider_id, -bet.stake)
 
+    # Record wagering progress (for bonus clearing)
+    # Only bets with odds >= 1.80 count toward wagering
+    wagering_status = record_wagering(db, profile.id, bet.provider_id, bet.stake, bet.odds)
+
     db.commit()
-    return {"success": True, "bet_id": b.id, "profile_id": profile.id}
+    return {
+        "success": True,
+        "bet_id": b.id,
+        "profile_id": profile.id,
+        "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
+    }
 
 
 @router.put("/{bet_id}")

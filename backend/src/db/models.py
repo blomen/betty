@@ -256,6 +256,12 @@ class ProfileProviderBonus(Base):
     Each profile tracks bonus status independently per provider.
     When switching profiles, the bonus_status shown is from this table,
     not the global Provider.bonus_status field.
+
+    Wagering tracking:
+    - bonus_amount: The bonus received (e.g., 1000 kr)
+    - wagering_requirement: Total amount to wager (e.g., 10000 kr = 10x bonus)
+    - wagered_amount: Amount wagered so far (only bets with odds >= 1.80 count)
+    - When wagered_amount >= wagering_requirement: bonus is "completed"
     """
     __tablename__ = "profile_provider_bonuses"
 
@@ -265,8 +271,14 @@ class ProfileProviderBonus(Base):
 
     # 'available' = bonus ready to use
     # 'in_progress' = deposited with double deposit, needs wagering
-    # 'completed' = bonus fully used
+    # 'completed' = bonus fully wagered, no more min odds restriction
     bonus_status = Column(String, default="available")
+
+    # Bonus wagering tracking
+    bonus_amount = Column(Float, default=0.0)           # Bonus received
+    wagering_multiplier = Column(Float, default=10.0)   # Wagering requirement multiplier (default 10x)
+    wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
+    wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= 1.80 only)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -694,6 +706,142 @@ def get_active_profile(db):
             db.add(profile)
             db.commit()
     return profile
+
+
+# ============ Bonus Wagering Helpers ============
+
+# Minimum odds for bonus wagering (bets below this don't count)
+BONUS_MIN_ODDS = 1.80
+
+
+def get_bonus_status(db, profile_id: int, provider_id: str) -> dict:
+    """
+    Get bonus status and wagering progress for a provider.
+
+    Returns:
+        {
+            "status": "available" | "in_progress" | "completed",
+            "bonus_amount": float,
+            "wagering_requirement": float,
+            "wagered_amount": float,
+            "progress_pct": float,
+            "is_cleared": bool,  # True if no restriction on min odds
+        }
+    """
+    record = db.query(ProfileProviderBonus).filter(
+        ProfileProviderBonus.profile_id == profile_id,
+        ProfileProviderBonus.provider_id == provider_id
+    ).first()
+
+    if not record:
+        return {
+            "status": "available",
+            "bonus_amount": 0.0,
+            "wagering_requirement": 0.0,
+            "wagered_amount": 0.0,
+            "progress_pct": 100.0,
+            "is_cleared": True,
+        }
+
+    is_cleared = (
+        record.bonus_status == "completed" or
+        record.bonus_status == "available" or
+        (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
+    )
+
+    progress_pct = 0.0
+    if record.wagering_requirement > 0:
+        progress_pct = min(100.0, record.wagered_amount / record.wagering_requirement * 100)
+
+    return {
+        "status": record.bonus_status,
+        "bonus_amount": record.bonus_amount,
+        "wagering_requirement": record.wagering_requirement,
+        "wagered_amount": record.wagered_amount,
+        "progress_pct": progress_pct,
+        "is_cleared": is_cleared,
+    }
+
+
+def record_wagering(db, profile_id: int, provider_id: str, stake: float, odds: float) -> dict:
+    """
+    Record a bet toward wagering requirement.
+
+    Only bets with odds >= 1.80 count toward wagering.
+    Automatically updates bonus_status to 'completed' when requirement is met.
+
+    Returns:
+        Updated bonus status dict
+    """
+    if odds < BONUS_MIN_ODDS:
+        return get_bonus_status(db, profile_id, provider_id)
+
+    record = db.query(ProfileProviderBonus).filter(
+        ProfileProviderBonus.profile_id == profile_id,
+        ProfileProviderBonus.provider_id == provider_id
+    ).first()
+
+    if not record or record.bonus_status != "in_progress":
+        return get_bonus_status(db, profile_id, provider_id)
+
+    # Update wagered amount
+    record.wagered_amount = (record.wagered_amount or 0.0) + stake
+    record.updated_at = datetime.utcnow()
+
+    # Check if wagering requirement is met
+    if record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement:
+        record.bonus_status = "completed"
+
+    return get_bonus_status(db, profile_id, provider_id)
+
+
+def start_bonus_wagering(
+    db,
+    profile_id: int,
+    provider_id: str,
+    bonus_amount: float,
+    wagering_multiplier: float = 10.0
+) -> dict:
+    """
+    Start tracking bonus wagering for a provider.
+
+    Args:
+        db: Database session
+        profile_id: Profile ID
+        provider_id: Provider ID
+        bonus_amount: Bonus received
+        wagering_multiplier: Times bonus must be wagered (default 10x)
+
+    Returns:
+        Updated bonus status dict
+    """
+    record = db.query(ProfileProviderBonus).filter(
+        ProfileProviderBonus.profile_id == profile_id,
+        ProfileProviderBonus.provider_id == provider_id
+    ).first()
+
+    wagering_requirement = bonus_amount * wagering_multiplier
+
+    if record:
+        record.bonus_status = "in_progress"
+        record.bonus_amount = bonus_amount
+        record.wagering_multiplier = wagering_multiplier
+        record.wagering_requirement = wagering_requirement
+        record.wagered_amount = 0.0
+        record.updated_at = datetime.utcnow()
+    else:
+        record = ProfileProviderBonus(
+            profile_id=profile_id,
+            provider_id=provider_id,
+            bonus_status="in_progress",
+            bonus_amount=bonus_amount,
+            wagering_multiplier=wagering_multiplier,
+            wagering_requirement=wagering_requirement,
+            wagered_amount=0.0,
+        )
+        db.add(record)
+
+    return get_bonus_status(db, profile_id, provider_id)
 
 
 def copy_profile_balances(db, from_profile_id: int, to_profile_id: int) -> int:
