@@ -164,6 +164,8 @@ class RiskCalculator:
             + config.weight_bonus_usage * features.bonus_usage_ratio
             + config.weight_clv * features.clv_score
             + config.weight_win_rate * features.win_rate_deviation
+            + config.weight_ev_quality * features.ev_quality_ratio
+            + config.weight_account_freshness * features.account_freshness_risk
         )
 
         return min(1.0, max(0.0, score))
@@ -213,8 +215,16 @@ class RiskCalculator:
         profile.bonus_usage_ratio = features.bonus_usage_ratio
         profile.clv_score = features.clv_score
         profile.win_rate_deviation = features.win_rate_deviation
+        profile.ev_quality_ratio = features.ev_quality_ratio
+        profile.account_freshness_risk = features.account_freshness_risk
+        profile.total_bets_placed = features.total_bets_all_time
         profile.bets_analyzed = features.bets_analyzed
         profile.last_calculated_at = datetime.utcnow()
+
+        # Update first_bet_date if we have account age info and it's not set
+        if features.account_age_days > 0 and profile.first_bet_date is None:
+            from datetime import timedelta
+            profile.first_bet_date = datetime.utcnow() - timedelta(days=features.account_age_days)
 
         # Auto-cooldown if score exceeds threshold
         config = self._get_config()
@@ -238,6 +248,26 @@ class RiskCalculator:
     ) -> list[str]:
         """Generate actionable recommendations based on risk factors."""
         recommendations = []
+
+        # Account freshness recommendations (prioritize these for new accounts)
+        if features.account_age_days < 7:
+            recommendations.append(
+                "New account (<7 days) - place 5-10 mug bets before +EV betting"
+            )
+        elif features.account_age_days < 14:
+            recommendations.append(
+                "Account warming up - mix in recreational bets (parlays, favorites)"
+            )
+
+        # EV quality recommendations
+        if features.ev_quality_ratio > 0.7:
+            recommendations.append(
+                "High +EV ratio detected - place some -EV bets to look recreational"
+            )
+        elif features.ev_quality_ratio > 0.5:
+            recommendations.append(
+                "Moderate +EV ratio - consider mixing in more mug bets (1 in 5)"
+            )
 
         if features.stake_entropy > 0.6:
             recommendations.append(

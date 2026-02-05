@@ -2,27 +2,21 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import type { Opportunity, BankrollExposure } from '@/types';
+import type { Opportunity } from '@/types';
 
 export function ValuePage() {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // Betting workflow state
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
-  const [stakeInput, setStakeInput] = useState('');
   const [isPlacing, setIsPlacing] = useState(false);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [response, exposureData] = await Promise.all([
-        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 5),  // Min 5% edge
-        api.getBankrollExposure(),
-      ]);
+      const response = await api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 5);  // Min 5% edge
       setOpportunities(response.opportunities);
-      setExposure(exposureData);
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {
@@ -47,14 +41,11 @@ export function ValuePage() {
 
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
-    setStakeInput('');
   };
 
-  const handlePlaceBet = async () => {
-    if (selectedOpp === null || !stakeInput) return;
-    const opp = opportunities[selectedOpp];
-    const stake = parseFloat(stakeInput);
-    if (isNaN(stake) || stake <= 0) return;
+  const handlePlaceBet = async (opp: Opportunity) => {
+    const stake = opp.final_stake;
+    if (!stake || stake <= 0) return;
 
     setIsPlacing(true);
     try {
@@ -69,7 +60,6 @@ export function ValuePage() {
       });
 
       setSelectedOpp(null);
-      setStakeInput('');
       fetchData();
     } catch (err) {
       console.error('Failed to place bet:', err);
@@ -78,11 +68,14 @@ export function ValuePage() {
     }
   };
 
-  const getProviderBalance = (providerId: string) => {
-    const provider = exposure?.providers.find(
-      p => p.provider_id.toLowerCase() === providerId.toLowerCase()
-    );
-    return provider?.available || 0;
+  const getRiskLevelColor = (level?: string) => {
+    switch (level) {
+      case 'low': return 'bg-success';
+      case 'medium': return 'bg-warning';
+      case 'high': return 'bg-orange-500';
+      case 'critical': return 'bg-error';
+      default: return 'bg-muted';
+    }
   };
 
   return (
@@ -113,24 +106,35 @@ export function ValuePage() {
           <div className="space-y-2">
             {opportunities.map((opp, idx) => {
               const isSelected = selectedOpp === idx;
-              const providerBalance = getProviderBalance(opp.provider1);
-              const stake = parseFloat(stakeInput) || 0;
-              const potentialReturn = stake * opp.odds1;
-              const potentialProfit = potentialReturn - stake;
+              const hasStake = opp.final_stake && opp.final_stake > 0;
+              const isSkipped = !!opp.skip_reason;
+              const potentialReturn = hasStake ? opp.final_stake! * opp.odds1 : 0;
+              const potentialProfit = potentialReturn - (opp.final_stake || 0);
 
               return (
                 <div
                   key={opp.id}
                   className={`border rounded-lg p-4 cursor-pointer transition-colors ${
-                    isSelected ? 'border-tabValue bg-tabValue/5' : 'border-border hover:border-muted2'
+                    isSkipped
+                      ? 'border-border/50 bg-panel/50 opacity-60'
+                      : isSelected
+                        ? 'border-tabValue bg-tabValue/5'
+                        : 'border-border hover:border-muted2'
                   }`}
-                  onClick={() => handleSelectOpp(idx)}
+                  onClick={() => !isSkipped && handleSelectOpp(idx)}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-4">
                         <div>
-                          <div className="text-text font-medium">{opp.home_team} vs {opp.away_team}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-text font-medium">{opp.home_team} vs {opp.away_team}</div>
+                            {isSkipped && (
+                              <span className="text-xs px-1.5 py-0.5 bg-muted/20 text-muted rounded">
+                                {opp.skip_reason}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-muted text-xs mt-1">{opp.sport} | {formatTime(opp.starts_at)}</div>
                         </div>
                       </div>
@@ -149,56 +153,48 @@ export function ValuePage() {
                         <div className="text-text">{opp.odds1.toFixed(2)}</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-muted text-xs">Fair</div>
-                        <div className="text-muted">{opp.fair_odds?.toFixed(2) || '-'}</div>
+                        <div className="text-muted text-xs">Stake</div>
+                        <div className="text-text font-medium">
+                          {hasStake ? `${opp.final_stake!.toFixed(0)} kr` : '-'}
+                        </div>
                       </div>
                       <div className="text-center">
                         <div className="text-muted text-xs">Edge</div>
                         <div className="text-tabValue font-medium">+{opp.edge_pct?.toFixed(1)}%</div>
                       </div>
+                      {/* Risk indicator */}
+                      <div className="flex items-center gap-1">
+                        <span className={`w-2 h-2 rounded-full ${getRiskLevelColor(opp.risk_level)}`} />
+                      </div>
                     </div>
                   </div>
 
-                  {/* Stake Input - shown when selected */}
-                  {isSelected && (
+                  {/* Expanded view when selected */}
+                  {isSelected && !isSkipped && (
                     <div className="mt-4 pt-4 border-t border-border" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-3">
-                        <span className="text-muted text-sm">Stake:</span>
-                        <input
-                          type="number"
-                          value={stakeInput}
-                          onChange={(e) => setStakeInput(e.target.value)}
-                          placeholder="Enter amount"
-                          className="w-32 px-3 py-2 bg-panel2 border border-border rounded text-text text-sm"
-                        />
-                        <div className="flex gap-2">
-                          {[0.01, 0.02, 0.05].map(pct => (
-                            <button
-                              key={pct}
-                              onClick={() => setStakeInput((providerBalance * pct).toFixed(0))}
-                              className="px-2 py-1 text-xs bg-panel2 border border-border rounded text-muted hover:text-text"
-                            >
-                              {pct * 100}%
-                            </button>
-                          ))}
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted">
+                          <span>Fair odds: {opp.fair_odds?.toFixed(2) || '-'}</span>
+                          <span className="mx-3">|</span>
+                          <span>Risk: {opp.risk_level || 'unknown'}</span>
+                          {hasStake && (
+                            <>
+                              <span className="mx-3">|</span>
+                              <span>
+                                Potential: {potentialReturn.toFixed(0)} kr
+                                <span className="text-tabValue ml-1">(+{potentialProfit.toFixed(0)} kr)</span>
+                              </span>
+                            </>
+                          )}
                         </div>
-                        <span className="text-muted text-xs">
-                          Balance: {providerBalance.toFixed(0)} kr
-                        </span>
                         <button
-                          onClick={handlePlaceBet}
-                          disabled={!stakeInput || isPlacing}
-                          className="px-4 py-2 bg-tabValue text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 ml-auto"
+                          onClick={() => handlePlaceBet(opp)}
+                          disabled={!hasStake || isPlacing}
+                          className="px-4 py-2 bg-tabValue text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
                         >
-                          {isPlacing ? 'Placing...' : 'Place Bet'}
+                          {isPlacing ? 'Placing...' : `Place ${hasStake ? opp.final_stake!.toFixed(0) : 0} kr`}
                         </button>
                       </div>
-                      {stake > 0 && (
-                        <div className="mt-2 text-sm text-muted">
-                          Potential return: {potentialReturn.toFixed(2)} kr
-                          <span className="text-tabValue ml-2">(+{potentialProfit.toFixed(2)} kr profit)</span>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

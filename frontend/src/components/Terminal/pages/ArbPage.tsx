@@ -2,27 +2,21 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import type { FullArbitrage, BankrollExposure } from '@/types';
+import type { FullArbitrage } from '@/types';
 
 export function ArbPage() {
   const [arbs, setArbs] = useState<FullArbitrage[]>([]);
-  const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // Betting workflow state
   const [selectedArb, setSelectedArb] = useState<number | null>(null);
-  const [stakeInput, setStakeInput] = useState('');
   const [isPlacing, setIsPlacing] = useState(false);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [arbResponse, exposureData] = await Promise.all([
-        api.scanArbitrage(2.0, 100),  // Min 2% profit, max 100 results
-        api.getBankrollExposure(),
-      ]);
+      const arbResponse = await api.scanArbitrage(2.0, 100);  // Min 2% profit, max 100 results
       setArbs(arbResponse.opportunities);
-      setExposure(exposureData);
     } catch (err) {
       console.error('Failed to fetch data:', err);
     } finally {
@@ -47,29 +41,14 @@ export function ArbPage() {
 
   const handleSelectArb = (idx: number) => {
     setSelectedArb(selectedArb === idx ? null : idx);
-    setStakeInput('');
   };
 
-  const calculateLegStakes = (arb: FullArbitrage, totalStake: number) => {
-    const totalImpliedProb = arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0);
-    return arb.legs.map(leg => ({
-      ...leg,
-      stake: (totalStake * (1 / leg.odds)) / totalImpliedProb,
-      return: (totalStake * (1 / leg.odds)) / totalImpliedProb * leg.odds,
-    }));
-  };
-
-  const handlePlaceBets = async () => {
-    if (selectedArb === null || !stakeInput) return;
-    const arb = arbs[selectedArb];
-    const totalStake = parseFloat(stakeInput);
-    if (isNaN(totalStake) || totalStake <= 0) return;
+  const handlePlaceBets = async (arb: FullArbitrage) => {
+    if (!arb.legs || arb.legs.length === 0) return;
 
     setIsPlacing(true);
     try {
-      const legStakes = calculateLegStakes(arb, totalStake);
-
-      for (const leg of legStakes) {
+      for (const leg of arb.legs) {
         await api.createBet({
           event_id: arb.event_id,
           provider_id: leg.provider,
@@ -82,7 +61,6 @@ export function ArbPage() {
       }
 
       setSelectedArb(null);
-      setStakeInput('');
       fetchData();
     } catch (err) {
       console.error('Failed to place bets:', err);
@@ -90,8 +68,6 @@ export function ArbPage() {
       setIsPlacing(false);
     }
   };
-
-  const totalBankroll = exposure?.total_available || 0;
 
   // Filter out suspect arbs (>7% profit likely data errors)
   const filteredArbs = arbs.filter(a => a.quality !== 'suspect');
@@ -124,8 +100,9 @@ export function ArbPage() {
           <div className="space-y-4">
             {filteredArbs.map((arb, idx) => {
               const isSelected = selectedArb === idx;
-              const stake = parseFloat(stakeInput) || 0;
-              const legStakes = isSelected && stake > 0 ? calculateLegStakes(arb, stake) : null;
+              const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
+              const guaranteedReturn = arb.legs[0]?.return || 0;
+              const profit = guaranteedReturn - totalStake;
 
               return (
                 <div
@@ -163,61 +140,38 @@ export function ArbPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(legStakes || arb.legs).map((leg, legIdx) => (
+                      {arb.legs.map((leg, legIdx) => (
                         <tr key={legIdx} className="border-t border-border/50">
                           <td className="py-2 text-text capitalize">{leg.outcome}</td>
                           <td className="py-2 text-muted">{formatProviderName(leg.provider)}</td>
                           <td className="py-2 text-right text-text">{leg.odds.toFixed(2)}</td>
-                          <td className="py-2 text-right text-muted">
-                            {legStakes ? `${leg.stake.toFixed(2)} kr` : '-'}
-                          </td>
-                          <td className="py-2 text-right text-success">
-                            {legStakes ? `${leg.return.toFixed(2)} kr` : '-'}
-                          </td>
+                          <td className="py-2 text-right text-muted">{leg.stake.toFixed(0)} kr</td>
+                          <td className="py-2 text-right text-success">{leg.return.toFixed(0)} kr</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
 
-                  {/* Stake Input - shown when selected */}
+                  {/* Summary and place button - shown when selected */}
                   {isSelected && (
                     <div className="mt-4 pt-4 border-t border-border" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-3">
-                        <span className="text-muted text-sm">Total Stake:</span>
-                        <input
-                          type="number"
-                          value={stakeInput}
-                          onChange={(e) => setStakeInput(e.target.value)}
-                          placeholder="Enter amount"
-                          className="w-32 px-3 py-2 bg-panel2 border border-border rounded text-text text-sm"
-                        />
-                        <div className="flex gap-2">
-                          {[0.01, 0.02, 0.05].map(pct => (
-                            <button
-                              key={pct}
-                              onClick={() => setStakeInput((totalBankroll * pct).toFixed(0))}
-                              className="px-2 py-1 text-xs bg-panel2 border border-border rounded text-muted hover:text-text"
-                            >
-                              {pct * 100}%
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          onClick={handlePlaceBets}
-                          disabled={!stakeInput || isPlacing}
-                          className="px-4 py-2 bg-tabArb text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 ml-auto"
-                        >
-                          {isPlacing ? 'Placing...' : 'Place Bets'}
-                        </button>
-                      </div>
-                      {stake > 0 && (
-                        <div className="mt-2 text-sm text-muted">
-                          Guaranteed return: ${(stake / arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0)).toFixed(2)}
-                          <span className="text-tabArb ml-2">
-                            (+${((stake / arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0)) - stake).toFixed(2)} profit)
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted">
+                          <span>Total: {totalStake.toFixed(0)} kr</span>
+                          <span className="mx-3">|</span>
+                          <span>
+                            Return: {guaranteedReturn.toFixed(0)} kr
+                            <span className="text-tabArb ml-1">(+{profit.toFixed(0)} kr)</span>
                           </span>
                         </div>
-                      )}
+                        <button
+                          onClick={() => handlePlaceBets(arb)}
+                          disabled={isPlacing || totalStake <= 0}
+                          className="px-4 py-2 bg-tabArb text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                        >
+                          {isPlacing ? 'Placing...' : `Place ${arb.legs.length} Bets`}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

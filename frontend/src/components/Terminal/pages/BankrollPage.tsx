@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import type { BankrollExposure, Profile, Provider } from '@/types';
+import type { BankrollExposure, Provider } from '@/types';
 
 interface BankrollPageProps {
   providers: Provider[];
@@ -11,7 +11,6 @@ interface BankrollPageProps {
 
 export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState('');
@@ -23,12 +22,8 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [exposureData, profileData] = await Promise.all([
-        api.getBankrollExposure(),
-        api.getActiveProfile().catch(() => null),
-      ]);
+      const exposureData = await api.getBankrollExposure();
       setExposure(exposureData);
-      setProfile(profileData);
     } catch (err) {
       console.error('Failed to fetch bankroll data:', err);
     } finally {
@@ -126,7 +121,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       {/* Overview */}
       {exposure && (
         <Card title="Overview">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <div className="text-muted text-sm">Total Balance</div>
               <div className="text-text text-xl font-semibold">{exposure.total_balance.toFixed(0)} kr</div>
@@ -138,38 +133,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
             <div>
               <div className="text-muted text-sm">Pending</div>
               <div className="text-tabBets text-xl font-semibold">{exposure.total_pending.toFixed(0)} kr</div>
-            </div>
-            <div>
-              <div className="text-muted text-sm">Utilization</div>
-              <div className="text-text text-xl font-semibold">
-                {exposure.total_balance > 0
-                  ? ((exposure.total_pending / exposure.total_balance) * 100).toFixed(1)
-                  : 0}%
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Profile Settings */}
-      {profile && (
-        <Card title="Active Profile">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <div className="text-muted">Profile</div>
-              <div className="text-text font-medium">{profile.name}</div>
-            </div>
-            <div>
-              <div className="text-muted">Kelly Fraction</div>
-              <div className="text-text">{(profile.kelly_fraction * 100).toFixed(0)}%</div>
-            </div>
-            <div>
-              <div className="text-muted">Min Edge</div>
-              <div className="text-text">{profile.min_edge_pct}%</div>
-            </div>
-            <div>
-              <div className="text-muted">Max Stake</div>
-              <div className="text-text">{profile.max_stake_pct}%</div>
             </div>
           </div>
         </Card>
@@ -183,7 +146,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
               <thead>
                 <tr className="text-muted text-left text-xs">
                   <th className="pb-2 pr-4">Provider</th>
-                  <th className="pb-2 pr-4">Bonus</th>
                   <th className="pb-2 pr-4 text-right">Balance</th>
                   <th className="pb-2 pr-4 text-right">Pending</th>
                   <th className="pb-2 pr-4 text-right">Available</th>
@@ -203,45 +165,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                   return (
                     <tr key={provider.provider_id} className="border-t border-border">
                       <td className="py-3 pr-4 text-text">{formatProviderName(provider.provider_name)}</td>
-                      <td className="py-3 pr-4">
-                        {bonusInfo?.bonus && (
-                          <div className="flex flex-col gap-0.5">
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded ${
-                              bonusInfo.status === 'completed'
-                                ? 'bg-success/10 text-success'
-                                : bonusInfo.status === 'in_progress'
-                                ? 'bg-tabBonus/20 text-tabBonus'
-                                : 'bg-tabBonus/10 text-tabBonus'
-                            }`}>
-                              {bonusInfo.status === 'completed' ? (
-                                'Done'
-                              ) : bonusInfo.status === 'in_progress' ? (
-                                'Active'
-                              ) : bonusInfo.bonus.type === 'doubledeposit' ? (
-                                <>
-                                  2x Deposit
-                                  <span className="text-muted2">
-                                    {bonusInfo.bonus.amount} kr
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  Free Bet
-                                  <span className="text-muted2">
-                                    {bonusInfo.bonus.amount} kr
-                                  </span>
-                                </>
-                              )}
-                            </span>
-                            {/* Hint for freebet - used on bet placement, not deposit */}
-                            {bonusInfo.bonus.type === 'freebet' && bonusInfo.hasUnclaimedBonus && (
-                              <span className="text-muted2 text-[10px] pl-2">
-                                Use on next bet
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </td>
                       <td className="py-3 pr-4 text-right text-text">{provider.total_balance.toFixed(0)} kr</td>
                       <td className="py-3 pr-4 text-right text-muted">
                         {provider.pending_exposure.toFixed(0)} kr

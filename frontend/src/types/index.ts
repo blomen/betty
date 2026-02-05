@@ -42,6 +42,12 @@ export interface Opportunity {
   home_team?: string;
   away_team?: string;
   starts_at?: string;
+  // Stake recommendations (for value bets)
+  suggested_stake?: number | null;
+  risk_adjusted_stake?: number | null;
+  final_stake?: number | null;
+  risk_level?: 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+  skip_reason?: string | null;
 }
 
 // Events
@@ -448,6 +454,8 @@ export interface FullArbitrage {
   // Quality classification: "verified" (normal) or "suspect" (needs validation)
   // Suspect arbs have unusually high profit (>7%) indicating possible data issues
   quality?: 'verified' | 'suspect';
+  // Pre-calculated total stake based on profile settings
+  total_stake?: number;
 }
 
 export interface ArbitrageScanResponse {

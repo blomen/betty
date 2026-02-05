@@ -2,6 +2,7 @@
  * useDropdownWorkflow - Manages extract/arb/value workflow state
  *
  * Handles multi-step workflows for extraction and opportunity selection.
+ * Stakes are now auto-calculated by the backend using risk management settings.
  */
 import { useState, useCallback } from 'react';
 import type {
@@ -26,7 +27,7 @@ interface UseDropdownWorkflowProps {
 
 export function useDropdownWorkflow({
   providers,
-  exposure,
+  // exposure is available for future use if needed
   sendMessage,
   onRefresh,
   onRunExtraction,
@@ -37,11 +38,6 @@ export function useDropdownWorkflow({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [lastOpportunities, setLastOpportunities] = useState<OpportunityWithEvent[]>([]);
   const [lastBets, setLastBets] = useState<Bet[]>([]);
-  const [manualStakeInput, setManualStakeInput] = useState('');
-  // Calculated stakes for arb confirmation
-  const [calculatedLegStakes, setCalculatedLegStakes] = useState<{ provider: string; outcome: string; odds: number; stake: number }[]>([]);
-  // Selected stake for value bet confirmation
-  const [selectedValueStake, setSelectedValueStake] = useState<number>(0);
 
   // Cancel workflow
   const cancel = useCallback(() => {
@@ -49,9 +45,6 @@ export function useDropdownWorkflow({
     setOptions([]);
     setSelectedProviderIds(new Set());
     setSelectedIndex(0);
-    setManualStakeInput('');
-    setCalculatedLegStakes([]);
-    setSelectedValueStake(0);
   }, []);
 
   // Back button option (added to all option arrays)
@@ -65,71 +58,11 @@ export function useDropdownWorkflow({
   // Helper to add back button to options
   const withBack = (opts: DropdownOption[]): DropdownOption[] => [...opts, backOption];
 
-  // Show arb confirmation with calculated stakes
-  const showArbConfirmation = useCallback((totalStake: number) => {
-    const oppIndex = (workflow.selectedOpp || 1) - 1;
-    const arb = workflow.fullArbs?.[oppIndex];
-    if (!arb) return;
-
-    // Calculate stake distribution for each leg
-    const totalImpliedProb = arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0);
-    const eventName = arb.home_team && arb.away_team
-      ? `${arb.home_team} vs ${arb.away_team}`
-      : 'Unknown';
-
-    const legStakes = arb.legs.map((l) => {
-      const legStake = (totalStake * (1 / l.odds)) / totalImpliedProb;
-      return {
-        provider: l.provider,
-        outcome: l.outcome,
-        odds: l.odds,
-        stake: legStake,
-      };
-    });
-
-    setCalculatedLegStakes(legStakes);
-
-    // Group legs by provider for cleaner display
-    const legsByProvider = new Map<string, typeof legStakes>();
-    for (const leg of legStakes) {
-      const existing = legsByProvider.get(leg.provider) || [];
-      existing.push(leg);
-      legsByProvider.set(leg.provider, existing);
-    }
-
-    const guaranteedReturn = totalStake / totalImpliedProb;
-    const profit = guaranteedReturn - totalStake;
-
-    // Build display grouped by provider
-    const providerLines: string[] = [];
-    legsByProvider.forEach((legs, provider) => {
-      const providerTotal = legs.reduce((sum, l) => sum + l.stake, 0);
-      const outcomes = legs.map(l => `${l.outcome} @ ${l.odds.toFixed(2)} → $${l.stake.toFixed(2)}`).join(', ');
-      providerLines.push(`**${provider}**: $${providerTotal.toFixed(2)}\n   ${outcomes}`);
-    });
-
-    sendMessage(
-      `**ARBITRAGE BET** ${eventName}\n\n` +
-      providerLines.join('\n\n') +
-      `\n\n**Total**: $${totalStake.toFixed(2)} → Return: $${guaranteedReturn.toFixed(2)} (+$${profit.toFixed(2)})\n\n` +
-      `Place bets manually on each site, then confirm to record.`
-    );
-
-    // Show confirm options
-    const confirmOpts: DropdownOption[] = [
-      { id: 'confirm', label: '[CONFIRM]', sublabel: 'Record bets', type: 'action' as const },
-    ];
-
-    setOptions(withBack(confirmOpts));
-    setSelectedIndex(0);
-    setWorkflow((prev) => ({ ...prev, step: 'confirm' }));
-  }, [workflow, sendMessage]);
-
-  // Place all arb bets (record them in database)
+  // Place all arb bets (record them in database) - uses pre-calculated stakes from API
   const placeArbBets = useCallback(async () => {
     const oppIndex = (workflow.selectedOpp || 1) - 1;
     const arb = workflow.fullArbs?.[oppIndex];
-    if (!arb || calculatedLegStakes.length === 0) return;
+    if (!arb || !arb.legs || arb.legs.length === 0) return;
 
     const eventName = arb.home_team && arb.away_team
       ? `${arb.home_team} vs ${arb.away_team}`
@@ -138,14 +71,14 @@ export function useDropdownWorkflow({
     try {
       const betIds: number[] = [];
 
-      for (const leg of calculatedLegStakes) {
+      for (const leg of arb.legs) {
         const result = await api.createBet({
           event_id: arb.event_id,
           provider_id: leg.provider,
           market: arb.market,
           outcome: leg.outcome,
           odds: leg.odds,
-          stake: leg.stake,
+          stake: leg.stake,  // Pre-calculated by backend
           is_bonus: false,
         });
         betIds.push(result.bet_id);
@@ -163,56 +96,21 @@ export function useDropdownWorkflow({
       sendMessage(`Error recording bets: ${err instanceof Error ? err.message : 'Unknown'}`);
       cancel();
     }
-  }, [workflow, calculatedLegStakes, sendMessage, onRefresh, cancel]);
+  }, [workflow, sendMessage, onRefresh, cancel]);
 
-  // Show value bet confirmation
-  const showValueConfirmation = useCallback((stake: number) => {
+  // Place value bet (record in database) - uses pre-calculated stake from API
+  const placeValueBet = useCallback(async () => {
     const oppIndex = (workflow.selectedOpp || 1) - 1;
     const opp = workflow.opportunities?.[oppIndex];
     if (!opp) return;
 
-    setSelectedValueStake(stake);
-
-    const homeTeam = opp.home_team || opp.event?.home_team;
-    const awayTeam = opp.away_team || opp.event?.away_team;
-    const betOn = outcomeToTeam(opp.outcome1, homeTeam, awayTeam);
-
-    const potentialReturn = stake * opp.odds1;
-    const potentialProfit = potentialReturn - stake;
-
-    // Table row format
-    const bet = betOn.length > 18 ? betOn.slice(0, 17) + '…' : betOn.padEnd(18);
-    const provider = opp.provider1.padEnd(10);
-    const odds = opp.odds1.toFixed(2).padStart(5);
-    const stakeStr = `$${stake.toFixed(0)}`.padStart(6);
-    const ret = `+$${potentialProfit.toFixed(0)}`.padStart(6);
-    const edge = `+${opp.edge_pct?.toFixed(1)}%`.padStart(6);
-
-    sendMessage(
-      `**VALUE BET** Confirm placement:\n` +
-      '```\n' +
-      `Bet on             | Provider   | Odds  | Stake  | Profit | Edge\n` +
-      `-------------------|------------|-------|--------|--------|------\n` +
-      `${bet} | ${provider} | ${odds} | ${stakeStr} | ${ret} | ${edge}\n` +
-      '```\n' +
-      `Place bet manually, then confirm to record.`
-    );
-
-    // Show confirm options
-    const confirmOpts: DropdownOption[] = [
-      { id: 'confirm', label: '[CONFIRM]', sublabel: 'Record bet', type: 'action' as const },
-    ];
-
-    setOptions(withBack(confirmOpts));
-    setSelectedIndex(0);
-    setWorkflow((prev) => ({ ...prev, step: 'confirm' }));
-  }, [workflow, sendMessage]);
-
-  // Place value bet (record in database)
-  const placeValueBet = useCallback(async () => {
-    const oppIndex = (workflow.selectedOpp || 1) - 1;
-    const opp = workflow.opportunities?.[oppIndex];
-    if (!opp || selectedValueStake <= 0) return;
+    // Use final_stake from API response
+    const stake = opp.final_stake;
+    if (!stake || stake <= 0) {
+      sendMessage('No stake calculated for this opportunity. Check profile settings.');
+      cancel();
+      return;
+    }
 
     const homeTeam = opp.home_team || opp.event?.home_team;
     const awayTeam = opp.away_team || opp.event?.away_team;
@@ -225,17 +123,17 @@ export function useDropdownWorkflow({
         market: opp.market,
         outcome: opp.outcome1,
         odds: opp.odds1,
-        stake: selectedValueStake,
+        stake,
         is_bonus: false,
       });
 
-      const potentialReturn = selectedValueStake * opp.odds1;
-      const potentialProfit = potentialReturn - selectedValueStake;
+      const potentialReturn = stake * opp.odds1;
+      const potentialProfit = potentialReturn - stake;
 
       sendMessage(
         `**BET #${result.bet_id} RECORDED**\n` +
         '```\n' +
-        `${betOn} | ${opp.provider1} | ${opp.odds1.toFixed(2)} | $${selectedValueStake.toFixed(0)} | +$${potentialProfit.toFixed(0)}\n` +
+        `${betOn} | ${opp.provider1} | ${opp.odds1.toFixed(2)} | $${stake.toFixed(0)} | +$${potentialProfit.toFixed(0)}\n` +
         '```\n' +
         `Use \`/bets\` to settle when result is in.`
       );
@@ -246,24 +144,7 @@ export function useDropdownWorkflow({
       sendMessage(`Error recording bet: ${err instanceof Error ? err.message : 'Unknown'}`);
       cancel();
     }
-  }, [workflow, selectedValueStake, sendMessage, onRefresh, cancel]);
-
-  // Handle manual stake submission
-  const submitManualStake = useCallback((stakeStr: string) => {
-    const stake = parseFloat(stakeStr);
-    if (isNaN(stake) || stake <= 0) {
-      sendMessage('Invalid stake amount. Enter a positive number.');
-      return;
-    }
-
-    setManualStakeInput('');
-
-    if (workflow.type === 'arb' && workflow.step === 'manual-stake') {
-      showArbConfirmation(stake);
-    } else if (workflow.type === 'value' && workflow.step === 'manual-stake') {
-      showValueConfirmation(stake);
-    }
-  }, [workflow, sendMessage, showArbConfirmation, showValueConfirmation]);
+  }, [workflow, sendMessage, onRefresh, cancel]);
 
   // Start extract workflow
   const startExtract = useCallback(() => {
@@ -313,12 +194,15 @@ export function useDropdownWorkflow({
 
       sendMessage(formatArbitrageList(verifiedArbs));
 
-      const opts: DropdownOption[] = verifiedArbs.map((arb, idx) => ({
-        id: idx + 1,
-        label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
-        sublabel: `${arb.legs.length} legs`,
-        type: 'opportunity' as const,
-      }));
+      const opts: DropdownOption[] = verifiedArbs.map((arb, idx) => {
+        const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
+        return {
+          id: idx + 1,
+          label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
+          sublabel: `${arb.legs.length} legs | $${totalStake.toFixed(0)}`,
+          type: 'opportunity' as const,
+        };
+      });
 
       setOptions(withBack(opts));
       setSelectedIndex(0);
@@ -354,12 +238,17 @@ export function useDropdownWorkflow({
       setLastOpportunities(opportunitiesWithEvents);
       sendMessage(formatOpportunitiesList(opportunitiesWithEvents, result.count));
 
-      const opts: DropdownOption[] = opportunitiesWithEvents.map((opp, idx) => ({
-        id: idx + 1,
-        label: `[${idx + 1}] +${opp.edge_pct?.toFixed(1)}% ${opp.event?.home_team || 'Unknown'} vs ${opp.event?.away_team || ''}`,
-        sublabel: `${opp.provider1} @ ${opp.odds1.toFixed(2)}`,
-        type: 'opportunity' as const,
-      }));
+      const opts: DropdownOption[] = opportunitiesWithEvents
+        .filter(opp => !opp.skip_reason)  // Filter out skipped opportunities
+        .map((opp, idx) => {
+          const stake = opp.final_stake || 0;
+          return {
+            id: idx + 1,
+            label: `[${idx + 1}] +${opp.edge_pct?.toFixed(1)}% ${opp.event?.home_team || opp.home_team || 'Unknown'} vs ${opp.event?.away_team || opp.away_team || ''}`,
+            sublabel: `${opp.provider1} @ ${opp.odds1.toFixed(2)} | $${stake.toFixed(0)}`,
+            type: 'opportunity' as const,
+          };
+        });
 
       setOptions(withBack(opts));
       setSelectedIndex(0);
@@ -461,64 +350,36 @@ export function useDropdownWorkflow({
     // Handle back navigation
     if (option.id === 'back') {
       switch (workflow.step) {
-        case 'select-stake':
-        case 'manual-stake':
+        case 'confirm':
           // Go back to opportunity selection
           if (workflow.type === 'arb' && workflow.fullArbs) {
-            const opts: DropdownOption[] = workflow.fullArbs.map((arb, idx) => ({
-              id: idx + 1,
-              label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
-              sublabel: `${arb.legs.length} legs`,
-              type: 'opportunity' as const,
-            }));
+            const opts: DropdownOption[] = workflow.fullArbs.map((arb, idx) => {
+              const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
+              return {
+                id: idx + 1,
+                label: `[${idx + 1}] ${arb.profit_pct.toFixed(1)}% ${arb.home_team || 'Unknown'} vs ${arb.away_team || ''}`,
+                sublabel: `${arb.legs.length} legs | $${totalStake.toFixed(0)}`,
+                type: 'opportunity' as const,
+              };
+            });
             setOptions(withBack(opts));
             setSelectedIndex(0);
             setWorkflow((prev) => ({ ...prev, step: 'select-opportunity', selectedOpp: undefined }));
           } else if (workflow.type === 'value' && workflow.opportunities) {
-            const opts: DropdownOption[] = workflow.opportunities.map((opp, idx) => ({
-              id: idx + 1,
-              label: `[${idx + 1}] +${opp.edge_pct?.toFixed(1)}% ${opp.event?.home_team || 'Unknown'} vs ${opp.event?.away_team || ''}`,
-              sublabel: `${opp.provider1} @ ${opp.odds1.toFixed(2)}`,
-              type: 'opportunity' as const,
-            }));
+            const opts: DropdownOption[] = workflow.opportunities
+              .filter(opp => !opp.skip_reason)
+              .map((opp, idx) => {
+                const stake = opp.final_stake || 0;
+                return {
+                  id: idx + 1,
+                  label: `[${idx + 1}] +${opp.edge_pct?.toFixed(1)}% ${opp.event?.home_team || opp.home_team || 'Unknown'} vs ${opp.event?.away_team || opp.away_team || ''}`,
+                  sublabel: `${opp.provider1} @ ${opp.odds1.toFixed(2)} | $${stake.toFixed(0)}`,
+                  type: 'opportunity' as const,
+                };
+              });
             setOptions(withBack(opts));
             setSelectedIndex(0);
             setWorkflow((prev) => ({ ...prev, step: 'select-opportunity', selectedOpp: undefined }));
-          }
-          return;
-        case 'confirm':
-          // Go back to stake selection - show stake options again
-          if (workflow.type === 'arb') {
-            const totalBankroll = exposure.total_available || 1000;
-            const stakeOpts: DropdownOption[] = [
-              { id: totalBankroll * 0.05, label: `$${(totalBankroll * 0.05).toFixed(0)}`, sublabel: '5% bankroll', type: 'stake' as const },
-              { id: totalBankroll * 0.02, label: `$${(totalBankroll * 0.02).toFixed(0)}`, sublabel: '2% bankroll', type: 'stake' as const },
-              { id: totalBankroll * 0.01, label: `$${(totalBankroll * 0.01).toFixed(0)}`, sublabel: '1% bankroll', type: 'stake' as const },
-              { id: 100, label: '$100', sublabel: 'fixed', type: 'stake' as const },
-              { id: 50, label: '$50', sublabel: 'fixed', type: 'stake' as const },
-              { id: 'manual', label: '[manual]', sublabel: 'enter amount', type: 'action' as const },
-            ];
-            setOptions(withBack(stakeOpts));
-            setSelectedIndex(0);
-            setWorkflow((prev) => ({ ...prev, step: 'select-stake' }));
-          } else if (workflow.type === 'value') {
-            const oppIndex = (workflow.selectedOpp || 1) - 1;
-            const opp = workflow.opportunities?.[oppIndex];
-            const providerExp = exposure.providers.find(
-              (p) => p.provider_id.toLowerCase() === opp?.provider1.toLowerCase()
-            );
-            const available = providerExp?.available || 100;
-            const stakeOpts: DropdownOption[] = [
-              { id: available * 0.05, label: `$${(available * 0.05).toFixed(0)}`, sublabel: '5% balance', type: 'stake' as const },
-              { id: available * 0.02, label: `$${(available * 0.02).toFixed(0)}`, sublabel: '2% balance', type: 'stake' as const },
-              { id: available * 0.01, label: `$${(available * 0.01).toFixed(0)}`, sublabel: '1% balance', type: 'stake' as const },
-              { id: 50, label: '$50', sublabel: 'fixed', type: 'stake' as const },
-              { id: 25, label: '$25', sublabel: 'fixed', type: 'stake' as const },
-              { id: 'manual', label: '[manual]', sublabel: 'enter amount', type: 'action' as const },
-            ];
-            setOptions(withBack(stakeOpts));
-            setSelectedIndex(0);
-            setWorkflow((prev) => ({ ...prev, step: 'select-stake' }));
           }
           return;
         case 'select-event-outcome':
@@ -584,60 +445,45 @@ export function useDropdownWorkflow({
             ? `${arb.home_team} vs ${arb.away_team}`
             : 'Unknown';
 
+          // Use pre-calculated stakes from API
+          const totalStake = arb.total_stake || arb.legs.reduce((sum, l) => sum + l.stake, 0);
+          const guaranteedReturn = arb.legs[0]?.return || (totalStake / arb.legs.reduce((sum, l) => sum + (1 / l.odds), 0));
+          const profit = guaranteedReturn - totalStake;
+
           // Table row format for legs with team names
           const legRows = arb.legs
             .map((l) => {
               const team = outcomeToTeam(l.outcome, arb.home_team || undefined, arb.away_team || undefined);
               const teamStr = team.length > 14 ? team.slice(0, 13) + '…' : team.padEnd(14);
-              return `${teamStr} | ${l.provider.padEnd(10)} | ${l.odds.toFixed(2)}`;
+              return `${teamStr} | ${l.provider.padEnd(10)} | ${l.odds.toFixed(2)} | $${l.stake.toFixed(0)}`;
             })
             .join('\n');
 
           sendMessage(
             `**#${option.id}** ${eventName} (+${arb.profit_pct.toFixed(2)}%)\n` +
             '```\n' +
-            `Bet on         | Provider   | Odds\n` +
-            `---------------|------------|------\n` +
+            `Bet on         | Provider   | Odds  | Stake\n` +
+            `---------------|------------|-------|------\n` +
             `${legRows}\n` +
             '```\n' +
-            `Select stake to see bet distribution.`
+            `**Total**: $${totalStake.toFixed(0)} → Return: $${guaranteedReturn.toFixed(0)} (+$${profit.toFixed(0)})\n\n` +
+            `Place bets manually on each site, then confirm to record.`
           );
 
-          // Calculate total available across all leg providers
-          const totalBankroll = exposure.total_available || 1000;
-
-          const stakeOpts: DropdownOption[] = [
-            { id: totalBankroll * 0.05, label: `$${(totalBankroll * 0.05).toFixed(0)}`, sublabel: '5% bankroll', type: 'stake' as const },
-            { id: totalBankroll * 0.02, label: `$${(totalBankroll * 0.02).toFixed(0)}`, sublabel: '2% bankroll', type: 'stake' as const },
-            { id: totalBankroll * 0.01, label: `$${(totalBankroll * 0.01).toFixed(0)}`, sublabel: '1% bankroll', type: 'stake' as const },
-            { id: 100, label: '$100', sublabel: 'fixed', type: 'stake' as const },
-            { id: 50, label: '$50', sublabel: 'fixed', type: 'stake' as const },
-            { id: 'manual', label: '[manual]', sublabel: 'enter amount', type: 'action' as const },
+          // Show confirm options directly (no stake selection needed)
+          const confirmOpts: DropdownOption[] = [
+            { id: 'confirm', label: '[CONFIRM]', sublabel: 'Record bets', type: 'action' as const },
           ];
 
-          setOptions(withBack(stakeOpts));
+          setOptions(withBack(confirmOpts));
           setSelectedIndex(0);
           setWorkflow((prev) => ({
             ...prev,
-            step: 'select-stake',
+            step: 'confirm',
             selectedOpp: option.id as number,
           }));
-        } else if (workflow.step === 'select-stake') {
-          if (option.id === 'manual') {
-            // Switch to manual input mode
-            setWorkflow((prev) => ({ ...prev, step: 'manual-stake' }));
-            setOptions(withBack([]));
-            return;
-          }
-
-          // Move to confirm step with calculated stakes
-          const totalStake = option.id as number;
-          showArbConfirmation(totalStake);
-        } else if (workflow.step === 'manual-stake') {
-          // This is handled by submitManualStake
         } else if (workflow.step === 'confirm') {
           if (option.id === 'confirm') {
-            // Place all bets
             await placeArbBets();
           }
         }
@@ -653,50 +499,33 @@ export function useDropdownWorkflow({
           const homeTeam = opp.home_team || opp.event?.home_team;
           const awayTeam = opp.away_team || opp.event?.away_team;
           const betOn = outcomeToTeam(opp.outcome1, homeTeam, awayTeam);
+          const stake = opp.final_stake || 0;
+          const potentialReturn = stake * opp.odds1;
+          const potentialProfit = potentialReturn - stake;
 
           sendMessage(
             `**#${option.id}** +${opp.edge_pct?.toFixed(1)}% edge\n` +
             '```\n' +
             `Bet on: ${betOn} | ${opp.provider1} @ ${opp.odds1.toFixed(2)}\n` +
-            '```'
+            `Stake: $${stake.toFixed(0)} | Return: $${potentialReturn.toFixed(0)} (+$${potentialProfit.toFixed(0)})\n` +
+            `Risk: ${opp.risk_level || 'unknown'}\n` +
+            '```\n' +
+            `Place bet manually, then confirm to record.`
           );
 
-          // Build stake options based on provider balance
-          const providerExp = exposure.providers.find(
-            (p) => p.provider_id.toLowerCase() === opp.provider1.toLowerCase()
-          );
-          const available = providerExp?.available || 100;
-
-          const stakeOpts: DropdownOption[] = [
-            { id: available * 0.05, label: `$${(available * 0.05).toFixed(0)}`, sublabel: '5% balance', type: 'stake' as const },
-            { id: available * 0.02, label: `$${(available * 0.02).toFixed(0)}`, sublabel: '2% balance', type: 'stake' as const },
-            { id: available * 0.01, label: `$${(available * 0.01).toFixed(0)}`, sublabel: '1% balance', type: 'stake' as const },
-            { id: 50, label: '$50', sublabel: 'fixed', type: 'stake' as const },
-            { id: 25, label: '$25', sublabel: 'fixed', type: 'stake' as const },
-            { id: 'manual', label: '[manual]', sublabel: 'enter amount', type: 'action' as const },
+          // Show confirm options directly (no stake selection needed)
+          const confirmOpts: DropdownOption[] = [
+            { id: 'confirm', label: '[CONFIRM]', sublabel: 'Record bet', type: 'action' as const },
           ];
 
-          setOptions(withBack(stakeOpts));
+          setOptions(withBack(confirmOpts));
           setSelectedIndex(0);
           setWorkflow((prev) => ({
             ...prev,
-            step: 'select-stake',
+            step: 'confirm',
             selectedOpp: option.id as number,
             selectedProvider: opp.provider1,
           }));
-        } else if (workflow.step === 'select-stake') {
-          if (option.id === 'manual') {
-            // Switch to manual input mode
-            setWorkflow((prev) => ({ ...prev, step: 'manual-stake' }));
-            setOptions(withBack([]));
-            return;
-          }
-
-          // Move to confirm step
-          const stake = option.id as number;
-          showValueConfirmation(stake);
-        } else if (workflow.step === 'manual-stake') {
-          // Handled by submitManualStake
         } else if (workflow.step === 'confirm') {
           if (option.id === 'confirm') {
             await placeValueBet();
@@ -812,7 +641,7 @@ export function useDropdownWorkflow({
         break;
       }
     }
-  }, [workflow, selectedProviderIds, exposure, sendMessage, onRefresh, onRunExtraction, cancel, showArbConfirmation, showValueConfirmation, placeArbBets, placeValueBet]);
+  }, [workflow, selectedProviderIds, sendMessage, onRefresh, onRunExtraction, cancel, placeArbBets, placeValueBet]);
 
   return {
     workflow,
@@ -828,10 +657,10 @@ export function useDropdownWorkflow({
     cancel,
     select,
     isActive: workflow.type !== 'idle',
-    // Manual stake input
-    manualStakeInput,
-    setManualStakeInput,
-    submitManualStake,
-    isManualStakeMode: workflow.step === 'manual-stake',
+    // Manual stake input - no longer needed but keep for backward compatibility
+    manualStakeInput: '',
+    setManualStakeInput: () => {},
+    submitManualStake: () => {},
+    isManualStakeMode: false,
   };
 }

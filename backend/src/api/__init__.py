@@ -32,6 +32,7 @@ from .routes import (
     chat_router,
     polymarket_router,
     risk_router,
+    mug_bets_router,
 )
 
 app = FastAPI(
@@ -147,6 +148,7 @@ app.include_router(monitoring_router)
 app.include_router(chat_router)
 app.include_router(polymarket_router)
 app.include_router(risk_router)
+app.include_router(mug_bets_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)

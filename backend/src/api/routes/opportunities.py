@@ -1,5 +1,6 @@
 """Opportunities API routes - with arbitrage scan."""
 
+import logging
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
@@ -9,9 +10,11 @@ import yaml
 from ...db.models import Event, Odds, Opportunity, Provider, Profile, ProfileProviderBonus
 from ...analysis import find_best_hedge
 from ...analysis.scanner import OpportunityScanner, MAX_ARB_PROFIT_PCT
-from ...bankroll.manager import kelly_stake
+from ...bankroll.manager import kelly_stake, RiskAwareBankrollManager
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
+
+logger = logging.getLogger(__name__)
 
 
 def load_provider_bonuses() -> dict[str, dict]:
@@ -43,7 +46,7 @@ async def list_opportunities(
     min_value: Optional[float] = None,
     db: Session = Depends(get_db)
 ):
-    """Get current arb/value/bonus opportunities with enhanced filtering."""
+    """Get current arb/value/bonus opportunities with enhanced filtering and stake recommendations."""
     query = db.query(Opportunity)
 
     if type:
@@ -83,12 +86,21 @@ async def list_opportunities(
     else:
         opps = query.order_by(Opportunity.edge_pct.desc().nullslast()).limit(50).all()
 
-    # Build response with event details
+    # Initialize risk-aware manager for stake calculations (value bets only)
+    risk_manager = None
+    if type == 'value' and opps:
+        try:
+            risk_manager = RiskAwareBankrollManager(db)
+        except Exception as e:
+            logger.warning(f"Could not initialize risk manager: {e}")
+
+    # Build response with event details and stake recommendations
     results = []
     for o in opps:
         # Get event for this opportunity (from joined query or separate lookup)
         event = db.query(Event).filter(Event.id == o.event_id).first()
-        results.append({
+
+        result = {
             "id": o.id,
             "type": o.type,
             "event_id": o.event_id,
@@ -109,7 +121,30 @@ async def list_opportunities(
             "home_team": event.home_team if event else None,
             "away_team": event.away_team if event else None,
             "starts_at": event.start_time.isoformat() if event and event.start_time else None,
-        })
+        }
+
+        # Add stake recommendations for value bets
+        if type == 'value' and risk_manager and o.odds1 and o.odds2:
+            try:
+                stake_rec = risk_manager.calculate_risk_aware_stake(
+                    odds=o.odds1,
+                    fair_odds=o.odds2,
+                    provider_id=o.provider1_id,
+                )
+                result["suggested_stake"] = round(stake_rec.base_stake, 2)
+                result["risk_adjusted_stake"] = round(stake_rec.risk_adjusted_stake, 2)
+                result["final_stake"] = round(stake_rec.final_stake, 2)
+                result["risk_level"] = stake_rec.risk_level
+                result["skip_reason"] = stake_rec.skip_reason
+            except Exception as e:
+                logger.debug(f"Stake calculation failed for opp {o.id}: {e}")
+                result["suggested_stake"] = None
+                result["risk_adjusted_stake"] = None
+                result["final_stake"] = None
+                result["risk_level"] = "unknown"
+                result["skip_reason"] = None
+
+        results.append(result)
 
     return {
         "opportunities": results,
@@ -194,18 +229,57 @@ async def scan_arbitrage_opportunities(
     db: Session = Depends(get_db)
 ):
     """
-    Scan for arbitrage opportunities with full leg details.
+    Scan for arbitrage opportunities with full leg details and stake recommendations.
 
     Returns complete 3-leg structure for 1x2 markets (or 2-leg for moneyline).
     Opportunities with quality="suspect" (profit >7%) should be verified before betting.
+    Includes total_stake calculated from profile's max_stake_pct.
     """
     scanner = OpportunityScanner(db)
     opportunities = scanner.scan_arbitrage(min_profit_pct=min_profit_pct)
+
+    # Get profile settings for stake calculation
+    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    if not profile:
+        profile = db.query(Profile).first()
+
+    # Get total bankroll
+    providers = db.query(Provider).filter(Provider.is_enabled == True).all()
+    total_bankroll = sum(p.balance for p in providers)
+
+    # Calculate total stake based on profile settings
+    max_stake_pct = profile.max_stake_pct if profile else 5.0
+    recommended_total_stake = total_bankroll * max_stake_pct / 100 if total_bankroll > 0 else 0
 
     results = []
     for arb in opportunities[:limit]:
         # Get event details
         event = db.query(Event).filter(Event.id == arb.event_id).first()
+
+        # Calculate actual stake distribution for this arb
+        total_implied_prob = sum(1 / s["odds"] for s in arb.stakes if s.get("odds", 0) > 0)
+        if total_implied_prob <= 0:
+            # Fallback to scanner's original stakes
+            total_implied_prob = sum(1 / o["odds"] for o in arb.outcomes if o.get("odds", 0) > 0)
+
+        # Recalculate leg stakes based on recommended total stake
+        legs = []
+        for s in arb.stakes:
+            odds = next((o["odds"] for o in arb.outcomes if o["outcome"] == s["outcome"]), s.get("odds", 0))
+            if odds > 0 and total_implied_prob > 0:
+                leg_stake = (recommended_total_stake * (1 / odds)) / total_implied_prob
+                leg_return = leg_stake * odds
+            else:
+                leg_stake = s["stake"]
+                leg_return = s["return"]
+
+            legs.append({
+                "outcome": s["outcome"],
+                "provider": s["provider"],
+                "odds": odds,
+                "stake": round(leg_stake, 2),
+                "return": round(leg_return, 2),
+            })
 
         results.append({
             "event_id": arb.event_id,
@@ -216,21 +290,15 @@ async def scan_arbitrage_opportunities(
             "away_team": event.away_team if event else None,
             "sport": event.sport if event else None,
             "start_time": event.start_time.isoformat() if event and event.start_time else None,
-            "legs": [
-                {
-                    "outcome": s["outcome"],
-                    "provider": s["provider"],
-                    "odds": next((o["odds"] for o in arb.outcomes if o["outcome"] == s["outcome"]), 0),
-                    "stake": s["stake"],
-                    "return": s["return"],
-                }
-                for s in arb.stakes
-            ],
+            "total_stake": round(recommended_total_stake, 2),
+            "legs": legs,
         })
 
     return {
         "opportunities": results,
         "count": len(opportunities),
+        "total_bankroll": round(total_bankroll, 2),
+        "max_stake_pct": max_stake_pct,
     }
 
 

@@ -145,8 +145,8 @@ class StakeNoiseInjector:
         # Apply noise
         noisy_stake = stake + noise_amount
 
-        # Adjust ending to be natural
-        noisy_stake = self._adjust_ending(noisy_stake)
+        # Snap to natural amount with adaptive granularity
+        noisy_stake = self._snap_to_natural(noisy_stake)
 
         # Enforce bounds
         if max_stake is not None:
@@ -184,37 +184,39 @@ class StakeNoiseInjector:
 
         return False
 
-    def _adjust_ending(self, stake: float) -> float:
+    def _snap_to_natural(self, stake: float) -> float:
         """
-        Adjust stake ending to look more natural.
+        Snap stake to natural amount that a human would actually type.
 
-        Avoids stakes ending in 0 or 5 (except for very small stakes).
+        Recreational bettors stake clean amounts (50, 100, 150, 175, 200),
+        not calculated amounts (63, 171, 173). This method snaps to the
+        nearest natural value - no artificial noise needed since Kelly
+        outputs vary naturally based on odds/bankroll.
+
+        Granularity scales with stake size:
+        - < 10: round to nearest integer
+        - < 100: nearest 10
+        - 100-500: closest value from natural stakes list
+        - 500+: nearest 50
         """
         if stake < 10:
-            # Small stakes don't need adjustment
-            return stake
+            return round(stake)
 
-        # Get the integer part and fractional part
-        int_part = int(stake)
-        frac_part = stake - int_part
+        if stake < 100:
+            # Small stakes: nearest 10
+            return round(stake / 10) * 10
 
-        # Check last digit
-        last_digit = int_part % 10
+        if stake <= 500:
+            # Medium stakes: pick closest natural amount
+            natural_stakes = [
+                100, 110, 120, 125, 130, 140, 150,
+                160, 170, 175, 180, 190, 200, 225,
+                250, 275, 300, 350, 400, 450, 500
+            ]
+            return min(natural_stakes, key=lambda x: abs(x - stake))
 
-        if last_digit in SUSPICIOUS_ENDINGS:
-            # Replace with a random natural ending
-            adjustment = random.choice(NATURAL_ENDINGS) - last_digit
-
-            # Randomly go up or down to the new ending
-            if random.random() < 0.5 and int_part + adjustment > 0:
-                int_part += adjustment
-            else:
-                # Go down instead
-                int_part -= (10 - adjustment) % 10
-                if int_part < 1:
-                    int_part = 1
-
-        return int_part + frac_part
+        # Large stakes: nearest 50
+        return round(stake / 50) * 50
 
     def _generate_reason(
         self,
