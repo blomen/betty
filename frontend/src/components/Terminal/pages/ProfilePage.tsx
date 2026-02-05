@@ -220,11 +220,12 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
           return (
             <div
               key={profile.id}
+              onClick={() => !isActive && handleActivate(profile.id)}
               className={`p-4 rounded-lg border ${
                 isActive
                   ? 'bg-tabProfiles/5 border-tabProfiles/30'
-                  : 'bg-panel border-border'
-              }`}
+                  : 'bg-panel border-border hover:border-tabProfiles/50 cursor-pointer'
+              } transition-colors`}
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
@@ -251,15 +252,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {!isActive && (
-                    <button
-                      onClick={() => handleActivate(profile.id)}
-                      className="px-2 py-1 text-xs text-tabProfiles hover:bg-tabProfiles/10 rounded transition-colors"
-                    >
-                      Activate
-                    </button>
-                  )}
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => startEditing(profile)}
                     className="px-2 py-1 text-xs text-muted hover:text-text hover:bg-panel2 rounded transition-colors"
