@@ -135,6 +135,9 @@ class Bet(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
+    # Profile association (for per-profile bet isolation)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=True)
+
     # What you bet on
     event_id = Column(String, ForeignKey("events.id"))
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
@@ -175,9 +178,17 @@ class Bet(Base):
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %
 
+    # EV tracking for mug betting analysis
+    ev_at_placement = Column(Float, nullable=True)    # EV score when bet was placed
+
+    # Mug betting fields
+    is_mug_bet = Column(Boolean, default=False)       # True if intentional -EV bet for account health
+    mug_bet_reason = Column(String, nullable=True)    # "warmup", "ratio_balance", "ongoing"
+
     # Relationships
     event = relationship("Event", back_populates="bets")
     provider = relationship("Provider", back_populates="bets")
+    profile = relationship("Profile", back_populates="bets")
 
     @property
     def profit(self) -> float:
@@ -234,6 +245,8 @@ class Profile(Base):
 
     # Relationships
     bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
+    provider_balances = relationship("ProfileProviderBalance", back_populates="profile", cascade="all, delete-orphan")
+    bets = relationship("Bet", back_populates="profile")
 
 
 class ProfileProviderBonus(Base):
@@ -263,6 +276,32 @@ class ProfileProviderBonus(Base):
 
     # Relationships
     profile = relationship("Profile", back_populates="bonus_statuses")
+    provider = relationship("Provider")
+
+
+class ProfileProviderBalance(Base):
+    """
+    Per-profile balance tracking.
+
+    Each profile tracks balances independently per provider.
+    This allows multiple profiles (e.g., different identity contexts)
+    to have separate bankrolls.
+    """
+    __tablename__ = "profile_provider_balances"
+
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    balance = Column(Float, default=0.0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
+    )
+
+    # Relationships
+    profile = relationship("Profile", back_populates="provider_balances")
     provider = relationship("Provider")
 
 
@@ -442,6 +481,14 @@ class ProviderRiskProfile(Base):
     # Brier score for calibration tracking (lower = better)
     brier_score = Column(Float, nullable=True)
 
+    # Account warmup tracking for mug betting
+    first_bet_date = Column(DateTime, nullable=True)  # Date of first bet on this provider
+    total_bets_placed = Column(Integer, default=0)    # All-time bet count
+
+    # New feature scores for mug betting detection
+    ev_quality_ratio = Column(Float, default=0.0)       # % of +EV bets (high = suspicious)
+    account_freshness_risk = Column(Float, default=0.0)  # New account risk (high = risky)
+
     # Cooldown tracking
     is_on_cooldown = Column(Boolean, default=False)
     cooldown_until = Column(DateTime, nullable=True)
@@ -472,13 +519,19 @@ class RiskConfig(Base):
     softmax_temperature = Column(Float, default=1.0)     # Selection randomness (T=0 deterministic)
 
     # Feature weights (must sum to 1.0 for normalized scoring)
-    weight_stake_entropy = Column(Float, default=0.15)
-    weight_market_diversity = Column(Float, default=0.10)
-    weight_timing_regularity = Column(Float, default=0.15)
-    weight_outcome_correlation = Column(Float, default=0.20)
-    weight_bonus_usage = Column(Float, default=0.15)
-    weight_clv = Column(Float, default=0.15)
-    weight_win_rate = Column(Float, default=0.10)
+    weight_stake_entropy = Column(Float, default=0.12)
+    weight_market_diversity = Column(Float, default=0.08)
+    weight_timing_regularity = Column(Float, default=0.12)
+    weight_outcome_correlation = Column(Float, default=0.15)
+    weight_bonus_usage = Column(Float, default=0.12)
+    weight_clv = Column(Float, default=0.13)
+    weight_win_rate = Column(Float, default=0.08)
+    weight_ev_quality = Column(Float, default=0.10)          # EV ratio contribution
+    weight_account_freshness = Column(Float, default=0.10)   # Account age contribution
+
+    # Account warmup thresholds
+    warmup_days_threshold = Column(Integer, default=14)   # Days until account is "warmed up"
+    warmup_bets_threshold = Column(Integer, default=20)   # Bets needed for warmup
 
     # Risk level thresholds
     threshold_low = Column(Float, default=0.3)           # < this = low risk
@@ -490,6 +543,14 @@ class RiskConfig(Base):
     rolling_window_days = Column(Integer, default=30)    # Feature calculation window
     cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
+
+    # Mug bet configuration
+    mug_bet_max_edge_pct = Column(Float, default=-1.0)      # Max edge (negative = -EV)
+    mug_bet_min_edge_pct = Column(Float, default=-10.0)     # Min edge (too -EV is wasteful)
+    mug_bet_min_implied_prob = Column(Float, default=0.60)  # Favorites only (odds < 1.67)
+    mug_bet_stake_pct = Column(Float, default=1.5)          # % of bankroll per mug bet
+    mug_bet_warmup_count = Column(Integer, default=7)       # Mug bets during warmup phase
+    mug_bet_ongoing_ratio = Column(Integer, default=5)      # 1 mug per X value bets
 
     # Updated timestamp
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -555,6 +616,105 @@ def get_session():
     """
     factory = get_session_factory()
     return factory()
+
+
+# ============ Per-Profile Balance Helpers ============
+
+def get_profile_balance(db, profile_id: int, provider_id: str) -> float:
+    """Get balance for a specific profile and provider."""
+    record = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile_id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+    return record.balance if record else 0.0
+
+
+def set_profile_balance(db, profile_id: int, provider_id: str, balance: float) -> None:
+    """Set balance for a specific profile and provider."""
+    record = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile_id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if record:
+        record.balance = balance
+        record.updated_at = datetime.utcnow()
+    else:
+        record = ProfileProviderBalance(
+            profile_id=profile_id,
+            provider_id=provider_id,
+            balance=balance
+        )
+        db.add(record)
+
+
+def adjust_profile_balance(db, profile_id: int, provider_id: str, amount: float) -> float:
+    """Adjust balance for a specific profile and provider. Returns new balance."""
+    record = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile_id,
+        ProfileProviderBalance.provider_id == provider_id
+    ).first()
+
+    if record:
+        record.balance += amount
+        record.updated_at = datetime.utcnow()
+        return record.balance
+    else:
+        record = ProfileProviderBalance(
+            profile_id=profile_id,
+            provider_id=provider_id,
+            balance=amount
+        )
+        db.add(record)
+        return amount
+
+
+def get_total_profile_bankroll(db, profile_id: int) -> float:
+    """Get total bankroll for a profile (sum of all provider balances)."""
+    records = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile_id
+    ).all()
+    return sum(r.balance for r in records)
+
+
+def get_active_profile(db):
+    """Get the currently active profile, creating default if none exists."""
+    profile = db.query(Profile).filter(Profile.is_active == True).first()
+    if not profile:
+        profile = db.query(Profile).first()
+        if profile:
+            profile.is_active = True
+            db.commit()
+        else:
+            profile = Profile(name="default", is_active=True)
+            db.add(profile)
+            db.commit()
+    return profile
+
+
+def copy_profile_balances(db, from_profile_id: int, to_profile_id: int) -> int:
+    """Copy all balances from one profile to another. Returns count of balances copied."""
+    source_balances = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == from_profile_id
+    ).all()
+
+    count = 0
+    for source in source_balances:
+        existing = db.query(ProfileProviderBalance).filter(
+            ProfileProviderBalance.profile_id == to_profile_id,
+            ProfileProviderBalance.provider_id == source.provider_id
+        ).first()
+
+        if not existing:
+            new_balance = ProfileProviderBalance(
+                profile_id=to_profile_id,
+                provider_id=source.provider_id,
+                balance=source.balance
+            )
+            db.add(new_balance)
+            count += 1
+
+    return count
 
 
 if __name__ == "__main__":

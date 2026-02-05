@@ -4,7 +4,11 @@ import json
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...db.models import Profile, Provider
+from ...db.models import (
+    Profile, Provider,
+    get_active_profile as get_active_profile_helper,
+    get_total_profile_bankroll, copy_profile_balances
+)
 from ...bankroll import kelly_stake
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
@@ -12,7 +16,7 @@ from ..schemas import ProfileCreate, ProfileUpdate
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
 
-def profile_to_dict(profile: Profile) -> dict:
+def profile_to_dict(profile: Profile, db: Session) -> dict:
     """Convert profile to dict response."""
     # Parse preferred_counterparts JSON if exists
     preferred_counterparts = []
@@ -22,10 +26,13 @@ def profile_to_dict(profile: Profile) -> dict:
         except:
             pass
 
+    # Calculate real bankroll from profile's provider balances
+    real_bankroll = get_total_profile_bankroll(db, profile.id)
+
     return {
         "id": profile.id,
         "name": profile.name,
-        "bankroll": profile.bankroll,
+        "bankroll": real_bankroll,
         "currency": profile.currency,
         "kelly_fraction": profile.kelly_fraction,
         "min_edge_pct": profile.min_edge_pct,
@@ -53,8 +60,8 @@ async def list_profiles(db: Session = Depends(get_db)):
         profiles = [default]
 
     return {
-        "profiles": [profile_to_dict(p) for p in profiles],
-        "active": next((profile_to_dict(p) for p in profiles if p.is_active), None),
+        "profiles": [profile_to_dict(p, db) for p in profiles],
+        "active": next((profile_to_dict(p, db) for p in profiles if p.is_active), None),
     }
 
 
@@ -69,16 +76,19 @@ async def get_active_profile(db: Session = Depends(get_db)):
         db.add(profile)
         db.commit()
 
-    return profile_to_dict(profile)
+    return profile_to_dict(profile, db)
 
 
 @router.post("")
 async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
-    """Create a new profile."""
+    """Create a new profile, copying balances from active profile."""
     # Check name uniqueness
     existing = db.query(Profile).filter(Profile.name == data.name).first()
     if existing:
         raise HTTPException(400, f"Profile '{data.name}' already exists")
+
+    # Get active profile to copy balances from
+    active_profile = db.query(Profile).filter(Profile.is_active == True).first()
 
     profile = Profile(
         name=data.name,
@@ -91,9 +101,21 @@ async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         is_active=False,
     )
     db.add(profile)
+    db.flush()  # Get the profile ID
+
+    # Copy balances from active profile to new profile
+    balances_copied = 0
+    if active_profile:
+        balances_copied = copy_profile_balances(db, active_profile.id, profile.id)
+
     db.commit()
 
-    return {"success": True, "profile": profile_to_dict(profile)}
+    return {
+        "success": True,
+        "profile": profile_to_dict(profile, db),
+        "balances_copied": balances_copied,
+        "copied_from_profile": active_profile.name if active_profile else None,
+    }
 
 
 @router.get("/{profile_id}")
@@ -103,7 +125,7 @@ async def get_profile(profile_id: int, db: Session = Depends(get_db)):
     if not profile:
         raise HTTPException(404, f"Profile {profile_id} not found")
 
-    return profile_to_dict(profile)
+    return profile_to_dict(profile, db)
 
 
 @router.put("/{profile_id}")
@@ -141,7 +163,7 @@ async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Dep
         profile.double_deposit = data.double_deposit
 
     db.commit()
-    return {"success": True, "profile": profile_to_dict(profile)}
+    return {"success": True, "profile": profile_to_dict(profile, db)}
 
 
 @router.post("/{profile_id}/activate")
@@ -158,7 +180,7 @@ async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
     profile.is_active = True
     db.commit()
 
-    return {"success": True, "profile": profile_to_dict(profile)}
+    return {"success": True, "profile": profile_to_dict(profile, db)}
 
 
 @router.delete("/{profile_id}")
@@ -183,12 +205,11 @@ async def calculate_stake(
     fair_odds: float,
     db: Session = Depends(get_db)
 ):
-    """Calculate recommended stake using Kelly criterion."""
-    # Get profile and bankroll
-    profile = db.query(Profile).filter(Profile.name == "default").first()
-    providers = db.query(Provider).filter(Provider.is_enabled == True).all()
+    """Calculate recommended stake using Kelly criterion for active profile."""
+    # Get active profile and its bankroll
+    profile = get_active_profile_helper(db)
+    bankroll = get_total_profile_bankroll(db, profile.id)
 
-    bankroll = sum(p.balance for p in providers)
     kelly_frac = profile.kelly_fraction if profile else 0.25
     max_stake_pct = profile.max_stake_pct if profile else 5.0
 
@@ -202,6 +223,7 @@ async def calculate_stake(
     )
 
     return {
+        "profile_id": profile.id,
         "recommended_stake": rec.stake,
         "kelly_stake": rec.kelly_stake,
         "max_stake": rec.max_stake,

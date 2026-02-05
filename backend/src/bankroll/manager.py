@@ -343,27 +343,25 @@ class RiskAwareBankrollManager:
     def _get_profile(self):
         """Get active profile with settings."""
         if self._profile is None:
-            from ..db.models import Profile
-            self._profile = (
-                self.db.query(Profile)
-                .filter(Profile.is_active == True)
-                .first()
-            )
-            if not self._profile:
-                self._profile = self.db.query(Profile).first()
+            from ..db.models import get_active_profile
+            self._profile = get_active_profile(self.db)
         return self._profile
 
     def _get_provider_balance(self, provider_id: str) -> float:
-        """Get provider balance."""
-        from ..db.models import Provider
-        provider = self.db.query(Provider).filter(Provider.id == provider_id).first()
-        return provider.balance if provider else 0.0
+        """Get provider balance for active profile."""
+        from ..db.models import get_profile_balance
+        profile = self._get_profile()
+        if not profile:
+            return 0.0
+        return get_profile_balance(self.db, profile.id, provider_id)
 
     def _get_total_bankroll(self) -> float:
-        """Get total bankroll across all providers."""
-        from ..db.models import Provider
-        providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
-        return sum(p.balance for p in providers)
+        """Get total bankroll for active profile."""
+        from ..db.models import get_total_profile_bankroll
+        profile = self._get_profile()
+        if not profile:
+            return 0.0
+        return get_total_profile_bankroll(self.db, profile.id)
 
     def calculate_risk_aware_stake(
         self,
@@ -380,7 +378,8 @@ class RiskAwareBankrollManager:
         2. Check if provider should be skipped (cooldown/critical)
         3. Apply risk regularization
         4. Reduce stake based on risk score
-        5. Inject noise for behavioral entropy
+        5. Apply account warmup multiplier for new accounts
+        6. Inject noise for behavioral entropy
 
         Args:
             odds: Provider odds
@@ -431,9 +430,24 @@ class RiskAwareBankrollManager:
             base_stake=base_rec.stake,
         )
 
+        # Get risk assessment for account warmup info
+        assessment = self.risk_calculator.assess_provider(provider_id)
+        account_age = assessment.features.account_age_days
+
+        # Apply account warmup multiplier for new accounts
+        # Ramp up: day 0 = 30%, day 14 = 100%
+        warmup_multiplier = 1.0
+        warmup_reason = None
+        if account_age < 14:
+            warmup_multiplier = 0.3 + (account_age / 14) * 0.7
+            warmup_reason = f"Account warmup ({account_age}d old, {warmup_multiplier:.0%} stake)"
+
+        # Apply warmup multiplier to risk-adjusted stake
+        warmup_adjusted_stake = regularized.risk_adjusted_stake * warmup_multiplier
+
         # Inject noise
         noisy = self.noise_injector.inject_noise(
-            stake=regularized.risk_adjusted_stake,
+            stake=warmup_adjusted_stake,
             risk_score=regularized.risk_score,
             max_stake=min(base_rec.max_stake, provider_balance),
             min_stake=1.0,
@@ -442,16 +456,15 @@ class RiskAwareBankrollManager:
         # Limit to provider balance
         final_stake = min(noisy.final_stake, provider_balance)
 
-        # Determine reason
-        if final_stake < base_rec.stake * 0.9:
+        # Determine reason (prioritize warmup reason for new accounts)
+        if warmup_reason:
+            reason = warmup_reason
+        elif final_stake < base_rec.stake * 0.9:
             reason = f"Risk-adjusted (score={regularized.risk_score:.2f})"
         elif noisy.was_rounded:
             reason = "Adjusted from round number"
         else:
             reason = base_rec.reason
-
-        # Get risk level
-        assessment = self.risk_calculator.assess_provider(provider_id)
 
         return RiskAwareStakeRecommendation(
             base_stake=base_rec.stake,

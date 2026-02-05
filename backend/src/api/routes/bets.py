@@ -5,7 +5,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...db.models import Provider, Bet
+from ...db.models import (
+    Provider, Bet,
+    get_active_profile, get_profile_balance, adjust_profile_balance
+)
 from ..deps import get_db
 from ..schemas import BetCreate, BetUpdate
 
@@ -18,14 +21,17 @@ async def list_bets(
     limit: int = 50,
     db: Session = Depends(get_db)
 ):
-    """Get bet history."""
-    query = db.query(Bet)
+    """Get bet history for active profile."""
+    profile = get_active_profile(db)
+
+    query = db.query(Bet).filter(Bet.profile_id == profile.id)
     if status:
         query = query.filter(Bet.result == status)
 
     bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     return {
+        "profile_id": profile.id,
         "bets": [
             {
                 "id": b.id,
@@ -51,21 +57,25 @@ async def list_bets(
 
 @router.post("")
 async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
-    """Record a placed bet (manual entry)."""
+    """Record a placed bet for active profile."""
+    profile = get_active_profile(db)
+
     # Verify provider exists
     provider = db.query(Provider).filter(Provider.id == bet.provider_id).first()
     if not provider:
         raise HTTPException(404, f"Provider {bet.provider_id} not found")
 
     # Validate sufficient balance (unless free bet)
+    current_balance = get_profile_balance(db, profile.id, bet.provider_id)
     if not bet.is_bonus:
-        if provider.balance < bet.stake:
+        if current_balance < bet.stake:
             raise HTTPException(
                 400,
-                f"Insufficient balance: {provider.balance:.2f} available, {bet.stake:.2f} required"
+                f"Insufficient balance: {current_balance:.2f} available, {bet.stake:.2f} required"
             )
 
     b = Bet(
+        profile_id=profile.id,
         event_id=bet.event_id,
         provider_id=bet.provider_id,
         market=bet.market,
@@ -77,12 +87,12 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
     )
     db.add(b)
 
-    # Deduct stake from provider balance (unless free bet)
+    # Deduct stake from profile's provider balance (unless free bet)
     if not bet.is_bonus:
-        provider.balance -= bet.stake
+        adjust_profile_balance(db, profile.id, bet.provider_id, -bet.stake)
 
     db.commit()
-    return {"success": True, "bet_id": b.id}
+    return {"success": True, "bet_id": b.id, "profile_id": profile.id}
 
 
 @router.put("/{bet_id}")
@@ -96,10 +106,9 @@ async def settle_bet(bet_id: int, data: BetUpdate, db: Session = Depends(get_db)
     bet.payout = data.payout
     bet.settled_at = datetime.utcnow()
 
-    # Add payout to provider balance
-    provider = db.query(Provider).filter(Provider.id == bet.provider_id).first()
-    if provider and data.payout > 0:
-        provider.balance += data.payout
+    # Add payout to profile's provider balance
+    if bet.profile_id and data.payout > 0:
+        adjust_profile_balance(db, bet.profile_id, bet.provider_id, data.payout)
 
     db.commit()
-    return {"success": True, "profit": bet.profit}
+    return {"success": True, "profit": bet.profit, "profile_id": bet.profile_id}

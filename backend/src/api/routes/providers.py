@@ -6,7 +6,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 import yaml
 
-from ...db.models import Provider, Profile, ProfileProviderBonus
+from ...db.models import (
+    Provider, Profile, ProfileProviderBonus,
+    get_active_profile, get_profile_balance, get_total_profile_bankroll
+)
 from ..deps import get_db
 from ..schemas import ProviderCreate, ProviderUpdate
 
@@ -46,24 +49,31 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 @router.get("")
 async def list_providers(db: Session = Depends(get_db)):
-    """Get all providers with status, balance, and bonus info."""
+    """Get all providers with status, balance, and bonus info for active profile."""
+    profile = get_active_profile(db)
     providers = db.query(Provider).all()
     bonus_info = load_provider_bonuses()
 
+    provider_list = []
+    for p in providers:
+        balance = get_profile_balance(db, profile.id, p.id) if p.is_enabled else 0.0
+        provider_list.append({
+            "id": p.id,
+            "name": p.name,
+            "url": p.url,
+            "is_enabled": p.is_enabled,
+            "balance": balance,
+            "bonus": bonus_info.get(p.id),  # {type: "freebet", amount: 500} or None
+            "bonus_status": get_profile_bonus_status(db, p.id),  # Per-profile status
+        })
+
+    total_balance = get_total_profile_bankroll(db, profile.id)
+
     return {
-        "providers": [
-            {
-                "id": p.id,
-                "name": p.name,
-                "url": p.url,
-                "is_enabled": p.is_enabled,
-                "balance": p.balance,
-                "bonus": bonus_info.get(p.id),  # {type: "freebet", amount: 500} or None
-                "bonus_status": get_profile_bonus_status(db, p.id),  # Per-profile status
-            }
-            for p in providers
-        ],
-        "total_balance": sum(p.balance for p in providers if p.is_enabled),
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+        "providers": provider_list,
+        "total_balance": total_balance,
     }
 
 
