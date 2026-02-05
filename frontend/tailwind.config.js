@@ -29,6 +29,7 @@ export default {
         tabBonus: '#a78bfa',
         tabBets: '#22d3d8',
         tabBankroll: '#ec4899',
+        tabProfiles: '#8b5cf6',
         tabStats: '#94a3b8',
       },
       fontFamily: {

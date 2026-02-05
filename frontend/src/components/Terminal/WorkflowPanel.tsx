@@ -2,8 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import type {
   DropdownWorkflowState,
   DropdownOption,
-  BonusWorkflowState,
-  BonusDropdownOption,
   BankrollWorkflowState,
   BankrollOption,
 } from '@/types';
@@ -15,22 +13,11 @@ interface WorkflowPanelProps {
   selectedIndex: number;
   onDropdownSelect: (option: DropdownOption) => void;
   onDropdownCancel: () => void;
-  // Manual stake input (shared between dropdown and bonus workflows)
+  // Manual stake input
   manualStakeInput?: string;
   onManualStakeChange?: (value: string) => void;
   onManualStakeSubmit?: (value: string) => void;
   isManualStakeMode?: boolean;
-  // Bonus workflow
-  bonusWorkflow?: BonusWorkflowState;
-  bonusOptions?: BonusDropdownOption[];
-  selectedBonusIndex?: number;
-  onBonusSelect?: (option: BonusDropdownOption) => void;
-  onBonusCancel?: () => void;
-  // Bonus manual stake (separate from dropdown)
-  bonusManualStakeInput?: string;
-  onBonusManualStakeChange?: (value: string) => void;
-  onBonusManualStakeSubmit?: (value: string) => void;
-  isBonusManualStakeMode?: boolean;
   // Bankroll workflow
   bankrollWorkflow?: BankrollWorkflowState;
   bankrollOptions?: BankrollOption[];
@@ -59,15 +46,6 @@ export function WorkflowPanel({
   onManualStakeChange,
   onManualStakeSubmit,
   isManualStakeMode = false,
-  bonusWorkflow,
-  bonusOptions = [],
-  selectedBonusIndex = 0,
-  onBonusSelect,
-  onBonusCancel,
-  bonusManualStakeInput = '',
-  onBonusManualStakeChange,
-  onBonusManualStakeSubmit,
-  isBonusManualStakeMode = false,
   bankrollWorkflow,
   bankrollOptions = [],
   selectedBankrollIndex = 0,
@@ -88,26 +66,23 @@ export function WorkflowPanel({
 
   // Check which workflow is active
   const isDropdownActive = dropdownWorkflow.type !== 'idle';
-  const isBonusActive = bonusWorkflow?.step !== 'idle' && bonusWorkflow?.step !== undefined;
   const isBankrollActive = bankrollWorkflow?.step !== 'idle' && bankrollWorkflow?.step !== undefined;
 
   // Reset minimized state when workflow changes
   useEffect(() => {
     setIsMinimized(false);
-  }, [dropdownWorkflow.type, bonusWorkflow?.step, bankrollWorkflow?.step]);
+  }, [dropdownWorkflow.type, bankrollWorkflow?.step]);
 
-  // Focus input when entering manual mode (dropdown, bonus, or bankroll)
+  // Focus input when entering manual mode (dropdown or bankroll)
   useEffect(() => {
-    if ((isManualStakeMode || isBonusManualStakeMode || isBankrollAmountMode || isBankrollResetConfirmMode) && manualInputRef.current) {
+    if ((isManualStakeMode || isBankrollAmountMode || isBankrollResetConfirmMode) && manualInputRef.current) {
       manualInputRef.current.focus();
     }
-  }, [isManualStakeMode, isBonusManualStakeMode, isBankrollAmountMode, isBankrollResetConfirmMode]);
+  }, [isManualStakeMode, isBankrollAmountMode, isBankrollResetConfirmMode]);
 
   // Auto-scroll to keep selected option visible
   const currentSelectedIndex = isDropdownActive
     ? selectedIndex
-    : isBonusActive
-    ? selectedBonusIndex
     : selectedBankrollIndex;
 
   useEffect(() => {
@@ -131,9 +106,6 @@ export function WorkflowPanel({
           return 'Select';
       }
     }
-    if (isBonusActive) {
-      return 'Bonus Arbitrage';
-    }
     if (isBankrollActive) {
       return 'Bankroll';
     }
@@ -146,22 +118,6 @@ export function WorkflowPanel({
       switch (dropdownWorkflow.step) {
         case 'select-provider':
           return dropdownWorkflow.type === 'extract' ? 'Select providers' : 'Select provider';
-        case 'select-opportunity':
-          return 'Select opp';
-        case 'select-stake':
-          return 'Select stake';
-        case 'manual-stake':
-          return 'Enter stake';
-        case 'confirm':
-          return 'Confirm';
-        default:
-          return '';
-      }
-    }
-    if (isBonusActive && bonusWorkflow) {
-      switch (bonusWorkflow.step) {
-        case 'select-provider':
-          return 'Select anchor provider';
         case 'select-opportunity':
           return 'Select opp';
         case 'select-stake':
@@ -199,40 +155,36 @@ export function WorkflowPanel({
   const handleCancel = () => {
     if (isDropdownActive) {
       onDropdownCancel();
-    } else if (isBonusActive && onBonusCancel) {
-      onBonusCancel();
     } else if (isBankrollActive && onBankrollCancel) {
       onBankrollCancel();
     }
   };
 
   // Render nothing if no workflow is active
-  if (!isDropdownActive && !isBonusActive && !isBankrollActive) {
+  if (!isDropdownActive && !isBankrollActive) {
     return null;
   }
 
   // Get options to display
   const options = isDropdownActive
     ? dropdownOptions
-    : isBonusActive
-    ? bonusOptions
     : bankrollOptions;
 
   return (
-    <div className="border border-terminal-border rounded bg-terminal-surface font-mono text-sm my-2">
+    <div className="border border-border rounded-lg bg-panel font-mono text-sm my-2">
       {/* Header - clickable to minimize */}
       <div
-        className="flex items-center justify-between px-3 py-2 border-b border-terminal-border cursor-pointer hover:bg-terminal-bg/50"
+        className="flex items-center justify-between px-3 py-2 border-b border-border cursor-pointer hover:bg-panel2"
         onClick={() => setIsMinimized(!isMinimized)}
       >
         <div className="flex items-center gap-2">
-          <span className="text-terminal-muted text-xs">
-            {isMinimized ? '▸' : '▾'}
+          <span className="text-muted2 text-xs">
+            {isMinimized ? '>' : 'v'}
           </span>
-          <span className="text-terminal-accent text-xs font-medium">
+          <span className="text-accent text-xs font-medium">
             {getWorkflowLabel()}
           </span>
-          <span className="text-terminal-muted text-xs">
+          <span className="text-muted2 text-xs">
             {getStepLabel()} ({options.length})
           </span>
         </div>
@@ -241,7 +193,7 @@ export function WorkflowPanel({
             e.stopPropagation();
             handleCancel();
           }}
-          className="text-terminal-muted hover:text-terminal-text text-xs"
+          className="text-muted2 hover:text-text text-xs"
         >
           esc
         </button>
@@ -250,52 +202,36 @@ export function WorkflowPanel({
       {/* Content - collapsible */}
       {!isMinimized && (
         <div className="p-2 max-h-64 overflow-y-auto">
-          {/* Manual stake input mode (dropdown or bonus) */}
-          {(isManualStakeMode || isBonusManualStakeMode) ? (
+          {/* Manual stake input mode */}
+          {isManualStakeMode ? (
             <div className="flex items-center gap-2">
-              <span className="text-terminal-muted">$</span>
+              <span className="text-muted">$</span>
               <input
                 ref={manualInputRef}
                 type="number"
-                value={isBonusManualStakeMode ? bonusManualStakeInput : manualStakeInput}
-                onChange={(e) => {
-                  if (isBonusManualStakeMode) {
-                    onBonusManualStakeChange?.(e.target.value);
-                  } else {
-                    onManualStakeChange?.(e.target.value);
-                  }
-                }}
+                value={manualStakeInput}
+                onChange={(e) => onManualStakeChange?.(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    if (isBonusManualStakeMode) {
-                      onBonusManualStakeSubmit?.(bonusManualStakeInput);
-                    } else {
-                      onManualStakeSubmit?.(manualStakeInput);
-                    }
+                    onManualStakeSubmit?.(manualStakeInput);
                   } else if (e.key === 'Escape') {
                     e.preventDefault();
                     handleCancel();
                   }
                 }}
                 placeholder="Enter stake amount..."
-                className="flex-1 bg-terminal-bg border border-terminal-border rounded px-2 py-1.5 text-terminal-text placeholder-terminal-muted/50 outline-none focus:border-terminal-accent"
+                className="flex-1 bg-bg border border-border rounded px-2 py-1.5 text-text placeholder-muted2 outline-none focus:border-accent"
               />
               <button
-                onClick={() => {
-                  if (isBonusManualStakeMode) {
-                    onBonusManualStakeSubmit?.(bonusManualStakeInput);
-                  } else {
-                    onManualStakeSubmit?.(manualStakeInput);
-                  }
-                }}
-                className="px-3 py-1.5 rounded bg-terminal-accent/20 text-terminal-accent hover:bg-terminal-accent/30 transition-colors"
+                onClick={() => onManualStakeSubmit?.(manualStakeInput)}
+                className="px-3 py-1.5 rounded bg-accentBg text-accent hover:bg-accent/30 transition-colors"
               >
                 OK
               </button>
               <button
                 onClick={handleCancel}
-                className="px-2 py-1.5 rounded text-terminal-muted hover:text-terminal-text hover:bg-terminal-bg/50 transition-colors"
+                className="px-2 py-1.5 rounded text-muted hover:text-text hover:bg-panel2 transition-colors"
               >
                 [cancel]
               </button>
@@ -303,7 +239,7 @@ export function WorkflowPanel({
           ) : isBankrollAmountMode ? (
             /* Bankroll amount input mode */
             <div className="flex items-center gap-2">
-              <span className="text-terminal-muted">$</span>
+              <span className="text-muted">$</span>
               <input
                 ref={manualInputRef}
                 type="number"
@@ -319,17 +255,17 @@ export function WorkflowPanel({
                   }
                 }}
                 placeholder="Enter amount..."
-                className="flex-1 bg-terminal-bg border border-terminal-border rounded px-2 py-1.5 text-terminal-text placeholder-terminal-muted/50 outline-none focus:border-terminal-accent"
+                className="flex-1 bg-bg border border-border rounded px-2 py-1.5 text-text placeholder-muted2 outline-none focus:border-accent"
               />
               <button
                 onClick={() => onBankrollAmountSubmit?.()}
-                className="px-3 py-1.5 rounded bg-terminal-accent/20 text-terminal-accent hover:bg-terminal-accent/30 transition-colors"
+                className="px-3 py-1.5 rounded bg-accentBg text-accent hover:bg-accent/30 transition-colors"
               >
                 OK
               </button>
               <button
                 onClick={handleCancel}
-                className="px-2 py-1.5 rounded text-terminal-muted hover:text-terminal-text hover:bg-terminal-bg/50 transition-colors"
+                className="px-2 py-1.5 rounded text-muted hover:text-text hover:bg-panel2 transition-colors"
               >
                 [cancel]
               </button>
@@ -337,7 +273,7 @@ export function WorkflowPanel({
           ) : isBankrollResetConfirmMode ? (
             /* Bankroll reset confirmation mode */
             <div className="flex items-center gap-2">
-              <span className="text-terminal-muted">Type RESET:</span>
+              <span className="text-muted">Type RESET:</span>
               <input
                 ref={manualInputRef}
                 type="text"
@@ -353,23 +289,23 @@ export function WorkflowPanel({
                   }
                 }}
                 placeholder="RESET"
-                className="flex-1 bg-terminal-bg border border-terminal-border rounded px-2 py-1.5 text-terminal-text placeholder-terminal-muted/50 outline-none focus:border-terminal-accent uppercase"
+                className="flex-1 bg-bg border border-border rounded px-2 py-1.5 text-text placeholder-muted2 outline-none focus:border-accent uppercase"
               />
               <button
                 onClick={() => onBankrollConfirmSubmit?.()}
-                className="px-3 py-1.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                className="px-3 py-1.5 rounded bg-error/20 text-error hover:bg-error/30 transition-colors"
               >
                 RESET
               </button>
               <button
                 onClick={handleCancel}
-                className="px-2 py-1.5 rounded text-terminal-muted hover:text-terminal-text hover:bg-terminal-bg/50 transition-colors"
+                className="px-2 py-1.5 rounded text-muted hover:text-text hover:bg-panel2 transition-colors"
               >
                 [cancel]
               </button>
             </div>
           ) : (
-            /* Flex wrap for opportunity numbers, grid for other steps */
+            /* Options list */
             <div className="flex flex-col gap-1">
               {isDropdownActive
                 ? dropdownOptions.map((opt, idx) => (
@@ -379,8 +315,8 @@ export function WorkflowPanel({
                       onClick={() => onDropdownSelect(opt)}
                       className={`text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors ${
                         idx === currentSelectedIndex
-                          ? 'bg-terminal-accent/15 text-terminal-accent'
-                          : 'hover:bg-terminal-bg/50 text-terminal-text'
+                          ? 'bg-accentBg border border-accentBorder text-accent'
+                          : 'bg-transparent border border-transparent hover:bg-panel2 text-text'
                       }`}
                     >
                       {/* Checkbox for extract multi-select */}
@@ -388,8 +324,8 @@ export function WorkflowPanel({
                         <span
                           className={`w-4 h-4 border rounded flex items-center justify-center text-xs flex-shrink-0 ${
                             opt.selected
-                              ? 'bg-terminal-green/20 border-terminal-green text-terminal-green'
-                              : 'border-terminal-muted/50'
+                              ? 'bg-success/20 border-success text-success'
+                              : 'border-muted2'
                           }`}
                         >
                           {opt.selected ? '✓' : ''}
@@ -397,27 +333,7 @@ export function WorkflowPanel({
                       )}
                       <span className="font-medium truncate">{opt.label}</span>
                       {opt.sublabel && (
-                        <span className="text-xs text-terminal-muted truncate">
-                          {opt.sublabel}
-                        </span>
-                      )}
-                    </button>
-                  ))
-                : isBonusActive
-                ? bonusOptions.map((opt, idx) => (
-                    <button
-                      key={`${opt.id}-${idx}`}
-                      ref={(el) => { if (el) optionRefs.current.set(idx, el); }}
-                      onClick={() => onBonusSelect?.(opt)}
-                      className={`text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors ${
-                        idx === currentSelectedIndex
-                          ? 'bg-terminal-accent/15 text-terminal-accent'
-                          : 'hover:bg-terminal-bg/50 text-terminal-text'
-                      }`}
-                    >
-                      <span className="font-medium truncate">{opt.label}</span>
-                      {opt.sublabel && (
-                        <span className="text-xs text-terminal-muted truncate">
+                        <span className="text-xs text-muted truncate">
                           {opt.sublabel}
                         </span>
                       )}
@@ -430,13 +346,13 @@ export function WorkflowPanel({
                       onClick={() => onBankrollSelect?.(opt)}
                       className={`text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors ${
                         idx === currentSelectedIndex
-                          ? 'bg-terminal-accent/15 text-terminal-accent'
-                          : 'hover:bg-terminal-bg/50 text-terminal-text'
+                          ? 'bg-accentBg border border-accentBorder text-accent'
+                          : 'bg-transparent border border-transparent hover:bg-panel2 text-text'
                       }`}
                     >
                       <span className="font-medium truncate">{opt.label}</span>
                       {opt.sublabel && (
-                        <span className="text-xs text-terminal-muted truncate">
+                        <span className="text-xs text-muted truncate">
                           {opt.sublabel}
                         </span>
                       )}
@@ -445,7 +361,7 @@ export function WorkflowPanel({
               {/* Cancel option */}
               <button
                 onClick={handleCancel}
-                className="text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors hover:bg-terminal-bg/50 text-terminal-muted hover:text-terminal-text"
+                className="text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors bg-transparent border border-transparent hover:bg-panel2 text-muted hover:text-text"
               >
                 <span className="font-medium">[cancel]</span>
               </button>

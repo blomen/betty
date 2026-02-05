@@ -52,7 +52,7 @@ export function ExtractionProgressMessage({ onComplete }: ExtractionProgressMess
 
   if (!status) {
     return (
-      <div className="whitespace-pre font-mono text-sm text-terminal-muted">
+      <div className="whitespace-pre font-mono text-sm text-muted">
         Initializing extraction...
       </div>
     );
@@ -72,17 +72,17 @@ export function ExtractionProgressMessage({ onComplete }: ExtractionProgressMess
   return (
     <div className="whitespace-pre font-mono text-sm">
       {/* Overall progress bar */}
-      <div className="text-terminal-accent mb-2">
+      <div className="text-accent mb-2">
         {generateProgressBar(progress)} {Math.round(progress)}%
         {status.current_provider && (
-          <span className="text-terminal-muted ml-2">
+          <span className="text-muted ml-2">
             → Processing: {status.current_provider}
           </span>
         )}
       </div>
 
       {/* Stats */}
-      <div className="text-terminal-muted mb-3">
+      <div className="text-muted mb-3">
         Providers: {status.completed_providers}/{status.total_providers} |
         Events: {status.total_events} |
         Odds: {status.total_odds} |
@@ -95,30 +95,30 @@ export function ExtractionProgressMessage({ onComplete }: ExtractionProgressMess
           {Object.entries(status.providers).map(([id, provider]) => (
             <div
               key={id}
-              className={`border border-terminal-border/30 p-2 rounded ${
-                provider.status === 'running' ? 'border-terminal-accent' :
-                provider.status === 'completed' ? 'border-green-500/50' :
-                provider.status === 'failed' ? 'border-red-500/50' : ''
+              className={`border border-border/30 p-2 rounded ${
+                provider.status === 'running' ? 'border-accent' :
+                provider.status === 'completed' ? 'border-success/50' :
+                provider.status === 'failed' ? 'border-error/50' : ''
               }`}
             >
               <div className="font-medium">
                 {getStatusIcon(provider.status)} {id}
               </div>
-              <div className="text-terminal-muted mt-1">
+              <div className="text-muted mt-1">
                 {provider.events} ev | {provider.odds} odds
               </div>
               {provider.sports_total > 0 && (
-                <div className="text-terminal-muted text-xs">
+                <div className="text-muted text-xs">
                   {provider.sports_completed}/{provider.sports_total} sports
                 </div>
               )}
               {provider.duration_seconds > 0 && (
-                <div className="text-terminal-muted text-xs">
+                <div className="text-muted text-xs">
                   {provider.duration_seconds.toFixed(1)}s
                 </div>
               )}
               {provider.error && (
-                <div className="text-red-500 text-xs truncate" title={provider.error}>
+                <div className="text-error text-xs truncate" title={provider.error}>
                   Error: {provider.error}
                 </div>
               )}

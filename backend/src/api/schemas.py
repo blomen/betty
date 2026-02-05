@@ -33,6 +33,10 @@ class BalanceAdjustment(BaseModel):
     amount: float  # Can be positive (add) or negative (subtract)
 
 
+class DepositRequest(BaseModel):
+    amount: float  # Deposit amount (positive)
+
+
 # ============ Bet Schemas ============
 
 class BetCreate(BaseModel):
@@ -64,6 +68,7 @@ class ProfileCreate(BaseModel):
     min_retention_pct: Optional[float] = 80.0
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = True
+    double_deposit: Optional[float] = 0.0
 
 
 class ProfileUpdate(BaseModel):
@@ -77,6 +82,7 @@ class ProfileUpdate(BaseModel):
     min_retention_pct: Optional[float] = None
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = None
+    double_deposit: Optional[float] = None
 
 
 # ============ Opportunity Schemas ============
@@ -256,6 +262,7 @@ class ProfileResponse(BaseModel):
     min_retention_pct: float = 80.0
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: bool = True
+    double_deposit: float = 0.0
     is_active: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

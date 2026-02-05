@@ -36,3 +36,11 @@ backend/logs/
 
 # Temp/Scrap
 backend/scrap/
+
+# Node
+node_modules/
+
+# Root workspace files (monorepo config)
+/package.json
+/package-lock.json
+/scripts/

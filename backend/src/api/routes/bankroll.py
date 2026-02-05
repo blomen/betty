@@ -1,12 +1,29 @@
 """Bankroll API routes."""
 
 from datetime import datetime
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+import yaml
 
-from ...db.models import Provider, Bet
+from ...db.models import Provider, Bet, Profile, ProfileProviderBonus
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceAdjustment
+from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest
+
+
+def load_provider_bonuses() -> dict[str, dict]:
+    """Load bonus info from providers.yaml config."""
+    config_path = Path(__file__).parent.parent.parent / "config" / "providers.yaml"
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        return {
+            pid: p['bonus']
+            for pid, p in config.get('providers', {}).items()
+            if 'bonus' in p
+        }
+    except Exception:
+        return {}
 
 router = APIRouter(prefix="/api/bankroll", tags=["bankroll"])
 
@@ -100,6 +117,87 @@ async def adjust_balance(
         "old_balance": old_balance,
         "adjustment": data.amount,
         "new_balance": provider.balance,
+    }
+
+
+@router.post("/deposit/{provider_id}")
+async def deposit_with_bonus(
+    provider_id: str,
+    data: DepositRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Deposit with automatic bonus claim.
+
+    For providers with a double deposit bonus:
+    1. Adds deposit amount to balance
+    2. Adds bonus amount (up to configured limit) to balance
+    3. Sets bonus_status to 'in_progress'
+
+    Returns breakdown of deposit and bonus amounts.
+    """
+    # 1. Get provider
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    # 2. Get bonus config from providers.yaml
+    bonus_config = load_provider_bonuses().get(provider_id, {})
+
+    # 3. Get active profile and check bonus eligibility
+    active_profile = db.query(Profile).filter(Profile.is_active == True).first()
+    bonus_record = None
+    if active_profile:
+        bonus_record = db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == active_profile.id,
+            ProfileProviderBonus.provider_id == provider_id
+        ).first()
+
+    # Check if bonus is available
+    is_double_deposit = bonus_config.get('type') == 'doubledeposit'
+    is_available = not bonus_record or bonus_record.bonus_status == 'available'
+
+    # 4. Calculate amounts
+    deposit_amount = data.amount
+    bonus_amount = 0.0
+    bonus_limit = bonus_config.get('amount', 0)
+
+    if is_double_deposit and is_available and bonus_limit > 0:
+        # Bonus matches deposit up to the configured limit
+        bonus_amount = min(deposit_amount, bonus_limit)
+
+    # 5. Update balance
+    old_balance = provider.balance
+    provider.balance += deposit_amount + bonus_amount
+    provider.updated_at = datetime.utcnow()
+
+    # 6. Update bonus status if bonus was claimed
+    new_bonus_status = None
+    if bonus_amount > 0 and active_profile:
+        if bonus_record:
+            bonus_record.bonus_status = 'in_progress'
+            bonus_record.updated_at = datetime.utcnow()
+        else:
+            bonus_record = ProfileProviderBonus(
+                profile_id=active_profile.id,
+                provider_id=provider_id,
+                bonus_status='in_progress'
+            )
+            db.add(bonus_record)
+        new_bonus_status = 'in_progress'
+
+    db.commit()
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "deposit": deposit_amount,
+        "bonus_claimed": bonus_amount,
+        "total_added": deposit_amount + bonus_amount,
+        "old_balance": old_balance,
+        "new_balance": provider.balance,
+        "bonus_status": new_bonus_status,
+        "bonus_limit": bonus_limit if is_double_deposit else None,
     }
 
 

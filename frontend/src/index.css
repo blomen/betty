@@ -2,6 +2,32 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #1a1a1a;
+  --panel: #202020;
+  --panel2: #242424;
+  --border: #2f2f2f;
+  --text: #e7e7e7;
+  --muted: #a7a7a7;
+  --muted2: #7f7f7f;
+  --accent: #a78bfa;
+  --accentBg: #2a2540;
+  --accentBorder: #3a2f66;
+  --success: #22c55e;
+  --error: #EF5350;
+  --tableBorder: rgba(255,255,255,.28);
+  --calloutBorder: #48968c;
+  /* Tab colors */
+  --tab-extract: #60a5fa;
+  --tab-arb: #22c55e;
+  --tab-value: #f59e0b;
+  --tab-bonus: #a78bfa;
+  --tab-bets: #22d3d8;
+  --tab-bankroll: #ec4899;
+  --tab-profiles: #8b5cf6;
+  --tab-stats: #94a3b8;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -13,15 +39,25 @@ html, body, #root {
 }
 
 body {
-  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, ui-monospace, monospace;
   font-size: 14px;
   line-height: 1.5;
   font-weight: 400;
   letter-spacing: 0;
-  background-color: #0F1115;
-  color: #E6E8EB;
+  background-color: var(--bg);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hide number input spinners globally */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 /* Scrollbar styling */
@@ -31,71 +67,72 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #161A20;
+  background: var(--panel);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2A2F36;
+  background: var(--border);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3A4046;
+  background: var(--muted2);
 }
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(79, 195, 247, 0.3);
+  background-color: rgba(167, 139, 250, 0.3);
   color: #ffffff;
 }
 
 /* Markdown code blocks */
 pre {
-  background-color: #161A20 !important;
-  border: 1px solid #2A2F36;
+  background-color: var(--panel) !important;
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
   overflow-x: auto;
 }
 
 code {
-  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, ui-monospace, monospace;
   font-size: 0.9em;
-  color: #E6E8EB;
+  color: var(--text);
 }
 
 :not(pre) > code {
-  background-color: rgba(79, 195, 247, 0.1);
+  background-color: rgba(167, 139, 250, 0.1);
   padding: 2px 6px;
   border-radius: 4px;
 }
 
 /* Markdown tables */
 table {
-  border-collapse: collapse;
   width: 100%;
-  margin: 8px 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: JetBrains Mono, Cascadia Code, SF Mono, Fira Code, Consolas, ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
 }
 
 th, td {
-  border: 1px solid #2A2F36;
-  padding: 8px 12px;
+  border: 1px solid var(--tableBorder);
+  padding: 10px 12px;
+  vertical-align: top;
   text-align: left;
 }
 
 th {
-  background-color: #161A20;
-  color: #4FC3F7;
-  font-weight: 500;
-}
-
-tr:nth-child(even) {
-  background-color: rgba(22, 26, 32, 0.5);
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
 }
 
 /* Links */
 a {
-  color: #4FC3F7;
+  color: var(--accent);
   text-decoration: none;
 }
 

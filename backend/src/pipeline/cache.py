@@ -121,9 +121,11 @@ class ResponseCache:
         Returns:
             Cached value or None if not found/expired
         """
+        # Pre-compute key BEFORE lock to reduce lock contention
+        key = self._get_cache_key(url, params)
+
         with self._lock:
             cache = self._get_provider_cache(provider_id)
-            key = self._get_cache_key(url, params)
 
             if key not in cache:
                 self._misses += 1
@@ -164,9 +166,11 @@ class ResponseCache:
             provider_id: Optional provider identifier
             ttl_seconds: Optional TTL override (uses default if None)
         """
+        # Pre-compute key BEFORE lock to reduce lock contention
+        key = self._get_cache_key(url, params)
+
         with self._lock:
             cache = self._get_provider_cache(provider_id)
-            key = self._get_cache_key(url, params)
             ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl_seconds
 
             # Create entry

@@ -30,11 +30,9 @@ from ..analysis.arbitrage import find_arbitrage
 from ..analysis.value import find_best_value, get_fair_odds
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity
+from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
-
-# Sharp providers used as "truth" sources for value detection
-SHARP_PROVIDERS = {"pinnacle"}
 
 
 class OpportunityAnalyzer:

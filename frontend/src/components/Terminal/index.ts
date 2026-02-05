@@ -1,8 +1,6 @@
 export { TerminalWindow } from './TerminalWindow';
-export { TerminalInput } from './TerminalInput';
-export { ChatMessage } from './ChatMessage';
-export { StreamingText } from './StreamingText';
-export { WelcomeMessage } from './WelcomeMessage';
+export { Sidebar } from './Sidebar';
 export { ExtractionProgressMessage } from './ExtractionProgressMessage';
-export { CommandPanel } from './CommandPanel';
+export { StreamingText } from './StreamingText';
 export { WorkflowPanel } from './WorkflowPanel';
+export { CalloutFrame } from './CalloutFrame';
