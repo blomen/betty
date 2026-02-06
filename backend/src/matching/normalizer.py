@@ -374,6 +374,14 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     from thefuzz import fuzz
 
     outcome_lower = outcome.lower().strip()
+
+    # Check over/under keywords FIRST — these should never fuzzy-match a team name
+    # (e.g., "under" can partial-match "dortmund" via fuzzy matching)
+    if outcome_lower in ['over', 'över']:
+        return 'over'
+    if outcome_lower in ['under']:
+        return 'under'
+
     home_norm = normalize_team_name(home)
     away_norm = normalize_team_name(away)
     outcome_norm = normalize_team_name(outcome)
@@ -414,10 +422,6 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
         return 'draw'
     if outcome_lower in ['2', 'away', 'borta', 'no', 'nej']:
         return 'away'
-    if outcome_lower in ['over', 'över']:
-        return 'over'
-    if outcome_lower in ['under']:
-        return 'under'
 
     # Log normalization failure for debugging
     logger.debug(

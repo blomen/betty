@@ -258,6 +258,23 @@ class PolymarketRetriever(Retriever):
                 if m:
                     markets.append(m)
 
+        # Collect spread/total markets (both football and non-football)
+        spread_candidates = []
+        total_candidates = []
+        for m_data in item.get("markets", []):
+            s = self._parse_spread_market(m_data, home, away)
+            if s:
+                spread_candidates.append((s, float(m_data.get("volume", 0) or 0)))
+            t = self._parse_total_market(m_data)
+            if t:
+                total_candidates.append((t, float(m_data.get("volume", 0) or 0)))
+
+        # Keep highest-volume line only (main line)
+        if spread_candidates:
+            markets.append(max(spread_candidates, key=lambda x: x[1])[0])
+        if total_candidates:
+            markets.append(max(total_candidates, key=lambda x: x[1])[0])
+
         if not markets:
             return None  # Skip events without valid markets
 
@@ -318,8 +335,12 @@ class PolymarketRetriever(Retriever):
                 clean_title = clean_title[len(prefix):]
                 break  # Only strip one prefix
 
+        # MMA: Strip "UFC Fight Night: ", "UFC 315: ", "Bellator 300: ", etc.
+        clean_title = re.sub(r'^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*', '', clean_title)
+
         # Strip match format indicators: (BO1), (BO3), (BO5), etc.
-        clean_title = re.sub(r'\s*\(BO\d+\)', '', clean_title)
+        # and trailing parenthetical metadata (weight class, card position, etc.)
+        clean_title = re.sub(r'\s*\([^)]+\)\s*', '', clean_title)
 
         # Strip tournament/league info after " - " (but preserve "vs" split)
         # Do this AFTER splitting on "vs" to avoid removing team names
@@ -331,9 +352,15 @@ class PolymarketRetriever(Retriever):
                     home = parts[0].strip()
                     away = parts[1].strip()
 
-                    # Strip tournament info from away team (appears after " - ")
+                    # Strip tournament info from away team (appears after " - " or "- ")
                     if " - " in away:
                         away = away.split(" - ")[0].strip()
+                    elif "- " in away:
+                        # Handle "TeamName- Tournament" (no space before dash)
+                        # Use rsplit to preserve team names with dashes (e.g., "ex-RUBY")
+                        parts = away.rsplit("- ", 1)
+                        if len(parts) == 2 and len(parts[1].split()) >= 2:
+                            away = parts[0].strip()
 
                     return home, away
 
@@ -490,12 +517,175 @@ class PolymarketRetriever(Retriever):
             if not formatted_outcomes:
                 return None
 
-            # For non-football markets (parsed via _parse_market), it's always moneyline
-            # Football markets go through _combine_football_markets which sets type='1x2'
+            # Moneyline = exactly 2 outcomes (home/away).
+            # More than 2 = prop market (TD scorer, MVP, etc.) — skip.
+            if len(formatted_outcomes) != 2:
+                return None
+
             return {
                 "type": "moneyline",
                 "outcomes": formatted_outcomes
             }
+        except Exception:
+            return None
+
+    def _parse_spread_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+        """Parse a spread/handicap market.
+
+        Detection: question starts with "Spread:" but NOT "1H Spread".
+        Example: "Spread: Pistons (-2.5)" → spread market with point=-2.5 for Pistons.
+        """
+        import re
+        try:
+            question = data.get("question", "")
+
+            # Must start with "Spread:" but not "1H Spread"
+            if not question.startswith("Spread:"):
+                return None
+            if question.startswith("1H Spread"):
+                return None
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Extract point value from question: "Spread: TeamName (-2.5)"
+            point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', question)
+            if not point_match:
+                return None
+            favored_point = float(point_match.group(1))
+
+            # Extract favored team name from question: "Spread: TeamName (-2.5)"
+            team_match = re.search(r'Spread:\s*(.+?)\s*\(', question)
+            if not team_match:
+                return None
+            favored_team = team_match.group(1).strip()
+
+            # Parse outcomes and prices
+            outcomes_raw = data.get("outcomes", "[]")
+            prices_raw = data.get("outcomePrices", "[]")
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            prices = [float(p) for p in prices]
+
+            # Skip exact 50/50 (no trading) and illiquid markets
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            # Determine which outcome is the favored team
+            from ..matching import normalize_outcome
+            favored_norm = normalize_outcome(favored_team, home, away)
+
+            result_outcomes = []
+            for name, p in zip(outcomes, prices):
+                if p <= 0.02:
+                    continue
+                norm = normalize_outcome(name, home, away)
+                if norm not in ('home', 'away'):
+                    continue
+                # Favored team gets the point from the question, other gets opposite
+                if norm == favored_norm:
+                    point = favored_point
+                else:
+                    point = -favored_point
+                result_outcomes.append({
+                    "name": norm,
+                    "odds": round(1 / p, 3),
+                    "point": point,
+                })
+
+            if len(result_outcomes) != 2:
+                return None
+
+            return {"type": "spread", "outcomes": result_outcomes}
+        except Exception:
+            return None
+
+    def _parse_total_market(self, data: dict) -> Optional[dict]:
+        """Parse a total (over/under) market.
+
+        Detection: question contains " O/U " but NOT "1H O/U" and NOT player props.
+        Example: "Knicks vs. Pistons: O/U 222.5" → total market with point=222.5.
+        """
+        import re
+        try:
+            question = data.get("question", "")
+
+            # Must contain " O/U " pattern
+            if " O/U " not in question:
+                return None
+
+            # Skip 1st half totals
+            if "1H O/U" in question:
+                return None
+
+            # Skip player props: pattern like "Player Name: Points O/U" or "Name: Rebounds O/U"
+            # Match events have pattern "Team vs Team: O/U NUM" — the colon-prefixed part is just "O/U"
+            # Player props have "Stat O/U" (e.g., "Points O/U", "Rebounds O/U")
+            colon_idx = question.find(":")
+            if colon_idx >= 0:
+                after_colon = question[colon_idx + 1:].strip()
+                # Event totals start directly with "O/U", player props have "stat O/U"
+                if not after_colon.startswith("O/U"):
+                    return None
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Extract point value: "O/U 222.5"
+            point_match = re.search(r'O/U\s+(\d+\.?\d*)', question)
+            if not point_match:
+                return None
+            point = float(point_match.group(1))
+
+            # Parse outcomes and prices
+            outcomes_raw = data.get("outcomes", "[]")
+            prices_raw = data.get("outcomePrices", "[]")
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            prices = [float(p) for p in prices]
+
+            # Skip exact 50/50 (no trading) and illiquid markets
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            result_outcomes = []
+            for name, p in zip(outcomes, prices):
+                if p <= 0.02:
+                    continue
+                name_lower = name.lower().strip()
+                if name_lower == "over":
+                    result_outcomes.append({
+                        "name": "over",
+                        "odds": round(1 / p, 3),
+                        "point": point,
+                    })
+                elif name_lower == "under":
+                    result_outcomes.append({
+                        "name": "under",
+                        "odds": round(1 / p, 3),
+                        "point": point,
+                    })
+
+            if len(result_outcomes) != 2:
+                return None
+
+            return {"type": "total", "outcomes": result_outcomes}
         except Exception:
             return None
 

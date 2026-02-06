@@ -90,8 +90,13 @@ def swap_home_away_outcomes(outcomes: list[dict]) -> list[dict]:
         # Swap home <-> away
         if name in ['home', 'hemma', '1']:
             new_outcome['name'] = 'away'
+            # Negate spread points when swapping
+            if new_outcome.get('point') is not None:
+                new_outcome['point'] = -new_outcome['point']
         elif name in ['away', 'borta', '2']:
             new_outcome['name'] = 'home'
+            if new_outcome.get('point') is not None:
+                new_outcome['point'] = -new_outcome['point']
 
         swapped.append(new_outcome)
     return swapped
@@ -331,6 +336,7 @@ def store_polymarket_event(
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
             odds = outcome.get("odds", 0)
+            point_value = outcome.get("point")
 
             if odds <= 1 or odds > 100:
                 continue
@@ -352,8 +358,11 @@ def store_polymarket_event(
                     outcome_norm = "away"
                 elif outcome_norm == "away":
                     outcome_norm = "home"
+                # Negate spread points when swapping home/away
+                if market_type == "spread" and point_value is not None:
+                    point_value = -point_value
 
-            odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds)
+            odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
 
     return is_new_event, odds_processed, odds_new
 
