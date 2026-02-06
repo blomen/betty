@@ -269,11 +269,11 @@ class PolymarketRetriever(Retriever):
             if t:
                 total_candidates.append((t, float(m_data.get("volume", 0) or 0)))
 
-        # Keep highest-volume line only (main line)
-        if spread_candidates:
-            markets.append(max(spread_candidates, key=lambda x: x[1])[0])
-        if total_candidates:
-            markets.append(max(total_candidates, key=lambda x: x[1])[0])
+        # Keep ALL spread/total lines — storage filters to Pinnacle's point
+        for s, _ in spread_candidates:
+            markets.append(s)
+        for t, _ in total_candidates:
+            markets.append(t)
 
         if not markets:
             return None  # Skip events without valid markets

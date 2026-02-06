@@ -328,23 +328,21 @@ class KambiRetriever(Retriever):
                 metrics.events_skipped_no_markets += 1
                 return None
 
-            # Deduplicate markets per type to keep only main lines:
-            # - Winner (1x2/moneyline): prefer 1x2 over moneyline, keep one
-            # - Spread/total: Kambi returns many alternate lines, keep only first (main line)
-            deduped = {}
+            # Deduplicate winner markets only (prefer 1x2 over moneyline).
+            # Keep ALL spread/total lines — storage filters to Pinnacle's point.
+            winner = None
+            other = []
             for m in markets:
                 mtype = m["type"]
-                if mtype not in deduped:
-                    deduped[mtype] = m
-                elif mtype in ("1x2", "moneyline"):
-                    # Prefer 1x2 over moneyline
-                    if mtype == "1x2" and deduped.get("moneyline"):
-                        del deduped["moneyline"]
-                        deduped["1x2"] = m
-                    elif mtype == "moneyline" and "1x2" in deduped:
-                        pass  # Already have 1x2, skip moneyline
-                    # else: already have one of same type, skip duplicate
-            markets = list(deduped.values())
+                if mtype in ("1x2", "moneyline"):
+                    if winner is None:
+                        winner = m
+                    elif mtype == "1x2" and winner["type"] == "moneyline":
+                        winner = m  # Prefer 1x2 over moneyline
+                    # else: skip duplicate moneyline / second 1x2
+                else:
+                    other.append(m)
+            markets = ([winner] if winner else []) + other
 
             path = event_raw.get("path", [])
             league = path[-1].get("name", "") if path else ""

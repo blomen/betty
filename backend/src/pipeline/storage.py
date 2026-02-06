@@ -15,9 +15,54 @@ from ..matching import (
     normalize_outcome,
 )
 from ..matching.normalizer import generate_canonical_id
-from ..constants import ALLOWED_MARKETS
+from ..constants import ALLOWED_MARKETS, SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
+
+# Tolerance for comparing spread/total point values (floats)
+_POINT_TOLERANCE = 0.01
+
+
+def _get_pinnacle_points(session, event_id: str) -> dict[str, set[float]]:
+    """
+    Get Pinnacle's spread and total point values for a matched event.
+
+    For spread: returns set of HOME outcome points (e.g., {0.25, 1.25}).
+    For total: returns set of point values (e.g., {222.5}).
+    Pinnacle may publish multiple non-alternate lines for the same market.
+
+    Returns {"spread": set, "total": set}.
+    """
+    from sqlalchemy import func
+    pinnacle_odds = session.query(Odds.market, Odds.outcome, Odds.point).filter(
+        Odds.event_id == event_id,
+        func.lower(Odds.provider_id).like('pinnacle%'),
+        Odds.market.in_(['spread', 'total']),
+        Odds.point.isnot(None),
+    ).all()
+
+    result: dict[str, set[float]] = {"spread": set(), "total": set()}
+    for market, outcome, point in pinnacle_odds:
+        if market == "spread" and outcome == "home":
+            result["spread"].add(point)
+        elif market == "total" and outcome in ("over", "under"):
+            result["total"].add(point)
+    return result
+
+
+def _point_matches_pinnacle(market_type: str, home_point: float | None, pinnacle_points: dict) -> bool:
+    """
+    Check if a market's home-perspective point matches any of Pinnacle's lines.
+
+    For spread: compare home outcome's point directly (sign matters — +0.25 != -0.25).
+    For total: compare point value directly (always positive).
+    """
+    pin_points = pinnacle_points.get(market_type, set())
+    if not pin_points:
+        return False  # Pinnacle doesn't have this market — skip
+    if home_point is None:
+        return False
+    return any(abs(home_point - pp) < _POINT_TOLERANCE for pp in pin_points)
 
 
 def detect_and_fix_inversion(
@@ -317,6 +362,9 @@ def store_polymarket_event(
     # So we ONLY need to swap if odds are inverted vs sharp (Pinnacle)
     should_swap_outcomes = odds_inverted
 
+    # Look up Pinnacle's spread/total points for this event (if matched)
+    pinnacle_points = _get_pinnacle_points(session, matched_id) if matched_id else {"spread": None, "total": None}
+
     # Store odds
     odds_processed = 0
     odds_new = 0
@@ -332,6 +380,24 @@ def store_polymarket_event(
             continue
 
         outcomes = market.get("outcomes", [])
+
+        # For spread/total: only keep lines matching Pinnacle's point
+        # Determine canonical home/over point (accounting for swap)
+        if market_type in ("spread", "total"):
+            # Find the home/over outcome's point
+            target_names = ("home",) if market_type == "spread" else ("over",)
+            home_point = None
+            for o in outcomes:
+                norm = normalize_outcome(o.get("name", ""), canonical_home, canonical_away)
+                if norm in target_names and o.get("point") is not None:
+                    pt = o["point"]
+                    # If swapping, negate spread point to get canonical perspective
+                    if should_swap_outcomes and market_type == "spread":
+                        pt = -pt
+                    home_point = pt
+                    break
+            if not _point_matches_pinnacle(market_type, home_point, pinnacle_points):
+                continue
 
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
@@ -623,6 +689,14 @@ def store_provider_event(
             f"[{provider}] Swapping outcomes for {final_id} to align with canonical event"
         )
 
+    # For soft books, look up Pinnacle's spread/total points to filter lines
+    is_sharp = provider.lower() in SHARP_PROVIDERS
+    pinnacle_points = (
+        _get_pinnacle_points(session, final_id)
+        if not is_sharp and final_id
+        else {"spread": None, "total": None}
+    )
+
     # Store odds
     odds_processed = 0
     odds_new = 0
@@ -641,11 +715,23 @@ def store_provider_event(
         market_type = normalize_market(market.get('type', ''))
         if market_type not in ALLOWED_MARKETS:
             continue
+
         outcomes = market.get('outcomes', [])
 
         # Swap home/away if team order differs from canonical event
         if should_swap:
             outcomes = swap_home_away_outcomes(outcomes)
+
+        # For soft book spread/total: only keep lines matching Pinnacle's point
+        # Check AFTER swap so "home" point is in canonical perspective
+        if not is_sharp and market_type in ("spread", "total"):
+            home_point = next(
+                (o.get("point") for o in outcomes
+                 if o.get("name", "").lower() in ("home", "over") and o.get("point") is not None),
+                None,
+            )
+            if not _point_matches_pinnacle(market_type, home_point, pinnacle_points):
+                continue
 
         for outcome in outcomes:
             outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
