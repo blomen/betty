@@ -11,9 +11,9 @@ import type {
   ProfileCreate,
   ProfileUpdate,
   StakeCalculation,
-  ExtractionStatus,
   MetricsRun,
   ProviderMetrics,
+  DetailedMetricsRun,
   CircuitBreakerStatus,
   CacheStats,
   ProviderCacheStats,
@@ -22,6 +22,8 @@ import type {
   BonusMatchRequest,
   BonusMatch,
   PolymarketMatchedResponse,
+  PolymarketValueResponse,
+  PolymarketStats,
   BonusArbResponse,
   ProviderRiskProfile,
   AllRiskResponse,
@@ -419,30 +421,6 @@ export const api = {
     });
   },
 
-  // ============ Extraction ============
-  async getExtractionStatus(): Promise<ExtractionStatus> {
-    return fetchJson<ExtractionStatus>('/extraction/status');
-  },
-
-  async getExtractionProgress(): Promise<ExtractionStatus> {
-    return fetchJson<ExtractionStatus>('/extraction/progress');
-  },
-
-  async runExtraction(
-    providers?: string  // Optional: "unibet,leovegas" or undefined for all
-  ): Promise<{ status: string; providers: string | string[] }> {
-    const params = new URLSearchParams();
-    if (providers) {
-      params.append('providers', providers);
-    }
-
-    const url = params.toString()
-      ? `/extraction/run?${params}`
-      : '/extraction/run';
-
-    return fetchJson(url, { method: 'POST' });
-  },
-
   // ============ Metrics ============
   async getMetricsHistory(limit = 10): Promise<{ history: MetricsRun[]; count: number }> {
     return fetchJson(`/metrics/history?limit=${limit}`);
@@ -452,8 +430,12 @@ export const api = {
     return fetchJson(`/metrics/provider/${providerId}?limit=${limit}`);
   },
 
-  async getCurrentMetrics(): Promise<MetricsRun | { error: string }> {
+  async getCurrentMetrics(): Promise<DetailedMetricsRun | { error: string }> {
     return fetchJson('/metrics/current');
+  },
+
+  async getDetailedHistory(limit = 10): Promise<{ history: DetailedMetricsRun[]; count: number }> {
+    return fetchJson(`/metrics/history?limit=${limit}`);
   },
 
   // ============ Circuit Breaker ============
@@ -580,6 +562,22 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/matched?${params}`);
+  },
+
+  async getPolymarketValue(
+    minEdge = 3.0,
+    sport?: string,
+    limit = 50
+  ): Promise<PolymarketValueResponse> {
+    const params = new URLSearchParams();
+    params.set('min_edge', minEdge.toString());
+    if (sport) params.set('sport', sport);
+    params.set('limit', limit.toString());
+    return fetchJson(`/polymarket/value?${params}`);
+  },
+
+  async getPolymarketStats(): Promise<PolymarketStats> {
+    return fetchJson<PolymarketStats>('/polymarket/stats');
   },
 
   // ============ Risk Management ============

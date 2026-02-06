@@ -113,10 +113,10 @@ class OpportunityScanner:
         events = self._get_multi_provider_events(min_providers=2)
 
         for event in events:
-            odds_grouped = self._group_odds(event)
+            odds_grouped = self.group_odds(event)
 
             for market, odds_by_outcome in odds_grouped.items():
-                values = self._find_value_in_market(
+                values = self.find_value_in_market(
                     event_id=event.id,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
@@ -262,7 +262,7 @@ class OpportunityScanner:
         events = self._get_events_with_provider(anchor_provider)
 
         for event in events:
-            odds_grouped = self._group_odds(event)
+            odds_grouped = self.group_odds(event)
 
             for market, odds_by_outcome in odds_grouped.items():
                 bonus_opps = self._find_bonus_in_market(
@@ -302,7 +302,7 @@ class OpportunityScanner:
             .all()
         )
 
-    def _group_odds(
+    def group_odds(
         self, event: Event, exclude_providers: set[str] = None, check_staleness: bool = True
     ) -> dict[str, dict[str, list[dict]]]:
         """
@@ -382,7 +382,7 @@ class OpportunityScanner:
 
         return {p: len(outcomes) for p, outcomes in provider_outcomes.items()}
 
-    def _find_value_in_market(
+    def find_value_in_market(
         self,
         event_id: str,
         market: str,

@@ -209,41 +209,6 @@ export interface BonusMatch {
   retention_pct: number;
 }
 
-// Extraction
-export interface ExtractionStatus {
-  running: boolean;
-  last_run: string | null;
-  start_time: string | null;
-  elapsed_seconds: number;
-  progress_pct: number;
-  total_events: number;
-  total_odds: number;
-  current_provider: string | null;
-  completed_providers: number;
-  total_providers: number;
-  providers: Record<string, ProviderProgress>;
-}
-
-// Scheduler Status (for continuous extraction)
-export interface SchedulerStatus {
-  running: boolean;
-  last_run: string | null;
-  run_count: number;
-  interval_seconds: number | null;
-  providers: string[] | null;
-  next_run: string | null;
-}
-
-export interface ProviderProgress {
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  events: number;
-  odds: number;
-  duration_seconds: number;
-  error: string | null;
-  sports_completed: number;
-  sports_total: number;
-}
-
 // Metrics - Detailed
 export interface SportMetrics {
   duration_seconds: number;
@@ -414,6 +379,13 @@ export interface PolymarketEdge {
   polymarket_odds: number;
 }
 
+export interface PolymarketPinnacleEdge {
+  outcome: string;
+  polymarket_odds: number;
+  pinnacle_odds: number;
+  edge_pct: number;
+}
+
 export interface PolymarketMatchedEvent {
   id: string;
   sport: string;
@@ -425,11 +397,56 @@ export interface PolymarketMatchedEvent {
   other_providers: Record<string, PolymarketOddsEntry[]>;
   edges: PolymarketEdge[];
   best_edge: number;
+  polymarket_edges: PolymarketPinnacleEdge[];
 }
 
 export interface PolymarketMatchedResponse {
   events: PolymarketMatchedEvent[];
   count: number;
+}
+
+// Polymarket Value Bets
+export interface PolymarketValueBet {
+  event_id: string;
+  market: string;
+  outcome: string;
+  polymarket_odds: number;
+  fair_odds: number;
+  fair_probability: number;
+  edge_pct: number;
+  point: number | null;
+  home_team: string;
+  away_team: string;
+  sport: string;
+  league: string | null;
+  start_time: string | null;
+  // Stake recommendations (from profile/bankroll)
+  suggested_stake?: number | null;
+  final_stake?: number | null;
+  kelly_fraction?: number | null;
+  skip_reason?: string | null;
+  bonus_cleared?: boolean | null;
+}
+
+export interface PolymarketValueResponse {
+  value_bets: PolymarketValueBet[];
+  count: number;
+  total_scanned: number;
+}
+
+// Polymarket Stats
+export interface PolymarketSportStat {
+  sport: string;
+  count: number;
+}
+
+export interface PolymarketStats {
+  total_odds: number;
+  total_events: number;
+  matched_events: number;
+  match_rate: number;
+  normalization_rate: number;
+  sports: PolymarketSportStat[];
 }
 
 // Bonus Arbitrage Types (True Arb with Hedges)
@@ -519,8 +536,8 @@ export interface BankrollOption {
   type: 'action' | 'provider' | 'setting' | 'value';
 }
 
-// Generic Dropdown Workflow Types (used by extract, value, bets commands)
-export type DropdownWorkflowType = 'idle' | 'extract' | 'value' | 'bets';
+// Generic Dropdown Workflow Types (used by value, bets commands)
+export type DropdownWorkflowType = 'idle' | 'value' | 'bets';
 
 export type DropdownWorkflowStep =
   | 'idle'
@@ -547,8 +564,6 @@ export interface EventWithBets {
 export interface DropdownWorkflowState {
   type: DropdownWorkflowType;
   step: DropdownWorkflowStep;
-  // Extract workflow
-  selectedProviders?: string[];
   // Value workflow
   opportunities?: OpportunityWithEvent[];
   selectedOpp?: number;
@@ -565,7 +580,7 @@ export interface DropdownOption {
   id: string | number;
   label: string;
   sublabel?: string;
-  selected?: boolean;  // For multi-select (extract)
+  selected?: boolean;
   type: 'provider' | 'opportunity' | 'stake' | 'action';
 }
 

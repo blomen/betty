@@ -19,17 +19,11 @@ export function createCommandRegistry(handlers: {
   onShowStats: () => Promise<void>;
   onClear: () => void;
   onBonusCommand: () => void;
-  onExtractWorkflow: () => void;
   onValueWorkflow: () => void;
   onBetsWorkflow: () => void;
   onBankrollWorkflow: () => void;
 }): CommandRegistry {
   return {
-    extract: {
-      name: 'extract',
-      description: 'Run extraction',
-      execute: () => handlers.onExtractWorkflow(),
-    },
     value: {
       name: 'value',
       description: 'Find value bets',

@@ -1,8 +1,9 @@
 """
 Opportunity Analyzer
 
-Integrates analysis functions into the extraction pipeline.
-Detects value betting opportunities after odds are stored.
+Integrates OpportunityScanner into the extraction pipeline.
+Delegates value detection to scanner (which applies all quality gates),
+then persists results to the Opportunity table.
 
 Architecture:
     Extraction (orchestrator.py)
@@ -10,24 +11,21 @@ Architecture:
         v
     [Database: Events + Odds]
         |
-        +---> scan_value() --> Value bets (5%+ edge, de-vigged sharps)
+        +---> scanner.find_value_in_market() --> Value bets (de-vigged Pinnacle)
         |
-        +---> scan_bonus() --> Bonus mode (anchor vs counterpart, any edge)
+        +---> scanner.scan_bonus() --> Bonus mode (anchor vs counterpart, any edge)
+        |
+        v
+    [Opportunity table] --> UI
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
-from collections import defaultdict
-
-from sqlalchemy import func, and_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds, Opportunity, Profile
-from ..analysis.value import find_best_value, get_fair_odds
-from ..analysis.devig import get_fair_odds_for_outcome
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity
-from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +91,11 @@ class OpportunityAnalyzer:
         }
 
         for event in events:
-            # Group odds by market -> outcome -> providers
-            odds_grouped = self._group_odds(event)
+            # Group odds by market -> outcome -> providers (delegates to scanner)
+            odds_grouped = self.scanner.group_odds(event)
 
             for market, odds_by_outcome in odds_grouped.items():
-                # Detect value
+                # Detect value via scanner, then persist best per outcome
                 value_count = self._detect_value(event.id, market, odds_by_outcome)
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
@@ -169,19 +167,24 @@ class OpportunityAnalyzer:
 
     def _cleanup_stale(self) -> dict:
         """
-        Clean up stale opportunities from database.
+        Clean up stale data from database.
 
         Deletes:
         1. Inactive opportunities (from previous runs)
         2. Orphaned opportunities (event no longer exists)
         3. Opportunities for past events (already started)
+        4. Past events and their odds (cascade) — preserves events with bets
 
         Also deactivates current opportunities (will be refreshed).
 
         Returns:
-            {"inactive": int, "orphaned": int, "past_events": int, "deactivated": int}
+            {"inactive": int, "orphaned": int, "past_events": int,
+             "past_events_deleted": int, "deactivated": int}
         """
-        stats = {"inactive": 0, "orphaned": 0, "past_events": 0, "deactivated": 0}
+        from ..db.models import Bet
+
+        stats = {"inactive": 0, "orphaned": 0, "past_events": 0,
+                 "past_events_deleted": 0, "deactivated": 0}
         now = datetime.now(timezone.utc)
 
         # 1. Delete inactive opportunities
@@ -189,37 +192,65 @@ class OpportunityAnalyzer:
             Opportunity.is_active == False
         ).delete()
 
-        # 2. Delete orphaned opportunities (event doesn't exist)
-        valid_event_ids = [e.id for e in self.session.query(Event.id).all()]
-        if valid_event_ids:
-            stats["orphaned"] = self.session.query(Opportunity).filter(
-                ~Opportunity.event_id.in_(valid_event_ids)
-            ).delete(synchronize_session=False)
-        else:
-            # No events - delete all opportunities
-            stats["orphaned"] = self.session.query(Opportunity).delete()
+        # 2. Delete orphaned opportunities (event doesn't exist) — SQL subquery
+        valid_event_subq = self.session.query(Event.id).subquery()
+        stats["orphaned"] = self.session.query(Opportunity).filter(
+            ~Opportunity.event_id.in_(self.session.query(valid_event_subq))
+        ).delete(synchronize_session=False)
 
-        # 3. Delete opportunities for past events
+        # 3. Delete opportunities for past events — SQL subquery
+        past_event_subq = self.session.query(Event.id).filter(
+            Event.start_time < now
+        ).subquery()
+        stats["past_events"] = self.session.query(Opportunity).filter(
+            Opportunity.event_id.in_(self.session.query(past_event_subq))
+        ).delete(synchronize_session=False)
+
+        # 4. Delete past events + their odds (cascade: all, delete-orphan)
+        #    Preserve events that have bets (historical record)
+        #    Must materialize IDs here — individual session.delete() needed for cascade
         past_event_ids = [
-            e.id for e in self.session.query(Event.id).filter(Event.start_time < now).all()
+            e.id for e in self.session.query(Event.id).filter(
+                Event.start_time < now
+            ).all()
         ]
         if past_event_ids:
-            stats["past_events"] = self.session.query(Opportunity).filter(
-                Opportunity.event_id.in_(past_event_ids)
-            ).delete(synchronize_session=False)
+            event_ids_with_bets = set(
+                row[0] for row in self.session.query(Bet.event_id).filter(
+                    Bet.event_id.in_(past_event_ids)
+                ).all()
+                if row[0]
+            )
+            deletable_ids = [
+                eid for eid in past_event_ids if eid not in event_ids_with_bets
+            ]
+            if deletable_ids:
+                for i in range(0, len(deletable_ids), 500):
+                    batch = deletable_ids[i:i + 500]
+                    past_events = self.session.query(Event).filter(
+                        Event.id.in_(batch)
+                    ).all()
+                    for event in past_events:
+                        self.session.delete(event)  # Cascades to odds
+                        stats["past_events_deleted"] += 1
 
-        # 4. Deactivate remaining (will be refreshed during detection)
+        # 5. Deactivate remaining (will be refreshed during detection)
         stats["deactivated"] = self.session.query(Opportunity).filter(
             Opportunity.is_active == True
         ).update({"is_active": False})
 
-        total_cleaned = stats["inactive"] + stats["orphaned"] + stats["past_events"]
-        if total_cleaned > 0:
+        total_cleaned = (
+            stats["inactive"] + stats["orphaned"] + stats["past_events"]
+        )
+        if total_cleaned > 0 or stats["past_events_deleted"] > 0:
             logger.info(
-                f"[Analyzer] Cleanup: {stats['inactive']} inactive, "
-                f"{stats['orphaned']} orphaned, {stats['past_events']} past events"
+                f"[Analyzer] Cleanup: {stats['inactive']} inactive opps, "
+                f"{stats['orphaned']} orphaned opps, {stats['past_events']} past opps, "
+                f"{stats['past_events_deleted']} past events+odds deleted"
             )
-        logger.debug(f"[Analyzer] Deactivated {stats['deactivated']} existing opportunities")
+        logger.debug(
+            f"[Analyzer] Deactivated {stats['deactivated']} existing opportunities"
+        )
 
         return stats
 
@@ -233,40 +264,6 @@ class OpportunityAnalyzer:
             .all()
         )
 
-    def _group_odds(self, event: Event) -> dict[str, dict[str, list[dict]]]:
-        """
-        Group event odds by market -> outcome -> provider list.
-
-        Returns:
-            {
-                "1x2": {
-                    "home": [{"provider": "unibet", "odds": 2.10, "point": None}, ...],
-                    "draw": [...],
-                    "away": [...]
-                },
-                "moneyline": {
-                    "home": [{"provider": "bet365", "odds": 1.95, "point": None}, ...],
-                    "away": [...]
-                }
-            }
-        """
-        grouped = defaultdict(lambda: defaultdict(list))
-
-        for odds in event.odds:
-            # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
-            if odds.point is not None:
-                market_key = f"{odds.market}_{odds.point}"
-            else:
-                market_key = odds.market
-
-            grouped[market_key][odds.outcome].append({
-                "provider": odds.provider_id,
-                "odds": odds.odds,
-                "point": odds.point
-            })
-
-        return dict(grouped)
-
     def _detect_value(
         self,
         event_id: str,
@@ -276,82 +273,44 @@ class OpportunityAnalyzer:
         """
         Detect value betting opportunities for a market.
 
-        Fair odds calculation:
-        - If both Pinnacle and Polymarket exist: mean of de-vigged Pinnacle + Polymarket
-        - If only Pinnacle: de-vigged Pinnacle odds
-        - If only Polymarket: Polymarket odds (no margin)
+        Delegates to scanner.find_value_in_market() which applies all quality gates:
+        - MAX_ODDS_RATIO: rejects likely event mismatches
+        - MIN_VALID_PROB_SUM: rejects incomplete soft provider markets
+        - Market type mismatch: prevents 3-way vs 2-way comparison
+        - Pinnacle market completeness: validates prob_sum before de-vigging
+
+        Keeps only the best value bet per outcome (highest edge) and upserts
+        to the Opportunity table.
 
         Returns:
             {"found": int, "new": int}
         """
         result = {"found": 0, "new": 0}
 
-        # Build Pinnacle market odds for de-vigging (need all outcomes)
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+        # Delegate to scanner (all quality gates applied here)
+        value_bets = self.scanner.find_value_in_market(
+            event_id=event_id,
+            market=market,
+            odds_by_outcome=odds_by_outcome,
+            min_edge_pct=self.min_edge_pct,
+        )
 
-        for outcome, provider_odds_list in odds_by_outcome.items():
-            # Get Pinnacle odds for this outcome (only sharp source)
-            pinnacle_odds = next(
-                (p["odds"] for p in provider_odds_list if p["provider"] == "pinnacle"),
-                None
-            )
+        if not value_bets:
+            return result
 
-            # Calculate fair odds from de-vigged Pinnacle
-            fair_odds = None
-            fair_provider = None
+        # Keep best per outcome (highest edge)
+        best_by_outcome: dict = {}
+        for vb in value_bets:
+            existing_best = best_by_outcome.get(vb.outcome)
+            if existing_best is None or vb.edge_pct > existing_best.edge_pct:
+                best_by_outcome[vb.outcome] = vb
 
-            if pinnacle_odds is not None and len(pinnacle_market) >= 2:
-                fair_odds = get_fair_odds_for_outcome(
-                    outcome, pinnacle_market, method="multiplicative"
-                )
-                fair_provider = "pinnacle"
-            elif pinnacle_odds is not None:
-                fair_odds = pinnacle_odds  # Can't de-vig single outcome
-                fair_provider = "pinnacle"
-
-            if not fair_odds:
-                continue  # No Pinnacle odds for this outcome
-
-            # Filter to non-sharp providers only
-            soft_providers = [
-                p for p in provider_odds_list
-                if p["provider"] not in SHARP_PROVIDERS
-            ]
-
-            if not soft_providers:
-                continue  # Only sharp providers have odds
-
-            # Find best value
-            value = find_best_value(
-                event_id=event_id,
-                market=market,
-                outcome=outcome,
-                fair_odds=fair_odds,
-                provider_odds_list=soft_providers,
-                min_edge_pct=self.min_edge_pct
-            )
-
-            if not value:
-                continue
-
-            # Sanity check: edges > 100% are almost certainly data quality issues
-            if value.edge_pct > 100:
-                logger.debug(
-                    f"[Analyzer] Skipping suspicious value {value.edge_pct:.1f}% for "
-                    f"{event_id} {market} {outcome}"
-                )
-                continue
-
+        for outcome, vb in best_by_outcome.items():
             result["found"] += 1
 
             logger.info(
                 f"[Analyzer] Value found: {event_id} {market} {outcome} "
-                f"@ {value.provider} {value.provider_odds} (+{value.edge_pct}% vs {fair_provider})"
+                f"@ {vb.provider} {vb.provider_odds} (+{vb.edge_pct}% vs pinnacle)"
             )
 
             # Extract point value from market key if present
@@ -369,20 +328,20 @@ class OpportunityAnalyzer:
             # Build outcomes JSON
             outcomes_json = [
                 {
-                    "provider": value.provider,
+                    "provider": vb.provider,
                     "outcome": outcome,
-                    "odds": value.provider_odds,
-                    "edge_pct": value.edge_pct
+                    "odds": vb.provider_odds,
+                    "edge_pct": vb.edge_pct
                 },
                 {
-                    "provider": fair_provider,
+                    "provider": "pinnacle",
                     "outcome": outcome,
-                    "odds": fair_odds,
+                    "odds": vb.fair_odds,
                     "is_fair_odds": True
                 }
             ]
 
-            # Check for existing
+            # Upsert to Opportunity table
             existing = self.session.query(Opportunity).filter(
                 Opportunity.event_id == event_id,
                 Opportunity.market == clean_market,
@@ -392,11 +351,11 @@ class OpportunityAnalyzer:
 
             if existing:
                 existing.is_active = True
-                existing.edge_pct = value.edge_pct
-                existing.provider1_id = value.provider
-                existing.odds1 = value.provider_odds
-                existing.provider2_id = fair_provider
-                existing.odds2 = fair_odds
+                existing.edge_pct = vb.edge_pct
+                existing.provider1_id = vb.provider
+                existing.odds1 = vb.provider_odds
+                existing.provider2_id = "pinnacle"
+                existing.odds2 = vb.fair_odds
                 existing.outcomes = outcomes_json
                 existing.point = point_value
                 existing.detected_at = datetime.now(timezone.utc)
@@ -406,11 +365,11 @@ class OpportunityAnalyzer:
                     event_id=event_id,
                     market=clean_market,
                     outcome1=outcome,
-                    edge_pct=value.edge_pct,
-                    provider1_id=value.provider,
-                    odds1=value.provider_odds,
-                    provider2_id=fair_provider,
-                    odds2=fair_odds,
+                    edge_pct=vb.edge_pct,
+                    provider1_id=vb.provider,
+                    odds1=vb.provider_odds,
+                    provider2_id="pinnacle",
+                    odds2=vb.fair_odds,
                     outcomes=outcomes_json,
                     point=point_value,
                     is_active=True,

@@ -2,8 +2,8 @@ import { useState, useCallback } from 'react';
 import type { BettingContext } from '@/types';
 import { Sidebar, type TabName } from './Sidebar';
 import {
-  ExtractPage,
   ValuePage,
+  PolymarketPage,
   BetsPage,
   BankrollPage,
   ProfilePage,
@@ -16,7 +16,7 @@ interface TerminalWindowProps {
 }
 
 export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
-  const [activeTab, setActiveTab] = useState<TabName>('extract');
+  const [activeTab, setActiveTab] = useState<TabName>('value');
 
   const handleTabChange = useCallback((tab: TabName) => {
     setActiveTab(tab);
@@ -24,10 +24,10 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
 
   const renderPage = () => {
     switch (activeTab) {
-      case 'extract':
-        return <ExtractPage providers={context.providers} onRefresh={onRefresh} />;
       case 'value':
         return <ValuePage />;
+      case 'polymarket':
+        return <PolymarketPage />;
       case 'bets':
         return <BetsPage />;
       case 'bankroll':

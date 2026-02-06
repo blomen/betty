@@ -1,14 +1,13 @@
 /**
- * useDropdownWorkflow - Manages extract/value workflow state
+ * useDropdownWorkflow - Manages value/bets workflow state
  *
- * Handles multi-step workflows for extraction and opportunity selection.
- * Stakes are now auto-calculated by the backend using risk management settings.
+ * Handles multi-step workflows for opportunity selection and bet settlement.
+ * Stakes are auto-calculated by the backend using risk management settings.
  */
 import { useState, useCallback } from 'react';
 import type {
   DropdownWorkflowState,
   DropdownOption,
-  Provider,
   OpportunityWithEvent,
   BankrollExposure,
   Bet,
@@ -18,23 +17,18 @@ import { api } from '@/services/api';
 import { formatOpportunitiesList, formatBetsTable, formatProviderName, joinLines, outcomeToTeam } from '@/utils/formatters';
 
 interface UseDropdownWorkflowProps {
-  providers: Provider[];
   exposure: BankrollExposure;
   sendMessage: (msg: string) => void;
   onRefresh: () => void;
-  onRunExtraction: (providers: string) => void;
 }
 
 export function useDropdownWorkflow({
-  providers,
   // exposure is available for future use if needed
   sendMessage,
   onRefresh,
-  onRunExtraction,
 }: UseDropdownWorkflowProps) {
   const [workflow, setWorkflow] = useState<DropdownWorkflowState>({ type: 'idle', step: 'idle' });
   const [options, setOptions] = useState<DropdownOption[]>([]);
-  const [selectedProviderIds, setSelectedProviderIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [lastOpportunities, setLastOpportunities] = useState<OpportunityWithEvent[]>([]);
   const [lastBets, setLastBets] = useState<Bet[]>([]);
@@ -43,7 +37,6 @@ export function useDropdownWorkflow({
   const cancel = useCallback(() => {
     setWorkflow({ type: 'idle', step: 'idle' });
     setOptions([]);
-    setSelectedProviderIds(new Set());
     setSelectedIndex(0);
   }, []);
 
@@ -105,39 +98,6 @@ export function useDropdownWorkflow({
       cancel();
     }
   }, [workflow, sendMessage, onRefresh, cancel]);
-
-  // Start extract workflow
-  const startExtract = useCallback(() => {
-    const allProviders = providers.filter((p) => p.is_enabled);
-    if (allProviders.length === 0) {
-      sendMessage('**No providers configured.**');
-      return;
-    }
-
-    const defaultSelected = new Set(['pinnacle']);
-    setSelectedProviderIds(defaultSelected);
-
-    const opts: DropdownOption[] = [
-      ...allProviders.map((p) => ({
-        id: p.id,
-        label: formatProviderName(p.name || p.id),
-        sublabel: ['pinnacle', 'polymarket'].includes(p.id) ? '(sharp)' : '(soft)',
-        selected: defaultSelected.has(p.id),
-        type: 'provider' as const,
-      })),
-      { id: 'run', label: '[RUN EXTRACTION]', sublabel: 'Start', type: 'action' as const },
-      { id: 'cancel', label: '[cancel]', type: 'action' as const },
-    ];
-
-    setOptions(opts);
-    setSelectedIndex(0);
-    setWorkflow({ type: 'extract', step: 'select-provider', selectedProviders: Array.from(defaultSelected) });
-    sendMessage(
-      '**EXTRACTION** - Select providers\n\n' +
-      'Use arrow keys to navigate, Enter to toggle selection.\n' +
-      'Select [RUN EXTRACTION] when ready.'
-    );
-  }, [providers, sendMessage]);
 
   // Start value workflow
   const startValue = useCallback(async () => {
@@ -318,37 +278,6 @@ export function useDropdownWorkflow({
     }
 
     switch (workflow.type) {
-      case 'extract': {
-        if (option.id === 'run') {
-          const selected = Array.from(selectedProviderIds);
-          if (selected.length === 0) {
-            sendMessage('**Select at least one provider.**');
-            return;
-          }
-          cancel();
-          onRunExtraction(selected.join(','));
-          return;
-        }
-
-        // Toggle provider selection
-        const providerId = option.id as string;
-        setSelectedProviderIds((prev) => {
-          const newSet = new Set(prev);
-          if (newSet.has(providerId)) {
-            newSet.delete(providerId);
-          } else {
-            newSet.add(providerId);
-          }
-          setOptions((opts) =>
-            opts.map((opt) =>
-              opt.id === providerId ? { ...opt, selected: !opt.selected } : opt
-            )
-          );
-          return newSet;
-        });
-        break;
-      }
-
       case 'value': {
         if (workflow.step === 'select-opportunity') {
           const oppIndex = (option.id as number) - 1;
@@ -500,7 +429,7 @@ export function useDropdownWorkflow({
         break;
       }
     }
-  }, [workflow, selectedProviderIds, sendMessage, onRefresh, onRunExtraction, cancel, placeValueBet]);
+  }, [workflow, sendMessage, onRefresh, cancel, placeValueBet]);
 
   return {
     workflow,
@@ -509,7 +438,6 @@ export function useDropdownWorkflow({
     setSelectedIndex,
     lastOpportunities,
     lastBets,
-    startExtract,
     startValue,
     startBets,
     cancel,

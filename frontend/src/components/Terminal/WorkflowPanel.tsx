@@ -7,7 +7,7 @@ import type {
 } from '@/types';
 
 interface WorkflowPanelProps {
-  // Generic dropdown workflow (extract, arb, value)
+  // Generic dropdown workflow (value, bets)
   dropdownWorkflow: DropdownWorkflowState;
   dropdownOptions: DropdownOption[];
   selectedIndex: number;
@@ -96,8 +96,6 @@ export function WorkflowPanel({
   const getWorkflowLabel = (): string => {
     if (isDropdownActive) {
       switch (dropdownWorkflow.type) {
-        case 'extract':
-          return 'Extraction';
         case 'value':
           return 'Value Bets';
         default:
@@ -115,7 +113,7 @@ export function WorkflowPanel({
     if (isDropdownActive) {
       switch (dropdownWorkflow.step) {
         case 'select-provider':
-          return dropdownWorkflow.type === 'extract' ? 'Select providers' : 'Select provider';
+          return 'Select provider';
         case 'select-opportunity':
           return 'Select opp';
         case 'select-stake':
@@ -317,18 +315,6 @@ export function WorkflowPanel({
                           : 'bg-transparent border border-transparent hover:bg-panel2 text-text'
                       }`}
                     >
-                      {/* Checkbox for extract multi-select */}
-                      {dropdownWorkflow.type === 'extract' && opt.type === 'provider' && (
-                        <span
-                          className={`w-4 h-4 border rounded flex items-center justify-center text-xs flex-shrink-0 ${
-                            opt.selected
-                              ? 'bg-success/20 border-success text-success'
-                              : 'border-muted2'
-                          }`}
-                        >
-                          {opt.selected ? '✓' : ''}
-                        </span>
-                      )}
                       <span className="font-medium truncate">{opt.label}</span>
                       {opt.sublabel && (
                         <span className="text-xs text-muted truncate">
