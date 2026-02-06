@@ -1,5 +1,5 @@
 # Bankroll package - stake calculation, tracking
-from .manager import BankrollManager, kelly_stake, arb_stakes, bonus_stakes, StakeRecommendation
+from .manager import arb_stakes, bonus_stakes
 from .stake_calculator import (
     StakeCalculator,
     StakeResult,

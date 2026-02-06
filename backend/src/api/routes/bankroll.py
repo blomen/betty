@@ -55,6 +55,12 @@ async def get_bankroll(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/bonuses")
+async def get_provider_bonuses():
+    """Get bonus configurations for all providers from providers.yaml."""
+    return load_provider_bonuses()
+
+
 @router.get("/stats")
 async def get_bankroll_stats(db: Session = Depends(get_db)):
     """Get bankroll statistics for active profile."""
@@ -196,8 +202,9 @@ async def deposit_with_bonus(
     # 6. Update bonus status if bonus was claimed
     bonus_info = None
     if bonus_amount > 0:
-        # Get wagering multiplier from config (default 10x)
+        # Get wagering multiplier and min_odds from config (per-provider)
         wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
+        bonus_min_odds = bonus_config.get('min_odds', 1.80)
 
         # Start bonus wagering tracking
         bonus_info = start_bonus_wagering(
@@ -206,6 +213,7 @@ async def deposit_with_bonus(
             provider_id,
             bonus_amount,
             wagering_multiplier,
+            min_odds=bonus_min_odds,
         )
 
     db.commit()
@@ -222,6 +230,7 @@ async def deposit_with_bonus(
         "bonus_status": bonus_info.get("status") if bonus_info else None,
         "bonus_limit": bonus_limit if is_double_deposit else None,
         "wagering_requirement": bonus_info.get("wagering_requirement") if bonus_info else None,
+        "min_odds": bonus_info.get("min_odds") if bonus_info else None,
     }
 
 
@@ -317,6 +326,7 @@ def get_stake_calculator(db: Session, profile_id: int) -> StakeCalculator:
                 "wagered": bonus.wagered_amount or 0.0,
                 "requirement": bonus.wagering_requirement,
                 "bonus_amount": bonus.bonus_amount or 0.0,
+                "min_odds": bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS,
             }
 
     return calc
@@ -343,11 +353,13 @@ async def get_bankroll_status(db: Session = Depends(get_db)):
 
     bonus_progress = {}
     for bonus in bonuses:
+        provider_min_odds = bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS
         bonus_progress[bonus.provider_id] = {
             "status": bonus.bonus_status,
             "bonus_amount": bonus.bonus_amount or 0.0,
             "wagering_requirement": bonus.wagering_requirement or 0.0,
             "wagered_amount": bonus.wagered_amount or 0.0,
+            "min_odds": provider_min_odds,
             "progress_pct": (
                 min(100.0, (bonus.wagered_amount or 0.0) / bonus.wagering_requirement * 100)
                 if bonus.wagering_requirement and bonus.wagering_requirement > 0
@@ -372,7 +384,7 @@ async def get_bankroll_status(db: Session = Depends(get_db)):
         "event_exposures": status["event_exposures"],
         "event_cap_pct": calc.event_tracker.max_event_exposure_pct * 100,
         "bonus_progress": bonus_progress,
-        "min_odds_bonus": BONUS_MIN_ODDS,
+        "min_odds_bonus_default": BONUS_MIN_ODDS,
     }
 
 
@@ -417,7 +429,7 @@ async def preview_stake(data: StakePreviewRequest, db: Session = Depends(get_db)
         "was_capped_daily": result.was_capped_daily,
         "skip_reason": result.skip_reason,
         "bonus_cleared": bonus_cleared,
-        "min_odds_applied": 0.0 if bonus_cleared else BONUS_MIN_ODDS,
+        "min_odds_applied": 0.0 if bonus_cleared else calc.get_min_odds_for_provider(data.provider_id or ""),
     }
 
 

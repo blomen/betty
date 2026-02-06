@@ -338,7 +338,8 @@ class BonusTracker:
         self,
         provider_id: str,
         bonus_amount: float,
-        wagering_multiplier: float = 10.0
+        wagering_multiplier: float = 10.0,
+        min_odds: float = 1.80,
     ):
         """
         Start tracking a new bonus.
@@ -347,24 +348,27 @@ class BonusTracker:
             provider_id: The provider where bonus was claimed
             bonus_amount: The bonus amount received
             wagering_multiplier: Times bonus must be wagered (default 10x)
+            min_odds: Minimum odds for wagering qualification (per-provider)
         """
         self.bonuses[provider_id] = {
             "wagered": 0.0,
             "requirement": bonus_amount * wagering_multiplier,
             "bonus_amount": bonus_amount,
+            "min_odds": min_odds,
         }
 
     def record_bet(self, provider_id: str, stake: float, odds: float):
         """
         Record a bet toward wagering requirement.
 
-        Only bets with odds >= 1.80 count toward wagering.
+        Only bets with odds >= provider's min_odds count toward wagering.
         """
         if provider_id not in self.bonuses:
             return
 
-        # Only bets with qualifying odds count
-        if odds >= BONUS_MIN_ODDS:
+        # Only bets with qualifying odds count (per-provider min_odds)
+        provider_min_odds = self.bonuses[provider_id].get("min_odds", BONUS_MIN_ODDS)
+        if odds >= provider_min_odds:
             self.bonuses[provider_id]["wagered"] += stake
 
     def is_cleared(self, provider_id: str) -> bool:
@@ -450,11 +454,13 @@ class StakeCalculator:
         Get minimum odds for a provider based on bonus status.
 
         If bonus is cleared (or no bonus), returns 0.0 (no restriction).
-        If bonus is not cleared, returns BONUS_MIN_ODDS (1.80).
+        If bonus is not cleared, returns provider-specific min_odds.
         """
         if self.bonus_tracker.is_cleared(provider_id):
             return 0.0  # No restriction
-        return BONUS_MIN_ODDS
+        # Return per-provider min_odds from bonus config
+        bonus = self.bonus_tracker.bonuses.get(provider_id, {})
+        return bonus.get("min_odds", BONUS_MIN_ODDS)
 
     def calculate(
         self,
@@ -534,9 +540,10 @@ class StakeCalculator:
         provider_id: str,
         bonus_amount: float,
         wagering_multiplier: float = 10.0,
+        min_odds: float = 1.80,
     ):
         """Start tracking a new bonus for a provider."""
-        self.bonus_tracker.start_bonus(provider_id, bonus_amount, wagering_multiplier)
+        self.bonus_tracker.start_bonus(provider_id, bonus_amount, wagering_multiplier, min_odds)
 
     def get_status(self) -> dict:
         """Get current calculator status."""

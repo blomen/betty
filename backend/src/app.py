@@ -20,8 +20,6 @@ from .db.models import init_db, get_session, Event, Odds, Provider, Bet, Profile
 from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 from .analysis.scanner import OpportunityScanner
-from .analysis.mug_scanner import MugBetScanner
-from .analysis.mug_automator import MugBetAutomator
 
 # Fix Windows console encoding for Unicode support
 if sys.platform == "win32":
@@ -285,130 +283,6 @@ def value():
     """Show value betting opportunities."""
     init_db()
     show_value_bets()
-
-
-def show_mug_status():
-    """Show account health stats for all providers (mug bets are optional/manual)."""
-    session = get_session()
-
-    # Get active profile
-    profile = session.query(Profile).filter(Profile.is_active == True).first()
-    if not profile:
-        profile = session.query(Profile).first()
-        if not profile:
-            profile = Profile(name="default", is_active=True)
-            session.add(profile)
-            session.commit()
-
-    automator = MugBetAutomator(session, profile_id=profile.id)
-    statuses = automator.get_all_provider_status()
-
-    if not statuses:
-        console.print("[yellow]No providers with balance found.[/yellow]")
-        session.close()
-        return
-
-    table = Table(title="Account Health Stats")
-    table.add_column("Provider", style="cyan")
-    table.add_column("Age (days)", style="white")
-    table.add_column("Total Bets", style="blue")
-    table.add_column("EV Bets", style="green")
-    table.add_column("Mug Bets", style="yellow")
-    table.add_column("EV Ratio", style="magenta")
-
-    for status in statuses:
-        age = str(status.account_age_days) if status.account_age_days is not None else "-"
-        ev_ratio = f"{status.ev_quality_ratio:.0%}"
-
-        table.add_row(
-            status.provider_id,
-            age,
-            str(status.total_bets),
-            str(status.ev_bets),
-            str(status.mug_bets),
-            ev_ratio,
-        )
-
-    session.close()
-    console.print(table)
-
-    # Note about manual mug bets
-    console.print("\n[dim]Mug bets are optional. Value betting losses (~45%) provide natural cover.[/dim]")
-    console.print("[dim]Use 'mug-place <provider> --count N' if you want to place mug bets manually.[/dim]")
-
-
-def run_mug_place(provider: str, count: int = 3, dry_run: bool = False):
-    """Manually place mug bets for a provider."""
-    session = get_session()
-
-    # Get active profile
-    profile = session.query(Profile).filter(Profile.is_active == True).first()
-    if not profile:
-        profile = session.query(Profile).first()
-        if not profile:
-            profile = Profile(name="default", is_active=True)
-            session.add(profile)
-            session.commit()
-
-    automator = MugBetAutomator(session, profile_id=profile.id)
-
-    # Place specified number of mug bets for the provider
-    results = {provider: automator.auto_place(provider, count=count, dry_run=dry_run)}
-    results = {k: v for k, v in results.items() if v}
-
-    if not results:
-        console.print(f"[yellow]No mug bets placed - no opportunities found for {provider}.[/yellow]")
-        session.close()
-        return
-
-    mode_str = "[yellow][DRY RUN][/yellow] " if dry_run else ""
-
-    table = Table(title=f"{mode_str}Mug Bets Placed")
-    table.add_column("Provider", style="cyan")
-    table.add_column("Event", style="white")
-    table.add_column("Outcome", style="green")
-    table.add_column("Odds", style="yellow")
-    table.add_column("Stake", style="blue")
-    table.add_column("Edge", style="magenta")
-
-    total_stake = 0.0
-    total_bets = 0
-
-    for pid, bets in results.items():
-        for bet in bets:
-            event_str = f"{bet.home_team} vs {bet.away_team}"[:30] if bet.home_team else bet.event_id[:30]
-            table.add_row(
-                pid,
-                event_str,
-                bet.outcome,
-                f"{bet.odds:.2f}",
-                f"{bet.stake:.2f}",
-                f"{bet.edge_pct:+.1f}%",
-            )
-            total_stake += bet.stake
-            total_bets += 1
-
-    session.close()
-    console.print(table)
-    console.print(f"\n{mode_str}Total: [cyan]{total_bets}[/cyan] mug bets, [cyan]{total_stake:.2f}[/cyan] staked")
-
-
-@app.command("mug-status")
-def mug_status():
-    """Show account health stats (mug bets are optional)."""
-    init_db()
-    show_mug_status()
-
-
-@app.command("mug-place")
-def mug_place(
-    provider: str = typer.Argument(..., help="Provider to place mug bets for"),
-    count: int = typer.Option(3, "--count", "-c", help="Number of mug bets to place"),
-    dry_run: bool = typer.Option(False, "--dry-run", "-d", help="Preview without placing"),
-):
-    """Manually place mug bets for a provider."""
-    init_db()
-    run_mug_place(provider=provider, count=count, dry_run=dry_run)
 
 
 if __name__ == "__main__":

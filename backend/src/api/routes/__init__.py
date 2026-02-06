@@ -12,7 +12,6 @@ from .monitoring import router as monitoring_router
 from .chat import router as chat_router
 from .polymarket import router as polymarket_router
 from .risk import router as risk_router
-from .mug_bets import router as mug_bets_router
 
 __all__ = [
     'providers_router',
@@ -27,5 +26,4 @@ __all__ = [
     'chat_router',
     'polymarket_router',
     'risk_router',
-    'mug_bets_router',
 ]

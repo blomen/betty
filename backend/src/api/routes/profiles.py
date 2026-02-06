@@ -11,7 +11,7 @@ from ...db.models import (
     get_active_profile as get_active_profile_helper,
     get_total_profile_bankroll,
 )
-from ...bankroll import kelly_stake
+from ...bankroll import calculate_stake
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
 
@@ -206,22 +206,21 @@ async def calculate_stake(
     kelly_frac = profile.kelly_fraction if profile else 0.25
     max_stake_pct = profile.max_stake_pct if profile else 5.0
 
-    win_prob = 1 / fair_odds
-    rec = kelly_stake(
+    edge_raw = odds / fair_odds - 1 if fair_odds > 1 else 0
+    rec = calculate_stake(
+        bankroll_total=bankroll,
+        edge_raw=edge_raw,
         odds=odds,
-        win_probability=win_prob,
-        bankroll=bankroll,
-        kelly_fraction=kelly_frac,
-        max_stake_pct=max_stake_pct,
+        min_odds=0.0,
     )
 
     return {
         "profile_id": profile.id,
         "recommended_stake": rec.stake,
-        "kelly_stake": rec.kelly_stake,
-        "max_stake": rec.max_stake,
+        "kelly_stake": rec.raw_kelly_stake,
+        "max_stake": rec.single_bet_cap,
         "bankroll": bankroll,
-        "reason": rec.reason,
+        "reason": rec.skip_reason or "Kelly",
     }
 
 

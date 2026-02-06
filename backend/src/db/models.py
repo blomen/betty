@@ -75,11 +75,6 @@ class Provider(Base):
     url = Column(String)                        # "unibet.se"
 
     is_enabled = Column(Boolean, default=True)  # Can toggle off
-    balance = Column(Float, default=0.0)        # Your current balance
-
-    # DEPRECATED: Bonus status is now tracked per-profile in ProfileProviderBonus table
-    # This column is kept for backwards compatibility but should not be used
-    bonus_status = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -178,13 +173,6 @@ class Bet(Base):
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %
 
-    # EV tracking for mug betting analysis
-    ev_at_placement = Column(Float, nullable=True)    # EV score when bet was placed
-
-    # Mug betting fields
-    is_mug_bet = Column(Boolean, default=False)       # True if intentional -EV bet for account health
-    mug_bet_reason = Column(String, nullable=True)    # "warmup", "ratio_balance", "ongoing"
-
     # Relationships
     event = relationship("Event", back_populates="bets")
     provider = relationship("Provider", back_populates="bets")
@@ -260,7 +248,8 @@ class ProfileProviderBonus(Base):
     Wagering tracking:
     - bonus_amount: The bonus received (e.g., 1000 kr)
     - wagering_requirement: Total amount to wager (e.g., 10000 kr = 10x bonus)
-    - wagered_amount: Amount wagered so far (only bets with odds >= 1.80 count)
+    - wagered_amount: Amount wagered so far (only bets with odds >= min_odds count)
+    - min_odds: Per-provider minimum odds for wagering qualification (from providers.yaml)
     - When wagered_amount >= wagering_requirement: bonus is "completed"
     """
     __tablename__ = "profile_provider_bonuses"
@@ -278,7 +267,8 @@ class ProfileProviderBonus(Base):
     bonus_amount = Column(Float, default=0.0)           # Bonus received
     wagering_multiplier = Column(Float, default=10.0)   # Wagering requirement multiplier (default 10x)
     wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
-    wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= 1.80 only)
+    wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
+    min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -497,13 +487,9 @@ class ProviderRiskProfile(Base):
     # Brier score for calibration tracking (lower = better)
     brier_score = Column(Float, nullable=True)
 
-    # Account warmup tracking for mug betting
+    # Account tracking
     first_bet_date = Column(DateTime, nullable=True)  # Date of first bet on this provider
     total_bets_placed = Column(Integer, default=0)    # All-time bet count
-
-    # New feature scores for mug betting detection
-    ev_quality_ratio = Column(Float, default=0.0)       # % of +EV bets (high = suspicious)
-    account_freshness_risk = Column(Float, default=0.0)  # New account risk (high = risky)
 
     # Cooldown tracking
     is_on_cooldown = Column(Boolean, default=False)
@@ -540,14 +526,8 @@ class RiskConfig(Base):
     weight_timing_regularity = Column(Float, default=0.12)
     weight_outcome_correlation = Column(Float, default=0.15)
     weight_bonus_usage = Column(Float, default=0.12)
-    weight_clv = Column(Float, default=0.13)
-    weight_win_rate = Column(Float, default=0.08)
-    weight_ev_quality = Column(Float, default=0.10)          # EV ratio contribution
-    weight_account_freshness = Column(Float, default=0.10)   # Account age contribution
-
-    # Account warmup thresholds
-    warmup_days_threshold = Column(Integer, default=14)   # Days until account is "warmed up"
-    warmup_bets_threshold = Column(Integer, default=20)   # Bets needed for warmup
+    weight_clv = Column(Float, default=0.15)
+    weight_win_rate = Column(Float, default=0.10)
 
     # Risk level thresholds
     threshold_low = Column(Float, default=0.3)           # < this = low risk
@@ -559,14 +539,6 @@ class RiskConfig(Base):
     rolling_window_days = Column(Integer, default=30)    # Feature calculation window
     cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
-
-    # Mug bet configuration
-    mug_bet_max_edge_pct = Column(Float, default=-1.0)      # Max edge (negative = -EV)
-    mug_bet_min_edge_pct = Column(Float, default=-10.0)     # Min edge (too -EV is wasteful)
-    mug_bet_min_implied_prob = Column(Float, default=0.60)  # Favorites only (odds < 1.67)
-    mug_bet_stake_pct = Column(Float, default=1.5)          # % of bankroll per mug bet
-    mug_bet_warmup_count = Column(Integer, default=7)       # Mug bets during warmup phase
-    mug_bet_ongoing_ratio = Column(Integer, default=5)      # 1 mug per X value bets
 
     # Updated timestamp
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -603,7 +575,26 @@ def get_engine():
         )
         # Create tables on first engine creation
         Base.metadata.create_all(_engine)
+        # Migrate existing tables (add new columns)
+        _run_migrations(_engine)
     return _engine
+
+
+def _run_migrations(engine):
+    """Add new columns to existing tables (safe for fresh DBs too)."""
+    import sqlite3
+    with engine.connect() as conn:
+        raw = conn.connection.connection  # Get raw sqlite3 connection
+        cursor = raw.cursor()
+        # Add min_odds to profile_provider_bonuses if missing
+        try:
+            cursor.execute("SELECT min_odds FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN min_odds FLOAT DEFAULT 1.80")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists or table doesn't exist
 
 
 def init_db() -> None:
@@ -739,6 +730,7 @@ def get_bonus_status(db, profile_id: int, provider_id: str) -> dict:
             "bonus_amount": 0.0,
             "wagering_requirement": 0.0,
             "wagered_amount": 0.0,
+            "min_odds": 0.0,
             "progress_pct": 100.0,
             "is_cleared": True,
         }
@@ -758,6 +750,7 @@ def get_bonus_status(db, profile_id: int, provider_id: str) -> dict:
         "bonus_amount": record.bonus_amount,
         "wagering_requirement": record.wagering_requirement,
         "wagered_amount": record.wagered_amount,
+        "min_odds": record.min_odds if record.min_odds else BONUS_MIN_ODDS,
         "progress_pct": progress_pct,
         "is_cleared": is_cleared,
     }
@@ -767,21 +760,23 @@ def record_wagering(db, profile_id: int, provider_id: str, stake: float, odds: f
     """
     Record a bet toward wagering requirement.
 
-    Only bets with odds >= 1.80 count toward wagering.
+    Only bets with odds >= provider's min_odds count toward wagering.
     Automatically updates bonus_status to 'completed' when requirement is met.
 
     Returns:
         Updated bonus status dict
     """
-    if odds < BONUS_MIN_ODDS:
-        return get_bonus_status(db, profile_id, provider_id)
-
     record = db.query(ProfileProviderBonus).filter(
         ProfileProviderBonus.profile_id == profile_id,
         ProfileProviderBonus.provider_id == provider_id
     ).first()
 
     if not record or record.bonus_status != "in_progress":
+        return get_bonus_status(db, profile_id, provider_id)
+
+    # Use per-provider min_odds (falls back to 1.80 if not set)
+    provider_min_odds = record.min_odds if record.min_odds else BONUS_MIN_ODDS
+    if odds < provider_min_odds:
         return get_bonus_status(db, profile_id, provider_id)
 
     # Update wagered amount
@@ -800,7 +795,8 @@ def start_bonus_wagering(
     profile_id: int,
     provider_id: str,
     bonus_amount: float,
-    wagering_multiplier: float = 10.0
+    wagering_multiplier: float = 10.0,
+    min_odds: float = 1.80,
 ) -> dict:
     """
     Start tracking bonus wagering for a provider.
@@ -811,6 +807,7 @@ def start_bonus_wagering(
         provider_id: Provider ID
         bonus_amount: Bonus received
         wagering_multiplier: Times bonus must be wagered (default 10x)
+        min_odds: Minimum odds for wagering qualification (default 1.80)
 
     Returns:
         Updated bonus status dict
@@ -828,6 +825,7 @@ def start_bonus_wagering(
         record.wagering_multiplier = wagering_multiplier
         record.wagering_requirement = wagering_requirement
         record.wagered_amount = 0.0
+        record.min_odds = min_odds
         record.updated_at = datetime.utcnow()
     else:
         record = ProfileProviderBonus(
@@ -838,6 +836,7 @@ def start_bonus_wagering(
             wagering_multiplier=wagering_multiplier,
             wagering_requirement=wagering_requirement,
             wagered_amount=0.0,
+            min_odds=min_odds,
         )
         db.add(record)
 

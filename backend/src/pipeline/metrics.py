@@ -176,12 +176,12 @@ class PipelineMetrics:
     @property
     def total_events(self) -> int:
         """Total events processed across all providers."""
-        return sum(p.total_events for p in self.providers.values()) + self.polymarket_events
+        return sum(p.total_events for p in self.providers.values())
 
     @property
     def total_odds(self) -> int:
         """Total odds processed across all providers."""
-        return sum(p.total_odds for p in self.providers.values()) + self.polymarket_odds
+        return sum(p.total_odds for p in self.providers.values())
 
     @property
     def providers_attempted(self) -> int:

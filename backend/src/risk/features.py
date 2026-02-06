@@ -47,9 +47,7 @@ class BehavioralFeatures:
     # Win rate
     win_rate_deviation: float = 0.0  # Deviation from expected win rate
 
-    # Mug betting / account warmup features
-    ev_quality_ratio: float = 0.0       # % of +EV bets (high = suspicious sharp behavior)
-    account_freshness_risk: float = 0.0  # New account risk (high = needs warmup)
+    # Account tracking
     account_age_days: int = 0            # Days since first bet
     total_bets_all_time: int = 0         # All-time bet count for this provider
 
@@ -68,8 +66,6 @@ class BehavioralFeatures:
             "bonus_usage_ratio": round(self.bonus_usage_ratio, 3),
             "clv_score": round(self.clv_score, 3),
             "win_rate_deviation": round(self.win_rate_deviation, 3),
-            "ev_quality_ratio": round(self.ev_quality_ratio, 3),
-            "account_freshness_risk": round(self.account_freshness_risk, 3),
             "account_age_days": self.account_age_days,
             "total_bets_all_time": self.total_bets_all_time,
             "bets_analyzed": self.bets_analyzed,
@@ -125,17 +121,14 @@ class FeatureExtractor:
             .all()
         )
 
-        # Calculate account freshness (uses all bets, not just window)
-        freshness_risk, account_age, total_bets = self._calculate_account_freshness(all_bets)
+        # Calculate account age (uses all bets, not just window)
+        account_age, total_bets = self._calculate_account_age(all_bets)
 
         if len(bets) < 5:
             # Not enough data for meaningful analysis of windowed features
-            # But still return account freshness info
             return BehavioralFeatures(
                 bets_analyzed=len(bets),
                 calculation_window_days=self.window_days,
-                ev_quality_ratio=0.0,
-                account_freshness_risk=freshness_risk,
                 account_age_days=account_age,
                 total_bets_all_time=total_bets,
             )
@@ -148,8 +141,6 @@ class FeatureExtractor:
             bonus_usage_ratio=self._calculate_bonus_usage(bets),
             clv_score=self._calculate_clv_score(bets),
             win_rate_deviation=self._calculate_win_rate_deviation(bets),
-            ev_quality_ratio=self._calculate_ev_quality_ratio(all_bets),
-            account_freshness_risk=freshness_risk,
             account_age_days=account_age,
             total_bets_all_time=total_bets,
             bets_analyzed=len(bets),
@@ -388,76 +379,22 @@ class FeatureExtractor:
         score = (deviation + 0.05) / 0.10
         return max(0, min(1.0, score))
 
-    def _calculate_ev_quality_ratio(self, bets: list[Bet]) -> float:
+    def _calculate_account_age(self, bets: list[Bet]) -> tuple[int, int]:
         """
-        Calculate ratio of +EV to total bets.
+        Calculate account age and total bets.
 
-        High ratio = always taking +EV = suspicious sharp behavior.
-        Recreational bettors have ~50% +EV bets.
-
-        Uses CLV as proxy for EV at placement:
-        - Positive CLV = bet was +EV at placement
-        - Negative CLV = bet was -EV at placement
-
-        Returns 0-1 (higher = more suspicious)
-        """
-        if len(bets) < 10:
-            return 0.0
-
-        # Count bets with CLV data
-        bets_with_clv = [b for b in bets if b.clv_pct is not None]
-
-        if len(bets_with_clv) < 10:
-            # Fall back to ev_at_placement if available
-            bets_with_ev = [b for b in bets if b.ev_at_placement is not None]
-            if len(bets_with_ev) >= 10:
-                positive_ev = sum(1 for b in bets_with_ev if b.ev_at_placement > 0)
-                ratio = positive_ev / len(bets_with_ev)
-            else:
-                return 0.0
-        else:
-            # Use CLV as proxy - positive CLV = +EV bet
-            positive_clv = sum(1 for b in bets_with_clv if b.clv_pct > 0)
-            ratio = positive_clv / len(bets_with_clv)
-
-        # Map: 50% +EV = 0.0 (normal recreational), 100% +EV = 1.0 (suspicious sharp)
-        # ratio of 0.5 -> score 0.0
-        # ratio of 1.0 -> score 1.0
-        score = max(0, (ratio - 0.5) * 2)
-        return min(1.0, score)
-
-    def _calculate_account_freshness(self, bets: list[Bet]) -> tuple[float, int, int]:
-        """
-        Calculate account freshness risk.
-
-        New accounts with few bets are higher risk for limiting.
-        Bookmakers flag new accounts that immediately start +EV betting.
-
-        Returns: (risk_score 0-1, age_days, total_bets)
+        Returns: (age_days, total_bets)
         """
         if not bets:
-            return 1.0, 0, 0  # No history = maximum risk
+            return 0, 0
 
         # Get first bet date
         bets_with_date = [b for b in bets if b.placed_at is not None]
         if not bets_with_date:
-            return 1.0, 0, len(bets)
+            return 0, len(bets)
 
         first_bet_date = min(b.placed_at for b in bets_with_date)
         age_days = (datetime.utcnow() - first_bet_date).days
         total_bets = len(bets)
 
-        # Exponential decay for age risk:
-        # <7 days = high risk, 14+ days = lower risk, 30+ days = minimal risk
-        # Uses smoother curve: risk = 1 - (age / 30) capped at 0
-        age_risk = max(0, 1.0 - (age_days / 30))
-
-        # Also factor in bet count
-        # <10 bets = high risk, 20+ bets = lower risk, 50+ bets = minimal risk
-        count_risk = max(0, 1.0 - (total_bets / 50))
-
-        # Combine: 60% age, 40% bet count
-        # Both new accounts AND accounts with few bets are suspicious
-        combined_risk = age_risk * 0.6 + count_risk * 0.4
-
-        return combined_risk, age_days, total_bets
+        return age_days, total_bets

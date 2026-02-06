@@ -204,11 +204,18 @@ def store_polymarket_event(
 
     default_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
 
-    # Cache for fuzzy matching - indexed by sport for O(1) lookup
+    # Diagnostic logging for matching
     if isinstance(event.start_time, datetime):
         date_str = event.start_time.strftime("%Y%m%d")
     else:
         date_str = str(event.start_time)[:10].replace('-', '') if event.start_time else "00000000"
+
+    logger.debug(
+        f"[polymarket] Matching '{home_team} vs {away_team}' sport={kambi_sport} "
+        f"date={date_str} default_id={default_id} "
+        f"cache_sports={list(event_cache.keys())} "
+        f"candidates_in_sport={len(event_cache.get(kambi_sport, {}))}"
+    )
 
     # Fuzzy match against existing events in cache (e.g., from Pinnacle)
     matched_id = None
@@ -295,9 +302,13 @@ def store_polymarket_event(
                     f"existing event (score: {best_score:.0f}, swapped: {best_is_swapped})"
                 )
 
-    # If no match found, use default ID
+    # If no match found, skip — Polymarket is not a sharp source,
+    # so unmatched events are useless (no sharp baseline to compare against)
     if not matched_id:
-        matched_id = default_id
+        logger.debug(
+            f"[polymarket] Skipped '{home_team} vs {away_team}' ({kambi_sport}) - no sharp match"
+        )
+        return False, 0, 0
 
     # Add to sport-indexed cache (use Polymarket's team order for cache key)
     # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup

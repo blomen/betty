@@ -1,6 +1,7 @@
 """Opportunities API routes - value betting opportunities."""
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -8,8 +9,7 @@ from sqlalchemy.orm import Session
 from ...db.models import Event, Odds, Opportunity, Provider, Profile, get_active_profile, get_total_profile_bankroll, get_bonus_status
 from ...analysis import find_best_hedge
 from ...analysis.scanner import OpportunityScanner
-from ...bankroll.manager import kelly_stake
-from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ...bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
 
@@ -42,6 +42,9 @@ async def list_opportunities(
         query = query.filter(Opportunity.provider1_id == provider1)
     if provider2:
         query = query.filter(Opportunity.provider2_id == provider2)
+    # Exclude polymarket from soft book results (has its own dedicated page)
+    if not provider1:
+        query = query.filter(Opportunity.provider1_id != "polymarket")
     if providers:
         provider_list = [p.strip() for p in providers.split(',')]
         query = query.filter(
@@ -51,12 +54,17 @@ async def list_opportunities(
     if market:
         query = query.filter(Opportunity.market == market)
     # Join with Event table to get event details (sport, start_time, teams)
-    # Use outer join to include opportunities even if event was deleted
+    # Always inner join - no point showing opportunities for deleted events
+    now = datetime.now(timezone.utc)
     if not sport:
-        query = query.join(Event, Event.id == Opportunity.event_id, isouter=True)
+        query = query.join(Event, Event.id == Opportunity.event_id)
     else:
-        # Already joined above for sport filter
         query = query.join(Event, Event.id == Opportunity.event_id).filter(Event.sport == sport)
+
+    # Filter out events that have already started
+    query = query.filter(
+        (Event.start_time.is_(None)) | (Event.start_time > now)
+    )
 
     if min_value is not None:
         # Filter by edge_pct for value
@@ -111,9 +119,9 @@ async def list_opportunities(
                 # Calculate edge
                 edge_raw = (o.odds1 / o.odds2 - 1) if o.odds2 > 1 else 0
 
-                # Check bonus status for min odds
+                # Check bonus status for min odds (per-provider)
                 bonus_status = get_bonus_status(db, profile.id, o.provider1_id)
-                min_odds = 0.0 if bonus_status.get("is_cleared", True) else BONUS_MIN_ODDS
+                min_odds = 0.0 if bonus_status.get("is_cleared", True) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
                 stake_rec = stake_calculator.calculate(
                     edge_raw=edge_raw,
@@ -249,21 +257,20 @@ async def scan_bonus_opportunities(
     # Calculate suggested stake for each opportunity
     results = []
     for o in filtered_opportunities[:limit]:
-        # Win probability from fair odds
-        win_prob = 1 / o.fair_odds if o.fair_odds > 0 else 0
+        # Edge from fair odds
+        edge_raw = o.anchor_odds / o.fair_odds - 1 if o.fair_odds > 1 else 0
 
-        if win_prob > 0 and total_bankroll > 0:
-            rec = kelly_stake(
+        if edge_raw > 0 and total_bankroll > 0:
+            rec = calculate_stake(
+                bankroll_total=total_bankroll,
+                edge_raw=edge_raw,
                 odds=o.anchor_odds,
-                win_probability=win_prob,
-                bankroll=total_bankroll,
-                kelly_fraction=0.25,  # Quarter Kelly
-                max_stake_pct=5.0,
+                min_odds=0.0,
             )
             # Limit to provider balance
             suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
-            kelly_amount = rec.kelly_stake
-            max_amount = rec.max_stake
+            kelly_amount = rec.raw_kelly_stake
+            max_amount = rec.single_bet_cap
         else:
             suggested = 0
             kelly_amount = 0

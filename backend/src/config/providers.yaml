@@ -163,8 +163,10 @@ providers:
     domain: unibet.se
     brand: ubse
     bonus:
-      type: doubledeposit
+      type: freebet
       amount: 1000
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   # PRODUCTION_READY: leovegas (2026-02-04) - ratio 2.75, 100% normalization
   leovegas:
@@ -176,6 +178,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 600
+      wagering_multiplier: 6
+      min_odds: 1.80
 
   # PRODUCTION_READY: expekt (2026-02-04) - ratio 2.77, 100% normalization
   expekt:
@@ -187,6 +191,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 1000
+      wagering_multiplier: 20
+      min_odds: 1.80
 
   # PRODUCTION_READY: betmgm (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
@@ -196,8 +202,10 @@ providers:
     domain: betmgm.se
     brand: betmgmse
     bonus:
-      type: doubledeposit
+      type: freebet
       amount: 500
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   # PRODUCTION_READY: speedybet (2026-02-04) - ratio 2.77, 100% normalization
   speedybet:
@@ -209,6 +217,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 12
+      min_odds: 1.80
 
   # PRODUCTION_READY: x3000 (2026-02-04) - ratio 2.77, 100% normalization
   x3000:
@@ -220,6 +230,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 12
+      min_odds: 1.80
 
   # PRODUCTION_READY: goldenbull (2026-02-04) - ratio 2.74, 100% normalization
   goldenbull:
@@ -231,6 +243,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 12
+      min_odds: 1.80
 
   # PRODUCTION_READY: 1x2 (2026-02-04) - ratio 2.74, 100% normalization
   1x2:
@@ -242,6 +256,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 12
+      min_odds: 1.80
 
   # Spectate providers
   mrgreen:
@@ -256,6 +272,8 @@ providers:
     bonus:
       type: freebet
       amount: 500
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   888sport:
     id: 888sport
@@ -270,6 +288,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   # Snabbare (custom retriever)
   snabbare:
@@ -286,6 +306,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 600
+      wagering_multiplier: 8
+      min_odds: 1.80
 
   # Gecko providers (Betsson Group - Custom API platform)
   # Using gecko_v2: Browser automation with API interception + stealth to bypass bot detection
@@ -298,6 +320,8 @@ providers:
     bonus:
       type: freebet
       amount: 250
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   betsafe:
     id: betsafe
@@ -308,6 +332,8 @@ providers:
     bonus:
       type: freebet
       amount: 100
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   nordicbet:
     id: nordicbet
@@ -318,6 +344,8 @@ providers:
     bonus:
       type: freebet
       amount: 100
+      wagering_multiplier: 1
+      min_odds: 1.80
 
   # Pinnacle (guest API - no auth required) - SHARP BOOK (reference odds)
   pinnacle:
@@ -328,7 +356,7 @@ providers:
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true  # No margin, use as truth source
 
-  # Polymarket (truth source)
+  # Polymarket (prediction market)
   polymarket:
     id: polymarket
     name: Polymarket
@@ -347,6 +375,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 15
+      min_odds: 1.90
 
   comeon:
     id: comeon
@@ -357,6 +387,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 500
+      wagering_multiplier: 6
+      min_odds: 1.80
 
     # Breadth controls - optimized for faster extraction
     max_leagues: 30  # Reduced from 50 for faster extraction (~40s target)
@@ -397,6 +429,8 @@ providers:
     bonus:
       type: freebet
       amount: 500
+      wagering_multiplier: 1
+      min_odds: 1.80
 
     # Breadth controls - optimized for faster extraction
     max_leagues: 30  # Reduced from 999 for faster extraction (~40s target)
@@ -421,6 +455,8 @@ providers:
     bonus:
       type: doubledeposit
       amount: 1000
+      wagering_multiplier: 6
+      min_odds: 1.80
 
     # Altenar API configuration
     api_base: https://sb2frontend-altenar2.biahosted.com/api

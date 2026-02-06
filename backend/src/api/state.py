@@ -15,6 +15,7 @@ extraction_state = {
     "current_provider": None,
     "completed_providers": 0,
     "total_providers": 0,
+    "elapsed_seconds": 0,
 }
 
 

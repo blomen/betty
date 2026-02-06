@@ -236,6 +236,14 @@ class PolymarketRetriever(Retriever):
         event_id = str(item.get("id", ""))
         start_time = item.get("startTime")
 
+        # Normalize startTime: Gamma API may return epoch timestamp (int/float)
+        # instead of ISO string. Convert to ISO so canonical ID date matching works.
+        if isinstance(start_time, (int, float)):
+            from datetime import datetime, timezone
+            # Handle millisecond vs second timestamps
+            ts = start_time / 1000 if start_time > 1e10 else start_time
+            start_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
         # Skip "More Markets" events - they only have spreads/totals/props, no 1x2
         if " - More Markets" in title:
             return None

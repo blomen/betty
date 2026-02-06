@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 
 from ..state import (
@@ -11,6 +11,7 @@ from ..state import (
     get_extraction_state,
     ws_manager,
 )
+from ...db.models import Event, Odds, get_session
 
 router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 logger = logging.getLogger(__name__)
@@ -20,7 +21,12 @@ async def poll_metrics_and_update_state(pipeline, stop_event):
     """
     Polls metrics every 500ms and updates extraction_state.
     Runs in background while extraction is active.
+
+    Uses actual DB counts for both totals and per-provider numbers
+    so they are always consistent.
     """
+    from sqlalchemy import func
+
     while not stop_event.is_set():
         if not pipeline.metrics:
             await asyncio.sleep(0.5)
@@ -31,25 +37,11 @@ async def poll_metrics_and_update_state(pipeline, stop_event):
             await asyncio.sleep(0.5)
             continue
 
-        # Build provider states from metrics
+        # Build provider states from metrics (status, duration, errors)
         providers_state = {}
         completed_count = 0
         current_provider = None
 
-        # Polymarket
-        if current_run.polymarket_events > 0:
-            providers_state["polymarket"] = {
-                "status": "completed",
-                "events": current_run.polymarket_events,
-                "odds": current_run.polymarket_odds,
-                "duration_seconds": 0,
-                "error": None,
-                "sports_completed": 0,
-                "sports_total": 0,
-            }
-            completed_count += 1
-
-        # Each provider
         for pid, pm in current_run.providers.items():
             status = "pending"
             if pm.is_complete:
@@ -69,16 +61,102 @@ async def poll_metrics_and_update_state(pipeline, stop_event):
                 "sports_total": pm.sports_attempted,
             }
 
+        # Query DB for actual unique counts (totals + per-provider)
+        db = get_session()
+        try:
+            total_events = db.query(Event).count()
+            total_odds = db.query(Odds).count()
+
+            # Override per-provider counts with actual DB numbers
+            # for completed providers (running ones keep live metrics)
+            provider_counts = {
+                row[0]: {"events": row[1], "odds": row[2]}
+                for row in db.query(
+                    Odds.provider_id,
+                    func.count(func.distinct(Odds.event_id)),
+                    func.count(Odds.id),
+                ).group_by(Odds.provider_id).all()
+            }
+            for pid, counts in provider_counts.items():
+                if pid in providers_state and providers_state[pid]["status"] == "completed":
+                    providers_state[pid]["events"] = counts["events"]
+                    providers_state[pid]["odds"] = counts["odds"]
+        finally:
+            db.close()
+
         # Update global state
         update_extraction_state(
-            total_events=current_run.total_events,
-            total_odds=current_run.total_odds,
+            total_events=total_events,
+            total_odds=total_odds,
             providers=providers_state,
             current_provider=current_provider,
             completed_providers=completed_count,
         )
 
         await asyncio.sleep(0.5)
+
+
+def _build_final_state(results: dict) -> dict:
+    """Build final provider state dict from pipeline results for UI.
+
+    Uses actual DB counts per provider so per-provider numbers
+    sum to the totals (no double-counting from cross-provider matching).
+    """
+    from sqlalchemy import func
+
+    # Query actual per-provider counts from DB
+    db = get_session()
+    try:
+        provider_counts = {
+            row[0]: {"events": row[1], "odds": row[2]}
+            for row in db.query(
+                Odds.provider_id,
+                func.count(func.distinct(Odds.event_id)),
+                func.count(Odds.id),
+            ).group_by(Odds.provider_id).all()
+        }
+    finally:
+        db.close()
+
+    final_providers = {}
+    completed = 0
+
+    # Add Polymarket
+    poly = results.get("polymarket", {})
+    if poly.get("events_processed", 0) > 0:
+        db_counts = provider_counts.get("polymarket", {"events": 0, "odds": 0})
+        final_providers["polymarket"] = {
+            "status": "completed",
+            "events": db_counts["events"],
+            "odds": db_counts["odds"],
+            "duration_seconds": 0,
+            "error": None,
+            "sports_completed": 0,
+            "sports_total": 0,
+        }
+        completed += 1
+
+    # Add other providers
+    for pid, presult in results.get("providers", {}).items():
+        has_error = "error" in presult and isinstance(presult["error"], str)
+        db_counts = provider_counts.get(pid, {"events": 0, "odds": 0})
+        final_providers[pid] = {
+            "status": "failed" if has_error else "completed",
+            "events": db_counts["events"],
+            "odds": db_counts["odds"],
+            "duration_seconds": 0,
+            "error": presult.get("error") if has_error else None,
+            "sports_completed": presult.get("sports_succeeded", 0),
+            "sports_total": presult.get("sports_attempted", 0),
+        }
+        if not has_error:
+            completed += 1
+
+    return {
+        "providers": final_providers,
+        "completed_providers": completed,
+        "total_providers": len(final_providers),
+    }
 
 
 async def run_extraction_task(providers: list[str] | None):
@@ -90,9 +168,8 @@ async def run_extraction_task(providers: list[str] | None):
     - providers=["polymarket", "pinnacle"] -> Both
     """
     from ..deps import get_pipeline
-    from ...pipeline.orchestrator import ExtractionPipeline
 
-    pipeline = ExtractionPipeline()
+    pipeline = get_pipeline()
     provider_list = providers if providers else pipeline.engine.get_enabled_providers()
 
     # Count includes polymarket only if explicitly requested
@@ -104,7 +181,7 @@ async def run_extraction_task(providers: list[str] | None):
     # Initialize state
     update_extraction_state(
         running=True,
-        start_time=datetime.utcnow(),
+        start_time=datetime.now(timezone.utc),
         total_events=0,
         total_odds=0,
         providers={},
@@ -113,6 +190,7 @@ async def run_extraction_task(providers: list[str] | None):
         total_providers=total_providers,
     )
 
+    _results = None
     try:
         # Start metrics polling task
         stop_event = asyncio.Event()
@@ -121,26 +199,41 @@ async def run_extraction_task(providers: list[str] | None):
         )
 
         try:
-            # Extract - polymarket auto-detected from providers list
-            results = await pipeline.run(
+            _results = await pipeline.run(
                 providers=provider_list if provider_list else None,
             )
-
-            update_extraction_state(
-                total_events=results.get("total_events", 0),
-                total_odds=results.get("total_odds", 0),
-                last_run=datetime.utcnow().isoformat(),
-            )
-
         finally:
             stop_event.set()
-            await polling_task
+            try:
+                await polling_task
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Extraction failed: {e}", exc_info=True)
         update_extraction_state(error=str(e))
 
     finally:
+        # Final state update in finally block (guaranteed to run)
+        if _results:
+            try:
+                final = _build_final_state(_results)
+                update_extraction_state(
+                    total_events=_results.get("total_events", 0),
+                    total_odds=_results.get("total_odds", 0),
+                    providers=final["providers"],
+                    completed_providers=final["completed_providers"],
+                    total_providers=final["total_providers"],
+                    current_provider=None,
+                    last_run=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception:
+                pass
+        # Compute final elapsed time before clearing running flag
+        start = extraction_state.get("start_time")
+        if start:
+            final_elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            update_extraction_state(elapsed_seconds=final_elapsed)
         update_extraction_state(running=False)
 
 
@@ -165,9 +258,10 @@ async def get_extraction_progress():
     state = get_extraction_state()
 
     # Calculate elapsed time
-    elapsed_seconds = 0
     if state["running"] and state["start_time"]:
-        elapsed_seconds = (datetime.utcnow() - state["start_time"]).total_seconds()
+        elapsed_seconds = (datetime.now(timezone.utc) - state["start_time"]).total_seconds()
+    else:
+        elapsed_seconds = state.get("elapsed_seconds", 0)
 
     # Calculate progress percentage
     progress_pct = 0

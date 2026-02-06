@@ -30,6 +30,7 @@ export default {
         tabBets: '#22d3d8',
         tabBankroll: '#ec4899',
         tabProfiles: '#8b5cf6',
+        tabPolymarket: '#6366f1',
         tabStats: '#94a3b8',
       },
       fontFamily: {

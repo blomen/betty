@@ -645,7 +645,9 @@ class ExtractionPipeline:
 
         if self.metrics:
             self.metrics.start_provider("polymarket")
-            self.metrics.start_sport("polymarket", "all")
+
+        # Track per-sport metrics: {sport: {"events": N, "odds": N}}
+        sport_counts = {}
 
         async with extractor as source:
             try:
@@ -662,6 +664,12 @@ class ExtractionPipeline:
                         if event.sport not in ALLOWED_SPORTS:
                             continue
 
+                        sport = event.sport
+                        if sport not in sport_counts:
+                            sport_counts[sport] = {"events": 0, "odds": 0}
+                            if self.metrics:
+                                self.metrics.start_sport("polymarket", sport)
+
                         ev_new, ev_processed_odds, _ = store_polymarket_event(
                             self.session,
                             event,
@@ -672,6 +680,8 @@ class ExtractionPipeline:
                             sharp_odds_cache=sharp_odds_cache,
                         )
 
+                        sport_counts[sport]["events"] += 1
+                        sport_counts[sport]["odds"] += ev_processed_odds
                         events_processed += 1
                         if ev_new:
                             events_new += 1
@@ -685,17 +695,19 @@ class ExtractionPipeline:
             except Exception as e:
                 logger.error(f"Polymarket extraction failed: {e}")
                 if self.metrics:
-                    self.metrics.end_sport("polymarket", "all", success=False, error=str(e))
+                    for sport in sport_counts:
+                        self.metrics.end_sport("polymarket", sport, success=False, error=str(e))
                     self.metrics.end_provider("polymarket", success=False, error=str(e))
 
             else:
                 if self.metrics:
-                    self.metrics.end_sport(
-                        "polymarket", "all",
-                        events_processed=events_processed,
-                        odds_processed=odds_processed,
-                        success=True,
-                    )
+                    for sport, counts in sport_counts.items():
+                        self.metrics.end_sport(
+                            "polymarket", sport,
+                            events_processed=counts["events"],
+                            odds_processed=counts["odds"],
+                            success=True,
+                        )
                     self.metrics.end_provider("polymarket", success=True)
 
             # Final commit
@@ -818,7 +830,7 @@ class ExtractionPipeline:
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,
-                                require_match=False,
+                                require_match=is_soft and sport_has_sharp,
                                 pinnacle_points_cache=pinnacle_points_cache,
                                 sharp_odds_cache=sharp_odds_cache,
                             )

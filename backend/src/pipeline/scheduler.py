@@ -41,13 +41,15 @@ class ExtractionScheduler:
         self._task: Optional[asyncio.Task] = None
         self._last_run: Optional[datetime] = None
         self._run_count = 0
+        self._interval_seconds: Optional[int] = None
+        self._providers: Optional[list[str]] = None
 
     @property
     def pipeline(self):
         """Lazy-load pipeline if not provided."""
         if self._pipeline is None:
-            from .orchestrator import ExtractionPipeline
-            self._pipeline = ExtractionPipeline()
+            from src.api.deps import get_pipeline
+            self._pipeline = get_pipeline()
         return self._pipeline
 
     @property
@@ -64,6 +66,16 @@ class ExtractionScheduler:
     def run_count(self) -> int:
         """Get number of extraction runs since start."""
         return self._run_count
+
+    @property
+    def interval_seconds(self) -> Optional[int]:
+        """Get current interval in seconds (only set when running)."""
+        return self._interval_seconds
+
+    @property
+    def providers(self) -> Optional[list[str]]:
+        """Get current provider list (only set when running)."""
+        return self._providers
 
     async def start_continuous(
         self,
@@ -88,6 +100,8 @@ class ExtractionScheduler:
 
         self._running = True
         self._run_count = 0
+        self._interval_seconds = interval_seconds
+        self._providers = providers
 
         logger.info(
             f"[Scheduler] Starting continuous extraction: "
@@ -111,7 +125,9 @@ class ExtractionScheduler:
                 start_time = datetime.now(timezone.utc)
 
                 logger.info(f"[Scheduler] Running extraction #{self._run_count + 1}")
-                results = await self.pipeline.run(providers=providers)
+
+                # Run extraction with state updates for UI
+                results = await self._run_with_state_updates(providers)
 
                 self._last_run = datetime.now(timezone.utc)
                 self._run_count += 1
@@ -137,10 +153,138 @@ class ExtractionScheduler:
                 break
             except Exception as e:
                 logger.error(f"[Scheduler] Extraction error: {e}", exc_info=True)
+                # Clear running state on error
+                self._clear_extraction_state()
                 # Wait before retry on error
                 await asyncio.sleep(60)
 
         logger.info("[Scheduler] Extraction loop stopped")
+
+    async def _run_with_state_updates(self, providers: list[str]) -> dict:
+        """Run extraction with UI state updates."""
+        from src.api.state import update_extraction_state
+        from src.api.routes.extraction import _build_final_state
+
+        # Initialize extraction state
+        update_extraction_state(
+            running=True,
+            start_time=datetime.now(timezone.utc),
+            total_events=0,
+            total_odds=0,
+            providers={},
+            current_provider=None,
+            completed_providers=0,
+            total_providers=len(providers),
+        )
+
+        _results = None
+        try:
+            # Start metrics polling task
+            stop_event = asyncio.Event()
+            polling_task = asyncio.create_task(
+                self._poll_metrics_loop(stop_event)
+            )
+
+            try:
+                _results = await self.pipeline.run(providers=providers)
+            finally:
+                stop_event.set()
+                try:
+                    await polling_task
+                except Exception:
+                    pass
+
+        finally:
+            # Final state update in finally block (guaranteed to run)
+            if _results:
+                try:
+                    final = _build_final_state(_results)
+                    update_extraction_state(
+                        total_events=_results.get("total_events", 0),
+                        total_odds=_results.get("total_odds", 0),
+                        providers=final["providers"],
+                        completed_providers=final["completed_providers"],
+                        total_providers=final["total_providers"],
+                        current_provider=None,
+                        last_run=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception:
+                    pass
+            # Compute final elapsed time before clearing running flag
+            from src.api.state import extraction_state
+            start = extraction_state.get("start_time")
+            if start:
+                final_elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+                update_extraction_state(elapsed_seconds=final_elapsed)
+            update_extraction_state(running=False)
+
+        return _results or {}
+
+    async def _poll_metrics_loop(self, stop_event: asyncio.Event):
+        """Poll metrics and update extraction state."""
+        from src.api.state import update_extraction_state
+        from src.db.models import Event, Odds, get_session
+
+        while not stop_event.is_set():
+            if not self.pipeline.metrics:
+                await asyncio.sleep(0.5)
+                continue
+
+            current_run = self.pipeline.metrics.get_current_run()
+            if not current_run:
+                await asyncio.sleep(0.5)
+                continue
+
+            # Build provider states from metrics
+            providers_state = {}
+            completed_count = 0
+            current_provider = None
+
+            for pid, pm in current_run.providers.items():
+                status = "pending"
+                if pm.is_complete:
+                    status = "completed" if pm.success else "failed"
+                    completed_count += 1
+                elif pm.start_time and not pm.is_complete:
+                    status = "running"
+                    current_provider = pid
+
+                providers_state[pid] = {
+                    "status": status,
+                    "events": pm.total_events,
+                    "odds": pm.total_odds,
+                    "duration_seconds": pm.duration_seconds,
+                    "error": pm.error,
+                    "sports_completed": pm.sports_succeeded,
+                    "sports_total": pm.sports_attempted,
+                }
+
+            # Query DB for unique counts (avoids double-counting across providers)
+            db = get_session()
+            try:
+                total_events = db.query(Event).count()
+                total_odds = db.query(Odds).count()
+            finally:
+                db.close()
+
+            # Update global state
+            update_extraction_state(
+                total_events=total_events,
+                total_odds=total_odds,
+                providers=providers_state,
+                current_provider=current_provider,
+                completed_providers=completed_count,
+            )
+
+            await asyncio.sleep(0.5)
+
+    def _clear_extraction_state(self):
+        """Clear extraction state on error."""
+        try:
+            from src.api.state import update_extraction_state
+            update_extraction_state(running=False)
+        except Exception:
+            pass
 
     def stop(self):
         """Stop continuous extraction."""
@@ -149,6 +293,8 @@ class ExtractionScheduler:
             return
 
         self._running = False
+        self._interval_seconds = None
+        self._providers = None
 
         if self._task:
             self._task.cancel()
@@ -178,10 +324,20 @@ class ExtractionScheduler:
 
     def get_status(self) -> dict:
         """Get scheduler status."""
+        # Calculate next run time
+        next_run = None
+        if self._running and self._last_run and self._interval_seconds:
+            from datetime import timedelta
+            next_run_dt = self._last_run + timedelta(seconds=self._interval_seconds)
+            next_run = next_run_dt.isoformat()
+
         return {
             "running": self._running,
             "last_run": self._last_run.isoformat() if self._last_run else None,
             "run_count": self._run_count,
+            "interval_seconds": self._interval_seconds,
+            "providers": self._providers,
+            "next_run": next_run,
         }
 
 

@@ -7,7 +7,7 @@ ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})
 SHARP_PROVIDERS = frozenset({'pinnacle'})
 
 # Providers excluded from opportunity scans (not used for betting)
-EXCLUDED_FROM_SCANS = frozenset({'polymarket'})
+EXCLUDED_FROM_SCANS = frozenset()
 
 # Sports to extract - these have pinnacle_id in sports.yaml
 # Only extract sports where Pinnacle provides sharp lines
