@@ -33,9 +33,9 @@ class KambiRetriever(Retriever):
     """
 
     # Shared class-level cache for group data across all Kambi providers
-    # This avoids fetching the same group tree multiple times
-    # Key format: "{base_url}/{brand}/group.json"
-    # Now uses TTL-based caching to prevent stale data
+    # All brands share the same group tree, so keyed by base_url only
+    # This means 1 fetch serves all 8 providers instead of 8 redundant fetches
+    # Uses TTL-based caching to prevent stale data
     _SHARED_GROUP_CACHE: Dict[str, CachedGroupData] = {}
 
     # We might need to fetch the groups first, then the events.
@@ -69,16 +69,18 @@ class KambiRetriever(Retriever):
         metrics = ExtractionMetrics()
 
         # 1. Get Groups (using shared cache with TTL)
+        # Cache key is base_url only — all Kambi brands share the same group tree
         groups_url = f"{self.base_url}/{self.brand}/group.json"
+        cache_key = self.base_url
 
         # Check shared cache first (with TTL expiration)
-        cached_entry = self._SHARED_GROUP_CACHE.get(groups_url)
+        cached_entry = self._SHARED_GROUP_CACHE.get(cache_key)
         if cached_entry and not cached_entry.is_expired():
-            logger.debug(f"[{self.provider_id}] Using cached groups for {groups_url}")
+            logger.debug(f"[{self.provider_id}] Using cached groups (shared across brands)")
             group_data = cached_entry.data
         else:
             if cached_entry and cached_entry.is_expired():
-                logger.debug(f"[{self.provider_id}] Cache expired for {groups_url}, refetching")
+                logger.debug(f"[{self.provider_id}] Cache expired, refetching")
             logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
             group_data = await self.transport.get(
                 groups_url,
@@ -86,11 +88,11 @@ class KambiRetriever(Retriever):
                 provider_id=self.provider_id
             )
             if group_data:
-                self._SHARED_GROUP_CACHE[groups_url] = CachedGroupData(
+                self._SHARED_GROUP_CACHE[cache_key] = CachedGroupData(
                     data=group_data,
                     created_at=time.time()
                 )
-                logger.debug(f"[{self.provider_id}] Cached groups for {groups_url} (TTL={GROUP_CACHE_TTL_SECONDS}s)")
+                logger.debug(f"[{self.provider_id}] Cached groups for all brands (TTL={GROUP_CACHE_TTL_SECONDS}s)")
 
         if not group_data:
             return []
@@ -372,24 +374,11 @@ class KambiRetriever(Retriever):
             if bet_offer_type_id not in ALLOWED_BET_OFFER_TYPE_IDS:
                 return None
 
-            # Filter by criterion label - only full match markets
+            # Filter by criterion label
             criterion = betoffer.get("criterion", {})
             label = (criterion.get("englishLabel") or criterion.get("label") or "").lower()
 
-            # Accept labels containing these keywords
-            MATCH_KEYWORDS = (
-                "full time", "fulltid", "heltid",       # Football regulation
-                "match", "moneyline",                    # General
-                "bout",                                  # Boxing, MMA
-                "regular time",                          # Rugby, generic regulation
-                "including overtime",                    # American football, ice hockey
-                "including extra ends",                  # Curling
-                "over/under", "handicap",                # Spread/total
-            )
-            if not any(kw in label for kw in MATCH_KEYWORDS):
-                return None
-
-            # Exclude partial markets and derivative bets
+            # Exclude partial markets and derivative bets (applies to ALL bet offer types)
             EXCLUDE_PATTERNS = (
                 "quarter", "period", "half",
                 "1st", "2nd", "3rd", "4th",
@@ -397,6 +386,21 @@ class KambiRetriever(Retriever):
             )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None
+
+            # For betOfferType 2 (match winner), apply keyword filter to ensure full-match only
+            # betOfferType 6 (total) and 7 (spread) are definitively identified by their type ID
+            if bet_offer_type_id == 2:
+                MATCH_KEYWORDS = (
+                    "full time", "fulltid", "heltid",       # Football regulation
+                    "match", "moneyline",                    # General
+                    "bout",                                  # Boxing, MMA
+                    "regular time",                          # Rugby, generic regulation
+                    "including overtime",                    # American football, ice hockey
+                    "including extra ends",                  # Curling
+                )
+                if not any(kw in label for kw in MATCH_KEYWORDS):
+                    logger.debug(f"[{self.provider_id}] Dropped betOffer type={bet_offer_type_id} label='{label}'")
+                    return None
 
             outcomes = []
             for outcome_ref in betoffer.get("outcomes", []):

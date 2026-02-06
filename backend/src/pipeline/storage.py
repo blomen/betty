@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _POINT_TOLERANCE = 0.01
 
 
-def _get_pinnacle_points(session, event_id: str) -> dict[str, set[float]]:
+def _get_pinnacle_points(session, event_id: str, cache: dict = None) -> dict[str, set[float]]:
     """
     Get Pinnacle's spread and total point values for a matched event.
 
@@ -31,8 +31,14 @@ def _get_pinnacle_points(session, event_id: str) -> dict[str, set[float]]:
     For total: returns set of point values (e.g., {222.5}).
     Pinnacle may publish multiple non-alternate lines for the same market.
 
+    Args:
+        cache: Optional dict keyed by event_id for caching results across calls.
+
     Returns {"spread": set, "total": set}.
     """
+    if cache is not None and event_id in cache:
+        return cache[event_id]
+
     from sqlalchemy import func
     pinnacle_odds = session.query(Odds.market, Odds.outcome, Odds.point).filter(
         Odds.event_id == event_id,
@@ -47,6 +53,9 @@ def _get_pinnacle_points(session, event_id: str) -> dict[str, set[float]]:
             result["spread"].add(point)
         elif market == "total" and outcome in ("over", "under"):
             result["total"].add(point)
+
+    if cache is not None:
+        cache[event_id] = result
     return result
 
 
@@ -71,6 +80,7 @@ def detect_and_fix_inversion(
     provider: str,
     home_odds: float | None,
     away_odds: float | None,
+    sharp_odds_cache: dict = None,
 ) -> bool:
     """
     Detect if provider odds are inverted vs sharp and return True if swap needed.
@@ -87,19 +97,23 @@ def detect_and_fix_inversion(
     if home_odds is None or away_odds is None or home_odds <= 1 or away_odds <= 1:
         return False
 
-    # Get sharp odds (Pinnacle only) - use case-insensitive match for provider ID
-    from sqlalchemy import func
-    sharp_odds = session.query(Odds).filter(
-        Odds.event_id == event_id,
-        func.lower(Odds.provider_id).like('pinnacle%'),
-        Odds.outcome.in_(['home', 'away']),
-        Odds.market.in_(['1x2', 'moneyline']),
-    ).all()
+    # Check cache first (Pinnacle data is static during a run)
+    if sharp_odds_cache is not None and event_id in sharp_odds_cache:
+        sharp = sharp_odds_cache[event_id]
+    else:
+        # Get sharp odds (Pinnacle only) - use case-insensitive match for provider ID
+        from sqlalchemy import func
+        sharp_rows = session.query(Odds).filter(
+            Odds.event_id == event_id,
+            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.outcome.in_(['home', 'away']),
+            Odds.market.in_(['1x2', 'moneyline']),
+        ).all()
 
-    if len(sharp_odds) < 2:
-        return False
+        sharp = {o.outcome: o.odds for o in sharp_rows}
+        if sharp_odds_cache is not None:
+            sharp_odds_cache[event_id] = sharp
 
-    sharp = {o.outcome: o.odds for o in sharp_odds}
     if 'home' not in sharp or 'away' not in sharp:
         return False
 
@@ -155,6 +169,9 @@ def store_polymarket_event(
     event_cache: dict,
     fuzzy_threshold: int = 90,
     min_individual_score: int = 80,
+    odds_batch: "OddsBatchProcessor" = None,
+    pinnacle_points_cache: dict = None,
+    sharp_odds_cache: dict = None,
 ) -> tuple[bool, int, int]:
     """
     Store Polymarket event in database with fuzzy matching.
@@ -349,7 +366,8 @@ def store_polymarket_event(
             canonical_away_odds = poly_away_odds
 
         inversion_result = detect_and_fix_inversion(
-            session, matched_id, "polymarket", canonical_home_odds, canonical_away_odds
+            session, matched_id, "polymarket", canonical_home_odds, canonical_away_odds,
+            sharp_odds_cache=sharp_odds_cache,
         )
         if inversion_result:
             odds_inverted = True
@@ -364,7 +382,7 @@ def store_polymarket_event(
     should_swap_outcomes = odds_inverted
 
     # Look up Pinnacle's spread/total points for this event (if matched)
-    pinnacle_points = _get_pinnacle_points(session, matched_id) if matched_id else {"spread": None, "total": None}
+    pinnacle_points = _get_pinnacle_points(session, matched_id, cache=pinnacle_points_cache) if matched_id else {"spread": None, "total": None}
 
     # Store odds
     odds_processed = 0
@@ -429,7 +447,10 @@ def store_polymarket_event(
                 if market_type == "spread" and point_value is not None:
                     point_value = -point_value
 
-            odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
+            if odds_batch:
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
+            else:
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
 
     return is_new_event, odds_processed, odds_new
 
@@ -444,6 +465,8 @@ def store_provider_event(
     prefix_filter_length: int = 3,
     odds_batch: "OddsBatchProcessor" = None,
     require_match: bool = False,
+    pinnacle_points_cache: dict = None,
+    sharp_odds_cache: dict = None,
 ) -> tuple[bool, int, int]:
     """
     Store provider event with STRICT fuzzy matching against Polymarket.
@@ -527,6 +550,11 @@ def store_provider_event(
         best_match_details = None
         best_is_swapped = False  # Track if match was in swapped order
 
+        # Near-miss tracking for diagnostic logging
+        near_miss_score = 0
+        near_miss_details = None
+        near_miss_reason = None
+
         for pid, poly_home, poly_away, date in candidates:
             # Get individual scores for DIRECT match
             home_direct = get_team_match_score(event.home_team, poly_home)
@@ -549,12 +577,22 @@ def store_provider_event(
                 avg_score = direct_avg
 
             # BULLETPROOF VALIDATION
+            # Track near-miss (best rejected candidate) for diagnostics
+            is_new_best = avg_score > near_miss_score
+            if is_new_best:
+                near_miss_score = avg_score
+                near_miss_details = (poly_home, poly_away, team1_score, team2_score)
+
             # Skip if average below threshold
             if avg_score < fuzzy_threshold:
+                if is_new_best:
+                    near_miss_reason = f"avg {avg_score:.0f} < threshold {fuzzy_threshold}"
                 continue
 
             # Skip if EITHER team below minimum individual score
             if team1_score < min_individual_score or team2_score < min_individual_score:
+                if is_new_best:
+                    near_miss_reason = f"individual {team1_score:.0f}/{team2_score:.0f}, min required {min_individual_score}"
                 logger.debug(
                     f"[{provider}] Rejected match '{event.home_team} vs {event.away_team}' -> "
                     f"'{poly_home} vs {poly_away}': individual scores {team1_score:.0f}/{team2_score:.0f}"
@@ -564,6 +602,8 @@ def store_provider_event(
             # Skip asymmetric matches (one team perfect, other poor)
             score_diff = abs(team1_score - team2_score)
             if score_diff > 20 and min(team1_score, team2_score) < 85:
+                if is_new_best:
+                    near_miss_reason = f"asymmetric {team1_score:.0f}/{team2_score:.0f}"
                 logger.debug(
                     f"[{provider}] Rejected asymmetric match '{event.home_team} vs {event.away_team}': "
                     f"scores {team1_score:.0f}/{team2_score:.0f}"
@@ -606,6 +646,23 @@ def store_provider_event(
                     return (False, 0, 0)
                 # 4. No match at all - use default ID
                 matched_id = default_id
+                if near_miss_details:
+                    nm_home, nm_away, nm_t1, nm_t2 = near_miss_details
+                    logger.info(
+                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+                        f"({len(candidates)} candidates, best: '{nm_home} vs {nm_away}' "
+                        f"score {near_miss_score:.0f}, reason: {near_miss_reason})"
+                    )
+                elif candidates:
+                    logger.info(
+                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+                        f"({len(candidates)} candidates, all below scoring threshold)"
+                    )
+                else:
+                    logger.info(
+                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+                        f"(0 candidates for {event.sport})"
+                    )
 
     final_id = matched_id
 
@@ -678,7 +735,8 @@ def store_provider_event(
             canonical_away_odds = away_odds
 
         # Check for odds inversion against sharp source
-        if detect_and_fix_inversion(session, matched_id, provider, canonical_home_odds, canonical_away_odds):
+        if detect_and_fix_inversion(session, matched_id, provider, canonical_home_odds, canonical_away_odds,
+                                    sharp_odds_cache=sharp_odds_cache):
             odds_inverted = True
 
     # Swap outcomes if:
@@ -695,7 +753,7 @@ def store_provider_event(
     # For soft books, look up Pinnacle's spread/total points to filter lines
     is_sharp = provider.lower() in SHARP_PROVIDERS
     pinnacle_points = (
-        _get_pinnacle_points(session, final_id)
+        _get_pinnacle_points(session, final_id, cache=pinnacle_points_cache)
         if not is_sharp and final_id
         else {"spread": None, "total": None}
     )

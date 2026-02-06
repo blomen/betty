@@ -13,7 +13,7 @@ from ..factory import ExtractorFactory
 from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
-from ..constants import ALLOWED_SPORTS, SHARP_PROVIDERS
+from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,6 @@ class ExtractionPipeline:
                 self.session.add(Provider(
                     id=pid,
                     name=name,
-                    balance=0,
                 ))
         self.session.commit()
 
@@ -354,8 +353,9 @@ class ExtractionPipeline:
                     self.metrics.start_provider("pinnacle")
 
                 try:
-                    all_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
-                    target_sports = [s for s in all_sports if s in ALLOWED_SPORTS]
+                    # Only extract sports in ALLOWED_SPORTS
+                    all_sports = set(s.kambi_sport for s in self.engine.sports)
+                    target_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
                     pinnacle_result = await self._extract_provider(
                         "pinnacle",
                         target_sports,
@@ -385,18 +385,11 @@ class ExtractionPipeline:
 
             # Extract from Polymarket (will fuzzy match against Pinnacle events)
             if polymarket:
-                log_progress("Extracting Polymarket (truth source)...")
+                log_progress("Extracting Polymarket...")
                 poly_start = time.time()
 
                 poly_results = await self._extract_polymarket(max_events_per_sport)
                 results["polymarket"] = poly_results
-
-                # Update metrics
-                if self.metrics:
-                    self.metrics.set_polymarket_stats(
-                        events=poly_results.get("events_processed", 0),
-                        odds=poly_results.get("odds_processed", 0)
-                    )
 
                 poly_elapsed = time.time() - poly_start
                 log_progress(
@@ -404,10 +397,11 @@ class ExtractionPipeline:
                 )
 
             # Extract from other providers in parallel
-            kambi_sports = [s for s in sorted(list(set(s.kambi_sport for s in self.engine.sports))) if s in ALLOWED_SPORTS]
+            # Only extract sports in ALLOWED_SPORTS
+            all_sports = set(s.kambi_sport for s in self.engine.sports)
+            kambi_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
 
-            # Pre-compute sharp sports once (thread-safe) before provider loop
-            # This avoids repeated lock acquisition inside _extract_provider()
+            # Pre-compute sharp sports from Pinnacle cache for filtering
             sharp_sports = await self.get_cached_sports()
 
             # Build league lookup from Pinnacle events in DB for filtering soft books
@@ -641,47 +635,76 @@ class ExtractionPipeline:
         odds_processed = 0
         odds_new = 0
 
-        # Batch commit configuration
-        BATCH_SIZE = 100
-        event_count = 0
-
         extractor = self.engine.get_extractor("polymarket")
+
+        # Caches for Pinnacle data (static during a run)
+        pinnacle_points_cache = {}
+        sharp_odds_cache = {}
+        api_elapsed = 0.0
+        db_elapsed = 0.0
+
+        if self.metrics:
+            self.metrics.start_provider("polymarket")
+            self.metrics.start_sport("polymarket", "all")
 
         async with extractor as source:
             try:
                 # Fetch ALL game events in one call (limit=1000)
+                api_start = time.time()
                 events = await source.extract_all(limit=1000)
-                logger.info(f"[polymarket] Fetched {len(events)} events")
+                api_elapsed = time.time() - api_start
+                logger.info(f"[polymarket] Fetched {len(events)} events (API: {api_elapsed:.1f}s)")
 
-                for event in events:
-                    # Sport is now determined by extractor from series info
-                    ev_new, ev_processed_odds, ev_new_odds = store_polymarket_event(
-                        self.session,
-                        event,
-                        event.sport,  # Use sport from event (determined from series)
-                        self.event_cache,
-                    )
+                db_start = time.time()
+                with OddsBatchProcessor(self.session, batch_size=500) as odds_batch:
+                    for event in events:
+                        # Skip sports not in ALLOWED_SPORTS
+                        if event.sport not in ALLOWED_SPORTS:
+                            continue
 
-                    events_processed += 1
-                    event_count += 1
-                    if ev_new:
-                        events_new += 1
+                        ev_new, ev_processed_odds, _ = store_polymarket_event(
+                            self.session,
+                            event,
+                            event.sport,
+                            self.event_cache,
+                            odds_batch=odds_batch,
+                            pinnacle_points_cache=pinnacle_points_cache,
+                            sharp_odds_cache=sharp_odds_cache,
+                        )
 
-                    odds_processed += ev_processed_odds
-                    odds_new += ev_new_odds
+                        events_processed += 1
+                        if ev_new:
+                            events_new += 1
+                        odds_processed += ev_processed_odds
 
-                    # Batch commit every BATCH_SIZE events
-                    if event_count % BATCH_SIZE == 0:
-                        self.session.commit()
-                        logger.debug(f"[polymarket] Batch committed {event_count} events")
+                    # Get actual insert/update counts from batch processor
+                    odds_new, odds_updated = odds_batch.get_stats()
+
+                db_elapsed = time.time() - db_start
 
             except Exception as e:
                 logger.error(f"Polymarket extraction failed: {e}")
+                if self.metrics:
+                    self.metrics.end_sport("polymarket", "all", success=False, error=str(e))
+                    self.metrics.end_provider("polymarket", success=False, error=str(e))
 
-            # Final commit for any remaining events
+            else:
+                if self.metrics:
+                    self.metrics.end_sport(
+                        "polymarket", "all",
+                        events_processed=events_processed,
+                        odds_processed=odds_processed,
+                        success=True,
+                    )
+                    self.metrics.end_provider("polymarket", success=True)
+
+            # Final commit
             self.session.commit()
 
-        logger.info(f"Polymarket extraction complete. New events: {events_new}, New odds: {odds_new}")
+        logger.info(
+            f"Polymarket complete: {events_new} new events, {odds_new} new odds "
+            f"(API: {api_elapsed:.1f}s, DB: {db_elapsed:.1f}s)"
+        )
 
         return {
             "events_processed": events_processed,
@@ -737,17 +760,22 @@ class ExtractionPipeline:
         # 0.5s is sufficient - Kambi rate limits at request level, not sport level
         sport_delay = 0.5 if is_kambi else 0.0
 
-        # Filter sports to only those with sharp data (Pinnacle/Polymarket)
-        # No point extracting sports we can't match against
-        # Use pre-computed sharp_sports if provided (thread-safe), otherwise compute now
+        # Log sports without sharp data but extract anyway
+        # (events are still useful when sharp data arrives later)
         if sharp_sports is None:
             sharp_sports = await self.get_cached_sports()
         if sharp_sports:
-            original_count = len(sports)
-            sports = [s for s in sports if s in sharp_sports]
-            skipped = original_count - len(sports)
-            if skipped > 0:
-                logger.info(f"[{provider_id}] Skipping {skipped} sports without sharp data")
+            no_sharp = [s for s in sports if s not in sharp_sports]
+            if no_sharp:
+                logger.info(f"[{provider_id}] Sports without sharp data (extracting anyway): {', '.join(no_sharp)}")
+
+        # Caches for Pinnacle data (static during a run, shared across sports)
+        pinnacle_points_cache = {}
+        sharp_odds_cache = {}
+
+        # Use larger batch size for sharp sources (fresh DB = all inserts)
+        is_sharp = provider_id in SHARP_PROVIDERS
+        batch_size = 500 if is_sharp else self.orchestrator_config.batch_commit_size
 
         # Define per-sport extraction function
         async def extract_sport(sport: str, sport_index: int):
@@ -759,6 +787,9 @@ class ExtractionPipeline:
                     await asyncio.sleep(sport_delay)
 
                 sport_start_time = time.time()
+
+                if self.metrics:
+                    self.metrics.start_sport(provider_id, sport)
 
                 try:
                     # Get target leagues for this sport (if available)
@@ -772,10 +803,12 @@ class ExtractionPipeline:
 
                     with OddsBatchProcessor(
                         self.session,
-                        batch_size=self.orchestrator_config.batch_commit_size
+                        batch_size=batch_size,
                     ) as odds_batch:
-                        # Soft providers must match existing sharp events (no orphans)
                         is_soft = provider_id not in SHARP_PROVIDERS
+                        sport_has_sharp = sharp_sports and sport in sharp_sports
+                        events_matched = 0
+                        events_unmatched = 0
                         for event in events:
                             is_new, odds_proc, _ = store_provider_event(
                                 session=self.session,
@@ -785,20 +818,37 @@ class ExtractionPipeline:
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,
-                                require_match=is_soft,
+                                require_match=False,
+                                pinnacle_points_cache=pinnacle_points_cache,
+                                sharp_odds_cache=sharp_odds_cache,
                             )
                             events_processed += 1
                             if is_new:
                                 events_new += 1
+                                if is_soft and sport_has_sharp:
+                                    events_unmatched += 1
+                            elif is_soft and sport_has_sharp:
+                                events_matched += 1
                             odds_processed += odds_proc
 
                         # Get actual insert/update counts from batch processor
                         odds_new, odds_updated = odds_batch.get_stats()
 
                     sport_elapsed = time.time() - sport_start_time
+                    match_info = ""
+                    if is_soft and sport_has_sharp:
+                        match_info = f" (matched: {events_matched}, unmatched: {events_unmatched})"
                     logger.info(
-                        f"[{provider_id}] {sport}: {len(events)} events in {sport_elapsed:.1f}s"
+                        f"[{provider_id}] {sport}: {len(events)} events in {sport_elapsed:.1f}s{match_info}"
                     )
+
+                    if self.metrics:
+                        self.metrics.end_sport(
+                            provider_id, sport,
+                            events_processed=events_processed,
+                            odds_processed=odds_processed,
+                            success=True,
+                        )
 
                     return {
                         "sport": sport,
@@ -811,6 +861,12 @@ class ExtractionPipeline:
 
                 except Exception as e:
                     logger.warning(f"[{provider_id}] {sport} failed: {e}", exc_info=True)
+                    if self.metrics:
+                        self.metrics.end_sport(
+                            provider_id, sport,
+                            success=False,
+                            error=str(e),
+                        )
                     return {
                         "sport": sport,
                         "events_processed": 0,
