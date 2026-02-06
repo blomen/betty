@@ -93,6 +93,7 @@ def detect_and_fix_inversion(
         Odds.event_id == event_id,
         func.lower(Odds.provider_id).like('pinnacle%'),
         Odds.outcome.in_(['home', 'away']),
+        Odds.market.in_(['1x2', 'moneyline']),
     ).all()
 
     if len(sharp_odds) < 2:
@@ -646,9 +647,11 @@ def store_provider_event(
             event_cache[event.sport][final_id] = (db_event.home_team, db_event.away_team, date_str)
 
     # Extract home/away odds from event markets for inversion detection
+    # Only use 1x2/moneyline — spread odds have inverted favorite semantics
     home_odds, away_odds = None, None
     for market in event.markets:
-        if normalize_market(market.get('type', '')) in ALLOWED_MARKETS:
+        market_type = normalize_market(market.get('type', ''))
+        if market_type in ('1x2', 'moneyline'):
             for outcome in market.get('outcomes', []):
                 norm = normalize_outcome(
                     outcome.get('name', ''),
