@@ -102,15 +102,20 @@ class KambiRetriever(Retriever):
         target_groups = [g for g in groups if self._match_sport(g.get("sport", ""), sport)]
 
         # Filter by target leagues if provided (Pinnacle cheat sheet)
+        # Falls back to unfiltered if league filter removes everything
         if target_leagues and target_groups:
             original = len(target_groups)
-            target_groups = [
+            filtered = [
                 g for g in target_groups
                 if self._match_league(g.get("name", ""), target_leagues)
             ]
-            skipped = original - len(target_groups)
-            if skipped > 0:
-                logger.info(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
+            if filtered:
+                target_groups = filtered
+                skipped = original - len(target_groups)
+                if skipped > 0:
+                    logger.info(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
+            else:
+                logger.info(f"[{self.provider_id}] {sport}: league filter matched 0/{original} groups, using all")
 
         if not target_groups:
             logger.warning(f"[{self.provider_id}] No groups found for {sport}")
@@ -130,7 +135,7 @@ class KambiRetriever(Retriever):
 
         async def fetch_with_limit(group):
             async with sem:
-                return await self._fetch_group_events(group, metrics)
+                return await self._fetch_group_events(group, sport, metrics)
 
         # Fetch all groups in parallel
         tasks = [fetch_with_limit(group) for group in target_groups]
@@ -185,7 +190,7 @@ class KambiRetriever(Retriever):
 
         return stats
         
-    async def _fetch_group_events(self, group: dict, metrics: ExtractionMetrics) -> List[StandardEvent]:
+    async def _fetch_group_events(self, group: dict, sport: str, metrics: ExtractionMetrics) -> List[StandardEvent]:
         endpoint = "betoffer/group/{group_id}.json"  # Default
         if "endpoints" in self.config and "events" in self.config["endpoints"]:
             endpoint = self.config["endpoints"]["events"]
@@ -200,7 +205,9 @@ class KambiRetriever(Retriever):
         # Check for pagination indicators
         self._check_pagination(data, group.get("name", "unknown"), metrics)
 
-        return self.parse(data, group.get("sport", "").lower(), metrics)
+        # Use canonical sport name (from config) not Kambi's group sport name
+        # e.g., "mma" instead of "martial_arts", "esports" instead of "valorant"
+        return self.parse(data, sport, metrics)
 
     def _check_pagination(self, data: Any, group_name: str, metrics: ExtractionMetrics):
         """
@@ -321,6 +328,17 @@ class KambiRetriever(Retriever):
                 metrics.events_skipped_no_markets += 1
                 return None
 
+            # Deduplicate winner markets: if both 1x2 and moneyline exist
+            # (e.g. ice hockey "Match Odds - Regular Time" + "Moneyline - Including Overtime"),
+            # prefer 1x2 (regulation time has draw info, avoids double counting).
+            # Keep spread/total markets alongside winner markets.
+            winner_markets = [m for m in markets if m["type"] in ("1x2", "moneyline")]
+            other_markets = [m for m in markets if m["type"] not in ("1x2", "moneyline")]
+            if len(winner_markets) > 1:
+                markets_1x2 = [m for m in winner_markets if m["type"] == "1x2"]
+                winner_markets = markets_1x2[:1] if markets_1x2 else winner_markets[:1]
+            markets = winner_markets + other_markets
+
             path = event_raw.get("path", [])
             league = path[-1].get("name", "") if path else ""
 
@@ -343,32 +361,37 @@ class KambiRetriever(Retriever):
     def _parse_market(self, betoffer: dict, outcome_map: dict, home_team: str = "", away_team: str = "") -> dict | None:
         try:
             # Filter by betOfferType.id FIRST (most reliable)
-            # 2 = Match (1x2/moneyline)
-            # Other IDs: 3=Correct Score, 6=Over/Under, 7=Asian Handicap, 127=Player Props
-            ALLOWED_BET_OFFER_TYPE_IDS = {2}
+            # 2 = Match (1x2/moneyline), 6 = Over/Under (total), 7 = Asian Handicap (spread)
+            ALLOWED_BET_OFFER_TYPE_IDS = {2, 6, 7}
             bet_offer_type_id = betoffer.get("betOfferType", {}).get("id", 0)
             if bet_offer_type_id not in ALLOWED_BET_OFFER_TYPE_IDS:
-                return None  # Skip non-1x2 markets early
+                return None
 
-            # Filter by criterion label - only full match result
-            # Accept: Full Time (football), Moneyline (basketball/hockey), Match Odds (tennis)
-            # Skips: 1st Half, 2nd Half, Draw No Bet, Most Corners, etc.
+            # Filter by criterion label - only full match markets
             criterion = betoffer.get("criterion", {})
             label = (criterion.get("englishLabel") or criterion.get("label") or "").lower()
 
-            # Accept labels containing these keywords for match winner bets
-            MATCH_KEYWORDS = ("full time", "fulltid", "heltid", "match", "moneyline")
+            # Accept labels containing these keywords
+            MATCH_KEYWORDS = (
+                "full time", "fulltid", "heltid",       # Football regulation
+                "match", "moneyline",                    # General
+                "bout",                                  # Boxing, MMA
+                "regular time",                          # Rugby, generic regulation
+                "including overtime",                    # American football, ice hockey
+                "including extra ends",                  # Curling
+                "over/under", "handicap",                # Spread/total
+            )
             if not any(kw in label for kw in MATCH_KEYWORDS):
                 return None
 
-            # Exclude partial markets (quarters, halves, periods) - they contain keywords but aren't full match
-            EXCLUDE_PATTERNS = ("quarter", "period", "half", "1st", "2nd", "3rd", "4th")
+            # Exclude partial markets and derivative bets
+            EXCLUDE_PATTERNS = (
+                "quarter", "period", "half",
+                "1st", "2nd", "3rd", "4th",
+                "draw no bet",
+            )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None
-
-            raw_market_type = criterion.get("label", "")
-            # Normalize market type to standard format (1x2, over_under, spread, etc.)
-            market_type = normalize_market(raw_market_type)
 
             outcomes = []
             for outcome_ref in betoffer.get("outcomes", []):
@@ -380,9 +403,20 @@ class KambiRetriever(Retriever):
                 if point is not None:
                     point = float(point) / 1000
 
-                # Normalize outcome name (maps team names to home/away, Swedish ja/nej, etc.)
+                # Normalize outcome name
                 raw_name = outcome.get("label", "")
-                normalized_name = normalize_outcome(raw_name, home_team, away_team)
+
+                # For totals (betOfferType 6): map "Over X" / "Under X" to over/under
+                if bet_offer_type_id == 6:
+                    raw_lower = raw_name.lower().strip()
+                    if raw_lower.startswith("over"):
+                        normalized_name = "over"
+                    elif raw_lower.startswith("under"):
+                        normalized_name = "under"
+                    else:
+                        normalized_name = normalize_outcome(raw_name, home_team, away_team)
+                else:
+                    normalized_name = normalize_outcome(raw_name, home_team, away_team)
 
                 outcomes.append({
                     "name": normalized_name,
@@ -391,11 +425,15 @@ class KambiRetriever(Retriever):
                 })
             if not outcomes: return None
 
-            # Determine market type from outcome structure:
-            # - 3 outcomes with draw = 1x2 (football)
-            # - 2 outcomes (home/away only) = moneyline (basketball, hockey, tennis)
-            has_draw = any(o["name"] == "draw" for o in outcomes)
-            market_type = "1x2" if has_draw else "moneyline"
+            # Determine market type from betOfferType ID and outcome structure
+            if bet_offer_type_id == 6:
+                market_type = "total"
+            elif bet_offer_type_id == 7:
+                market_type = "spread"
+            else:
+                # betOfferType 2: determine from outcome structure
+                has_draw = any(o["name"] == "draw" for o in outcomes)
+                market_type = "1x2" if has_draw else "moneyline"
 
             return {"type": market_type, "outcomes": outcomes}
         except Exception as e:

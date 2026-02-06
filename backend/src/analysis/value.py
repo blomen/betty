@@ -45,6 +45,9 @@ class ValueBet:
     is_high_confidence: Optional[bool] = None
     skip_reason: Optional[str] = None
 
+    # Point/line value (for spread/total markets)
+    point: Optional[float] = None
+
     # Event context (optional, for display)
     home_team: Optional[str] = None
     away_team: Optional[str] = None

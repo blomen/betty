@@ -255,7 +255,7 @@ def store_polymarket_event(
         db_event = Event(
             id=matched_id,
             sport=kambi_sport,
-            league=event.sport,
+            league=event.league,
             home_team=home_team,
             away_team=away_team,
             start_time=start_dt,
@@ -322,7 +322,7 @@ def store_polymarket_event(
 
         market_type = normalize_market(market.get("question", "") or market.get("type", ""))
 
-        # Only store 1x2/moneyline markets (consistent with provider extraction)
+        # Only store allowed markets (1x2, moneyline, spread, total)
         if market_type not in ALLOWED_MARKETS:
             continue
 
@@ -337,6 +337,11 @@ def store_polymarket_event(
 
             odds_processed += 1
             outcome_norm = normalize_outcome(outcome_name, canonical_home, canonical_away)
+
+            # Skip outcomes that couldn't be normalized to home/away/draw/over/under
+            # (e.g., player names from prop markets that slipped through parsing)
+            if outcome_norm not in ('home', 'away', 'draw', 'over', 'under'):
+                continue
 
             # Swap home/away based on XOR of team swap and odds inversion
             # - teams_swapped only: swap (team order different from canonical)
@@ -362,6 +367,7 @@ def store_provider_event(
     min_individual_score: int = 80,
     prefix_filter_length: int = 3,
     odds_batch: "OddsBatchProcessor" = None,
+    require_match: bool = False,
 ) -> tuple[bool, int, int]:
     """
     Store provider event with STRICT fuzzy matching against Polymarket.
@@ -516,6 +522,12 @@ def store_provider_event(
                     f"canonical event with swapped teams (using {swapped_id})"
                 )
             else:
+                if require_match:
+                    # Soft book event with no sharp match - skip
+                    logger.debug(
+                        f"[{provider}] Skipped '{event.home_team} vs {event.away_team}' - no sharp match"
+                    )
+                    return (False, 0, 0)
                 # 4. No match at all - use default ID
                 matched_id = default_id
 

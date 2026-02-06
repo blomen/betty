@@ -35,6 +35,7 @@ export interface Opportunity {
   profit_pct: number | null;
   edge_pct: number | null;
   fair_odds: number | null;
+  point?: number | null;
   detected_at: string;
   // Event details
   sport?: string;
@@ -69,6 +70,7 @@ export interface OddsEntry {
   provider: string;
   outcome: string;
   odds: number;
+  point?: number;
 }
 
 // Providers
@@ -222,6 +224,16 @@ export interface ExtractionStatus {
   providers: Record<string, ProviderProgress>;
 }
 
+// Scheduler Status (for continuous extraction)
+export interface SchedulerStatus {
+  running: boolean;
+  last_run: string | null;
+  run_count: number;
+  interval_seconds: number | null;
+  providers: string[] | null;
+  next_run: string | null;
+}
+
 export interface ProviderProgress {
   status: 'pending' | 'running' | 'completed' | 'failed';
   events: number;
@@ -232,7 +244,56 @@ export interface ProviderProgress {
   sports_total: number;
 }
 
-// Metrics
+// Metrics - Detailed
+export interface SportMetrics {
+  duration_seconds: number;
+  events_processed: number;
+  events_new: number;
+  odds_processed: number;
+  odds_new: number;
+  success: boolean;
+  error: string | null;
+}
+
+export interface DetailedProviderMetrics {
+  duration_seconds: number;
+  total_events: number;
+  total_events_new: number;
+  total_odds: number;
+  total_odds_new: number;
+  sports_attempted: number;
+  sports_succeeded: number;
+  sports_failed: number;
+  success_rate: number;
+  retries: number;
+  cache_hits: number;
+  rate_limit_hits: number;
+  success: boolean;
+  error: string | null;
+  sports: Record<string, SportMetrics>;
+}
+
+export interface DetailedMetricsRun {
+  run_id: string;
+  start_time: number;
+  end_time: number | null;
+  duration_seconds: number;
+  total_events: number;
+  total_odds: number;
+  providers_attempted: number;
+  providers_succeeded: number;
+  providers_failed: number;
+  overall_success_rate: number;
+  total_retries: number;
+  total_cache_hits: number;
+  polymarket: {
+    events: number;
+    odds: number;
+  };
+  providers: Record<string, DetailedProviderMetrics>;
+}
+
+// Metrics - Simple (legacy)
 export interface MetricsRun {
   run_id: string;
   started_at: string;

@@ -76,14 +76,15 @@ pytest tests/                      # Run test suite
 - **Sharp source**: Pinnacle ONLY (Polymarket is NOT used as sharp)
 
 ### Extraction Scope (IMPORTANT)
-**We ONLY extract 1x2/moneyline markets. All other markets are skipped.**
+**We extract 1x2/moneyline, spread, and total markets. All other markets are skipped.**
 
-- **Markets extracted**: `1x2`, `moneyline` (match winner bets only)
-- **Markets skipped**: over/under, spreads, props, player markets, corners, cards, etc.
+- **Markets extracted**: `1x2`, `moneyline` (match winner), `spread` (handicap), `total` (over/under)
+- **Spread/total**: Main lines only (`isAlternate=false` for Pinnacle, betOfferType 6/7 for Kambi)
+- **Markets skipped**: props, player markets, corners, cards, correct score, etc.
 - **Live events**: Skipped entirely - only pre-match odds
 - **Whitelist enforced in**: `constants.py` via `ALLOWED_MARKETS` (imported by `pipeline/storage.py`)
 
-This keeps the system focused on the highest-value, most comparable market type across all providers.
+This keeps the system focused on the highest-value, most comparable market types across all providers.
 
 ## Configuration
 
@@ -129,13 +130,13 @@ This keeps the system focused on the highest-value, most comparable market type 
 - Shared constants in `constants.py` (ALLOWED_MARKETS, SHARP_PROVIDERS)
 
 ### Code Cleanup Rule (IMPORTANT)
-**If you find any redundant code handling markets other than 1x2/moneyline, remove it immediately.**
+**If you find any redundant code handling markets other than 1x2/moneyline/spread/total, remove it immediately.**
 
-We only support 1x2/moneyline markets. Any code for over/under, spreads, props, player markets, corners, cards, etc. is dead code and should be deleted. This includes:
-- Normalization logic for non-1x2 market types
-- Storage logic for non-1x2 markets
-- Analysis logic for non-1x2 markets
-- UI components for non-1x2 markets
+We only support 1x2, moneyline, spread, and total markets. Any code for props, player markets, corners, cards, correct score, etc. is dead code and should be deleted. This includes:
+- Normalization logic for unsupported market types
+- Storage logic for unsupported markets
+- Analysis logic for unsupported markets
+- UI components for unsupported markets
 
 Keep the codebase lean - delete, don't comment out.
 
@@ -267,7 +268,7 @@ print(f"\nCross-provider: {row[1]}/{row[0]} events ({100*row[1]/row[0]:.1f}%)")
 | Odds/event ratio | 2.5-2.7 | 2.3-2.5 | 2.9-3.1 |
 | Outcome normalization | 100% | >97% | 100% |
 | Score-like outcomes | 0 | 0 | 0 |
-| Market types | 1x2 only | 1x2 only | 1x2 only |
+| Market types | 1x2/ml/spread/total | 1x2 only | 1x2/ml/spread/total |
 
 **Red flags to investigate:**
 - Ratio > 4.0: Non-1x2 markets leaking through (check `betOfferType.id` filter)

@@ -63,6 +63,9 @@ class BonusOpportunity:
     # The edge (can be negative for bonus clearing)
     edge_pct: float
 
+    # Point/line value (for spread/total markets)
+    point: Optional[float] = None
+
     # Event context
     home_team: Optional[str] = None
     away_team: Optional[str] = None

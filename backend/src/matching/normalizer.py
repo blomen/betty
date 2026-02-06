@@ -274,12 +274,14 @@ def normalize_market(market: str) -> str:
     """
     Normalize market type to standard format.
 
-    We ONLY support 1x2/moneyline markets. Everything else returns 'other'
-    which gets filtered out by ALLOWED_MARKETS in storage.
+    We support 1x2, moneyline, spread, and total markets.
+    Everything else returns 'other' which gets filtered out by ALLOWED_MARKETS in storage.
 
     Returns:
     - '1x2' for 3-way markets (home/draw/away) - football
     - 'moneyline' for 2-way markets (home/away) - basketball, hockey, tennis
+    - 'spread' for handicap/spread markets
+    - 'total' for over/under markets
     - 'other' for everything else (filtered out)
 
     Note: Market type is best determined from outcome structure (has draw or not).
@@ -288,16 +290,24 @@ def normalize_market(market: str) -> str:
     market = market.lower().strip()
 
     # Pass through if already normalized
-    if market in ('1x2', 'moneyline'):
+    if market in ('1x2', 'moneyline', 'spread', 'total'):
         return market
+
+    # Spread/handicap detection
+    if any(kw in market for kw in [
+        'spread', 'handicap', 'handikapp', 'europeiskt', 'run line', 'puck line',
+    ]):
+        return 'spread'
+
+    # Total/over-under detection
+    if any(kw in market for kw in [
+        'total', 'totalt', 'over/under', 'o/u', 'över/under',
+    ]):
+        return 'total'
 
     # Early exit for markets that are definitely NOT 1x2/moneyline
     # This avoids false positives from keywords like "förlängning" in handicap markets
     if any(kw in market for kw in [
-        # Spreads/handicaps
-        'spread', 'handicap', 'handikapp', 'europeiskt', 'run line', 'puck line',
-        # Totals
-        'total', 'totalt', 'over/under', 'o/u', 'över/under',
         # Props and other markets
         'corner', 'card', 'kort', 'shot', 'skott', 'foul', 'booking',
         'player', 'spelare', 'scorer', 'målskytt',
@@ -404,6 +414,10 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
         return 'draw'
     if outcome_lower in ['2', 'away', 'borta', 'no', 'nej']:
         return 'away'
+    if outcome_lower in ['over', 'över']:
+        return 'over'
+    if outcome_lower in ['under']:
+        return 'under'
 
     # Log normalization failure for debugging
     logger.debug(

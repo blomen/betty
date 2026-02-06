@@ -319,10 +319,9 @@ class PinnacleRetriever(Retriever):
 
     def _parse_markets(self, raw_markets: List[dict]) -> List[dict]:
         """
-        Parse moneyline/1x2 markets from Pinnacle API response.
+        Parse moneyline/1x2, spread, and total markets from Pinnacle API response.
 
-        Only extracts winner markets (moneyline). Other markets (spread, total)
-        are skipped as per project scope - only 1x2/moneyline markets stored.
+        Extracts main lines only (isAlternate=false) for spread and total.
         """
         parsed = []
 
@@ -335,13 +334,24 @@ class PinnacleRetriever(Retriever):
             if market.get("status") != "open":
                 continue
 
-            # Only parse moneyline (1x2/moneyline) - skip spread/total
-            if market.get("type") != "moneyline":
+            market_type = market.get("type")
+            if market_type not in ("moneyline", "spread", "total"):
+                continue
+
+            # Skip alternate lines (only main lines for spread/total)
+            if market_type in ("spread", "total") and market.get("isAlternate", False):
                 continue
 
             prices = market.get("prices", [])
-            if prices:
+            if not prices:
+                continue
+
+            if market_type == "moneyline":
                 parsed.extend(self._parse_moneyline(prices))
+            elif market_type == "spread":
+                parsed.extend(self._parse_spread(prices))
+            elif market_type == "total":
+                parsed.extend(self._parse_total(prices))
 
         return parsed
 
@@ -371,6 +381,50 @@ class PinnacleRetriever(Retriever):
             "type": market_type,
             "outcomes": outcomes
         }]
+
+    def _parse_spread(self, prices: List[dict]) -> List[dict]:
+        """Parse spread (handicap) market."""
+        outcomes = []
+
+        for price_obj in prices:
+            designation = price_obj.get("designation")
+            american_odds = price_obj.get("price")
+            points = price_obj.get("points")
+
+            if designation and american_odds is not None and points is not None:
+                decimal_odds = self._american_to_decimal(american_odds)
+                outcomes.append({
+                    "name": designation,
+                    "odds": decimal_odds,
+                    "point": float(points),
+                })
+
+        if not outcomes:
+            return []
+
+        return [{"type": "spread", "outcomes": outcomes}]
+
+    def _parse_total(self, prices: List[dict]) -> List[dict]:
+        """Parse total (over/under) market."""
+        outcomes = []
+
+        for price_obj in prices:
+            designation = price_obj.get("designation")
+            american_odds = price_obj.get("price")
+            points = price_obj.get("points")
+
+            if designation and american_odds is not None and points is not None:
+                decimal_odds = self._american_to_decimal(american_odds)
+                outcomes.append({
+                    "name": designation,
+                    "odds": decimal_odds,
+                    "point": float(points),
+                })
+
+        if not outcomes:
+            return []
+
+        return [{"type": "total", "outcomes": outcomes}]
 
     def _american_to_decimal(self, american_odds: int) -> float:
         """Convert American odds to decimal format"""
