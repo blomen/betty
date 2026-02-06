@@ -39,7 +39,7 @@ class Retriever(ABC):
         """Parse raw data into StandardEvents."""
         pass
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
         url = self._get_sport_url(sport)
         # Some retrievers (like Kambi) might handle fetching internally in extract
         # If _get_sport_url returns empty, we assume extract handled it or it's invalid.

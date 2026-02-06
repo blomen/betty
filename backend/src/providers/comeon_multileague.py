@@ -208,7 +208,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             logger.warning(f"[{self.provider_id}] Failed to parse event {event_data.get('id')}: {e}")
             return None
 
-    async def extract(self, sport: str | List[str], limit: Optional[int] = None) -> List[StandardEvent]:
+    async def extract(self, sport: str | List[str], limit: Optional[int] = None, **kwargs) -> List[StandardEvent]:
         """
         Extract events from one or more sports.
 

@@ -40,7 +40,7 @@ class PinnacleRetriever(Retriever):
         """Not used - we override extract() completely"""
         return []
 
-    async def extract(self, sport: str, limit: int = None) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = None, **kwargs) -> List[StandardEvent]:
         """
         Extract events and odds for a sport using parallel fetching.
 

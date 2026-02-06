@@ -65,7 +65,7 @@ class KambiRetriever(Retriever):
         # We will override `extract` instead or use this for the final call.
         return "" 
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, target_leagues: set[str] | None = None, **kwargs) -> List[StandardEvent]:
         metrics = ExtractionMetrics()
 
         # 1. Get Groups (using shared cache with TTL)
@@ -100,6 +100,18 @@ class KambiRetriever(Retriever):
         self._extract_groups_recursive(group_data, groups)
 
         target_groups = [g for g in groups if self._match_sport(g.get("sport", ""), sport)]
+
+        # Filter by target leagues if provided (Pinnacle cheat sheet)
+        if target_leagues and target_groups:
+            original = len(target_groups)
+            target_groups = [
+                g for g in target_groups
+                if self._match_league(g.get("name", ""), target_leagues)
+            ]
+            skipped = original - len(target_groups)
+            if skipped > 0:
+                logger.info(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
+
         if not target_groups:
             logger.warning(f"[{self.provider_id}] No groups found for {sport}")
             return []
@@ -421,3 +433,15 @@ class KambiRetriever(Retriever):
         aliases = config_loader.get_sport_aliases(target_sport)
 
         return group_sport in aliases
+
+    def _match_league(self, group_name: str, target_leagues: set[str]) -> bool:
+        """Check if Kambi group name matches any Pinnacle league."""
+        name = group_name.lower().strip()
+        # Direct match
+        if name in target_leagues:
+            return True
+        # Substring match: "Premier League" matches "england - premier league"
+        for league in target_leagues:
+            if name in league or league in name:
+                return True
+        return False

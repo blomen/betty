@@ -43,7 +43,7 @@ class SnabbareRetriever(BrowserRetriever):
             "locale": "sv"
         }
 
-    async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
         # Initialize session by visiting the odds page
         await self._ensure_init(url=f"{self.site_url}/sv/odds", page_key="odds_page")
         all_events = []

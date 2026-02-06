@@ -130,7 +130,7 @@ class SBTechRetriever(BrowserRetriever):
         """Not used - extract() is overridden."""
         raise NotImplementedError("SBTechRetriever uses extract() directly")
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
         """
         Extract events by intercepting SBTech API calls.
 

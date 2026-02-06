@@ -13,6 +13,7 @@ from ..factory import ExtractorFactory
 from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
+from ..constants import ALLOWED_SPORTS, SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,8 @@ class ExtractionPipeline:
         provider_id: str,
         kambi_sports: list[str],
         limit: int,
-        sharp_sports: set | None = None
+        sharp_sports: set | None = None,
+        sharp_leagues: dict | None = None,
     ) -> dict:
         """
         Wrapper for provider extraction with retry logic.
@@ -189,6 +191,7 @@ class ExtractionPipeline:
             kambi_sports: List of sports to extract
             limit: Max events per sport
             sharp_sports: Pre-computed set of sports with sharp data (optional)
+            sharp_leagues: {sport: set(league_names)} from Pinnacle (optional)
 
         Returns:
             Dictionary with extraction results
@@ -199,7 +202,7 @@ class ExtractionPipeline:
         retry_config = self.orchestrator_config.retry
 
         if not retry_config.enabled:
-            return await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports)
+            return await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports, sharp_leagues)
 
         last_error = None
 
@@ -210,7 +213,7 @@ class ExtractionPipeline:
                 raise asyncio.CancelledError("Shutdown requested")
 
             try:
-                result = await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports)
+                result = await self._extract_provider(provider_id, kambi_sports, limit, sharp_sports, sharp_leagues)
 
                 # Success - record in circuit breaker
                 if self.circuit_breaker:
@@ -351,9 +354,11 @@ class ExtractionPipeline:
                     self.metrics.start_provider("pinnacle")
 
                 try:
+                    all_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
+                    target_sports = [s for s in all_sports if s in ALLOWED_SPORTS]
                     pinnacle_result = await self._extract_provider(
                         "pinnacle",
-                        sorted(list(set(s.kambi_sport for s in self.engine.sports))),
+                        target_sports,
                         max_events_per_sport
                     )
                     results["providers"]["pinnacle"] = pinnacle_result
@@ -377,6 +382,7 @@ class ExtractionPipeline:
                 # Commit Pinnacle data so Polymarket can query it for inversion detection
                 self.session.commit()
 
+
             # Extract from Polymarket (will fuzzy match against Pinnacle events)
             if polymarket:
                 log_progress("Extracting Polymarket (truth source)...")
@@ -398,11 +404,38 @@ class ExtractionPipeline:
                 )
 
             # Extract from other providers in parallel
-            kambi_sports = sorted(list(set(s.kambi_sport for s in self.engine.sports)))
+            kambi_sports = [s for s in sorted(list(set(s.kambi_sport for s in self.engine.sports))) if s in ALLOWED_SPORTS]
 
             # Pre-compute sharp sports once (thread-safe) before provider loop
             # This avoids repeated lock acquisition inside _extract_provider()
             sharp_sports = await self.get_cached_sports()
+
+            # Build league lookup from Pinnacle events in DB for filtering soft books
+            # Works whether Pinnacle was extracted this run or a previous one
+            sharp_league_rows = self.session.query(
+                Event.sport, Event.league
+            ).filter(
+                Event.id.in_(
+                    self.session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
+                )
+            ).distinct().all()
+
+            self.sharp_leagues = {}
+            for sport, league in sharp_league_rows:
+                if not league:
+                    continue
+                if sport not in self.sharp_leagues:
+                    self.sharp_leagues[sport] = set()
+                normalized = league.lower().strip()
+                self.sharp_leagues[sport].add(normalized)
+                # Also strip country prefix: "England - Premier League" → "premier league"
+                if ' - ' in league:
+                    stripped = league.split(' - ', 1)[1].lower().strip()
+                    self.sharp_leagues[sport].add(stripped)
+
+            if self.sharp_leagues:
+                total_leagues = sum(len(v) for v in self.sharp_leagues.values())
+                logger.info(f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports")
 
             if target_providers:
                 # Filter providers by circuit breaker status and health checks
@@ -455,9 +488,10 @@ class ExtractionPipeline:
                         if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
                             raise Exception("Circuit breaker open")
 
-                        # Use retry wrapper (pass pre-computed sharp_sports)
+                        # Use retry wrapper (pass pre-computed sharp_sports and sharp_leagues)
                         provider_results = await self._extract_provider_with_retry(
-                            provider_id, kambi_sports, max_events_per_sport, sharp_sports
+                            provider_id, kambi_sports, max_events_per_sport, sharp_sports,
+                            sharp_leagues=getattr(self, 'sharp_leagues', None),
                         )
 
                         # End provider metrics on success
@@ -661,7 +695,8 @@ class ExtractionPipeline:
         provider_id: str,
         sports: list[str],
         limit: int,
-        sharp_sports: set | None = None
+        sharp_sports: set | None = None,
+        sharp_leagues: dict | None = None,
     ) -> dict:
         """
         Extract from a specific provider across multiple sports.
@@ -674,6 +709,7 @@ class ExtractionPipeline:
             sports: List of sport names to extract
             limit: Maximum events per sport
             sharp_sports: Pre-computed set of sports with sharp data (optional)
+            sharp_leagues: {sport: set(league_names)} from Pinnacle (optional)
 
         Returns:
             Dictionary with extraction statistics
@@ -725,7 +761,9 @@ class ExtractionPipeline:
                 sport_start_time = time.time()
 
                 try:
-                    events = await extractor.extract(sport, limit=limit)
+                    # Get target leagues for this sport (if available)
+                    target_leagues = sharp_leagues.get(sport) if sharp_leagues else None
+                    events = await extractor.extract(sport, limit=limit, target_leagues=target_leagues)
 
                     # Store events with batch processor for better performance
                     events_processed = 0
@@ -736,6 +774,8 @@ class ExtractionPipeline:
                         self.session,
                         batch_size=self.orchestrator_config.batch_commit_size
                     ) as odds_batch:
+                        # Soft providers must match existing sharp events (no orphans)
+                        is_soft = provider_id not in SHARP_PROVIDERS
                         for event in events:
                             is_new, odds_proc, _ = store_provider_event(
                                 session=self.session,
@@ -745,6 +785,7 @@ class ExtractionPipeline:
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,
+                                require_match=is_soft,
                             )
                             events_processed += 1
                             if is_new:

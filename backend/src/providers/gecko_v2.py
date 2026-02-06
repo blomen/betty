@@ -144,7 +144,7 @@ class GeckoV2Retriever(BrowserRetriever):
         """Not used - extract() is overridden."""
         raise NotImplementedError("GeckoV2Retriever uses extract() directly")
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
         """
         Extract events by intercepting API calls.
 

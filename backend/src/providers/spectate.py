@@ -77,7 +77,7 @@ class SpectateRetriever(BrowserRetriever):
             self._initialized_pages.add("spectate_session")
             logger.info(f"[{self.provider_id}] Session initialized")
 
-    async def extract(self, sport: str, limit: int = 1000) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
         # 1. Ensure session is initialized for this sport
         await self._ensure_sport_init(sport)
 

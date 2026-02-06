@@ -324,7 +324,7 @@ class AltenarRetriever(Retriever):
         """
         return []
 
-    async def extract(self, sport: str, limit: int = 100) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 100, **kwargs) -> List[StandardEvent]:
         """
         Extract events using REST API.
 

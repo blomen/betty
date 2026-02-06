@@ -278,7 +278,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         """Not used - extract() is overridden."""
         raise NotImplementedError("HajperRetriever uses extract() directly")
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
         """Extract events using multi-league approach for comprehensive coverage."""
         sport_url_path = self.SPORT_URL_MAP.get(sport)
         if not sport_url_path:

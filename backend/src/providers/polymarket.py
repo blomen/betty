@@ -184,7 +184,7 @@ class PolymarketRetriever(Retriever):
         logger.info(f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket ({page} pages)")
         return all_events
 
-    async def extract(self, sport: str, limit: int = 50) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
         """
         Extract events for a specific sport/league.
 
