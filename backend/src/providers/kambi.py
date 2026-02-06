@@ -328,16 +328,23 @@ class KambiRetriever(Retriever):
                 metrics.events_skipped_no_markets += 1
                 return None
 
-            # Deduplicate winner markets: if both 1x2 and moneyline exist
-            # (e.g. ice hockey "Match Odds - Regular Time" + "Moneyline - Including Overtime"),
-            # prefer 1x2 (regulation time has draw info, avoids double counting).
-            # Keep spread/total markets alongside winner markets.
-            winner_markets = [m for m in markets if m["type"] in ("1x2", "moneyline")]
-            other_markets = [m for m in markets if m["type"] not in ("1x2", "moneyline")]
-            if len(winner_markets) > 1:
-                markets_1x2 = [m for m in winner_markets if m["type"] == "1x2"]
-                winner_markets = markets_1x2[:1] if markets_1x2 else winner_markets[:1]
-            markets = winner_markets + other_markets
+            # Deduplicate markets per type to keep only main lines:
+            # - Winner (1x2/moneyline): prefer 1x2 over moneyline, keep one
+            # - Spread/total: Kambi returns many alternate lines, keep only first (main line)
+            deduped = {}
+            for m in markets:
+                mtype = m["type"]
+                if mtype not in deduped:
+                    deduped[mtype] = m
+                elif mtype in ("1x2", "moneyline"):
+                    # Prefer 1x2 over moneyline
+                    if mtype == "1x2" and deduped.get("moneyline"):
+                        del deduped["moneyline"]
+                        deduped["1x2"] = m
+                    elif mtype == "moneyline" and "1x2" in deduped:
+                        pass  # Already have 1x2, skip moneyline
+                    # else: already have one of same type, skip duplicate
+            markets = list(deduped.values())
 
             path = event_raw.get("path", [])
             league = path[-1].get("name", "") if path else ""
