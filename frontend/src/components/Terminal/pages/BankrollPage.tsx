@@ -59,7 +59,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     if (isNaN(amount) || amount <= 0) return;
 
     const bonusInfo = getProviderBonus(providerId);
-    const hasUnclaimedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'doubledeposit';
+    const hasUnclaimedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit';
 
     try {
       if (isDeposit && hasUnclaimedBonus) {
@@ -158,7 +158,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                   const isAdjusting = adjustingProvider === provider.provider_id;
                   const depositNum = parseFloat(adjustAmount) || 0;
                   const bonusAmount = bonusInfo?.bonus?.amount || 0;
-                  const matchedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'doubledeposit'
+                  const matchedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit'
                     ? Math.min(depositNum, bonusAmount)
                     : 0;
 

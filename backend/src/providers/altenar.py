@@ -51,19 +51,41 @@ class AltenarRetriever(Retriever):
         66: 'football',
         67: 'basketball',
         68: 'tennis',
-        70: 'ice_hockey',
-        77: 'table_tennis',
-        73: 'handball',
         69: 'volleyball',
+        70: 'ice_hockey',
+        73: 'handball',
+        75: 'american_football',
+        76: 'baseball',
+        77: 'table_tennis',
+        84: 'mma',
+        101: 'rugby',
+        102: 'rugby',
         145: 'esports',
-        # Add more as discovered
     }
 
     # Market type mapping from Altenar typeId to our market types
-    # Only 1x2/moneyline markets are supported
     MARKET_TYPE_MAPPING = {
-        1: '1x2',              # Match result (football)
-        219: 'moneyline',      # Winner (basketball, incl. overtime)
+        # 1x2 / moneyline (match winner)
+        1: '1x2',              # Match result (football, handball, rugby)
+        186: 'moneyline',      # Winner (tennis, volleyball, table tennis, MMA)
+        219: 'moneyline',      # Winner incl. OT (basketball, american football)
+        251: 'moneyline',      # Winner incl. extra innings (baseball)
+        406: 'moneyline',      # Winner incl. OT+penalties (ice hockey)
+        30001: 'moneyline',    # Match winner (esports)
+        # Total (over/under)
+        18: 'total',           # Total (football, ice hockey, MMA, rugby)
+        189: 'total',          # Total games (tennis)
+        225: 'total',          # Total incl. OT (basketball, american football)
+        238: 'total',          # Total points (volleyball, table tennis)
+        258: 'total',          # Total incl. extra innings (baseball)
+        412: 'total',          # Total incl. OT+penalties (ice hockey)
+        # Spread (handicap)
+        16: 'spread',          # Handicap (handball, rugby)
+        187: 'spread',         # Game handicap (tennis)
+        223: 'spread',         # Spread incl. OT (basketball, american football)
+        237: 'spread',         # Point handicap (volleyball, table tennis)
+        256: 'spread',         # Handicap incl. extra innings (baseball)
+        410: 'spread',         # Handicap incl. OT+penalties (ice hockey)
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -94,17 +116,25 @@ class AltenarRetriever(Retriever):
 
         Args:
             outcome_name: Raw outcome name from API
-            market_type: Market type (1x2, moneyline)
+            market_type: Market type (1x2, moneyline, spread, total)
             raw_home: Raw home team name (before normalization)
             raw_away: Raw away team name (before normalization)
 
         Returns:
-            Standardized outcome name (home, away, draw)
+            Standardized outcome name (home, away, draw, over, under)
         """
         outcome_lower = outcome_name.lower().strip()
 
-        # Handle 1x2 and moneyline markets (only difference is draw for 1x2)
-        if market_type in ('1x2', 'moneyline'):
+        # Handle total markets: "Over X.5" → "over", "Under X.5" → "under"
+        if market_type == 'total':
+            if outcome_lower.startswith('over'):
+                return 'over'
+            if outcome_lower.startswith('under'):
+                return 'under'
+            return outcome_name
+
+        # Handle 1x2, moneyline, and spread markets
+        if market_type in ('1x2', 'moneyline', 'spread'):
             # Check for draw first (1x2 only)
             if market_type == '1x2' and outcome_lower in ['x', 'draw', 'tie', 'x2']:
                 return 'draw'
@@ -255,6 +285,16 @@ class AltenarRetriever(Retriever):
                 market_type = self.MARKET_TYPE_MAPPING.get(market_type_id, 'other')
                 market_name = market.get('name', 'Unknown')
 
+                # Extract point value from market's 'sv' field for spread/total
+                market_point = None
+                if market_type in ('spread', 'total'):
+                    sv = market.get('sv')
+                    if sv:
+                        try:
+                            market_point = float(sv)
+                        except (ValueError, TypeError):
+                            pass
+
                 # Get odds for this market
                 odd_ids = market.get('oddIds', [])
                 outcomes = []
@@ -270,10 +310,13 @@ class AltenarRetriever(Retriever):
                             raw_away
                         )
 
-                        outcomes.append({
+                        outcome_dict = {
                             'name': standardized_outcome,
                             'odds': odd.get('price', 0.0)
-                        })
+                        }
+                        if market_point is not None:
+                            outcome_dict['point'] = market_point
+                        outcomes.append(outcome_dict)
 
                 if outcomes:
                     market_dict = {

@@ -752,11 +752,14 @@ class ExtractionPipeline:
         # Get provider config for concurrency settings
         provider_config = self.engine.get_provider(provider_id)
 
-        # Check if this is a Kambi provider (needs sequential extraction)
-        is_kambi = getattr(provider_config, 'retriever_type', '') == 'kambi'
+        # Check if this provider needs sequential sport extraction
+        retriever_type = getattr(provider_config, 'retriever_type', '')
+        is_kambi = retriever_type == 'kambi'
+        # Browser-based providers share a single page — concurrent goto() causes ERR_ABORTED
+        is_single_page = retriever_type in ('sbtech', 'gecko_v2', 'spectate', 'custom')
 
-        # Kambi: sequential (1), Others: parallel (up to 4)
-        concurrent_sports = 1 if is_kambi else getattr(
+        # Kambi + browser-based: sequential (1), Others: parallel (up to 4)
+        concurrent_sports = 1 if (is_kambi or is_single_page) else getattr(
             provider_config,
             'concurrent_leagues',
             self.orchestrator_config.max_concurrent_sports_per_provider

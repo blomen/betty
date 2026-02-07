@@ -3,6 +3,8 @@ Bethard Retriever - SBTech-powered sportsbook
 
 Bethard is a Malta-licensed bookmaker using SBTech platform.
 Uses the shared SBTech base retriever with brand-specific configuration.
+
+URL structure: /sv/sports/<swedish-slug> (Swedish locale)
 """
 
 from typing import Dict, Any, Optional
@@ -13,14 +15,14 @@ from ..core import BrowserTransport
 class BethardRetriever(SBTechRetriever):
     """Retriever for Bethard sportsbook."""
 
-    # Bethard-specific sport slugs (update after inspecting site)
+    # Bethard uses Swedish sport slugs
     SPORT_SLUGS: Dict[str, str] = {
-        "football": "football",
-        "basketball": "basketball",
+        "football": "fotboll",
+        "basketball": "basket",
         "tennis": "tennis",
-        "ice_hockey": "ice-hockey",
-        "american_football": "american-football",
-        "baseball": "baseball",
+        "ice_hockey": "ishockey",
+        "american_football": "amerikansk-fotboll",
+        "baseball": "baseboll",
         "mma": "mma",
         "esports": "esports",
     }
@@ -29,7 +31,14 @@ class BethardRetriever(SBTechRetriever):
         super().__init__(config, transport)
 
     def _get_sport_url(self, sport: str) -> str:
-        """Get Bethard sportsbook URL for a sport."""
+        """Get Bethard sportsbook URL for a sport (Swedish locale).
+
+        Appends ?tab=upcoming to bypass the default "Featured" tab which
+        only shows a handful of promoted events.
+        """
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
-        # URL structure to be confirmed during testing
-        return f"{self.site_url}/sports/{sport_slug}"
+        return f"{self.site_url}/sv/sports/{sport_slug}?tab=upcoming"
+
+    def _get_event_detail_url(self, slug: str) -> str:
+        """Get Bethard event detail URL (Swedish locale)."""
+        return f"{self.site_url}/sv/sports/{slug}"

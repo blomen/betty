@@ -223,7 +223,7 @@ class Profile(Base):
     min_retention_pct = Column(Float, default=80.0)  # Min % for free bet value
     preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
-    double_deposit = Column(Float, default=0.0)      # Max deposit match (0 = none)
+    bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile

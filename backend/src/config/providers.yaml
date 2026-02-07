@@ -36,9 +36,14 @@ orchestrator:
       shared_resource: browser
 
     - name: rest_api
-      retriever_types: [pinnacle, altenar]
+      retriever_types: [pinnacle, altenar, betconstruct]
       max_concurrent: 5                # Independent APIs - no limits
       shared_resource: none
+
+    - name: interwetten_browser
+      retriever_types: [interwetten]
+      max_concurrent: 1                # Headed browser, heavy
+      shared_resource: browser
 
     - name: sbtech_browser
       retriever_types: [sbtech, snabbare]
@@ -108,7 +113,10 @@ orchestrator:
     max_wait_seconds: 60             # Cap on exponential backoff
     notify_circuit_breaker_after: 2  # Notify circuit breaker after N consecutive 429s
 
-# Base configurations
+# ============================================================================
+# Base configurations (YAML anchors)
+# ============================================================================
+
 kambi_defaults: &kambi_defaults
   retriever_type: kambi
   base_url: https://eu1.offering-api.kambicdn.com/offering/v2018
@@ -116,6 +124,23 @@ kambi_defaults: &kambi_defaults
     market: SE
     lang: sv_SE
     odds_format: decimal
+
+altenar_defaults: &altenar_defaults
+  retriever_type: altenar
+  api_base: https://sb2frontend-altenar2.biahosted.com/api
+  supported_sports:
+    - football
+    - basketball
+    - tennis
+    - ice_hockey
+    - american_football
+    - baseball
+    - table_tennis
+    - handball
+    - volleyball
+    - mma
+    - rugby
+    - esports
 
 spectate_tournaments: &spectate_tournaments
   football:
@@ -151,11 +176,45 @@ spectate_tournaments: &spectate_tournaments
     - counter-strike/esl-pro-league
     - league-of-legends/lec
 
+# ============================================================================
 # Provider definitions
+# ============================================================================
+# Only providers with bonuses are included. No-bonus providers (ATG, Paf,
+# Svenska Spel, FrankFred) are excluded — they add extraction load without
+# bankroll value.
+#
 # Validation status: PRODUCTION_READY = tested in full pipeline with metrics validated
 providers:
-  # Kambi providers (same API, different brands)
-  # PRODUCTION_READY: unibet (2026-02-04) - ratio 2.75, 100% normalization, no 429s
+
+  # --------------------------------------------------------------------------
+  # Sharp source (reference odds — no bonus, kept for fair-odds baseline)
+  # --------------------------------------------------------------------------
+
+  pinnacle:
+    id: pinnacle
+    name: Pinnacle
+    domain: pinnacle.com
+    retriever_type: pinnacle
+    api_base: https://guest.api.arcadia.pinnacle.com/0.1
+    sharp: true
+
+  # --------------------------------------------------------------------------
+  # Polymarket (prediction market — event matching only)
+  # --------------------------------------------------------------------------
+
+  polymarket:
+    id: polymarket
+    name: Polymarket
+    retriever_type: polymarket
+    base_url: https://gamma-api.polymarket.com
+    params:
+      game_bets_tag_id: 100639
+
+  # --------------------------------------------------------------------------
+  # Kambi API providers (same API, different brands)
+  # --------------------------------------------------------------------------
+
+  # PRODUCTION_READY (2026-02-04) - ratio 2.75, 100% normalization, no 429s
   unibet:
     <<: *kambi_defaults
     id: unibet
@@ -168,7 +227,7 @@ providers:
       wagering_multiplier: 1
       min_odds: 1.80
 
-  # PRODUCTION_READY: leovegas (2026-02-04) - ratio 2.75, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.75, 100% normalization
   leovegas:
     <<: *kambi_defaults
     id: leovegas
@@ -176,12 +235,12 @@ providers:
     domain: leovegas.com
     brand: leose
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 600
       wagering_multiplier: 6
       min_odds: 1.80
 
-  # PRODUCTION_READY: expekt (2026-02-04) - ratio 2.77, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   expekt:
     <<: *kambi_defaults
     id: expekt
@@ -189,12 +248,12 @@ providers:
     domain: expekt.se
     brand: expektse
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 1000
       wagering_multiplier: 20
       min_odds: 1.80
 
-  # PRODUCTION_READY: betmgm (2026-02-04) - ratio 2.77, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
     <<: *kambi_defaults
     id: betmgm
@@ -207,7 +266,7 @@ providers:
       wagering_multiplier: 1
       min_odds: 1.80
 
-  # PRODUCTION_READY: speedybet (2026-02-04) - ratio 2.77, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   speedybet:
     <<: *kambi_defaults
     id: speedybet
@@ -215,12 +274,12 @@ providers:
     domain: speedybet.com
     brand: speedybetse
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
 
-  # PRODUCTION_READY: x3000 (2026-02-04) - ratio 2.77, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   x3000:
     <<: *kambi_defaults
     id: x3000
@@ -228,38 +287,117 @@ providers:
     domain: x3000.se
     brand: speedyspelse
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
 
-  # PRODUCTION_READY: goldenbull (2026-02-04) - ratio 2.74, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   goldenbull:
     <<: *kambi_defaults
     id: goldenbull
     name: Golden Bull
     domain: goldenbull.se
-    brand: pafgoldense  # Discovered via browser interception (Paf-branded Kambi)
+    brand: pafgoldense
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
 
-  # PRODUCTION_READY: 1x2 (2026-02-04) - ratio 2.74, 100% normalization
+  # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   1x2:
     <<: *kambi_defaults
     id: 1x2
     name: 1X2
     domain: 1x2.se
-    brand: pafpre1x2se  # Discovered via browser interception (Paf-branded Kambi)
+    brand: pafpre1x2se
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
 
-  # Spectate providers
+  # --------------------------------------------------------------------------
+  # Altenar REST API providers
+  # --------------------------------------------------------------------------
+
+  betinia:
+    <<: *altenar_defaults
+    id: betinia
+    name: Betinia
+    domain: betinia.se
+    integration: betiniase2
+    bonus:
+      type: bonusdeposit
+      amount: 1000
+      wagering_multiplier: 6
+      min_odds: 1.80
+
+  campobet:
+    <<: *altenar_defaults
+    id: campobet
+    name: CampoBet
+    domain: campobet.se
+    integration: campose
+    bonus:
+      type: bonusdeposit
+      amount: 500
+      wagering_multiplier: 6
+      min_odds: 1.80
+
+  swiper:
+    <<: *altenar_defaults
+    id: swiper
+    name: Swiper
+    domain: swiper.se
+    integration: swiperse
+    bonus:
+      type: bonusdeposit
+      amount: 500
+      wagering_multiplier: 6
+      min_odds: 1.80
+
+  lodur:
+    <<: *altenar_defaults
+    id: lodur
+    name: Lodur
+    domain: lodur.se
+    integration: lodurse
+    bonus:
+      type: bonusdeposit
+      amount: 1000
+      wagering_multiplier: 6
+      min_odds: 1.80
+
+  dbet:
+    <<: *altenar_defaults
+    id: dbet
+    name: Dbet
+    domain: dbet.se
+    integration: dbet
+    bonus:
+      type: freebet
+      amount: 500
+      wagering_multiplier: 1
+      min_odds: 1.80
+
+  quickcasino:
+    <<: *altenar_defaults
+    id: quickcasino
+    name: QuickCasino
+    domain: quickcasino.se
+    integration: quickcasinose
+    bonus:
+      type: bonusdeposit
+      amount: 500
+      wagering_multiplier: 6
+      min_odds: 1.80
+
+  # --------------------------------------------------------------------------
+  # Spectate providers (888/Evoke platform)
+  # --------------------------------------------------------------------------
+
   mrgreen:
     id: mrgreen
     name: Mr Green
@@ -286,31 +424,15 @@ providers:
       tournaments:
         <<: *spectate_tournaments
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
 
-  # Snabbare (custom retriever)
-  snabbare:
-    id: snabbare
-    name: Snabbare
-    domain: snabbare.com
-    retriever_type: snabbare
-    api_base: https://www.snabbare.com/sportsbook-api/api
-    params:
-      tournaments:
-        football:
-          - sweden/allsvenskan
-          - england/premier-league
-    bonus:
-      type: doubledeposit
-      amount: 600
-      wagering_multiplier: 8
-      min_odds: 1.80
+  # --------------------------------------------------------------------------
+  # Gecko V2 providers (Betsson Group — browser + API interception)
+  # --------------------------------------------------------------------------
 
-  # Gecko providers (Betsson Group - Custom API platform)
-  # Using gecko_v2: Browser automation with API interception + stealth to bypass bot detection
   betsson:
     id: betsson
     name: Betsson
@@ -347,25 +469,22 @@ providers:
       wagering_multiplier: 1
       min_odds: 1.80
 
-  # Pinnacle (guest API - no auth required) - SHARP BOOK (reference odds)
-  pinnacle:
-    id: pinnacle
-    name: Pinnacle
-    domain: pinnacle.com
-    retriever_type: pinnacle
-    api_base: https://guest.api.arcadia.pinnacle.com/0.1
-    sharp: true  # No margin, use as truth source
+  spelklubben:
+    id: spelklubben
+    name: Spelklubben
+    domain: spelklubben.se
+    retriever_type: gecko_v2
+    site_url: https://www.spelklubben.se
+    bonus:
+      type: bonusdeposit
+      amount: 500
+      wagering_multiplier: 15
+      min_odds: 1.90
 
-  # Polymarket (prediction market)
-  polymarket:
-    id: polymarket
-    name: Polymarket
-    retriever_type: polymarket
-    base_url: https://gamma-api.polymarket.com
-    params:
-      game_bets_tag_id: 100639
+  # --------------------------------------------------------------------------
+  # SBTech providers (browser + API interception)
+  # --------------------------------------------------------------------------
 
-  # SBTech providers (browser automation with API interception)
   bethard:
     id: bethard
     name: Bethard
@@ -373,40 +492,66 @@ providers:
     retriever_type: sbtech
     site_url: https://www.bethard.com
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 15
       min_odds: 1.90
+
+  10bet:
+    id: 10bet
+    name: 10Bet
+    domain: 10bet.se
+    retriever_type: sbtech
+    site_url: https://www.10bet.se
+    bonus:
+      type: bonusdeposit
+      amount: 1000
+      wagering_multiplier: 8
+      min_odds: 1.80
+
+  # --------------------------------------------------------------------------
+  # Snabbare (custom MTS sports API)
+  # --------------------------------------------------------------------------
+
+  snabbare:
+    id: snabbare
+    name: Snabbare
+    domain: snabbare.com
+    retriever_type: snabbare
+    api_base: https://www.snabbare.com/sportsbook-api/api
+    params:
+      tournaments:
+        football:
+          - sweden/allsvenskan
+          - england/premier-league
+    bonus:
+      type: bonusdeposit
+      amount: 600
+      wagering_multiplier: 8
+      min_odds: 1.80
+
+  # --------------------------------------------------------------------------
+  # ComeOn Group (custom multi-league WebSocket extraction)
+  # --------------------------------------------------------------------------
 
   comeon:
     id: comeon
     name: ComeOn
     domain: comeon.com
-    retriever_type: custom  # Multi-league WebSocket implementation
+    retriever_type: custom
     site_url: https://www.comeon.com
     bonus:
-      type: doubledeposit
+      type: bonusdeposit
       amount: 500
       wagering_multiplier: 6
       min_odds: 1.80
-
-    # Breadth controls - optimized for faster extraction
-    max_leagues: 30  # Reduced from 50 for faster extraction (~40s target)
-    concurrent_leagues: 8  # Increased from 5 for better parallelism
-
-    # Depth controls (DISABLED for validation - causes timeouts)
-    extract_full_markets: false  # Disable event detail page extraction
+    max_leagues: 30
+    concurrent_leagues: 8
+    extract_full_markets: false
     concurrent_event_details: 8
     detail_extraction_filter: "none"
-
-    # Multi-sport support
-    sports_to_extract: "all"  # "all" or list of specific sports
-    # sports_to_extract:  # Alternative: specify sports
-    #   - football
-    #   - basketball
-    #   - tennis
-
-    supported_sports:  # Multi-sport support via URL slug mapping
+    sports_to_extract: "all"
+    supported_sports:
       - football
       - basketball
       - tennis
@@ -424,18 +569,15 @@ providers:
     id: hajper
     name: Hajper
     domain: hajper.com
-    retriever_type: custom  # Multi-league WebSocket extraction (ComeOn Group)
+    retriever_type: custom
     site_url: https://www.hajper.com
     bonus:
       type: freebet
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
-
-    # Breadth controls - optimized for faster extraction
-    max_leagues: 30  # Reduced from 999 for faster extraction (~40s target)
-    concurrent_leagues: 8  # Number of parallel league extractions
-
+    max_leagues: 30
+    concurrent_leagues: 8
     supported_sports:
       - football
       - basketball
@@ -446,50 +588,76 @@ providers:
       - mma
       - esports
 
-  # Altenar Platform Providers
-  betinia:
-    id: betinia
-    name: Betinia
-    domain: betinia.se
-    retriever_type: altenar  # REST API extraction (Altenar platform)
-    bonus:
-      type: doubledeposit
-      amount: 1000
-      wagering_multiplier: 6
-      min_odds: 1.80
+  # --------------------------------------------------------------------------
+  # BetConstruct / Swarm WebSocket providers
+  # --------------------------------------------------------------------------
 
-    # Altenar API configuration
-    api_base: https://sb2frontend-altenar2.biahosted.com/api
-    integration: betiniase2  # Altenar skin ID for Betinia
-
+  vbet:
+    id: vbet
+    name: Vbet
+    domain: vbet.se
+    retriever_type: betconstruct
+    ws_url: wss://eu-swarm-newm.vbet.se/
+    site_id: 1088
     supported_sports:
       - football
       - basketball
       - tennis
       - ice_hockey
+      - american_football
+      - baseball
       - table_tennis
       - handball
       - volleyball
+      - mma
+      - boxing
       - esports
+    bonus:
+      type: freebet
+      amount: 1500
+      wagering_multiplier: 1
+      min_odds: 1.80
 
+  # --------------------------------------------------------------------------
+  # Interwetten (proprietary SSR — browser-based DOM parsing)
+  # --------------------------------------------------------------------------
+
+  interwetten:
+    id: interwetten
+    name: Interwetten
+    domain: interwetten.se
+    retriever_type: interwetten
+    site_url: https://www.interwetten.se
+    supported_sports:
+      - football
+      - ice_hockey
+      - basketball
+      - american_football
+    bonus:
+      type: bonusdeposit
+      amount: 1000
+      wagering_multiplier: 5
+      min_odds: 1.70
+
+# ============================================================================
 # Extraction Tiers
-# Defines how frequently different provider types should be extracted
+# ============================================================================
+
 extraction_tiers:
   continuous:
-    # Primary betting (Polymarket) + sharp reference (Pinnacle)
-    # These run on a loop every 5 minutes
-    providers: [polymarket, pinnacle]
+    # Sharp reference (Pinnacle) + event matching (Polymarket)
+    providers: [pinnacle, polymarket]
     interval_minutes: 5
 
   scheduled:
-    # Easy API soft books - less frequent extraction
-    providers: [betinia]
-    interval_minutes: 240  # Every 4 hours
+    # Easy REST API soft books
+    providers: [betinia, campobet, swiper, lodur, dbet, quickcasino]
+    interval_minutes: 240
 
   manual:
-    # Rate-limited/browser-based providers - on-demand extraction only
+    # Rate-limited / browser-based providers — on-demand only
     providers:
-      # Kambi API (8 providers)
+      # Kambi API (8)
       - unibet
       - leovegas
       - expekt
@@ -501,22 +669,34 @@ extraction_tiers:
       # Spectate (2)
       - mrgreen
       - 888sport
-      # Gecko V2 (3)
+      # Gecko V2 (4)
       - betsson
       - betsafe
       - nordicbet
-      # SBTech (1)
+      - spelklubben
+      # SBTech (2)
       - bethard
+      - 10bet
       # Snabbare (1)
       - snabbare
-      # ComeOn group (2)
+      # ComeOn Group (2)
       - comeon
       - hajper
+      # BetConstruct (1)
+      - vbet
+      # Interwetten (1)
+      - interwetten
 
-# Active providers (subset of above to use)
+# ============================================================================
+# Active providers (subset used for extraction)
+# ============================================================================
+
 active:
-  # Kambi API providers (8 total - all with bonuses)
-  # Note: Kambi rate limits aggressively, run sequentially with 30s delays
+  # Sharp source
+  - pinnacle
+  # Polymarket
+  - polymarket
+  # Kambi API (8)
   - unibet
   - leovegas
   - expekt
@@ -525,16 +705,27 @@ active:
   - x3000
   - goldenbull
   - 1x2
-  # Sharp source
-  - pinnacle  # Sharp lines - truth source
-  # Polymarket for continuous extraction
-  - polymarket
-  # DISABLED for validation:
-  # - hajper
-  # - comeon
+  # Altenar API (6)
+  - betinia
+  - campobet
+  - swiper
+  - lodur
+  - dbet
+  - quickcasino
+  # SBTech (1)
+  - bethard
+  # - 10bet  # DISABLED: uses WebSocket (framegas3.com), not REST API — needs custom extractor
+  # BetConstruct (1) - WebSocket API, no browser needed
+  - vbet
+  # Interwetten (1) - browser-based, headed mode
+  - interwetten
+  # DISABLED: browser-based, needs validation
   # - mrgreen
   # - 888sport
   # - snabbare
-  # - betinia
-  # DISABLED: bethard - fails under concurrent browser load
-  # DISABLED: Gecko V2 (betsson, betsafe, nordicbet) - only ~34 events, fails under load
+  # - comeon
+  # - hajper
+  # - betsson
+  # - betsafe
+  # - nordicbet
+  # - spelklubben

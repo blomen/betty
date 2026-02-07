@@ -35,6 +35,86 @@ import type {
   StakeNoiseResult,
 } from '@/types';
 
+// ============ Specials & Bonus Validation Types ============
+
+export interface SpecialItem {
+  provider: string;
+  title: string;
+  description: string;
+  original_odds: number | null;
+  boosted_odds: number | null;
+  max_stake: number | null;
+  category: string;
+  sport: string;
+  event: string;
+  expires_at: string | null;
+  url: string;
+  scraped_at: string;
+  source: string;
+}
+
+export interface BonusDiff {
+  field: string;
+  yaml: unknown;
+  scraped: unknown;
+}
+
+export interface BonusChange {
+  provider_id: string;
+  diffs: BonusDiff[];
+  sources: string[];
+}
+
+export interface BonusAlert {
+  type: 'bonus_changed' | 'new_bonus_available';
+  provider_id: string;
+  field?: string;
+  old_value?: unknown;
+  new_value?: unknown;
+  message: string;
+  bonus?: Record<string, unknown>;
+}
+
+export interface BonusValidation {
+  validated_at: string;
+  providers_checked: number;
+  matches: number;
+  mismatches: number;
+  changes: BonusChange[];
+  missing_from_yaml: Array<{ provider_id: string; scraped_bonus: Record<string, unknown> }>;
+  missing_from_scrape: Array<{ provider_id: string; yaml_bonus: Record<string, unknown> }>;
+  alerts: BonusAlert[];
+}
+
+export interface SpecialsResponse {
+  specials: SpecialItem[];
+  count: number;
+  scraped_at: string | null;
+}
+
+export interface ScrapeResponse extends SpecialsResponse {
+  bonus_validation: BonusValidation;
+}
+
+export interface BonusValidationStatus {
+  status: string;
+  message?: string;
+  validated_at?: string;
+  providers_checked?: number;
+  matches?: number;
+  mismatches?: number;
+  changes?: BonusChange[];
+  missing_from_yaml?: Array<{ provider_id: string; scraped_bonus: Record<string, unknown> }>;
+  missing_from_scrape?: Array<{ provider_id: string; yaml_bonus: Record<string, unknown> }>;
+  provider_status?: Record<string, {
+    status: string;
+    yaml_bonus: Record<string, unknown>;
+    scraped_bonus: Record<string, unknown> | null;
+    sources: string[];
+    diffs: BonusDiff[];
+  }>;
+}
+
 const API_BASE = '/api';
 
 // Configuration for fetch with retry
@@ -249,6 +329,32 @@ export const api = {
 
   async getBankrollStats(): Promise<BankrollStats> {
     return fetchJson<BankrollStats>('/bankroll/stats');
+  },
+
+  async getProviderBonuses(): Promise<Record<string, {
+    type: string;
+    amount: number;
+    wagering_multiplier: number;
+    min_odds: number;
+  }>> {
+    return fetchJson('/bankroll/bonuses');
+  },
+
+  async getBankrollStatus(): Promise<{
+    profile_id: number;
+    profile_name: string;
+    bankroll: number;
+    bonus_progress: Record<string, {
+      status: string;
+      bonus_amount: number;
+      wagering_requirement: number;
+      wagered_amount: number;
+      min_odds: number;
+      progress_pct: number;
+      is_cleared: boolean;
+    }>;
+  }> {
+    return fetchJson('/bankroll/status');
   },
 
   async setAllBalances(
@@ -669,6 +775,19 @@ export const api = {
         provider_id: providerId,
       }),
     });
+  },
+
+  // ============ Specials (Odds Boosts) & Bonus Validation ============
+  async getSpecials(): Promise<SpecialsResponse> {
+    return fetchJson('/specials');
+  },
+
+  async scrapeSpecials(): Promise<ScrapeResponse> {
+    return fetchJson('/specials/scrape', { method: 'POST' });
+  },
+
+  async getBonusStatus(): Promise<BonusValidationStatus> {
+    return fetchJson('/specials/bonus-status');
   },
 
   // ============ Profiles ============

@@ -15,9 +15,10 @@ Flow:
 from typing import List, Any, Optional, Dict
 import logging
 import asyncio
+import re
 from datetime import datetime
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
-from ..matching.normalizer import normalize_team_name
+from ..matching.normalizer import normalize_team_name, normalize_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ class SBTechRetriever(BrowserRetriever):
     - site_url: Base URL for the operator
     - SPORT_SLUGS: Mapping of sport names to URL slugs
     """
+
+    # Sports where participants are individuals (name order: "lastname firstname" in SBTech)
+    INDIVIDUAL_SPORTS = {"tennis", "mma", "boxing", "darts", "snooker", "table_tennis"}
 
     # Default sport slugs (can be overridden by subclasses)
     SPORT_SLUGS: Dict[str, str] = {
@@ -130,13 +134,17 @@ class SBTechRetriever(BrowserRetriever):
         """Not used - extract() is overridden."""
         raise NotImplementedError("SBTechRetriever uses extract() directly")
 
-    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
+    # Team sports where spread/total markets are expected
+    DETAIL_SPORTS = {"football", "basketball", "ice_hockey", "american_football", "baseball"}
+
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
         Extract events by intercepting SBTech API calls.
 
         1. Load sport page with Playwright
         2. Intercept SBTech API responses
         3. Parse JSON directly
+        4. For team sports, navigate to event detail pages for spread/total markets
         """
         if sport not in self.SPORT_SLUGS:
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
@@ -185,10 +193,19 @@ class SBTechRetriever(BrowserRetriever):
             await asyncio.sleep(8)
             logger.debug(f"[{self.provider_id}] Total HTTP responses: {all_responses_count}")
 
-            # Scroll to trigger lazy loading
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            await asyncio.sleep(3)
-            logger.debug(f"[{self.provider_id}] Total HTTP responses after scroll: {all_responses_count}")
+            # Scroll loop to trigger infinite-scroll pagination
+            prev_response_count = len(self._api_responses)
+            for scroll_i in range(8):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(2)
+                current_count = len(self._api_responses)
+                logger.debug(
+                    f"[{self.provider_id}] Scroll {scroll_i + 1}: "
+                    f"{current_count} API responses (was {prev_response_count})"
+                )
+                if current_count == prev_response_count:
+                    break  # No new data loaded
+                prev_response_count = current_count
 
             # Remove interceptor
             page.remove_listener('response', intercept_response)
@@ -198,15 +215,10 @@ class SBTechRetriever(BrowserRetriever):
                 logger.debug(f"[{self.provider_id}] Waiting for {len(pending_tasks)} pending tasks...")
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-            # Parse captured responses
+            # Aggregate all responses then parse (SBTech splits events/markets/selections across responses)
             logger.info(f"[{self.provider_id}] Captured {len(self._api_responses)} API responses")
-
-            events = []
-            for i, api_data in enumerate(self._api_responses):
-                logger.debug(f"[{self.provider_id}] Parsing response {i+1}...")
-                parsed_events = self._parse_sbtech_response(api_data, sport)
-                logger.debug(f"[{self.provider_id}] Response {i+1} yielded {len(parsed_events)} events")
-                events.extend(parsed_events)
+            slug_map: Dict[str, str] = {}
+            events = self._parse_aggregated_responses(self._api_responses, sport, slug_map)
 
             # Deduplicate by event ID
             seen_ids = set()
@@ -217,6 +229,16 @@ class SBTechRetriever(BrowserRetriever):
                     seen_ids.add(event_key)
                     unique_events.append(event)
 
+            # For team sports, fetch detail pages to get spread/total markets
+            if sport in self.DETAIL_SPORTS and slug_map:
+                events_with_markets = [e for e in unique_events if e.markets]
+                if events_with_markets:
+                    logger.info(
+                        f"[{self.provider_id}] Fetching detail pages for "
+                        f"{len(events_with_markets)} {sport} events"
+                    )
+                    await self._extract_event_details(events_with_markets, slug_map, sport)
+
             logger.info(f"[{self.provider_id}] Extracted {len(unique_events)} unique events")
             return unique_events[:limit]
 
@@ -224,76 +246,179 @@ class SBTechRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    def _parse_sbtech_response(self, api_data: Dict, sport: str) -> List[StandardEvent]:
+    def _get_event_detail_url(self, slug: str) -> str:
         """
-        Parse SBTech API response.
+        Get the URL for an event's detail page.
 
-        SBTech structure:
-        {
-          "data": {
-            "events": [...],      # Event metadata
-            "markets": [...],     # Market metadata
-            "selections": [...]   # Outcomes with odds
-          }
-        }
+        Override in subclasses for locale-specific URL patterns.
         """
-        events = []
+        return f"{self.site_url}/sports/{slug}"
 
-        try:
-            # Skip non-dict responses (arrays, null, etc.)
+    async def _extract_event_details(self, events: List[StandardEvent],
+                                      slug_map: Dict[str, str], sport: str) -> None:
+        """
+        Navigate to individual event detail pages to capture spread/total markets.
+
+        Listing pages only return 1x2/moneyline. Detail pages include all markets.
+        Modifies events in-place by merging additional markets.
+        """
+        page = self.transport.page
+        detail_count = 0
+        markets_added = 0
+
+        for event in events:
+            event_key = f"{event.home_team}:{event.away_team}:{event.start_time}"
+            slug = slug_map.get(event_key)
+            if not slug:
+                continue
+
+            # Skip if event already has spread and total
+            existing_types = {m["type"] for m in event.markets}
+            if "spread" in existing_types and "total" in existing_types:
+                continue
+
+            try:
+                # Clear responses for this detail page
+                self._api_responses = []
+                pending_tasks = []
+
+                def intercept_detail(response):
+                    url = response.url
+                    if self._should_intercept(url):
+                        task = asyncio.create_task(self._process_response(response))
+                        pending_tasks.append(task)
+
+                page.on('response', intercept_detail)
+
+                detail_url = self._get_event_detail_url(slug)
+                logger.debug(f"[{self.provider_id}] Detail page: {detail_url}")
+                await page.goto(detail_url, wait_until='load', timeout=30000)
+                await asyncio.sleep(3)
+
+                page.remove_listener('response', intercept_detail)
+
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+                if not self._api_responses:
+                    continue
+
+                # Parse detail page responses
+                detail_events = self._parse_aggregated_responses(self._api_responses, sport)
+
+                # Find matching event and merge new markets
+                for de in detail_events:
+                    de_key = f"{de.home_team}:{de.away_team}:{de.start_time}"
+                    if de_key == event_key:
+                        for market in de.markets:
+                            if market["type"] not in existing_types:
+                                event.markets.append(market)
+                                existing_types.add(market["type"])
+                                markets_added += 1
+                        break
+
+                detail_count += 1
+                # Small delay between navigations to avoid rate limiting
+                await asyncio.sleep(1)
+
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Detail page failed for {event.name}: {e}")
+                continue
+
+        logger.info(
+            f"[{self.provider_id}] Detail extraction: {detail_count} pages visited, "
+            f"{markets_added} markets added"
+        )
+
+    def _parse_aggregated_responses(self, responses: List[Dict], sport: str,
+                                     slug_map: Optional[Dict[str, str]] = None) -> List[StandardEvent]:
+        """
+        Aggregate all captured API responses then parse.
+
+        SBTech splits events, markets, and selections across separate responses.
+        We merge them all before parsing to avoid missing data.
+
+        If slug_map is provided, it will be populated with event_key -> slug mappings
+        for use in detail page extraction.
+        """
+        # Aggregate all events, markets, selections across responses
+        all_events = {}  # id -> event data (dedup by id)
+        all_markets = {}  # id -> market data
+        all_selections = {}  # id -> selection data
+
+        for api_data in responses:
             if not isinstance(api_data, dict):
-                return []
+                continue
+            if 'data' not in api_data or not isinstance(api_data['data'], dict):
+                continue
 
-            # Check for SBTech data structure
-            if 'data' in api_data and isinstance(api_data['data'], dict):
-                data = api_data['data']
+            data = api_data['data']
+            for ev in data.get('events', []):
+                eid = ev.get('id')
+                if eid:
+                    all_events[eid] = ev
+            for mk in data.get('markets', []):
+                mid = mk.get('id')
+                if mid:
+                    all_markets[mid] = mk
+            for sel in data.get('selections', []):
+                sid = sel.get('id')
+                if sid:
+                    all_selections[sid] = sel
+            # Also parse marketSelections (SBTech returns selections under both keys)
+            ms = data.get('marketSelections')
+            if isinstance(ms, list):
+                for sel_item in ms:
+                    if isinstance(sel_item, dict):
+                        sid = sel_item.get('id')
+                        if sid:
+                            all_selections[sid] = sel_item
+            elif isinstance(ms, dict):
+                for sid, sel_item in ms.items():
+                    if isinstance(sel_item, dict):
+                        all_selections[sid] = sel_item
 
-                # Must have events
-                if 'events' not in data:
-                    return []
+        logger.info(
+            f"[{self.provider_id}] Aggregated {len(all_events)} events, "
+            f"{len(all_markets)} markets, {len(all_selections)} selections"
+        )
 
-                events_raw = data.get('events', [])
-                markets_raw = data.get('markets', [])
-                selections_raw = data.get('selections', [])
+        if not all_events:
+            return []
 
-                logger.debug(f"[{self.provider_id}] Processing {len(events_raw)} events, {len(markets_raw)} markets, {len(selections_raw)} selections")
+        # Build market lookup: eventId -> list of markets
+        markets_by_event = {}
+        for market in all_markets.values():
+            event_id = market.get('eventId')
+            if event_id not in markets_by_event:
+                markets_by_event[event_id] = []
+            markets_by_event[event_id].append(market)
 
-                # Build market lookup: marketId -> market data
-                markets_by_event = {}
-                for market in markets_raw:
-                    event_id = market.get('eventId')
-                    if event_id not in markets_by_event:
-                        markets_by_event[event_id] = []
-                    markets_by_event[event_id].append(market)
+        # Build selection lookup: marketId -> list of selections
+        selections_by_market = {}
+        for selection in all_selections.values():
+            market_id = selection.get('marketId')
+            if market_id not in selections_by_market:
+                selections_by_market[market_id] = []
+            selections_by_market[market_id].append(selection)
 
-                # Build selection lookup: marketId -> list of selections
-                selections_by_market = {}
-                for selection in selections_raw:
-                    market_id = selection.get('marketId')
-                    if market_id not in selections_by_market:
-                        selections_by_market[market_id] = []
-                    selections_by_market[market_id].append(selection)
-
-                # Parse each event with its markets
-                for event_data in events_raw:
-                    try:
-                        event_id = event_data.get('id')
-                        event_markets = markets_by_event.get(event_id, [])
-
-                        event = self._parse_event(event_data, sport, event_markets, selections_by_market)
-                        if event:
-                            events.append(event)
-                    except Exception as e:
-                        logger.debug(f"[{self.provider_id}] Failed to parse event {event_id}: {e}")
-                        continue
-
-            else:
-                # Unknown structure
-                logger.debug(f"[{self.provider_id}] Unknown API structure: {list(api_data.keys())[:10]}")
-                return []
-
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] Failed to parse SBTech response: {e}")
+        # Parse each event
+        events = []
+        for event_data in all_events.values():
+            try:
+                event_id = event_data.get('id')
+                event_markets = markets_by_event.get(event_id, [])
+                event = self._parse_event(event_data, sport, event_markets, selections_by_market)
+                if event:
+                    events.append(event)
+                    # Track slug for detail page extraction
+                    if slug_map is not None:
+                        slug = event_data.get('slug')
+                        if slug:
+                            event_key = f"{event.home_team}:{event.away_team}:{event.start_time}"
+                            slug_map[event_key] = slug
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Failed to parse event: {e}")
 
         return events
 
@@ -323,6 +448,12 @@ class SBTechRetriever(BrowserRetriever):
             if not home_team or not away_team:
                 return None
 
+            # SBTech returns individual sport names as "lastname firstname"
+            # Pinnacle uses "firstname lastname" — reverse 2-word names to match
+            if sport in self.INDIVIDUAL_SPORTS:
+                home_team = self._reverse_player_name(home_team)
+                away_team = self._reverse_player_name(away_team)
+
             # Normalize team names
             home_team = normalize_team_name(home_team)
             away_team = normalize_team_name(away_team)
@@ -336,31 +467,116 @@ class SBTechRetriever(BrowserRetriever):
 
             # Parse markets
             markets = []
+            seen_market_types = set()
             for market in event_markets:
                 market_id = market.get('id')
                 market_label = market.get('marketFriendlyName', market.get('label', ''))
+                template_id = market.get('marketTemplateId', '')
 
                 # Get selections for this market
                 market_selections = selections_by_market.get(market_id, [])
 
-                # Normalize market type first (needed for point value logic)
-                market_type = self._normalize_market_type(market_label)
+                # Normalize market type (prefer template ID over label)
+                market_type = self._normalize_market_type(market_label, template_id)
+                if market_type == "other":
+                    continue
+
+                # Only keep first market per type (avoid duplicate 1x2, spread, total)
+                if market_type in seen_market_types:
+                    continue
+
+                # Extract point value from market-level lineValueRaw
+                line_raw = market.get('lineValueRaw')
+                market_point = None
+                if line_raw is not None and line_raw != 0:
+                    try:
+                        market_point = float(line_raw)
+                    except (ValueError, TypeError):
+                        pass
+                # Fallback to lineValue string or other fields
+                if market_point is None:
+                    for field in ('lineValue', 'line', 'handicap', 'points'):
+                        val = market.get(field)
+                        if val is not None and val != '' and val != 0:
+                            try:
+                                market_point = float(val)
+                                break
+                            except (ValueError, TypeError):
+                                continue
 
                 # Build outcomes
                 outcomes = []
                 for selection in market_selections:
-                    if selection.get('status') == 'Open':
-                        outcome_dict = {
-                            "name": selection.get('label', ''),
-                            "odds": selection.get('odds', 0.0)
-                        }
-                        outcomes.append(outcome_dict)
+                    if selection.get('status') != 'Open':
+                        continue
+
+                    raw_label = selection.get('label', '')
+                    odds_val = selection.get('odds', 0.0)
+                    if odds_val <= 1:
+                        continue
+
+                    # Use selectionTemplateId for reliable outcome mapping
+                    sel_template = selection.get('selectionTemplateId', '')
+
+                    # Determine point value
+                    point = market_point
+
+                    # Normalize outcome name based on market type
+                    if market_type == "total":
+                        if sel_template == 'OVER' or raw_label.lower().strip().startswith('over'):
+                            outcome_name = "over"
+                        elif sel_template == 'UNDER' or raw_label.lower().strip().startswith('under'):
+                            outcome_name = "under"
+                        else:
+                            continue
+                        # Try extracting point from label if not from market
+                        if point is None:
+                            m = re.search(r'[\d]+\.?\d*', raw_label)
+                            if m:
+                                point = float(m.group())
+                    elif market_type == "spread":
+                        # Use selectionTemplateId (HOME/AWAY) or normalize from label
+                        if sel_template == 'HOME':
+                            outcome_name = "home"
+                        elif sel_template == 'AWAY':
+                            outcome_name = "away"
+                        else:
+                            outcome_name = normalize_outcome(raw_label, home_team, away_team)
+                        # Try extracting point from label
+                        if point is None:
+                            m = re.search(r'[+-]?[\d]+\.?\d*', raw_label)
+                            if m:
+                                point = float(m.group())
+                    else:
+                        # 1x2/moneyline — use selectionTemplateId if available
+                        if sel_template == 'HOME':
+                            outcome_name = "home"
+                        elif sel_template == 'AWAY':
+                            outcome_name = "away"
+                        elif sel_template == 'DRAW':
+                            outcome_name = "draw"
+                        else:
+                            outcome_name = normalize_outcome(raw_label, home_team, away_team)
+
+                    outcome_dict = {
+                        "name": outcome_name,
+                        "odds": odds_val,
+                    }
+                    if point is not None:
+                        outcome_dict["point"] = point
+                    outcomes.append(outcome_dict)
 
                 if outcomes:
                     markets.append({
                         "type": market_type,
                         "outcomes": outcomes
                     })
+                    seen_market_types.add(market_type)
+
+            # Dedup: prefer 1x2 over moneyline when both exist (e.g., ice hockey)
+            market_types_present = {m["type"] for m in markets}
+            if "1x2" in market_types_present and "moneyline" in market_types_present:
+                markets = [m for m in markets if m["type"] != "moneyline"]
 
             # Generate event ID and name
             event_id = event_data.get('id', event_data.get('globalId', ''))
@@ -382,16 +598,58 @@ class SBTechRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Failed to parse event: {e}")
             return None
 
-    def _normalize_market_type(self, market_label: str) -> str:
-        """Normalize market labels to standard types (1x2/moneyline only)."""
+    # SBTech marketTemplateId → market type mapping
+    # MW3W = 3-way match result, MW2W = 2-way winner (moneyline)
+    # Various handicap/total templates across sports
+    TEMPLATE_MAP: Dict[str, str] = {
+        "MW3W": "1x2",
+        "MW2W": "moneyline",
+        "ESNMOWINNER2W": "moneyline",
+        # Handicap (spread) templates
+        "2WHCPROLMID": "spread",
+        "ESNMOHANDICAP": "spread",
+        "M2WHCPIO": "spread",
+        # Over/Under (total) templates
+        "MROU": "total",
+        "ESNMOOU": "total",
+    }
+
+    def _normalize_market_type(self, market_label: str, template_id: str = "") -> str:
+        """Normalize market type from template ID or label."""
+        # Prefer template ID (most reliable)
+        if template_id and template_id in self.TEMPLATE_MAP:
+            return self.TEMPLATE_MAP[template_id]
+
         label_lower = market_label.lower()
 
-        # 1x2/Match result patterns
+        # 1x2/Match result patterns (Swedish + English)
         if any(kw in label_lower for kw in ['matchresultat', 'match result', '1x2', 'full time result',
                                              'vinnare', 'winner', 'slutresultat', 'matchodds', 'moneyline']):
             return "1x2"
 
+        # Total (over/under)
+        if any(kw in label_lower for kw in ['over/under', 'total', 'över/under']):
+            return "total"
+
+        # Spread (handicap)
+        if any(kw in label_lower for kw in ['handicap', 'spread', 'handikapp']):
+            return "spread"
+
         return "other"
+
+    @staticmethod
+    def _reverse_player_name(name: str) -> str:
+        """
+        Reverse 2-word player names from "lastname firstname" to "firstname lastname".
+
+        SBTech returns individual sport participants as "cocciaretto elisabetta"
+        while Pinnacle uses "elisabetta cocciaretto". For 3+ word names, leave
+        as-is since token_set_ratio fuzzy matching handles those.
+        """
+        parts = name.strip().split()
+        if len(parts) == 2:
+            return f"{parts[1]} {parts[0]}"
+        return name
 
     def _parse_datetime(self, dt_str: Any) -> Optional[datetime]:
         """Parse datetime from various formats."""

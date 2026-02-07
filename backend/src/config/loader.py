@@ -38,6 +38,13 @@ class ProviderConfig(BaseModel):
     max_leagues: Optional[int] = None  # For multi-league providers like ComeOn
     concurrent_leagues: Optional[int] = 3  # Number of parallel league extractions (default 3)
 
+    # Fields used by various providers (must be declared to avoid Pydantic dropping them)
+    integration: Optional[str] = None        # Altenar skin ID
+    supported_sports: Optional[List[str]] = None
+    bonus: Optional[Dict] = None
+    sharp: Optional[bool] = False
+    site_url: Optional[str] = None
+
     # ComeOn-specific depth extraction configuration
     extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
     concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads

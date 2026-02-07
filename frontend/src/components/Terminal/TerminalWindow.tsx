@@ -6,6 +6,7 @@ import {
   PolymarketPage,
   BetsPage,
   BankrollPage,
+  SpecialsPage,
   ProfilePage,
   StatsPage,
 } from './pages';
@@ -32,6 +33,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <BetsPage />;
       case 'bankroll':
         return <BankrollPage providers={context.providers} onRefresh={onRefresh} />;
+      case 'specials':
+        return <SpecialsPage />;
       case 'profiles':
         return <ProfilePage onRefresh={onRefresh} />;
       case 'stats':

@@ -48,7 +48,7 @@ def profile_to_dict(profile: Profile, db: Session) -> dict:
         "min_retention_pct": profile.min_retention_pct,
         "preferred_counterparts": preferred_counterparts,
         "bonus_enabled": profile.bonus_enabled,
-        "double_deposit": profile.double_deposit or 0.0,
+        "bonus_deposit": profile.bonus_deposit or 0.0,
         "is_active": profile.is_active,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
@@ -152,8 +152,8 @@ async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Dep
         profile.preferred_counterparts = json.dumps(data.preferred_counterparts)
     if data.bonus_enabled is not None:
         profile.bonus_enabled = data.bonus_enabled
-    if data.double_deposit is not None:
-        profile.double_deposit = data.double_deposit
+    if data.bonus_deposit is not None:
+        profile.bonus_deposit = data.bonus_deposit
 
     db.commit()
     return {"success": True, "profile": profile_to_dict(profile, db)}

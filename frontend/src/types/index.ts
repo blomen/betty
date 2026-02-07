@@ -75,7 +75,7 @@ export interface OddsEntry {
 
 // Providers
 export interface ProviderBonus {
-  type: 'freebet' | 'doubledeposit';
+  type: 'freebet' | 'bonusdeposit';
   amount: number;
 }
 

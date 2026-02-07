@@ -88,8 +88,8 @@ This keeps the system focused on the highest-value, most comparable market types
 
 ## Configuration
 
-- `config/providers.yaml` - Provider endpoints, types, concurrency limits
-- `config/sports.json` - Sport/league mappings with provider-specific IDs
+- `config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
+- `config/sports.yaml` - Sport/league mappings with provider-specific IDs
 - `backend/data/oddopp.db` - SQLite database
 
 ### Extraction Volume Audit (IMPORTANT)

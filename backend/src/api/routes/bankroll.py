@@ -159,7 +159,7 @@ async def deposit_with_bonus(
     """
     Deposit with automatic bonus claim for active profile.
 
-    For providers with a double deposit bonus:
+    For providers with a bonus deposit match:
     1. Adds deposit amount to balance
     2. Adds bonus amount (up to configured limit) to balance
     3. Sets bonus_status to 'in_progress'
@@ -182,7 +182,7 @@ async def deposit_with_bonus(
     ).first()
 
     # Check if bonus is available
-    is_double_deposit = bonus_config.get('type') == 'doubledeposit'
+    is_bonus_deposit = bonus_config.get('type') == 'bonusdeposit'
     is_available = not bonus_record or bonus_record.bonus_status == 'available'
 
     # 4. Calculate amounts
@@ -190,7 +190,7 @@ async def deposit_with_bonus(
     bonus_amount = 0.0
     bonus_limit = bonus_config.get('amount', 0)
 
-    if is_double_deposit and is_available and bonus_limit > 0:
+    if is_bonus_deposit and is_available and bonus_limit > 0:
         # Bonus matches deposit up to the configured limit
         bonus_amount = min(deposit_amount, bonus_limit)
 
@@ -228,7 +228,7 @@ async def deposit_with_bonus(
         "old_balance": old_balance,
         "new_balance": new_balance,
         "bonus_status": bonus_info.get("status") if bonus_info else None,
-        "bonus_limit": bonus_limit if is_double_deposit else None,
+        "bonus_limit": bonus_limit if is_bonus_deposit else None,
         "wagering_requirement": bonus_info.get("wagering_requirement") if bonus_info else None,
         "min_odds": bonus_info.get("min_odds") if bonus_info else None,
     }

@@ -16,6 +16,8 @@ from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.bethard import BethardRetriever
 from .providers.altenar import AltenarRetriever
+from .providers.vbet import VbetRetriever
+from .providers.interwetten import InterwettenRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -134,11 +136,22 @@ class ExtractorFactory:
             # Select brand-specific retriever
             if provider_id == "bethard":
                 retriever = BethardRetriever(config, transport=transport)
+            elif provider_id == "10bet":
+                from .providers.tenbet import TenBetRetriever
+                retriever = TenBetRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
             retriever = AltenarRetriever(config)
+        elif retriever_type == "betconstruct":
+            # BetConstruct/Swarm WebSocket - direct API (no browser needed)
+            retriever = VbetRetriever(config)
+        elif retriever_type == "interwetten":
+            # Interwetten SSR - browser-based DOM parsing (headed for Cloudflare)
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=False)
+            retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations
             from .core import BrowserTransport
