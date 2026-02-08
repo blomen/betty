@@ -15,10 +15,10 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 import logging
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds
+from ..repositories import EventRepo
 from .value import find_value, ValueBet
 from ..bankroll.stake_calculator import StakeCalculator, StakeResult
 from .devig import (
@@ -92,6 +92,7 @@ class OpportunityScanner:
 
     def __init__(self, session: Session):
         self.session = session
+        self.event_repo = EventRepo(session)
 
     def scan_value(self, min_edge_pct: float = 5.0) -> list[ValueBet]:
         """
@@ -157,11 +158,15 @@ class OpportunityScanner:
         # Get base value bets
         raw_bets = self.scan_value(min_edge_pct=min_edge_pct)
 
+        # Pre-fetch all events in one query (avoid N+1)
+        event_ids = list({vb.event_id for vb in raw_bets})
+        events_by_id = self.event_repo.get_by_ids(event_ids)
+
         # Enrich with stakes and event context
         enriched_bets = []
         for vb in raw_bets:
-            # Get event for context
-            event = self.session.query(Event).filter(Event.id == vb.event_id).first()
+            # Get event for context (from pre-fetched dict)
+            event = events_by_id.get(vb.event_id)
 
             # Determine confidence based on match quality
             # High confidence = strong match score AND odds ratio within bounds
@@ -284,23 +289,11 @@ class OpportunityScanner:
 
     def _get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:
         """Get events with odds from N+ providers."""
-        return (
-            self.session.query(Event)
-            .join(Odds)
-            .group_by(Event.id)
-            .having(func.count(func.distinct(Odds.provider_id)) >= min_providers)
-            .all()
-        )
+        return self.event_repo.get_multi_provider_events(min_providers)
 
     def _get_events_with_provider(self, provider_id: str) -> list[Event]:
         """Get events where a specific provider has odds."""
-        return (
-            self.session.query(Event)
-            .join(Odds)
-            .filter(Odds.provider_id == provider_id)
-            .distinct()
-            .all()
-        )
+        return self.event_repo.get_events_with_provider(provider_id)
 
     def group_odds(
         self, event: Event, exclude_providers: set[str] = None, check_staleness: bool = True
@@ -398,6 +391,21 @@ class OpportunityScanner:
         # Find Pinnacle's outcome count (sole sharp source)
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
+        # Pre-compute Pinnacle market dict once for this market (used by _get_fair_odds)
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
+        # Pre-compute probability sums per soft provider (used in completeness check)
+        soft_prob_sums = defaultdict(float)
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] not in SHARP_PROVIDERS:
+                    soft_prob_sums[p["provider"]] += 1.0 / p["odds"]
+
         # Check for odds discrepancy (likely event mismatch)
         for outcome, provider_odds_list in odds_by_outcome.items():
             if len(provider_odds_list) >= 3:
@@ -411,10 +419,11 @@ class OpportunityScanner:
                     return []  # Skip entire market if any outcome has high discrepancy
 
         for outcome, provider_odds_list in odds_by_outcome.items():
-            # Get fair odds from de-vigged Pinnacle
+            # Get fair odds from de-vigged Pinnacle (using pre-computed market dict)
             fair_result = self._get_fair_odds(
                 outcome=outcome,
                 odds_by_outcome=odds_by_outcome,
+                pinnacle_market=pinnacle_market,
             )
 
             if fair_result is None:
@@ -433,15 +442,8 @@ class OpportunityScanner:
                     if soft_count != sharp_outcome_count:
                         continue  # Don't compare 3-way vs 2-way markets
 
-                # Validate soft provider's market completeness
-                soft_provider = po["provider"]
-                soft_prob_sum = sum(
-                    1.0 / p["odds"]
-                    for out, providers in odds_by_outcome.items()
-                    for p in providers
-                    if p["provider"] == soft_provider
-                )
-                if soft_prob_sum < MIN_VALID_PROB_SUM:
+                # Validate soft provider's market completeness (pre-computed)
+                if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
                     continue  # Incomplete market at soft provider
 
                 vb = find_value(
@@ -560,6 +562,7 @@ class OpportunityScanner:
         outcome: str,
         odds_by_outcome: dict[str, list[dict]],
         devig: bool = True,
+        pinnacle_market: dict[str, float] = None,
     ) -> Optional[tuple[float, str]]:
         """
         Get fair odds for an outcome from Pinnacle (sole sharp source).
@@ -570,25 +573,13 @@ class OpportunityScanner:
             outcome: The outcome to get fair odds for
             odds_by_outcome: All market odds
             devig: Whether to de-vig (default True)
+            pinnacle_market: Pre-computed {outcome: odds} dict for Pinnacle
 
         Returns:
             (fair_odds, "pinnacle") or None if Pinnacle not found
         """
-        # Find Pinnacle odds for this outcome
-        outcome_providers = odds_by_outcome.get(outcome, [])
-
-        pinnacle_odds = None
-        for po in outcome_providers:
-            if po["provider"] == "pinnacle":
-                pinnacle_odds = po["odds"]
-                break
-
-        if pinnacle_odds is None:
-            return None
-
-        # De-vig Pinnacle if requested
-        if devig:
-            # Need full market odds to de-vig properly
+        # Build Pinnacle market dict if not pre-computed
+        if pinnacle_market is None:
             pinnacle_market = {}
             for out, providers in odds_by_outcome.items():
                 for p in providers:
@@ -596,6 +587,12 @@ class OpportunityScanner:
                         pinnacle_market[out] = p["odds"]
                         break
 
+        pinnacle_odds = pinnacle_market.get(outcome)
+        if pinnacle_odds is None:
+            return None
+
+        # De-vig Pinnacle if requested
+        if devig:
             if len(pinnacle_market) >= 2:
                 # Validate market completeness via probability sum
                 prob_sum = sum(1.0 / o for o in pinnacle_market.values())

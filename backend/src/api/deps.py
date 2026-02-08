@@ -1,6 +1,9 @@
 """FastAPI dependencies."""
 
+from fastapi import Depends
+
 from ..db.models import get_session
+from ..repositories import ProfileRepo, EventRepo, OddsRepo, OpportunityRepo, BetRepo
 
 # Global pipeline instance for accessing metrics/circuit breaker/cache
 _pipeline_instance = None
@@ -33,3 +36,21 @@ def get_pipeline():
         from ..pipeline import ExtractionPipeline
         _pipeline_instance = ExtractionPipeline()
     return _pipeline_instance
+
+
+# ---- Repository dependencies ----
+
+def get_profile_repo(db=Depends(get_db)) -> ProfileRepo:
+    return ProfileRepo(db)
+
+def get_event_repo(db=Depends(get_db)) -> EventRepo:
+    return EventRepo(db)
+
+def get_odds_repo(db=Depends(get_db)) -> OddsRepo:
+    return OddsRepo(db)
+
+def get_opportunity_repo(db=Depends(get_db)) -> OpportunityRepo:
+    return OpportunityRepo(db)
+
+def get_bet_repo(db=Depends(get_db)) -> BetRepo:
+    return BetRepo(db)

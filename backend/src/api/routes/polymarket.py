@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from ...db.models import Event, Odds, get_active_profile, get_total_profile_bankroll, get_bonus_status
+from ...db.models import Event, Odds
+from ...repositories import ProfileRepo
 from ...analysis.scanner import OpportunityScanner
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ..deps import get_db
@@ -35,8 +36,9 @@ async def get_polymarket_value(
     profile = None
     if poly_values:
         try:
-            profile = get_active_profile(db)
-            bankroll = get_total_profile_bankroll(db, profile.id)
+            profile_repo = ProfileRepo(db)
+            profile = profile_repo.get_active()
+            bankroll = profile_repo.get_total_bankroll(profile.id)
             stake_calculator = StakeCalculator(bankroll=bankroll)
         except Exception as e:
             logger.warning(f"Could not initialize stake calculator: {e}")
@@ -71,7 +73,7 @@ async def get_polymarket_value(
         if stake_calculator and profile:
             try:
                 edge_raw = (vb.provider_odds / vb.fair_odds - 1) if vb.fair_odds > 1 else 0
-                bonus_status = get_bonus_status(db, profile.id, "polymarket")
+                bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
                 min_odds = 0.0 if bonus_status.get("is_cleared", True) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
                 stake_rec = stake_calculator.calculate(

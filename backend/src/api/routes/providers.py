@@ -1,21 +1,21 @@
 """Provider API routes."""
 
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 import yaml
 
-from ...db.models import (
-    Provider, Profile, ProfileProviderBonus,
-    get_active_profile, get_profile_balance, get_total_profile_bankroll
-)
+from ...db.models import Provider, Profile, ProfileProviderBonus
+from ...repositories import ProfileRepo
 from ..deps import get_db
 from ..schemas import ProviderCreate, ProviderUpdate
 
 
+@lru_cache(maxsize=1)
 def load_provider_bonuses() -> dict[str, dict]:
-    """Load bonus info from providers.yaml config."""
+    """Load bonus info from providers.yaml config (cached — config doesn't change at runtime)."""
     config_path = Path(__file__).parent.parent.parent / "config" / "providers.yaml"
     try:
         with open(config_path) as f:
@@ -50,24 +50,25 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 @router.get("")
 async def list_providers(db: Session = Depends(get_db)):
     """Get all providers with status, balance, and bonus info for active profile."""
-    profile = get_active_profile(db)
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
     providers = db.query(Provider).all()
     bonus_info = load_provider_bonuses()
 
     provider_list = []
     for p in providers:
-        balance = get_profile_balance(db, profile.id, p.id) if p.is_enabled else 0.0
+        balance = profile_repo.get_balance(profile.id, p.id) if p.is_enabled else 0.0
         provider_list.append({
             "id": p.id,
             "name": p.name,
             "url": p.url,
             "is_enabled": p.is_enabled,
             "balance": balance,
-            "bonus": bonus_info.get(p.id),  # {type: "freebet", amount: 500} or None
-            "bonus_status": get_profile_bonus_status(db, p.id),  # Per-profile status
+            "bonus": bonus_info.get(p.id),
+            "bonus_status": get_profile_bonus_status(db, p.id),
         })
 
-    total_balance = get_total_profile_bankroll(db, profile.id)
+    total_balance = profile_repo.get_total_bankroll(profile.id)
 
     return {
         "profile_id": profile.id,

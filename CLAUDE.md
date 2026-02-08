@@ -13,9 +13,11 @@ backend/src/
 ├── analysis/         # scanner, value, bonus, devig
 ├── matching/         # Event normalization + fuzzy matching
 ├── bankroll/         # Kelly criterion + stake sizing
-├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile)
+├── repositories/     # Data access abstraction (ProfileRepo, EventRepo, OddsRepo, OpportunityRepo, BetRepo)
+├── services/         # Business logic coordination (OpportunityService, BankrollService, BetService)
+├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile) — ORM only, no business logic
 ├── api/              # FastAPI application
-│   └── routes/       # 11 routes: providers, bankroll, events, opportunities, bets, profiles, extraction, metrics, monitoring, chat, polymarket
+│   └── routes/       # Thin HTTP handlers — delegate to services/repositories
 ├── core/             # Transport, exceptions
 ├── constants.py      # ALLOWED_MARKETS, SHARP_PROVIDERS
 └── app.py            # Typer CLI
@@ -37,6 +39,9 @@ frontend/src/
 - **Sharp sources separate** - Pinnacle provides "fair odds" baseline (Polymarket for event matching only)
 - **Matching layer abstracts providers** - Fuzzy matching normalizes "Real Madrid CF" → canonical event
 - **Analysis is provider-agnostic** - Works on normalized events/odds
+- **Repositories abstract DB access** - All queries go through repo classes, not raw `session.query()` in routes/services
+- **Services coordinate business logic** - Routes are thin HTTP handlers, services own the logic
+- **`db/models.py` is ORM-only** - No helper functions, no business logic — just model definitions and DB init
 
 ## HOW To Work In This Codebase
 
@@ -148,13 +153,13 @@ Provider API → StandardEvent
     ↓
 normalize_team_name() + normalize_market()
     ↓
-generate_canonical_id() → Event (deduplicated)
+_resolve_event_id() → exact match / fuzzy match / swapped-team fallback
     ↓
-Fuzzy match against Polymarket cache
+store_provider_event() → Event + Odds (via OddsBatchProcessor)
     ↓
-store_odds() → Odds table
+detect_and_fix_inversion() → swap if needed (cached sharp odds)
     ↓
-OpportunityScanner.scan_value()
+OpportunityScanner.scan_value() → pre-computed Pinnacle dict + soft prob sums
 ```
 
 ### Running Extractions
@@ -361,7 +366,7 @@ LIMIT 30;
 1. Check circuit breaker status (rate limits)
 2. Review provider API responses for schema changes
 3. Verify `betOfferType.id` filter for Kambi (ID 2 = Match Winner)
-4. Check fuzzy match threshold (default: 85)
+4. Check fuzzy match threshold (default: 90, min individual: 80)
 
 ### Scanner Validation (STANDARD PROCEDURE)
 
@@ -394,3 +399,30 @@ db.close()
 **Data quality filters in `scanner.py`:**
 - `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
 - `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
+
+## Performance Architecture
+
+### Key Optimizations Applied
+
+**Data Integrity:**
+- `OddsBatchProcessor.__exit__` always flushes (even on exception) to prevent data loss
+- `HttpTransport.post()` has 429 retry with exponential backoff (matching GET behavior)
+- All bare `except:` replaced with specific exception types (`ValueError`, `TypeError`, `Exception`)
+
+**Query Performance:**
+- DB indexes on Odds: `(provider_id, market)`, `(updated_at)`, `(event_id, market, outcome)`
+- N+1 queries eliminated in `scan_value_with_stakes()` and opportunities route (pre-fetch events)
+- `_get_fair_odds()` accepts pre-computed `pinnacle_market` dict (built once per market, not per outcome)
+- `soft_prob_sums` pre-computed per provider per market (avoids O(outcomes * providers) recomputation)
+
+**Resource Management:**
+- Altenar uses `self.transport` (shared `HttpTransport`) instead of creating new `aiohttp.ClientSession` per call
+- YAML config loaded once via `@lru_cache` in route handlers (bankroll.py imports from providers.py)
+
+**Algorithm Optimization:**
+- `normalize_outcome()` fast path: keyword checks ("1", "x", "2", "home", "away") before any fuzzy matching
+- Fuzzy matching reduced from 6 calls to 2 per outcome (single `token_set_ratio` per team)
+
+**Architecture:**
+- `_resolve_event_id()` extracted from `store_provider_event()` (~180 lines of matching logic separated)
+- Event resolution: exact → fuzzy → swapped-team → default (clear fallback chain)

@@ -21,10 +21,10 @@ Architecture:
 
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..db.models import Event, Odds, Opportunity, Profile
+from ..db.models import Profile
+from ..repositories import EventRepo, OpportunityRepo
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity
 
 logger = logging.getLogger(__name__)
@@ -52,13 +52,14 @@ class OpportunityAnalyzer:
         """
         self.session = session
         self.scanner = OpportunityScanner(session)
+        self.event_repo = EventRepo(session)
+        self.opp_repo = OpportunityRepo(session)
 
         # Get thresholds from active profile or use defaults
         profile = None
         try:
             profile = session.query(Profile).filter(Profile.is_active == True).first()
         except Exception as e:
-            # Profile table may have different schema - use defaults
             logger.debug(f"[Analyzer] Could not load profile: {e}")
 
         self.min_edge_pct = min_edge_pct if min_edge_pct is not None else (
@@ -79,10 +80,10 @@ class OpportunityAnalyzer:
         logger.info("[Analyzer] Starting opportunity detection...")
 
         # Clean up stale opportunities before detection
-        cleanup_stats = self._cleanup_stale()
+        cleanup_stats = self.opp_repo.cleanup_stale()
 
         # Get events with odds from 2+ providers
-        events = self._get_multi_provider_events()
+        events = self.event_repo.get_multi_provider_events(min_providers=2)
 
         results = {
             "value": {"found": 0, "new": 0},
@@ -165,105 +166,6 @@ class OpportunityAnalyzer:
 
         return result
 
-    def _cleanup_stale(self) -> dict:
-        """
-        Clean up stale data from database.
-
-        Deletes:
-        1. Inactive opportunities (from previous runs)
-        2. Orphaned opportunities (event no longer exists)
-        3. Opportunities for past events (already started)
-        4. Past events and their odds (cascade) — preserves events with bets
-
-        Also deactivates current opportunities (will be refreshed).
-
-        Returns:
-            {"inactive": int, "orphaned": int, "past_events": int,
-             "past_events_deleted": int, "deactivated": int}
-        """
-        from ..db.models import Bet
-
-        stats = {"inactive": 0, "orphaned": 0, "past_events": 0,
-                 "past_events_deleted": 0, "deactivated": 0}
-        now = datetime.now(timezone.utc)
-
-        # 1. Delete inactive opportunities
-        stats["inactive"] = self.session.query(Opportunity).filter(
-            Opportunity.is_active == False
-        ).delete()
-
-        # 2. Delete orphaned opportunities (event doesn't exist) — SQL subquery
-        valid_event_subq = self.session.query(Event.id).subquery()
-        stats["orphaned"] = self.session.query(Opportunity).filter(
-            ~Opportunity.event_id.in_(self.session.query(valid_event_subq))
-        ).delete(synchronize_session=False)
-
-        # 3. Delete opportunities for past events — SQL subquery
-        past_event_subq = self.session.query(Event.id).filter(
-            Event.start_time < now
-        ).subquery()
-        stats["past_events"] = self.session.query(Opportunity).filter(
-            Opportunity.event_id.in_(self.session.query(past_event_subq))
-        ).delete(synchronize_session=False)
-
-        # 4. Delete past events + their odds (cascade: all, delete-orphan)
-        #    Preserve events that have bets (historical record)
-        #    Must materialize IDs here — individual session.delete() needed for cascade
-        past_event_ids = [
-            e.id for e in self.session.query(Event.id).filter(
-                Event.start_time < now
-            ).all()
-        ]
-        if past_event_ids:
-            event_ids_with_bets = set(
-                row[0] for row in self.session.query(Bet.event_id).filter(
-                    Bet.event_id.in_(past_event_ids)
-                ).all()
-                if row[0]
-            )
-            deletable_ids = [
-                eid for eid in past_event_ids if eid not in event_ids_with_bets
-            ]
-            if deletable_ids:
-                for i in range(0, len(deletable_ids), 500):
-                    batch = deletable_ids[i:i + 500]
-                    past_events = self.session.query(Event).filter(
-                        Event.id.in_(batch)
-                    ).all()
-                    for event in past_events:
-                        self.session.delete(event)  # Cascades to odds
-                        stats["past_events_deleted"] += 1
-
-        # 5. Deactivate remaining (will be refreshed during detection)
-        stats["deactivated"] = self.session.query(Opportunity).filter(
-            Opportunity.is_active == True
-        ).update({"is_active": False})
-
-        total_cleaned = (
-            stats["inactive"] + stats["orphaned"] + stats["past_events"]
-        )
-        if total_cleaned > 0 or stats["past_events_deleted"] > 0:
-            logger.info(
-                f"[Analyzer] Cleanup: {stats['inactive']} inactive opps, "
-                f"{stats['orphaned']} orphaned opps, {stats['past_events']} past opps, "
-                f"{stats['past_events_deleted']} past events+odds deleted"
-            )
-        logger.debug(
-            f"[Analyzer] Deactivated {stats['deactivated']} existing opportunities"
-        )
-
-        return stats
-
-    def _get_multi_provider_events(self) -> list[Event]:
-        """Get events that have odds from 2+ providers."""
-        return (
-            self.session.query(Event)
-            .join(Odds)
-            .group_by(Event.id)
-            .having(func.count(func.distinct(Odds.provider_id)) >= 2)
-            .all()
-        )
-
     def _detect_value(
         self,
         event_id: str,
@@ -341,41 +243,19 @@ class OpportunityAnalyzer:
                 }
             ]
 
-            # Upsert to Opportunity table
-            existing = self.session.query(Opportunity).filter(
-                Opportunity.event_id == event_id,
-                Opportunity.market == clean_market,
-                Opportunity.type == "value",
-                Opportunity.outcome1 == outcome
-            ).first()
-
-            if existing:
-                existing.is_active = True
-                existing.edge_pct = vb.edge_pct
-                existing.provider1_id = vb.provider
-                existing.odds1 = vb.provider_odds
-                existing.provider2_id = "pinnacle"
-                existing.odds2 = vb.fair_odds
-                existing.outcomes = outcomes_json
-                existing.point = point_value
-                existing.detected_at = datetime.now(timezone.utc)
-            else:
-                opp = Opportunity(
-                    type="value",
-                    event_id=event_id,
-                    market=clean_market,
-                    outcome1=outcome,
-                    edge_pct=vb.edge_pct,
-                    provider1_id=vb.provider,
-                    odds1=vb.provider_odds,
-                    provider2_id="pinnacle",
-                    odds2=vb.fair_odds,
-                    outcomes=outcomes_json,
-                    point=point_value,
-                    is_active=True,
-                    detected_at=datetime.now(timezone.utc)
-                )
-                self.session.add(opp)
+            # Upsert to Opportunity table via repo
+            is_new = self.opp_repo.upsert_value(
+                event_id=event_id,
+                market=clean_market,
+                outcome=outcome,
+                provider_id=vb.provider,
+                provider_odds=vb.provider_odds,
+                fair_odds=vb.fair_odds,
+                edge_pct=vb.edge_pct,
+                outcomes_json=outcomes_json,
+                point=point_value,
+            )
+            if is_new:
                 result["new"] += 1
 
         return result

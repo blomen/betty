@@ -1,35 +1,33 @@
 """Bets API routes."""
 
-from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...db.models import (
-    Provider, Bet,
-    get_active_profile, get_profile_balance, adjust_profile_balance,
-    record_wagering,
-)
+from ...services import BetService
+from ...repositories import BetRepo, ProfileRepo
 from ..deps import get_db
 from ..schemas import BetCreate, BetUpdate
 
 router = APIRouter(prefix="/api/bets", tags=["bets"])
 
 
+def _get_service(db: Session = Depends(get_db)) -> BetService:
+    return BetService(db)
+
+
 @router.get("")
 async def list_bets(
     status: Optional[str] = None,
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get bet history for active profile."""
-    profile = get_active_profile(db)
+    profile_repo = ProfileRepo(db)
+    bet_repo = BetRepo(db)
+    profile = profile_repo.get_active()
 
-    query = db.query(Bet).filter(Bet.profile_id == profile.id)
-    if status:
-        query = query.filter(Bet.result == status)
-
-    bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
+    bets = bet_repo.list_for_profile(profile.id, status=status, limit=limit)
 
     return {
         "profile_id": profile.id,
@@ -57,26 +55,9 @@ async def list_bets(
 
 
 @router.post("")
-async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
+async def create_bet(bet: BetCreate, service: BetService = Depends(_get_service)):
     """Record a placed bet for active profile."""
-    profile = get_active_profile(db)
-
-    # Verify provider exists
-    provider = db.query(Provider).filter(Provider.id == bet.provider_id).first()
-    if not provider:
-        raise HTTPException(404, f"Provider {bet.provider_id} not found")
-
-    # Validate sufficient balance (unless free bet)
-    current_balance = get_profile_balance(db, profile.id, bet.provider_id)
-    if not bet.is_bonus:
-        if current_balance < bet.stake:
-            raise HTTPException(
-                400,
-                f"Insufficient balance: {current_balance:.2f} available, {bet.stake:.2f} required"
-            )
-
-    b = Bet(
-        profile_id=profile.id,
+    result = service.create_bet(
         event_id=bet.event_id,
         provider_id=bet.provider_id,
         market=bet.market,
@@ -86,39 +67,20 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db)):
         is_bonus=bet.is_bonus,
         bonus_type=bet.bonus_type,
     )
-    db.add(b)
 
-    # Deduct stake from profile's provider balance (unless free bet)
-    if not bet.is_bonus:
-        adjust_profile_balance(db, profile.id, bet.provider_id, -bet.stake)
+    if "error" in result:
+        status_code = 404 if "not found" in result["error"] else 400
+        raise HTTPException(status_code, result["error"])
 
-    # Record wagering progress (for bonus clearing)
-    # Only bets with odds >= 1.80 count toward wagering
-    wagering_status = record_wagering(db, profile.id, bet.provider_id, bet.stake, bet.odds)
-
-    db.commit()
-    return {
-        "success": True,
-        "bet_id": b.id,
-        "profile_id": profile.id,
-        "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
-    }
+    return result
 
 
 @router.put("/{bet_id}")
-async def settle_bet(bet_id: int, data: BetUpdate, db: Session = Depends(get_db)):
+async def settle_bet(bet_id: int, data: BetUpdate, service: BetService = Depends(_get_service)):
     """Settle a bet with result."""
-    bet = db.query(Bet).filter(Bet.id == bet_id).first()
-    if not bet:
-        raise HTTPException(404, f"Bet {bet_id} not found")
+    result = service.settle_bet(bet_id, data.result, data.payout)
 
-    bet.result = data.result
-    bet.payout = data.payout
-    bet.settled_at = datetime.utcnow()
+    if "error" in result:
+        raise HTTPException(404, result["error"])
 
-    # Add payout to profile's provider balance
-    if bet.profile_id and data.payout > 0:
-        adjust_profile_balance(db, bet.profile_id, bet.provider_id, data.payout)
-
-    db.commit()
-    return {"success": True, "profit": bet.profit, "profile_id": bet.profile_id}
+    return result
