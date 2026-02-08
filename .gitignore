@@ -21,8 +21,7 @@ venv/
 .claude/settings.local.json
 
 # Data
-data/*.db
-backend/data/*.db
+backend/data/
 *.db
 
 # OS

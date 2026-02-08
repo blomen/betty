@@ -50,6 +50,16 @@ orchestrator:
       max_concurrent: 2                # Browser-based
       shared_resource: browser
 
+    - name: coolbet_browser
+      retriever_types: [coolbet]
+      max_concurrent: 1                # Browser-based, Imperva-sensitive
+      shared_resource: browser
+
+    - name: tipwin_browser
+      retriever_types: [tipwin]
+      max_concurrent: 1                # Browser-based SPA
+      shared_resource: browser
+
   # Timeouts (seconds)
   provider_timeout: 300                # Per-provider timeout
   sport_timeout: 60                    # Per-sport timeout
@@ -226,6 +236,8 @@ providers:
       amount: 1000
       wagering_multiplier: 1
       min_odds: 1.80
+    
+
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.75, 100% normalization
   leovegas:
@@ -239,6 +251,8 @@ providers:
       amount: 600
       wagering_multiplier: 6
       min_odds: 1.80
+    
+
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   expekt:
@@ -252,6 +266,7 @@ providers:
       amount: 1000
       wagering_multiplier: 20
       min_odds: 1.80
+      
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
@@ -265,6 +280,7 @@ providers:
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
+      
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   speedybet:
@@ -354,9 +370,9 @@ providers:
     integration: swiperse
     bonus:
       type: bonusdeposit
-      amount: 500
+      amount: 1000
       wagering_multiplier: 6
-      min_odds: 1.80
+      min_odds: 1.50
 
   lodur:
     <<: *altenar_defaults
@@ -404,6 +420,7 @@ providers:
     domain: mrgreen.se
     retriever_type: spectate
     api_base: https://spectate-web.mrgreen.se/spectate
+    site_url: https://www.mrgreen.se
     params:
       tournaments:
         <<: *spectate_tournaments
@@ -519,6 +536,7 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     api_base: https://www.snabbare.com/sportsbook-api/api
+    site_url: https://www.snabbare.com
     params:
       tournaments:
         football:
@@ -614,8 +632,8 @@ providers:
       - esports
     bonus:
       type: freebet
-      amount: 1500
-      wagering_multiplier: 1
+      amount: 800
+      wagering_multiplier: 10
       min_odds: 1.80
 
   # --------------------------------------------------------------------------
@@ -638,6 +656,59 @@ providers:
       amount: 1000
       wagering_multiplier: 5
       min_odds: 1.70
+
+  # --------------------------------------------------------------------------
+  # Coolbet (proprietary GAN Sports platform — browser-based API interception)
+  # --------------------------------------------------------------------------
+
+  coolbet:
+    id: coolbet
+    name: Coolbet
+    domain: coolbet.com
+    retriever_type: coolbet
+    site_url: https://www.coolbet.com
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - esports
+    bonus:
+      type: depositbonus
+      amount: 1000
+      wagering_multiplier: 6
+      min_odds: 1.50
+
+  # --------------------------------------------------------------------------
+  # Tipwin (proprietary platform — browser-based API interception)
+  # --------------------------------------------------------------------------
+
+  tipwin:
+    id: tipwin
+    name: Tipwin
+    domain: tipwin.se
+    retriever_type: tipwin
+    site_url: https://www.tipwin.se
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - esports
+      - handball
+      - volleyball
+      - table_tennis
+    bonus:
+      type: bonusdeposit
+      amount: 1000
+      wagering_multiplier: 7
+      min_odds: 1.80
 
 # ============================================================================
 # Extraction Tiers
@@ -686,6 +757,10 @@ extraction_tiers:
       - vbet
       # Interwetten (1)
       - interwetten
+      # Coolbet (1)
+      - coolbet
+      # Tipwin (1)
+      - tipwin
 
 # ============================================================================
 # Active providers (subset used for extraction)
@@ -719,13 +794,140 @@ active:
   - vbet
   # Interwetten (1) - browser-based, headed mode
   - interwetten
-  # DISABLED: browser-based, needs validation
-  # - mrgreen
-  # - 888sport
-  # - snabbare
-  # - comeon
-  # - hajper
+  # Coolbet (1) - browser-based, Imperva-protected
+  - coolbet
+  # Tipwin (1) - browser-based SPA
+  - tipwin
+  # Spectate (2) - browser-based
+  - mrgreen
+  - 888sport
+  # Gecko V2 (4) - DISABLED: event-market widget returns props only, needs EventsTable widget rework
   # - betsson
   # - betsafe
   # - nordicbet
   # - spelklubben
+  # Snabbare (1)
+  - snabbare
+  # ComeOn Group (2)
+  - comeon
+  - hajper
+
+
+# ============================================================================
+# Odds Boost Configuration
+# ============================================================================
+# Boost scraping is separate from odds extraction. Each entry defines a
+# boost page to scrape and which providers share those boosts.
+# type: scraper function to use (gecko_v2 = API interception)
+# type: null means not yet implemented / needs investigation
+
+boosts:
+  # ═══════════════════════════════════════════════════════
+  # IMPLEMENTED — currently scraping
+  # ═══════════════════════════════════════════════════════
+  betsson_group:
+    type: gecko_v2
+    url: "https://www.betsson.com/sv/odds/odds-boost"
+    primary_provider: betsson
+    shared_with: [betsafe, nordicbet, spelklubben]
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════
+  # KAMBI PROVIDERS — no original odds via API
+  # Kambi SPECIAL_BETS only shows boosted odds (no pre-boost baseline).
+  # Price Boost feature disabled for Swedish market.
+  # Listed on aggregators as having oddsboost, but not scrapeable.
+  # ═══════════════════════════════════════════════════════
+  unibet:
+    type: null
+    primary_provider: unibet
+    shared_with: []
+    enabled: false
+    note: "Kambi — no original odds. Listed on aggregators but only boosted odds visible."
+
+  leovegas:
+    type: null
+    primary_provider: leovegas
+    shared_with: []
+    enabled: false
+    note: "Kambi — same limitation as unibet"
+
+  expekt:
+    type: null
+    primary_provider: expekt
+    shared_with: []
+    enabled: false
+    note: "Kambi — listed on bettingkollen as 5/5 oddsboost but no original odds via API"
+
+  betmgm:
+    type: null
+    primary_provider: betmgm
+    shared_with: []
+    enabled: false
+    note: "Kambi — listed on bettingkollen as 5/5 oddsboost but no original odds via API"
+
+  goldenbull:
+    type: null
+    primary_provider: goldenbull
+    shared_with: []
+    enabled: false
+    note: "Kambi — listed on bettingkollen as 4/5 oddsboost but no original odds via API"
+
+  # ═══════════════════════════════════════════════════════
+  # ALTENAR PROVIDERS — needs API investigation
+  # Listed on aggregators as having oddsboost.
+  # Altenar API may expose boost data — needs reverse engineering.
+  # ═══════════════════════════════════════════════════════
+  betinia:
+    type: null
+    primary_provider: betinia
+    shared_with: [campobet, swiper]
+    enabled: false
+    note: "Altenar — listed on bettingkollen (4/5). Likely shared boosts across Altenar brands. API investigation needed."
+
+  # ═══════════════════════════════════════════════════════
+  # SBTECH — needs investigation
+  # ═══════════════════════════════════════════════════════
+  bethard:
+    type: null
+    primary_provider: bethard
+    shared_with: []
+    enabled: false
+    note: "SBTech — Combo Booster (7-30% on combos). Single-bet boosts need investigation."
+
+  # ═══════════════════════════════════════════════════════
+  # OTHER PLATFORMS
+  # ═══════════════════════════════════════════════════════
+  coolbet:
+    type: null
+    url: "https://www.coolbet.com/sv/oddsboost"
+    primary_provider: coolbet
+    shared_with: []
+    enabled: false
+    note: "GAN/Coolbet — has /sv/oddsboost page but Imperva blocks scraping. CDP connection needed."
+
+  interwetten:
+    type: null
+    primary_provider: interwetten
+    shared_with: []
+    enabled: false
+    note: "Proprietary SSR — no boost page found in search. May not offer oddsboost."
+
+  tipwin:
+    type: null
+    primary_provider: tipwin
+    shared_with: []
+    enabled: false
+    note: "Proprietary SPA — no boost page found. May not offer oddsboost."
+
+  # ═══════════════════════════════════════════════════════
+  # SPECTATE/COMEON GROUP — listed on aggregators
+  # ComeOn 5/5, Hajper listed, Snabbare 4/5
+  # These use browser-based extraction — would need Playwright interception.
+  # ═══════════════════════════════════════════════════════
+  comeon_group:
+    type: null
+    primary_provider: comeon
+    shared_with: [hajper, snabbare]
+    enabled: false
+    note: "Spectate/ComeOn — listed on aggregators. Browser-based, needs Playwright boost page scraping."

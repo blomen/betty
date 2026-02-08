@@ -301,11 +301,14 @@ class SpectateRetriever(BrowserRetriever):
             if not home or not away or not ev_id:
                 return None
 
+            # Save raw names for market parsing (spread outcome resolution)
+            raw_home, raw_away = home, away
+
             # Normalize team names
             home = normalize_team_name(home)
             away = normalize_team_name(away)
 
-            markets = self._parse_markets(event_data)
+            markets = self._parse_markets(event_data, home_raw=raw_home, away_raw=raw_away)
             if not markets:
                 return None
 
@@ -324,35 +327,43 @@ class SpectateRetriever(BrowserRetriever):
             # logger.debug(f"Event parsing error: {e}")
             return None
 
-    def _parse_markets(self, event_data: dict) -> List[dict]:
+    def _parse_markets(self, event_data: dict, home_raw: str = "", away_raw: str = "") -> List[dict]:
         markets: List[dict] = []
         m_data = event_data.get("markets", {})
         items = m_data.values() if isinstance(m_data, dict) else m_data if isinstance(m_data, list) else []
         
         # Standardized Mappings
         MARKET_MAP = {
+            # 1x2 / moneyline
             "match winner": "moneyline",
             "vinnare": "moneyline",
-            # Only 1x2/moneyline markets
-            "utdelningsrader": "moneyline", # "Payout lines" (1X2)
+            "utdelningsrader": "moneyline",
             "1x2": "moneyline",
+            "fulltid": "1x2",
             "matchresultat": "moneyline",
-            "matchresultat (2-vägs)": "moneyline", # Tennis/US Sports
-            "matchresultat (3-vägs)": "moneyline", # Soccer
+            "matchresultat (2-vägs)": "moneyline",
+            "matchresultat (3-vägs)": "1x2",
             "matchvinnare": "moneyline",
             "matchvinnare tvåvägs": "moneyline",
-            "matchvinnare (3-vägs)": "moneyline",
+            "matchvinnare (3-vägs)": "1x2",
             "fightodds": "moneyline",
+            # Spread / handicap
+            "pucklinje": "spread",
+            "poänghandikapp": "spread",
+            "handicap": "spread",
+            # Total (over/under)
+            "totalt antal mål i match, över/under": "total",
+            "totalt antal poäng, över/under": "total",
+            "totalt antal poäng": "total",
+            "over/under": "total",
+            "över/under": "total",
         }
 
         for m in items:
             if not isinstance(m, dict): continue
             raw_name = m.get("name", "").lower().strip()
 
-            # Direct Map Check - only 1x2/moneyline
             m_type = MARKET_MAP.get(raw_name)
-
-            # If no type match, skip (we only support 1x2/moneyline)
             if not m_type:
                 continue
 
@@ -364,15 +375,47 @@ class SpectateRetriever(BrowserRetriever):
                 if not isinstance(s, dict) or not s.get("active", True): continue
                 try:
                     price = s.get("decimal_price") or s.get("price")
-                    if price:
-                        outcome = {
-                            "name": s.get("name", ""),
-                            "odds": round(float(price), 3)
-                        }
-                        outcomes.append(outcome)
-                except: continue
+                    if not price:
+                        continue
+                    sel_name = s.get("name", "")
+                    outcome: Dict[str, Any] = {"odds": round(float(price), 3)}
+
+                    if m_type == "total":
+                        # "Over (5.5)" / "Under (5.5)" → name=over/under, point=5.5
+                        match = re.match(r'(over|under)\s*\(([0-9.]+)\)', sel_name, re.IGNORECASE)
+                        if match:
+                            outcome["name"] = match.group(1).lower()
+                            outcome["point"] = float(match.group(2))
+                        else:
+                            continue
+                    elif m_type == "spread":
+                        # "Team (+2.5)" / "Team (-2.5)" → name=home/away, point=±2.5
+                        match = re.search(r'\(([+-]?[0-9.]+)\)', sel_name)
+                        if match:
+                            point_val = float(match.group(1))
+                            # Strip point from name for team matching
+                            team_part = re.sub(r'\s*\([+-]?[0-9.]+\)\s*', '', sel_name).strip().lower()
+                            if home_raw and team_part == home_raw.lower():
+                                outcome["name"] = "home"
+                            elif away_raw and team_part == away_raw.lower():
+                                outcome["name"] = "away"
+                            elif home_raw and home_raw.lower() in team_part:
+                                outcome["name"] = "home"
+                            elif away_raw and away_raw.lower() in team_part:
+                                outcome["name"] = "away"
+                            else:
+                                continue
+                            outcome["point"] = point_val
+                        else:
+                            continue
+                    else:
+                        outcome["name"] = sel_name
+
+                    outcomes.append(outcome)
+                except Exception:
+                    continue
 
             if outcomes:
                 markets.append({"type": m_type, "outcomes": outcomes})
-                
+
         return markets

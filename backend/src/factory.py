@@ -18,6 +18,8 @@ from .providers.bethard import BethardRetriever
 from .providers.altenar import AltenarRetriever
 from .providers.vbet import VbetRetriever
 from .providers.interwetten import InterwettenRetriever
+from .providers.coolbet import CoolbetRetriever
+from .providers.tipwin import TipwinRetriever
 from .config import ConfigLoader, SportConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -152,6 +154,19 @@ class ExtractorFactory:
             from .core import BrowserTransport
             transport = BrowserTransport(headless=False)
             retriever = InterwettenRetriever(config, transport=transport)
+        elif retriever_type == "coolbet":
+            # Coolbet - proprietary GAN Sports platform, Imperva-protected
+            # Imperva blocks ALL Playwright-launched browsers (even real Chrome channel).
+            # Must connect via CDP to an existing user Chrome instance.
+            # Start Chrome with: chrome --remote-debugging-port=9222
+            from .core import BrowserTransport
+            transport = BrowserTransport(cdp_url='http://localhost:9222')
+            retriever = CoolbetRetriever(config, transport=transport)
+        elif retriever_type == "tipwin":
+            # Tipwin - proprietary platform, browser-based API interception
+            from .core import BrowserTransport
+            transport = BrowserTransport(headless=False)
+            retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations
             from .core import BrowserTransport

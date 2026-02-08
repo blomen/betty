@@ -188,9 +188,24 @@ class BrowserTransport(Transport):
     """
     Heavy transport using Playwright.
     Best for protected sites or DOM scraping.
+
+    Args:
+        headless: Run browser in headless mode
+        user_data_dir: Path for persistent browser profile (cookies/session survive restarts).
+                       When set, uses launch_persistent_context() instead of launch() + new_context().
+                       Useful for sites with aggressive bot protection (Imperva, Cloudflare).
+        channel: Browser channel to use (e.g. 'chrome' for installed Chrome instead of Playwright Chromium).
+                 Using 'chrome' bypasses Imperva/Incapsula bot detection that flags Playwright's bundled Chromium.
+        cdp_url: Connect to an existing Chrome browser via CDP (e.g. 'http://localhost:9222').
+                 Chrome must be running with --remote-debugging-port=9222.
+                 This bypasses all bot detection since it attaches to a real human-controlled browser.
     """
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
+                 channel: Optional[str] = None, cdp_url: Optional[str] = None):
         self.headless = headless
+        self.user_data_dir = user_data_dir
+        self.channel = channel
+        self.cdp_url = cdp_url
         self.playwright = None
         self.browser = None
         self.context = None
@@ -201,23 +216,52 @@ class BrowserTransport(Transport):
 
         self.playwright = await async_playwright().start()
 
-        # Launch browser with stealth options
-        # Note: Minimal args - too many security-disabling flags can break sites
-        self.browser = await self.playwright.chromium.launch(
-            headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-            ]
-        )
+        # CDP mode: attach to an already-running Chrome browser
+        if self.cdp_url:
+            self.browser = await self.playwright.chromium.connect_over_cdp(self.cdp_url)
+            contexts = self.browser.contexts
+            if contexts:
+                self.context = contexts[0]
+                self.page = await self.context.new_page()
+            else:
+                self.context = await self.browser.new_context()
+                self.page = await self.context.new_page()
+            logger.info(f"Browser connected via CDP to {self.cdp_url}")
+            return
 
-        # Create context with realistic settings
-        self.context = await self.browser.new_context(
+        context_opts = dict(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             locale='sv-SE',
-            geolocation={'latitude': 59.3293, 'longitude': 18.0686}  # Stockholm coordinates
+            geolocation={'latitude': 59.3293, 'longitude': 18.0686},  # Stockholm
         )
+        launch_args = ['--disable-blink-features=AutomationControlled']
 
-        self.page = await self.context.new_page()
+        launch_kwargs = {}
+        if self.channel:
+            launch_kwargs['channel'] = self.channel
+
+        if self.user_data_dir:
+            # Persistent context — cookies/local storage survive between runs
+            import os
+            os.makedirs(self.user_data_dir, exist_ok=True)
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                self.user_data_dir,
+                headless=self.headless,
+                args=launch_args,
+                **launch_kwargs,
+                **context_opts,
+            )
+            self.browser = None  # persistent context has no separate browser handle
+            self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        else:
+            # Standard launch — fresh context each run
+            self.browser = await self.playwright.chromium.launch(
+                headless=self.headless,
+                args=launch_args,
+                **launch_kwargs,
+            )
+            self.context = await self.browser.new_context(**context_opts)
+            self.page = await self.context.new_page()
 
         # NOTE: playwright-stealth was interfering with Gecko sites
         # Using only minimal custom init scripts
@@ -396,7 +440,14 @@ class BrowserTransport(Transport):
             logger.error(f"Smart scroll failed: {e}")
 
     async def close(self):
-        if self.browser:
+        if self.cdp_url:
+            # CDP mode — only close the page we created, leave the browser running
+            if self.page:
+                await self.page.close()
+        elif self.user_data_dir and self.context:
+            # Persistent context — close context directly (no separate browser)
+            await self.context.close()
+        elif self.browser:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
