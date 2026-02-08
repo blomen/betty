@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Scrape odds boosts and specials from Swedish sportsbook affiliate sites.
+Scrape odds boosts directly from provider sportsbook websites.
 
 Sources:
-  - bettingstugan.se/alla-oddsbooster-idag (daily boost aggregator)
-  - bettingstugan.se/forhojda-odds (enhanced odds overview)
+  - betsson.com/sv/odds/odds-boost (Gecko V2 API — Betsson/Betsafe/NordicBet)
 
 Output: backend/data/specials.json
 
@@ -15,80 +14,59 @@ Usage:
 """
 
 import argparse
-import csv
-import io
 import json
 import re
-import sys
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import requests
-from bs4 import BeautifulSoup
-
 # Provider name normalization map
 PROVIDER_ALIASES: dict[str, str] = {
-    # Kambi API
-    "unibet": "unibet",
-    "leovegas": "leovegas",
-    "leo vegas": "leovegas",
-    "expekt": "expekt",
-    "betmgm": "betmgm",
-    "speedybet": "speedybet",
-    "speedy bet": "speedybet",
-    "x3000": "x3000",
-    "goldenbull": "goldenbull",
-    "golden bull": "goldenbull",
-    "1x2": "1x2",
-    # Altenar API
-    "betinia": "betinia",
-    "campobet": "campobet",
-    "swiper": "swiper",
-    "lodur": "lodur",
-    "dbet": "dbet",
-    "d-bet": "dbet",
-    "quickcasino": "quickcasino",
-    "quick casino": "quickcasino",
-    # Spectate (888/Evoke)
-    "888sport": "888sport",
-    "888 sport": "888sport",
-    "mr green": "mrgreen",
-    "mrgreen": "mrgreen",
-    # Gecko V2 (Betsson Group)
     "betsson": "betsson",
     "betsafe": "betsafe",
     "nordicbet": "nordicbet",
     "spelklubben": "spelklubben",
-    # SBTech
-    "bethard": "bethard",
-    "10bet": "10bet",
-    "10 bet": "10bet",
-    # Snabbare
-    "snabbare": "snabbare",
-    # ComeOn Group
+    "unibet": "unibet",
+    "leovegas": "leovegas",
     "comeon": "comeon",
-    "come on": "comeon",
     "hajper": "hajper",
-    # BetConstruct
-    "vbet": "vbet",
-    "v bet": "vbet",
-    # Interwetten
-    "interwetten": "interwetten",
-    "inter wetten": "interwetten",
+    "bethard": "bethard",
 }
 
 SPORT_KEYWORDS: dict[str, list[str]] = {
-    "football": ["fotboll", "football", "soccer", "premier league", "champions league",
-                 "allsvenskan", "la liga", "serie a", "bundesliga", "ligue 1",
-                 "europa league", "vm", "em", "nations league"],
-    "ice_hockey": ["hockey", "ishockey", "shl", "nhl", "hockeyallsvenskan", "world championship"],
-    "tennis": ["tennis", "atp", "wta", "grand slam", "wimbledon", "us open", "french open"],
-    "basketball": ["basket", "basketball", "nba", "euroleague"],
+    "football": [
+        "fotboll", "football", "soccer", "premier league", "champions league",
+        "allsvenskan", "la liga", "serie a", "bundesliga", "ligue 1",
+        "europa league", "vm kval", "nations league", "conference league",
+        "fa cup", "carabao", "copa del rey", "superettan", "eredivisie",
+        "manchester", "arsenal", "liverpool", "chelsea", "tottenham",
+        "barcelona", "real madrid", "atletico", "juventus", "inter milan",
+        "ac milan", "bayern", "dortmund", "psg", "napoli",
+        "aston villa", "newcastle", "west ham", "brighton", "wolves",
+        "crystal palace", "everton", "fulham", "brentford", "bournemouth",
+        "sunderland", "leicester", "nottingham", "ipswich", "southampton",
+        "malmö ff", "aik", "djurgården", "hammarby", "ifk göteborg",
+        "häcken", "elfsborg", "norrköping", "kalmar", "sirius",
+        "playoff fotbolls-vm", "vm-kval",
+        "liga mx", "primera division", "primera a", "pro league",
+        "superligaen", "liga professionell",
+    ],
+    "ice_hockey": [
+        "hockey", "ishockey", "shl", "nhl", "hockeyallsvenskan",
+        "vinterspelen", "winter olympics", "tre kronor", "os herrar",
+        "rögle", "växjö", "brynäs", "färjestad", "frölunda",
+        "luleå", "skellefteå", "örebro", "linköping", "leksand",
+        "timrå", "oskarshamn", "hv71", "modo",
+    ],
+    "tennis": ["tennis", "atp", "wta", "grand slam", "wimbledon", "us open",
+               "french open", "australian open", "roland garros"],
+    "basketball": ["basket", "basketball", "nba", "euroleague", "ncaa"],
     "handball": ["handboll", "handball"],
     "mma": ["mma", "ufc", "bellator"],
     "esports": ["esport", "cs2", "counter-strike", "league of legends", "dota"],
+    "american_football": ["nfl", "super bowl", "american football",
+                          "patriots", "seahawks", "touchdown"],
 }
 
 # Output path
@@ -97,26 +75,25 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 
 @dataclass
 class Special:
-    """A single odds boost or special offer."""
+    """A single odds boost."""
     provider: str
-    title: str
+    title: str              # enriched: "market_label: selection_label"
     description: str = ""
     original_odds: Optional[float] = None
     boosted_odds: Optional[float] = None
+    boost_pct: Optional[float] = None   # pre-calculated boost percentage
     max_stake: Optional[float] = None
-    category: str = "boost"  # boost, superboost, combo_boost, zero_margin
+    category: str = "boost"   # boost, superboost
     sport: str = "unknown"
-    event: str = ""
+    league: str = ""          # e.g. "Premier League"
+    event: str = ""           # e.g. "Arsenal vs Sunderland"
+    event_time: Optional[str] = None  # ISO datetime of the event
     expires_at: Optional[str] = None
     url: str = ""
     scraped_at: str = ""
     source: str = ""
-
-
-def normalize_provider(name: str) -> str:
-    """Normalize provider name to canonical ID."""
-    name_lower = name.strip().lower()
-    return PROVIDER_ALIASES.get(name_lower, name_lower)
+    market_label: str = ""              # raw market label
+    shared_providers: Optional[list] = None  # providers sharing this boost
 
 
 def detect_sport(text: str) -> str:
@@ -128,524 +105,467 @@ def detect_sport(text: str) -> str:
     return "unknown"
 
 
-def parse_odds(text: str) -> Optional[float]:
-    """Parse odds value from text like '3.50' or '3,50'."""
-    text = text.replace(",", ".").strip()
-    match = re.search(r'(\d+\.\d{1,2})', text)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
-    return None
+# ============ Provider Boost Pages ============
+
+# Config path for boost definitions
+CONFIG_DIR = Path(__file__).parent.parent / "src" / "config"
 
 
-def parse_max_stake(text: str) -> Optional[float]:
-    """Parse max stake from text like 'max 250 kr' or 'Max. insats: 500kr'."""
-    text_lower = text.lower()
-    match = re.search(r'max[.\s:]*(?:insats[.\s:]*)?(\d[\d\s]*)\s*kr', text_lower)
-    if match:
-        try:
-            return float(match.group(1).replace(" ", ""))
-        except ValueError:
-            pass
-    return None
+def _load_boost_config() -> list[dict]:
+    """Load enabled boost entries from providers.yaml."""
+    config_path = CONFIG_DIR / "providers.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        import yaml
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        boosts_cfg = config.get("boosts", {})
+        entries = []
+        for name, entry in boosts_cfg.items():
+            if entry.get("enabled") and entry.get("type") and entry.get("url"):
+                entries.append({
+                    "name": name,
+                    "type": entry["type"],
+                    "url": entry["url"],
+                    "primary_provider": entry.get("primary_provider", name),
+                    "shared_with": entry.get("shared_with", []),
+                })
+        return entries
+    except Exception:
+        return []
 
 
-# ============ Source Scrapers ============
+async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
+    """Scrape odds boosts from all configured providers in providers.yaml."""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        if verbose:
+            print("  [provider_boosts] playwright not installed, skipping")
+        return []
 
-def scrape_bettingstugan_today(session: requests.Session, verbose: bool = False) -> list[Special]:
-    """
-    Scrape bettingstugan.se/alla-oddsbooster-idag for today's boosts.
+    boost_configs = _load_boost_config()
+    if not boost_configs:
+        if verbose:
+            print("  No enabled boost configs found in providers.yaml")
+        return []
 
-    Page structure (from inspection Feb 2026):
-    The boosts appear as free-form text blocks under the heading
-    "Alla dagens oddsboostar". Each boost follows this pattern:
-
-        [Event name]              (e.g. "Arsenal - Sunderland")
-        [Date time]               (e.g. "7 feb. 16:00")
-        [League] [Provider]       (e.g. "Premier League Bethard")
-        * [condition1]            (e.g. "Arsenal leder efter 20 min")
-        * [condition2...]
-        Maxbet: [amount]          (optional, e.g. "Maxbet: 250")
-        [orig] >> [boosted]       (e.g. "3.00 >> 3.35")
-
-    The page also contains a welcome bonus table (Rank/Spelbolag/Bonus)
-    which we skip entirely.
-    """
-    url = "https://bettingstugan.se/alla-oddsbooster-idag/"
-    specials = []
-    now_iso = datetime.now(tz=None).isoformat()
+    all_boosts: list[Special] = []
+    now_iso = datetime.now().isoformat()
 
     try:
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        content = soup.select_one(".content") or soup.select_one(".entry-content")
-        if not content:
-            if verbose:
-                print("  bettingstugan/today: no content container found")
-            return specials
-
-        # Get the full text content and split into lines for parsing
-        full_text = content.get_text(separator="\n")
-        lines = [line.strip() for line in full_text.split("\n") if line.strip()]
-
-        if verbose:
-            print(f"  bettingstugan/today: {len(lines)} text lines in content")
-
-        # Find the boost section start
-        boost_section_start = None
-        for i, line in enumerate(lines):
-            if "alla dagens oddsboostar" in line.lower():
-                boost_section_start = i + 1
-                break
-
-        if boost_section_start is None:
-            if verbose:
-                print("  bettingstugan/today: could not find 'Alla dagens oddsboostar' heading")
-            return specials
-
-        # Find the end of the boost section (next heading or table)
-        boost_section_end = len(lines)
-        for i in range(boost_section_start, len(lines)):
-            line_lower = lines[i].lower()
-            if ("alla spelbolag med" in line_lower
-                    or "rank" == line_lower
-                    or "vad ar en oddsboost" in line_lower.replace("ä", "a")
-                    or "las mer om" in line_lower.replace("ä", "a")):
-                boost_section_end = i
-                break
-
-        boost_lines = lines[boost_section_start:boost_section_end]
-        if verbose:
-            print(f"  bettingstugan/today: boost section lines {boost_section_start}-{boost_section_end} ({len(boost_lines)} lines)")
-
-        # Parse boost entries from the section
-        # The structure is line-by-line with the arrow char on its own line:
-        #   [Event name]
-        #   [Day] [Month]      (e.g. "7 feb.")
-        #   [HH:MM]            (e.g. "16:00")
-        #   [League]           (e.g. "Premier League")
-        #   [Provider]         (e.g. "Bethard")
-        #   [condition1]       (e.g. "Arsenal leder efter 20 min")
-        #   ...
-        #   Maxbet: NNN        (optional)
-        #   [original_odds]    (e.g. "3.00")
-        #   [arrow]            (e.g. ">>")
-        #   [boosted_odds]     (e.g. "3.35")
-
-        arrow_chars = {'\u00bb', '\u203a', '>', '\u2192'}  # >> and arrow variants
-        known_providers = set(PROVIDER_ALIASES.values())
-        date_pattern = re.compile(r'^\d{1,2}\s+(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|okt|nov|dec)', re.IGNORECASE)
-        time_pattern = re.compile(r'^\d{2}:\d{2}$')
-        odds_number = re.compile(r'^\d+[.,]\d{2}$')
-
-        i = 0
-        while i < len(boost_lines):
-            line = boost_lines[i]
-
-            # Detect arrow lines (the separator between original and boosted odds)
-            is_arrow = all(c in arrow_chars or c.isspace() for c in line) and len(line.strip()) > 0
-
-            if is_arrow and i >= 1 and i + 1 < len(boost_lines):
-                # Line before arrow = original odds, line after = boosted odds
-                orig_line = boost_lines[i - 1].replace(",", ".").strip()
-                boost_line = boost_lines[i + 1].replace(",", ".").strip()
-
-                orig_match = odds_number.match(orig_line)
-                boost_match = odds_number.match(boost_line)
-
-                if orig_match and boost_match:
-                    original = float(orig_line)
-                    boosted = float(boost_line)
-
-                    # Now scan backwards from the original odds line to get context
-                    event_name = ""
-                    date_str = ""
-                    time_str = ""
-                    provider = ""
-                    league = ""
-                    conditions = []
-                    max_stake = None
-
-                    # Scan backwards from i-2 (line before original odds)
-                    for j in range(i - 2, max(0, i - 12) - 1, -1):
-                        prev = boost_lines[j]
-                        prev_lower = prev.lower().strip()
-
-                        # Check for "Maxbet: NNN" or "Maxbet: 25 SEK INSATS..."
-                        maxbet_match = re.search(r'maxbet[:\s]*(\d+)', prev_lower)
-                        if maxbet_match:
-                            max_stake = float(maxbet_match.group(1))
-                            continue
-
-                        # Time line (HH:MM)
-                        if time_pattern.match(prev.strip()) and not time_str:
-                            time_str = prev.strip()
-                            continue
-
-                        # Date line (e.g. "7 feb.")
-                        if date_pattern.match(prev.strip()) and not date_str:
-                            date_str = prev.strip()
-                            continue
-
-                        # Provider line (single known provider name)
-                        normalized = normalize_provider(prev.strip())
-                        if normalized in known_providers and not provider:
-                            provider = normalized
-                            continue
-
-                        # League line: if next line was the provider, this is the league
-                        # Also skip lines that look like arrow/odds
-                        if odds_number.match(prev.strip().replace(",", ".")):
-                            # This is an odds from a previous boost entry, stop scanning
-                            break
-
-                        all_arrow = all(c in arrow_chars or c.isspace() for c in prev) and len(prev.strip()) > 0
-                        if all_arrow:
-                            break
-
-                        # Classify remaining lines as event name, league, or condition
-                        if not league and not date_pattern.match(prev.strip()) and not time_pattern.match(prev.strip()):
-                            cleaned = re.sub(r'^NYKUND[:\s]*', '', prev, flags=re.IGNORECASE).strip()
-
-                            if " - " in cleaned and not event_name:
-                                # Contains " - " = event name (e.g. "Arsenal - Sunderland")
-                                event_name = cleaned
-                            elif not league and len(cleaned.split()) <= 4 and cleaned[0].isupper() and not any(
-                                kw in cleaned.lower() for kw in ['vinner', 'mål', 'leder', 'över', 'under', 'gör', 'kvalificerar', 'båda', 'guld']
-                            ):
-                                # Short capitalized phrase without condition keywords = likely league
-                                league = cleaned
-                            else:
-                                # Everything else is a condition
-                                conditions.insert(0, cleaned)
-
-                    # Build the special entry
-                    if not event_name and conditions:
-                        event_name = conditions.pop(0)
-                    if not event_name:
-                        event_name = f"Boost ({original:.2f} -> {boosted:.2f})"
-
-                    title = "; ".join(conditions) if conditions else event_name
-                    description = event_name
-                    if conditions:
-                        description += " | " + "; ".join(conditions)
-                    if date_str or time_str:
-                        description += f" | {date_str} {time_str}".strip()
-
-                    all_text = " ".join([event_name, league, title, description])
-
-                    special = Special(
-                        provider=provider or "unknown",
-                        title=title[:120],
-                        description=description,
-                        original_odds=original,
-                        boosted_odds=boosted,
-                        max_stake=max_stake,
-                        category="boost",
-                        sport=detect_sport(all_text),
-                        event=event_name,
-                        source="bettingstugan.se/alla-oddsbooster-idag",
-                        scraped_at=now_iso,
-                        url=url,
-                    )
-                    specials.append(special)
-
-                    if verbose:
-                        print(f"    BOOST: {provider} | {event_name} | {original:.2f} -> {boosted:.2f} | max {max_stake}")
-
-                    # Skip past the boosted odds line
-                    i += 2
-                    continue
-
-            i += 1
-
-    except Exception as e:
-        if verbose:
-            print(f"  ERROR scraping bettingstugan/today: {e}")
-            import traceback
-            traceback.print_exc()
-
-    return specials
-
-
-def scrape_bettingstugan_overview(session: requests.Session, verbose: bool = False) -> list[Special]:
-    """Scrape bettingstugan.se/forhojda-odds for boost examples and info."""
-    url = "https://bettingstugan.se/forhojda-odds/"
-    specials = []
-
-    try:
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        if verbose:
-            print(f"  bettingstugan/overview: page loaded ({len(resp.text)} bytes)")
-
-        # Look for provider-specific boost sections
-        content = soup.select_one(".content") or soup.select_one(".entry-content")
-        if not content:
-            return specials
-
-        # Find headings that contain provider names
-        headings = content.select("h2, h3")
-        for heading in headings:
-            heading_text = heading.get_text(strip=True)
-            provider = normalize_provider(heading_text.split()[0] if heading_text else "")
-
-            if provider not in PROVIDER_ALIASES.values():
-                continue
-
-            # Get content between this heading and the next
-            sibling = heading.find_next_sibling()
-            while sibling and sibling.name not in ("h2", "h3"):
-                text = sibling.get_text(strip=True)
-                if text and len(text) > 15:
-                    # Look for odds patterns
-                    odds_match = re.search(r'(\d+[.,]\d{2})\s*(?:->|-->|till|=>|istallet for)\s*(\d+[.,]\d{2})', text)
-                    if odds_match:
-                        original = float(odds_match.group(1).replace(",", "."))
-                        boosted = float(odds_match.group(2).replace(",", "."))
-                        special = Special(
-                            provider=provider,
-                            title=text[:100],
-                            description=text,
-                            original_odds=original,
-                            boosted_odds=boosted,
-                            max_stake=parse_max_stake(text),
-                            sport=detect_sport(text),
-                            source="bettingstugan.se/forhojda-odds",
-                            scraped_at=datetime.now(tz=None).isoformat(),
-                            url=url,
-                        )
-                        specials.append(special)
-
-                sibling = sibling.find_next_sibling() if sibling else None
-
-    except Exception as e:
-        if verbose:
-            print(f"  ERROR scraping bettingstugan/overview: {e}")
-
-    return specials
-
-
-def scrape_casivo(session: requests.Session, verbose: bool = False) -> list[Special]:
-    """Scrape casivo.se/oddsboost for boost info."""
-    url = "https://www.casivo.se/oddsboost/"
-    specials = []
-
-    try:
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        if verbose:
-            print(f"  casivo.se: page loaded ({len(resp.text)} bytes)")
-
-        content = soup.select_one(".content, .entry-content, main, article")
-        if not content:
-            return specials
-
-        # Look for provider names followed by boost descriptions
-        paragraphs = content.select("p, li")
-        current_provider = None
-
-        for p in paragraphs:
-            text = p.get_text(strip=True)
-            if not text:
-                continue
-
-            # Check if this paragraph starts with a known provider
-            for alias, pid in PROVIDER_ALIASES.items():
-                if text.lower().startswith(alias):
-                    current_provider = pid
-                    break
-
-            # Look for odds patterns
-            if current_provider:
-                odds_match = re.search(r'(\d+[.,]\d{2})\s*(?:->|-->|till|=>)\s*(\d+[.,]\d{2})', text)
-                if odds_match:
-                    original = float(odds_match.group(1).replace(",", "."))
-                    boosted = float(odds_match.group(2).replace(",", "."))
-                    special = Special(
-                        provider=current_provider,
-                        title=text[:100],
-                        description=text,
-                        original_odds=original,
-                        boosted_odds=boosted,
-                        max_stake=parse_max_stake(text),
-                        sport=detect_sport(text),
-                        source="casivo.se/oddsboost",
-                        scraped_at=datetime.now(tz=None).isoformat(),
-                        url=url,
-                    )
-                    specials.append(special)
-
-    except Exception as e:
-        if verbose:
-            print(f"  ERROR scraping casivo: {e}")
-
-    return specials
-
-
-def scrape_bettingkollen(session: requests.Session, verbose: bool = False) -> list[Special]:
-    """
-    Scrape bettingkollen.se boost data from their public Google Sheet.
-
-    The site renders boost cards client-side from a CSV exported from:
-    https://docs.google.com/spreadsheets/d/.../export?format=csv
-
-    CSV schema: id, enable, match, outcome, old, new, stop
-    - id: provider key (comeon, unibet, betsson, etc.)
-    - enable: TRUE for active boosts
-    - match: event name (e.g. "Manchester United - Tottenham")
-    - outcome: bet description (e.g. "Bruno Fernandes gör mål eller assist")
-    - old: original decimal odds
-    - new: boosted decimal odds
-    - stop: expiry in D/M/YY HH:MM format
-    """
-    csv_url = "https://docs.google.com/spreadsheets/d/1YJOeSg4QHzDOKLX7CqlfZ-gvoNaxoeg-ZqQ4gqah5LE/export?format=csv"
-    specials = []
-    now = datetime.now(tz=None)
-    now_iso = now.isoformat()
-    known_providers = set(PROVIDER_ALIASES.values())
-
-    try:
-        resp = session.get(csv_url, timeout=15)
-        resp.raise_for_status()
-
-        reader = csv.DictReader(io.StringIO(resp.text))
-        rows = list(reader)
-
-        if verbose:
-            print(f"  bettingkollen: {len(rows)} rows in sheet")
-
-        for row in rows:
-            # Only active boosts
-            if row.get("enable") != "TRUE":
-                continue
-
-            # Must have match, outcome, and odds
-            match = row.get("match", "").strip()
-            outcome = row.get("outcome", "").strip()
-            old_str = row.get("old", "").strip()
-            new_str = row.get("new", "").strip()
-            stop_str = row.get("stop", "").strip()
-
-            if not match or not outcome or not old_str or not new_str:
-                continue
-
-            # Parse odds
-            try:
-                original = float(old_str.replace(",", "."))
-                boosted = float(new_str.replace(",", "."))
-            except ValueError:
-                continue
-
-            # Normalize provider
-            provider_raw = row.get("id", "").strip().lower()
-            provider = PROVIDER_ALIASES.get(provider_raw, provider_raw)
-
-            # Skip providers not in our config
-            if provider not in known_providers:
-                if verbose:
-                    print(f"    SKIP: {provider_raw} (not in providers.yaml)")
-                continue
-
-            # Parse expiry date (format: D/M/YY HH:MM)
-            expires_at = None
-            if stop_str:
-                try:
-                    dt = datetime.strptime(stop_str, "%d/%m/%y %H:%M")
-                    # Skip expired boosts
-                    if dt < now:
-                        continue
-                    expires_at = dt.isoformat()
-                except ValueError:
-                    pass
-
-            all_text = f"{match} {outcome}"
-
-            special = Special(
-                provider=provider,
-                title=outcome[:120],
-                description=f"{match} | {outcome}",
-                original_odds=original,
-                boosted_odds=boosted,
-                max_stake=None,
-                category="boost",
-                sport=detect_sport(all_text),
-                event=match,
-                expires_at=expires_at,
-                source="bettingkollen.se",
-                scraped_at=now_iso,
-                url="https://bettingkollen.se/oddsbonus/oddsboost",
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
             )
-            specials.append(special)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                locale='sv-SE',
+            )
 
+            for cfg in boost_configs:
+                provider_id = cfg["primary_provider"]
+                boost_url = cfg["url"]
+                boost_type = cfg["type"]
+                shared = cfg["shared_with"]
+
+                if verbose:
+                    print(f"  [{cfg['name']}] {provider_id}: {boost_url} (type={boost_type})")
+
+                try:
+                    if boost_type == "gecko_v2":
+                        boosts = await _scrape_gecko_boosts(
+                            context, provider_id, boost_url, now_iso, verbose
+                        )
+                    else:
+                        if verbose:
+                            print(f"    Unsupported boost type: {boost_type}")
+                        continue
+
+                    # Tag shared providers
+                    for b in boosts:
+                        b.shared_providers = shared if shared else None
+
+                    all_boosts.extend(boosts)
+                    if verbose:
+                        print(f"  {provider_id}: {len(boosts)} boosts found")
+                        if shared:
+                            print(f"    (also available on: {', '.join(shared)})")
+                except Exception as e:
+                    if verbose:
+                        print(f"  {provider_id} failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+            await browser.close()
+    except Exception as e:
+        if verbose:
+            print(f"  Browser launch failed: {e}")
+
+    return all_boosts
+
+
+async def _scrape_gecko_boosts(
+    context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
+) -> list[Special]:
+    """
+    Scrape Gecko V2 (Betsson group) odds boosts via API interception.
+
+    The boost page makes two key API calls:
+    1. globalbonuses — returns PriceBoost bonus objects with:
+       - bonusData.boostedOdds = the boosted (enhanced) odds
+       - bonusData.type = "Multiplier" or "FixedOdds"
+       - bonusData.isSuperBoost = true/false
+       - criteria.criteriaEntityDetails[].marketSelectionId = selection to match
+       - conditions.maximumStake = max bet amount
+
+    2. event-market — returns events, markets, and selections with:
+       - selection.odds = the ORIGINAL (pre-boost) odds
+       - selection.label = bet description
+       - event.participants[].label = team names
+       - event.competitionName = league name
+       - event.deadline = event start time
+
+    The page only loads event-market data for visible cards. We need to
+    scroll to load all cards, then fetch any remaining missing selections
+    by requesting their market IDs directly.
+    """
+    import asyncio
+
+    page = await context.new_page()
+    boosts: list[Special] = []
+
+    bonus_data = None
+    all_events: dict[str, dict] = {}
+    all_markets: dict[str, dict] = {}
+    all_selections: dict[str, dict] = {}
+
+    try:
+        async def capture_response(response):
+            nonlocal bonus_data
+            if response.status != 200:
+                return
+            ct = response.headers.get('content-type', '')
+            if 'json' not in ct:
+                return
+            url = response.url
+            try:
+                data = await response.json()
+            except Exception:
+                return
+
+            if 'globalbonuses' in url:
+                bonus_data = data
+            elif 'event-market' in url:
+                _collect_event_market(data, all_events, all_markets, all_selections)
+
+        page.on('response', capture_response)
+        await page.goto(boost_url, wait_until='load', timeout=30000)
+
+        # Handle cookie consent
+        for selector in [
+            '#onetrust-accept-btn-handler',
+            'button:has-text("Acceptera")', 'button:has-text("Accept")',
+            'button:has-text("Godkänn")', '[data-testid="cookie-accept"]',
+        ]:
+            try:
+                btn = page.locator(selector).first
+                if await btn.is_visible(timeout=2000):
+                    await btn.click()
+                    await asyncio.sleep(0.5)
+                    break
+            except Exception:
+                continue
+
+        # Wait for initial API load
+        await asyncio.sleep(5)
+
+        # Scroll incrementally to trigger lazy loading of all boost cards
+        for i in range(8):
+            await page.evaluate(f"window.scrollTo(0, {(i + 1) * 1000})")
+            await asyncio.sleep(1)
+
+        # Final scroll to bottom
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(3)
+
+        page.remove_listener('response', capture_response)
+
+        if not bonus_data:
             if verbose:
-                print(f"    BOOST: {provider} | {match} | {original:.2f} -> {boosted:.2f} | expires {stop_str}")
+                print(f"    [{provider_id}] No globalbonuses response captured")
+            await page.close()
+            return boosts
+
+        bonuses = bonus_data.get('data', {}).get('bonuses', [])
+        price_boosts = [b for b in bonuses if b.get('type') == 'PriceBoost']
+
+        if verbose:
+            print(f"    [{provider_id}] {len(price_boosts)} PriceBoost bonuses, "
+                  f"{len(all_selections)} selections loaded")
+
+        # Parse boosts with full data
+        boosts = _parse_gecko_boosts(
+            price_boosts, all_events, all_markets, all_selections,
+            provider_id, boost_url, now_iso, verbose
+        )
 
     except Exception as e:
         if verbose:
-            print(f"  ERROR scraping bettingkollen: {e}")
+            print(f"    [{provider_id}] Error: {e}")
             import traceback
             traceback.print_exc()
+    finally:
+        await page.close()
 
-    return specials
+    return boosts
+
+
+def _collect_event_market(
+    data: dict,
+    events: dict[str, dict],
+    markets: dict[str, dict],
+    selections: dict[str, dict],
+) -> None:
+    """Collect events, markets, and selections from an event-market API response."""
+    d = data.get('data', {})
+
+    evts = d.get('events', [])
+    if isinstance(evts, list):
+        for e in evts:
+            if isinstance(e, dict) and 'id' in e:
+                events[e['id']] = e
+    elif isinstance(evts, dict):
+        events.update(evts)
+
+    mkts = d.get('markets', [])
+    if isinstance(mkts, list):
+        for m in mkts:
+            if isinstance(m, dict) and 'id' in m:
+                markets[m['id']] = m
+    elif isinstance(mkts, dict):
+        markets.update(mkts)
+
+    sels = d.get('marketSelections', [])
+    if isinstance(sels, list):
+        for s in sels:
+            if isinstance(s, dict) and 'id' in s:
+                selections[s['id']] = s
+    elif isinstance(sels, dict):
+        selections.update(sels)
+
+
+def _parse_gecko_boosts(
+    price_boosts: list[dict],
+    events: dict[str, dict],
+    markets: dict[str, dict],
+    selections: dict[str, dict],
+    provider_id: str,
+    boost_url: str,
+    now_iso: str,
+    verbose: bool,
+) -> list[Special]:
+    """
+    Parse Gecko V2 PriceBoost bonuses into Special objects.
+
+    Key mapping:
+      - bonusData.boostedOdds = the BOOSTED (enhanced) odds
+      - selection.odds = the ORIGINAL (pre-boost) odds
+      - bonusData.isSuperBoost = true for super boosts
+      - bonusData.type = "Multiplier" (most) or "FixedOdds"
+
+    Boosts whose selections weren't loaded by the page (combo/prop markets
+    like MWBTTS, AGSNAB, etc.) have no original odds and no bet description.
+    These are skipped since they're not useful without edge calculation.
+    """
+    boosts = []
+
+    for bonus in price_boosts:
+        bonus_d = bonus.get('bonusData', {})
+        boosted_odds = bonus_d.get('boostedOdds')
+        is_super = bonus_d.get('isSuperBoost', False)
+
+        if not boosted_odds:
+            continue
+
+        max_stake = bonus.get('conditions', {}).get('maximumStake')
+        expiry = bonus.get('expiryDate')
+        bonus_name = bonus.get('name', '')
+
+        details = bonus.get('criteria', {}).get('criteriaEntityDetails', [])
+        if not details:
+            continue
+
+        # Collect enriched selection labels for multi-leg boosts
+        # Combine market.label + selection.label for descriptive titles
+        sel_labels = []
+        market_labels = []
+        original_odds = None
+        event_id = None
+        for detail in details:
+            sel_id = detail.get('marketSelectionId', '')
+            if not event_id:
+                event_id = detail.get('eventId', '')
+
+            sel = selections.get(sel_id, {})
+            sel_label = sel.get('label', '')
+            if sel_label:
+                # Look up parent market for context
+                market_id = sel.get('marketId', sel.get('market_id', ''))
+                market = markets.get(market_id, {})
+                market_label = market.get('label', '')
+
+                # Combine: "Båda lagen gör mål: Ja" instead of just "Ja"
+                # Skip generic labels like "Pre-built" that add no context
+                generic_labels = {'pre-built', 'custom', 'special'}
+                if (market_label
+                    and market_label.lower() not in generic_labels
+                    and market_label.lower() != sel_label.lower()):
+                    sel_labels.append(f"{market_label}: {sel_label}")
+                else:
+                    sel_labels.append(sel_label)
+                if market_label:
+                    market_labels.append(market_label)
+            # Use odds from first selection that has them
+            if original_odds is None and sel.get('odds'):
+                original_odds = sel.get('odds')
+
+        # Skip boosts without original odds — these are combo/prop markets
+        # where selections weren't loaded, so we can't calculate edge
+        if original_odds is None:
+            continue
+
+        # Skip if original >= boosted (data anomaly)
+        if float(original_odds) >= float(boosted_odds):
+            continue
+
+        # Build title from selection labels or fall back to bonus name
+        if sel_labels:
+            title = ','.join(sel_labels)
+        elif bonus_name:
+            title = bonus_name
+        else:
+            continue
+
+        # Get event info
+        event = events.get(event_id, {}) if event_id else {}
+        participants = event.get('participants', [])
+        part_names = [p.get('label', '') for p in participants if p.get('label')]
+        event_name = ' vs '.join(part_names) if part_names else ''
+        category_name = event.get('categoryName', '')
+        competition_name = event.get('competitionName', '')
+        # startDate = actual match kickoff, deadline = often same as bonus expiry
+        event_start = event.get('startDate') or event.get('deadline')
+
+        # Fallback: extract event name from CCRM-style bonus name
+        # e.g. "CCRM PB Man Utd v Tottenham" -> "Man Utd vs Tottenham"
+        if not event_name and bonus_name:
+            m = re.match(r'^(?:CCRM\s+)?PB\s+(.+?)\s+v\s+(.+)$', bonus_name, re.IGNORECASE)
+            if m:
+                event_name = f"{m.group(1).strip()} vs {m.group(2).strip()}"
+            elif not bonus_name.startswith('CCRM'):
+                event_name = bonus_name
+
+        # Clean CCRM prefix from title if it leaked through
+        if title.startswith('CCRM '):
+            m = re.match(r'^(?:CCRM\s+)?PB\s+(.+?)\s+v\s+(.+)$', title, re.IGNORECASE)
+            if m:
+                title = f"{m.group(1).strip()} vs {m.group(2).strip()}"
+
+        # Sport detection
+        sport = detect_sport(
+            f"{title} {event_name} {category_name} {competition_name}"
+        )
+
+        # Use startDate as event_time (actual kickoff), skip if same as expiry
+        real_event_time = event_start if (event_start and event_start != expiry) else None
+
+        # Calculate boost percentage
+        orig_f = float(original_odds) if original_odds else None
+        boosted_f = float(boosted_odds)
+        boost_pct_val = ((boosted_f / orig_f) - 1) * 100 if orig_f else None
+
+        boosts.append(Special(
+            provider=provider_id,
+            title=title,
+            event=event_name,
+            original_odds=orig_f,
+            boosted_odds=boosted_f,
+            boost_pct=round(boost_pct_val, 1) if boost_pct_val is not None else None,
+            max_stake=float(max_stake) if max_stake else None,
+            sport=sport,
+            league=competition_name,
+            category="superboost" if is_super else "boost",
+            expires_at=expiry,
+            event_time=real_event_time,
+            source=f"{provider_id}",
+            scraped_at=now_iso,
+            url=boost_url,
+            market_label=', '.join(market_labels) if market_labels else "",
+        ))
+
+    if verbose:
+        with_orig = sum(1 for b in boosts if b.original_odds is not None)
+        without = len(boosts) - with_orig
+        print(f"    [{provider_id}] {len(boosts)} boosts parsed "
+              f"({with_orig} with original odds, {without} without)")
+
+    return boosts
 
 
 # ============ Aggregation ============
 
 def deduplicate_specials(specials: list[Special]) -> list[Special]:
-    """Remove duplicate specials based on provider + odds or title match."""
+    """Remove duplicate specials based on provider + event + title + boosted odds."""
     seen_keys = set()
     unique = []
     for s in specials:
-        # Primary key: provider + original odds + boosted odds (same bet = same boost)
-        odds_key = (s.provider, s.original_odds, s.boosted_odds)
-        # Secondary key: provider + title prefix (catches reformulated descriptions)
-        title_key = (s.provider, s.title[:40].lower())
-        if odds_key not in seen_keys and title_key not in seen_keys:
-            seen_keys.add(odds_key)
-            seen_keys.add(title_key)
+        key = (s.provider, s.event.lower(), s.title.lower(), s.boosted_odds)
+        if key not in seen_keys:
+            seen_keys.add(key)
             unique.append(s)
     return unique
 
 
 def scrape_all(verbose: bool = False) -> list[Special]:
     """Run all scrapers and return aggregated results."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
-    })
+    import asyncio
 
-    all_specials = []
+    all_specials: list[Special] = []
 
-    sources = [
-        ("bettingkollen", scrape_bettingkollen),
-        ("bettingstugan/today", scrape_bettingstugan_today),
-        ("bettingstugan/overview", scrape_bettingstugan_overview),
-        ("casivo", scrape_casivo),
-    ]
+    if verbose:
+        print("Scraping provider boost pages...")
 
-    for name, scraper in sources:
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                provider_boosts = pool.submit(
+                    lambda: asyncio.run(scrape_provider_boosts(verbose=verbose))
+                ).result(timeout=180)
+        else:
+            provider_boosts = asyncio.run(scrape_provider_boosts(verbose=verbose))
+    except RuntimeError:
+        provider_boosts = asyncio.run(scrape_provider_boosts(verbose=verbose))
+    except Exception as e:
         if verbose:
-            print(f"Scraping {name}...")
-        results = scraper(session, verbose=verbose)
-        if verbose:
-            print(f"  -> {len(results)} specials found")
-        all_specials.extend(results)
+            print(f"  Provider scraping failed: {e}")
+        provider_boosts = []
+
+    all_specials.extend(provider_boosts)
 
     # Deduplicate
     unique = deduplicate_specials(all_specials)
     if verbose:
-        print(f"\nTotal: {len(all_specials)} raw, {len(unique)} unique specials")
+        print(f"\nTotal: {len(all_specials)} raw, {len(unique)} unique boosts")
 
     return unique
 
@@ -696,7 +616,7 @@ def _print(text: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape odds boosts from Swedish betting sites")
+    parser = argparse.ArgumentParser(description="Scrape odds boosts from provider sites")
     parser.add_argument("--save", action="store_true", help="Save results to data/specials.json")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
@@ -704,18 +624,16 @@ def main():
     specials = scrape_all(verbose=args.verbose)
 
     if not specials:
-        print("No specials found. Sites may have changed structure or no boosts active today.")
+        print("No boosts found.")
         if args.save:
             path = save_specials(specials)
             print(f"Empty results saved to {path}")
         return
 
-    # Print results
     print(f"\n{'='*60}")
-    print(f"  ODDS BOOSTS & SPECIALS ({len(specials)} found)")
+    print(f"  ODDS BOOSTS ({len(specials)} found)")
     print(f"{'='*60}\n")
 
-    # Group by provider
     by_provider: dict[str, list[Special]] = {}
     for s in specials:
         by_provider.setdefault(s.provider, []).append(s)
@@ -725,16 +643,19 @@ def main():
         for item in items:
             odds_str = ""
             if item.original_odds and item.boosted_odds:
-                odds_str = f"  {item.original_odds:.2f} -> {item.boosted_odds:.2f}"
+                boost_pct = (item.boosted_odds / item.original_odds - 1) * 100
+                odds_str = f"  {item.original_odds:.2f} -> {item.boosted_odds:.2f} (+{boost_pct:.0f}%)"
             elif item.boosted_odds:
-                odds_str = f"  odds: {item.boosted_odds:.2f}"
+                odds_str = f"  -> {item.boosted_odds:.2f}"
 
             stake_str = f"  max {item.max_stake:.0f} kr" if item.max_stake else ""
             sport_str = f"  [{item.sport}]" if item.sport != "unknown" else ""
+            league_str = f"  {item.league}" if item.league else ""
+            cat_str = " [SUPER]" if item.category == "superboost" else ""
 
-            _print(f"    {item.title}")
-            if odds_str or stake_str or sport_str:
-                _print(f"   {odds_str}{stake_str}{sport_str}")
+            _print(f"    {item.event or '?'}{cat_str}")
+            _print(f"      {item.title}")
+            _print(f"     {odds_str}{stake_str}{sport_str}{league_str}")
         print()
 
     if args.save:

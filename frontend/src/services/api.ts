@@ -35,7 +35,7 @@ import type {
   StakeNoiseResult,
 } from '@/types';
 
-// ============ Specials & Bonus Validation Types ============
+// ============ Oddsboost Types ============
 
 export interface SpecialItem {
   provider: string;
@@ -43,76 +43,48 @@ export interface SpecialItem {
   description: string;
   original_odds: number | null;
   boosted_odds: number | null;
+  boost_pct: number | null;
   max_stake: number | null;
   category: string;
   sport: string;
+  league: string;
   event: string;
+  event_time: string | null;
   expires_at: string | null;
   url: string;
   scraped_at: string;
   source: string;
+  market_label: string;
+  shared_providers: string[] | null;
 }
 
-export interface BonusDiff {
-  field: string;
-  yaml: unknown;
-  scraped: unknown;
-}
-
-export interface BonusChange {
-  provider_id: string;
-  diffs: BonusDiff[];
-  sources: string[];
-}
-
-export interface BonusAlert {
-  type: 'bonus_changed' | 'new_bonus_available';
-  provider_id: string;
-  field?: string;
-  old_value?: unknown;
-  new_value?: unknown;
-  message: string;
-  bonus?: Record<string, unknown>;
-}
-
-export interface BonusValidation {
-  validated_at: string;
-  providers_checked: number;
-  matches: number;
-  mismatches: number;
-  changes: BonusChange[];
-  missing_from_yaml: Array<{ provider_id: string; scraped_bonus: Record<string, unknown> }>;
-  missing_from_scrape: Array<{ provider_id: string; yaml_bonus: Record<string, unknown> }>;
-  alerts: BonusAlert[];
+export interface SpecialsFilters {
+  sports: string[];
+  providers: string[];
+  categories: string[];
 }
 
 export interface SpecialsResponse {
   specials: SpecialItem[];
   count: number;
   scraped_at: string | null;
+  filters?: SpecialsFilters;
 }
 
-export interface ScrapeResponse extends SpecialsResponse {
-  bonus_validation: BonusValidation;
-}
-
-export interface BonusValidationStatus {
-  status: string;
-  message?: string;
-  validated_at?: string;
-  providers_checked?: number;
-  matches?: number;
-  mismatches?: number;
-  changes?: BonusChange[];
-  missing_from_yaml?: Array<{ provider_id: string; scraped_bonus: Record<string, unknown> }>;
-  missing_from_scrape?: Array<{ provider_id: string; yaml_bonus: Record<string, unknown> }>;
-  provider_status?: Record<string, {
-    status: string;
-    yaml_bonus: Record<string, unknown>;
-    scraped_bonus: Record<string, unknown> | null;
-    sources: string[];
-    diffs: BonusDiff[];
-  }>;
+export interface StakePreviewResult {
+  recommended_stake: number;
+  kelly_fraction: number;
+  edge_raw: number;
+  edge_used: number;
+  bankroll: number;
+  raw_kelly_stake: number;
+  single_bet_cap: number;
+  was_capped_single: boolean;
+  was_capped_event: boolean;
+  was_capped_daily: boolean;
+  skip_reason: string | null;
+  bonus_cleared: boolean;
+  min_odds_applied: number;
 }
 
 const API_BASE = '/api';
@@ -777,17 +749,39 @@ export const api = {
     });
   },
 
-  // ============ Specials (Odds Boosts) & Bonus Validation ============
-  async getSpecials(): Promise<SpecialsResponse> {
-    return fetchJson('/specials');
+  // ============ Oddsboost ============
+  async getSpecials(filters?: {
+    sport?: string;
+    provider?: string;
+    category?: string;
+    sort?: string;
+    order?: string;
+  }): Promise<SpecialsResponse> {
+    const params = new URLSearchParams();
+    if (filters?.sport) params.set('sport', filters.sport);
+    if (filters?.provider) params.set('provider', filters.provider);
+    if (filters?.category) params.set('category', filters.category);
+    if (filters?.sort) params.set('sort', filters.sort);
+    if (filters?.order) params.set('order', filters.order);
+    const qs = params.toString();
+    return fetchJson(`/specials${qs ? `?${qs}` : ''}`);
   },
 
-  async scrapeSpecials(): Promise<ScrapeResponse> {
+  async scrapeSpecials(): Promise<SpecialsResponse> {
     return fetchJson('/specials/scrape', { method: 'POST' });
   },
 
-  async getBonusStatus(): Promise<BonusValidationStatus> {
-    return fetchJson('/specials/bonus-status');
+  async getBoostStakePreview(data: {
+    edge_pct: number;
+    odds: number;
+    event_id?: string;
+    provider_id?: string;
+  }): Promise<StakePreviewResult> {
+    return fetchJson('/bankroll/stake-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
   },
 
   // ============ Profiles ============

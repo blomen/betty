@@ -1,36 +1,47 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card } from './Card';
 import { api } from '@/services/api';
-import type { SpecialItem, BonusValidation, BonusAlert, BonusChange, BonusValidationStatus } from '@/services/api';
+import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 
 
 export function SpecialsPage() {
   const [specials, setSpecials] = useState<SpecialItem[]>([]);
+  const [filters, setFilters] = useState<SpecialsFilters | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
-  const [bonusValidation, setBonusValidation] = useState<BonusValidation | null>(null);
-  const [bonusStatus, setBonusStatus] = useState<BonusValidationStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isScraping, setIsScraping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Active filters
+  const [sportFilter, setSportFilter] = useState<string | null>(null);
+  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+
+  // Expanded row + bet placement
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [stakePreview, setStakePreview] = useState<StakePreviewResult | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [isPlacing, setIsPlacing] = useState(false);
+  const [placementError, setPlacementError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const [specialsData, bonusData] = await Promise.all([
-        api.getSpecials(),
-        api.getBonusStatus(),
-      ]);
-      setSpecials(specialsData.specials || []);
-      setScrapedAt(specialsData.scraped_at);
-      setBonusStatus(bonusData);
+      const data = await api.getSpecials({
+        sport: sportFilter || undefined,
+        provider: providerFilter || undefined,
+        category: categoryFilter || undefined,
+      });
+      setSpecials(data.specials || []);
+      setScrapedAt(data.scraped_at);
+      if (data.filters) setFilters(data.filters);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load specials');
+      setError(err instanceof Error ? err.message : 'Failed to load boosts');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [sportFilter, providerFilter, categoryFilter]);
 
   const handleScrape = useCallback(async () => {
     setIsScraping(true);
@@ -39,9 +50,7 @@ export function SpecialsPage() {
       const data = await api.scrapeSpecials();
       setSpecials(data.specials || []);
       setScrapedAt(data.scraped_at);
-      if (data.bonus_validation) {
-        setBonusValidation(data.bonus_validation);
-      }
+      if (data.filters) setFilters(data.filters);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scraping failed');
     } finally {
@@ -53,32 +62,85 @@ export function SpecialsPage() {
     fetchData();
   }, [fetchData]);
 
-  // Group specials by provider
-  const grouped: Record<string, SpecialItem[]> = {};
-  for (const s of specials) {
-    if (!grouped[s.provider]) grouped[s.provider] = [];
-    grouped[s.provider].push(s);
-  }
-  const providerIds = Object.keys(grouped).sort();
+  // Filter out expired specials client-side as extra safety
+  const activeSpecials = specials.filter(s => {
+    if (!s.expires_at) return true;
+    try { return new Date(s.expires_at).getTime() > Date.now(); }
+    catch { return true; }
+  });
+
+  // When a row is expanded, fetch the stake preview
+  const handleRowClick = async (idx: number, special: SpecialItem) => {
+    if (expandedIdx === idx) {
+      setExpandedIdx(null);
+      setStakePreview(null);
+      setPlacementError(null);
+      return;
+    }
+
+    setExpandedIdx(idx);
+    setStakePreview(null);
+    setPlacementError(null);
+
+    if (!special.boosted_odds || !special.boost_pct) return;
+
+    setIsLoadingPreview(true);
+    try {
+      const preview = await api.getBoostStakePreview({
+        edge_pct: special.boost_pct,
+        odds: special.boosted_odds,
+        provider_id: special.provider,
+      });
+      setStakePreview(preview);
+    } catch (err) {
+      console.error('Failed to load stake preview:', err);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
+  const handlePlaceBet = async (special: SpecialItem) => {
+    if (!stakePreview || !special.boosted_odds) return;
+
+    let stake = stakePreview.recommended_stake;
+    // Cap at max_stake if set
+    if (special.max_stake != null && stake > special.max_stake) {
+      stake = special.max_stake;
+    }
+    if (stake <= 0) return;
+
+    setIsPlacing(true);
+    setPlacementError(null);
+    try {
+      await api.createBet({
+        provider_id: special.provider,
+        market: 'boost',
+        outcome: special.title,
+        odds: special.boosted_odds,
+        stake,
+        is_bonus: false,
+      });
+      setExpandedIdx(null);
+      setStakePreview(null);
+      fetchData();
+    } catch (err) {
+      setPlacementError(err instanceof Error ? err.message : 'Failed to place bet');
+    } finally {
+      setIsPlacing(false);
+    }
+  };
 
   const timeAgo = scrapedAt ? formatTimeAgo(scrapedAt) : null;
-  const sourceCount = new Set(specials.map(s => s.source)).size;
 
-  // Merge bonus info: prefer fresh validation from scrape, fall back to cached status
-  const effectiveBonusChecked = bonusValidation?.providers_checked ?? bonusStatus?.providers_checked ?? 0;
-  const effectiveBonusMatches = bonusValidation?.matches ?? bonusStatus?.matches ?? 0;
-  const effectiveBonusMismatches = bonusValidation?.mismatches ?? bonusStatus?.mismatches ?? 0;
-  const effectiveChanges = bonusValidation?.changes ?? bonusStatus?.changes ?? [];
-  const effectiveAlerts = bonusValidation?.alerts ?? [];
-  const effectiveValidatedAt = bonusValidation?.validated_at ?? bonusStatus?.validated_at;
-
-  if (isLoading) {
+  if (isLoading && specials.length === 0) {
     return (
       <div className="space-y-4">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabBonus" />
-          Specials
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-tabBonus" />
+            Oddsboost
+          </h2>
+        </div>
         <div className="text-muted text-sm py-8 text-center">Loading...</div>
       </div>
     );
@@ -86,290 +148,367 @@ export function SpecialsPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full bg-tabBonus" />
-        Specials
-      </h2>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-tabBonus" />
+          Oddsboost
+          <span className="text-muted text-sm font-normal ml-1">({activeSpecials.length})</span>
+        </h2>
+        <div className="flex items-center gap-3">
+          {timeAgo && (
+            <span className="text-muted text-xs">{timeAgo}</span>
+          )}
+          <button
+            onClick={handleScrape}
+            disabled={isScraping}
+            className={`
+              px-3 py-1 text-xs rounded font-medium transition-colors
+              ${isScraping
+                ? 'bg-border text-muted cursor-not-allowed'
+                : 'bg-panel2 text-text hover:bg-border'
+              }
+            `}
+          >
+            {isScraping ? 'Scraping...' : 'Refresh'}
+          </button>
+        </div>
+      </div>
 
       {error && (
         <div className="text-red-400 text-sm bg-red-400/10 px-3 py-2 rounded">{error}</div>
       )}
 
-      {/* Bonus Alerts */}
-      {effectiveAlerts.length > 0 && (
-        <AlertBanner alerts={effectiveAlerts} />
+      {/* Filter pills */}
+      {filters && (
+        <div className="flex flex-wrap gap-2">
+          {/* Sport filter */}
+          <FilterGroup
+            label="Sport"
+            options={filters.sports}
+            active={sportFilter}
+            onSelect={(v) => { setSportFilter(v); setExpandedIdx(null); }}
+          />
+          {/* Provider filter */}
+          <FilterGroup
+            label="Provider"
+            options={filters.providers}
+            active={providerFilter}
+            onSelect={(v) => { setProviderFilter(v); setExpandedIdx(null); }}
+            format={formatProviderName}
+          />
+          {/* Category filter */}
+          <FilterGroup
+            label="Type"
+            options={filters.categories}
+            active={categoryFilter}
+            onSelect={(v) => { setCategoryFilter(v); setExpandedIdx(null); }}
+            format={(v) => v === 'superboost' ? 'Superboost' : 'Boost'}
+          />
+        </div>
       )}
 
-      {/* Bonus Validation Status */}
-      {effectiveBonusChecked > 0 && (
-        <BonusStatusCard
-          checked={effectiveBonusChecked}
-          matches={effectiveBonusMatches}
-          mismatches={effectiveBonusMismatches}
-          changes={effectiveChanges}
-          validatedAt={effectiveValidatedAt}
-        />
-      )}
+      {/* Table */}
+      {activeSpecials.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
+          No active boosts. Click Refresh to scrape latest data.
+        </div>
+      ) : (
+        <div className="bg-panel border border-border rounded-lg overflow-hidden">
+          {/* Column header */}
+          <div className="grid grid-cols-[1fr_2fr_2.5fr_80px_140px_70px_90px_90px_70px] gap-2 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
+            <div>Provider</div>
+            <div>Event</div>
+            <div>Bet</div>
+            <div>Sport</div>
+            <div className="text-right">Odds</div>
+            <div className="text-right">Boost</div>
+            <div className="text-right">Kickoff</div>
+            <div className="text-right">Expires</div>
+            <div className="text-right">Max</div>
+          </div>
 
-      {/* Odds Boosts */}
-      <Card
-        title={`Odds Boosts (${specials.length})`}
-        headerRight={
-          <div className="flex items-center gap-3">
-            {timeAgo && (
-              <span className="text-muted text-xs">
-                {timeAgo} &middot; {sourceCount} {sourceCount === 1 ? 'source' : 'sources'}
-              </span>
-            )}
-            <button
-              onClick={handleScrape}
-              disabled={isScraping}
-              className={`
-                px-3 py-1 text-xs rounded font-medium transition-colors
-                ${isScraping
-                  ? 'bg-border text-muted cursor-not-allowed'
-                  : 'bg-panel2 text-text hover:bg-border'
-                }
-              `}
-            >
-              {isScraping ? 'Scraping...' : 'Refresh'}
-            </button>
-          </div>
-        }
-      >
-        {specials.length === 0 ? (
-          <div className="text-muted text-sm py-6 text-center">
-            No specials available. Click Refresh to scrape latest boosts.
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {providerIds.map(pid => (
-              <div key={pid}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-semibold text-muted uppercase tracking-wider">
-                    {formatProviderName(pid)}
-                  </span>
-                  <span className="text-[10px] text-muted bg-border px-1.5 py-0.5 rounded-full">
-                    {grouped[pid].length}
-                  </span>
+          {/* Rows */}
+          <div className="divide-y divide-border/50">
+            {activeSpecials.map((s, idx) => {
+              const isExpanded = expandedIdx === idx;
+              const boostPct = s.boost_pct;
+
+              return (
+                <div key={`${s.provider}-${idx}`}>
+                  {/* Main row */}
+                  <div
+                    className={`grid grid-cols-[1fr_2fr_2.5fr_80px_140px_70px_90px_90px_70px] gap-2 px-4 py-2.5 cursor-pointer transition-colors text-sm
+                      ${isExpanded ? 'bg-tabBonus/5' : 'hover:bg-panel2'}
+                    `}
+                    onClick={() => handleRowClick(idx, s)}
+                  >
+                    {/* Provider */}
+                    <div className="flex flex-col justify-center min-w-0">
+                      <span className="text-text text-sm truncate">{formatProviderName(s.provider)}</span>
+                      {s.shared_providers && s.shared_providers.length > 0 && (
+                        <div className="flex gap-1 mt-0.5 flex-wrap">
+                          {s.shared_providers.map(sp => (
+                            <span key={sp} className="text-[9px] text-muted bg-border px-1 rounded">
+                              {formatProviderName(sp)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Event */}
+                    <div className="flex flex-col justify-center min-w-0">
+                      <span className="text-text text-sm truncate">{s.event || '-'}</span>
+                      {s.league && (
+                        <span className="text-muted text-[11px] truncate">{s.league}</span>
+                      )}
+                    </div>
+
+                    {/* Bet description (title) */}
+                    <div className="flex items-center min-w-0">
+                      <span className="text-text text-sm truncate leading-snug">{s.title}</span>
+                      {s.category === 'superboost' && (
+                        <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 rounded shrink-0">
+                          SUPER
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Sport */}
+                    <div className="flex items-center">
+                      {s.sport !== 'unknown' ? (
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 text-[11px] truncate">
+                          {s.sport.replace(/_/g, ' ')}
+                        </span>
+                      ) : (
+                        <span className="text-muted text-[11px]">-</span>
+                      )}
+                    </div>
+
+                    {/* Odds: original → boosted */}
+                    <div className="flex items-center justify-end gap-1.5">
+                      {s.original_odds != null && (
+                        <>
+                          <span className="text-muted line-through text-xs">{s.original_odds.toFixed(2)}</span>
+                          <span className="text-muted text-xs">&rarr;</span>
+                        </>
+                      )}
+                      <span className="text-emerald-400 font-bold text-sm">
+                        {s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}
+                      </span>
+                    </div>
+
+                    {/* Boost % */}
+                    <div className="flex items-center justify-end">
+                      {boostPct != null && boostPct > 0 ? (
+                        <span className={`font-semibold text-sm ${
+                          boostPct >= 100 ? 'text-emerald-400' : 'text-emerald-400/80'
+                        }`}>
+                          +{boostPct.toFixed(0)}%
+                        </span>
+                      ) : (
+                        <span className="text-muted text-sm">-</span>
+                      )}
+                    </div>
+
+                    {/* Kickoff */}
+                    <div className="flex items-center justify-end">
+                      {s.event_time ? (
+                        <span className="text-text text-xs">{formatEventTime(s.event_time)}</span>
+                      ) : (
+                        <span className="text-muted text-xs">-</span>
+                      )}
+                    </div>
+
+                    {/* Expires (time left on boost) */}
+                    <div className="flex items-center justify-end">
+                      {s.expires_at ? (
+                        <span className={`text-xs ${
+                          isExpiringSoon(s.expires_at) ? 'text-amber-400' : 'text-muted'
+                        }`}>
+                          {formatTimeRemaining(s.expires_at)}
+                        </span>
+                      ) : (
+                        <span className="text-muted text-xs">-</span>
+                      )}
+                    </div>
+
+                    {/* Max stake */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-muted text-sm">
+                        {s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expanded: stake preview + place bet */}
+                  {isExpanded && (
+                    <ExpandedRow
+                      special={s}
+                      stakePreview={stakePreview}
+                      isLoadingPreview={isLoadingPreview}
+                      isPlacing={isPlacing}
+                      placementError={placementError}
+                      onPlaceBet={() => handlePlaceBet(s)}
+                    />
+                  )}
                 </div>
-                <div className="space-y-1.5">
-                  {grouped[pid].map((s, i) => (
-                    <SpecialCard key={`${pid}-${i}`} special={s} />
-                  ))}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        )}
-      </Card>
+        </div>
+      )}
     </div>
   );
 }
 
 
-// ============ Bonus Validation Components ============
+// ============ Filter Group ============
 
-function AlertBanner({ alerts }: { alerts: BonusAlert[] }) {
+function FilterGroup({
+  label,
+  options,
+  active,
+  onSelect,
+  format,
+}: {
+  label: string;
+  options: string[];
+  active: string | null;
+  onSelect: (value: string | null) => void;
+  format?: (value: string) => string;
+}) {
+  if (options.length === 0) return null;
+
   return (
-    <div className="space-y-1.5">
-      {alerts.map((alert, i) => (
-        <div
-          key={i}
-          className={`px-3 py-2 rounded-lg text-sm flex items-start gap-2 ${
-            alert.type === 'bonus_changed'
-              ? 'bg-amber-500/10 border border-amber-500/20 text-amber-300'
-              : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'
+    <div className="flex items-center gap-1">
+      <span className="text-muted text-[10px] uppercase tracking-wider mr-1">{label}</span>
+      <button
+        onClick={() => onSelect(null)}
+        className={`px-2 py-0.5 text-[11px] rounded-full transition-colors ${
+          active === null
+            ? 'bg-tabBonus/20 text-tabBonus'
+            : 'bg-panel2 text-muted hover:text-text'
+        }`}
+      >
+        All
+      </button>
+      {options.map(opt => (
+        <button
+          key={opt}
+          onClick={() => onSelect(active === opt ? null : opt)}
+          className={`px-2 py-0.5 text-[11px] rounded-full transition-colors ${
+            active === opt
+              ? 'bg-tabBonus/20 text-tabBonus'
+              : 'bg-panel2 text-muted hover:text-text'
           }`}
         >
-          <span className="shrink-0 mt-0.5">
-            {alert.type === 'bonus_changed' ? '⚠' : '✦'}
-          </span>
-          <div>
-            <span className="font-medium">{formatProviderName(alert.provider_id)}</span>
-            {': '}
-            {alert.type === 'bonus_changed' ? (
-              <span>
-                {alert.field} changed from{' '}
-                <span className="text-red-400 line-through">{String(alert.old_value)}</span>
-                {' → '}
-                <span className="text-emerald-400 font-medium">{String(alert.new_value)}</span>
-              </span>
-            ) : (
-              <span>New bonus available</span>
-            )}
-          </div>
-        </div>
+          {format ? format(opt) : opt}
+        </button>
       ))}
     </div>
   );
 }
 
 
-function BonusStatusCard({
-  checked,
-  matches,
-  mismatches,
-  changes,
-  validatedAt,
+// ============ Expanded Row ============
+
+function ExpandedRow({
+  special,
+  stakePreview,
+  isLoadingPreview,
+  isPlacing,
+  placementError,
+  onPlaceBet,
 }: {
-  checked: number;
-  matches: number;
-  mismatches: number;
-  changes: BonusChange[];
-  validatedAt?: string;
+  special: SpecialItem;
+  stakePreview: StakePreviewResult | null;
+  isLoadingPreview: boolean;
+  isPlacing: boolean;
+  placementError: string | null;
+  onPlaceBet: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const allMatch = mismatches === 0;
+  const stake = stakePreview
+    ? Math.min(
+        stakePreview.recommended_stake,
+        special.max_stake ?? Infinity
+      )
+    : 0;
+  const potentialReturn = stake * (special.boosted_odds ?? 0);
+  const potentialProfit = potentialReturn - stake;
+  const eventTimeLabel = special.event_time ? formatEventTime(special.event_time) : null;
 
   return (
-    <div className={`rounded-lg border px-4 py-3 ${
-      allMatch
-        ? 'bg-emerald-500/5 border-emerald-500/20'
-        : 'bg-amber-500/5 border-amber-500/20'
-    }`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className={`w-2 h-2 rounded-full ${allMatch ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-          <div>
-            <span className={`text-sm font-medium ${allMatch ? 'text-emerald-300' : 'text-amber-300'}`}>
-              Bonus Stats {allMatch ? 'Verified' : `${mismatches} Change${mismatches !== 1 ? 's' : ''} Detected`}
-            </span>
-            <div className="flex items-center gap-2 text-muted text-xs mt-0.5">
-              <span>{checked} providers checked</span>
-              <span>&middot;</span>
-              <span>{matches} match</span>
-              {mismatches > 0 && (
-                <>
-                  <span>&middot;</span>
-                  <span className="text-amber-400">{mismatches} mismatch</span>
-                </>
+    <div
+      className="px-4 py-3 bg-panel2/50 border-t border-border/30"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {isLoadingPreview ? (
+        <div className="text-muted text-sm">Calculating stake...</div>
+      ) : stakePreview ? (
+        <div className="flex items-center justify-between gap-6">
+          {/* Left: details */}
+          <div className="flex items-center gap-6 text-sm text-muted">
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-muted block">Kelly</span>
+              <span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-muted block">Stake</span>
+              <span className="text-text font-medium">{stake.toFixed(0)} kr</span>
+              {stakePreview.was_capped_single && (
+                <span className="text-amber-400 text-[10px] ml-1" title="Capped by single bet limit">capped</span>
               )}
-              {validatedAt && (
-                <>
-                  <span>&middot;</span>
-                  <span>{formatTimeAgo(validatedAt)}</span>
-                </>
+              {special.max_stake != null && stakePreview.recommended_stake > special.max_stake && (
+                <span className="text-amber-400 text-[10px] ml-1" title="Capped by max stake">max</span>
               )}
             </div>
-          </div>
-        </div>
-        {changes.length > 0 && (
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="text-xs text-muted hover:text-text transition-colors px-2 py-1"
-          >
-            {expanded ? 'Hide' : 'Details'}
-          </button>
-        )}
-      </div>
-
-      {expanded && changes.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-border space-y-2">
-          {changes.map((change, i) => (
-            <div key={i} className="text-xs">
-              <span className="text-text font-medium">{formatProviderName(change.provider_id)}</span>
-              <div className="ml-3 mt-0.5 space-y-0.5">
-                {change.diffs.map((diff, j) => (
-                  <div key={j} className="text-muted">
-                    {diff.field}:{' '}
-                    <span className="text-red-400">{String(diff.yaml)}</span>
-                    {' → '}
-                    <span className="text-amber-300">{String(diff.scraped)}</span>
-                  </div>
-                ))}
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-muted block">Return</span>
+              <span className="text-text">{potentialReturn.toFixed(0)} kr</span>
+              <span className="text-emerald-400 text-xs ml-1">(+{potentialProfit.toFixed(0)})</span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase tracking-wider text-muted block">Bankroll</span>
+              <span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span>
+            </div>
+            {eventTimeLabel && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-muted block">Kickoff</span>
+                <span className="text-text">{eventTimeLabel}</span>
               </div>
-              {change.sources.length > 0 && (
-                <div className="text-muted ml-3 mt-0.5">
-                  sources: {change.sources.join(', ')}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// ============ Special Card Components ============
-
-function SpecialCard({ special }: { special: SpecialItem }) {
-  const boostPct = special.original_odds && special.boosted_odds
-    ? ((special.boosted_odds / special.original_odds - 1) * 100)
-    : null;
-
-  const expiresLabel = special.expires_at ? formatExpiry(special.expires_at) : null;
-  const isExpiringSoon = special.expires_at ? isWithinHours(special.expires_at, 6) : false;
-
-  // Show event if it differs from title (bettingkollen has structured event + outcome)
-  const showEvent = special.event
-    && special.event !== special.title
-    && !special.title.includes(special.event);
-
-  return (
-    <div className="px-3 py-2.5 bg-panel2 rounded-lg flex items-start justify-between gap-3">
-      {/* Left: event + title + metadata */}
-      <div className="flex-1 min-w-0 space-y-1">
-        {showEvent && (
-          <div className="text-muted text-[11px] truncate">{special.event}</div>
-        )}
-        <div className="text-text text-sm font-medium leading-snug">{special.title}</div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {special.sport !== 'unknown' && <SportBadge sport={special.sport} />}
-          {special.max_stake != null && (
-            <span className="text-muted text-[11px]">
-              max {special.max_stake.toFixed(0)} kr
-            </span>
-          )}
-          {expiresLabel && (
-            <span className={`text-[11px] ${isExpiringSoon ? 'text-amber-400' : 'text-muted'}`}>
-              {expiresLabel}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Right: odds + boost % */}
-      {special.original_odds != null && special.boosted_odds != null && (
-        <div className="flex flex-col items-end shrink-0">
-          <div className="flex items-center gap-1.5 text-sm">
-            <span className="text-muted line-through text-xs">{special.original_odds.toFixed(2)}</span>
-            <span className="text-muted">&rarr;</span>
-            <span className="text-emerald-400 font-bold">{special.boosted_odds.toFixed(2)}</span>
+            )}
+            {!stakePreview.bonus_cleared && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-amber-400 block">Bonus active</span>
+                <span className="text-amber-400 text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span>
+              </div>
+            )}
           </div>
-          {boostPct != null && boostPct > 0 && (
-            <span className="text-emerald-400/70 text-[11px] font-medium">
-              +{boostPct.toFixed(0)}%
-            </span>
-          )}
+
+          {/* Right: place bet button */}
+          <div className="flex items-center gap-3">
+            {placementError && (
+              <span className="text-red-400 text-xs max-w-[200px] truncate">{placementError}</span>
+            )}
+            {stakePreview.skip_reason ? (
+              <span className="text-muted text-xs bg-border px-2 py-1 rounded">{stakePreview.skip_reason}</span>
+            ) : (
+              <button
+                onClick={onPlaceBet}
+                disabled={stake <= 0 || isPlacing}
+                className="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              >
+                {isPlacing ? 'Placing...' : `Place ${stake.toFixed(0)} kr`}
+              </button>
+            )}
+          </div>
         </div>
+      ) : (
+        <div className="text-muted text-sm">No preview available — missing boost data</div>
       )}
     </div>
-  );
-}
-
-
-function SportBadge({ sport }: { sport: string }) {
-  const icons: Record<string, string> = {
-    football: '\u26BD',
-    ice_hockey: '\u{1F3D2}',
-    basketball: '\u{1F3C0}',
-    tennis: '\u{1F3BE}',
-    mma: '\u{1F94A}',
-    esports: '\u{1F3AE}',
-    american_football: '\u{1F3C8}',
-    baseball: '\u26BE',
-  };
-  const icon = icons[sport] || '';
-  const label = sport.replace('_', ' ');
-
-  return (
-    <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 text-[11px]">
-      {icon && <span className="mr-0.5">{icon}</span>}
-      {label}
-    </span>
   );
 }
 
@@ -394,7 +533,38 @@ function formatTimeAgo(isoString: string): string {
 }
 
 
-function formatExpiry(isoString: string): string {
+function formatEventTime(isoString: string): string {
+  try {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = date.getTime() - now.getTime();
+
+    if (diffMs <= 0) return 'started';
+
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHrs = Math.floor(diffMin / 60);
+    const diffDays = Math.floor(diffHrs / 24);
+
+    // If within 24h, show "in Xh Xm"
+    if (diffHrs < 24) {
+      if (diffMin < 60) return `in ${diffMin}m`;
+      const remMin = diffMin % 60;
+      return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`;
+    }
+
+    // Otherwise show date + time
+    if (diffDays < 7) {
+      return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    }
+
+    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+
+function formatTimeRemaining(isoString: string): string {
   try {
     const date = new Date(isoString);
     const now = new Date();
@@ -407,22 +577,24 @@ function formatExpiry(isoString: string): string {
     const diffDays = Math.floor(diffHrs / 24);
 
     if (diffMin < 60) return `${diffMin}m left`;
-    if (diffHrs < 24) return `${diffHrs}h left`;
-    if (diffDays < 7) return `${diffDays}d left`;
-
-    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric' });
+    if (diffHrs < 24) {
+      const remMin = diffMin % 60;
+      return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`;
+    }
+    if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`;
+    return `${diffDays}d left`;
   } catch {
     return '';
   }
 }
 
 
-function isWithinHours(isoString: string, hours: number): boolean {
+function isExpiringSoon(isoString: string): boolean {
   try {
     const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-    return diffMs > 0 && diffMs < hours * 3600000;
+    const diffMs = date.getTime() - Date.now();
+    // Expiring within 6 hours
+    return diffMs > 0 && diffMs < 6 * 60 * 60 * 1000;
   } catch {
     return false;
   }

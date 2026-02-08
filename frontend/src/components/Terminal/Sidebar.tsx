@@ -13,7 +13,7 @@ const tabs: Tab[] = [
   { name: 'polymarket', label: 'Poly', color: '#6366f1' },
   { name: 'bets', label: 'Bets', color: '#22d3d8' },
   { name: 'bankroll', label: 'Bankroll', color: '#ec4899' },
-  { name: 'specials', label: 'Specials', color: '#a78bfa' },
+  { name: 'specials', label: 'Oddsboost', color: '#a78bfa' },
   { name: 'stats', label: 'Stats', color: '#94a3b8' },
   { name: 'profiles', label: 'Profiles', color: '#8b5cf6' },
 ];

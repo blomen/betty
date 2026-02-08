@@ -114,6 +114,76 @@ def normalize_provider_name(name: str) -> Optional[str]:
     return PROVIDER_ALIASES.get(cleaned)
 
 
+def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
+    """Map scraped provider name to canonical ID, or return cleaned name for unknowns.
+
+    Returns (provider_id, is_known).
+    """
+    canonical = normalize_provider_name(name)
+    if canonical:
+        return canonical, True
+
+    # --- Filter out junk that isn't a provider name ---
+    raw = name.strip()
+
+    # Pure numbers (table row indices)
+    if re.fullmatch(r'\d+', raw):
+        return "", False
+
+    # Too short (single char/word fragments) or too long (full sentences)
+    if len(raw) < 3 or len(raw) > 40:
+        return "", False
+
+    # Contains emoji
+    if re.search(r'[\U0001F300-\U0001FAFF\u2600-\u27BF]', raw):
+        return "", False
+
+    # Swedish UI/table labels that aren't providers
+    _JUNK_NAMES = {
+        "betalningsmetoder", "kundtjanst", "kundtjänst", "spelutbud",
+        "mobilupplevelse", "spelupplevelse", "helhetsbetyg",
+        "bonuserbjudande", "omsattningskrav", "omsättningskrav",
+        "minsta insattning", "minsta insättning", "bonus", "bonusar",
+        "spelsida", "spelsidor", "bettingsida", "bettingsidor",
+        "oddsbonus", "oddsbonusar", "välkomstbonus", "freebet",
+        "gratisspel", "riskfritt", "riskfria", "webbsida",
+        "uttag", "insattning", "insättning", "licens",
+        "fördelar", "nackdelar", "rank", "spelbolag",
+        "jämförelse av oddsbonusar", "jämförelse",
+        "free spins", "freespins", "cashback",
+        "sbk bonus", "alexsnacke",
+    }
+    lowered = raw.lower()
+    if lowered in _JUNK_NAMES:
+        return "", False
+
+    # Multi-word phrases (4+ words) are likely descriptions, not provider names
+    if len(lowered.split()) >= 4:
+        return "", False
+
+    # Contains colon (like "Ägare:PAF MT Limited") — not a provider name
+    if ":" in raw:
+        return "", False
+
+    # Starts with common junk prefixes (category headers, descriptive text)
+    _JUNK_PREFIXES = (
+        "störst ", "största ", "nya ", "bästa ", "generös ", "topp ",
+        "webbsida:", "🎲", "🎁", "💰", "♠",
+        "inget ", "kan ", "ägare",
+    )
+    for prefix in _JUNK_PREFIXES:
+        if lowered.startswith(prefix):
+            return "", False
+
+    # Generate a stable ID from the raw name
+    cleaned = lowered
+    cleaned = re.sub(r'\s*(sport|casino|betting|se)$', '', cleaned).strip()
+    cleaned = re.sub(r'[^a-z0-9]', '', cleaned)
+    if not cleaned or len(cleaned) < 3:
+        return "", False
+    return cleaned, False
+
+
 def parse_amount(text: str) -> int:
     """Extract SEK amount from text like '1 000 kr', '500', 'Up to 1,000'."""
     # Remove common prefixes/suffixes
@@ -201,6 +271,7 @@ def scrape_speltips(session: requests.Session) -> list[BonusInfo]:
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
 
         # Find bonus cards/rows - speltips uses WordPress with structured review boxes
@@ -209,7 +280,7 @@ def scrape_speltips(session: requests.Session) -> list[BonusInfo]:
 
         for row in rows:
             provider_name = row.get("provider", "").strip()
-            provider_id = normalize_provider_name(provider_name)
+            provider_id, _is_known = normalize_provider_name_or_raw(provider_name)
             if not provider_id:
                 continue
 
@@ -238,12 +309,13 @@ def scrape_rekatochklart(session: requests.Session) -> list[BonusInfo]:
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = _extract_bonus_rows(soup)
 
         for row in rows:
             provider_name = row.get("provider", "").strip()
-            provider_id = normalize_provider_name(provider_name)
+            provider_id, _is_known = normalize_provider_name_or_raw(provider_name)
             if not provider_id:
                 continue
 
@@ -272,12 +344,13 @@ def scrape_bettingstugan(session: requests.Session) -> list[BonusInfo]:
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = _extract_bonus_rows(soup)
 
         for row in rows:
             provider_name = row.get("provider", "").strip()
-            provider_id = normalize_provider_name(provider_name)
+            provider_id, _is_known = normalize_provider_name_or_raw(provider_name)
             if not provider_id:
                 continue
 
@@ -306,12 +379,13 @@ def scrape_betting_se(session: requests.Session) -> list[BonusInfo]:
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = _extract_bonus_rows(soup)
 
         for row in rows:
             provider_name = row.get("provider", "").strip()
-            provider_id = normalize_provider_name(provider_name)
+            provider_id, _is_known = normalize_provider_name_or_raw(provider_name)
             if not provider_id:
                 continue
 
@@ -340,12 +414,13 @@ def scrape_tvmatchen(session: requests.Session) -> list[BonusInfo]:
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = _extract_bonus_rows(soup)
 
         for row in rows:
             provider_name = row.get("provider", "").strip()
-            provider_id = normalize_provider_name(provider_name)
+            provider_id, _is_known = normalize_provider_name_or_raw(provider_name)
             if not provider_id:
                 continue
 
@@ -395,7 +470,7 @@ def _extract_bonus_rows(soup: BeautifulSoup) -> list[dict]:
             cell_texts = [c.get_text(strip=True) for c in cells]
 
             # Try to identify provider name (usually first column)
-            row_data = _parse_table_row(cell_texts, headers)
+            row_data = _parse_table_row(cell_texts, headers, tr)
             if row_data and row_data.get("provider"):
                 rows.append(row_data)
 
@@ -431,12 +506,43 @@ def _extract_bonus_rows(soup: BeautifulSoup) -> list[dict]:
     return rows
 
 
-def _parse_table_row(cells: list[str], headers: list[str]) -> Optional[dict]:
+def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> Optional[dict]:
     """Parse a table row into bonus info dict."""
     if not cells:
         return None
 
-    row = {"provider": cells[0]}
+    provider = cells[0]
+
+    # If cells[0] doesn't look like a provider name, try extracting from the row DOM
+    pid, is_known = normalize_provider_name_or_raw(provider)
+    if not is_known and tr is not None:
+        # Try image alt text
+        for img in tr.find_all("img"):
+            alt = img.get("alt", "")
+            cleaned = re.sub(r'^(besök|gå till|visit)\s+', '', alt, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r'\s*(logo|ikon|icon|bonus)$', '', cleaned, flags=re.IGNORECASE).strip()
+            if cleaned and len(cleaned) >= 3 and len(cleaned) <= 40:
+                provider = cleaned
+                break
+
+        # Try link hrefs (e.g., /lyllo-casino, /spelbolag/bet365)
+        if provider == cells[0]:  # Still unchanged
+            for a in tr.find_all("a", href=True):
+                href = a["href"]
+                for pattern in [r'/spelbolag/([a-z0-9-]+)', r'/bettingsidor/([a-z0-9-]+)',
+                                r'/(?:hamta|besok)/([a-z0-9-]+)', r'\.se/([a-z0-9-]+)/?$']:
+                    m = re.search(pattern, href, re.IGNORECASE)
+                    if m:
+                        slug = m.group(1)
+                        name = re.sub(r'-(casino|sport|betting|se|odds)$', '', slug)
+                        name = name.replace('-', ' ').strip().title()
+                        if name and len(name) >= 3:
+                            provider = name
+                            break
+                if provider != cells[0]:
+                    break
+
+    row = {"provider": provider}
     full_text = " ".join(cells)
 
     # Extract amount
@@ -445,6 +551,12 @@ def _parse_table_row(cells: list[str], headers: list[str]) -> Optional[dict]:
         if amount > 0:
             row["amount"] = str(amount)
             break
+
+    # Also try full text for amount if cells didn't have it
+    if "amount" not in row:
+        amount = parse_amount(full_text)
+        if amount > 0:
+            row["amount"] = str(amount)
 
     # Extract wagering using improved parser
     wager_val = parse_wagering(full_text)
@@ -462,24 +574,54 @@ def _parse_table_row(cells: list[str], headers: list[str]) -> Optional[dict]:
 
 def _parse_bonus_card(card) -> Optional[dict]:
     """Parse a bonus card/review box element."""
-    text = card.get_text(strip=True)
+    text = card.get_text(" ", strip=True)
     if len(text) < 10:
         return None
 
-    # Try to find provider name from links, headings, or images
+    # Try to find provider name from multiple sources
     provider = ""
+
+    # 1. Known providers from links, headings, images
     for el in card.find_all(["a", "h2", "h3", "h4", "strong", "b"]):
         el_text = el.get_text(strip=True)
         if normalize_provider_name(el_text):
             provider = el_text
             break
 
-    # Try image alt text
     if not provider:
         for img in card.find_all("img"):
             alt = img.get("alt", "")
             if normalize_provider_name(alt):
                 provider = alt
+                break
+
+    # 2. Unknown providers: extract name from link hrefs (e.g., /spelbolag/lyllo-casino)
+    if not provider:
+        for a in card.find_all("a", href=True):
+            href = a["href"]
+            for pattern in [r'/spelbolag/([a-z0-9-]+)', r'/bettingsidor/([a-z0-9-]+)', r'/r/([a-z0-9-]+)/']:
+                m = re.search(pattern, href, re.IGNORECASE)
+                if m:
+                    slug = m.group(1)
+                    # Clean slug: remove trailing -casino, -sport, -betting etc.
+                    name = re.sub(r'-(casino|sport|betting|se|odds)$', '', slug)
+                    name = name.replace('-', ' ').strip().title()
+                    if name and len(name) >= 3:
+                        provider = name
+                        break
+            if provider:
+                break
+
+    # 3. Try image alt text for unknowns (e.g., alt="Besök Lyllo Casino")
+    if not provider:
+        for img in card.find_all("img"):
+            alt = img.get("alt", "")
+            # Strip common prefixes: "Besök X", "Gå till X"
+            cleaned = re.sub(r'^(besök|gå till|visit)\s+', '', alt, flags=re.IGNORECASE).strip()
+            # Strip suffixes
+            cleaned = re.sub(r'\s*(casino|sport|betting|logo|ikon)$', '', cleaned, flags=re.IGNORECASE).strip()
+            if cleaned and len(cleaned) >= 3 and len(cleaned) <= 30:
+                provider = cleaned
                 break
 
     if not provider:
@@ -540,26 +682,40 @@ def aggregate_bonuses(all_bonuses: list[BonusInfo]) -> dict[str, BonusInfo]:
 
         # Get baseline values
         baseline = KNOWN_BONUSES.get(pid, {})
-        baseline_type = baseline.get("type", "bonusdeposit")
-        baseline_amount = baseline.get("amount", 500)
-        baseline_wagering = baseline.get("wagering_multiplier", 1.0)
-        baseline_min_odds = baseline.get("min_odds", 1.80)
+        is_known = pid in KNOWN_BONUSES or pid in PROVIDER_ALIASES.values()
 
-        # Use scraped value only if 2+ sources agree, otherwise fall back to baseline
-        scraped_type = _most_common(types, None) if len(types) >= 2 else None
-        scraped_amount = _most_common(amounts, None) if len(amounts) >= 2 else None
-        scraped_wagering = _most_common(wagerings, None) if len(wagerings) >= 2 else None
-        scraped_min_odds = _most_common(min_odds_list, None) if len(min_odds_list) >= 2 else None
+        if is_known:
+            # Known providers: require 2+ source agreement, fall back to baseline
+            baseline_type = baseline.get("type", "bonusdeposit")
+            baseline_amount = baseline.get("amount", 500)
+            baseline_wagering = baseline.get("wagering_multiplier", 1.0)
+            baseline_min_odds = baseline.get("min_odds", 1.80)
 
-        aggregated[pid] = BonusInfo(
-            provider_name=entries[0].provider_name,
-            provider_id=pid,
-            bonus_type=scraped_type or baseline_type,
-            amount=int(scraped_amount) if scraped_amount else baseline_amount,
-            wagering_multiplier=scraped_wagering if scraped_wagering else baseline_wagering,
-            min_odds=scraped_min_odds if scraped_min_odds else baseline_min_odds,
-            sources=list(set(sources)),
-        )
+            scraped_type = _most_common(types, None) if len(types) >= 2 else None
+            scraped_amount = _most_common(amounts, None) if len(amounts) >= 2 else None
+            scraped_wagering = _most_common(wagerings, None) if len(wagerings) >= 2 else None
+            scraped_min_odds = _most_common(min_odds_list, None) if len(min_odds_list) >= 2 else None
+
+            aggregated[pid] = BonusInfo(
+                provider_name=entries[0].provider_name,
+                provider_id=pid,
+                bonus_type=scraped_type or baseline_type,
+                amount=int(scraped_amount) if scraped_amount else baseline_amount,
+                wagering_multiplier=scraped_wagering if scraped_wagering else baseline_wagering,
+                min_odds=scraped_min_odds if scraped_min_odds else baseline_min_odds,
+                sources=list(set(sources)),
+            )
+        else:
+            # Unknown providers: use best available scraped data (even single source)
+            aggregated[pid] = BonusInfo(
+                provider_name=entries[0].provider_name,
+                provider_id=pid,
+                bonus_type=_most_common(types, "unknown") if types else "unknown",
+                amount=int(_most_common(amounts, 0)) if amounts else 0,
+                wagering_multiplier=_most_common(wagerings, 0) if wagerings else 0,
+                min_odds=_most_common(min_odds_list, 0) if min_odds_list else 0,
+                sources=list(set(sources)),
+            )
 
     return aggregated
 
@@ -833,19 +989,27 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
         pid for pid, p in providers.items()
         if "bonus" in p and pid not in ("pinnacle", "polymarket")
     }
+    # ALL provider IDs in YAML (for filtering new-provider suggestions)
+    all_yaml_providers = set(providers.keys())
 
     scraped_providers = set(scraped.keys())
 
-    # Providers in scrape but not in YAML
-    for pid in scraped_providers - yaml_bonus_providers:
+    # Providers in scrape but not in YAML at all (truly new/unknown providers)
+    for pid in scraped_providers - all_yaml_providers:
+        s = scraped[pid]
+        # Require meaningful bonus data: amount >= 50 kr
+        if s.amount < 50:
+            continue
         results["missing_from_yaml"].append({
             "provider_id": pid,
+            "provider_name": s.provider_name,
             "scraped_bonus": {
-                "type": scraped[pid].bonus_type,
-                "amount": scraped[pid].amount,
-                "wagering_multiplier": scraped[pid].wagering_multiplier,
-                "min_odds": scraped[pid].min_odds,
+                "type": s.bonus_type,
+                "amount": s.amount,
+                "wagering_multiplier": s.wagering_multiplier,
+                "min_odds": s.min_odds,
             },
+            "sources": s.sources,
         })
 
     # Providers in YAML but not in scrape
