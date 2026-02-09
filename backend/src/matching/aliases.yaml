@@ -777,3 +777,143 @@ james wade:
   - wade
 ross smith:
   - smith
+
+# ============================================================================
+# International / Country Names (Swedish ↔ English)
+# Kambi, ComeOn, Betsson, Snabbare use Swedish; Pinnacle uses English.
+# ============================================================================
+canada:
+  - kanada
+czech republic:
+  - tjeckien
+  - czechia
+  - cesko
+switzerland:
+  - schweiz
+  - suisse
+  - svizzera
+germany:
+  - tyskland
+  - deutschland
+  - allemagne
+france:
+  - frankrike
+sweden:
+  - sverige
+finland:
+  - finland
+norway:
+  - norge
+denmark:
+  - danmark
+austria:
+  - osterrike
+  - oesterrike
+russia:
+  - ryssland
+  - rossiya
+poland:
+  - polen
+  - polska
+hungary:
+  - ungern
+  - magyarorszag
+slovakia:
+  - slovakien
+  - slovensko
+croatia:
+  - kroatien
+  - hrvatska
+serbia:
+  - serbien
+  - srbija
+romania:
+  - rumanien
+  - romania
+greece:
+  - grekland
+turkey:
+  - turkiet
+  - turkiye
+spain:
+  - spanien
+  - espana
+italy:
+  - italien
+  - italia
+portugal:
+  - portugal
+netherlands:
+  - holland
+  - nederlanderna
+belgium:
+  - belgien
+  - belgie
+japan:
+  - japan
+south korea:
+  - sydkorea
+  - korea republic
+china:
+  - kina
+australia:
+  - australien
+new zealand:
+  - nya zeeland
+  - nz
+brazil:
+  - brasilien
+  - brasil
+argentina:
+  - argentina
+mexico:
+  - mexiko
+colombia:
+  - colombia
+chile:
+  - chile
+united states:
+  - usa
+  - forenta staterna
+  - us
+  - united states of america
+great britain:
+  - storbritannien
+  - united kingdom
+  - uk
+ireland:
+  - irland
+scotland:
+  - skottland
+wales:
+  - wales
+latvia:
+  - lettland
+  - latvija
+lithuania:
+  - litauen
+  - lietuva
+estonia:
+  - estland
+  - eesti
+belarus:
+  - vitryssland
+  - belarus
+ukraine:
+  - ukraina
+kazakhstan:
+  - kazakstan
+slovenia:
+  - slovenien
+  - slovenija
+bulgaria:
+  - bulgarien
+  - bulgaria
+israel:
+  - israel
+south africa:
+  - sydafrika
+india:
+  - indien
+iceland:
+  - island

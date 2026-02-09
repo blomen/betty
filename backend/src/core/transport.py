@@ -263,7 +263,10 @@ class BrowserTransport(Transport):
             locale='sv-SE',
             geolocation={'latitude': 59.3293, 'longitude': 18.0686},  # Stockholm
         )
-        launch_args = ['--disable-blink-features=AutomationControlled']
+        launch_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--window-position=-2400,-2400',
+        ]
 
         launch_kwargs = {}
         if self.channel:

@@ -441,8 +441,15 @@ class ExtractionPipeline:
                         continue
 
                     # Health check if enabled (with group-aware delays)
+                    # Skip health check for browser-based providers (too slow for pre-check)
+                    BROWSER_TYPES = ('sbtech', 'gecko_v2', 'spectate', 'custom', 'tipwin',
+                                     'snabbare', 'interwetten', 'coolbet', 'tenbet')
+                    provider_cfg = self.engine.get_provider(pid)
+                    retriever_type = getattr(provider_cfg, 'retriever_type', '')
+
                     if (self.health_checker and
-                        self.orchestrator_config.health_check.check_before_extraction):
+                        self.orchestrator_config.health_check.check_before_extraction and
+                        retriever_type not in BROWSER_TYPES):
 
                         # Add delay between health checks for same-API groups
                         if self.pool_manager:

@@ -64,3 +64,22 @@ class RSocketMixin:
 
         page.on("websocket", on_websocket)
         return messages
+
+    def _setup_ws_interception_into(self, page, messages: list) -> None:
+        """
+        Setup WebSocket interception that feeds into an existing shared list.
+
+        Unlike _setup_ws_interception which creates and returns a new list,
+        this method appends decoded messages to the provided list, allowing
+        multiple pages/tabs to share a single message store.
+        """
+        def on_websocket(ws):
+            def on_frame_received(payload):
+                if isinstance(payload, bytes):
+                    decoded = self._decode_rsocket_frame(payload)
+                    if decoded:
+                        messages.append(decoded)
+
+            ws.on("framereceived", on_frame_received)
+
+        page.on("websocket", on_websocket)

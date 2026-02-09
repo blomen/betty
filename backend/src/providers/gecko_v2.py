@@ -70,7 +70,7 @@ class GeckoV2Retriever(BrowserRetriever):
     }
 
     # OBG category IDs for each sport
-    # Verified 2026-02-09 via events-table/v2 scanning (discover_gecko_categories_browser.py)
+    # Verified 2026-02-09 via events-table/v2 category scan (gecko_category_scan.py)
     SPORT_CATEGORY_IDS: Dict[str, int] = {
         "football": 1,
         "ice_hockey": 2,
@@ -84,6 +84,7 @@ class GeckoV2Retriever(BrowserRetriever):
         "cricket": 26,
         "boxing": 30,
         "darts": 34,
+        "mma": 53,
     }
 
     # Market template ID → our standard market type
@@ -94,16 +95,20 @@ class GeckoV2Retriever(BrowserRetriever):
         # Moneyline (2-way)
         "MW2W": "moneyline",
         "ESNMOWINNER2W": "moneyline",
+        "ESMW2W": "moneyline",          # Esports moneyline
         # Total (over/under)
         "MTG2W": "total",
         "MTG2W25": "total",
         "TGOU": "total",
+        "TGOUOT": "total",              # Ice hockey total (incl. overtime)
         "MWOU": "total",
         "MROU": "total",
         "ESNMOTOTAL": "total",
         "OUALT": "total",
         "PTSOUROLMID": "total",
         "MTG2WIO": "total",
+        "MTG2WP": "total",              # Tennis total (games/sets)
+        "MTP": "total",                 # Volleyball total (points)
         # Spread (handicap)
         "M3WHCP": "spread",
         "M2WHCP": "spread",
@@ -111,9 +116,12 @@ class GeckoV2Retriever(BrowserRetriever):
         "M2WHCPIO": "spread",
         "2WHCPROLMID": "spread",
         "MWHCPALT": "spread",
+        "MHCPNOT": "spread",            # Ice hockey handicap (not overtime)
         "MAHCP": "spread",
         "AHC": "spread",
         "ESNMOHANDICAP": "spread",
+        "MSH": "spread",                # Volleyball set handicap
+        "ESHMTHANDICAP": "spread",      # Esports handicap (maps)
     }
 
     # Selection template ID → our standard outcome name
@@ -276,8 +284,13 @@ class GeckoV2Retriever(BrowserRetriever):
             context = page.context
             base_url = f"{self._api_base}/api/sb/v1/widgets/events-table/v2"
 
-            # Request all main market types
-            market_templates = "MW3W,MW2W,MTG2W,TGOU,MWOU,M3WHCP,M2WHCP,MW2WHCP,2WHCPROLMID"
+            # Request all main market types (must include sport-specific variants)
+            market_templates = (
+                "MW3W,MW2W,MTG2W,MTG2W25,TGOU,TGOUOT,MWOU,MROU,"
+                "M3WHCP,M2WHCP,MW2WHCP,M2WHCPIO,2WHCPROLMID,MWHCPALT,MHCPNOT,"
+                "ESNRTWINNER3W,ESNMOWINNER2W,ESMW2W,ESNMOTOTAL,ESNMOHANDICAP,"
+                "OUALT,PTSOUROLMID,MTG2WIO,MTG2WP,MTP,MSH,ESHMTHANDICAP,MAHCP,AHC"
+            )
             base_params = (
                 f"categoryIds={category_id}&phase=4"
                 f"&marketTemplateIds={market_templates}"

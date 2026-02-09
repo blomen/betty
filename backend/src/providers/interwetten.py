@@ -2,44 +2,29 @@
 Interwetten Retriever - Browser-based SSR extraction
 
 Interwetten uses a proprietary platform (Sportsbook Software GmbH) with
-server-side rendered HTML pages. Each league page contains all events
-with 1x2 odds embedded in the DOM.
+server-side rendered HTML pages.
 
-Architecture:
-1. Navigate to league page via Playwright (headed mode needed for Cloudflare)
-2. Parse DOM elements: .s-event containers
-3. Extract team names, odds, and event IDs from data-betting attributes
+Extraction strategy (two-pass):
+1. League pages: Navigate to each league, extract events with 1x2/moneyline odds
+2. Event detail pages: Navigate to each event, extract spread + total markets
 
-HTML Structure per event:
-<li class="s-event">
-  <div class="s-event-data">
-    <a href="/en/sportsbook/e/{eventId}/slug">
-      <div class="s-event-name">
-        <strong class="s-event-player">Home Team</strong>
-        <strong class="s-event-player">Away Team</strong>
-      </div>
-      <div class="js-gametime-{eventId}"><span>13:30</span></div>
-    </a>
-  </div>
-  <div class="s-market" data-betting="[marketId, eventId, ...]">
-    <div class="s-outcome" data-betting="[outcomeId, '1', 'Home', 'Home', '2,65', false]">
-      <span class="s-outcome-odd">2.65</span>
-    </div>
-    <div class="s-outcome" data-betting="[outcomeId, 'X', 'X', 'X', '3,5', false]">
-      <span class="s-outcome-odd">3.50</span>
-    </div>
-    <div class="s-outcome" data-betting="[outcomeId, '2', 'Away', 'Away', '2,2', false]">
-      <span class="s-outcome-odd">2.20</span>
-    </div>
-  </div>
-</li>
+League page data-betting format:
+  Market: [marketId, eventId, "Match Name", "Market Label", locked, " "]
+  Outcome: [outcomeId, "1"/"X"/"2", displayName, teamName, "odds", locked]
 
-League pages: /en/sportsbook/l/{leagueId}/league-slug
-Sport page (all): /en/sportsbook/e/football (doesn't work — blocked)
-Main sportsbook: /en/sportsbook (works — lists all navigation)
+Event detail page market labels:
+  Football: "Asian Handicap" (spread), "How many goals" (total)
+  Basketball: "Handicap" (spread), "Over/Under" (total)
+  Ice Hockey: "Over/Under" (total only, no Asian Handicap)
+  Tennis: "Handicap Games" (spread), "How many games" (total)
+  Handball: "Handicap" (spread), "Over/Under" (total)
+
+Spread outcome format: "Team Name (+1.5)" / "Team Name (-1.5)" with type "1"/"2"
+Total outcome format: "Over 2.5" / "Under 2.5" with type " " (space)
 """
 
 from typing import Dict, Any, List, Optional
+import asyncio
 import json
 import logging
 import re
@@ -264,6 +249,67 @@ class InterwettenRetriever(BrowserRetriever):
         "2": "away",
     }
 
+    # Sports where event detail pages have useful spread/total markets
+    DETAIL_SPORTS = {
+        "football", "basketball", "ice_hockey", "tennis",
+        "handball", "volleyball", "american_football", "baseball", "rugby",
+    }
+
+    # Market label sets for spread/total detection across sports
+    # Football: "Asian Handicap" (spread), "How many goals" (total)
+    # Basketball/Ice Hockey: "Handicap" (spread), "Over/Under" (total)
+    # Tennis: "Handicap Games" (spread), "How many games" (total)
+    # Handball: "Handicap" (spread), "Over/Under" (total)
+    SPREAD_LABELS = {"Asian Handicap", "Handicap", "Handicap Games"}
+    TOTAL_LABELS = {"How many goals", "Over/Under", "How many games"}
+
+    # JS to extract spread/total from event detail page data-betting attributes
+    JS_EXTRACT_DETAIL_MARKETS = """() => {
+        const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games"]);
+        const TOTAL = new Set(["How many goals", "Over/Under", "How many games"]);
+        const results = { spread: null, total: null };
+        const allBetting = document.querySelectorAll('[data-betting]');
+
+        for (const el of allBetting) {
+            try {
+                const raw = JSON.parse(el.getAttribute('data-betting'));
+                if (!Array.isArray(raw)) continue;
+                // Market-level: [marketId, eventId(number), matchName, marketLabel, locked, " "]
+                if (typeof raw[1] !== 'number' || raw[1] < 100000) continue;
+                const label = (raw[3] || '').trim();
+
+                // Spread markets (first occurrence = main line)
+                if (SPREAD.has(label) && !results.spread) {
+                    const outcomes = [];
+                    for (const oel of el.querySelectorAll('[data-betting]')) {
+                        try {
+                            const od = JSON.parse(oel.getAttribute('data-betting'));
+                            if (typeof od[1] === 'string')
+                                outcomes.push({ type: od[1], name: od[2], odds: od[4] });
+                        } catch(e) {}
+                    }
+                    if (outcomes.length >= 2) results.spread = { label, outcomes };
+                }
+
+                // Total markets (first occurrence = main line)
+                if (TOTAL.has(label) && !results.total) {
+                    const outcomes = [];
+                    for (const oel of el.querySelectorAll('[data-betting]')) {
+                        try {
+                            const od = JSON.parse(oel.getAttribute('data-betting'));
+                            if (typeof od[1] === 'string')
+                                outcomes.push({ type: od[1], name: od[2], odds: od[4] });
+                        } catch(e) {}
+                    }
+                    if (outcomes.length >= 2) results.total = { label, outcomes };
+                }
+
+                if (results.spread && results.total) break;
+            } catch(e) {}
+        }
+        return results;
+    }"""
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         # Interwetten needs headed browser to bypass Cloudflare
         transport = transport or BrowserTransport(headless=False)
@@ -272,12 +318,9 @@ class InterwettenRetriever(BrowserRetriever):
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
-        Extract events by navigating to league pages and parsing SSR HTML.
-
-        Strategy:
-        1. Navigate to /en/sportsbook first (cookies + session)
-        2. Then visit each league page for the sport
-        3. Parse DOM to extract events with 1x2 odds
+        Extract events via two-pass strategy:
+        1. League pages: get all events with 1x2/moneyline odds + event detail hrefs
+        2. Event detail pages: navigate to each event to get spread + total markets
         """
         leagues = self.SPORT_LEAGUES.get(sport, [])
         if not leagues:
@@ -299,44 +342,51 @@ class InterwettenRetriever(BrowserRetriever):
         # Navigate to main sportsbook first to establish session
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")
 
+        # --- Pass 1: League listing pages (1x2/moneyline) ---
         all_events = []
+        event_hrefs = {}  # event_id -> href for detail page
         seen_event_ids = set()
-        empty_count = 0
 
         for league_id, league_slug in leagues:
             if limit and len(all_events) >= limit:
                 break
 
             try:
-                league_events = await self._extract_league(
+                league_events, league_hrefs = await self._extract_league(
                     page, league_id, league_slug, sport
                 )
 
                 if league_events:
-                    empty_count = 0
-                    # Deduplicate
                     new_count = 0
                     for event in league_events:
                         if event.id not in seen_event_ids:
                             seen_event_ids.add(event.id)
                             all_events.append(event)
                             new_count += 1
+                    event_hrefs.update(league_hrefs)
                     if new_count > 0:
                         logger.debug(
                             f"[{self.provider_id}] {league_slug}: {new_count} events"
                         )
-                else:
-                    empty_count += 1
 
             except Exception as e:
                 logger.warning(
                     f"[{self.provider_id}] Error extracting league {league_slug}: {e}"
                 )
-                empty_count += 1
 
         logger.info(
             f"[{self.provider_id}] {sport}: {len(all_events)} events from {len(leagues)} leagues"
         )
+
+        # --- Pass 2: Event detail pages (spread + total) ---
+        if all_events and event_hrefs and sport in self.DETAIL_SPORTS:
+            detail_count = await self._enrich_with_detail_markets(
+                page, all_events, event_hrefs, sport
+            )
+            logger.info(
+                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} events with spread/total"
+            )
+
         return all_events[:limit] if limit else all_events
 
     async def _extract_league(
@@ -345,30 +395,33 @@ class InterwettenRetriever(BrowserRetriever):
         league_id: int,
         league_slug: str,
         sport: str,
-    ) -> List[StandardEvent]:
-        """Extract events from a single league page."""
+    ) -> tuple[List[StandardEvent], Dict[str, str]]:
+        """Extract events from a single league page.
+
+        Returns:
+            Tuple of (events, {event_id: detail_href})
+        """
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
 
         try:
             resp = await page.goto(url, wait_until="load", timeout=30000)
             if not resp or resp.status != 200:
                 logger.debug(f"[{self.provider_id}] League {league_slug}: status {resp.status if resp else '?'}")
-                return []
+                return [], {}
         except Exception as e:
             logger.debug(f"[{self.provider_id}] League {league_slug} navigation error: {e}")
-            return []
+            return [], {}
 
         # Wait for content to render — try to detect events quickly
         try:
             await page.wait_for_selector('.s-event', timeout=3000)
         except Exception:
-            # No events on this page — skip quickly
-            return []
+            return [], {}
 
         title = await page.title()
         if title == "Error":
             logger.debug(f"[{self.provider_id}] League {league_slug}: page returned Error")
-            return []
+            return [], {}
 
         # Parse events from DOM using JavaScript evaluation
         raw_events = await page.evaluate("""() => {
@@ -377,23 +430,19 @@ class InterwettenRetriever(BrowserRetriever):
 
             for (const el of eventEls) {
                 try {
-                    // Get team names
                     const players = el.querySelectorAll('.s-event-player');
                     if (players.length < 2) continue;
                     const home = players[0].textContent.trim();
                     const away = players[1].textContent.trim();
 
-                    // Get event link/ID
                     const link = el.querySelector('a[href*="/e/"]');
                     const href = link ? link.getAttribute('href') : '';
                     const idMatch = href.match(/\\/e\\/(\\d+)\\//);
                     const eventId = idMatch ? idMatch[1] : '';
 
-                    // Get time
                     const timeEl = el.querySelector('[class*="gametime"] span');
                     const time = timeEl ? timeEl.textContent.trim() : '';
 
-                    // Get outcomes from data-betting attributes
                     const outcomes = [];
                     const outcomeEls = el.querySelectorAll('.s-outcome');
                     for (const oe of outcomeEls) {
@@ -404,9 +453,8 @@ class InterwettenRetriever(BrowserRetriever):
                         if (dataBetting) {
                             try {
                                 const parsed = JSON.parse(dataBetting);
-                                // Format: [outcomeId, "1"/"X"/"2", displayName, teamName, "odds,value", isLocked]
                                 outcomes.push({
-                                    type: parsed[1],  // "1", "X", or "2"
+                                    type: parsed[1],
                                     name: parsed[2],
                                     odds: oddText,
                                     locked: parsed[5] || false,
@@ -415,7 +463,6 @@ class InterwettenRetriever(BrowserRetriever):
                         }
                     }
 
-                    // Get market count
                     const countEl = el.querySelector('[data-count]');
                     const marketCount = countEl ? parseInt(countEl.getAttribute('data-count')) : 0;
 
@@ -425,6 +472,7 @@ class InterwettenRetriever(BrowserRetriever):
                             home: home,
                             away: away,
                             time: time,
+                            href: href,
                             outcomes: outcomes,
                             marketCount: marketCount,
                         });
@@ -436,15 +484,219 @@ class InterwettenRetriever(BrowserRetriever):
         }""")
 
         events = []
+        hrefs = {}
         for raw in raw_events:
             event = self._parse_raw_event(raw, sport, league_slug)
             if event:
                 events.append(event)
+                href = raw.get("href", "")
+                if href:
+                    hrefs[event.id] = href
 
         logger.info(
             f"[{self.provider_id}] {league_slug}: {len(events)} events"
         )
-        return events
+        return events, hrefs
+
+    CONCURRENT_DETAIL_PAGES = 3
+
+    async def _enrich_with_detail_markets(
+        self,
+        page,
+        events: List[StandardEvent],
+        event_hrefs: Dict[str, str],
+        sport: str,
+    ) -> int:
+        """Navigate to event detail pages to extract spread and total markets.
+
+        Uses concurrent tabs (CONCURRENT_DETAIL_PAGES) for parallelism.
+        Returns count of events enriched with additional markets.
+        """
+        # Filter to events with hrefs
+        todo = [(ev, event_hrefs[ev.id]) for ev in events if ev.id in event_hrefs]
+        if not todo:
+            return 0
+
+        enriched = 0
+        errors = 0
+        sem = asyncio.Semaphore(self.CONCURRENT_DETAIL_PAGES)
+
+        # Open extra pages for concurrency (reuse main page as one worker)
+        context = page.context
+        extra_pages = []
+        for _ in range(self.CONCURRENT_DETAIL_PAGES - 1):
+            try:
+                p = await context.new_page()
+                extra_pages.append(p)
+            except Exception:
+                break
+        all_pages = [page] + extra_pages
+        # Round-robin page assignment
+        page_pool = asyncio.Queue()
+        for p in all_pages:
+            await page_pool.put(p)
+
+        async def enrich_one(event: StandardEvent, href: str):
+            nonlocal enriched, errors
+            if errors > 5:
+                return
+
+            worker_page = await page_pool.get()
+            try:
+                async with sem:
+                    url = f"{self.base_url}{href}"
+                    resp = await worker_page.goto(url, wait_until="load", timeout=15000)
+                    if not resp or resp.status != 200:
+                        errors += 1
+                        return
+
+                    await worker_page.wait_for_timeout(500)
+                    detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
+
+                    added_markets = []
+                    if detail.get("spread"):
+                        spread_market = self._parse_spread_market(detail["spread"], event)
+                        if spread_market:
+                            added_markets.append(spread_market)
+                    if detail.get("total"):
+                        total_market = self._parse_total_market(detail["total"])
+                        if total_market:
+                            added_markets.append(total_market)
+
+                    if added_markets:
+                        event.markets.extend(added_markets)
+                        enriched += 1
+
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Detail page error for {event.id}: {e}")
+                errors += 1
+            finally:
+                await page_pool.put(worker_page)
+
+        # Process in batches to allow early exit on too many errors
+        batch_size = 20
+        for i in range(0, len(todo), batch_size):
+            if errors > 5:
+                logger.warning(f"[{self.provider_id}] Too many detail page errors, stopping enrichment")
+                break
+            batch = todo[i:i + batch_size]
+            await asyncio.gather(*(enrich_one(ev, href) for ev, href in batch))
+
+        # Close extra pages
+        for p in extra_pages:
+            try:
+                await p.close()
+            except Exception:
+                pass
+
+        return enriched
+
+    def _parse_spread_market(
+        self, raw_market: dict, event: StandardEvent
+    ) -> Optional[dict]:
+        """Parse Asian Handicap / Handicap market into spread format.
+
+        Outcome name format: "Team Name (+1.5)" or "Team Name (-1.5)"
+        Outcome type: "1" (home) or "2" (away)
+        """
+        outcomes = []
+        point = None
+
+        point_by_side = {}  # "home" -> point, "away" -> point
+
+        for out in raw_market.get("outcomes", []):
+            out_type = out.get("type", "")
+            name = out.get("name", "")
+            odds_str = out.get("odds", "")
+
+            # Map type to home/away
+            if out_type == "1":
+                outcome_name = "home"
+            elif out_type == "2":
+                outcome_name = "away"
+            else:
+                continue
+
+            # Parse odds
+            try:
+                odds = float(odds_str.replace(",", "."))
+                if odds <= 1.0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            # Extract point value from display name: "Team (+1.5)" or "Team (-0.5)"
+            match = re.search(r'\(([+-]?\d+\.?\d*)\)', name)
+            if match:
+                p = float(match.group(1))
+                point_by_side[outcome_name] = p
+                if outcome_name == "home":
+                    point = p
+
+            outcomes.append({"name": outcome_name, "odds": odds})
+
+        # Add point to each outcome (storage pipeline expects point on each outcome)
+        if len(outcomes) >= 2 and point is not None:
+            for o in outcomes:
+                side = o["name"]
+                if side in point_by_side:
+                    o["point"] = point_by_side[side]
+                elif side == "away" and point is not None:
+                    o["point"] = -point  # away point is negated home point
+                else:
+                    o["point"] = point
+            return {
+                "type": "spread",
+                "outcomes": outcomes,
+            }
+        return None
+
+    def _parse_total_market(self, raw_market: dict) -> Optional[dict]:
+        """Parse How many goals / Over/Under market into total format.
+
+        Football: "How many goals" with outcomes "Over 3.5" / "Under 3.5"
+        Basketball/etc: "Over/Under" with outcomes "over 220.5" / "under 220.5"
+        """
+        outcomes = []
+        point = None
+
+        for out in raw_market.get("outcomes", []):
+            name = out.get("name", "").strip()
+            odds_str = out.get("odds", "")
+
+            # Parse odds
+            try:
+                odds = float(odds_str.replace(",", "."))
+                if odds <= 1.0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            # Determine over/under from display name
+            name_lower = name.lower()
+            if name_lower.startswith("over"):
+                outcome_name = "over"
+            elif name_lower.startswith("under"):
+                outcome_name = "under"
+            else:
+                continue
+
+            # Extract point value: "Over 2.5" → 2.5, "over 220.5" → 220.5
+            match = re.search(r'(\d+\.?\d*)', name)
+            outcome_point = None
+            if match:
+                outcome_point = float(match.group(1))
+                if outcome_name == "over":
+                    point = outcome_point
+
+            outcomes.append({"name": outcome_name, "odds": odds, "point": outcome_point})
+
+        if len(outcomes) >= 2 and point is not None:
+            return {
+                "type": "total",
+                "outcomes": outcomes,
+            }
+        return None
 
     def _parse_raw_event(
         self,

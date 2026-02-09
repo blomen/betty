@@ -3,7 +3,9 @@ Hajper Retriever - Multi-League WebSocket extraction
 
 Hajper (ComeOn Group) uses WebSocket/RSocket for event data.
 Extracts events by navigating to individual league pages.
-Similar to ComeOn: Multi-league approach for comprehensive coverage.
+
+URL structure: /sv/sportsbook/sport/{id}-{slug}/leagues/{id}-{slug}
+Same platform as ComeOn — shared league IDs and WS format.
 """
 
 from typing import Dict, Any, List, Optional
@@ -21,65 +23,52 @@ logger = logging.getLogger(__name__)
 
 class HajperRetriever(BrowserRetriever, RSocketMixin):
     """
-    Multi-league Hajper retriever for comprehensive event coverage.
+    Multi-league Hajper retriever.
 
-    Strategy: Navigate to individual league pages to extract all events
-    ComeOn Group platform - similar to ComeOn implementation
+    Strategy: Navigate to sport page → extract league links → visit each league
+    page in parallel → parse RSocket WS messages for events/markets/selections.
     """
 
-    # Sport URL mapping: sports.json keys -> Hajper URL slugs
+    # Sport URL mapping: canonical sport key -> Hajper URL path (no /sv/ prefix)
+    # Same sport IDs as ComeOn (shared ComeOn Group platform)
     SPORT_URL_MAP = {
         'football': '/sportsbook/sport/1-fotboll',
         'basketball': '/sportsbook/sport/2-basket',
-        'tennis': '/sportsbook/sport/3-tennis',
+        'american_football': '/sportsbook/sport/3-amerikansk-fotboll',
         'ice_hockey': '/sportsbook/sport/4-ishockey',
-        'american_football': '/sportsbook/sport/5-amerikansk-fotboll',
-        'baseball': '/sportsbook/sport/6-baseboll',
+        'tennis': '/sportsbook/sport/6-tennis',
         'mma': '/sportsbook/sport/7-mma',
-        'esports': '/sportsbook/sport/8-esport',
+        'esports': '/sportsbook/sport/130-esport',
+        'baseball': '/sportsbook/sport/12-baseboll',
+        'handball': '/sportsbook/sport/10-handboll',
+        'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        self.max_leagues = config.get("max_leagues", 30)  # Reduced default for faster extraction
-        # Cache for league list to avoid re-fetching between runs
+        self.max_leagues = config.get("max_leagues", 100)
         self._league_cache: Dict[str, List[Dict[str, str]]] = {}
 
     async def _extract_league_links(self, page) -> List[Dict[str, str]]:
-        """Extract league links from main sport page DOM."""
-        # Note: Initial testing showed Hajper loads all leagues immediately (no lazy loading)
-        # The page height stabilizes at ~720px regardless of scrolling
-        # Keeping wait time for initial render but removing scrolling logic
-
-        await page.wait_for_timeout(2000)  # Wait for initial render
-
-        # Count leagues before extraction for debugging
-        initial_count = await page.evaluate('''() => {
-            return document.querySelectorAll('a[href*="/leagues/"]').length;
-        }''')
-
-        logger.info(f"[{self.provider_id}] Found {initial_count} league link elements on page")
-
+        """Extract league links from sport page DOM."""
         league_links = await page.evaluate('''() => {
             const links = [];
             const seen = new Set();
 
-            // Find all league links (pattern: /leagues/)
-            const allLinks = document.querySelectorAll('a[href*="/leagues/"]');
-
-            allLinks.forEach(link => {
+            document.querySelectorAll('a[href*="/leagues/"]').forEach(link => {
                 const href = link.getAttribute('href');
                 const text = link.textContent.trim();
 
-                // Filter out event pages (contain "/events/")
-                if (href && !href.includes('/events/') && text) {
-                    // Normalize href to avoid duplicates
+                if (href && text && !href.includes('/events/')) {
                     const cleanHref = href.split('?')[0];
+                    // Deduplicate by league ID (extract number from path)
+                    const match = cleanHref.match(/\\/leagues\\/(\\d+)/);
+                    const key = match ? match[1] : cleanHref;
 
-                    if (!seen.has(cleanHref)) {
-                        seen.add(cleanHref);
+                    if (!seen.has(key)) {
+                        seen.add(key);
                         links.push({ href: cleanHref, text });
                     }
                 }
@@ -88,319 +77,305 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             return links;
         }''')
 
-        logger.info(f"[{self.provider_id}] Found {len(league_links)} league links on main page")
+        logger.info(f"[{self.provider_id}] Found {len(league_links)} league links")
         return league_links
 
-    async def _extract_events_from_league(self, page, league_url: str, sport: str) -> List[tuple]:
-        """Extract events from a single league page."""
-        # Setup per-page WebSocket interception
-        ws_messages = self._setup_ws_interception(page)
+    # Market type mapping: marketType.id -> standard type
+    MARKET_TYPE_MAP = {
+        1: '1x2',          # 1x2 (3-way match result)
+        175: 'moneyline',   # Vinnare (Winner, 2-way)
+        206: 'moneyline',   # Vinnare inkl. övertid (Winner incl. overtime)
+        212: 'total',        # Totalt inkl. övertid (Total incl. overtime)
+    }
 
-        # Navigate to league page
-        full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
-        try:
-            # Use "networkidle" for reliable WebSocket initialization (reverted from domcontentloaded)
-            await asyncio.wait_for(
-                page.goto(full_url, wait_until="networkidle", timeout=30000),
-                timeout=45.0  # Python-level timeout (45s) - restored for reliability
-            )
-            await page.wait_for_timeout(2000)  # Allow WebSocket messages to complete
-        except asyncio.TimeoutError:
-            logger.warning(f"[{self.provider_id}] Timeout loading {league_url}")
-            return []
-        except Exception as e:
-            logger.warning(f"[{self.provider_id}] Failed to load {league_url}: {e}")
-            return []
+    def _normalize_market_type(self, market_type_id: int) -> str:
+        """Map marketTypeId to standard market type."""
+        return self.MARKET_TYPE_MAP.get(market_type_id, 'other')
 
-        # Parse WebSocket messages
-        events_data = []
-        event_ids_seen = set()
+    def _build_outcome(self, selection: dict, market_type: str) -> Optional[dict]:
+        """Build normalized outcome dict from a selection."""
+        odds = selection.get('trueOdds', 0.0)
+        if not odds or odds <= 1.0:
+            return None
 
-        for msg_data in ws_messages:
-            if isinstance(msg_data, list):
-                for msg in msg_data:
-                    if msg.get('type') == 'INITIAL_STATE':
-                        payload = msg.get('payload', {})
-                        events_list = payload.get('events', [])
-                        selections_list = payload.get('selections', [])
+        outcome_type = (selection.get('outcomeType') or '').lower()
+        name = (selection.get('name') or '').lower()
 
-                        for event_data in events_list:
-                            event_id = str(event_data.get('id', ''))
-                            if event_id and event_id not in event_ids_seen:
-                                event_ids_seen.add(event_id)
-                                # Store event data with selections for later parsing
-                                events_data.append((event_id, json.dumps({
-                                    'event': event_data,
-                                    'selections': selections_list,
-                                    'sport': sport
-                                })))
-
-        return events_data
-
-    def _normalize_market_type(self, market_name: str) -> str:
-        """Normalize Hajper market names to standard types (1x2/moneyline only)."""
-        name_lower = market_name.lower()
-
-        # 1x2 / Match result / Moneyline
-        if any(kw in name_lower for kw in ['1x2', 'helmatchen', 'match result', 'slutresultat', 'matchresultat', 'vinnare', 'winner', 'moneyline']):
-            return '1x2'
-
-        return 'other'
-
-    def _normalize_outcome(self, outcome_name: str, outcome_type: str, market_type: str) -> str:
-        """Normalize outcome names for 1x2/moneyline markets."""
-        name_lower = outcome_name.lower()
-        type_lower = outcome_type.lower() if outcome_type else ''
-
-        # 1x2/moneyline markets
         if market_type in ('1x2', 'moneyline'):
-            if 'home' in type_lower or any(kw in name_lower for kw in ['hemma', 'home', '1']):
-                return 'home'
-            if 'away' in type_lower or any(kw in name_lower for kw in ['borta', 'away', '2']):
-                return 'away'
-            if 'draw' in type_lower or any(kw in name_lower for kw in ['oavgjort', 'draw', 'x', 'lika']):
-                return 'draw'
+            if outcome_type == 'home':
+                return {'name': 'home', 'odds': float(odds)}
+            if outcome_type == 'away':
+                return {'name': 'away', 'odds': float(odds)}
+            if outcome_type in ('tie', 'draw'):
+                return {'name': 'draw', 'odds': float(odds)}
 
-        return outcome_name
+        elif market_type == 'total':
+            points = selection.get('points')
+            if points is None or points == 0.0:
+                return None
+            if outcome_type == 'over' or name.startswith('över') or name.startswith('over'):
+                return {'name': 'over', 'odds': float(odds), 'point': float(points)}
+            if outcome_type == 'under' or name.startswith('under'):
+                return {'name': 'under', 'odds': float(odds), 'point': float(points)}
 
-    def _get_sport_market_type_map(self, sport: str) -> Dict[str, str]:
-        """Get sport-specific market type mapping (1x2/moneyline only)."""
-        # All sports use the same mapping - only 1x2/moneyline is supported
-        return {
-            '1': '1x2',           # Match result / Match winner
-        }
+        return None
 
-    def _parse_event(self, event_data: Dict, sport: str, all_selections: list) -> Optional[StandardEvent]:
-        """Parse event data from WebSocket message."""
+    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+        raise NotImplementedError("HajperRetriever uses extract() directly")
+
+    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
+        """Extract events using multi-league approach."""
+        sport_path = self.SPORT_URL_MAP.get(sport)
+        if not sport_path:
+            logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
+            return []
+
+        logger.info(f"[{self.provider_id}] Starting extraction for {sport}")
+
+        # Shared WS message storage
+        ws_messages = []
+        all_events_data = {}
+
         try:
-            # Extract teams from primaryParticipants (key is participant ID)
+            if not isinstance(self.transport, BrowserTransport):
+                logger.error(f"[{self.provider_id}] Requires BrowserTransport")
+                return []
+
+            await self.transport._ensure_browser()
+            page = self.transport.page
+
+            # Setup WS interception on main page
+            def on_websocket(ws):
+                def on_frame_received(payload):
+                    if isinstance(payload, bytes):
+                        decoded = self._decode_rsocket_frame(payload)
+                        if decoded:
+                            ws_messages.append(decoded)
+                ws.on("framereceived", on_frame_received)
+            page.on("websocket", on_websocket)
+
+            # Load sport page with /sv/ prefix
+            sport_url = f"{self.site_url}/sv{sport_path}"
+            logger.info(f"[{self.provider_id}] Loading {sport_url}")
+            await page.goto(sport_url, wait_until='networkidle', timeout=45000)
+            await page.wait_for_timeout(3000)
+
+            # Cookie consent
+            for btn_text in ['Acceptera', 'Accept']:
+                try:
+                    await page.click(f'button:has-text("{btn_text}")', timeout=1500)
+                    await page.wait_for_timeout(500)
+                except:
+                    pass
+
+            # Extract league links (SPA may need extra wait for rendering)
+            cache_key = sport
+            if cache_key in self._league_cache:
+                league_links = self._league_cache[cache_key]
+                logger.info(f"[{self.provider_id}] Using cached leagues ({len(league_links)})")
+            else:
+                league_links = await self._extract_league_links(page)
+                if not league_links:
+                    await page.wait_for_timeout(5000)
+                    league_links = await self._extract_league_links(page)
+                if league_links:
+                    self._league_cache[cache_key] = league_links
+
+            if not league_links:
+                logger.warning(f"[{self.provider_id}] No league links found for {sport}")
+                return []
+
+            leagues_to_process = league_links[:self.max_leagues]
+            logger.info(f"[{self.provider_id}] Processing {len(leagues_to_process)}/{len(league_links)} leagues")
+
+            # Visit leagues in parallel
+            concurrent_limit = self.config.get('concurrent_leagues', 8)
+            sem = asyncio.Semaphore(concurrent_limit)
+
+            async def extract_league(idx: int, league: dict) -> int:
+                async with sem:
+                    league_url = league['href']
+                    if not league_url.startswith('http'):
+                        league_url = f"{self.site_url}{league_url}"
+
+                    league_page = await self.transport.new_page()
+                    try:
+                        def on_ws(ws):
+                            def on_frame(payload):
+                                if isinstance(payload, bytes):
+                                    decoded = self._decode_rsocket_frame(payload)
+                                    if decoded:
+                                        ws_messages.append(decoded)
+                            ws.on("framereceived", on_frame)
+                        league_page.on("websocket", on_ws)
+
+                        await league_page.goto(league_url, wait_until='networkidle', timeout=30000)
+                        await league_page.wait_for_timeout(2000)
+                        return 1
+                    except Exception as e:
+                        logger.debug(f"[{self.provider_id}] Failed league {league['text']}: {e}")
+                        return 0
+                    finally:
+                        await league_page.close()
+
+            tasks = [extract_league(i, lg) for i, lg in enumerate(leagues_to_process, 1)]
+            logger.info(f"[{self.provider_id}] Extracting {len(tasks)} leagues (max {concurrent_limit} concurrent)")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            successful = sum(1 for r in results if isinstance(r, int) and r > 0)
+            logger.info(f"[{self.provider_id}] {successful}/{len(leagues_to_process)} leagues extracted")
+
+            # Parse WS data
+            all_markets = {}
+            all_selections = {}
+
+            for msg_data in ws_messages:
+                if not isinstance(msg_data, list):
+                    continue
+                for msg in msg_data:
+                    if msg.get('type') != 'INITIAL_STATE':
+                        continue
+                    payload = msg.get('payload', {})
+
+                    for event in payload.get('events', []):
+                        eid = event.get('id')
+                        if eid and eid not in all_events_data:
+                            all_events_data[eid] = event
+
+                    for market in payload.get('markets', []):
+                        mid = market.get('id')
+                        if mid:
+                            all_markets[mid] = market
+
+                    for sel in payload.get('selections', []):
+                        sid = sel.get('id')
+                        if sid:
+                            all_selections[sid] = sel
+
+            logger.info(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
+                        f"{len(all_markets)} markets, {len(all_selections)} selections")
+
+            # Build mappings
+            event_markets_map: Dict[int, List[int]] = {}
+            for mid, mkt in all_markets.items():
+                eid = mkt.get('eventId')
+                if eid:
+                    event_markets_map.setdefault(eid, []).append(mid)
+
+            market_selections_map: Dict[int, List[dict]] = {}
+            for sid, sel in all_selections.items():
+                mid = sel.get('marketId')
+                if mid:
+                    market_selections_map.setdefault(mid, []).append(sel)
+
+            # Parse events
+            events = []
+            for eid, event_data in all_events_data.items():
+                event = self._parse_event(event_data, sport,
+                                          event_markets_map, all_markets, market_selections_map)
+                if event:
+                    events.append(event)
+
+            logger.info(f"[{self.provider_id}] Parsed {len(events)} events for {sport}")
+            return events[:limit] if limit else events
+
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
+            return []
+
+    def _parse_event(self, event_data: dict, sport: str,
+                     event_markets_map: Dict[int, List[int]],
+                     all_markets: Dict[int, dict],
+                     market_selections_map: Dict[int, List[dict]]) -> Optional[StandardEvent]:
+        """Parse a single event from WS data."""
+        try:
+            eid = event_data.get('id')
+            if not eid:
+                return None
+
+            # Extract teams from primaryParticipants
             home_team = None
             away_team = None
 
-            primary_participants = event_data.get('primaryParticipants', {})
-            for participant_id, participant in primary_participants.items():
-                venue_role = participant.get('venueRole', '')
-                if venue_role == 'Home':
-                    home_team = participant.get('name')
-                elif venue_role == 'Away':
-                    away_team = participant.get('name')
+            primary = event_data.get('primaryParticipants', {})
+            if isinstance(primary, dict):
+                for pid, p in primary.items():
+                    role = p.get('venueRole', '')
+                    if role == 'Home':
+                        home_team = p.get('name')
+                    elif role == 'Away':
+                        away_team = p.get('name')
+
+            # Fallback: parse from eventName
+            if not home_team or not away_team:
+                event_name = event_data.get('eventName', '')
+                if ' - ' in event_name:
+                    parts = event_name.split(' - ', 1)
+                    home_team = home_team or parts[0].strip()
+                    away_team = away_team or parts[1].strip()
 
             if not home_team or not away_team:
                 return None
 
-            # Normalize team names
             home_team = normalize_team_name(home_team)
             away_team = normalize_team_name(away_team)
 
-            # Parse start time
-            start_time_str = event_data.get('startingOn')
+            # Start time
+            start_time_str = event_data.get('startingOn') or event_data.get('startTime')
             start_time = None
             if start_time_str:
                 try:
                     start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
-                except:
+                except ValueError:
                     pass
 
-            # Extract league
             league = event_data.get('leagueName', 'Unknown')
 
-            # Build markets dynamically from selections
-            event_id = str(event_data.get('id', ''))
-            markets_dict = {}
+            # Build markets
+            markets = []
+            market_ids = event_markets_map.get(eid, [])
 
-            # Get sport-specific market type mapping
-            market_type_map = self._get_sport_market_type_map(sport)
-
-            # Build markets from selections
-            for selection in all_selections:
-                selection_event_id = str(selection.get('eventId', ''))
-                if selection_event_id != event_id:
+            for mid in market_ids:
+                mkt = all_markets.get(mid)
+                if not mkt:
                     continue
 
-                # Skip suspended selections
-                if selection.get('status') != 'Active':
+                mt = mkt.get('marketType', {})
+                mt_id = mt.get('id', 0)
+                market_type = self._normalize_market_type(mt_id)
+
+                if market_type == 'other':
                     continue
 
-                market_id = str(selection.get('marketId', ''))
-                market_type_id = str(selection.get('marketTypeId', ''))
+                if mkt.get('isSuspended'):
+                    continue
 
-                # Create market if not exists
-                if market_id not in markets_dict:
-                    # Infer market type from marketTypeId using sport-specific mapping
-                    market_type = market_type_map.get(market_type_id, 'other')
+                selections = market_selections_map.get(mid, [])
+                outcomes = []
+                for sel in selections:
+                    if sel.get('status') != 'Active':
+                        continue
+                    outcome = self._build_outcome(sel, market_type)
+                    if outcome:
+                        outcomes.append(outcome)
 
-                    # Log unmapped market types for future enhancement
-                    if market_type == 'other' and market_type_id not in ['8', '18', '52', '60', '342', '2718']:
-                        logger.info(f"[{self.provider_id}] {sport}: Unmapped marketTypeId: {market_type_id}")
-
-                    markets_dict[market_id] = {
+                if outcomes:
+                    markets.append({
                         'type': market_type,
-                        'outcomes': []
-                    }
-
-                outcome_name = selection.get('name', '')
-                outcome_type = selection.get('outcomeType', '')
-                odds = selection.get('trueOdds', 0.0)
-
-                market_type = markets_dict[market_id]['type']
-                normalized_outcome = self._normalize_outcome(outcome_name, outcome_type, market_type)
-
-                outcome_dict = {
-                    "name": normalized_outcome,
-                    "odds": odds
-                }
-
-                markets_dict[market_id]['outcomes'].append(outcome_dict)
-
-            # Convert to list and filter empty markets
-            markets_list = [m for m in markets_dict.values() if m['outcomes']]
-
-            # Create StandardEvent
-            event_name = f"{home_team} vs {away_team}"
+                        'outcomes': outcomes
+                    })
 
             return StandardEvent(
-                id=event_id,
-                name=event_name,
+                id=str(eid),
+                name=f"{home_team} vs {away_team}",
                 provider=self.provider_id,
                 sport=sport,
                 league=league,
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time,
-                markets=markets_list
+                markets=markets
             )
 
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Failed to parse event: {e}")
             return None
-
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Not used - extract() is overridden."""
-        raise NotImplementedError("HajperRetriever uses extract() directly")
-
-    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
-        """Extract events using multi-league approach for comprehensive coverage."""
-        sport_url_path = self.SPORT_URL_MAP.get(sport)
-        if not sport_url_path:
-            logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
-            return []
-
-        logger.info(f"[{self.provider_id}] Starting multi-league extraction for {sport}")
-        logger.info(f"[{self.provider_id}] Max leagues to process: {self.max_leagues}")
-
-        all_events_data = {}  # event_id -> event_json
-
-        try:
-            if not isinstance(self.transport, BrowserTransport):
-                logger.error(f"[{self.provider_id}] Hajper requires BrowserTransport")
-                return []
-
-            await self.transport._ensure_browser()
-            page = self.transport.page
-
-            # Step 1: Load main sport page to get league links
-            sport_url = f"{self.site_url}{sport_url_path}"
-            logger.info(f"[{self.provider_id}] Loading main page: {sport_url}")
-
-            await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)  # Optimized: domcontentloaded
-
-            # Handle cookie consent
-            try:
-                await page.click('button:has-text("Accept")', timeout=2000)
-                logger.info(f"[{self.provider_id}] Clicked cookie consent")
-                await page.wait_for_timeout(1000)
-            except:
-                pass
-
-            await page.wait_for_timeout(1500)  # Optimized from 3s
-
-            # Extract league links from DOM (with caching)
-            cache_key = sport
-            if cache_key in self._league_cache:
-                league_links = self._league_cache[cache_key]
-                logger.info(f"[{self.provider_id}] Using cached league links ({len(league_links)} leagues)")
-            else:
-                league_links = await self._extract_league_links(page)
-                if league_links:
-                    self._league_cache[cache_key] = league_links
-
-            if not league_links:
-                logger.warning(f"[{self.provider_id}] No league links found")
-                return []
-
-            # Limit number of leagues to process
-            leagues_to_process = league_links[:self.max_leagues]
-            logger.info(f"[{self.provider_id}] Processing {len(leagues_to_process)} of {len(league_links)} leagues")
-
-            # Step 2: Navigate to leagues in parallel (optimized concurrency)
-            concurrent_limit = self.config.get('concurrent_leagues', 8)  # Increased from 5 to 8
-            sem = asyncio.Semaphore(concurrent_limit)
-
-            async def extract_league_with_limit(league_index: int, league: dict) -> tuple:
-                """Extract events from single league with concurrency control."""
-                async with sem:
-                    league_name = league['text']
-                    league_url = league['href']
-
-                    logger.info(f"[{self.provider_id}] [{league_index}/{len(leagues_to_process)}] Processing: {league_name}")
-
-                    # Create dedicated page for this league
-                    league_page = await self.transport.new_page()
-
-                    try:
-                        league_events = await self._extract_events_from_league(league_page, league_url, sport)
-                        logger.info(f"[{self.provider_id}]   -> {len(league_events)} events from {league_name}")
-                        return (True, league_events)
-
-                    except Exception as e:
-                        logger.warning(f"[{self.provider_id}] Failed to extract {league_name}: {e}")
-                        return (False, [])
-
-                    finally:
-                        await league_page.close()
-
-            # Create parallel tasks for all leagues
-            tasks = [
-                extract_league_with_limit(i, league)
-                for i, league in enumerate(leagues_to_process, 1)
-            ]
-
-            # Execute in parallel with error handling
-            logger.info(f"[{self.provider_id}] Extracting {len(leagues_to_process)} leagues in parallel (max {concurrent_limit} concurrent)")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Merge results
-            successful_leagues = 0
-            for result in results:
-                if isinstance(result, tuple):
-                    success, league_events = result
-                    if success:
-                        successful_leagues += 1
-                        for event_id, event_json in league_events:
-                            if event_id not in all_events_data:
-                                all_events_data[event_id] = event_json
-
-            logger.info(f"[{self.provider_id}] Successfully extracted {successful_leagues}/{len(leagues_to_process)} leagues")
-            logger.info(f"[{self.provider_id}] Total unique events: {len(all_events_data)}")
-
-            # Step 3: Parse events
-            events = []
-            for event_id, event_json in all_events_data.items():
-                try:
-                    event_obj = json.loads(event_json)
-                    event_data = event_obj['event']
-                    selections = event_obj['selections']
-                    sport_key = event_obj['sport']
-
-                    event = self._parse_event(event_data, sport_key, selections)
-                    if event:
-                        events.append(event)
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Failed to parse event {event_id}: {e}")
-
-            logger.info(f"[{self.provider_id}] Parsed {len(events)} events successfully")
-            return events[:limit] if limit else events
-
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
-            return []

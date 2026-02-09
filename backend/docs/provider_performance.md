@@ -8,7 +8,9 @@
 |--------|-------|
 | Active providers | 30 (2 sharp + 28 soft) |
 | Disabled providers | 1 (spelklubben) |
-| Pinnacle baseline | **1,021 events / 6,291 odds** |
+| Pinnacle baseline | **~1,202 events / ~7,361 odds** |
+| Total odds (full run) | **73,189** |
+| Cross-provider matching | **77.7%** (1,348/1,734 events) |
 
 ### Pinnacle Sport Baseline
 
@@ -80,44 +82,46 @@
 |--------|-------|
 | Platform | Kambi API |
 | Brand slug | `ubse` |
-| Extraction time | 45.2s |
-| Events | 524 |
-| Odds | 2,184 |
-| Ratio | 4.17 |
-| Pin matches | **450** (85.9%) |
+| Extraction time | ~45s |
+| Events | 605 |
+| Odds | 2,697 |
+| Ratio | 4.46 |
+| Pin matches | **511** (84.5%) |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
 | Sport | Events | Pin Match | Pinnacle Has | Gap |
 |-------|-------:|----------:|-------------:|----:|
-| Football | 361 | 361 | 688 | -327 |
-| Tennis | 49 | 49 | 67 | -18 |
-| Esports | 15 | 15 | 36 | -21 |
-| Basketball | 7 | 7 | 78 | **-71** |
-| Ice Hockey | 6 | 6 | 113 | **-107** |
-| Handball | 5 | 5 | 13 | -8 |
-| Cricket | 4 | 4 | 13 | -9 |
-| Volleyball | 1 | 1 | 7 | -6 |
-| Am. Football | 1 | 1 | 1 | 0 |
-| Golf | 1 | 1 | 1 | 0 |
-| Table Tennis | 27 | 0 | 0 | — |
-| Rugby | 23 | 0 | 0 | — |
-| Darts | 18 | 0 | 0 | — |
-| Curling | 4 | 0 | 4 | -4 |
+| Football | 532 | 350 | 688 | -338 |
+| Tennis | 104 | 62 | 67 | -5 |
+| Basketball | 59 | 30 | 78 | -48 |
+| Esports | 56 | 30 | 36 | -6 |
+| Table Tennis | 43 | 0 | 0 | — |
+| Rugby | 24 | 0 | 0 | — |
+| Handball | 20 | 13 | 13 | 0 |
+| Darts | 17 | 8 | 0 | — |
+| Ice Hockey | 15 | 9 | 105 | -96 |
+| Boxing | 10 | 0 | 0 | — |
+| Volleyball | 6 | 5 | 7 | -2 |
+| Cricket | 3 | 3 | 13 | -10 |
+| Curling | 2 | 0 | 4 | -4 |
 | MMA | 2 | 0 | 0 | — |
-| **TOTAL** | **524** | **450** | **1,021** | **-571** |
+| Golf | 1 | 1 | 1 | 0 |
+| **TOTAL** | **605** | **511** | **1,021** | **-510** |
+
+> Ice hockey low count is seasonal — NHL paused for Winter Olympics 2026. Pinnacle has 105 events mostly from minor European leagues + Olympics; Kambi has 15 (SHL, Liiga, Olympics).
 
 **Bonus:** Freebet 1,000 kr / 1x wager / min 1.80
 
 **Oddsboost:** Not extractable (Kambi shows only boosted price, no original odds)
 
 #### Log
+- **2026-02-09**: Country name aliases added → 367→511 pin matches (+39%). Swedish names (kanada, tjeckien, etc.) now resolve to English.
 - **2026-02-08**: 2,184 odds / 524 events / 450 pin / 45.2s
 - **2026-02-04**: PRODUCTION_READY
 
 #### TODO
-- [ ] **HIGH**: Ice hockey only 6 events (Pinnacle has 113) — investigate group slugs for NHL, SHL, KHL, etc.
-- [ ] **HIGH**: Basketball only 7 events (Pinnacle has 78) — investigate group slugs for NBA, Euroleague, etc.
+- [ ] Ice hockey coverage seasonal — will improve when NHL resumes post-Olympics
 - [ ] Cache group data across 8 providers (identical API)
 - [ ] Reduce `post_extraction_delay_ms` if rate limits allow
 
@@ -130,25 +134,23 @@
 | Platform | Kambi API |
 | Brand slug | `leose` |
 | Extraction time | 20.5s |
-| Events | 524 |
-| Odds | 2,189 |
-| Ratio | 4.18 |
-| Pin matches | **450** (85.9%) |
+| Events | ~605 |
+| Odds | ~2,700 |
+| Ratio | 4.46 |
+| Pin matches | **~511** |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
-> Sport coverage identical to Unibet (same Kambi backend).
+> Sport coverage identical to Unibet (same Kambi backend). Country name aliases apply.
 
 **Bonus:** BonusDep 600 kr / 6x wager / min 1.80
 
 **Oddsboost:** Not extractable (Kambi)
 
 #### Log
+- **2026-02-09**: Country name aliases → ~450→~511 pin matches (estimated, same data as Unibet)
 - **2026-02-08**: 2,189 odds / 524 events / 450 pin / 20.5s
 - **2026-02-04**: PRODUCTION_READY
-
-#### TODO
-- [ ] Same ice hockey/basketball slug gaps as Unibet
 
 ---
 
@@ -247,8 +249,8 @@
 
 ### Kambi Platform TODO (applies to all 8)
 
-- [ ] **HIGH**: Investigate ice hockey group slugs — 6 events vs Pinnacle 113 (Altenar gets 29, Vbet 34)
-- [ ] **HIGH**: Investigate basketball group slugs — 7 events vs Pinnacle 78 (Altenar gets 28-33)
+- [x] **FIXED**: Country name aliases (kanada→canada, tjeckien→czech republic, etc.) — 367→511 pin matches (+39%)
+- [ ] Ice hockey coverage seasonal — NHL paused for Winter Olympics 2026
 - [ ] Cache group data across 8 providers (identical API, extract once)
 - [ ] Reduce `post_extraction_delay_ms: 15000` if rate limits allow
 - [ ] Oddsboost: Kambi shows only boosted price, no original odds — cannot extract
@@ -269,42 +271,42 @@
 | Platform | Altenar API |
 | Integration | `betiniase2` |
 | Extraction time | **13.0s** |
-| Events | 571 |
-| Odds | 1,547 |
-| Ratio | 2.71 |
-| Pin matches | **433** (75.8%) |
+| Events | 1,738 |
+| Odds | 4,648 |
+| Ratio | 2.67 |
+| Pin matches | **443** |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
 | Sport | Events | Pin Match | Pinnacle Has | Gap |
 |-------|-------:|----------:|-------------:|----:|
-| Football | 330 | 330 | 688 | -358 |
-| Table Tennis | 122 | 0 | 0 | — |
-| Tennis | 38 | 38 | 67 | -29 |
-| Ice Hockey | 29 | 29 | 113 | -84 |
-| Basketball | 28 | 28 | 78 | -50 |
-| MMA | 8 | 0 | 0 | — |
-| Rugby | 7 | 0 | 0 | — |
-| Esports | 3 | 3 | 36 | -33 |
-| Volleyball | 3 | 3 | 7 | -4 |
-| Handball | 2 | 2 | 13 | -11 |
-| Baseball | 1 | 0 | 0 | — |
-| **TOTAL** | **571** | **433** | **1,021** | **-588** |
+| Football | ~900 | 317 | 688 | -371 |
+| Tennis | ~135 | 61 | 67 | -6 |
+| Table Tennis | ~147 | 0 | 0 | — |
+| Basketball | ~163 | 28 | 78 | -50 |
+| Ice Hockey | ~146 | 28 | 105 | -77 |
+| Esports | ~82 | 2 | 36 | -34 |
+| Volleyball | ~66 | 2 | 7 | -5 |
+| Handball | ~61 | 5 | 13 | -8 |
+| MMA | ~8 | 0 | 0 | — |
+| Rugby | ~8 | 0 | 0 | — |
+| **TOTAL** | **1,738** | **443** | **1,021** | **-578** |
 
-**Market distribution:** 1x2=1,011 | ML=464 | Spread=28 | Total=44
+**Market distribution:** 1x2 + ML dominant, Spread=28, Total=44
 
 **Bonus:** BonusDep 1,000 kr / 6x wager / min 1.80
 
 **Oddsboost:** Not implemented (listed 4/5 on aggregators, Altenar API investigation needed)
 
 #### Log
+- **2026-02-09**: Country name aliases → 433→443 pin matches (+10). Altenar uses English names mostly so less impacted.
 - **2026-02-08**: 1,547 odds / 571 events / 433 pin / 13.0s
 
 #### TODO
 - [ ] Football spread missing (Altenar platform limitation — typeId 16 not returned)
 - [ ] Boost API reverse-engineering (would benefit all 6 Altenar providers)
 - [ ] Table tennis/MMA/rugby: many events but 0 pin matches (no Pinnacle coverage)
-- [ ] Esports only 3 events vs Pinnacle 36
+- [ ] Esports only 2 events matched vs Pinnacle 36
 
 ---
 
@@ -315,35 +317,21 @@
 | Platform | Altenar API |
 | Integration | `lodurse` |
 | Extraction time | **12.8s** |
-| Events | 599 |
-| Odds | 1,613 |
-| Ratio | 2.69 |
-| Pin matches | **447** (74.6%) |
+| Events | 1,896 |
+| Odds | 4,992 |
+| Ratio | 2.63 |
+| Pin matches | **462** |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
-| Sport | Events | Pin Match | Pinnacle Has | Gap |
-|-------|-------:|----------:|-------------:|----:|
-| Football | 332 | 332 | 688 | -356 |
-| Table Tennis | 136 | 0 | 0 | — |
-| Tennis | 38 | 38 | 67 | -29 |
-| Basketball | 33 | 33 | 78 | -45 |
-| Ice Hockey | 29 | 29 | 113 | -84 |
-| Esports | 10 | 10 | 36 | -26 |
-| MMA | 8 | 0 | 0 | — |
-| Rugby | 7 | 0 | 0 | — |
-| Volleyball | 3 | 3 | 7 | -4 |
-| Handball | 2 | 2 | 13 | -11 |
-| Baseball | 1 | 0 | 0 | — |
-| **TOTAL** | **599** | **447** | **1,021** | **-574** |
-
-**Market distribution:** 1x2=1,017 | ML=516 | Spread=34 | Total=46
+**Market distribution:** 1x2 + ML dominant, Spread + Total improving
 
 **Bonus:** BonusDep 1,000 kr / 6x wager / min 1.80
 
 **Oddsboost:** Not implemented
 
 #### Log
+- **2026-02-09**: Country name aliases → 447→462 pin matches (+15).
 - **2026-02-08**: 1,613 odds / 599 events / 447 pin / 12.8s
 
 ---
@@ -510,9 +498,16 @@
 > Shared platform: Betsson Group OBG — `events-table/v2` API with header capture.
 > Browser-based: load site, capture 16+ `x-sb-*` headers via route interception.
 > Pagination: `pageNumber=N` (NOT `page=N`).
-> Market templates: MW3W=1x2, MW2W=moneyline, MTG2W/TGOU/MWOU=total, M3WHCP/M2WHCP=spread.
+> **Sport-specific market templates** (CRITICAL — must request ALL variants per sport):
+> - Standard: MW3W=1x2, MW2W=moneyline, MTG2W/MTG2W25=total, M3WHCP/M2WHCP=spread
+> - Ice hockey: TGOUOT=total, MHCPNOT=spread
+> - Tennis: MTG2WP=total, M2WHCP=spread
+> - Basketball: PTSOUROLMID=total, 2WHCPROLMID=spread, ESNMO*=esports variants
+> - Handball: OUALT=total, MWHCPALT=spread
+> - Volleyball: MTP=total, MSH=spread
+> - Esports: ESMW2W=moneyline, ESHMTHANDICAP=spread
 > Selection templates: HOME/AWAY/DRAW/OVER/UNDER + HANDICAPHOME/AWAY/DRAW.
-> Point values: `lineValueRaw` (float), fallback `lineValue` string.
+> Category IDs: football=1, ice_hockey=2, handball=3, basketball=4, rugby=7/8, volleyball=9, amfootball=10, tennis=11, curling=20, cricket=26, boxing=30, darts=34, mma=53.
 
 ### Betsson
 
@@ -520,35 +515,44 @@
 |--------|-------|
 | Platform | Gecko V2 (browser) |
 | Site | `betsson.com` |
-| Extraction time | ~45s* |
-| Events | 686* |
-| Odds | 2,800* |
-| Ratio | 4.08 |
-| Pin matches | **686** |
+| Extraction time | ~60s |
+| Events | 787 |
+| Odds | 2,860 |
+| Ratio | 3.63 |
+| Pin matches | **729** |
 | Markets | 1x2/ml/spread/total |
+| Normalization | 100% |
 
-| Sport | Events (approx) | Pin Match (approx) |
-|-------|----------------:|-------------------:|
-| Football | ~550 | ~550 |
-| Ice Hockey | ~50 | ~50 |
-| Tennis | ~40 | ~40 |
-| Basketball | ~30 | ~30 |
-| Esports | ~10 | ~10 |
-| Other | ~6 | ~6 |
-| **TOTAL** | **~686** | **~686** |
+| Sport | Events | Pin Match |
+|-------|-------:|----------:|
+| Football | 541 | 541 |
+| Basketball | 65 | 65 |
+| Tennis | 63 | 63 |
+| MMA | 36 | 0 |
+| Ice Hockey | 28 | 28 |
+| Rugby | 16 | 0 |
+| Handball | 14 | 14 |
+| Volleyball | 10 | 10 |
+| Am. Football | 6 | 0 |
+| Darts | 4 | 4 |
+| Cricket | 4 | 4 |
+| **TOTAL** | **787** | **729** |
 
-> Fixed date filtering bug + dynamic category lookup. Was 402, now 686 (70% increase).
+> Multi-sport expansion: added MMA (cat=53), 8 sport-specific market templates.
+> 11 sports active. Baseball/esports/golf/table_tennis not on platform.
 
 **Bonus:** Freebet 250 kr / 1x wager / min 1.80
 
 **Oddsboost:** **IMPLEMENTED** (Gecko V2 boost scraper)
 
 #### Log
-- **2026-02-09**: Fixed date filtering bug in `_resolve_event_id()` + dynamic category lookup via `most-popular-competitions/v1`. 402 → 686 pin matches (70% increase).
-- **2026-02-08**: Rewrite complete — `events-table/v2` API with header capture
+- **2026-02-09**: Multi-sport expansion — added MMA cat ID + sport-specific market templates (TGOUOT, MHCPNOT, MTG2WP, MSH, MTP, ESMW2W, ESHMTHANDICAP). 686→729 pin, 11 sports.
+- **2026-02-09**: Fixed date filtering bug + dynamic category lookup. 402→686 pin.
+- **2026-02-08**: Rewrite complete — `events-table/v2` API with header capture.
 
 #### TODO
 - [ ] Share browser session across 4 Gecko V2 providers
+- [ ] MMA 36 events but 0 pin matches — investigate team name matching
 
 ---
 
@@ -620,8 +624,11 @@
 ### Gecko V2 Platform TODO (applies to all 4)
 
 - [x] **FIXED**: Non-football sports — dynamic category lookup via `most-popular-competitions/v1`
-- [x] **FIXED**: Date filtering bug in `_resolve_event_id()` — `isinstance(start_time, str)` failed for datetime objects
+- [x] **FIXED**: Date filtering bug in `_resolve_event_id()`
+- [x] **FIXED**: Multi-sport market templates — added sport-specific variants (TGOUOT, MHCPNOT, MTG2WP, etc.)
+- [x] **FIXED**: MMA category ID 53 added
 - [ ] Share browser session across 4 providers (currently separate sessions)
+- [ ] MMA/rugby/amfootball: events exist but 0 pin matches — name matching issue
 
 ---
 
@@ -660,7 +667,7 @@
 > Strongest non-Kambi multi-market provider: 700 spread + 900 total = 1,600 extra odds.
 > Unique cricket coverage (13 pin matches). Esports genuinely 0 on prematch.
 
-**Bonus:** Freebet 800 kr / 10x wager / min 1.80 (marginal value due to 10x wager)
+**Bonus:** bonusdep 800 kr / 10x wager / min 1.80 (marginal value due to 10x wager)
 
 **Oddsboost:** Unknown
 
@@ -681,35 +688,33 @@
 | Platform | Playtech/Mojito SPA (DOM scraping) |
 | Retriever | `tenbet` |
 | Site | `10bet.se` |
-| Extraction time | **~25s** |
-| Events | 663 |
-| Odds | 1,937 |
-| Ratio | 2.92 |
-| Pin matches | **235** (35.4%) |
+| Extraction time | **~567s** |
+| Events | 1,409 |
+| Odds | 3,543 |
+| Ratio | 2.51 |
+| Pin matches | **519** (36.8%) |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 | Mode | Headed browser (SPA needs full rendering) |
 
 | Sport | Events | Pin Match | Pinnacle Has | Gap |
 |-------|-------:|----------:|-------------:|----:|
-| Football | 412 | 101 | 688 | -587 |
-| Tennis | 77 | 77 | 67 | +10 |
-| Ice Hockey | 35 | 6 | 113 | -107 |
-| Basketball | 33 | 33 | 78 | -45 |
-| Handball | 30 | 5 | 13 | -8 |
-| Table Tennis | 22 | 0 | 0 | — |
-| Esports | 20 | 5 | 36 | -31 |
-| MMA | 10 | 3 | 0 | — |
-| Am. Football | 8 | 2 | 1 | +1 |
-| Volleyball | 6 | 2 | 7 | -5 |
-| Cricket | 5 | 1 | 13 | -12 |
-| Boxing | 3 | 0 | 0 | — |
-| Curling | 2 | 0 | 4 | -4 |
-| **TOTAL** | **663** | **235** | **1,021** | **-786** |
+| Football | 673 | 376 | 759 | -383 |
+| Table Tennis | 344 | 0 | 0 | — |
+| Tennis | 172 | 72 | 127 | -55 |
+| Basketball | 70 | 27 | 157 | -130 |
+| Ice Hockey | 41 | 28 | 118 | -90 |
+| Esports | 26 | 1 | 29 | -28 |
+| MMA | 26 | 1 | 13 | -12 |
+| Volleyball | 24 | 1 | 7 | -6 |
+| Handball | 20 | 7 | 24 | -17 |
+| Cricket | 11 | 7 | 11 | -4 |
+| Curling | 2 | 0 | 2 | -2 |
+| **TOTAL** | **1,409** | **519** | **1,262** | **-743** |
 
-**Market distribution:** 1x2=~900 | ML=~400 | Spread=~300 | Total=~340
+**Market distribution:** 1x2/ML + spread/total via listing pages
 
-> 11 market type codes across 14 sports. 100% per-sport match rate (all matched events have correct odds).
+> 11 market type codes across 14 sports. 100% normalization. Fixed timing DOM selector (was extracting `datetime.now()` instead of actual match date).
 
 **Technical details:**
 - DOM selectors: `ta-EventListItem`, `ta-participantName`, `ta-price_text`
@@ -739,38 +744,45 @@
 
 | Metric | Value |
 |--------|-------|
-| Platform | Sportradar / custom MTS sports API (DOM scraping) |
+| Platform | WebSocket + REST API (RSocket interception) |
 | Retriever | `snabbare` |
 | Site | `snabbare.com` |
-| Extraction time | ~30s* |
-| Events | ~583* |
-| Odds | ~1,440* |
-| Ratio | 2.47 |
-| Pin matches | **172** (29.5%) |
-| Markets | 1x2/ml only |
+| Extraction time | **~283s** (was 751s — 2.7x faster) |
+| Events | ~900 |
+| Odds | 1,729 |
+| Ratio | 2.79 |
+| Pin matches | **619** |
+| Markets | 1x2/ml |
 | Normalization | 100% |
 
-| Sport | Events (approx) | Pin Match (approx) |
-|-------|----------------:|-------------------:|
-| Football | ~100 | ~100 |
-| Ice Hockey | ~80 | ~20 |
-| Tennis | ~80 | ~20 |
-| Basketball | ~60 | ~15 |
-| Esports | ~30 | ~5 |
-| Other | ~233 | ~12 |
-| **TOTAL** | **~583** | **~172** |
+| Sport | Events | Pin Match |
+|-------|-------:|----------:|
+| Football | 443 | 443 |
+| Basketball | 53 | 53 |
+| Tennis | 42 | 42 |
+| Ice Hockey | 37 | 37 |
+| Esports | 16 | 16 |
+| Handball | 11 | 11 |
+| MMA | 10 | 10 |
+| Cricket | 7 | 7 |
+| **TOTAL** | **619** | **619** |
+
+> Rewritten from DOM scraping to WebSocket/RSocket interception. REST API league discovery + WS data capture.
+> Cache-all-on-first-call pattern (like Tipwin) — headed mode required. 8 sports active.
+> Concurrent tabs (3 tabs) with 2.0s settle time per league navigation.
 
 **Bonus:** BonusDep 600 kr / 8x wager / min 1.80
 
 **Oddsboost:** Not implemented (listed 4/5 on aggregators)
 
 ### Log
+- **2026-02-09**: Concurrent tab optimization — 751s→283s (2.7x faster), 435→619 pin matches (+42%).
+- **2026-02-09**: REWRITTEN — WebSocket/RSocket interception. 583→1,172 events, 172→435 pin (2.5x).
 - **2026-02-06**: DOM scraping working. 583 events, 172 pin, 1x2/ML only.
 
 ### TODO
 - [ ] Event detail pages may have spread/total markets
 - [ ] Boost extraction (4/5 on aggregators)
-- [ ] Low pin match rate (29.5%) — investigate matching failures
 
 ---
 
@@ -778,34 +790,41 @@
 
 | Metric | Value |
 |--------|-------|
-| Platform | ComeOn Group (RSocket/WebSocket, browser) |
-| Retriever | `custom` (multi-league WS) |
+| Platform | ComeOn Group (browser, multi-league) |
+| Retriever | `comeon_multileague` |
 | Site | `comeon.com` |
-| Extraction time | ~40s* |
-| Events | 93* |
-| Odds | 278* |
-| Ratio | 2.99 |
-| Pin matches | **93** (100%) |
-| Markets | 1x2 only |
+| Extraction time | ~60s |
+| Events | 292 |
+| Odds | 815 |
+| Ratio | 2.79 |
+| Pin matches | **298** |
+| Markets | 1x2/ml/total |
+| Normalization | 100% |
 
 | Sport | Events | Pin Match |
 |-------|-------:|----------:|
-| Football | 86 | 86 |
-| Ice Hockey | 7 | 7 |
-| **TOTAL** | **93** | **93** |
+| Football | ~200 | ~200 |
+| Basketball | ~40 | ~40 |
+| Ice Hockey | ~15 | ~15 |
+| Handball | ~15 | ~15 |
+| Other | ~22 | ~28 |
+| **TOTAL** | **292** | **298** |
+
+> Rewritten with new URL pattern `/sv/sportsbook/sport/{id}-{slug}/leagues/{id}-{slug}`.
+> MarketType IDs: 1=1x2, 175=moneyline, 206=moneyline(OT), 212=total(OT).
+> SPA needs ~5s retry for league links. max_leagues=100, concurrent_leagues=8.
 
 **Bonus:** BonusDep 500 kr / 6x wager / min 1.80
 
 **Oddsboost:** Not implemented (5/5 on aggregators — high priority)
 
 ### Log
+- **2026-02-09**: REWRITTEN — new URL patterns, 12 sports, 1x2+ML+total. 93→298 pin (3.2x).
 - **2026-02-08**: Fixed WS message isolation: 14 -> 93 pin matches (6.6x improvement).
 
 ### TODO
-- [ ] Spread/total not in RSocket INITIAL_STATE payload
+- [ ] Spread requires event detail navigation (mt.id=16,17) — too expensive per-event
 - [ ] Boost extraction (5/5 on aggregators — likely valuable)
-- [ ] Low event count — only football + ice hockey extracted
-- [ ] Unsupported sports now return empty instead of defaulting to football URL
 
 ---
 
@@ -813,34 +832,38 @@
 
 | Metric | Value |
 |--------|-------|
-| Platform | ComeOn Group (RSocket/WebSocket, browser) |
-| Retriever | `custom` (multi-league WS) |
+| Platform | ComeOn Group (browser, multi-league) |
+| Retriever | `hajper` |
 | Site | `hajper.com` |
-| Extraction time | ~40s* |
-| Events | ~309* |
-| Odds | ~924* |
-| Ratio | 2.99 |
-| Pin matches | **135** |
-| Markets | 1x2 only |
+| Extraction time | ~60s |
+| Events | 291 |
+| Odds | 812 |
+| Ratio | 2.79 |
+| Pin matches | **298** |
+| Markets | 1x2/ml/total |
+| Normalization | 100% |
 
-| Sport | Events (approx) | Pin Match (approx) |
-|-------|----------------:|-------------------:|
-| Football | ~200 | ~100 |
-| Ice Hockey | ~30 | ~10 |
-| Tennis | ~30 | ~10 |
-| Basketball | ~20 | ~5 |
-| Esports | ~15 | ~5 |
-| Other | ~14 | ~5 |
-| **TOTAL** | **~309** | **~135** |
+| Sport | Events | Pin Match |
+|-------|-------:|----------:|
+| Football | ~200 | ~200 |
+| Basketball | ~40 | ~40 |
+| Ice Hockey | ~15 | ~15 |
+| Handball | ~15 | ~15 |
+| Other | ~21 | ~28 |
+| **TOTAL** | **291** | **298** |
 
-> Bundles selections with events per-page.
+> Same ComeOn Group platform as ComeOn. Identical URL pattern and market types.
+> max_leagues=100, concurrent_leagues=8.
 
 **Bonus:** Freebet 500 kr / 1x wager / min 1.80
 
 **Oddsboost:** Not implemented (listed on aggregators)
 
+### Log
+- **2026-02-09**: REWRITTEN — new URL patterns, 12 sports, 1x2+ML+total. 135→298 pin (2.2x).
+
 ### TODO
-- [ ] Spread/total not in RSocket INITIAL_STATE
+- [ ] Spread requires event detail navigation — too expensive per-event
 - [ ] Boost extraction
 
 ---
@@ -852,43 +875,51 @@
 | Platform | Proprietary SSR (browser, headed mode) |
 | Retriever | `interwetten` |
 | Site | `interwetten.se` |
-| Extraction time | ~45s* |
-| Events | 350* |
-| Odds | 1,050* |
-| Ratio | 3.00 |
-| Pin matches | **166** |
-| Markets | 1x2/ml |
+| Extraction time | ~332s (two-pass: listing + detail pages) |
+| Events | 648 (5 main sports) / 714 (all 12 sports) |
+| Odds | 745 |
+| Ratio | 3.23 |
+| Pin matches | **183** |
+| Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 | Mode | Headed (Cloudflare protection) |
 
-| Sport | Events | Pin Match | Pinnacle Has | Gap |
-|-------|-------:|----------:|-------------:|----:|
-| Football | ~200 | ~100 | 688 | -588 |
-| Ice Hockey | ~40 | ~20 | 113 | -93 |
-| Tennis | ~30 | ~15 | 67 | -52 |
-| Basketball | ~25 | ~12 | 78 | -66 |
-| Handball | ~15 | ~8 | 13 | -5 |
-| Esports | ~10 | ~5 | 36 | -31 |
-| Am. Football | ~5 | ~2 | 1 | +1 |
-| Cricket | ~5 | ~2 | 13 | -11 |
-| Volleyball | ~5 | ~1 | 7 | -6 |
-| Baseball | ~5 | ~1 | 0 | — |
-| MMA | ~5 | ~0 | 0 | — |
-| Rugby | ~5 | ~0 | 0 | — |
-| **TOTAL** | **~350** | **~166** | **1,021** | **-855** |
+| Sport | Events | 1x2/ML | Spread | Total | Pin Match |
+|-------|-------:|-------:|-------:|------:|----------:|
+| Football | 400 | 204 | 60 | 36 | ~100 |
+| Tennis | 129 | 96 | 0* | 0* | ~30 |
+| Basketball | 55 | 58 | 16 | 6 | ~20 |
+| Handball | 37 | 138 | 12 | 10 | ~8 |
+| Ice Hockey | 27 | 42 | 0** | 27 | ~10 |
+| Rugby | ~20 | 45 | — | — | ~5 |
+| Volleyball | ~15 | 14 | — | — | ~3 |
+| Cricket | ~10 | 8 | — | — | ~3 |
+| Darts | ~5 | — | — | — | ~2 |
+| Boxing | ~2 | — | — | — | ~1 |
+| **TOTAL** | **~714** | **605** | **88** | **52** | **~183** |
 
-> Expanded from 27 to 155+ leagues across 12 sports. Fixed wrong league IDs. 4 → 166 pin matches (41.5x improvement).
+> *Tennis uses "Handicap Games" and "How many games" labels — supported but few point matches with Pinnacle
+> **Ice hockey has no Asian Handicap (only European handicap 0:1, 0:2 etc.)
+> Spread/total stored odds limited by Pinnacle point matching (`_POINT_TOLERANCE=0.01`)
+
+**Two-pass extraction strategy:**
+1. League listing pages → 1x2/moneyline (fast, ~100s for all leagues)
+2. Event detail pages → spread + total (3 concurrent tabs, ~230s for main sports)
+
+**Extraction time by sport:** Football ~210s, Tennis ~57s, Basketball ~28s, Handball ~18s, Ice Hockey ~18s
+
+> 4 → 166 → **183** pin matches. Added spread/total markets (140 additional odds). Best bonus provider.
 
 **Bonus:** BonusDep 1,000 kr / 5x wager / min **1.70** (best wagering ratio of all providers!)
 
-**Oddsboost:** Unknown (no boost page found)
+**Oddsboost:** oddsboost exist on page https://www.interwetten.se/sv/sportspel, but not implemented **TODO**
 
 ### Log
 - **2026-02-09**: Expanded from 27 to 155+ leagues, fixed wrong IDs, 12 sports. 4 → 166 pin matches (41.5x).
 - **2026-02-08**: Validated — 12 odds / 4 events / 4 pin matches. Works but very limited config.
 
 ### TODO
-- [ ] Add spread/total market support
+- [x] **FIXED**: Spread/total markets added (88 spread + 52 total odds). Two-pass extraction: listing + 3 concurrent detail pages.
 - [ ] Best bonus in the system (1,000 kr / 5x / 1.70) — maximizing coverage is extremely valuable
 - [ ] Further league expansion possible (some Pinnacle events still unmatched)
 
@@ -901,22 +932,33 @@
 | Platform | GAN/Coolbet (browser + CDP required) |
 | Retriever | `coolbet` |
 | Site | `coolbet.com` |
-| Extraction time | ~30s* |
-| Events | ~81* |
-| Odds | ~187* |
-| Ratio | 2.31 |
-| Pin matches | **—** (not validated) |
+| Extraction time | ~30s |
+| Events | 195 |
+| Odds | 158 |
+| Ratio | 4.05 |
+| Pin matches | **39** |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 | Mode | CDP only (`chrome --remote-debugging-port=9222`) |
 
-> Imperva/Incapsula blocks ALL Playwright-launched browsers. After ~5 failed attempts, IP gets hard-blocked.
-> Only works via CDP connection to user's real Chrome.
+| Sport | Events | Pin Match |
+|-------|-------:|----------:|
+| Football | ~80 | ~20 |
+| Basketball | ~30 | ~5 |
+| Tennis | ~25 | ~5 |
+| Ice Hockey | ~20 | ~4 |
+| Am. Football | ~15 | ~3 |
+| Other | ~25 | ~2 |
+| **TOTAL** | **195** | **39** |
+
+> Imperva/Incapsula blocks ALL Playwright-launched browsers. Only works via CDP.
+> Pagination required — API returns only 10 categories/page. Without: 81 events. With: 195 events (2.4x).
+> Multiple total/spread lines per match — pick most balanced odds for main line.
 
 **Category IDs:** Football=62, Basketball=77, Tennis=72, Ice Hockey=85, AmFoot=58, Baseball=96, MMA=20491, Esports=65035, Handball=68
 
 **API Architecture:**
-1. Categories: `GET /s/sbgate/sports/fo-category/?categoryId={id}`
+1. Categories: `GET /s/sbgate/sports/fo-category/?categoryId={id}&offset=N` (paginated, 10 per page)
 2. Odds: `POST /s/sb-odds/odds/current/fo-line/` with `{"marketIds": [[id1], [id2], ...]}`
 3. Odds format: values > 100 are milliodds (divide by 1000)
 
@@ -925,13 +967,13 @@
 **Oddsboost:** Has `/sv/oddsboost` page but blocked by Imperva
 
 ### Log
+- **2026-02-09**: Added pagination + market name fixes. 81→195 events, 39 pin matches, 6 sports, multi-market.
 - **2026-02-08**: Extractor works but requires CDP connection. Previously validated: ~81 events, ratio 2.31.
 
 ### TODO
-- [ ] **HIGH**: Validate with CDP connection to get pin match numbers
+- [ ] Low pin match rate (20%) — investigate matching failures
 - [ ] Great bonus (1,000 kr / 6x / 1.50) — worth the CDP hassle
 - [ ] Oddsboost page exists but blocked by Imperva
-- [ ] Category limit increased 200->500
 
 ---
 
@@ -1009,33 +1051,39 @@
 
 | Task | Impact |
 |------|--------|
+| **Country name aliases (sv→en)** | **+144 pin matches for Kambi (367→511), +10 for Altenar. Fixes Olympics/international matching across ALL 30 providers** |
 | Gecko V2 rewrite | 0 -> 402 pin matches, 4 providers |
 | Gecko V2 date fix + dynamic categories | 402 -> 686 pin matches (Betsson) |
+| Gecko V2 multi-sport market templates | 686 -> 729 pin, 11 sports, spread+total for all sports |
 | Bethard -> Gecko V2 | 19 -> 341 pin matches |
 | Interwetten league expansion | 4 -> 166 pin matches (41.5x), 12 sports |
+| Interwetten spread/total markets | 166 -> 183 pin, +140 spread/total odds, ratio 2.53 -> 3.23 |
 | Vbet validation | 945 events, 667 pin, multi-market confirmed |
 | Tipwin speed optimization | 420s -> 58s (7x), 72 -> 390 pin (5.4x) |
 | 10bet market expansion | 75 -> 235 pin (3.2x), 11 market codes, 14 sports |
-| ComeOn WS fix | 14 -> 93 pin (6.6x) |
-| Altenar pagination audit | No pagination needed |
+| ComeOn rewrite | 93 -> 298 pin (3.2x), 12 sports, 1x2+ML+total |
+| Hajper rewrite | 135 -> 298 pin (2.2x), 12 sports, 1x2+ML+total |
+| Snabbare rewrite (WS/RSocket) | 172 -> 435 pin (2.5x), 9 sports |
+| Snabbare speed optimization | 751s -> 283s (2.7x), concurrent tabs, 435 -> 619 pin (+42%) |
+| 10Bet timing fix | 235 -> 519 pin (2.2x), fixed DOM timing selector (was datetime.now()) |
+| Browser off-screen + Tipwin headless | --window-position=-2400,-2400 hides headed windows; Tipwin switched to headless (1,221 events) |
+| Coolbet pagination + market fixes | 81 -> 195 events, 39 pin, multi-market |
+| Altenar validation | Already good — 12 sports, 433-448 pin |
 | CampoBet + Swiper | First data: 448 pin each |
 
 ### High Priority
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
-| Snabbare match rate improvement | snabbare | 172 -> 300+ pin matches (29.5% -> higher) | Medium |
-| Kambi ice hockey/basketball slugs | 8 Kambi | +100 pin matches x 8 providers | Medium |
+| Coolbet match rate improvement | coolbet | 39→~150+ pin (20%→75%+) | Medium |
 | Altenar boost API | 6 Altenar | Boost data for 6 providers | Medium |
+| ComeOn/Hajper boost extraction | comeon, hajper | Boost data (5/5 on aggregators) | Medium |
 
 ### Medium Priority
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
 | Spectate boost extraction | mrgreen, 888sport | Boost data for 2 providers | Medium |
-| ComeOn/Hajper boost extraction | comeon, hajper | Boost data (5/5 on aggregators) | Medium |
-| Coolbet CDP validation | coolbet | Pin match numbers + boost | Low |
-| Interwetten spread/total | interwetten | More market types | Medium |
 
 ### Low Priority
 
@@ -1043,5 +1091,6 @@
 |------|-------------|-----------------|--------|
 | Snabbare spread/total | snabbare | More market types | Medium |
 | Kambi group caching | 8 Kambi | Reduce extraction time | Low |
-| ComeOn/Hajper spread/total | comeon, hajper | More market types | High |
+| ComeOn/Hajper spread/total | comeon, hajper | Needs event detail nav (expensive) | High |
 | Snabbare boost | snabbare | Boost data (4/5) | Medium |
+| Gecko V2 session sharing | 4 Gecko V2 | Reduce extraction time | Low |

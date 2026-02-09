@@ -264,11 +264,24 @@ class TenBetRetriever(BrowserRetriever):
                         item.querySelectorAll('[class*="ta-participantName"]')
                     ).map(p => p.textContent.trim());
 
-                    // Timing
+                    // Timing — find div containing time pattern (HH:MM)
+                    let timing = '';
                     const timingEl = item.querySelector(
                         '[class*="ta-EventTimingStatus"], [class*="Timing"]'
                     );
-                    const timing = timingEl ? timingEl.textContent.trim() : '';
+                    if (timingEl) {
+                        timing = timingEl.textContent.trim();
+                    } else {
+                        // Fallback: search for small div with time pattern
+                        const divs = item.querySelectorAll('div');
+                        for (const d of divs) {
+                            const t = d.textContent.trim();
+                            if (t.length < 25 && /\\d{1,2}:\\d{2}/.test(t) && d.children.length === 0) {
+                                timing = t;
+                                break;
+                            }
+                        }
+                    }
 
                     // Live indicator
                     const isLive = !!(

@@ -2,30 +2,18 @@
 Coolbet Retriever - Proprietary GAN Sports platform
 
 Coolbet uses a proprietary sportsbook (formerly GAN Sports) with Imperva/Incapsula
-bot protection. Uses browser-based API interception via Playwright.
+bot protection. Uses browser-based API interception via Playwright CDP.
 
 API endpoints (proxied through coolbet.com):
-- GET /s/sbgate/sports/fo-category/?categoryId={id} — category/league listing with matches and markets
-- POST /s/sb-odds/odds/current/fo — odds values keyed by outcome ID
-- POST /s/sb-odds/odds/current/fo-line/ — line (spread/total) odds
+- GET /s/sbgate/sports/fo-category/?categoryId={id}&offset=N — paginated category/league listing
+- POST /s/sb-odds/odds/current/fo-line/ — odds values keyed by outcome ID
 
-The category API returns match structure including:
-- match.home_team_name, match.away_team_name, match.match_start
-- match.markets[].name, match.markets[].outcomes[].id, outcome.result_key
-- Odds decimal values come from the sb-odds POST (keyed by outcome ID)
+The category API returns 10 leagues per page. Must paginate with offset (starting at 1)
+to get all leagues for a sport. offset=0 returns a validation error.
 
 Sport category IDs (discovered via /s/sbgate/category/by-slug/sv/):
-- Football: 62
-- Basketball: 77
-- Tennis: 72
-- Ice Hockey: 85
-- American Football: 58
-- Baseball: 96
-- MMA: 20491
-- Esports: 65035
-- Handball: 68
-
-URL structure: /sv/odds/{sport-slug}
+- Football: 62, Basketball: 77, Tennis: 72, Ice Hockey: 85
+- American Football: 58, Baseball: 96, MMA: 20491, Esports: 65035, Handball: 68
 """
 
 from typing import Dict, Any, List, Optional
@@ -41,11 +29,14 @@ from ..matching.normalizer import normalize_team_name, normalize_outcome
 
 logger = logging.getLogger(__name__)
 
+# Page size for category API (fixed server-side)
+CATEGORY_PAGE_SIZE = 10
+MAX_OFFSET = 500
+
 
 class CoolbetRetriever(BrowserRetriever):
     """Retriever for Coolbet sportsbook (GAN Sports platform)."""
 
-    # Sport slug → categoryId mapping (discovered via /s/sbgate/category/by-slug/sv/)
     SPORT_CONFIG: Dict[str, Dict] = {
         "football":          {"slug": "fotboll",             "category_id": 62},
         "basketball":        {"slug": "basket",              "category_id": 77},
@@ -58,34 +49,43 @@ class CoolbetRetriever(BrowserRetriever):
         "handball":          {"slug": "handboll",            "category_id": 68},
     }
 
-    # Markets we extract (Coolbet naming)
+    # Exact market name → standard type (all observed names from API)
     MARKET_MAP = {
-        "Match Result (1X2)":       "1x2",
-        "Match Winner":             "moneyline",
-        "Moneyline":                "moneyline",
-        "Total Goals Over / Under": "total",
-        "Total Points Over / Under": "total",
-        "Total Over / Under":       "total",
-        "Asian Handicap":           "spread",
-        "Handicap":                 "spread",
-        "Spread":                   "spread",
+        # 1x2 (3-way)
+        "Match Result (1X2)":           "1x2",
+        # Moneyline (2-way)
+        "Match Winner":                 "moneyline",
+        "Match Winner (2-way)":         "moneyline",
+        "Moneyline":                    "moneyline",
+        "Money Line":                   "moneyline",
+        "Match Result":                 "moneyline",
+        # Total
+        "Total Goals Over / Under":     "total",
+        "Total Goals Over/Under":       "total",
+        "Total Points Over/Under":      "total",
+        "Total Points Over / Under":    "total",
+        "Total Over / Under":           "total",
+        "Total Over/Under":             "total",
+        "Total Games Over/Under":       "total",
+        "Total Maps Played":            "total",
+        # Spread
+        "Asian Handicap":               "spread",
+        "Handicap (2 Way)":             "spread",
+        "Handicap":                     "spread",
+        "Spread":                       "spread",
+        "Game Handicap":                "spread",
+        "Match Handicap":               "spread",
     }
+
+    # Market names to explicitly skip (3-way handicap not useful)
+    SKIP_MARKETS = {"Handicap (3 Way)"}
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.coolbet.com")
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
-        """
-        Extract events using Coolbet's internal API (via browser context for auth).
-
-        Flow:
-        1. Navigate to sport page (establishes session/cookies)
-        2. Fetch category data via direct API call (gets all leagues + matches)
-        3. Collect outcome IDs from prematch matches
-        4. Fetch odds via POST to sb-odds endpoint
-        5. Merge and parse into StandardEvents
-        """
+        """Extract events using Coolbet's internal API via browser context."""
         sport_conf = self.SPORT_CONFIG.get(sport)
         if not sport_conf:
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
@@ -112,24 +112,6 @@ class CoolbetRetriever(BrowserRetriever):
                 sport_url = f"{self.site_url}/sv/odds/{sport_conf['slug']}"
                 logger.info(f"[{self.provider_id}] Loading {sport_url}")
 
-                # Intercept odds responses during initial page load
-                odds_data: Dict[str, Any] = {}
-                pending_tasks = []
-
-                async def capture_odds(response):
-                    try:
-                        if '/s/sb-odds/odds/current/fo' in response.url:
-                            data = await response.json()
-                            if isinstance(data, dict):
-                                odds_data.update(data)
-                    except Exception:
-                        pass
-
-                def on_response(response):
-                    if '/s/sb-odds/' in response.url:
-                        pending_tasks.append(asyncio.create_task(capture_odds(response)))
-
-                page.on('response', on_response)
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
                 # Check for Imperva block
@@ -143,20 +125,13 @@ class CoolbetRetriever(BrowserRetriever):
                         f"[{self.provider_id}] Imperva block detected. "
                         f"Start Chrome with: chrome --remote-debugging-port=9222"
                     )
-                    page.remove_listener('response', on_response)
                     return []
 
-                await asyncio.sleep(5)
-                page.remove_listener('response', on_response)
-                if pending_tasks:
-                    await asyncio.gather(*pending_tasks, return_exceptions=True)
-
+                await asyncio.sleep(2)
                 self._session_ready = True
-            else:
-                odds_data = {}
 
-            # Fetch category data via direct API call
-            category_data = await self._fetch_category_api(
+            # Fetch ALL categories with pagination
+            category_data = await self._fetch_all_categories(
                 page, sport_conf['category_id']
             )
 
@@ -164,11 +139,11 @@ class CoolbetRetriever(BrowserRetriever):
                 logger.warning(f"[{self.provider_id}] No category data for {sport}")
                 return []
 
-            # Collect market IDs from prematch matches to fetch odds
+            # Collect market IDs from prematch matches
             market_ids = []
             for cat in category_data:
                 for match in cat.get("matches", []):
-                    if match.get("inplay"):
+                    if match.get("inplay") or match.get("match_type") == "OUTRIGHT":
                         continue
                     for market in match.get("markets", []):
                         mid = market.get("id")
@@ -176,13 +151,13 @@ class CoolbetRetriever(BrowserRetriever):
                             market_ids.append(mid)
 
             # Fetch odds for all markets via POST
+            odds_data = {}
             if market_ids:
-                fetched_odds = await self._fetch_odds_api(page, market_ids)
-                odds_data.update(fetched_odds)
+                odds_data = await self._fetch_odds_api(page, market_ids)
 
             logger.info(
                 f"[{self.provider_id}] {sport}: {len(category_data)} categories, "
-                f"{len(odds_data)} odds entries"
+                f"{len(market_ids)} markets, {len(odds_data)} odds entries"
             )
 
             # Parse events
@@ -194,45 +169,93 @@ class CoolbetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    async def _fetch_category_api(self, page, category_id: int) -> List[Dict]:
-        """Fetch category data via browser context (shares cookies/auth)."""
+    async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
+        """Fetch all categories with pagination (API returns 10 per page).
+
+        First fetches without offset (gets first 10), then paginates with offset
+        starting from 11 to get the rest.
+        """
+        all_categories = []
+        seen_cat_ids = set()
+
+        # First page: no offset param (offset=0 returns validation error)
+        first_page = await self._fetch_category_page(page, category_id, offset=None)
+        if first_page:
+            for cat in first_page:
+                cid = cat.get("id")
+                if cid not in seen_cat_ids:
+                    seen_cat_ids.add(cid)
+                    all_categories.append(cat)
+
+        # Paginate remaining pages
+        empty_count = 0
+        offset = CATEGORY_PAGE_SIZE + 1  # Start after first page
+
+        while offset < MAX_OFFSET:
+            cats = await self._fetch_category_page(page, category_id, offset)
+
+            if not cats:
+                empty_count += 1
+                if empty_count >= 2:
+                    break
+                offset += CATEGORY_PAGE_SIZE
+                continue
+
+            empty_count = 0
+            new_count = 0
+            for cat in cats:
+                cid = cat.get("id")
+                if cid not in seen_cat_ids:
+                    seen_cat_ids.add(cid)
+                    all_categories.append(cat)
+                    new_count += 1
+
+            if new_count == 0:
+                break
+
+            offset += CATEGORY_PAGE_SIZE
+
+        logger.info(
+            f"[{self.provider_id}] Category API: {len(all_categories)} categories "
+            f"(paginated to offset={offset})"
+        )
+        return all_categories
+
+    async def _fetch_category_page(
+        self, page, category_id: int, offset: Optional[int] = None
+    ) -> List[Dict]:
+        """Fetch a single page of categories."""
         try:
             url = (
                 f"{self.site_url}/s/sbgate/sports/fo-category/"
                 f"?categoryId={category_id}&country=SE&isMobile=0"
                 f"&language=sv&layout=EUROPEAN&limit=500"
             )
+            if offset is not None:
+                url += f"&offset={offset}"
             resp = await page.evaluate(f"""
                 (async () => {{
                     const resp = await fetch('{url}', {{credentials: 'include'}});
+                    if (!resp.ok) return null;
                     return await resp.json();
                 }})();
             """)
             if isinstance(resp, list):
-                logger.info(
-                    f"[{self.provider_id}] Category API: {len(resp)} categories"
-                )
                 return resp
         except Exception as e:
-            logger.debug(f"[{self.provider_id}] Direct category API failed: {e}")
+            logger.debug(f"[{self.provider_id}] Category page offset={offset} failed: {e}")
         return []
 
     async def _fetch_odds_api(self, page, market_ids: List) -> Dict:
-        """Fetch odds values for market IDs via the sb-odds fo-line endpoint.
-
-        The Coolbet odds API accepts {"marketIds": [[id1], [id2], ...]}
-        and returns odds keyed by outcome_id.
-        """
+        """Fetch odds values for market IDs via the sb-odds fo-line endpoint."""
         if not market_ids:
             return {}
         try:
-            # Deduplicate and format as nested arrays
             unique_ids = list(set(market_ids))
             all_odds = {}
             chunk_size = 200
             for i in range(0, len(unique_ids), chunk_size):
                 chunk = unique_ids[i:i + chunk_size]
-                # Each market ID is wrapped in its own array
                 market_arrays = [[mid] for mid in chunk]
                 body = json.dumps({"marketIds": market_arrays})
                 resp = await page.evaluate(f"""
@@ -290,13 +313,9 @@ class CoolbetRetriever(BrowserRetriever):
         league: str,
     ) -> Optional[StandardEvent]:
         """Parse a single match from Coolbet category API."""
-        # Skip live events
         if match.get("inplay"):
             return None
-
-        # Skip outrights/season bets
-        match_type = match.get("match_type")
-        if match_type == "OUTRIGHT":
+        if match.get("match_type") == "OUTRIGHT":
             return None
 
         match_id = match.get("id")
@@ -309,7 +328,6 @@ class CoolbetRetriever(BrowserRetriever):
         home_team = normalize_team_name(home_team_raw)
         away_team = normalize_team_name(away_team_raw)
 
-        # Parse start time
         start_time = None
         start_str = match.get("match_start")
         if start_str:
@@ -318,14 +336,18 @@ class CoolbetRetriever(BrowserRetriever):
             except (ValueError, TypeError):
                 pass
 
-        # Parse markets
+        # Parse markets — for total/spread, collect all lines then pick main line
         markets = []
-        seen_market_types = set()
+        # Candidates grouped by type: {type: [(market_dict, balance_score), ...]}
+        line_candidates: Dict[str, List] = {}
 
         for raw_market in match.get("markets", []):
             market_name = raw_market.get("name", "")
+            if market_name in self.SKIP_MARKETS:
+                continue
+
             market_type = self._normalize_market_type(market_name)
-            if not market_type or market_type in seen_market_types:
+            if not market_type:
                 continue
 
             line = raw_market.get("line")
@@ -336,57 +358,37 @@ class CoolbetRetriever(BrowserRetriever):
                 except (ValueError, TypeError):
                     pass
 
-            outcomes = []
-            for raw_outcome in raw_market.get("outcomes", []):
-                if raw_outcome.get("status") != "OPEN":
-                    continue
+            outcomes = self._parse_outcomes(
+                raw_market.get("outcomes", []),
+                odds_data, market_type, home_team_raw, away_team_raw
+            )
 
-                outcome_id = str(raw_outcome.get("id", ""))
-                result_key = raw_outcome.get("result_key", "")
-                outcome_name_raw = raw_outcome.get("name", "")
+            if not outcomes:
+                continue
 
-                # Get odds value from odds_data (keyed by outcome ID)
-                odds_entry = odds_data.get(outcome_id)
-                if odds_entry is None:
-                    odds_entry = odds_data.get(raw_outcome.get("id"))
-                if odds_entry is None:
-                    continue
+            market_dict = {"type": market_type, "outcomes": outcomes}
+            if point is not None:
+                for o in market_dict["outcomes"]:
+                    o["point"] = point
 
-                # odds_entry can be a dict {value: ...} or a plain number
-                if isinstance(odds_entry, dict):
-                    odds_val = odds_entry.get("value")
-                    # Skip suspended outcomes
-                    if odds_entry.get("status") == "SUSPENDED":
-                        continue
+            if market_type in ("total", "spread"):
+                # Collect candidates — pick most balanced line later
+                odds_vals = [o["odds"] for o in outcomes]
+                if len(odds_vals) >= 2:
+                    balance = abs(odds_vals[0] - odds_vals[1])
                 else:
-                    odds_val = odds_entry
+                    balance = 999.0
+                line_candidates.setdefault(market_type, []).append((market_dict, balance))
+            else:
+                # 1x2/moneyline: take first
+                if market_type not in {m["type"] for m in markets}:
+                    markets.append(market_dict)
 
-                if odds_val is None or not isinstance(odds_val, (int, float)):
-                    continue
-
-                # Coolbet uses milliodds for values > 100 (e.g. 4501 = 4.501)
-                if odds_val > 100:
-                    odds_val = odds_val / 1000.0
-
-                if odds_val <= 1.0:
-                    continue
-
-                # Normalize outcome name
-                outcome_name = self._normalize_outcome(
-                    result_key, outcome_name_raw, market_type,
-                    home_team_raw, away_team_raw
-                )
-                if not outcome_name:
-                    continue
-
-                outcome_dict = {"name": outcome_name, "odds": float(odds_val)}
-                if point is not None:
-                    outcome_dict["point"] = point
-                outcomes.append(outcome_dict)
-
-            if outcomes:
-                markets.append({"type": market_type, "outcomes": outcomes})
-                seen_market_types.add(market_type)
+        # Pick the most balanced line for total/spread (main line)
+        for mtype, candidates in line_candidates.items():
+            if mtype not in {m["type"] for m in markets}:
+                best = min(candidates, key=lambda x: x[1])
+                markets.append(best[0])
 
         # Dedup: prefer 1x2 over moneyline
         market_types_present = {m["type"] for m in markets}
@@ -408,19 +410,82 @@ class CoolbetRetriever(BrowserRetriever):
             markets=markets,
         )
 
+    def _parse_outcomes(
+        self,
+        raw_outcomes: List[Dict],
+        odds_data: Dict,
+        market_type: str,
+        home_raw: str,
+        away_raw: str,
+    ) -> List[Dict]:
+        """Parse outcomes for a market, looking up odds from odds_data."""
+        outcomes = []
+        for raw_outcome in raw_outcomes:
+            if raw_outcome.get("status") != "OPEN":
+                continue
+
+            outcome_id = str(raw_outcome.get("id", ""))
+            result_key = raw_outcome.get("result_key", "")
+            outcome_name_raw = raw_outcome.get("name", "")
+
+            # Get odds value from odds_data (keyed by outcome ID)
+            odds_entry = odds_data.get(outcome_id)
+            if odds_entry is None:
+                odds_entry = odds_data.get(raw_outcome.get("id"))
+            if odds_entry is None:
+                continue
+
+            if isinstance(odds_entry, dict):
+                if odds_entry.get("status") == "SUSPENDED":
+                    continue
+                odds_val = odds_entry.get("value")
+            else:
+                odds_val = odds_entry
+
+            if odds_val is None or not isinstance(odds_val, (int, float)):
+                continue
+
+            # Coolbet uses milliodds for values > 100
+            if odds_val > 100:
+                odds_val = odds_val / 1000.0
+
+            if odds_val <= 1.0:
+                continue
+
+            outcome_name = self._normalize_outcome(
+                result_key, outcome_name_raw, market_type,
+                home_raw, away_raw
+            )
+            if not outcome_name:
+                continue
+
+            outcomes.append({"name": outcome_name, "odds": float(odds_val)})
+
+        return outcomes
+
     def _normalize_market_type(self, market_name: str) -> Optional[str]:
         """Map Coolbet market name to standard type."""
-        # Exact match first
         if market_name in self.MARKET_MAP:
             return self.MARKET_MAP[market_name]
 
-        # Fuzzy match
         name_lower = market_name.lower()
-        if "1x2" in name_lower or "match result" in name_lower:
+
+        # Skip sequence/quarter/period markets
+        if "[sequence]" in name_lower or "quarter" in name_lower or "period" in name_lower:
+            return None
+        # Skip 3-way handicap
+        if "3 way" in name_lower or "3-way" in name_lower:
+            return None
+
+        if "1x2" in name_lower:
             return "1x2"
-        if "winner" in name_lower or "moneyline" in name_lower:
+        if "match result" in name_lower:
+            return "1x2"
+        if "winner" in name_lower or "moneyline" in name_lower or "money line" in name_lower:
             return "moneyline"
-        if "over / under" in name_lower or "over/under" in name_lower or "total" in name_lower:
+        if "over" in name_lower and "under" in name_lower:
+            return "total"
+        if "total" in name_lower and ("over" in name_lower or "under" in name_lower or "maps" in name_lower):
             return "total"
         if "handicap" in name_lower or "spread" in name_lower:
             return "spread"
@@ -449,6 +514,12 @@ class CoolbetRetriever(BrowserRetriever):
                 return normalize_outcome(name, home_raw, away_raw)
 
         elif market_type == "total":
+            rk_check = rk.lower()
+            if rk_check == "over":
+                return "over"
+            elif rk_check == "under":
+                return "under"
+            # Fallback to name
             name_lower = name.lower()
             if "över" in name_lower or "over" in name_lower:
                 return "over"

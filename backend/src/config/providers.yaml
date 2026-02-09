@@ -543,7 +543,7 @@ providers:
       min_odds: 1.80
 
   # --------------------------------------------------------------------------
-  # Snabbare (custom MTS sports API)
+  # Snabbare (Sportradar MTS - WebSocket extraction)
   # --------------------------------------------------------------------------
 
   snabbare:
@@ -551,13 +551,23 @@ providers:
     name: Snabbare
     domain: snabbare.com
     retriever_type: snabbare
-    api_base: https://www.snabbare.com/sportsbook-api/api
     site_url: https://www.snabbare.com
-    params:
-      tournaments:
-        football:
-          - sweden/allsvenskan
-          - england/premier-league
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - esports
+      - handball
+      - volleyball
+      - table_tennis
+      - rugby
+      - cricket
+      - boxing
+      - darts
     bonus:
       type: bonusdeposit
       amount: 600
@@ -579,12 +589,8 @@ providers:
       amount: 500
       wagering_multiplier: 6
       min_odds: 1.80
-    max_leagues: 30
+    max_leagues: 100
     concurrent_leagues: 8
-    extract_full_markets: false
-    concurrent_event_details: 8
-    detail_extraction_filter: "none"
-    sports_to_extract: "all"
     supported_sports:
       - football
       - basketball
@@ -592,12 +598,12 @@ providers:
       - ice_hockey
       - american_football
       - baseball
-      - cricket
-      - rugby
       - esports
       - mma
-      - boxing
-      - motorsports
+      - handball
+      - rugby
+      - cricket
+      - table_tennis
 
   hajper:
     id: hajper
@@ -610,17 +616,18 @@ providers:
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
-    max_leagues: 30
+    max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
       - football
       - basketball
-      - tennis
       - ice_hockey
       - american_football
       - baseball
       - mma
       - esports
+      - handball
+      - table_tennis
 
   # --------------------------------------------------------------------------
   # BetConstruct / Swarm WebSocket providers
@@ -700,6 +707,7 @@ providers:
       - baseball
       - mma
       - esports
+      - handball
     bonus:
       type: depositbonus
       amount: 1000

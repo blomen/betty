@@ -126,8 +126,12 @@ class ExtractorFactory:
             transport = BrowserTransport(headless=True)
             retriever = GeckoV2Retriever(config, transport=transport)
         elif retriever_type == "snabbare":
+            # Snabbare - Sportradar MTS platform, WebSocket interception
+            # Headed required: headless drops from ~900 to ~249 events (WS data not delivered)
+            from .core import BrowserTransport
             from .providers.snabbare import SnabbareRetriever
-            retriever = SnabbareRetriever(config)
+            transport = BrowserTransport(headless=False)
+            retriever = SnabbareRetriever(config, transport=transport)
         elif retriever_type == "pinnacle":
             retriever = PinnacleRetriever(config)
         elif retriever_type == "sbtech":
@@ -167,8 +171,9 @@ class ExtractorFactory:
             retriever = CoolbetRetriever(config, transport=transport)
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
+            # Headless works fine (tested: 1,221 events vs 1,077 headed)
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=False)
+            transport = BrowserTransport(headless=True)
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations
