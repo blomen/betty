@@ -328,7 +328,7 @@ def store_polymarket_event(
         if isinstance(start_dt, str):
             try:
                 start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
-            except:
+            except (ValueError, TypeError):
                 start_dt = None
 
         db_event = Event(
@@ -466,6 +466,180 @@ def store_polymarket_event(
     return is_new_event, odds_processed, odds_new
 
 
+def _resolve_event_id(
+    session,
+    event: StandardEvent,
+    provider: str,
+    event_cache: dict,
+    fuzzy_threshold: int,
+    min_individual_score: int,
+    prefix_filter_length: int,
+    require_match: bool,
+) -> tuple[str | None, bool]:
+    """
+    Resolve event to a canonical ID via exact match, fuzzy match, or swapped-team fallback.
+
+    Returns:
+        (event_id, is_swapped) or (None, False) if require_match=True and no match found.
+    """
+    from ..matching.matcher import get_team_match_score
+
+    default_id = generate_canonical_id(event.sport, event.home_team, event.away_team, event.start_time)
+
+    # 1. Exact match on canonical ID
+    if session.query(Event.id).filter(Event.id == default_id).first():
+        return default_id, False
+
+    # 2. Fuzzy match against memory cache
+    if isinstance(event.start_time, str):
+        event_date = event.start_time.split('T')[0].replace('-', '')
+    elif hasattr(event.start_time, 'strftime'):
+        event_date = event.start_time.strftime('%Y%m%d')
+    else:
+        event_date = "00000000"
+
+    sport_events = event_cache.get(event.sport, {})
+
+    # Filter by date (allow +/- 1 day for timezone issues)
+    candidates = []
+    for pid, (home, away, date) in sport_events.items():
+        if date == event_date:
+            candidates.append((pid, home, away, date))
+        else:
+            try:
+                if date and event_date:
+                    d1 = datetime.strptime(event_date, "%Y%m%d")
+                    d2 = datetime.strptime(date, "%Y%m%d")
+                    if abs((d1 - d2).days) <= 1:
+                        candidates.append((pid, home, away, date))
+            except (ValueError, TypeError):
+                pass
+
+    # Pre-filter by team name prefix for better performance
+    if prefix_filter_length > 0 and len(candidates) > 10:
+        home_prefix = event.home_team[:prefix_filter_length].lower() if event.home_team else ""
+        away_prefix = event.away_team[:prefix_filter_length].lower() if event.away_team else ""
+
+        prefix_filtered = [
+            (pid, home, away, date)
+            for pid, home, away, date in candidates
+            if (home[:prefix_filter_length].lower() == home_prefix or
+                away[:prefix_filter_length].lower() == home_prefix or
+                home[:prefix_filter_length].lower() == away_prefix or
+                away[:prefix_filter_length].lower() == away_prefix)
+        ]
+        if prefix_filtered:
+            candidates = prefix_filtered
+
+    # Try fuzzy matching with STRICT validation
+    best_score = 0
+    best_match_id = None
+    best_match_details = None
+    best_is_swapped = False
+
+    near_miss_score = 0
+    near_miss_details = None
+    near_miss_reason = None
+
+    for pid, poly_home, poly_away, date in candidates:
+        home_direct = get_team_match_score(event.home_team, poly_home)
+        away_direct = get_team_match_score(event.away_team, poly_away)
+        home_swapped = get_team_match_score(event.home_team, poly_away)
+        away_swapped = get_team_match_score(event.away_team, poly_home)
+
+        direct_avg = (home_direct + away_direct) / 2
+        swapped_avg = (home_swapped + away_swapped) / 2
+
+        is_swapped = swapped_avg > direct_avg
+        if is_swapped:
+            team1_score, team2_score = home_swapped, away_swapped
+            avg_score = swapped_avg
+        else:
+            team1_score, team2_score = home_direct, away_direct
+            avg_score = direct_avg
+
+        is_new_best = avg_score > near_miss_score
+        if is_new_best:
+            near_miss_score = avg_score
+            near_miss_details = (poly_home, poly_away, team1_score, team2_score)
+
+        if avg_score < fuzzy_threshold:
+            if is_new_best:
+                near_miss_reason = f"avg {avg_score:.0f} < threshold {fuzzy_threshold}"
+            continue
+
+        if team1_score < min_individual_score or team2_score < min_individual_score:
+            if is_new_best:
+                near_miss_reason = f"individual {team1_score:.0f}/{team2_score:.0f}, min required {min_individual_score}"
+            logger.debug(
+                f"[{provider}] Rejected match '{event.home_team} vs {event.away_team}' -> "
+                f"'{poly_home} vs {poly_away}': individual scores {team1_score:.0f}/{team2_score:.0f}"
+            )
+            continue
+
+        score_diff = abs(team1_score - team2_score)
+        if score_diff > 20 and min(team1_score, team2_score) < 85:
+            if is_new_best:
+                near_miss_reason = f"asymmetric {team1_score:.0f}/{team2_score:.0f}"
+            logger.debug(
+                f"[{provider}] Rejected asymmetric match '{event.home_team} vs {event.away_team}': "
+                f"scores {team1_score:.0f}/{team2_score:.0f}"
+            )
+            continue
+
+        if avg_score > best_score:
+            best_score = avg_score
+            best_match_id = pid
+            best_match_details = (poly_home, poly_away, team1_score, team2_score)
+            best_is_swapped = is_swapped
+
+    if best_match_id:
+        poly_home, poly_away, t1, t2 = best_match_details
+        swap_note = " [SWAPPED]" if best_is_swapped else ""
+        logger.info(
+            f"[{provider}] Matched '{event.home_team} vs {event.away_team}' -> "
+            f"'{poly_home} vs {poly_away}' (scores: {t1:.0f}/{t2:.0f}, avg: {best_score:.0f}){swap_note}"
+        )
+        return best_match_id, best_is_swapped
+
+    # 3. No fuzzy match - check if canonical event exists with swapped teams
+    swapped_id = generate_canonical_id(event.sport, event.away_team, event.home_team, event.start_time)
+    if session.query(Event.id).filter(Event.id == swapped_id).first():
+        logger.info(
+            f"[{provider}] Aligned '{event.home_team} vs {event.away_team}' -> "
+            f"canonical event with swapped teams (using {swapped_id})"
+        )
+        return swapped_id, True
+
+    # 4. No match at all
+    if require_match:
+        logger.debug(
+            f"[{provider}] Skipped '{event.home_team} vs {event.away_team}' - no sharp match"
+        )
+        return None, False
+
+    # Use default ID — log diagnostic info
+    if near_miss_details:
+        nm_home, nm_away, nm_t1, nm_t2 = near_miss_details
+        logger.info(
+            f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+            f"({len(candidates)} candidates, best: '{nm_home} vs {nm_away}' "
+            f"score {near_miss_score:.0f}, reason: {near_miss_reason})"
+        )
+    elif candidates:
+        logger.info(
+            f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+            f"({len(candidates)} candidates, all below scoring threshold)"
+        )
+    else:
+        logger.info(
+            f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
+            f"(0 candidates for {event.sport})"
+        )
+
+    return default_id, False
+
+
 def store_provider_event(
     session,
     event: StandardEvent,
@@ -480,200 +654,19 @@ def store_provider_event(
     sharp_odds_cache: dict = None,
 ) -> tuple[bool, int, int]:
     """
-    Store provider event with STRICT fuzzy matching against Polymarket.
-
-    BULLETPROOF MATCHING:
-    - Requires BOTH teams to match individually (min_individual_score)
-    - Higher default threshold (90 vs 85)
-    - Rejects asymmetric matches (one team perfect, other poor)
-
-    Args:
-        session: SQLAlchemy session
-        event: StandardEvent from provider
-        provider: Provider ID
-        event_cache: Dict {sport: {event_id: (home, away, date)}} for O(1) lookup
-        fuzzy_threshold: Minimum average match score (default 90)
-        min_individual_score: Minimum score for EACH team (default 80)
+    Store provider event with STRICT fuzzy matching against existing events.
 
     Returns:
         (is_new_event, odds_processed, odds_new)
     """
-    from ..matching.matcher import get_team_match_score
+    # Resolve event ID via exact/fuzzy/swapped matching
+    matched_id, fuzzy_swapped = _resolve_event_id(
+        session, event, provider, event_cache,
+        fuzzy_threshold, min_individual_score, prefix_filter_length, require_match,
+    )
 
-    # Generate default ID
-    default_id = generate_canonical_id(event.sport, event.home_team, event.away_team, event.start_time)
-    matched_id = None
-    fuzzy_swapped = False  # Track if fuzzy match detected swapped team order
-
-    # 1. Check if default ID exists (exact match)
-    if session.query(Event.id).filter(Event.id == default_id).first():
-        matched_id = default_id
-    else:
-        # 2. Fuzzy match against memory cache (O(1) sport lookup)
-
-        # Safe strftime
-        if isinstance(event.start_time, str):
-            event_date = event.start_time.split('T')[0].replace('-', '')
-        else:
-            event_date = "00000000"
-
-        # Get candidates for this sport only (O(1) lookup)
-        # Cache structure: {sport: {event_id: (home, away, date)}}
-        sport_events = event_cache.get(event.sport, {})
-
-        # Filter by date (allow +/- 1 day for timezone issues)
-        candidates = []
-        for pid, (home, away, date) in sport_events.items():
-            if date == event_date:
-                candidates.append((pid, home, away, date))
-            else:
-                # Check +/- 1 day
-                try:
-                    from datetime import datetime
-                    if date and event_date:
-                        d1 = datetime.strptime(event_date, "%Y%m%d")
-                        d2 = datetime.strptime(date, "%Y%m%d")
-                        if abs((d1 - d2).days) <= 1:
-                            candidates.append((pid, home, away, date))
-                except (ValueError, TypeError):
-                    pass
-
-        # Pre-filter by team name prefix for better performance
-        if prefix_filter_length > 0 and len(candidates) > 10:
-            home_prefix = event.home_team[:prefix_filter_length].lower() if event.home_team else ""
-            away_prefix = event.away_team[:prefix_filter_length].lower() if event.away_team else ""
-
-            prefix_filtered = [
-                (pid, home, away, date)
-                for pid, home, away, date in candidates
-                if (home[:prefix_filter_length].lower() == home_prefix or
-                    away[:prefix_filter_length].lower() == home_prefix or
-                    home[:prefix_filter_length].lower() == away_prefix or
-                    away[:prefix_filter_length].lower() == away_prefix)
-            ]
-            # Only use prefix filter if it found matches, otherwise fall back to full list
-            if prefix_filtered:
-                candidates = prefix_filtered
-
-        # Try fuzzy matching with STRICT validation
-        best_score = 0
-        best_match_id = None
-        best_match_details = None
-        best_is_swapped = False  # Track if match was in swapped order
-
-        # Near-miss tracking for diagnostic logging
-        near_miss_score = 0
-        near_miss_details = None
-        near_miss_reason = None
-
-        for pid, poly_home, poly_away, date in candidates:
-            # Get individual scores for DIRECT match
-            home_direct = get_team_match_score(event.home_team, poly_home)
-            away_direct = get_team_match_score(event.away_team, poly_away)
-
-            # Get individual scores for SWAPPED match
-            home_swapped = get_team_match_score(event.home_team, poly_away)
-            away_swapped = get_team_match_score(event.away_team, poly_home)
-
-            # Choose best orientation
-            direct_avg = (home_direct + away_direct) / 2
-            swapped_avg = (home_swapped + away_swapped) / 2
-
-            is_swapped = swapped_avg > direct_avg
-            if is_swapped:
-                team1_score, team2_score = home_swapped, away_swapped
-                avg_score = swapped_avg
-            else:
-                team1_score, team2_score = home_direct, away_direct
-                avg_score = direct_avg
-
-            # BULLETPROOF VALIDATION
-            # Track near-miss (best rejected candidate) for diagnostics
-            is_new_best = avg_score > near_miss_score
-            if is_new_best:
-                near_miss_score = avg_score
-                near_miss_details = (poly_home, poly_away, team1_score, team2_score)
-
-            # Skip if average below threshold
-            if avg_score < fuzzy_threshold:
-                if is_new_best:
-                    near_miss_reason = f"avg {avg_score:.0f} < threshold {fuzzy_threshold}"
-                continue
-
-            # Skip if EITHER team below minimum individual score
-            if team1_score < min_individual_score or team2_score < min_individual_score:
-                if is_new_best:
-                    near_miss_reason = f"individual {team1_score:.0f}/{team2_score:.0f}, min required {min_individual_score}"
-                logger.debug(
-                    f"[{provider}] Rejected match '{event.home_team} vs {event.away_team}' -> "
-                    f"'{poly_home} vs {poly_away}': individual scores {team1_score:.0f}/{team2_score:.0f}"
-                )
-                continue
-
-            # Skip asymmetric matches (one team perfect, other poor)
-            score_diff = abs(team1_score - team2_score)
-            if score_diff > 20 and min(team1_score, team2_score) < 85:
-                if is_new_best:
-                    near_miss_reason = f"asymmetric {team1_score:.0f}/{team2_score:.0f}"
-                logger.debug(
-                    f"[{provider}] Rejected asymmetric match '{event.home_team} vs {event.away_team}': "
-                    f"scores {team1_score:.0f}/{team2_score:.0f}"
-                )
-                continue
-
-            if avg_score > best_score:
-                best_score = avg_score
-                best_match_id = pid
-                best_match_details = (poly_home, poly_away, team1_score, team2_score)
-                best_is_swapped = is_swapped
-
-        if best_match_id:
-            matched_id = best_match_id
-            fuzzy_swapped = best_is_swapped  # Record if teams were swapped
-            poly_home, poly_away, t1, t2 = best_match_details
-            swap_note = " [SWAPPED]" if best_is_swapped else ""
-            logger.info(
-                f"[{provider}] Matched '{event.home_team} vs {event.away_team}' -> "
-                f"'{poly_home} vs {poly_away}' (scores: {t1:.0f}/{t2:.0f}, avg: {best_score:.0f}){swap_note}"
-            )
-        else:
-            # 3. No fuzzy match - check if canonical event exists with swapped teams
-            # This catches cases where the provider has home/away reversed vs sharp source
-            swapped_id = generate_canonical_id(event.sport, event.away_team, event.home_team, event.start_time)
-            if session.query(Event.id).filter(Event.id == swapped_id).first():
-                # Canonical event exists with swapped team order - use it
-                matched_id = swapped_id
-                fuzzy_swapped = True  # Mark as swapped so outcomes get flipped
-                logger.info(
-                    f"[{provider}] Aligned '{event.home_team} vs {event.away_team}' -> "
-                    f"canonical event with swapped teams (using {swapped_id})"
-                )
-            else:
-                if require_match:
-                    # Soft book event with no sharp match - skip
-                    logger.debug(
-                        f"[{provider}] Skipped '{event.home_team} vs {event.away_team}' - no sharp match"
-                    )
-                    return (False, 0, 0)
-                # 4. No match at all - use default ID
-                matched_id = default_id
-                if near_miss_details:
-                    nm_home, nm_away, nm_t1, nm_t2 = near_miss_details
-                    logger.info(
-                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
-                        f"({len(candidates)} candidates, best: '{nm_home} vs {nm_away}' "
-                        f"score {near_miss_score:.0f}, reason: {near_miss_reason})"
-                    )
-                elif candidates:
-                    logger.info(
-                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
-                        f"({len(candidates)} candidates, all below scoring threshold)"
-                    )
-                else:
-                    logger.info(
-                        f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
-                        f"(0 candidates for {event.sport})"
-                    )
+    if matched_id is None:
+        return (False, 0, 0)
 
     final_id = matched_id
 
@@ -686,7 +679,7 @@ def store_provider_event(
         if isinstance(start_dt, str):
             try:
                 start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
-            except:
+            except (ValueError, TypeError):
                 start_dt = None
 
         db_event = Event(
@@ -705,6 +698,8 @@ def store_provider_event(
         # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup
         if isinstance(event.start_time, str):
             date_str = event.start_time.split('T')[0].replace('-', '')
+        elif hasattr(event.start_time, 'strftime'):
+            date_str = event.start_time.strftime('%Y%m%d')
         else:
             date_str = "00000000"
 
@@ -991,6 +986,10 @@ class OddsBatchProcessor:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
+        try:
             self.flush()
+        except Exception:
+            if exc_type is None:
+                raise
+            logger.warning("OddsBatchProcessor: flush failed during exception handling")
         return False

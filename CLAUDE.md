@@ -43,6 +43,31 @@ frontend/src/
 - **Services coordinate business logic** - Routes are thin HTTP handlers, services own the logic
 - **`db/models.py` is ORM-only** - No helper functions, no business logic — just model definitions and DB init
 
+## Skills Usage (IMPORTANT)
+
+**Always use relevant skills (slash commands) for every task.** Skills provide specialized domain knowledge and enforce best practices.
+
+**Before writing code, invoke the matching skill:**
+- Refactoring / architecture → `architecture-patterns`
+- Debugging / errors → `debugging-strategies` or `debugging-wizard`
+- FastAPI routes / async → `fastapi-expert` or `fastapi-async-patterns`
+- Python patterns / design → `python-design-patterns`, `python-anti-patterns`
+- SQLAlchemy / DB → `sqlalchemy-orm`, `sql-optimization-patterns`
+- Testing → `pytest`, `python-testing-patterns`, `e2e-testing-patterns`
+- React / frontend → `react-dev`, `frontend-design`, `frontend-ui-dark-ts`
+- Playwright / scraping → `playwright-expert`, `web-scraping`, `scrapy-web-scraping`
+- Performance → `python-performance-optimization`
+- Error handling → `python-error-handling`, `python-resilience`
+- Logging → `logging-best-practices`, `python-observability`
+- Type safety → `python-type-safety`, `pydantic`
+- Code review → `typescript-react-reviewer`, `python-code-style`
+- Git → `git-workflow`
+- CI/CD → `github-actions-templates`
+
+**If no existing skill fits, search for one:** use `find-skills` to discover installable skills, or search GitHub for open-source reference implementations to learn from.
+
+**Multiple skills can be used per task** — e.g., `architecture-patterns` + `python-design-patterns` for a refactor, or `fastapi-expert` + `sql-optimization-patterns` for an API endpoint.
+
 ## HOW To Work In This Codebase
 
 ### Commands

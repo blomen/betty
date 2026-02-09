@@ -14,15 +14,16 @@ The category API returns match structure including:
 - match.markets[].name, match.markets[].outcomes[].id, outcome.result_key
 - Odds decimal values come from the sb-odds POST (keyed by outcome ID)
 
-Sport category IDs (discovered from navigation):
+Sport category IDs (discovered via /s/sbgate/category/by-slug/sv/):
 - Football: 62
-- Basketball: 7
-- Tennis: 5
-- Ice Hockey: 3
-- American Football: 36
-- Baseball: 46
-- MMA: 43
-- Esports: 31
+- Basketball: 77
+- Tennis: 72
+- Ice Hockey: 85
+- American Football: 58
+- Baseball: 96
+- MMA: 20491
+- Esports: 65035
+- Handball: 68
 
 URL structure: /sv/odds/{sport-slug}
 """
@@ -199,7 +200,7 @@ class CoolbetRetriever(BrowserRetriever):
             url = (
                 f"{self.site_url}/s/sbgate/sports/fo-category/"
                 f"?categoryId={category_id}&country=SE&isMobile=0"
-                f"&language=sv&layout=EUROPEAN&limit=200"
+                f"&language=sv&layout=EUROPEAN&limit=500"
             )
             resp = await page.evaluate(f"""
                 (async () => {{

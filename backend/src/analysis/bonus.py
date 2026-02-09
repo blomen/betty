@@ -99,7 +99,7 @@ def find_best_hedge(
             hedge_stake = anchor_profit / hedge["odds"]
             
             # Loss is just the hedge stake (anchor is "free")
-            loss = hedge_stake - (anchor_profit if False else 0)
+            loss = hedge_stake
             
             # Calculate retention (how much of free bet value we keep)
             # Retention = guaranteed profit / free bet value

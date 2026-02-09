@@ -83,10 +83,23 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         logger.info(f"[{self.provider_id}] Found {len(league_links)} league links on main page")
         return league_links
 
-    async def _extract_events_from_league(self, page, league_url: str) -> List[tuple]:
-        """Extract events from a single league page."""
-        # Setup per-page WebSocket interception
-        ws_messages = self._setup_ws_interception(page)
+    async def _extract_events_from_league(self, page, league_url: str, shared_messages: list) -> List[tuple]:
+        """Extract events from a single league page.
+
+        Args:
+            page: Playwright page to use
+            league_url: URL of the league page
+            shared_messages: Shared list to append WS messages to (for market/selection parsing)
+        """
+        # Setup per-page WebSocket interception that feeds into shared list
+        def on_websocket(ws):
+            def on_frame_received(payload):
+                if isinstance(payload, bytes):
+                    decoded = self._decode_rsocket_frame(payload)
+                    if decoded:
+                        shared_messages.append(decoded)
+            ws.on("framereceived", on_frame_received)
+        page.on("websocket", on_websocket)
 
         # Navigate to league page
         full_url = league_url if league_url.startswith('http') else f"{self.site_url}{league_url}"
@@ -98,9 +111,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             logger.warning(f"[{self.provider_id}] Failed to load {league_url}: {e}")
             return []
 
-        # Parse WebSocket messages
+        # Parse events from shared messages (only events captured so far)
         events_data = {}
-        for msg_data in ws_messages:
+        for msg_data in shared_messages:
             if isinstance(msg_data, list):
                 for msg in msg_data:
                     if msg.get('type') == 'INITIAL_STATE':
@@ -141,12 +154,11 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         # Fallback to original name (cleaned)
         return outcome_name.lower().strip()
 
-    def _get_sport_url(self, sport: str) -> str:
-        """Get URL for sport page."""
+    def _get_sport_url(self, sport: str) -> Optional[str]:
+        """Get URL for sport page, or None if not supported."""
         sport_path = self.SPORT_URL_MAP.get(sport)
         if not sport_path:
-            logger.warning(f"[{self.provider_id}] Unknown sport '{sport}', defaulting to football")
-            sport_path = self.SPORT_URL_MAP['football']
+            return None
         return f"{self.site_url}{sport_path}"
 
     def _construct_event_detail_url(self, event_id: str, home_team: str, away_team: str) -> str:
@@ -262,6 +274,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         """
         sport_normalized = sport.split('/')[0] if '/' in sport else sport
 
+        # Skip unsupported sports
+        main_url = self._get_sport_url(sport_normalized)
+        if not main_url:
+            logger.warning(f"[{self.provider_id}] Sport '{sport_normalized}' not supported")
+            return []
+
         logger.info(f"[{self.provider_id}] Starting multi-league extraction for {sport_normalized}")
         logger.info(f"[{self.provider_id}] Max leagues to process: {self.max_leagues}")
 
@@ -285,7 +303,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             page.on("websocket", on_websocket)
 
             # Step 1: Load main page to get league links
-            main_url = self._get_sport_url(sport_normalized)
             logger.info(f"[{self.provider_id}] Loading main page for {sport_normalized}: {main_url}")
 
             # networkidle needed for WebSocket establishment
@@ -327,7 +344,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                     league_page = await self.transport.new_page()
 
                     try:
-                        league_events = await self._extract_events_from_league(league_page, league_url)
+                        league_events = await self._extract_events_from_league(
+                            league_page, league_url, self.ws_messages
+                        )
                         logger.info(f"[{self.provider_id}]   -> {len(league_events)} events from {league_name}")
                         return (True, league_events)
 

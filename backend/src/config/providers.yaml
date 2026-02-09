@@ -46,7 +46,7 @@ orchestrator:
       shared_resource: browser
 
     - name: sbtech_browser
-      retriever_types: [sbtech, snabbare]
+      retriever_types: [sbtech, snabbare, tenbet]
       max_concurrent: 2                # Browser-based
       shared_resource: browser
 
@@ -498,28 +498,44 @@ providers:
       wagering_multiplier: 15
       min_odds: 1.90
 
-  # --------------------------------------------------------------------------
-  # SBTech providers (browser + API interception)
-  # --------------------------------------------------------------------------
-
   bethard:
     id: bethard
     name: Bethard
     domain: bethard.com
-    retriever_type: sbtech
+    retriever_type: gecko_v2
     site_url: https://www.bethard.com
+    init_path: /sv/sports
     bonus:
       type: bonusdeposit
       amount: 500
       wagering_multiplier: 15
       min_odds: 1.90
 
+  # --------------------------------------------------------------------------
+  # SBTech providers (browser + API interception)
+  # --------------------------------------------------------------------------
+
   10bet:
     id: 10bet
     name: 10Bet
     domain: 10bet.se
-    retriever_type: sbtech
+    retriever_type: tenbet
     site_url: https://www.10bet.se
+    supported_sports:
+      - football
+      - basketball
+      - tennis
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - esports
+      - handball
+      - volleyball
+      - cricket
+      - table_tennis
+      - boxing
+      - curling
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -650,7 +666,15 @@ providers:
       - football
       - ice_hockey
       - basketball
+      - tennis
+      - handball
+      - volleyball
+      - rugby
+      - cricket
+      - darts
+      - boxing
       - american_football
+      - baseball
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -787,9 +811,7 @@ active:
   - lodur
   - dbet
   - quickcasino
-  # SBTech (1)
-  - bethard
-  # - 10bet  # DISABLED: uses WebSocket (framegas3.com), not REST API — needs custom extractor
+  - 10bet  # DOM scraping via ta-* selectors (Playtech/Mojito SPA)
   # BetConstruct (1) - WebSocket API, no browser needed
   - vbet
   # Interwetten (1) - browser-based, headed mode
@@ -801,11 +823,12 @@ active:
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
-  # Gecko V2 (4) - DISABLED: event-market widget returns props only, needs EventsTable widget rework
-  # - betsson
-  # - betsafe
-  # - nordicbet
-  # - spelklubben
+  # Gecko V2 (4) - events-table/v2 API
+  - betsson
+  - betsafe
+  - nordicbet
+  # - spelklubben  # DISABLED: migrated off OBG platform to custom Next.js app
+  - bethard
   # Snabbare (1)
   - snabbare
   # ComeOn Group (2)

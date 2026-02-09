@@ -371,17 +371,21 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
     Returns:
         Normalized outcome string (max 20 chars)
     """
-    from thefuzz import fuzz
-
     outcome_lower = outcome.lower().strip()
 
-    # Check over/under keywords FIRST — these should never fuzzy-match a team name
-    # (e.g., "under" can partial-match "dortmund" via fuzzy matching)
-    if outcome_lower in ['over', 'över']:
+    # Fast path: standard keywords (covers 90%+ of outcomes, no fuzzy needed)
+    if outcome_lower in ('1', 'home', 'hemma', 'yes', 'ja'):
+        return 'home'
+    if outcome_lower in ('x', 'draw', 'oavgjort', 'tie'):
+        return 'draw'
+    if outcome_lower in ('2', 'away', 'borta', 'no', 'nej'):
+        return 'away'
+    if outcome_lower in ('over', 'över'):
         return 'over'
-    if outcome_lower in ['under']:
+    if outcome_lower in ('under',):
         return 'under'
 
+    # Slow path: team name matching (only when outcome is a team name)
     home_norm = normalize_team_name(home)
     away_norm = normalize_team_name(away)
     outcome_norm = normalize_team_name(outcome)
@@ -394,34 +398,17 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
 
     # Fuzzy match for cases like "chattanooga mocs" vs "chattanooga"
     if home_norm and away_norm and outcome_norm:
-        # Use multiple fuzzy strategies
-        home_scores = [
-            fuzz.ratio(outcome_norm, home_norm),
-            fuzz.token_set_ratio(outcome_norm, home_norm),
-            fuzz.partial_ratio(outcome_norm, home_norm) if len(home_norm) >= 4 else 0,
-        ]
-        away_scores = [
-            fuzz.ratio(outcome_norm, away_norm),
-            fuzz.token_set_ratio(outcome_norm, away_norm),
-            fuzz.partial_ratio(outcome_norm, away_norm) if len(away_norm) >= 4 else 0,
-        ]
+        from thefuzz import fuzz
 
-        home_score = max(home_scores)
-        away_score = max(away_scores)
+        # token_set_ratio handles subsets and reordering well
+        home_score = fuzz.token_set_ratio(outcome_norm, home_norm)
+        away_score = fuzz.token_set_ratio(outcome_norm, away_norm)
 
         # Require clear winner with minimum threshold
         if home_score >= 80 and home_score > away_score + 10:
             return 'home'
         if away_score >= 80 and away_score > home_score + 10:
             return 'away'
-
-    # Standard outcome keywords
-    if outcome_lower in ['1', 'home', 'hemma', 'yes', 'ja']:
-        return 'home'
-    if outcome_lower in ['x', 'draw', 'oavgjort', 'tie']:
-        return 'draw'
-    if outcome_lower in ['2', 'away', 'borta', 'no', 'nej']:
-        return 'away'
 
     # Log normalization failure for debugging
     logger.debug(

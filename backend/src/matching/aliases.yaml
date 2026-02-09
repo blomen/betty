@@ -476,6 +476,30 @@ ducks:
   - anaheim ducks
 coyotes:
   - arizona coyotes
+mammoth:
+  - utah mammoth
+  - utah hockey club
+sabres:
+  - buffalo sabres
+devils:
+  - new jersey devils
+kings:
+  - los angeles kings
+  - la kings
+senators:
+  - ottawa senators
+blue jackets:
+  - columbus blue jackets
+
+# International / National Teams (country aliases)
+united states:
+  - usa
+  - us
+  - team usa
+south korea:
+  - korea
+  - korea republic
+  - republic of korea
 
 # Additional European Teams
 chelsea:

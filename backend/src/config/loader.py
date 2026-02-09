@@ -45,6 +45,9 @@ class ProviderConfig(BaseModel):
     sharp: Optional[bool] = False
     site_url: Optional[str] = None
 
+    # Gecko V2 session init path (default /sv/odds, bethard needs /sv/sports)
+    init_path: Optional[str] = None
+
     # ComeOn-specific depth extraction configuration
     extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
     concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads

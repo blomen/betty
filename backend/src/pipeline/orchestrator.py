@@ -756,7 +756,7 @@ class ExtractionPipeline:
         retriever_type = getattr(provider_config, 'retriever_type', '')
         is_kambi = retriever_type == 'kambi'
         # Browser-based providers share a single page — concurrent goto() causes ERR_ABORTED
-        is_single_page = retriever_type in ('sbtech', 'gecko_v2', 'spectate', 'custom')
+        is_single_page = retriever_type in ('sbtech', 'gecko_v2', 'spectate', 'custom', 'tipwin', 'snabbare', 'interwetten', 'coolbet', 'tenbet')
 
         # Kambi + browser-based: sequential (1), Others: parallel (up to 4)
         concurrent_sports = 1 if (is_kambi or is_single_page) else getattr(

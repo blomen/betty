@@ -165,19 +165,48 @@ class HttpTransport(Transport):
 
         return None
 
-    async def post(self, url: str, data: Optional[Dict] = None, json: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+    async def post(
+        self,
+        url: str,
+        data: Optional[Dict] = None,
+        json: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        max_retries: int = None
+    ) -> Any:
+        if max_retries is None:
+            max_retries = self.rate_limit_config.max_retries if self.rate_limit_config else 2
+        default_wait = self.rate_limit_config.default_wait_seconds if self.rate_limit_config else 5
+        max_wait = self.rate_limit_config.max_wait_seconds if self.rate_limit_config else 60
+
         await self._ensure_session()
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
 
-        async with self.session.post(url, data=data, json=json, headers=req_headers) as response:
-             if response.status not in (200, 201):
-                 logger.warning(f"HTTP POST {url} returned status {response.status}")
-                 return None
-             if "application/json" in response.headers.get("Content-Type", ""):
-                 return await response.json()
-             return await response.text()
+        for attempt in range(max_retries + 1):
+            async with self.session.post(url, data=data, json=json, headers=req_headers) as response:
+                if response.status == 429:
+                    retry_after = response.headers.get('Retry-After', str(default_wait))
+                    try:
+                        wait_seconds = int(retry_after)
+                    except ValueError:
+                        wait_seconds = default_wait
+                    wait_seconds = min(wait_seconds * (2 ** attempt), max_wait)
+                    logger.warning(f"429 Rate Limited on POST {url} (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        await asyncio.sleep(wait_seconds)
+                        continue
+                    else:
+                        return None
+
+                if response.status not in (200, 201):
+                    logger.warning(f"HTTP POST {url} returned status {response.status}")
+                    return None
+                if "application/json" in response.headers.get("Content-Type", ""):
+                    return await response.json()
+                return await response.text()
+
+        return None
 
     async def close(self):
         if self.session:
@@ -289,7 +318,7 @@ class BrowserTransport(Transport):
             if response.status == 200:
                 try:
                     return await response.json()
-                except:
+                except Exception:
                     return await response.text()
             else:
                  # Fallback to page navigation if API fails (maybe protected?)
@@ -339,7 +368,7 @@ class BrowserTransport(Transport):
             if response.status in (200, 201):
                 try:
                     return await response.json()
-                except:
+                except Exception:
                     return await response.text()
             else:
                 logger.warning(f"Browser POST {url} returned {response.status} {response.status_text}")

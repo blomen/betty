@@ -16,11 +16,8 @@ Providers using Altenar:
 """
 
 from typing import Dict, Any, List, Optional
-import json
 import logging
 from datetime import datetime
-import asyncio
-import aiohttp
 
 from ..core import Retriever, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -176,6 +173,8 @@ class AltenarRetriever(Retriever):
         """
         Fetch events from Altenar API endpoint.
 
+        Uses self.transport (HttpTransport) for connection reuse across calls.
+
         Args:
             endpoint: API endpoint (e.g., 'widget/GetUpcoming')
             sport_id: Optional sport ID to filter events (e.g., 67 for basketball)
@@ -198,13 +197,11 @@ class AltenarRetriever(Retriever):
             if sport_id is not None:
                 params['sportId'] = str(sport_id)
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data
+            data = await self.transport.get(url, params=params)
+            if data and isinstance(data, dict):
+                return data
 
-            logger.warning(f"[{self.provider_id}] {endpoint} returned status {response.status}")
+            logger.warning(f"[{self.provider_id}] {endpoint} returned no data")
             return {}
 
         except Exception as e:
@@ -280,10 +277,11 @@ class AltenarRetriever(Retriever):
                 if not market:
                     continue
 
-                # Map market type
+                # Map market type — skip unsupported markets early
                 market_type_id = market.get('typeId')
-                market_type = self.MARKET_TYPE_MAPPING.get(market_type_id, 'other')
-                market_name = market.get('name', 'Unknown')
+                market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
+                if not market_type:
+                    continue
 
                 # Extract point value from market's 'sv' field for spread/total
                 market_point = None
@@ -324,13 +322,6 @@ class AltenarRetriever(Retriever):
                         'outcomes': outcomes
                     }
                     markets.append(market_dict)
-
-                    # Log unmapped market types for future improvement
-                    if market_type == 'other' and market_type_id:
-                        logger.debug(
-                            f"[{self.provider_id}] {sport}: Unmapped marketTypeId: {market_type_id} "
-                            f"({market_name})"
-                        )
 
             # Create StandardEvent
             return StandardEvent(

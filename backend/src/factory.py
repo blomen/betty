@@ -138,11 +138,14 @@ class ExtractorFactory:
             # Select brand-specific retriever
             if provider_id == "bethard":
                 retriever = BethardRetriever(config, transport=transport)
-            elif provider_id == "10bet":
-                from .providers.tenbet import TenBetRetriever
-                retriever = TenBetRetriever(config, transport=transport)
             else:
                 raise ValueError(f"Unknown SBTech provider '{provider_id}'")
+        elif retriever_type == "tenbet":
+            # 10Bet - Playtech/Mojito SPA, DOM scraping with ta-* selectors
+            from .core import BrowserTransport
+            from .providers.tenbet import TenBetRetriever
+            transport = BrowserTransport(headless=False)  # Headed: SPA needs full rendering
+            retriever = TenBetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
             retriever = AltenarRetriever(config)

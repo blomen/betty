@@ -97,7 +97,9 @@ class KambiRetriever(Retriever):
         if not group_data:
             return []
 
-        # 2. Find target sport group
+        # 2. Find target sport groups
+        # Kambi group tree: Sport Root (depth=2) → Region (depth=3) → League (depth=4)
+        # Fetch ALL groups — deduplication below merges markets from overlapping groups
         groups = []
         self._extract_groups_recursive(group_data, groups)
 
@@ -151,13 +153,15 @@ class KambiRetriever(Retriever):
                 logger.debug(f"[{self.provider_id}] Group fetch error: {result}")
                 metrics.groups_failed += 1
 
-        # Deduplicate events by ID (same event can appear in multiple groups)
-        seen_ids = set()
-        unique_events = []
+        # Deduplicate events by ID — keep the version with the most markets
+        # Same event appears in parent + child groups with different betoffer sets;
+        # child groups typically have richer match-level betoffers
+        event_map: Dict[str, StandardEvent] = {}
         for event in all_events:
-            if event.id not in seen_ids:
-                seen_ids.add(event.id)
-                unique_events.append(event)
+            existing = event_map.get(event.id)
+            if existing is None or len(event.markets) > len(existing.markets):
+                event_map[event.id] = event
+        unique_events = list(event_map.values())
 
         # Log extraction summary
         metrics.log_summary(self.provider_id, sport, len(all_events))
@@ -368,8 +372,9 @@ class KambiRetriever(Retriever):
     def _parse_market(self, betoffer: dict, outcome_map: dict, home_team: str = "", away_team: str = "") -> dict | None:
         try:
             # Filter by betOfferType.id FIRST (most reliable)
-            # 2 = Match (1x2/moneyline), 6 = Over/Under (total), 7 = Asian Handicap (spread)
-            ALLOWED_BET_OFFER_TYPE_IDS = {2, 6, 7}
+            # 1 = Handicap/Spread (Puck Line, Point Spread), 2 = Match (1x2/moneyline)
+            # 6 = Over/Under (total), 7 = Asian Handicap (spread)
+            ALLOWED_BET_OFFER_TYPE_IDS = {1, 2, 6, 7}
             bet_offer_type_id = betoffer.get("betOfferType", {}).get("id", 0)
             if bet_offer_type_id not in ALLOWED_BET_OFFER_TYPE_IDS:
                 return None
@@ -378,17 +383,22 @@ class KambiRetriever(Retriever):
             criterion = betoffer.get("criterion", {})
             label = (criterion.get("englishLabel") or criterion.get("label") or "").lower()
 
-            # Exclude partial markets and derivative bets (applies to ALL bet offer types)
+            # Exclude partial markets, derivative bets, and futures (applies to ALL bet offer types)
             EXCLUDE_PATTERNS = (
                 "quarter", "period", "half",
                 "1st", "2nd", "3rd", "4th",
                 "draw no bet",
+                "competition", "season", "trophy", "award",  # Futures/outrights
+                "0:00-", "5:00-", "10:00-",                   # Time-segment markets
+                "conference winner", "division winner",        # Season futures
+                "group winner",                                # Tournament futures
+                "team total", "lags total",                    # Team-specific totals (not match total)
             )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None
 
             # For betOfferType 2 (match winner), apply keyword filter to ensure full-match only
-            # betOfferType 6 (total) and 7 (spread) are definitively identified by their type ID
+            # betOfferType 1 (handicap), 6 (total), 7 (spread) pass after EXCLUDE_PATTERNS
             if bet_offer_type_id == 2:
                 MATCH_KEYWORDS = (
                     "full time", "fulltid", "heltid",       # Football regulation
@@ -397,6 +407,7 @@ class KambiRetriever(Retriever):
                     "regular time",                          # Rugby, generic regulation
                     "including overtime",                    # American football, ice hockey
                     "including extra ends",                  # Curling
+                    "inklusive",                             # Swedish "including overtime" variant
                 )
                 if not any(kw in label for kw in MATCH_KEYWORDS):
                     logger.debug(f"[{self.provider_id}] Dropped betOffer type={bet_offer_type_id} label='{label}'")
@@ -437,7 +448,8 @@ class KambiRetriever(Retriever):
             # Determine market type from betOfferType ID and outcome structure
             if bet_offer_type_id == 6:
                 market_type = "total"
-            elif bet_offer_type_id == 7:
+            elif bet_offer_type_id in (1, 7):
+                # 1 = Handicap (Puck Line, Point Spread), 7 = Asian Handicap
                 market_type = "spread"
             else:
                 # betOfferType 2: determine from outcome structure

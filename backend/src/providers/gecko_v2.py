@@ -1,16 +1,36 @@
 """
-Gecko V2 Retriever - Hybrid Approach
+Gecko V2 Retriever - Events Table API Approach
 
-Uses Playwright to load the page and intercept API calls, then uses the REST API
-to fetch clean JSON data. Much faster than DOM parsing.
+Betsson Group sites (betsson, betsafe, nordicbet, spelklubben) use the OBG
+sportsbook platform (Gecko V2). The events-table/v2 API returns paginated
+event listings with markets, selections, and odds.
 
 Flow:
-1. Load page with Playwright
-2. Intercept event-market API calls to capture market IDs
-3. Parse the JSON responses (no DOM parsing needed)
+1. Load sport page with Playwright to establish session
+2. Capture required custom headers (x-sb-*, brandid, sessiontoken)
+3. Call events-table/v2 API directly with context.request + pagination
+4. Parse events/markets/selections from JSON response
+
+API endpoint:
+- GET /api/sb/v1/widgets/events-table/v2
+- Required headers: brandid, sessiontoken, x-sb-* (16+ custom headers)
+- Params: categoryIds, phase, marketTemplateIds, priceFormats, page
+- Returns: data.events[], data.markets[], data.selections[], totalPages, page
+
+Market template IDs:
+- MW3W = 3-way 1x2 (football, ice hockey)
+- MW2W = 2-way moneyline (tennis, basketball, etc.)
+- MTG2W / TGOU = total (over/under)
+- M3WHCP / M2WHCP / 2WHCPROLMID = spread/handicap
+- MWOU = over/under total
+
+Selection template IDs:
+- HOME, AWAY, DRAW
+- OVER, UNDER
+- HANDICAPHOME, HANDICAPDRAW, HANDICAPAWAY
 """
 
-from typing import List, Any, Optional, Dict
+from typing import List, Any, Optional, Dict, Set
 import logging
 import asyncio
 from datetime import datetime
@@ -22,42 +42,90 @@ logger = logging.getLogger(__name__)
 
 class GeckoV2Retriever(BrowserRetriever):
     """
-    Retriever for Betsson Group sites using API interception.
+    Retriever for Betsson Group sites using events-table/v2 API.
 
-    Strategy: Load page with browser, intercept event-market API calls,
-    parse JSON responses instead of HTML.
+    Strategy: Load page to establish session headers, then call
+    events-table/v2 API directly with pagination.
     """
 
+    # Sport slug for URL navigation (used for session init)
     SPORT_SLUGS: Dict[str, str] = {
         "football": "fotboll",
-        "basketball": "basket",
-        "tennis": "tennis",
         "ice_hockey": "ishockey",
-        "american_football": "amerikansk-fotboll",
-        "baseball": "baseboll",
-        "mma": "mma",
-        "esports": "esports",
+        "handball": "handboll",
+        "basketball": "basket",
         "rugby": "rugby",
+        "volleyball": "volleyboll",
+        "american_football": "amerikansk-fotboll",
+        "tennis": "tennis",
+        "curling": "curling",
         "cricket": "cricket",
         "boxing": "boxning",
-        "handball": "handboll",
+        "darts": "dart",
+        "esports": "esports",
+        "mma": "mma",
+        "baseball": "baseboll",
+        "golf": "golf",
+        "table_tennis": "bordtennis",
     }
 
-    # League keywords to validate sport matches (for filtering wrong-sport events)
-    # Intentionally broad to avoid filtering valid events while still catching obvious mismatches
-    SPORT_LEAGUE_KEYWORDS: Dict[str, List[str]] = {
-        "football": ["fotboll", "premier league", "la liga", "liga", "bundesliga", "serie a", "ligue", "champions", "europa", "allsvenskan", "eredivisie", "primeira", "championship", "cup"],
-        "basketball": ["basket", "nba", "euroleague", "ncaa", "college", "liga acb", "bbl", "cba", "turkish airlines"],
-        "tennis": ["tennis", "atp", "wta", "grand slam", "open", "masters", "wimbledon"],
-        "ice_hockey": ["hockey", "hock", "nhl", "shl", "khl", "liiga", "del", "swiss league"],
-        "american_football": ["football", "nfl", "ncaa", "college"],
-        "baseball": ["baseball", "baseboll", "mlb", "npb", "kbo"],
-        "mma": ["mma", "ufc", "bellator", "pfl", "mixed martial"],
-        "esports": ["esports", "esport", "cs:go", "counter-strike", "league of legends", "dota", "valorant", "call of duty"],
-        "rugby": ["rugby", "six nations", "championship", "premiership", "top 14"],
-        "cricket": ["cricket", "test", "odi", "t20", "ipl", "big bash"],
-        "boxing": ["boxing", "boxning", "wbc", "wba", "ibf", "wbo", "heavyweight", "welterweight"],
-        "handball": ["handboll", "handball", "ehf"],
+    # OBG category IDs for each sport
+    # Verified 2026-02-09 via events-table/v2 scanning (discover_gecko_categories_browser.py)
+    SPORT_CATEGORY_IDS: Dict[str, int] = {
+        "football": 1,
+        "ice_hockey": 2,
+        "handball": 3,
+        "basketball": 4,
+        "rugby": 7,            # Rugby League (ID 8 = Rugby Union)
+        "volleyball": 9,
+        "american_football": 10,
+        "tennis": 11,
+        "curling": 20,
+        "cricket": 26,
+        "boxing": 30,
+        "darts": 34,
+    }
+
+    # Market template ID → our standard market type
+    MARKET_TEMPLATE_MAP: Dict[str, str] = {
+        # 1x2 (3-way)
+        "MW3W": "1x2",
+        "ESNRTWINNER3W": "1x2",
+        # Moneyline (2-way)
+        "MW2W": "moneyline",
+        "ESNMOWINNER2W": "moneyline",
+        # Total (over/under)
+        "MTG2W": "total",
+        "MTG2W25": "total",
+        "TGOU": "total",
+        "MWOU": "total",
+        "MROU": "total",
+        "ESNMOTOTAL": "total",
+        "OUALT": "total",
+        "PTSOUROLMID": "total",
+        "MTG2WIO": "total",
+        # Spread (handicap)
+        "M3WHCP": "spread",
+        "M2WHCP": "spread",
+        "MW2WHCP": "spread",
+        "M2WHCPIO": "spread",
+        "2WHCPROLMID": "spread",
+        "MWHCPALT": "spread",
+        "MAHCP": "spread",
+        "AHC": "spread",
+        "ESNMOHANDICAP": "spread",
+    }
+
+    # Selection template ID → our standard outcome name
+    SELECTION_TEMPLATE_MAP: Dict[str, str] = {
+        "HOME": "home",
+        "AWAY": "away",
+        "DRAW": "draw",
+        "OVER": "over",
+        "UNDER": "under",
+        "HANDICAPHOME": "home",
+        "HANDICAPAWAY": "away",
+        "HANDICAPDRAW": "draw",
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -65,396 +133,411 @@ class GeckoV2Retriever(BrowserRetriever):
 
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain', 'betsson.com')}")
         self.site_url: str = raw_site_url.rstrip("/")
+        # Path to navigate for session init (must trigger OBG API calls)
+        self._init_path: str = config.get("init_path") or "/sv/odds"
 
-        # Cache for captured API responses
-        self._api_responses: List[Dict] = []
+        # Cached custom headers from browser session
+        self._api_headers: Optional[Dict[str, str]] = None
+        # API base URL (may differ from site_url, e.g., bethard uses d-cf.bethardplayground.net)
+        self._api_base: Optional[str] = None
 
-    async def _ensure_sport_init(self, sport: str) -> None:
-        """No special initialization needed."""
-        pass
-
-    def _get_sport_url(self, sport: str) -> str:
-        """Get the sportsbook URL for a given sport."""
-        sport_slug = self.SPORT_SLUGS.get(sport, sport)
-        # Don't filter by tab - get all events
-        return f"{self.site_url}/sv/odds/{sport_slug}"
-
-    def _validate_event_sport(self, sport: str, league: str) -> bool:
+    async def _ensure_session(self) -> bool:
         """
-        Validate that an event's league matches the requested sport.
-
-        Some sites (e.g., Betsafe) may load wrong sport events on certain pages.
-        This filters out obviously wrong events by checking league names.
+        Load the site and capture required API headers.
+        Returns True if session is established.
         """
-        if not league:
-            return True  # Can't validate without league info
+        if self._api_headers:
+            return True
 
-        league_lower = league.lower()
-        keywords = self.SPORT_LEAGUE_KEYWORDS.get(sport, [])
+        try:
+            if not isinstance(self.transport, BrowserTransport):
+                logger.error(f"[{self.provider_id}] GeckoV2Retriever requires BrowserTransport")
+                return False
 
-        if not keywords:
-            return True  # No validation keywords for this sport
+            await self.transport._ensure_browser()
+            page = self.transport.page
 
-        # Check if ANY keyword matches the league
-        return any(keyword in league_lower for keyword in keywords)
+            # Capture headers and API base URL from the first API request
+            captured = {}
+            api_base_holder: List[str] = []
+
+            async def capture_route(route, request):
+                url = request.url
+                if '/api/sb/' in url and not captured:
+                    captured.update(dict(request.headers))
+                    idx = url.find('/api/sb/')
+                    api_base_holder.append(url[:idx])
+                await route.continue_()
+
+            await page.route('**/api/sb/**', capture_route)
+
+            # Navigate to site
+            url = f"{self.site_url}{self._init_path}"
+            logger.info(f"[{self.provider_id}] Loading {url} for session init")
+            await page.goto(url, wait_until='load', timeout=60000)
+
+            # Handle cookie consent
+            await self._handle_cookie_consent(page)
+            await asyncio.sleep(5)
+
+            await page.unroute('**/api/sb/**')
+
+            if not captured:
+                logger.error(f"[{self.provider_id}] No API headers captured")
+                return False
+
+            # Extract only the custom headers needed for API calls
+            headers = {}
+            for k, v in captured.items():
+                kl = k.lower()
+                if kl.startswith(('x-sb-', 'x-obg-')) or kl in (
+                    'brandid', 'sessiontoken', 'marketcode', 'correlationid'
+                ):
+                    headers[k] = v
+            headers['accept'] = 'application/json'
+            headers['content-type'] = 'application/json'
+
+            self._api_headers = headers
+            self._api_base = api_base_holder[0] if api_base_holder else self.site_url
+            self._session_ready = True
+            logger.info(
+                f"[{self.provider_id}] Session established with {len(headers)} headers, "
+                f"API base: {self._api_base}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Session init failed: {e}")
+            return False
 
     async def _handle_cookie_consent(self, page):
         """Handle cookie consent dialogs."""
-        cookie_selectors = [
+        for selector in [
             'button:has-text("Acceptera")',
             'button:has-text("Accept")',
             '#accept-cookies',
-        ]
-
-        for selector in cookie_selectors:
+        ]:
             try:
-                await page.click(selector, timeout=2000)
+                await page.click(selector, timeout=3000)
                 logger.info(f"[{self.provider_id}] Clicked cookie consent")
                 await asyncio.sleep(1)
                 return
             except Exception:
                 continue
 
-        logger.debug(f"[{self.provider_id}] No cookie consent needed")
+    async def _lookup_category_id(self, sport: str) -> Optional[int]:
+        """
+        Dynamically look up category ID via category-by-slug API.
+        Falls back to slug lookup when a sport isn't in the hardcoded map.
+        """
+        slug = self.SPORT_SLUGS.get(sport)
+        if not slug:
+            return None
 
-    async def _process_response(self, response):
-        """Process an API response asynchronously."""
         try:
-            # Try to get JSON directly first
-            try:
-                data = await response.json()
-            except:
-                # Fallback to text parsing
-                text = await response.text()
-                import json
-                data = json.loads(text)
-
-            # Check for errors
-            if 'errorId' in data or 'code' in data:
-                logger.warning(f"[{self.provider_id}] API returned error: {data}")
-                # Don't add error responses
-            else:
-                self._api_responses.append(data)
-                logger.info(f"[{self.provider_id}] Captured event-market response (total: {len(self._api_responses)})")
-
+            page = self.transport.page
+            context = page.context
+            url = f"{self._api_base}/api/sb/v1/widgets/category-by-slug/sv/{slug}"
+            resp = await context.request.get(url, headers=self._api_headers)
+            if resp.ok:
+                data = (await resp.json()).get("data", {})
+                cat_id = data.get("id")
+                if cat_id:
+                    logger.info(f"[{self.provider_id}] Discovered category ID for {sport}: {cat_id}")
+                    # Cache for future use in this session
+                    self.SPORT_CATEGORY_IDS[sport] = cat_id
+                    return cat_id
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] Failed to parse response: {e}")
+            logger.debug(f"[{self.provider_id}] Category slug lookup failed for {sport}: {e}")
 
-    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
-        """Not used - extract() is overridden."""
-        raise NotImplementedError("GeckoV2Retriever uses extract() directly")
+        return None
 
-    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
+    async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
-        Extract events by intercepting API calls.
-
-        1. Load sport page with Playwright
-        2. Intercept event-market API responses
-        3. Parse JSON directly (no DOM parsing)
+        Extract events by calling events-table/v2 API with pagination.
         """
-        if sport not in self.SPORT_SLUGS:
-            logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
+        if not await self._ensure_session():
             return []
 
-        try:
-            if not isinstance(self.transport, BrowserTransport):
-                logger.error(f"[{self.provider_id}] GeckoV2Retriever requires BrowserTransport")
+        # Get category ID from hardcoded map or dynamic slug lookup
+        category_id = self.SPORT_CATEGORY_IDS.get(sport)
+        if category_id is None:
+            category_id = await self._lookup_category_id(sport)
+            if category_id is None:
+                slug = self.SPORT_SLUGS.get(sport)
+                if slug:
+                    logger.warning(f"[{self.provider_id}] Could not find category ID for '{sport}' (slug: {slug})")
+                else:
+                    logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported (no slug mapping)")
                 return []
 
-            # Clear previous responses
-            self._api_responses = []
-
-            # Setup response interceptor
-            await self.transport._ensure_browser()
+        try:
             page = self.transport.page
+            context = page.context
+            base_url = f"{self._api_base}/api/sb/v1/widgets/events-table/v2"
 
-            # Intercept API responses (use list to track pending tasks)
-            pending_tasks = []
+            # Request all main market types
+            market_templates = "MW3W,MW2W,MTG2W,TGOU,MWOU,M3WHCP,M2WHCP,MW2WHCP,2WHCPROLMID"
+            base_params = (
+                f"categoryIds={category_id}&phase=4"
+                f"&marketTemplateIds={market_templates}"
+                f"&priceFormats=1&timezoneOffsetMinutes=60"
+            )
 
-            def intercept_response(response):
-                """Synchronous handler that schedules async processing."""
-                url = response.url
+            all_events = []
+            seen_ids: Set[str] = set()
+            page_num = 1
+            total_pages = None
 
-                # Log ALL API calls for debugging
-                if '/api/sb/' in url:
-                    logger.debug(f"[{self.provider_id}] API call: {url.split('?')[0]}")
+            while True:
+                url = f"{base_url}?{base_params}&pageNumber={page_num}"
 
-                if '/api/sb/v1/widgets/event-market' in url:
-                    # Log full URL to check parameters
-                    has_params = '?' in url
-                    logger.debug(f"[{self.provider_id}] Found event-market response (has_params={has_params})")
-                    if has_params:
-                        params_start = url.index('?')
-                        logger.debug(f"[{self.provider_id}] Params: {url[params_start:params_start+200]}")
+                try:
+                    resp = await context.request.get(url, headers=self._api_headers)
+                except Exception as e:
+                    logger.error(f"[{self.provider_id}] API request failed: {e}")
+                    break
 
-                    # Schedule async processing and track the task
-                    task = asyncio.create_task(self._process_response(response))
-                    pending_tasks.append(task)
+                if not resp.ok:
+                    if resp.status == 400:
+                        # Session might have expired — try re-init once
+                        logger.warning(f"[{self.provider_id}] 400 error, re-initializing session")
+                        self._api_headers = None
+                        self._api_base = None
+                        self._session_ready = False
+                        if await self._ensure_session():
+                            try:
+                                resp = await context.request.get(url, headers=self._api_headers)
+                            except Exception as e:
+                                logger.error(f"[{self.provider_id}] Retry failed: {e}")
+                                break
+                            if not resp.ok:
+                                logger.error(f"[{self.provider_id}] API still returning {resp.status}")
+                                break
+                        else:
+                            break
+                    else:
+                        logger.error(f"[{self.provider_id}] API returned {resp.status}")
+                        break
 
-            page.on('response', intercept_response)
+                data = (await resp.json()).get('data', {})
 
-            # Load the sport page
-            sport_url = self._get_sport_url(sport)
-            logger.info(f"[{self.provider_id}] Loading {sport_url}")
-            # Use 'load' instead of 'networkidle' to not block API calls
-            await page.goto(sport_url, wait_until='load', timeout=60000)
+                if total_pages is None:
+                    total_pages = data.get('totalPages', 1)
+                    total_items = data.get('totalItemCount', 0)
+                    logger.info(
+                        f"[{self.provider_id}] {sport}: {total_items} events, "
+                        f"{total_pages} pages"
+                    )
 
-            # Handle cookie consent
-            await self._handle_cookie_consent(page)
+                # Parse events from this page
+                events_raw = data.get('events', [])
+                markets_raw = data.get('markets', [])
+                selections_raw = data.get('selections', [])
 
-            # Wait for page to fully render and make API calls
-            logger.info(f"[{self.provider_id}] Waiting for page to fully load...")
-            await asyncio.sleep(7)  # Reduced from 10s for better performance
+                if not events_raw:
+                    break
 
-            # Scroll to trigger lazy loading
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            await asyncio.sleep(2)  # Reduced from 3s for better performance
+                page_events = self._parse_page(
+                    events_raw, markets_raw, selections_raw, sport, seen_ids
+                )
+                all_events.extend(page_events)
 
-            # Remove interceptor
-            page.remove_listener('response', intercept_response)
+                if page_num >= total_pages or len(all_events) >= limit:
+                    break
+                page_num += 1
 
-            # Wait for all pending response processing tasks to complete
-            if pending_tasks:
-                logger.debug(f"[{self.provider_id}] Waiting for {len(pending_tasks)} pending response tasks...")
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
-
-            # Parse captured responses
-            logger.info(f"[{self.provider_id}] Captured {len(self._api_responses)} API responses")
-
-            events = []
-            for i, api_data in enumerate(self._api_responses):
-                logger.debug(f"[{self.provider_id}] Parsing response {i+1}...")
-                parsed_events = self._parse_api_response(api_data, sport)
-                logger.debug(f"[{self.provider_id}] Response {i+1} yielded {len(parsed_events)} events")
-                events.extend(parsed_events)
-
-            # Deduplicate by event ID
-            seen_ids = set()
-            unique_events = []
-            for event in events:
-                if event.id not in seen_ids:
-                    seen_ids.add(event.id)
-                    unique_events.append(event)
-
-            logger.info(f"[{self.provider_id}] Extracted {len(unique_events)} unique events")
-            return unique_events[:limit]
+            logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events parsed")
+            return all_events[:limit]
 
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    def _parse_api_response(self, api_data: Dict, sport: str) -> List[StandardEvent]:
-        """
-        Parse event-market API response.
+    def _parse_page(
+        self,
+        events_raw: List[Dict],
+        markets_raw: List[Dict],
+        selections_raw: List[Dict],
+        sport: str,
+        seen_ids: Set[str],
+    ) -> List[StandardEvent]:
+        """Parse a page of events-table API data."""
+        # Build lookup maps
+        # markets by eventId
+        markets_by_event: Dict[str, List[Dict]] = {}
+        for m in markets_raw:
+            eid = m.get('eventId', '')
+            markets_by_event.setdefault(eid, []).append(m)
 
-        Response structure:
-        {
-          "data": {
-            "events": [...],
-            "markets": [...],
-            "marketSelections": [...]
-          }
-        }
-        """
+        # selections by marketId
+        selections_by_market: Dict[str, List[Dict]] = {}
+        for s in selections_raw:
+            mid = s.get('marketId', '')
+            selections_by_market.setdefault(mid, []).append(s)
+
         events = []
-
-        try:
-            data = api_data.get('data', {})
-            events_raw = data.get('events', [])
-            markets_raw = data.get('markets', [])
-            selections_raw = data.get('marketSelections', [])
-
-            logger.debug(f"[{self.provider_id}] API response has {len(events_raw)} events, {len(markets_raw)} markets, {len(selections_raw)} selections")
-
-            # Build lookup maps
-            market_map = {m['id']: m for m in markets_raw}
-            selections_by_market = {}
-            for sel in selections_raw:
-                market_id = sel.get('marketId')
-                if market_id not in selections_by_market:
-                    selections_by_market[market_id] = []
-                selections_by_market[market_id].append(sel)
-
-            # Parse each event
-            for event_raw in events_raw:
-                try:
-                    event = self._parse_event(event_raw, market_map, selections_by_market, sport)
-                    if event:
-                        events.append(event)
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] Error parsing event: {e}")
-                    continue
-
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Error parsing API response: {e}")
+        for event_raw in events_raw:
+            try:
+                event = self._parse_event(
+                    event_raw, markets_by_event, selections_by_market, sport
+                )
+                if event and event.id not in seen_ids:
+                    seen_ids.add(event.id)
+                    events.append(event)
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Error parsing event: {e}")
 
         return events
 
-    def _parse_event(self, event_raw: Dict, market_map: Dict, selections_by_market: Dict, sport: str) -> Optional[StandardEvent]:
-        """Parse a single event from the API response."""
-        try:
-            # Event ID can be either 'id' or 'globalId'
-            event_id_full = event_raw.get('id') or event_raw.get('globalId')
-            if not event_id_full:
-                return None
-
-            # Extract short event ID (globalId format: "event.X.Y.Z.f-XXXXX", we need "f-XXXXX")
-            if 'globalId' in event_raw and '.' in event_id_full:
-                # Extract the last part after the last dot
-                event_id = event_id_full.split('.')[-1]
-            else:
-                event_id = event_id_full
-
-            # Extract team names from participants
-            participants = event_raw.get('participants', [])
-            if len(participants) < 2:
-                return None
-
-            # Sort by side (1=home, 2=away)
-            participants.sort(key=lambda p: p.get('side', 0))
-            home_team_raw = participants[0].get('label', '')
-            away_team_raw = participants[1].get('label', '')
-
-            if not home_team_raw or not away_team_raw:
-                return None
-
-            # Normalize team names
-            home_team = normalize_team_name(home_team_raw)
-            away_team = normalize_team_name(away_team_raw)
-
-            # Parse start time
-            start_date_str = event_raw.get('startDate')
-            start_time = None
-            if start_date_str:
-                try:
-                    start_time = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-                except Exception:
-                    pass
-
-            # Get competition/league
-            league = event_raw.get('competitionName', 'Unknown')
-
-            # Parse markets (note: we only see markets that were loaded for this event)
-            markets_list = []
-            # We don't have direct event->market mapping in the response
-            # Markets are loaded separately and linked by eventId
-            # For now, we'll create a simple market structure
-
-            # Find markets for this event (would need to check eventId in market_map)
-            event_markets = [m for m_id, m in market_map.items() if m.get('eventId') == event_id]
-
-            for market in event_markets:
-                market_id = market.get('id')
-                market_dict = self._parse_market(market, selections_by_market.get(market_id, []))
-                if market_dict:
-                    markets_list.append(market_dict)
-
-            # Skip event if no markets (likely wrong sport or incomplete data)
-            if not markets_list:
-                logger.debug(f"[{self.provider_id}] Event {event_id} has no markets, skipping")
-                return None
-
-            # Validate that the league matches the requested sport
-            # (Some sites like Betsafe may load wrong sport events)
-            if not self._validate_event_sport(sport, league):
-                logger.debug(f"[{self.provider_id}] Event {event_id} league '{league}' doesn't match sport '{sport}', skipping")
-                return None
-
-            return StandardEvent(
-                id=f"{self.provider_id}_{event_id}",
-                name=f"{home_team_raw} vs {away_team_raw}",
-                sport=sport,
-                markets=markets_list,
-                provider=self.provider_id,
-                url="",
-                start_time=start_time.isoformat() if start_time else "",
-                home_team=home_team,
-                away_team=away_team,
-                league=league
-            )
-
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Error parsing event: {e}")
+    def _parse_event(
+        self,
+        event_raw: Dict,
+        markets_by_event: Dict[str, List[Dict]],
+        selections_by_market: Dict[str, List[Dict]],
+        sport: str,
+    ) -> Optional[StandardEvent]:
+        """Parse a single event from events-table API."""
+        event_id = event_raw.get('id', '')
+        if not event_id:
             return None
 
-    def _parse_market(self, market: Dict, selections: List[Dict]) -> Optional[Dict]:
-        """Parse a market and its selections."""
-        try:
-            # Use marketFriendlyName, fallback to marketTemplateId for better detection
-            market_type = market.get('marketFriendlyName') or market.get('label') or market.get('marketTemplateId', '')
+        # Skip non-fixture events (outrights, etc.)
+        event_type = event_raw.get('eventType', '')
+        if event_type == 'Outright':
+            return None
 
-            # Normalize market type
-            market_type_normalized = self._normalize_market_type(market_type)
+        # Skip live events
+        phase = event_raw.get('phase', '')
+        if phase != 'Prematch':
+            return None
+
+        # Extract participants (home/away)
+        participants = event_raw.get('participants', [])
+        if len(participants) < 2:
+            return None
+
+        # Sort by side (1=home, 2=away)
+        participants.sort(key=lambda p: p.get('side', 0))
+        home_raw = participants[0].get('label', '')
+        away_raw = participants[1].get('label', '')
+
+        if not home_raw or not away_raw:
+            return None
+
+        home_team = normalize_team_name(home_raw)
+        away_team = normalize_team_name(away_raw)
+
+        # Parse start time
+        start_time = None
+        start_date_str = event_raw.get('startDate')
+        if start_date_str:
+            try:
+                start_time = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+            except Exception:
+                pass
+
+        # League/competition
+        league = event_raw.get('competitionName', 'Unknown')
+
+        # Parse markets
+        event_markets = markets_by_event.get(event_id, [])
+        markets = self._parse_markets(event_markets, selections_by_market)
+        if not markets:
+            return None
+
+        return StandardEvent(
+            id=f"{self.provider_id}_{event_id}",
+            name=f"{home_raw} vs {away_raw}",
+            sport=sport,
+            markets=markets,
+            provider=self.provider_id,
+            start_time=start_time,
+            home_team=home_team,
+            away_team=away_team,
+            league=league,
+        )
+
+    def _parse_markets(
+        self,
+        markets_raw: List[Dict],
+        selections_by_market: Dict[str, List[Dict]],
+    ) -> List[Dict]:
+        """Parse markets and their selections."""
+        markets = []
+        seen_types: Set[str] = set()
+
+        for market in markets_raw:
+            template_id = market.get('marketTemplateId', '')
+            market_type = self.MARKET_TEMPLATE_MAP.get(template_id)
+            if not market_type:
+                continue
+
+            # Skip duplicate market types (keep first)
+            if market_type in seen_types:
+                continue
+
+            # Skip suspended markets
+            if market.get('status') != 'Open':
+                continue
+
+            market_id = market.get('id', '')
+            selections = selections_by_market.get(market_id, [])
+
+            # Extract point value for spread/total
+            point = None
+            if market_type in ('spread', 'total'):
+                line_raw = market.get('lineValueRaw')
+                if line_raw is not None and line_raw != 0.0:
+                    point = float(line_raw)
+                else:
+                    # Try lineValue string
+                    line_str = market.get('lineValue', '').strip()
+                    if line_str:
+                        try:
+                            # Handle "0 - 1" format → -1.0
+                            if ' - ' in line_str:
+                                parts = line_str.split(' - ')
+                                point = float(parts[0]) - float(parts[1])
+                            else:
+                                point = float(line_str)
+                        except (ValueError, IndexError):
+                            pass
 
             outcomes = []
             for sel in selections:
-                outcome = self._parse_selection(sel)
-                if outcome:
-                    outcomes.append(outcome)
+                if sel.get('status') != 'Open':
+                    continue
 
-            if not outcomes:
-                return None
+                odds = sel.get('odds')
+                if not odds or odds <= 1.0:
+                    continue
 
-            market_dict = {
-                "type": market_type_normalized,
-                "outcomes": outcomes
-            }
+                # Map selection template to outcome name
+                sel_template = sel.get('selectionTemplateId', '')
+                outcome_name = self.SELECTION_TEMPLATE_MAP.get(sel_template)
+                if not outcome_name:
+                    continue
 
-            return market_dict
+                outcome_dict: Dict[str, Any] = {
+                    "name": outcome_name,
+                    "odds": round(float(odds), 3),
+                }
+                if point is not None:
+                    outcome_dict["point"] = point
+                outcomes.append(outcome_dict)
 
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Error parsing market: {e}")
-            return None
+            if outcomes:
+                markets.append({"type": market_type, "outcomes": outcomes})
+                seen_types.add(market_type)
 
-    def _parse_selection(self, selection: Dict) -> Optional[Dict]:
-        """Parse a selection (outcome)."""
-        try:
-            label = selection.get('label', '')
-            odds_value = selection.get('odds')
+        # Dedup: prefer 1x2 over moneyline
+        types = {m["type"] for m in markets}
+        if "1x2" in types and "moneyline" in types:
+            markets = [m for m in markets if m["type"] != "moneyline"]
 
-            if not odds_value or odds_value <= 1.0:
-                return None
+        return markets
 
-            # Normalize outcome label
-            outcome_name = self._normalize_outcome_label(label)
-
-            return {
-                "name": outcome_name,
-                "odds": round(float(odds_value), 3)
-            }
-
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Error parsing selection: {e}")
-            return None
-
-    def _normalize_market_type(self, market_type: str) -> str:
-        """Normalize market type to standard names (1x2/moneyline only)."""
-        mt_lower = market_type.lower()
-
-        # 1x2 / Three-way moneyline (Swedish: matchodds)
-        if any(x in mt_lower for x in ['1x2', 'full time result', 'matchodds', 'match odds', 'helresultat', 'ftcsr']):
-            return '1x2'
-
-        # Two-way moneyline (Swedish: vinnare)
-        if any(x in mt_lower for x in ['moneyline', 'match winner', 'vinnare', 'matchwinner', 'mgt']):
-            return 'moneyline'
-
-        return 'other'
-
-    def _normalize_outcome_label(self, label: str) -> str:
-        """Normalize outcome label to standard names (1x2/moneyline only)."""
-        label_lower = label.lower()
-
-        # Home outcomes
-        if label in ['1', 'home', 'hemma'] or label_lower in ['1', 'home', 'hemma']:
-            return 'home'
-
-        # Draw outcomes
-        if label in ['X', 'x', 'draw', 'oavgjort'] or label_lower in ['draw', 'oavgjort']:
-            return 'draw'
-
-        # Away outcomes
-        if label in ['2', 'away', 'borta'] or label_lower in ['2', 'away', 'borta']:
-            return 'away'
-
-        return label.lower()
+    def parse(self, data: Any, sport: str) -> List[StandardEvent]:
+        """Not used - extract() is overridden."""
+        return []
