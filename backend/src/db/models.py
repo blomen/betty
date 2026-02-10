@@ -11,7 +11,6 @@ SQLite schema for:
 """
 
 from datetime import datetime
-from pathlib import Path
 from enum import Enum
 
 from sqlalchemy import (
@@ -29,7 +28,8 @@ class RiskLevel(str, Enum):
     CRITICAL = "critical"
 
 # Database file location
-DB_PATH = Path(__file__).parent.parent.parent / "data" / "oddopp.db"
+from ..paths import get_db_path
+DB_PATH = get_db_path()
 
 Base = declarative_base()
 

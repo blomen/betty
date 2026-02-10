@@ -1,18 +1,23 @@
 """
-ComeOn Multi-League Retriever
+ComeOn Date-Based Retriever
 
-Extracts events by navigating to individual league pages.
+Extracts events by clicking through date buttons on the sport page.
 ComeOn Group platform with RSocket WebSocket data delivery.
 
-URL structure: /sv/sportsbook/sport/{id}-{slug}/leagues/{id}-{slug}
-League pages deliver 1x2 (id=1), moneyline (id=175,206), total (id=212) via WS.
+URL structure: /sv/sportsbook/sport/{id}-{slug}
+Sport page shows today's events initially. Clicking date buttons (11 feb, 12 feb, ...)
+triggers new WS INITIAL_STATE messages with events for that date.
+
+Markets: 1x2 (id=1), moneyline (id=175,206), total (id=212) via WS.
+
+Note: League page navigation in new tabs does NOT work — the WS connection
+only delivers data to the page that initiated it. Date-based extraction on
+the main page is the correct approach.
 """
 
 from typing import Dict, Any, List, Optional
-import json
 import logging
 from datetime import datetime
-import asyncio
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -23,10 +28,10 @@ logger = logging.getLogger(__name__)
 
 class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
     """
-    Multi-league ComeOn retriever.
+    Date-based ComeOn retriever.
 
-    Strategy: Navigate to sport page → extract league links → visit each league
-    page in parallel → parse RSocket WS messages for events/markets/selections.
+    Strategy: Navigate to sport page → dismiss cookies → click through date
+    buttons → parse RSocket WS messages for events/markets/selections.
     """
 
     # Sport URL mapping: canonical sport key -> ComeOn URL path (no /sv/ prefix)
@@ -49,37 +54,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        self.max_leagues = config.get("max_leagues", 100)
-        self._league_cache: Dict[str, List[Dict[str, str]]] = {}
-
-    async def _extract_league_links(self, page) -> List[Dict[str, str]]:
-        """Extract league links from sport page DOM."""
-        league_links = await page.evaluate('''() => {
-            const links = [];
-            const seen = new Set();
-
-            document.querySelectorAll('a[href*="/leagues/"]').forEach(link => {
-                const href = link.getAttribute('href');
-                const text = link.textContent.trim();
-
-                if (href && text && !href.includes('/events/')) {
-                    const cleanHref = href.split('?')[0];
-                    // Deduplicate by league ID (extract number from path)
-                    const match = cleanHref.match(/\\/leagues\\/(\\d+)/);
-                    const key = match ? match[1] : cleanHref;
-
-                    if (!seen.has(key)) {
-                        seen.add(key);
-                        links.push({ href: cleanHref, text });
-                    }
-                }
-            });
-
-            return links;
-        }''')
-
-        logger.info(f"[{self.provider_id}] Found {len(league_links)} league links")
-        return league_links
 
     # Market type mapping: marketType.id -> standard type
     MARKET_TYPE_MAP = {
@@ -147,8 +121,41 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             return list(self.SPORT_URL_MAP.keys())
         return [sport.split('/')[0] if '/' in sport else sport]
 
+    async def _dismiss_cookie_overlay(self, page) -> None:
+        """Dismiss OneTrust cookie consent overlay.
+
+        ComeOn's SPA may navigate after cookie accept, destroying the
+        execution context. We wait for the page to settle before removing
+        overlay elements.
+        """
+        try:
+            btn = await page.query_selector('#onetrust-accept-btn-handler')
+            if btn:
+                await btn.click()
+                # Wait for potential SPA navigation to complete
+                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_timeout(1000)
+        except Exception:
+            pass
+        # Force-remove overlay elements that intercept clicks
+        try:
+            await page.evaluate('''() => {
+                const filter = document.querySelector('.onetrust-pc-dark-filter');
+                if (filter) filter.remove();
+                const sdk = document.querySelector('#onetrust-consent-sdk');
+                if (sdk) sdk.remove();
+            }''')
+        except Exception:
+            pass  # Context may have been destroyed — overlay is likely gone anyway
+
     async def _extract_single_sport(self, sport: str, limit: Optional[int] = None) -> List[StandardEvent]:
-        """Extract events from a single sport via multi-league approach."""
+        """Extract events from a single sport via date-button navigation.
+
+        ComeOn shows today's events by default. Clicking date buttons
+        (11 feb, 12 feb, ...) triggers new WS INITIAL_STATE messages
+        with events for that date. We click through all available dates
+        to capture all upcoming events.
+        """
         sport_normalized = sport.split('/')[0] if '/' in sport else sport
 
         sport_path = self.SPORT_URL_MAP.get(sport_normalized)
@@ -158,7 +165,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
         logger.info(f"[{self.provider_id}] Starting extraction for {sport_normalized}")
 
-        # Shared WS message storage across all league pages
         ws_messages = []
         all_events_data = {}  # event_id -> event_data dict
 
@@ -166,7 +172,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             await self.transport._ensure_browser()
             page = self.transport.page
 
-            # Setup WS interception on main page
+            # Setup WS interception — persists across SPA navigations
             def on_websocket(ws):
                 def on_frame_received(payload):
                     if isinstance(payload, bytes):
@@ -176,80 +182,57 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 ws.on("framereceived", on_frame_received)
             page.on("websocket", on_websocket)
 
-            # Load sport page with /sv/ prefix
+            # Load sport page
             main_url = f"{self.site_url}/sv{sport_path}"
             logger.info(f"[{self.provider_id}] Loading {main_url}")
-            await page.goto(main_url, wait_until='networkidle', timeout=45000)
+            await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
+            await page.wait_for_timeout(1500)
+
+            # Dismiss cookie overlay — may trigger SPA navigation
+            await self._dismiss_cookie_overlay(page)
+
+            # Check if we're still on the sport page, if not navigate back
+            current_url = page.url
+            if sport_path not in current_url:
+                logger.info(f"[{self.provider_id}] Cookie redirect detected, navigating back to {main_url}")
+                await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
+
+            # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
             await page.wait_for_timeout(3000)
 
-            # Cookie consent (first load only)
-            for btn_text in ['Acceptera', 'Accept']:
-                try:
-                    await page.click(f'button:has-text("{btn_text}")', timeout=1500)
-                    await page.wait_for_timeout(500)
-                except:
-                    pass
+            # Step 1: Collect today's events from initial WS messages
+            self._collect_ws_events(ws_messages, all_events_data)
+            logger.info(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
 
-            # Extract league links (SPA may need extra wait for rendering)
-            cache_key = sport_normalized
-            if cache_key in self._league_cache:
-                league_links = self._league_cache[cache_key]
-                logger.info(f"[{self.provider_id}] Using cached leagues ({len(league_links)})")
-            else:
-                league_links = await self._extract_league_links(page)
-                if not league_links:
-                    # SPA rendering delay — wait and retry
-                    await page.wait_for_timeout(5000)
-                    league_links = await self._extract_league_links(page)
-                if league_links:
-                    self._league_cache[cache_key] = league_links
+            # Step 2: Find all date buttons and click through them
+            date_buttons = await page.evaluate(r'''() => {
+                const btns = [];
+                document.querySelectorAll('button').forEach((btn, idx) => {
+                    const text = btn.textContent.trim().toLowerCase();
+                    // Match date patterns like "11 feb.", "ons11 feb."
+                    if (/\d+\s+\w{3}\.?$/.test(text) && !text.startsWith('idag')) {
+                        btns.push(idx);
+                    }
+                });
+                return btns;
+            }''')
 
-            if not league_links:
-                logger.warning(f"[{self.provider_id}] No league links found for {sport_normalized}")
-                return []
-
-            leagues_to_process = league_links[:self.max_leagues]
-            logger.info(f"[{self.provider_id}] Processing {len(leagues_to_process)}/{len(league_links)} leagues")
-
-            # Step 2: Visit leagues in parallel
-            concurrent_limit = self.config.get('concurrent_leagues', 8)
-            sem = asyncio.Semaphore(concurrent_limit)
-
-            async def extract_league(idx: int, league: dict) -> int:
-                """Extract events from a single league page."""
-                async with sem:
-                    league_url = league['href']
-                    if not league_url.startswith('http'):
-                        league_url = f"{self.site_url}{league_url}"
-
-                    league_page = await self.transport.new_page()
+            if date_buttons:
+                logger.info(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
+                for btn_idx in date_buttons:
+                    before_count = len(all_events_data)
                     try:
-                        # Setup WS on league page feeding into shared messages
-                        def on_ws(ws):
-                            def on_frame(payload):
-                                if isinstance(payload, bytes):
-                                    decoded = self._decode_rsocket_frame(payload)
-                                    if decoded:
-                                        ws_messages.append(decoded)
-                            ws.on("framereceived", on_frame)
-                        league_page.on("websocket", on_ws)
+                        await page.evaluate(f'document.querySelectorAll("button")[{btn_idx}].click()')
+                        await page.wait_for_timeout(2000)
 
-                        await league_page.goto(league_url, wait_until='networkidle', timeout=30000)
-                        await league_page.wait_for_timeout(2000)
-                        return 1
+                        # Collect new events from WS
+                        self._collect_ws_events(ws_messages, all_events_data)
                     except Exception as e:
-                        logger.debug(f"[{self.provider_id}] Failed league {league['text']}: {e}")
-                        return 0
-                    finally:
-                        await league_page.close()
+                        logger.debug(f"[{self.provider_id}] Date button {btn_idx} failed: {e}")
 
-            tasks = [extract_league(i, lg) for i, lg in enumerate(leagues_to_process, 1)]
-            logger.info(f"[{self.provider_id}] Extracting {len(tasks)} leagues (max {concurrent_limit} concurrent)")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            successful = sum(1 for r in results if isinstance(r, int) and r > 0)
-            logger.info(f"[{self.provider_id}] {successful}/{len(leagues_to_process)} leagues extracted")
+            logger.info(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 
-            # Step 3: Parse WS data into events
+            # Step 3: Parse WS data into structured events
             all_markets = {}
             all_selections = {}
 
@@ -257,14 +240,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 if not isinstance(msg_data, list):
                     continue
                 for msg in msg_data:
-                    if msg.get('type') != 'INITIAL_STATE':
+                    if not isinstance(msg, dict):
                         continue
                     payload = msg.get('payload', {})
-
-                    for event in payload.get('events', []):
-                        eid = event.get('id')
-                        if eid and eid not in all_events_data:
-                            all_events_data[eid] = event
 
                     for market in payload.get('markets', []):
                         mid = market.get('id')
@@ -306,6 +284,20 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         except Exception as e:
             logger.error(f"[{self.provider_id}] Extraction failed for {sport_normalized}: {e}", exc_info=True)
             return []
+
+    def _collect_ws_events(self, ws_messages: list, all_events_data: dict) -> None:
+        """Collect events from WS messages into all_events_data dict."""
+        for msg_data in ws_messages:
+            if not isinstance(msg_data, list):
+                continue
+            for msg in msg_data:
+                if not isinstance(msg, dict):
+                    continue
+                payload = msg.get('payload', {})
+                for event in payload.get('events', []):
+                    eid = event.get('id')
+                    if eid and eid not in all_events_data:
+                        all_events_data[eid] = event
 
     def _parse_event(self, event_data: dict, sport: str,
                      event_markets_map: Dict[int, List[int]],

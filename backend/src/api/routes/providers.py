@@ -2,7 +2,6 @@
 
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 import yaml
@@ -16,7 +15,8 @@ from ..schemas import ProviderCreate, ProviderUpdate
 @lru_cache(maxsize=1)
 def load_provider_bonuses() -> dict[str, dict]:
     """Load bonus info from providers.yaml config (cached — config doesn't change at runtime)."""
-    config_path = Path(__file__).parent.parent.parent / "config" / "providers.yaml"
+    from ...paths import get_config_path
+    config_path = get_config_path("providers.yaml")
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f)

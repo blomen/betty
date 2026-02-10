@@ -1,11 +1,11 @@
 """Centralized logging configuration with rotation."""
 import logging
 import logging.handlers
-from pathlib import Path
 import sys
 
-LOGS_DIR = Path(__file__).parent.parent / "logs"
-LOGS_DIR.mkdir(exist_ok=True)
+from .paths import get_logs_dir
+
+LOGS_DIR = get_logs_dir()
 
 
 def setup_logging(name: str = None, level: str = "INFO"):

@@ -342,10 +342,10 @@ class CoolbetRetriever(BrowserRetriever):
             start_time = datetime.now(timezone.utc)
             logger.debug(f"[{self.provider_id}] No start_time for match {match.get('id')}, using now()")
 
-        # Parse markets — for total/spread, collect all lines then pick main line
+        # Parse markets — store ALL spread/total lines (storage layer filters to Pinnacle's point)
+        # Previously picked "most balanced" line which rarely matched Pinnacle → 0 spread/total stored
         markets = []
-        # Candidates grouped by type: {type: [(market_dict, balance_score), ...]}
-        line_candidates: Dict[str, List] = {}
+        seen_winner_type = None  # Track 1x2/moneyline dedup
 
         for raw_market in match.get("markets", []):
             market_name = raw_market.get("name", "")
@@ -378,23 +378,12 @@ class CoolbetRetriever(BrowserRetriever):
                     o["point"] = point
 
             if market_type in ("total", "spread"):
-                # Collect candidates — pick most balanced line later
-                odds_vals = [o["odds"] for o in outcomes]
-                if len(odds_vals) >= 2:
-                    balance = abs(odds_vals[0] - odds_vals[1])
-                else:
-                    balance = 999.0
-                line_candidates.setdefault(market_type, []).append((market_dict, balance))
+                # Store ALL lines — storage pipeline will match against Pinnacle's point
+                markets.append(market_dict)
             else:
-                # 1x2/moneyline: take first
+                # 1x2/moneyline: take first of each type
                 if market_type not in {m["type"] for m in markets}:
                     markets.append(market_dict)
-
-        # Pick the most balanced line for total/spread (main line)
-        for mtype, candidates in line_candidates.items():
-            if mtype not in {m["type"] for m in markets}:
-                best = min(candidates, key=lambda x: x[1])
-                markets.append(best[0])
 
         # Dedup: prefer 1x2 over moneyline
         market_types_present = {m["type"] for m in markets}

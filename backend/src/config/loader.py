@@ -219,7 +219,8 @@ class ConfigLoader:
             return
 
         if config_dir is None:
-            config_dir = Path(__file__).parent
+            from ..paths import get_config_dir
+            config_dir = get_config_dir()
 
         try:
             # Load sports config

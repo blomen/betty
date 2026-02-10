@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
+import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import type { BankrollStats, MetricsRun } from '@/types';
 
 export function StatsPage() {
@@ -27,6 +28,8 @@ export function StatsPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useRefreshOnExtraction(fetchData);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);

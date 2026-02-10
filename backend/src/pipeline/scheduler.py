@@ -221,62 +221,70 @@ class ExtractionScheduler:
         return _results or {}
 
     async def _poll_metrics_loop(self, stop_event: asyncio.Event):
-        """Poll metrics and update extraction state."""
+        """Poll metrics and update extraction state.
+
+        Uses a single DB session for the entire loop, calling expire_all()
+        each iteration so COUNT queries see fresh data without creating
+        hundreds of sessions during a run.
+        """
         from src.api.state import update_extraction_state
         from src.db.models import Event, Odds, get_session
 
-        while not stop_event.is_set():
-            if not self.pipeline.metrics:
-                await asyncio.sleep(0.5)
-                continue
+        db = get_session()
+        try:
+            while not stop_event.is_set():
+                if not self.pipeline.metrics:
+                    await asyncio.sleep(0.5)
+                    continue
 
-            current_run = self.pipeline.metrics.get_current_run()
-            if not current_run:
-                await asyncio.sleep(0.5)
-                continue
+                current_run = self.pipeline.metrics.get_current_run()
+                if not current_run:
+                    await asyncio.sleep(0.5)
+                    continue
 
-            # Build provider states from metrics
-            providers_state = {}
-            completed_count = 0
-            current_provider = None
+                # Build provider states from metrics
+                providers_state = {}
+                completed_count = 0
+                current_provider = None
 
-            for pid, pm in current_run.providers.items():
-                status = "pending"
-                if pm.is_complete:
-                    status = "completed" if pm.success else "failed"
-                    completed_count += 1
-                elif pm.start_time and not pm.is_complete:
-                    status = "running"
-                    current_provider = pid
+                for pid, pm in current_run.providers.items():
+                    status = "pending"
+                    if pm.is_complete:
+                        status = "completed" if pm.success else "failed"
+                        completed_count += 1
+                    elif pm.start_time and not pm.is_complete:
+                        status = "running"
+                        current_provider = pid
 
-                providers_state[pid] = {
-                    "status": status,
-                    "events": pm.total_events,
-                    "odds": pm.total_odds,
-                    "duration_seconds": pm.duration_seconds,
-                    "error": pm.error,
-                    "sports_completed": pm.sports_succeeded,
-                    "sports_total": pm.sports_attempted,
-                }
+                    providers_state[pid] = {
+                        "status": status,
+                        "events": pm.total_events,
+                        "odds": pm.total_odds,
+                        "duration_seconds": pm.duration_seconds,
+                        "error": pm.error,
+                        "sports_completed": pm.sports_succeeded,
+                        "sports_total": pm.sports_attempted,
+                    }
 
-            # Query DB for unique counts (avoids double-counting across providers)
-            db = get_session()
-            try:
+                # Expire cached objects so COUNT sees rows committed by
+                # the extraction pipeline running in the same process
+                db.expire_all()
+
                 total_events = db.query(Event).count()
                 total_odds = db.query(Odds).count()
-            finally:
-                db.close()
 
-            # Update global state
-            update_extraction_state(
-                total_events=total_events,
-                total_odds=total_odds,
-                providers=providers_state,
-                current_provider=current_provider,
-                completed_providers=completed_count,
-            )
+                # Update global state
+                update_extraction_state(
+                    total_events=total_events,
+                    total_odds=total_odds,
+                    providers=providers_state,
+                    current_provider=current_provider,
+                    completed_providers=completed_count,
+                )
 
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5)
+        finally:
+            db.close()
 
     def _clear_extraction_state(self):
         """Clear extraction state on error."""

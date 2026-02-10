@@ -131,8 +131,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    CONCURRENT_TABS = 3
-    LEAGUE_SETTLE_TIME = 2.0  # seconds to wait for WS data after navigation
+    CONCURRENT_TABS = 8
+    LEAGUE_SETTLE_TIME = 0.8  # seconds to wait for WS data after navigation (reduced from 1.2)
 
     async def _extract_all(self) -> Dict[str, List[StandardEvent]]:
         """

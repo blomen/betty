@@ -10,6 +10,7 @@ import time
 from typing import Callable
 
 from ..factory import ExtractorFactory
+from sqlalchemy import func
 from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
@@ -355,6 +356,14 @@ class ExtractionPipeline:
 
         log_progress("Pipeline started")
 
+        # Expire all cached ORM objects so this run sees fresh DB state.
+        # The pipeline singleton keeps self.session across runs; without
+        # expire_all(), queries return stale identity-map objects.
+        self.session.expire_all()
+
+        # Clear stale extractors from previous runs (browser handles, connections)
+        self.engine.clear_extractor_cache()
+
         # Clear stale events from previous runs
         await self.clear_cache()
 
@@ -384,10 +393,13 @@ class ExtractionPipeline:
                     # Only extract sports in ALLOWED_SPORTS
                     all_sports = set(s.kambi_sport for s in self.engine.sports)
                     target_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
-                    pinnacle_result = await self._extract_provider(
-                        "pinnacle",
-                        target_sports,
-                        max_events_per_sport
+                    pinnacle_result = await asyncio.wait_for(
+                        self._extract_provider(
+                            "pinnacle",
+                            target_sports,
+                            max_events_per_sport
+                        ),
+                        timeout=self.orchestrator_config.provider_timeout,
                     )
                     results["providers"]["pinnacle"] = pinnacle_result
 
@@ -398,6 +410,12 @@ class ExtractionPipeline:
                     log_progress(
                         f"Pinnacle done: {pinnacle_result.get('events_processed', 0)} events in {pinnacle_elapsed:.1f}s"
                     )
+                except asyncio.TimeoutError:
+                    error_msg = f"Timed out after {self.orchestrator_config.provider_timeout}s"
+                    logger.error(f"[pinnacle] {error_msg}")
+                    results["providers"]["pinnacle"] = {"error": error_msg}
+                    if self.metrics:
+                        self.metrics.end_provider("pinnacle", success=False, error=error_msg)
                 except Exception as e:
                     logger.error(f"Pinnacle extraction failed: {e}")
                     results["providers"]["pinnacle"] = {"error": str(e)}
@@ -416,13 +434,21 @@ class ExtractionPipeline:
                 log_progress("Extracting Polymarket...")
                 poly_start = time.time()
 
-                poly_results = await self._extract_polymarket(max_events_per_sport)
-                results["polymarket"] = poly_results
+                try:
+                    poly_results = await asyncio.wait_for(
+                        self._extract_polymarket(max_events_per_sport),
+                        timeout=self.orchestrator_config.provider_timeout,
+                    )
+                    results["polymarket"] = poly_results
 
-                poly_elapsed = time.time() - poly_start
-                log_progress(
-                    f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
-                )
+                    poly_elapsed = time.time() - poly_start
+                    log_progress(
+                        f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"
+                    )
+                except asyncio.TimeoutError:
+                    error_msg = f"Timed out after {self.orchestrator_config.provider_timeout}s"
+                    logger.error(f"[polymarket] {error_msg}")
+                    results["polymarket"] = {"events_processed": 0, "odds_processed": 0, "error": error_msg}
 
             # Extract from other providers in parallel
             # Only extract sports in ALLOWED_SPORTS
@@ -431,6 +457,40 @@ class ExtractionPipeline:
 
             # Pre-compute sharp sports from Pinnacle cache for filtering
             sharp_sports = await self.get_cached_sports()
+
+            # Only extract sports where Pinnacle has events — others are useless
+            # (no fair odds = no value detection possible)
+            if sharp_sports:
+                skipped = sorted(set(kambi_sports) - sharp_sports)
+                kambi_sports = sorted(s for s in kambi_sports if s in sharp_sports)
+                if skipped:
+                    logger.info(
+                        f"[Orchestrator] Skipping {len(skipped)} sports with no Pinnacle events: "
+                        f"{', '.join(skipped)}"
+                    )
+
+            # Order sports by Pinnacle event count (most events first)
+            # Browser providers that time out will at least have extracted high-value sports
+            pin_event_counts = {}
+            try:
+                rows = self.session.query(
+                    Event.sport, func.count(Event.id)
+                ).filter(
+                    Event.id.in_(
+                        self.session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
+                    )
+                ).group_by(Event.sport).all()
+                pin_event_counts = {sport: count for sport, count in rows}
+            except Exception:
+                pass
+
+            if pin_event_counts:
+                kambi_sports = sorted(kambi_sports, key=lambda s: pin_event_counts.get(s, 0), reverse=True)
+                top3 = [(s, pin_event_counts.get(s, 0)) for s in kambi_sports[:3]]
+                logger.info(
+                    f"[Orchestrator] Extracting {len(kambi_sports)} sports ordered by Pinnacle coverage: "
+                    f"{', '.join(f'{s}({c})' for s, c in top3)}..."
+                )
 
             # Build league lookup from Pinnacle events in DB for filtering soft books
             # Works whether Pinnacle was extracted this run or a previous one
@@ -507,6 +567,9 @@ class ExtractionPipeline:
                         log_progress(f"Extracting {len(available_providers)} providers...")
 
                 # Create tasks for parallel extraction
+                # Provider timeout from config (default 300s = 5 min)
+                provider_timeout = self.orchestrator_config.provider_timeout
+
                 async def extract_with_error_handling(provider_id):
                     # Start provider metrics
                     if self.metrics:
@@ -517,10 +580,13 @@ class ExtractionPipeline:
                         if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
                             raise Exception("Circuit breaker open")
 
-                        # Use retry wrapper (pass pre-computed sharp_sports and sharp_leagues)
-                        provider_results = await self._extract_provider_with_retry(
-                            provider_id, kambi_sports, max_events_per_sport, sharp_sports,
-                            sharp_leagues=getattr(self, 'sharp_leagues', None),
+                        # Use retry wrapper with timeout enforcement
+                        provider_results = await asyncio.wait_for(
+                            self._extract_provider_with_retry(
+                                provider_id, kambi_sports, max_events_per_sport, sharp_sports,
+                                sharp_leagues=getattr(self, 'sharp_leagues', None),
+                            ),
+                            timeout=provider_timeout,
                         )
 
                         # End provider metrics on success
@@ -528,6 +594,24 @@ class ExtractionPipeline:
                             self.metrics.end_provider(provider_id, success=True)
 
                         return provider_id, provider_results
+
+                    except asyncio.TimeoutError:
+                        error_msg = f"Timed out after {provider_timeout}s"
+                        logger.error(f"[{provider_id}] {error_msg}")
+
+                        if self.metrics:
+                            self.metrics.end_provider(provider_id, success=False, error=error_msg)
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_failure(provider_id)
+
+                        return provider_id, {
+                            "events_processed": 0,
+                            "events_new": 0,
+                            "odds_processed": 0,
+                            "odds_new": 0,
+                            "error": error_msg,
+                        }
+
                     except Exception as e:
                         logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
 
@@ -827,6 +911,11 @@ class ExtractionPipeline:
         is_sharp = provider_id in SHARP_PROVIDERS
         batch_size = 500 if is_sharp else self.orchestrator_config.batch_commit_size
 
+        # Sport timeout from config (default 60s)
+        # Browser-based providers need longer: page load + rendering + data extraction
+        base_sport_timeout = self.orchestrator_config.sport_timeout
+        sport_timeout = base_sport_timeout * 2 if is_single_page else base_sport_timeout
+
         # Define per-sport extraction function
         async def extract_sport(sport: str, sport_index: int):
             """Extract single sport with error handling."""
@@ -844,7 +933,10 @@ class ExtractionPipeline:
                 try:
                     # Get target leagues for this sport (if available)
                     target_leagues = sharp_leagues.get(sport) if sharp_leagues else None
-                    events = await extractor.extract(sport, limit=limit, target_leagues=target_leagues)
+                    events = await asyncio.wait_for(
+                        extractor.extract(sport, limit=limit, target_leagues=target_leagues),
+                        timeout=sport_timeout,
+                    )
 
                     # Store events with batch processor for better performance
                     events_processed = 0
@@ -910,6 +1002,24 @@ class ExtractionPipeline:
                         "odds_processed": odds_processed,
                         "odds_new": odds_new,
                         "error": None
+                    }
+
+                except asyncio.TimeoutError:
+                    error_msg = f"Timed out after {sport_timeout}s"
+                    logger.warning(f"[{provider_id}] {sport} {error_msg}")
+                    if self.metrics:
+                        self.metrics.end_sport(
+                            provider_id, sport,
+                            success=False,
+                            error=error_msg,
+                        )
+                    return {
+                        "sport": sport,
+                        "events_processed": 0,
+                        "events_new": 0,
+                        "odds_processed": 0,
+                        "odds_new": 0,
+                        "error": {"error": error_msg, "error_type": "TimeoutError"}
                     }
 
                 except Exception as e:

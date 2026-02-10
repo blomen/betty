@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
+import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import type { PolymarketValueBet } from '@/types';
 
 export function PolymarketPage() {
@@ -28,6 +30,8 @@ export function PolymarketPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useRefreshOnExtraction(fetchData);
 
   const formatTime = (dateStr: string | null) => {
     if (!dateStr) return '-';
@@ -85,6 +89,8 @@ export function PolymarketPage() {
           {isLoading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
+
+      <ExtractionProgressBar />
 
       {/* Value Bets Card */}
       <Card title={`Value Bets (${valueBets.length})`}>

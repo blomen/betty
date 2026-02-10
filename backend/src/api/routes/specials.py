@@ -2,15 +2,16 @@
 
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query
 
+from ...paths import get_app_data_dir
+
 # Add backend root to path for script import
-_backend_root = Path(__file__).parent.parent.parent.parent
-if str(_backend_root) not in sys.path:
-    sys.path.insert(0, str(_backend_root))
+_backend_root = str(get_app_data_dir())
+if _backend_root not in sys.path:
+    sys.path.insert(0, _backend_root)
 
 router = APIRouter(prefix="/api/specials", tags=["specials"])
 

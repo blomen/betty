@@ -94,8 +94,13 @@ class AltenarRetriever(Retriever):
         # Integration ID (skin)
         self.integration = config.get("integration", "betiniase2")
 
+    @staticmethod
+    def _build_id_index(items: List[Dict]) -> Dict[int, Dict]:
+        """Build O(1) lookup index from list of dicts with 'id' field."""
+        return {item['id']: item for item in items if 'id' in item}
+
     def _find_by_id(self, items: List[Dict], target_id: int) -> Optional[Dict]:
-        """Find item in list by ID."""
+        """Find item in list by ID (O(n) fallback for non-indexed lists)."""
         for item in items:
             if item.get('id') == target_id:
                 return item
@@ -106,7 +111,8 @@ class AltenarRetriever(Retriever):
         outcome_name: str,
         market_type: str,
         raw_home: str,
-        raw_away: str
+        raw_away: str,
+        outcome_index: int = -1
     ) -> str:
         """
         Standardize outcome names to platform conventions.
@@ -116,6 +122,7 @@ class AltenarRetriever(Retriever):
             market_type: Market type (1x2, moneyline, spread, total)
             raw_home: Raw home team name (before normalization)
             raw_away: Raw away team name (before normalization)
+            outcome_index: Position in the odds list (0=first, 1=second) for fallback
 
         Returns:
             Standardized outcome name (home, away, draw, over, under)
@@ -124,7 +131,7 @@ class AltenarRetriever(Retriever):
 
         # Handle total markets: "Over X.5" → "over", "Under X.5" → "under"
         if market_type == 'total':
-            if outcome_lower.startswith('over'):
+            if outcome_lower.startswith('over') or outcome_lower.startswith('över'):
                 return 'over'
             if outcome_lower.startswith('under'):
                 return 'under'
@@ -136,9 +143,20 @@ class AltenarRetriever(Retriever):
             if market_type == '1x2' and outcome_lower in ['x', 'draw', 'tie', 'x2']:
                 return 'draw'
 
+            # Simple numeric markers (common in all sports)
+            if outcome_lower in ['1', '2']:
+                return 'home' if outcome_lower == '1' else 'away'
+
+            # Explicit home/away keywords
+            if outcome_lower in ['home', 'hemma']:
+                return 'home'
+            if outcome_lower in ['away', 'borta']:
+                return 'away'
+
             # Extract team name without parentheses and extra text
+            import re
+
             def extract_base_name(team_name):
-                import re
                 base = re.sub(r'\([^)]*\)', '', team_name).strip()
                 return normalize_team_name(base)
 
@@ -153,18 +171,27 @@ class AltenarRetriever(Retriever):
                 return 'away'
 
             # Try partial match - check if any word from team name is in outcome
-            home_words = set(home_base.split())
-            away_words = set(away_base.split())
-            outcome_words = set(outcome_base.split())
+            # Filter out very short words (< 3 chars) to avoid false matches
+            home_words = {w for w in home_base.split() if len(w) >= 3}
+            away_words = {w for w in away_base.split() if len(w) >= 3}
+            outcome_words = {w for w in outcome_base.split() if len(w) >= 3}
 
-            if home_words & outcome_words:
+            home_overlap = home_words & outcome_words
+            away_overlap = away_words & outcome_words
+
+            if home_overlap and not away_overlap:
                 return 'home'
-            if away_words & outcome_words:
+            if away_overlap and not home_overlap:
                 return 'away'
 
-            # Simple numeric markers
-            if outcome_lower in ['1', '2']:
-                return 'home' if outcome_lower == '1' else 'away'
+            # Positional fallback for 2-way markets (moneyline, spread)
+            # When outcome name doesn't match team names (common in esports/MMA),
+            # use position: first outcome = home, second = away
+            if market_type in ('moneyline', 'spread') and outcome_index >= 0:
+                if outcome_index == 0:
+                    return 'home'
+                elif outcome_index == 1:
+                    return 'away'
 
         # If no match found, return original (will be logged as 'other')
         return outcome_name
@@ -241,13 +268,10 @@ class AltenarRetriever(Retriever):
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Failed to parse start time: {e}")
 
-            # Get competitors (teams)
+            # Get competitors (teams) — O(1) via pre-built index
+            comp_idx = reference_data.get('_comp_idx', {})
             competitor_ids = event_data.get('competitorIds', [])
-            competitors = [
-                self._find_by_id(reference_data.get('competitors', []), comp_id)
-                for comp_id in competitor_ids
-            ]
-            competitors = [c for c in competitors if c]  # Filter out None
+            competitors = [comp_idx[cid] for cid in competitor_ids if cid in comp_idx]
 
             # Determine home/away teams (normalize immediately)
             raw_home = competitors[0]['name'] if len(competitors) > 0 else None
@@ -263,17 +287,20 @@ class AltenarRetriever(Retriever):
             home_team = normalize_team_name(raw_home) if raw_home else None
             away_team = normalize_team_name(raw_away) if raw_away else None
 
-            # Get championship (league)
+            # Get championship (league) — O(1) via pre-built index
+            champ_idx = reference_data.get('_champ_idx', {})
             champ_id = event_data.get('champId')
-            champ = self._find_by_id(reference_data.get('champs', []), champ_id)
+            champ = champ_idx.get(champ_id)
             league = champ['name'] if champ else 'Unknown'
 
             # Parse markets
             markets = []
             market_ids = event_data.get('marketIds', [])
 
+            market_idx = reference_data.get('_market_idx', {})
+            odd_idx = reference_data.get('_odd_idx', {})
             for market_id in market_ids:
-                market = self._find_by_id(reference_data.get('markets', []), market_id)
+                market = market_idx.get(market_id)
                 if not market:
                     continue
 
@@ -297,15 +324,16 @@ class AltenarRetriever(Retriever):
                 odd_ids = market.get('oddIds', [])
                 outcomes = []
 
-                for odd_id in odd_ids:
-                    odd = self._find_by_id(reference_data.get('odds', []), odd_id)
+                for idx, odd_id in enumerate(odd_ids):
+                    odd = odd_idx.get(odd_id)
                     if odd:
                         raw_outcome = odd.get('name', '')
                         standardized_outcome = self._standardize_outcome(
                             raw_outcome,
                             market_type,
                             raw_home,
-                            raw_away
+                            raw_away,
+                            outcome_index=idx
                         )
 
                         outcome_dict = {
@@ -396,12 +424,19 @@ class AltenarRetriever(Retriever):
 
             logger.info(f"[{self.provider_id}] Found {len(sport_events)} {sport} events")
 
-            # Reference data for resolving IDs
+            # Build O(1) lookup indexes (called once, used per-event)
+            # Without indexing: ~4 list scans per market × ~3 markets × ~500 events = ~6000 O(n) scans
+            # With indexing: 4 dict builds + O(1) lookups = massive speedup
             reference_data = {
                 'competitors': data.get('competitors', []),
                 'champs': data.get('champs', []),
                 'markets': data.get('markets', []),
-                'odds': data.get('odds', [])
+                'odds': data.get('odds', []),
+                # Pre-built indexes for O(1) lookups
+                '_comp_idx': self._build_id_index(data.get('competitors', [])),
+                '_champ_idx': self._build_id_index(data.get('champs', [])),
+                '_market_idx': self._build_id_index(data.get('markets', [])),
+                '_odd_idx': self._build_id_index(data.get('odds', [])),
             }
 
             # Parse events

@@ -7,15 +7,17 @@ Connects to SQLite database and analysis modules.
 
 import time
 from datetime import datetime
-from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from backend directory
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+# Load .env from user data directory (AppData in bundled mode, backend/ in dev)
+from ..paths import get_env_path
+load_dotenv(get_env_path())
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..db.models import init_db
 from .state import ws_manager
@@ -54,12 +56,17 @@ app.add_middleware(
 _startup_time: float = 0.0
 
 
-# Initialize database on startup
+# Initialize database on startup and auto-start extraction
 @app.on_event("startup")
 async def startup():
     global _startup_time
     _startup_time = time.time()
     init_db()
+
+    # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
+    from ..pipeline.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    await scheduler.start_continuous(interval_seconds=300)
 
 
 # Health check endpoints
@@ -165,6 +172,44 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# Version endpoint
+@app.get("/api/version")
+async def get_version():
+    """Return app version and runtime info."""
+    from ..paths import get_app_data_dir, is_bundled
+    return {
+        "version": app.version,
+        "data_dir": str(get_app_data_dir()),
+        "is_bundled": is_bundled(),
+    }
+
+
+# Serve frontend static files (when dist/ exists — bundled mode or pre-built dev)
+from ..paths import get_frontend_dir
+
+_frontend_dir = get_frontend_dir()
+if _frontend_dir.exists():
+    # Mount JS/CSS/image assets
+    _assets_dir = _frontend_dir / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="static-assets")
+
+    # Serve favicon and other root static files
+    @app.get("/terminal.svg")
+    async def serve_favicon():
+        svg = _frontend_dir / "terminal.svg"
+        if svg.exists():
+            return FileResponse(str(svg), media_type="image/svg+xml")
+
+    # SPA catch-all: serve index.html for all non-API routes
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve React app for client-side routing."""
+        index = _frontend_dir / "index.html"
+        if index.exists():
+            return FileResponse(str(index), media_type="text/html")
 
 
 # Entry point for development

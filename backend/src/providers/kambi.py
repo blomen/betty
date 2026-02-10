@@ -1,8 +1,9 @@
 from typing import List, Any
+import copy
 import logging
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 # Kambi Specific Logic adapted from APIExtractor
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 # TTL for shared group cache (1 hour)
 GROUP_CACHE_TTL_SECONDS = 3600
+
+# TTL for shared event cache (5 minutes — events don't change often within a run)
+EVENT_CACHE_TTL_SECONDS = 300
 
 
 @dataclass
@@ -27,6 +31,16 @@ class CachedGroupData:
         return time.time() - self.created_at > GROUP_CACHE_TTL_SECONDS
 
 
+@dataclass
+class CachedEventData:
+    """Cache entry for parsed events per group, shared across Kambi brands."""
+    events: List[StandardEvent]
+    created_at: float
+
+    def is_expired(self) -> bool:
+        return time.time() - self.created_at > EVENT_CACHE_TTL_SECONDS
+
+
 class KambiRetriever(Retriever):
     """
     Kambi Logic ported to the new Retriever Architecture.
@@ -37,6 +51,13 @@ class KambiRetriever(Retriever):
     # This means 1 fetch serves all 8 providers instead of 8 redundant fetches
     # Uses TTL-based caching to prevent stale data
     _SHARED_GROUP_CACHE: Dict[str, CachedGroupData] = {}
+
+    # Shared class-level cache for PARSED events per group
+    # All 8 Kambi brands return identical events (same API backend, different brand slug)
+    # Key: (base_url, group_id, sport) → CachedEventData with list of StandardEvents
+    # First brand fetches + parses, subsequent brands clone with their provider_id
+    # Saves ~7 redundant API calls per group × ~50 groups = ~350 avoided HTTP requests
+    _SHARED_EVENT_CACHE: Dict[tuple, CachedEventData] = {}
 
     # We might need to fetch the groups first, then the events.
     # The Retriever interface assumes a single URL per sport usually,
@@ -170,16 +191,22 @@ class KambiRetriever(Retriever):
 
     @classmethod
     def clear_group_cache(cls):
-        """Clear the shared group cache. Useful for testing or forced refresh."""
+        """Clear the shared group and event caches. Useful for testing or forced refresh."""
         cls._SHARED_GROUP_CACHE.clear()
-        logger.info("Kambi group cache cleared")
+        cls._SHARED_EVENT_CACHE.clear()
+        logger.info("Kambi group + event caches cleared")
 
     @classmethod
     def get_cache_stats(cls) -> Dict:
-        """Get statistics about the shared group cache."""
+        """Get statistics about the shared caches."""
         now = time.time()
         stats = {
-            "total_entries": len(cls._SHARED_GROUP_CACHE),
+            "group_cache_entries": len(cls._SHARED_GROUP_CACHE),
+            "event_cache_entries": len(cls._SHARED_EVENT_CACHE),
+            "event_cache_events": sum(
+                len(entry.events) for entry in cls._SHARED_EVENT_CACHE.values()
+                if not entry.is_expired()
+            ),
             "expired_entries": 0,
             "active_entries": 0,
             "oldest_age_seconds": 0,
@@ -197,6 +224,29 @@ class KambiRetriever(Retriever):
         return stats
         
     async def _fetch_group_events(self, group: dict, sport: str, metrics: ExtractionMetrics) -> List[StandardEvent]:
+        # Check shared event cache first — all Kambi brands return identical events
+        cache_key = (self.base_url, group["id"], sport)
+        cached = self._SHARED_EVENT_CACHE.get(cache_key)
+        if cached and not cached.is_expired():
+            # Clone events with this brand's provider_id (cheap shallow copy)
+            cloned = []
+            for ev in cached.events:
+                clone = StandardEvent(
+                    id=ev.id, name=ev.name,
+                    home_team=ev.home_team, away_team=ev.away_team,
+                    sport=ev.sport, league=ev.league,
+                    start_time=ev.start_time,
+                    markets=ev.markets,  # markets are read-only, safe to share
+                    provider=self.provider_id,
+                )
+                cloned.append(clone)
+            logger.debug(
+                f"[{self.provider_id}] Cache hit for group {group['id']} ({sport}): "
+                f"{len(cloned)} events"
+            )
+            metrics.events_parsed += len(cloned)
+            return cloned
+
         endpoint = "betoffer/group/{group_id}.json"  # Default
         if "endpoints" in self.config and "events" in self.config["endpoints"]:
             endpoint = self.config["endpoints"]["events"]
@@ -213,7 +263,14 @@ class KambiRetriever(Retriever):
 
         # Use canonical sport name (from config) not Kambi's group sport name
         # e.g., "mma" instead of "martial_arts", "esports" instead of "valorant"
-        return self.parse(data, sport, metrics)
+        events = self.parse(data, sport, metrics)
+
+        # Cache parsed events for other brands to reuse
+        self._SHARED_EVENT_CACHE[cache_key] = CachedEventData(
+            events=events, created_at=time.time()
+        )
+
+        return events
 
     def _check_pagination(self, data: Any, group_name: str, metrics: ExtractionMetrics):
         """

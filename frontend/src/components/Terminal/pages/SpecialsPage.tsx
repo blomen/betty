@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
+import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { ExtractionProgressBar } from '../ExtractionProgressBar';
 
 
 export function SpecialsPage() {
@@ -61,6 +63,8 @@ export function SpecialsPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useRefreshOnExtraction(fetchData);
 
   // Filter out expired specials client-side as extra safety
   const activeSpecials = specials.filter(s => {
@@ -174,6 +178,8 @@ export function SpecialsPage() {
           </button>
         </div>
       </div>
+
+      <ExtractionProgressBar />
 
       {error && (
         <div className="text-red-400 text-sm bg-red-400/10 px-3 py-2 rounded">{error}</div>

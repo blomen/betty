@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
+import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import type { Opportunity } from '@/types';
 
 export function ValuePage() {
@@ -27,6 +29,8 @@ export function ValuePage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useRefreshOnExtraction(fetchData);
 
   const formatTime = (dateStr: string | undefined) => {
     if (!dateStr) return '-';
@@ -93,6 +97,8 @@ export function ValuePage() {
           {isLoading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
+
+      <ExtractionProgressBar />
 
       {/* Results */}
       <Card title={`Value Bets (${opportunities.length})`}>

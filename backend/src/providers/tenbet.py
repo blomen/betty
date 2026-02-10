@@ -116,7 +116,7 @@ class TenBetRetriever(BrowserRetriever):
         # Scrape competitions in batches to allow early exit
         all_events = []
         unique_ids = set()
-        sem = asyncio.Semaphore(3)  # Conservative: 3 parallel tabs (JS SPA is heavy)
+        sem = asyncio.Semaphore(5)  # 5 parallel tabs (tested: SPA handles concurrency well)
         batch_size = 10
 
         async def process_competition(comp):
@@ -193,7 +193,7 @@ class TenBetRetriever(BrowserRetriever):
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)  # Wait for SPA to render
+            await page.wait_for_timeout(2000)  # Wait for SPA to render (reduced from 3s)
 
             competitions = await page.evaluate("""() => {
                 const links = document.querySelectorAll('a[href*="competitions/"]');
@@ -242,7 +242,7 @@ class TenBetRetriever(BrowserRetriever):
 
             # Wait for event items to render (SPA widget needs time)
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=15000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
             except Exception:
                 # Check for empty state
                 empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
@@ -253,7 +253,7 @@ class TenBetRetriever(BrowserRetriever):
                 return []
 
             # Brief pause for remaining odds to load
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(500)
 
             # Scrape event data from DOM
             scraped = await page.evaluate("""() => {

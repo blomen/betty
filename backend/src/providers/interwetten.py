@@ -404,7 +404,7 @@ class InterwettenRetriever(BrowserRetriever):
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
 
         try:
-            resp = await page.goto(url, wait_until="load", timeout=30000)
+            resp = await page.goto(url, wait_until="load", timeout=20000)
             if not resp or resp.status != 200:
                 logger.debug(f"[{self.provider_id}] League {league_slug}: status {resp.status if resp else '?'}")
                 return [], {}
@@ -498,7 +498,7 @@ class InterwettenRetriever(BrowserRetriever):
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 3
+    CONCURRENT_DETAIL_PAGES = 8
 
     async def _enrich_with_detail_markets(
         self,
@@ -545,12 +545,12 @@ class InterwettenRetriever(BrowserRetriever):
             try:
                 async with sem:
                     url = f"{self.base_url}{href}"
-                    resp = await worker_page.goto(url, wait_until="load", timeout=15000)
+                    resp = await worker_page.goto(url, wait_until="load", timeout=10000)
                     if not resp or resp.status != 200:
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(500)
+                    await worker_page.wait_for_timeout(250)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []

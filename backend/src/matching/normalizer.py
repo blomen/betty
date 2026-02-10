@@ -73,7 +73,8 @@ TEAM_PREFIXES = [
 @lru_cache(maxsize=1)
 def _load_aliases() -> Dict[str, str]:
     """Load and build reverse alias lookup from YAML."""
-    aliases_path = Path(__file__).parent / "aliases.yaml"
+    from ..paths import get_aliases_path
+    aliases_path = get_aliases_path()
 
     lookup = {}
 

@@ -148,7 +148,12 @@ class HttpTransport(Transport):
                     self._consecutive_429s[provider_id] = 0
 
                 if response.status != 200:
-                    logger.warning(f"HTTP GET {url} returned status {response.status}")
+                    # 401/403 are expected for restricted resources (e.g., Pinnacle leagues)
+                    # Log at DEBUG to avoid noisy warnings during normal operation
+                    if response.status in (401, 403):
+                        logger.debug(f"HTTP GET {url} returned status {response.status}")
+                    else:
+                        logger.warning(f"HTTP GET {url} returned status {response.status}")
                     return None
 
                 # Auto-detect JSON vs Text

@@ -1,18 +1,23 @@
 """
-Hajper Retriever - Multi-League WebSocket extraction
+Hajper/Lyllo Retriever - Date-Based WebSocket extraction
 
-Hajper (ComeOn Group) uses WebSocket/RSocket for event data.
-Extracts events by navigating to individual league pages.
+ComeOn Group platform with RSocket WebSocket data delivery.
+Shared platform with ComeOn — same sport IDs, WS format, and date navigation.
 
-URL structure: /sv/sportsbook/sport/{id}-{slug}/leagues/{id}-{slug}
-Same platform as ComeOn — shared league IDs and WS format.
+URL structure: /sv/sportsbook/sport/{id}-{slug}
+Sport page shows today's events initially. Clicking date buttons (11 feb, 12 feb, ...)
+triggers new WS INITIAL_STATE messages with events for that date.
+
+Markets: 1x2 (id=1), moneyline (id=175,206), total (id=212) via WS.
+
+Note: League page navigation in new tabs does NOT work — the WS connection
+only delivers data to the page that initiated it. Date-based extraction on
+the main page is the correct approach.
 """
 
 from typing import Dict, Any, List, Optional
-import json
 import logging
 from datetime import datetime
-import asyncio
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..matching.normalizer import normalize_team_name
@@ -23,13 +28,13 @@ logger = logging.getLogger(__name__)
 
 class HajperRetriever(BrowserRetriever, RSocketMixin):
     """
-    Multi-league Hajper retriever.
+    Date-based Hajper/Lyllo retriever.
 
-    Strategy: Navigate to sport page → extract league links → visit each league
-    page in parallel → parse RSocket WS messages for events/markets/selections.
+    Strategy: Navigate to sport page → dismiss cookies → click through date
+    buttons → parse RSocket WS messages for events/markets/selections.
     """
 
-    # Sport URL mapping: canonical sport key -> Hajper URL path (no /sv/ prefix)
+    # Sport URL mapping: canonical sport key -> URL path (no /sv/ prefix)
     # Same sport IDs as ComeOn (shared ComeOn Group platform)
     SPORT_URL_MAP = {
         'football': '/sportsbook/sport/1-fotboll',
@@ -44,42 +49,6 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
-    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
-        super().__init__(config, transport)
-        raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
-        self.site_url: str = raw_site_url.rstrip("/")
-        self.max_leagues = config.get("max_leagues", 100)
-        self._league_cache: Dict[str, List[Dict[str, str]]] = {}
-
-    async def _extract_league_links(self, page) -> List[Dict[str, str]]:
-        """Extract league links from sport page DOM."""
-        league_links = await page.evaluate('''() => {
-            const links = [];
-            const seen = new Set();
-
-            document.querySelectorAll('a[href*="/leagues/"]').forEach(link => {
-                const href = link.getAttribute('href');
-                const text = link.textContent.trim();
-
-                if (href && text && !href.includes('/events/')) {
-                    const cleanHref = href.split('?')[0];
-                    // Deduplicate by league ID (extract number from path)
-                    const match = cleanHref.match(/\\/leagues\\/(\\d+)/);
-                    const key = match ? match[1] : cleanHref;
-
-                    if (!seen.has(key)) {
-                        seen.add(key);
-                        links.push({ href: cleanHref, text });
-                    }
-                }
-            });
-
-            return links;
-        }''')
-
-        logger.info(f"[{self.provider_id}] Found {len(league_links)} league links")
-        return league_links
-
     # Market type mapping: marketType.id -> standard type
     MARKET_TYPE_MAP = {
         1: '1x2',          # 1x2 (3-way match result)
@@ -87,6 +56,11 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         206: 'moneyline',   # Vinnare inkl. övertid (Winner incl. overtime)
         212: 'total',        # Totalt inkl. övertid (Total incl. overtime)
     }
+
+    def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
+        super().__init__(config, transport)
+        raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
+        self.site_url: str = raw_site_url.rstrip("/")
 
     def _normalize_market_type(self, market_type_id: int) -> str:
         """Map marketTypeId to standard market type."""
@@ -123,8 +97,46 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         raise NotImplementedError("HajperRetriever uses extract() directly")
 
-    async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
-        """Extract events using multi-league approach."""
+    async def _dismiss_cookie_overlay(self, page) -> None:
+        """Dismiss cookie consent overlay.
+
+        ComeOn Group SPAs may navigate after cookie accept, destroying the
+        execution context. We wait for the page to settle before continuing.
+        """
+        # Try OneTrust (used by some ComeOn Group sites)
+        try:
+            btn = await page.query_selector('#onetrust-accept-btn-handler')
+            if btn:
+                await btn.click()
+                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_timeout(1000)
+                return
+        except Exception:
+            pass
+
+        # Try generic accept buttons (Hajper/Lyllo may use different consent)
+        for btn_text in ['Acceptera', 'Accept', 'Godkänn']:
+            try:
+                await page.click(f'button:has-text("{btn_text}")', timeout=1500)
+                await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                await page.wait_for_timeout(1000)
+                return
+            except Exception:
+                pass
+
+        # Force-remove overlay elements that intercept clicks
+        try:
+            await page.evaluate('''() => {
+                const filter = document.querySelector('.onetrust-pc-dark-filter');
+                if (filter) filter.remove();
+                const sdk = document.querySelector('#onetrust-consent-sdk');
+                if (sdk) sdk.remove();
+            }''')
+        except Exception:
+            pass
+
+    async def extract(self, sport: str, limit: Optional[int] = None, **kwargs) -> List[StandardEvent]:
+        """Extract events via date-button navigation on the sport page."""
         sport_path = self.SPORT_URL_MAP.get(sport)
         if not sport_path:
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
@@ -132,19 +144,14 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
         logger.info(f"[{self.provider_id}] Starting extraction for {sport}")
 
-        # Shared WS message storage
         ws_messages = []
         all_events_data = {}
 
         try:
-            if not isinstance(self.transport, BrowserTransport):
-                logger.error(f"[{self.provider_id}] Requires BrowserTransport")
-                return []
-
             await self.transport._ensure_browser()
             page = self.transport.page
 
-            # Setup WS interception on main page
+            # Setup WS interception — persists across SPA navigations
             def on_websocket(ws):
                 def on_frame_received(payload):
                     if isinstance(payload, bytes):
@@ -154,77 +161,54 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 ws.on("framereceived", on_frame_received)
             page.on("websocket", on_websocket)
 
-            # Load sport page with /sv/ prefix
+            # Load sport page
             sport_url = f"{self.site_url}/sv{sport_path}"
             logger.info(f"[{self.provider_id}] Loading {sport_url}")
-            await page.goto(sport_url, wait_until='networkidle', timeout=45000)
+            await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
+            await page.wait_for_timeout(1500)
+
+            # Dismiss cookie overlay — may trigger SPA navigation
+            await self._dismiss_cookie_overlay(page)
+
+            # Check if cookie redirect moved us off the sport page
+            current_url = page.url
+            if sport_path not in current_url:
+                logger.info(f"[{self.provider_id}] Cookie redirect detected, navigating back to {sport_url}")
+                await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
+
+            # Wait for WS data to arrive
             await page.wait_for_timeout(3000)
 
-            # Cookie consent
-            for btn_text in ['Acceptera', 'Accept']:
-                try:
-                    await page.click(f'button:has-text("{btn_text}")', timeout=1500)
-                    await page.wait_for_timeout(500)
-                except:
-                    pass
+            # Step 1: Collect today's events from initial WS messages
+            self._collect_ws_events(ws_messages, all_events_data)
+            logger.info(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
 
-            # Extract league links (SPA may need extra wait for rendering)
-            cache_key = sport
-            if cache_key in self._league_cache:
-                league_links = self._league_cache[cache_key]
-                logger.info(f"[{self.provider_id}] Using cached leagues ({len(league_links)})")
-            else:
-                league_links = await self._extract_league_links(page)
-                if not league_links:
-                    await page.wait_for_timeout(5000)
-                    league_links = await self._extract_league_links(page)
-                if league_links:
-                    self._league_cache[cache_key] = league_links
+            # Step 2: Find all date buttons and click through them
+            date_buttons = await page.evaluate(r'''() => {
+                const btns = [];
+                document.querySelectorAll('button').forEach((btn, idx) => {
+                    const text = btn.textContent.trim().toLowerCase();
+                    // Match date patterns like "11 feb.", "ons11 feb."
+                    if (/\d+\s+\w{3}\.?$/.test(text) && !text.startsWith('idag')) {
+                        btns.push(idx);
+                    }
+                });
+                return btns;
+            }''')
 
-            if not league_links:
-                logger.warning(f"[{self.provider_id}] No league links found for {sport}")
-                return []
-
-            leagues_to_process = league_links[:self.max_leagues]
-            logger.info(f"[{self.provider_id}] Processing {len(leagues_to_process)}/{len(league_links)} leagues")
-
-            # Visit leagues in parallel
-            concurrent_limit = self.config.get('concurrent_leagues', 8)
-            sem = asyncio.Semaphore(concurrent_limit)
-
-            async def extract_league(idx: int, league: dict) -> int:
-                async with sem:
-                    league_url = league['href']
-                    if not league_url.startswith('http'):
-                        league_url = f"{self.site_url}{league_url}"
-
-                    league_page = await self.transport.new_page()
+            if date_buttons:
+                logger.info(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
+                for btn_idx in date_buttons:
                     try:
-                        def on_ws(ws):
-                            def on_frame(payload):
-                                if isinstance(payload, bytes):
-                                    decoded = self._decode_rsocket_frame(payload)
-                                    if decoded:
-                                        ws_messages.append(decoded)
-                            ws.on("framereceived", on_frame)
-                        league_page.on("websocket", on_ws)
-
-                        await league_page.goto(league_url, wait_until='networkidle', timeout=30000)
-                        await league_page.wait_for_timeout(2000)
-                        return 1
+                        await page.evaluate(f'document.querySelectorAll("button")[{btn_idx}].click()')
+                        await page.wait_for_timeout(2000)
+                        self._collect_ws_events(ws_messages, all_events_data)
                     except Exception as e:
-                        logger.debug(f"[{self.provider_id}] Failed league {league['text']}: {e}")
-                        return 0
-                    finally:
-                        await league_page.close()
+                        logger.debug(f"[{self.provider_id}] Date button {btn_idx} failed: {e}")
 
-            tasks = [extract_league(i, lg) for i, lg in enumerate(leagues_to_process, 1)]
-            logger.info(f"[{self.provider_id}] Extracting {len(tasks)} leagues (max {concurrent_limit} concurrent)")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            successful = sum(1 for r in results if isinstance(r, int) and r > 0)
-            logger.info(f"[{self.provider_id}] {successful}/{len(leagues_to_process)} leagues extracted")
+            logger.info(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 
-            # Parse WS data
+            # Step 3: Parse WS data into structured events
             all_markets = {}
             all_selections = {}
 
@@ -232,14 +216,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 if not isinstance(msg_data, list):
                     continue
                 for msg in msg_data:
-                    if msg.get('type') != 'INITIAL_STATE':
+                    if not isinstance(msg, dict):
                         continue
                     payload = msg.get('payload', {})
-
-                    for event in payload.get('events', []):
-                        eid = event.get('id')
-                        if eid and eid not in all_events_data:
-                            all_events_data[eid] = event
 
                     for market in payload.get('markets', []):
                         mid = market.get('id')
@@ -254,7 +233,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             logger.info(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
                         f"{len(all_markets)} markets, {len(all_selections)} selections")
 
-            # Build mappings
+            # Build event->markets and market->selections mappings
             event_markets_map: Dict[int, List[int]] = {}
             for mid, mkt in all_markets.items():
                 eid = mkt.get('eventId')
@@ -281,6 +260,20 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
+
+    def _collect_ws_events(self, ws_messages: list, all_events_data: dict) -> None:
+        """Collect events from WS messages into all_events_data dict."""
+        for msg_data in ws_messages:
+            if not isinstance(msg_data, list):
+                continue
+            for msg in msg_data:
+                if not isinstance(msg, dict):
+                    continue
+                payload = msg.get('payload', {})
+                for event in payload.get('events', []):
+                    eid = event.get('id')
+                    if eid and eid not in all_events_data:
+                        all_events_data[eid] = event
 
     def _parse_event(self, event_data: dict, sport: str,
                      event_markets_map: Dict[int, List[int]],

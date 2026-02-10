@@ -14,7 +14,6 @@ from .providers.polymarket import PolymarketRetriever
 from .providers.spectate import SpectateRetriever
 from .providers.gecko_v2 import GeckoV2Retriever
 from .providers.pinnacle import PinnacleRetriever
-from .providers.bethard import BethardRetriever
 from .providers.altenar import AltenarRetriever
 from .providers.vbet import VbetRetriever
 from .providers.interwetten import InterwettenRetriever
@@ -42,6 +41,20 @@ class ExtractorFactory:
     def set_circuit_breaker(self, circuit_breaker):
         """Inject circuit breaker for transport-level 429 detection."""
         self._circuit_breaker = circuit_breaker
+
+    def clear_extractor_cache(self):
+        """Clear all cached extractors.
+
+        Must be called between extraction runs so that stale
+        browser handles / closed connections are not reused.
+        The orchestrator's finally block calls extractor.close(),
+        which invalidates the instance — keeping it in the cache
+        would hand the next run a dead reference.
+        """
+        count = len(self._extractor_cache)
+        self._extractor_cache.clear()
+        if count:
+            logger.debug(f"Cleared extractor cache ({count} entries)")
 
     @classmethod
     def get_instance(cls) -> "ExtractorFactory":
@@ -134,16 +147,6 @@ class ExtractorFactory:
             retriever = SnabbareRetriever(config, transport=transport)
         elif retriever_type == "pinnacle":
             retriever = PinnacleRetriever(config)
-        elif retriever_type == "sbtech":
-            # SBTech providers require browser for API interception
-            from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
-
-            # Select brand-specific retriever
-            if provider_id == "bethard":
-                retriever = BethardRetriever(config, transport=transport)
-            else:
-                raise ValueError(f"Unknown SBTech provider '{provider_id}'")
         elif retriever_type == "tenbet":
             # 10Bet - Playtech/Mojito SPA, DOM scraping with ta-* selectors
             from .core import BrowserTransport
@@ -183,7 +186,7 @@ class ExtractorFactory:
             if provider_id == "comeon":
                 from .providers.comeon_multileague import ComeOnMultiLeagueRetriever
                 retriever = ComeOnMultiLeagueRetriever(config, transport=transport)
-            elif provider_id == "hajper":
+            elif provider_id in ("hajper", "lyllo"):
                 from .providers.hajper import HajperRetriever
                 retriever = HajperRetriever(config, transport=transport)
             else:

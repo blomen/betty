@@ -259,7 +259,36 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
   return fetchWithRetry<T>(endpoint, options);
 }
 
+// ============ Extraction Progress Types ============
+
+export interface ExtractionProgress {
+  running: boolean;
+  last_run: string | null;
+  start_time: string | null;
+  elapsed_seconds: number;
+  progress_pct: number;
+  total_events: number;
+  total_odds: number;
+  current_provider: string | null;
+  completed_providers: number;
+  total_providers: number;
+  providers: Record<string, {
+    status: string;
+    events: number;
+    odds: number;
+    duration_seconds: number;
+    error: string | null;
+    sports_completed: number;
+    sports_total: number;
+  }>;
+}
+
 export const api = {
+  // ============ Extraction ============
+  async getExtractionProgress(): Promise<ExtractionProgress> {
+    return fetchJson<ExtractionProgress>('/extraction/progress');
+  },
+
   // ============ Providers ============
   async getProviders(): Promise<ProvidersResponse> {
     return fetchJson<ProvidersResponse>('/providers');

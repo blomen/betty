@@ -348,10 +348,13 @@ def store_polymarket_event(
     canonical_away = db_event.away_team
 
     # Extract home/away odds from Polymarket outcomes for inversion detection
+    # CRITICAL: Only use winner-market (1x2/moneyline) odds for inversion check.
+    # Spread/total odds have different semantics (home spread=-0.5 doesn't indicate favorite)
+    # and would overwrite moneyline odds due to last-write-wins in this loop.
     poly_home_odds, poly_away_odds = None, None
     for market in event.markets:
         market_type = normalize_market(market.get("question", "") or market.get("type", ""))
-        if market_type in ALLOWED_MARKETS:
+        if market_type in ('1x2', 'moneyline'):
             for outcome in market.get("outcomes", []):
                 norm = normalize_outcome(
                     outcome.get("name", ""),

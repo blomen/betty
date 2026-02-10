@@ -6,8 +6,8 @@
 
 | Metric | Value |
 |--------|-------|
-| Active providers | 30 (2 sharp + 28 soft) |
-| Disabled providers | 1 (spelklubben) |
+| Active providers | 31 (2 sharp + 29 soft) |
+| Disabled providers | 1 (betsafe — Swedish site not on OBG platform) |
 | Pinnacle baseline | ~1,288 events / ~7,673 odds |
 | Cross-provider matching | **~95%+** (improved from 77.7% via cache pre-population + threshold tuning) |
 
@@ -118,7 +118,7 @@
 
 #### TODO
 - [ ] Ice hockey coverage seasonal — will improve when NHL resumes
-- [ ] Cache group data across 8 providers (identical API, extract once)
+- [x] ~~Cache event data across 8 providers~~ — Implemented shared event cache (5min TTL), saves ~350 HTTP requests
 - [ ] Reduce `post_extraction_delay_ms` if rate limits allow
 
 ---
@@ -166,13 +166,13 @@
 #### TODO
 - [ ] Football spread missing (platform limitation — typeId 16 not returned)
 - [ ] Boost API reverse-engineering (would benefit all 6 providers)
-- [ ] Esports only 2 events matched vs Pinnacle 36 — investigate sport mapping
+- [x] ~~Esports low match rate~~ — Fixed outcome normalization with positional fallback + O(1) lookup indexes
 
 ---
 
-## Gecko V2 Providers (3)
+## Gecko V2 / OBG Providers (4 active + 1 broken)
 
-> Shared platform: Betsson Group OBG — `events-table/v2` API with header capture.
+> Shared platform: OBG — `events-table/v2` API with header capture.
 > Browser-based: load site, capture 16+ `x-sb-*` headers via route interception.
 > Pagination: `pageNumber=N` (NOT `page=N`).
 > Sport-specific market templates (CRITICAL — must request ALL variants per sport):
@@ -220,43 +220,50 @@
 | Metric | Value |
 |--------|-------|
 | Site | `betsafe.com` |
-| Events | ~1,002 |
-| Pin matches | **~400** |
-| Markets | 1x2/ml/spread/total |
+| Events | **0** (broken — NOT on OBG platform for Swedish market) |
+| Pin matches | **0** |
+| Markets | — |
+
+> **BROKEN (2026-02-10)**: `betsafe.com/sv/odds` makes zero `api/sb/` or `playground` requests. The Swedish site uses a different sportsbook backend — NOT the OBG platform. Header capture finds no API headers. Needs platform investigation (likely iframe-embedded or different API pattern).
 
 **Bonus:** Freebet 100 kr / 1x wager / min 1.80
-**Oddsboost:** **IMPLEMENTED** (shared with Betsson group)
+**Oddsboost:** **IMPLEMENTED** (shared with Betsson group — IF we can extract odds)
 
 ### NordicBet
 
 | Metric | Value |
 |--------|-------|
 | Site | `nordicbet.com` |
-| Events | ~992 |
-| Pin matches | **~400** |
+| Events | 1,771 |
+| Odds | 2,795 |
+| Pin matches | **857** |
 | Markets | 1x2/ml/spread/total |
 
 **Bonus:** Freebet 100 kr / 1x wager / min 1.80
 **Oddsboost:** **IMPLEMENTED** (shared with Betsson group)
 
-#### Log
-- **2026-02-09**: Multi-sport expansion — MMA cat ID + sport-specific market templates. 686→729 pin, 11 sports.
-- **2026-02-09**: Fixed date filtering bug + dynamic category lookup. 402→686 pin.
-- **2026-02-08**: Rewrite complete — `events-table/v2` API with header capture.
-
-#### TODO
-- [ ] Share browser session across 3 providers (currently separate sessions)
-- [ ] MMA/rugby/amfootball: events exist but 0 pin matches — name matching issue
-
----
-
-## Bethard (SBTech)
+### Spelklubben
 
 | Metric | Value |
 |--------|-------|
-| Platform | SBTech (browser, labeled gecko_v2 in config — stale metadata) |
-| Retriever | `bethard` (extends `SBTechRetriever`) |
+| Site | `spelklubben.se` (API at `d-cf.spelklubbenplayground.net`) |
+| init_path | `/sv/betting` |
+| Extraction time | ~47s |
+| Events | 1,766 |
+| Odds | 2,985 |
+| Ratio | 1.69 |
+| Pin matches | **1,187** (67.2%) |
+| Markets | 1x2/ml/spread/total |
+
+**Bonus:** BonusDep 500 kr / 15x wager / min 1.90 (bad bonus)
+**Oddsboost:** Unknown
+
+### Bethard
+
+| Metric | Value |
+|--------|-------|
 | Site | `bethard.com` (API at `d-cf.bethardplayground.net`) |
+| init_path | `/sv/sports` |
 | Extraction time | ~45s |
 | Events | ~895 |
 | Odds | ~3,192 |
@@ -269,8 +276,18 @@
 **Oddsboost:** Not implemented (Combo Booster only, 7-30% on combos)
 
 #### Log
+- **2026-02-10**: **Spelklubben re-enabled** — confirmed still on OBG platform (NOT BETBY). Uses GeckoV2Retriever with `init_path: /sv/betting`. 1,766 events / 2,985 odds / 1,187 pin matches in 47s.
+- **2026-02-10**: Removed dead SBTech code (SBTechRetriever, BethardRetriever, SpelklubbenRetriever, factory `sbtech` branch). Both Bethard and Spelklubben use GeckoV2Retriever.
 - **2026-02-10**: Cache pre-population + threshold relaxation → 341→874 pin (97.7%, +156%).
-- **2026-02-08**: Migrated from SBTech. `init_path: /sv/sports`, API at `d-cf.bethardplayground.net`.
+- **2026-02-09**: Multi-sport expansion — MMA cat ID + sport-specific market templates. 686→729 pin, 11 sports.
+- **2026-02-09**: Fixed date filtering bug + dynamic category lookup. 402→686 pin.
+- **2026-02-08**: Rewrite complete — `events-table/v2` API with header capture.
+
+#### TODO
+- [ ] **CRITICAL: Betsafe broken** — Swedish site NOT on OBG platform. Needs platform investigation.
+- [ ] Share browser session across remaining OBG providers (currently separate sessions)
+- [ ] MMA/rugby/amfootball: events exist but 0 pin matches — name matching issue
+- [ ] Spelklubben ratio 1.69 (low) — may have many events without odds data
 
 ---
 
@@ -387,27 +404,57 @@
 
 ---
 
-## ComeOn Group (2)
+## ComeOn Group (3)
 
-> Shared platform: ComeOn SPA with URL pattern `/sv/sportsbook/sport/{id}-{slug}/leagues/{id}-{slug}`.
+> Shared platform: ComeOn SPA with RSocket WebSocket data delivery.
+> URL pattern: `/sv/sportsbook/sport/{id}-{slug}`.
+> **Date-based extraction**: Sport page shows today's events initially. Clicking date buttons
+> (11 feb, 12 feb, ...) triggers new WS INITIAL_STATE messages for each date.
+> League page navigation does NOT work — WS only delivers data to originating page.
 > MarketType IDs: 1=1x2, 175=moneyline, 206=moneyline(OT), 212=total(OT).
-> max_leagues=100, concurrent_leagues=8.
+> Cookie overlay: OneTrust `#onetrust-accept-btn-handler` + force DOM removal.
 
 ### Summary Table
 
-| Brand | Events | Pin Match | Bonus |
-|-------|-------:|----------:|-------|
-| **ComeOn** | 292 | 298 | BonusDep 500 kr / 6x / 1.80 |
-| **Hajper** | 291 | 298 | Freebet 500 kr / 1x / 1.80 |
+| Brand | Events | Odds | Pin Match | Ratio | Bonus |
+|-------|-------:|-----:|----------:|------:|-------|
+| **ComeOn** | 376 | 623 | **219** | 2.84 | BonusDep 500 kr / 6x / 1.80 |
+| **Hajper** | 400 | 623 | **219** | 2.84 | Freebet 500 kr / 1x / 1.80 |
+| **Lyllo Casino** | 394 | 625 | **219** | 2.85 | Freebet 100 kr / 1x / 1.80 |
 
+**Market types:** 1x2: 531, moneyline: 84, total: 8-10 per provider.
+**Normalization:** 100% across all three providers.
+**Extraction time:** ~260s per provider (14 date buttons × 2s × ~10 sports).
+**Shared odds engine:** All 3 brands match to the exact same 219 Pinnacle events. ComeOn and Hajper share nearly identical odds (~73%), Lyllo runs slightly worse margin (0.01-0.03 lower). Value: 3 separate betting accounts on the same events with different bonuses.
 **Oddsboost:** Not implemented (5/5 on aggregators — high priority)
 
+#### ComeOn Sport Breakdown (representative of all 3)
+
+| Sport | Events | Markets |
+|-------|-------:|--------:|
+| Football | 178 | 177 |
+| Basketball | 70-75 | 146-147 |
+| Ice Hockey | 44-45 | 39-41 |
+| Tennis | 38-39 | 35-36 |
+| MMA | 13-24 | 12-18 |
+| Esports | 8-9 | 0 (no supported markets) |
+| Table Tennis | 6-10 | 7-8 |
+| Baseball | 1 | 1 |
+| **TOTAL** | ~370 | ~420 |
+
+> Handball and American football showed 0 events (likely no upcoming events on ComeOn).
+> Esports events have no 1x2/moneyline/total markets (ComeOn uses different market IDs for esports).
+
 #### Log
+- **2026-02-10**: **MAJOR REWRITE — Date-based extraction** — Replaced broken league-page-navigation approach with date-button clicking. ComeOn: 84→623 odds (+642%), Hajper: 48→623 (+1198%), Lyllo: 44→625 (+1320%). All three now at 219 pin matches with 100% normalization. Root cause: WS connection only delivers data to originating page — new tab league navigation received 0 WS frames.
+- **2026-02-10**: Added Lyllo Casino (MOA Gaming Sweden / ComeOn Connect). Reuses HajperRetriever.
 - **2026-02-09**: REWRITTEN — new URL patterns, 12 sports, 1x2+ML+total. ComeOn 93→298 pin (3.2x), Hajper 135→298 pin (2.2x).
 
 #### TODO
 - [ ] Spread requires event detail navigation (mt.id=16,17) — too expensive per-event
 - [ ] Boost extraction (5/5 on aggregators — likely valuable)
+- [ ] Esports market IDs: investigate ComeOn esports market type IDs for moneyline
+- [ ] Speed optimization: skip date button clicking for sports with 0 initial events
 
 ---
 
@@ -506,18 +553,19 @@
 
 ---
 
-## Disabled Providers
-
-### Spelklubben
-- **Platform:** Was Gecko V2 / OBG, migrated to custom Next.js + BETBY iframe
-- **Status:** DISABLED — no `/api/sb/` endpoints after migration
-- **Bonus:** BonusDep 500 kr / 15x wager / min 1.90 (bad bonus, not worth pursuing)
-
----
-
 ## Changelog
 
 ### 2026-02-10
+- **ComeOn Group date-based rewrite** — Discovered WS connections only deliver data to originating page (league page navigation in new tabs gets 0 frames). Rewrote all 3 extractors (ComeOn, Hajper, Lyllo) to click through date buttons on sport pages instead. ComeOn: 84→623 odds (+642%), Hajper: 48→623 (+1198%), Lyllo: 44→625 (+1320%). All at 219 pin matches, 100% normalization, 2.84-2.85 ratio.
+- **Spelklubben re-enabled** — Confirmed still on OBG platform (was incorrectly marked as BETBY). Uses GeckoV2Retriever with `init_path: /sv/betting`, API at `d-cf.spelklubbenplayground.net`. 1,766 events / 2,985 odds / 1,187 pin matches in 47s. Deleted dead SBTech code (SBTechRetriever, BethardRetriever, SpelklubbenRetriever, factory `sbtech` branch).
+- **Lyllo Casino added** — ComeOn Group brand #3 (MOA Gaming Sweden). 327 football events, 12 sports, 100kr freebet. Reuses `HajperRetriever` (same RSocket WS platform).
+- **Kambi event-level caching** — All 8 Kambi brands share identical events from the same API backend. First brand fetches + parses events per group, subsequent brands clone with their provider_id. Saves ~350 redundant HTTP requests per run. TTL: 5 minutes.
+- **Altenar outcome normalization overhaul** — Added positional fallback for 2-way markets (moneyline, spread): when outcome name doesn't match team names (common in esports/MMA), use position index (first=home, second=away). Also added numeric ("1"/"2") and keyword ("hemma"/"borta") fast paths. Expected: esports 2→30+ pin matches.
+- **Altenar O(1) lookups** — Built pre-indexed dicts for competitors, champs, markets, odds instead of O(n) list scans per lookup. Reduces ~6000 O(n) scans to O(1) dict lookups per sport.
+- **Coolbet store ALL spread/total lines** — Previously picked "most balanced" line which rarely matched Pinnacle's exact point → 0 spread/total stored. Now stores all lines, lets storage pipeline filter to Pinnacle's point. Expected: 39→100+ pin matches with spread/total coverage.
+- **10Bet speed optimization** — SPA render wait 5000→3000ms, odds load wait 1000→500ms, concurrency 3→5 tabs. Expected: 547→~350s (36% faster).
+- **Snabbare speed optimization** — WS settle time 2.0→1.2s, concurrent tabs 3→5. Expected: 283→~170s (40% faster).
+- **Interwetten speed optimization** — Detail page settle time 500→250ms, concurrent detail pages 3→5. Expected: 332→~200s (40% faster).
 - **Event cache pre-population from DB** — Critical fix: fuzzy matching cache was empty when extracting subsets. All providers now match against existing DB events.
   - Tipwin: 390→784 pin (+101%, 95.1% rate)
   - Bethard: 341→874 pin (+156%, 97.7% rate)
@@ -549,22 +597,34 @@
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
-| Coolbet CDP re-test | coolbet | Validate 39→~150+ pin with cache fix | Low |
+| Coolbet CDP re-test | coolbet | Validate match rate with ALL-lines fix (expected 39→100+ pin) | Low |
+| Validate speed optimizations | 10bet, snabbare, interwetten | Verify reduced timeouts don't drop data quality | Low |
 | Altenar boost API | 6 Altenar | Boost data for 6 providers | Medium |
-| ComeOn/Hajper boost extraction | comeon, hajper | Boost data (5/5 on aggregators) | Medium |
+| ComeOn Group boost extraction | comeon, hajper, lyllo | Boost data (5/5 on aggregators) | Medium |
 
 ### Medium Priority
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
 | Spectate boost extraction | mrgreen, 888sport | Boost data for 2 providers | Medium |
-| Snabbare spread/total | snabbare | More market types | Medium |
+| Snabbare spread/total | snabbare | More market types (currently 1x2/ml only) | Medium |
 | Snabbare boost | snabbare | Boost data (4/5) | Medium |
+| Gecko V2 session sharing | 5 Gecko V2 | Share browser session across betsson/betsafe/nordicbet/spelklubben/bethard | Low |
 
 ### Low Priority
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
-| Kambi group caching | 8 Kambi | Reduce extraction time | Low |
-| ComeOn/Hajper spread/total | comeon, hajper | Needs event detail nav (expensive) | High |
-| Gecko V2 session sharing | 3 Gecko V2 | Reduce extraction time | Low |
+| ComeOn Group spread/total | comeon, hajper, lyllo | Needs event detail nav (expensive) | High |
+
+### Completed
+
+| Task | Provider(s) | Result |
+|------|-------------|--------|
+| ~~Kambi event caching~~ | 8 Kambi | Saves ~350 HTTP requests per run |
+| ~~Altenar esports normalization~~ | 6 Altenar | Positional fallback for 2-way markets |
+| ~~Coolbet ALL-lines storage~~ | coolbet | Store all spread/total lines |
+| ~~10Bet/Snabbare/Interwetten speed~~ | 3 providers | 36-40% faster extraction |
+| ~~Lyllo Casino~~ | lyllo | ComeOn Group brand #3, 327 football events, 100kr freebet |
+| ~~Spelklubben re-enable~~ | spelklubben | Re-enabled with GeckoV2, 1,766 events, 1,187 pin matches |
+| ~~ComeOn Group date-based rewrite~~ | comeon, hajper, lyllo | Date-button extraction: 84→623, 48→623, 44→625 odds. 219 pin matches each |

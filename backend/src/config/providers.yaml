@@ -8,7 +8,7 @@ orchestrator:
   # Type-aware scheduling allows higher total concurrent providers by mixing types
   max_concurrent_providers: 10         # Increased - mixing allows higher total
   max_concurrent_sports_per_provider: 4 # Max sports per provider
-  max_browser_instances: 4             # Global browser limit
+  max_browser_instances: 6             # Global browser limit (5 gecko + spectate/comeon)
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -46,7 +46,7 @@ orchestrator:
       shared_resource: browser
 
     - name: sbtech_browser
-      retriever_types: [sbtech, snabbare, tenbet]
+      retriever_types: [snabbare, tenbet]
       max_concurrent: 2                # Browser-based
       shared_resource: browser
 
@@ -450,7 +450,10 @@ providers:
       min_odds: 1.80
 
   # --------------------------------------------------------------------------
-  # Gecko V2 providers (Betsson Group — browser + API interception)
+  # Gecko V2 / OBG providers (browser + events-table/v2 API)
+  # Betsson Group: betsson, betsafe, nordicbet
+  # Together Gaming: spelklubben (init_path: /sv/betting)
+  # Bethard Group: bethard (init_path: /sv/sports)
   # --------------------------------------------------------------------------
 
   betsson:
@@ -495,6 +498,7 @@ providers:
     domain: spelklubben.se
     retriever_type: gecko_v2
     site_url: https://www.spelklubben.se
+    init_path: /sv/betting
     bonus:
       type: bonusdeposit
       amount: 500
@@ -515,7 +519,7 @@ providers:
       min_odds: 1.90
 
   # --------------------------------------------------------------------------
-  # SBTech providers (browser + API interception)
+  # 10Bet (Playtech/Mojito SPA — DOM scraping)
   # --------------------------------------------------------------------------
 
   10bet:
@@ -631,6 +635,33 @@ providers:
       - esports
       - handball
       - table_tennis
+
+  lyllo:
+    id: lyllo
+    name: Lyllo Casino
+    domain: lyllocasino.com
+    retriever_type: custom
+    site_url: https://www.lyllocasino.com
+    bonus:
+      type: freebet
+      amount: 100
+      wagering_multiplier: 1
+      min_odds: 1.80
+    max_leagues: 100
+    concurrent_leagues: 8
+    supported_sports:
+      - football
+      - basketball
+      - ice_hockey
+      - american_football
+      - baseball
+      - mma
+      - esports
+      - handball
+      - tennis
+      - table_tennis
+      - rugby
+      - cricket
 
   # --------------------------------------------------------------------------
   # BetConstruct / Swarm WebSocket providers
@@ -775,19 +806,20 @@ extraction_tiers:
       # Spectate (2)
       - mrgreen
       - 888sport
-      # Gecko V2 (4)
+      # Gecko V2 (4) — betsafe disabled (Swedish site not on OBG platform)
       - betsson
-      - betsafe
+      # - betsafe  # BROKEN: /sv/odds makes 0 api/sb/ requests, needs platform investigation
       - nordicbet
       - spelklubben
-      # SBTech (2)
       - bethard
+      # 10Bet (1)
       - 10bet
       # Snabbare (1)
       - snabbare
-      # ComeOn Group (2)
+      # ComeOn Group (3)
       - comeon
       - hajper
+      - lyllo
       # BetConstruct (1)
       - vbet
       # Interwetten (1)
@@ -834,17 +866,18 @@ active:
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
-  # Gecko V2 (4) - events-table/v2 API
+  # Gecko V2 (4) - events-table/v2 API (OBG platform)
   - betsson
-  - betsafe
+  # - betsafe  # BROKEN: Swedish site NOT on OBG platform
   - nordicbet
-  # - spelklubben  # DISABLED: migrated off OBG platform to custom Next.js app
+  - spelklubben  # OBG platform — re-enabled 2026-02-10
   - bethard
   # Snabbare (1)
   - snabbare
-  # ComeOn Group (2)
+  # ComeOn Group (3)
   - comeon
   - hajper
+  - lyllo
 
 
 # ============================================================================
