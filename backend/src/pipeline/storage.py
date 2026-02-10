@@ -475,6 +475,8 @@ def _resolve_event_id(
     min_individual_score: int,
     prefix_filter_length: int,
     require_match: bool,
+    max_asymmetry_diff: int = 25,
+    min_for_asymmetry_check: int = 80,
 ) -> tuple[str | None, bool]:
     """
     Resolve event to a canonical ID via exact match, fuzzy match, or swapped-team fallback.
@@ -578,7 +580,7 @@ def _resolve_event_id(
             continue
 
         score_diff = abs(team1_score - team2_score)
-        if score_diff > 20 and min(team1_score, team2_score) < 85:
+        if score_diff > max_asymmetry_diff and min(team1_score, team2_score) < min_for_asymmetry_check:
             if is_new_best:
                 near_miss_reason = f"asymmetric {team1_score:.0f}/{team2_score:.0f}"
             logger.debug(
@@ -646,12 +648,14 @@ def store_provider_event(
     provider: str,
     event_cache: dict,
     fuzzy_threshold: int = 90,
-    min_individual_score: int = 80,
+    min_individual_score: int = 75,
     prefix_filter_length: int = 3,
     odds_batch: "OddsBatchProcessor" = None,
     require_match: bool = False,
     pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
+    max_asymmetry_diff: int = 25,
+    min_for_asymmetry_check: int = 80,
 ) -> tuple[bool, int, int]:
     """
     Store provider event with STRICT fuzzy matching against existing events.
@@ -663,6 +667,7 @@ def store_provider_event(
     matched_id, fuzzy_swapped = _resolve_event_id(
         session, event, provider, event_cache,
         fuzzy_threshold, min_individual_score, prefix_filter_length, require_match,
+        max_asymmetry_diff, min_for_asymmetry_check,
     )
 
     if matched_id is None:

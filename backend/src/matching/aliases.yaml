@@ -778,6 +778,114 @@ james wade:
 ross smith:
   - smith
 
+# Esports Teams
+g2:
+  - g2 esports
+  - g2 esports club
+fnatic:
+  - fnatic esports
+  - fnatic gaming
+team liquid:
+  - liquid
+  - teamliquid
+cloud9:
+  - c9
+  - cloud 9
+  - cloud9 esports
+t1:
+  - t1 esports
+  - skt t1
+  - sk telecom t1
+natus vincere:
+  - navi
+  - na'vi
+  - natus vincere esports
+vitality:
+  - team vitality
+  - vitality esports
+heroic:
+  - heroic esports
+mouz:
+  - mousesports
+  - mouz esports
+faze:
+  - faze clan
+  - faze esports
+virtus pro:
+  - virtuspro
+  - vp
+nrg:
+  - nrg esports
+  - nrg gaming
+sentinels:
+  - sentinels esports
+  - sen
+100 thieves:
+  - 100t
+  - 100 thieves esports
+gen g:
+  - gen.g
+  - gen.g esports
+  - geng
+drx:
+  - drx esports
+hanwha life:
+  - hanwha life esports
+  - hle
+eternal fire:
+  - eternal fire esports
+  - ef
+spirit:
+  - team spirit
+  - spirit esports
+aurora:
+  - aurora gaming
+  - aurora esports
+bb:
+  - big brother
+  - bb team
+complexity:
+  - complexity gaming
+  - col
+
+# MMA / UFC Fighters (common name variations)
+jon jones:
+  - jones
+  - bones jones
+  - jon bones jones
+islam makhachev:
+  - makhachev
+alex pereira:
+  - pereira
+  - alex poatan pereira
+sean omalley:
+  - omalley
+  - o'malley
+  - sean o'malley
+dricus du plessis:
+  - du plessis
+  - dricus
+ilia topuria:
+  - topuria
+merab dvalishvili:
+  - dvalishvili
+  - merab
+belal muhammad:
+  - muhammad
+  - belal
+leon edwards:
+  - edwards
+max holloway:
+  - holloway
+charles oliveira:
+  - oliveira
+  - do bronx
+dustin poirier:
+  - poirier
+kamaru usman:
+  - usman
+  - nigerian nightmare
+
 # ============================================================================
 # International / Country Names (Swedish ↔ English)
 # Kambi, ComeOn, Betsson, Snabbare use Swedish; Pinnacle uses English.

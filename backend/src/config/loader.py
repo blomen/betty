@@ -132,7 +132,10 @@ class GracefulShutdownConfig(BaseModel):
 
 class FuzzyMatchConfig(BaseModel):
     """Fuzzy matching configuration."""
-    threshold: int = 85  # Minimum match score (0-100)
+    threshold: int = 85  # Minimum average match score (0-100)
+    min_individual_score: int = 75  # Minimum score for EACH team (0-100)
+    max_asymmetry_diff: int = 25  # Max allowed difference between team scores
+    min_for_asymmetry_check: int = 80  # Only reject asymmetry if min score below this
     prefix_filter_length: int = 3  # Chars for prefix pre-filtering (0 to disable)
 
 

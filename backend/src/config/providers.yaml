@@ -114,7 +114,10 @@ orchestrator:
     cancel_pending_tasks: true
 
   fuzzy_match:
-    threshold: 85                    # Minimum match score (0-100)
+    threshold: 85                    # Minimum average match score (0-100)
+    min_individual_score: 75         # Minimum score for EACH team (was 80, relaxed for browser providers)
+    max_asymmetry_diff: 25           # Max difference between team scores (was 20)
+    min_for_asymmetry_check: 80      # Only reject asymmetry if min score below this (was 85)
     prefix_filter_length: 3          # Chars for prefix pre-filtering (0 to disable)
 
   rate_limit:

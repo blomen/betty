@@ -62,6 +62,30 @@ class ExtractionPipeline:
         async with self._cache_lock:
             self.event_cache.clear()
 
+    def _populate_cache_from_db(self):
+        """Pre-populate event_cache from existing DB events for fuzzy matching.
+
+        This is critical when extracting a subset of providers (e.g., just '10bet')
+        against an existing DB with Pinnacle events. Without this, the fuzzy matching
+        has no candidates and events with slight name/date differences won't match.
+        """
+        from ..db.models import Event
+        events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time).all()
+        for eid, sport, home, away, start_time in events:
+            if sport not in self.event_cache:
+                self.event_cache[sport] = {}
+            if hasattr(start_time, 'strftime'):
+                date_str = start_time.strftime('%Y%m%d')
+            elif isinstance(start_time, str):
+                date_str = start_time.split('T')[0].replace('-', '')
+            else:
+                date_str = "00000000"
+            if eid not in self.event_cache[sport]:
+                self.event_cache[sport][eid] = (home, away, date_str)
+        total = sum(len(v) for v in self.event_cache.values())
+        if total > 0:
+            logger.info(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
+
     def _init_orchestrator(self):
         """Initialize orchestrator components (called from __init__)."""
         # Get orchestrator config
@@ -333,6 +357,10 @@ class ExtractionPipeline:
 
         # Clear stale events from previous runs
         await self.clear_cache()
+
+        # Pre-populate cache from existing DB events (enables fuzzy matching
+        # when extracting a subset of providers against existing sharp data)
+        self._populate_cache_from_db()
 
         try:
             # Check for shutdown at start
@@ -838,11 +866,14 @@ class ExtractionPipeline:
                                 event=event,
                                 event_cache=self.event_cache,
                                 fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
+                                min_individual_score=self.orchestrator_config.fuzzy_match.min_individual_score,
                                 prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
                                 odds_batch=odds_batch,
                                 require_match=is_soft and sport_has_sharp,
                                 pinnacle_points_cache=pinnacle_points_cache,
                                 sharp_odds_cache=sharp_odds_cache,
+                                max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
+                                min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
                             )
                             events_processed += 1
                             if is_new:

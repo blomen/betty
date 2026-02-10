@@ -334,7 +334,13 @@ class CoolbetRetriever(BrowserRetriever):
             try:
                 start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
             except (ValueError, TypeError):
-                pass
+                logger.debug(f"[{self.provider_id}] Invalid start_time: {start_str}")
+
+        # Fallback: use current time so fuzzy matching has a valid date
+        if not start_time:
+            from datetime import timezone
+            start_time = datetime.now(timezone.utc)
+            logger.debug(f"[{self.provider_id}] No start_time for match {match.get('id')}, using now()")
 
         # Parse markets — for total/spread, collect all lines then pick main line
         markets = []
