@@ -72,33 +72,14 @@ export function ValuePage() {
     }
   };
 
-  const getRiskLevelColor = (level?: string) => {
-    switch (level) {
-      case 'low': return 'bg-success';
-      case 'medium': return 'bg-warning';
-      case 'high': return 'bg-orange-500';
-      case 'critical': return 'bg-error';
-      default: return 'bg-muted';
-    }
-  };
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabValue" />
-          Value Bets
-        </h2>
-        <button
-          onClick={fetchData}
-          disabled={isLoading}
-          className="px-3 py-1 bg-panel2 border border-border text-text rounded text-sm font-medium hover:bg-border disabled:opacity-50"
-        >
-          {isLoading ? 'Loading...' : 'Refresh'}
-        </button>
-      </div>
+      <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-tabValue" />
+        Value Bets
+      </h2>
 
-      <ExtractionProgressBar />
+      <ExtractionProgressBar tiers={['api_soft', 'browser_soft']} />
 
       {/* Results */}
       <Card title={`Value Bets (${opportunities.length})`}>
@@ -152,7 +133,7 @@ export function ValuePage() {
                       </div>
                       <div className="text-center">
                         <div className="text-muted text-xs">Outcome</div>
-                        <div className="text-text capitalize">{opp.outcome1}</div>
+                        <div className="text-text">{resolveOutcomeName(opp)}</div>
                       </div>
                       <div className="text-center">
                         <div className="text-muted text-xs">Odds</div>
@@ -168,10 +149,6 @@ export function ValuePage() {
                         <div className="text-muted text-xs">Edge</div>
                         <div className="text-tabValue font-medium">+{opp.edge_pct?.toFixed(1)}%</div>
                       </div>
-                      {/* Risk indicator */}
-                      <div className="flex items-center gap-1">
-                        <span className={`w-2 h-2 rounded-full ${getRiskLevelColor(opp.risk_level)}`} />
-                      </div>
                     </div>
                   </div>
 
@@ -181,8 +158,6 @@ export function ValuePage() {
                       <div className="flex items-center justify-between">
                         <div className="text-sm text-muted">
                           <span>Fair odds: {opp.fair_odds?.toFixed(2) || '-'}</span>
-                          <span className="mx-3">|</span>
-                          <span>Risk: {opp.risk_level || 'unknown'}</span>
                           {hasStake && (
                             <>
                               <span className="mx-3">|</span>
@@ -211,4 +186,16 @@ export function ValuePage() {
       </Card>
     </div>
   );
+}
+
+
+function resolveOutcomeName(opp: Opportunity): string {
+  const outcome = opp.outcome1;
+  const point = opp.point != null ? ` ${opp.point}` : '';
+  if (outcome === 'home' && opp.home_team) return opp.home_team;
+  if (outcome === 'away' && opp.away_team) return opp.away_team;
+  if (outcome === 'draw') return 'Draw';
+  if (outcome === 'over') return `Over${point}`;
+  if (outcome === 'under') return `Under${point}`;
+  return outcome;
 }

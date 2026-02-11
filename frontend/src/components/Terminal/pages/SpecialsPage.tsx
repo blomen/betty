@@ -3,7 +3,6 @@ import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { ExtractionProgressBar } from '../ExtractionProgressBar';
 
 
 export function SpecialsPage() {
@@ -15,7 +14,6 @@ export function SpecialsPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Active filters
-  const [sportFilter, setSportFilter] = useState<string | null>(null);
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
@@ -31,7 +29,6 @@ export function SpecialsPage() {
     setError(null);
     try {
       const data = await api.getSpecials({
-        sport: sportFilter || undefined,
         provider: providerFilter || undefined,
         category: categoryFilter || undefined,
       });
@@ -43,7 +40,7 @@ export function SpecialsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [sportFilter, providerFilter, categoryFilter]);
+  }, [providerFilter, categoryFilter]);
 
   const handleScrape = useCallback(async () => {
     setIsScraping(true);
@@ -174,12 +171,10 @@ export function SpecialsPage() {
               }
             `}
           >
-            {isScraping ? 'Scraping...' : 'Refresh'}
+            {isScraping ? 'Scraping...' : 'Scrape Boosts'}
           </button>
         </div>
       </div>
-
-      <ExtractionProgressBar />
 
       {error && (
         <div className="text-red-400 text-sm bg-red-400/10 px-3 py-2 rounded">{error}</div>
@@ -188,13 +183,6 @@ export function SpecialsPage() {
       {/* Filter pills */}
       {filters && (
         <div className="flex flex-wrap gap-2">
-          {/* Sport filter */}
-          <FilterGroup
-            label="Sport"
-            options={filters.sports}
-            active={sportFilter}
-            onSelect={(v) => { setSportFilter(v); setExpandedIdx(null); }}
-          />
           {/* Provider filter */}
           <FilterGroup
             label="Provider"
@@ -222,14 +210,12 @@ export function SpecialsPage() {
       ) : (
         <div className="bg-panel border border-border rounded-lg overflow-hidden">
           {/* Column header */}
-          <div className="grid grid-cols-[1fr_2fr_2.5fr_80px_140px_70px_90px_90px_70px] gap-2 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
+          <div className="grid grid-cols-[100px_1.5fr_2fr_110px_60px_80px_60px] gap-2 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
             <div>Provider</div>
             <div>Event</div>
             <div>Bet</div>
-            <div>Sport</div>
             <div className="text-right">Odds</div>
             <div className="text-right">Boost</div>
-            <div className="text-right">Kickoff</div>
             <div className="text-right">Expires</div>
             <div className="text-right">Max</div>
           </div>
@@ -244,7 +230,7 @@ export function SpecialsPage() {
                 <div key={`${s.provider}-${idx}`}>
                   {/* Main row */}
                   <div
-                    className={`grid grid-cols-[1fr_2fr_2.5fr_80px_140px_70px_90px_90px_70px] gap-2 px-4 py-2.5 cursor-pointer transition-colors text-sm
+                    className={`grid grid-cols-[100px_1.5fr_2fr_110px_60px_80px_60px] gap-2 px-4 py-2.5 cursor-pointer transition-colors text-sm
                       ${isExpanded ? 'bg-tabBonus/5' : 'hover:bg-panel2'}
                     `}
                     onClick={() => handleRowClick(idx, s)}
@@ -263,9 +249,16 @@ export function SpecialsPage() {
                       )}
                     </div>
 
-                    {/* Event */}
+                    {/* Event + sport badge + league */}
                     <div className="flex flex-col justify-center min-w-0">
-                      <span className="text-text text-sm truncate">{s.event || '-'}</span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-text text-sm truncate">{s.event || '-'}</span>
+                        {s.sport && s.sport !== 'unknown' && (
+                          <span className="px-1 py-0.5 rounded bg-indigo-500/15 text-indigo-400 text-[9px] shrink-0">
+                            {s.sport.replace(/_/g, ' ')}
+                          </span>
+                        )}
+                      </div>
                       {s.league && (
                         <span className="text-muted text-[11px] truncate">{s.league}</span>
                       )}
@@ -278,17 +271,6 @@ export function SpecialsPage() {
                         <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 rounded shrink-0">
                           SUPER
                         </span>
-                      )}
-                    </div>
-
-                    {/* Sport */}
-                    <div className="flex items-center">
-                      {s.sport !== 'unknown' ? (
-                        <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 text-[11px] truncate">
-                          {s.sport.replace(/_/g, ' ')}
-                        </span>
-                      ) : (
-                        <span className="text-muted text-[11px]">-</span>
                       )}
                     </div>
 
@@ -318,17 +300,8 @@ export function SpecialsPage() {
                       )}
                     </div>
 
-                    {/* Kickoff */}
-                    <div className="flex items-center justify-end">
-                      {s.event_time ? (
-                        <span className="text-text text-xs">{formatEventTime(s.event_time)}</span>
-                      ) : (
-                        <span className="text-muted text-xs">-</span>
-                      )}
-                    </div>
-
-                    {/* Expires (time left on boost) */}
-                    <div className="flex items-center justify-end">
+                    {/* Expires */}
+                    <div className="flex flex-col items-end justify-center">
                       {s.expires_at ? (
                         <span className={`text-xs ${
                           isExpiringSoon(s.expires_at) ? 'text-amber-400' : 'text-muted'
@@ -337,6 +310,9 @@ export function SpecialsPage() {
                         </span>
                       ) : (
                         <span className="text-muted text-xs">-</span>
+                      )}
+                      {s.event_time && isFutureDate(s.event_time) && (
+                        <span className="text-muted text-[10px]">{formatEventTime(s.event_time)}</span>
                       )}
                     </div>
 
@@ -591,6 +567,15 @@ function formatTimeRemaining(isoString: string): string {
     return `${diffDays}d left`;
   } catch {
     return '';
+  }
+}
+
+
+function isFutureDate(isoString: string): boolean {
+  try {
+    return new Date(isoString).getTime() > Date.now();
+  } catch {
+    return false;
   }
 }
 

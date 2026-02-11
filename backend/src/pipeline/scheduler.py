@@ -1,48 +1,64 @@
 """
 Extraction Scheduler
 
-Manages scheduled and continuous extraction tiers:
-- Continuous: Polymarket + Pinnacle every 5 minutes
-- Scheduled: Betinia every 4 hours
-- Manual: All other providers (on-demand only)
+Manages tiered extraction:
+- Sharp (continuous): Pinnacle + Polymarket every 5 minutes
+- API soft: Kambi, Altenar, Gecko V2, Vbet every 60 minutes
+- Browser soft: Spectate, ComeOn, Snabbare, 10Bet, Interwetten, Coolbet, Tipwin every 120 minutes
+
+All tiers run on startup, then repeat at their configured interval.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TierState:
+    """Tracks state for a single extraction tier."""
+    name: str
+    providers: list[str]
+    interval_seconds: int
+    running: bool = False
+    task: Optional[asyncio.Task] = field(default=None, repr=False)
+    last_run: Optional[datetime] = None
+    run_count: int = 0
 
 
 class ExtractionScheduler:
     """
     Manages tiered extraction scheduling.
 
+    Supports multiple named tiers running concurrently, each with its own
+    provider list and interval. Tiers are independent — a slow browser
+    extraction doesn't block the next sharp refresh.
+
     Usage:
-        scheduler = ExtractionScheduler(pipeline)
+        scheduler = ExtractionScheduler()
 
-        # Start continuous extraction loop
-        await scheduler.start_continuous(interval_seconds=300)
+        # Start all tiers
+        await scheduler.start_all()
 
-        # Later, stop it
-        scheduler.stop()
+        # Or start individual tiers
+        await scheduler.start_tier("sharp", ["pinnacle", "polymarket"], 300)
+        await scheduler.start_tier("api_soft", [...], 3600)
+
+        # Stop everything
+        scheduler.stop_all()
     """
 
     def __init__(self, pipeline=None):
-        """
-        Initialize scheduler.
-
-        Args:
-            pipeline: ExtractionPipeline instance (lazy-loaded if None)
-        """
         self._pipeline = pipeline
-        self._running = False
-        self._task: Optional[asyncio.Task] = None
-        self._last_run: Optional[datetime] = None
-        self._run_count = 0
-        self._interval_seconds: Optional[int] = None
-        self._providers: Optional[list[str]] = None
+        self._tiers: dict[str, TierState] = {}
+        self._boosts_task: Optional[asyncio.Task] = None
+        # Lock ensures only one tier runs at a time — the pipeline shares
+        # a single DB session and event_cache, so concurrent runs corrupt state.
+        self._run_lock = asyncio.Lock()
 
     @property
     def pipeline(self):
@@ -52,30 +68,232 @@ class ExtractionScheduler:
             self._pipeline = get_pipeline()
         return self._pipeline
 
-    @property
-    def running(self) -> bool:
-        """Check if continuous extraction is running."""
-        return self._running
+    # ── Tier management ────────────────────────────────────────────────
 
-    @property
-    def last_run(self) -> Optional[datetime]:
-        """Get timestamp of last extraction run."""
-        return self._last_run
+    async def start_tier(
+        self,
+        name: str,
+        providers: list[str],
+        interval_seconds: int,
+        run_immediately: bool = True,
+    ):
+        """Start a named extraction tier.
 
-    @property
-    def run_count(self) -> int:
-        """Get number of extraction runs since start."""
-        return self._run_count
+        Args:
+            name: Tier name (e.g. "sharp", "api_soft", "browser_soft")
+            providers: Provider IDs to extract
+            interval_seconds: Seconds between runs
+            run_immediately: Run first extraction immediately (default: True)
+        """
+        if name in self._tiers and self._tiers[name].running:
+            logger.warning(f"[Scheduler] Tier '{name}' already running")
+            return
 
-    @property
-    def interval_seconds(self) -> Optional[int]:
-        """Get current interval in seconds (only set when running)."""
-        return self._interval_seconds
+        tier = TierState(
+            name=name,
+            providers=providers,
+            interval_seconds=interval_seconds,
+            running=True,
+        )
+        self._tiers[name] = tier
 
-    @property
-    def providers(self) -> Optional[list[str]]:
-        """Get current provider list (only set when running)."""
-        return self._providers
+        logger.info(
+            f"[Scheduler] Starting tier '{name}': "
+            f"providers={providers}, interval={interval_seconds}s, "
+            f"run_immediately={run_immediately}"
+        )
+
+        tier.task = asyncio.create_task(
+            self._tier_loop(tier, run_immediately)
+        )
+
+    async def _tier_loop(self, tier: TierState, run_immediately: bool):
+        """Extraction loop for a single tier."""
+        # Optionally wait before first run (e.g. stagger browser tier)
+        if not run_immediately:
+            logger.info(f"[Scheduler:{tier.name}] Waiting {tier.interval_seconds}s before first run")
+            await asyncio.sleep(tier.interval_seconds)
+
+        while tier.running:
+            try:
+                start_time = datetime.now(timezone.utc)
+                tier.run_count += 1
+
+                logger.info(
+                    f"[Scheduler:{tier.name}] Starting run #{tier.run_count} "
+                    f"({len(tier.providers)} providers)"
+                )
+
+                # Acquire lock — only one tier can use the pipeline at a time
+                async with self._run_lock:
+                    results = await self._run_with_state_updates(tier.providers, tier_name=tier.name)
+
+                tier.last_run = datetime.now(timezone.utc)
+                elapsed = (tier.last_run - start_time).total_seconds()
+
+                logger.info(
+                    f"[Scheduler:{tier.name}] Run #{tier.run_count} complete: "
+                    f"{results.get('total_events', 0)} events, "
+                    f"{results.get('total_odds', 0)} odds in {elapsed:.1f}s"
+                )
+
+                # Wait remaining interval time
+                wait_time = max(0, tier.interval_seconds - elapsed)
+                if wait_time > 0:
+                    logger.debug(f"[Scheduler:{tier.name}] Waiting {wait_time:.0f}s until next run")
+                    await asyncio.sleep(wait_time)
+
+            except asyncio.CancelledError:
+                logger.info(f"[Scheduler:{tier.name}] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:{tier.name}] Error: {e}", exc_info=True)
+                self._clear_extraction_state()
+                # Wait before retry on error
+                await asyncio.sleep(60)
+
+        logger.info(f"[Scheduler:{tier.name}] Loop stopped")
+
+    def stop_tier(self, name: str):
+        """Stop a specific tier."""
+        tier = self._tiers.get(name)
+        if not tier or not tier.running:
+            logger.warning(f"[Scheduler] Tier '{name}' not running")
+            return
+
+        tier.running = False
+        if tier.task:
+            tier.task.cancel()
+            tier.task = None
+
+        logger.info(f"[Scheduler] Stopped tier '{name}' after {tier.run_count} runs")
+
+    # ── Convenience: start/stop all tiers ──────────────────────────────
+
+    async def start_all(self):
+        """Start all extraction tiers with default config.
+
+        Tier config:
+        - sharp: Pinnacle + Polymarket every 5 min (immediate)
+        - api_soft: Kambi (8) + Altenar (6) + Gecko V2 (4) + Vbet every 60 min (immediate)
+        - browser_soft: Spectate + ComeOn + Snabbare + 10Bet + Interwetten + Coolbet + Tipwin every 120 min (immediate)
+        - boosts: Oddsboost scraping every 120 min (immediate)
+        """
+        # Sharp tier — reference odds
+        await self.start_tier(
+            name="sharp",
+            providers=["polymarket", "pinnacle"],
+            interval_seconds=300,  # 5 min
+            run_immediately=True,
+        )
+
+        # API soft tier — fast REST/WS extractors
+        await self.start_tier(
+            name="api_soft",
+            providers=[
+                # Kambi API (8)
+                "unibet", "leovegas", "expekt", "betmgm",
+                "speedybet", "x3000", "goldenbull", "1x2",
+                # Altenar API (6)
+                "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",
+                # Gecko V2 (4) — API interception, not pure REST, but fast
+                "betsson", "nordicbet", "spelklubben", "bethard",
+                # BetConstruct (1) — WebSocket API
+                "vbet",
+            ],
+            interval_seconds=3600,  # 60 min
+            run_immediately=True,
+        )
+
+        # Browser soft tier — heavy browser-based extractors
+        await self.start_tier(
+            name="browser_soft",
+            providers=[
+                # Spectate (2)
+                "mrgreen", "888sport",
+                # ComeOn Group (3)
+                "comeon", "hajper", "lyllo",
+                # Snabbare (1)
+                "snabbare",
+                # 10Bet (1)
+                "10bet",
+                # Interwetten (1)
+                "interwetten",
+                # Coolbet (1)
+                "coolbet",
+                # Tipwin (1)
+                "tipwin",
+            ],
+            interval_seconds=7200,  # 120 min
+            run_immediately=True,
+        )
+
+        # Boosts tier — oddsboost scraping (standalone, no pipeline lock needed)
+        await self.start_boosts_tier()
+
+    def stop_all(self):
+        """Stop all running tiers."""
+        for name in list(self._tiers.keys()):
+            if self._tiers[name].running:
+                self.stop_tier(name)
+        # Also stop boosts task
+        if self._boosts_task and not self._boosts_task.done():
+            self._boosts_task.cancel()
+            self._boosts_task = None
+
+    # ── Boosts tier (standalone, no pipeline) ─────────────────────────
+
+    async def start_boosts_tier(self, interval_seconds: int = 7200):
+        """Start the oddsboost scraper on a recurring schedule.
+
+        Runs independently of extraction tiers — doesn't need the pipeline
+        lock since it uses its own Playwright browser and saves to JSON.
+        """
+        if self._boosts_task and not self._boosts_task.done():
+            logger.warning("[Scheduler] Boosts tier already running")
+            return
+
+        logger.info(f"[Scheduler] Starting boosts tier: interval={interval_seconds}s")
+        self._boosts_task = asyncio.create_task(
+            self._boosts_loop(interval_seconds)
+        )
+
+    async def _boosts_loop(self, interval_seconds: int):
+        """Recurring loop for oddsboost scraping."""
+        while True:
+            try:
+                logger.info("[Scheduler:boosts] Starting boost scrape")
+                await self._run_boost_scrape()
+                logger.info("[Scheduler:boosts] Boost scrape complete")
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:boosts] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:boosts] Error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    async def _run_boost_scrape(self):
+        """Execute the boost scraper in a thread executor."""
+        import sys
+        from src.paths import get_app_data_dir
+        _root = str(get_app_data_dir())
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from scripts.scrape_specials import scrape_all, save_specials
+
+        loop = asyncio.get_running_loop()
+        specials = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
+        if specials:
+            save_specials(specials)
+            logger.info(f"[Scheduler:boosts] Saved {len(specials)} boosts")
+        else:
+            logger.info("[Scheduler:boosts] No boosts found")
+
+    # ── Legacy interface (backwards-compatible) ────────────────────────
 
     async def start_continuous(
         self,
@@ -83,92 +301,98 @@ class ExtractionScheduler:
         interval_seconds: int = 300,
         on_complete: Callable[[dict], None] = None,
     ):
-        """
-        Start continuous extraction loop.
+        """Start continuous sharp extraction (legacy interface).
 
-        Args:
-            providers: Providers to extract (default: polymarket, pinnacle)
-            interval_seconds: Seconds between runs (default: 300 = 5 min)
-            on_complete: Optional callback after each run
+        This is called from app startup. Now starts ALL tiers.
         """
-        if self._running:
-            logger.warning("[Scheduler] Continuous extraction already running")
-            return
+        await self.start_all()
 
+    def stop(self):
+        """Stop all tiers (legacy interface)."""
+        self.stop_all()
+
+    async def run_once(self, providers: list[str] = None) -> dict:
+        """Run a single extraction (for manual/on-demand)."""
         if providers is None:
-            providers = ["polymarket", "pinnacle"]
+            providers = self.pipeline.engine.get_enabled_providers()
 
-        self._running = True
-        self._run_count = 0
-        self._interval_seconds = interval_seconds
-        self._providers = providers
+        logger.info(f"[Scheduler] Running one-time extraction: {len(providers)} providers")
+        async with self._run_lock:
+            results = await self._run_with_state_updates(providers)
+        return results
 
-        logger.info(
-            f"[Scheduler] Starting continuous extraction: "
-            f"providers={providers}, interval={interval_seconds}s"
-        )
+    # ── State ──────────────────────────────────────────────────────────
 
-        # Create and run the extraction loop
-        self._task = asyncio.create_task(
-            self._extraction_loop(providers, interval_seconds, on_complete)
-        )
+    @property
+    def running(self) -> bool:
+        """Check if any tier is running."""
+        return any(t.running for t in self._tiers.values())
 
-    async def _extraction_loop(
-        self,
-        providers: list[str],
-        interval_seconds: int,
-        on_complete: Callable[[dict], None] = None,
-    ):
-        """Internal extraction loop."""
-        while self._running:
-            try:
-                start_time = datetime.now(timezone.utc)
+    @property
+    def last_run(self) -> Optional[datetime]:
+        """Get most recent run across all tiers."""
+        runs = [t.last_run for t in self._tiers.values() if t.last_run]
+        return max(runs) if runs else None
 
-                logger.info(f"[Scheduler] Running extraction #{self._run_count + 1}")
+    @property
+    def run_count(self) -> int:
+        """Get total runs across all tiers."""
+        return sum(t.run_count for t in self._tiers.values())
 
-                # Run extraction with state updates for UI
-                results = await self._run_with_state_updates(providers)
+    @property
+    def interval_seconds(self) -> Optional[int]:
+        """Get sharp tier interval (legacy)."""
+        sharp = self._tiers.get("sharp")
+        return sharp.interval_seconds if sharp else None
 
-                self._last_run = datetime.now(timezone.utc)
-                self._run_count += 1
+    @property
+    def providers(self) -> Optional[list[str]]:
+        """Get sharp tier providers (legacy)."""
+        sharp = self._tiers.get("sharp")
+        return sharp.providers if sharp else None
 
-                elapsed = (self._last_run - start_time).total_seconds()
-                logger.info(
-                    f"[Scheduler] Extraction #{self._run_count} complete: "
-                    f"{results.get('total_events', 0)} events, "
-                    f"{results.get('total_odds', 0)} odds in {elapsed:.1f}s"
-                )
+    def get_status(self) -> dict:
+        """Get scheduler status for all tiers."""
+        tiers = {}
+        for name, tier in self._tiers.items():
+            next_run = None
+            if tier.running and tier.last_run:
+                next_run_dt = tier.last_run + timedelta(seconds=tier.interval_seconds)
+                next_run = next_run_dt.isoformat()
 
-                if on_complete:
-                    on_complete(results)
+            tiers[name] = {
+                "running": tier.running,
+                "providers": tier.providers,
+                "interval_seconds": tier.interval_seconds,
+                "last_run": tier.last_run.isoformat() if tier.last_run else None,
+                "run_count": tier.run_count,
+                "next_run": next_run,
+            }
 
-                # Wait for next interval
-                wait_time = max(0, interval_seconds - elapsed)
-                if wait_time > 0:
-                    logger.debug(f"[Scheduler] Waiting {wait_time:.0f}s until next run")
-                    await asyncio.sleep(wait_time)
+        return {
+            "running": self.running,
+            "tiers": tiers,
+            # Legacy fields
+            "last_run": self.last_run.isoformat() if self.last_run else None,
+            "run_count": self.run_count,
+            "interval_seconds": self.interval_seconds,
+            "providers": self.providers,
+            "next_run": None,  # Deprecated — use tiers[x].next_run
+        }
 
-            except asyncio.CancelledError:
-                logger.info("[Scheduler] Extraction loop cancelled")
-                break
-            except Exception as e:
-                logger.error(f"[Scheduler] Extraction error: {e}", exc_info=True)
-                # Clear running state on error
-                self._clear_extraction_state()
-                # Wait before retry on error
-                await asyncio.sleep(60)
+    # ── Internal ───────────────────────────────────────────────────────
 
-        logger.info("[Scheduler] Extraction loop stopped")
-
-    async def _run_with_state_updates(self, providers: list[str]) -> dict:
-        """Run extraction with UI state updates."""
-        from src.api.state import update_extraction_state
+    async def _run_with_state_updates(self, providers: list[str], tier_name: str = "default") -> dict:
+        """Run extraction with UI state updates (both global and per-tier)."""
+        from src.api.state import update_extraction_state, extraction_state, update_tier_state
         from src.api.routes.extraction import _build_final_state
 
-        # Initialize extraction state
+        now = datetime.now(timezone.utc)
+
+        # Initialize global extraction state
         update_extraction_state(
             running=True,
-            start_time=datetime.now(timezone.utc),
+            start_time=now,
             total_events=0,
             total_odds=0,
             providers={},
@@ -177,12 +401,25 @@ class ExtractionScheduler:
             total_providers=len(providers),
         )
 
+        # Initialize per-tier state
+        update_tier_state(tier_name,
+            running=True,
+            start_time=now,
+            total_events=0,
+            total_odds=0,
+            providers={},
+            current_provider=None,
+            completed_providers=0,
+            total_providers=len(providers),
+            elapsed_seconds=0,
+        )
+
         _results = None
         try:
             # Start metrics polling task
             stop_event = asyncio.Event()
             polling_task = asyncio.create_task(
-                self._poll_metrics_loop(stop_event)
+                self._poll_metrics_loop(stop_event, tier_name=tier_name, tier_providers=providers)
             )
 
             try:
@@ -198,7 +435,13 @@ class ExtractionScheduler:
             # Final state update in finally block (guaranteed to run)
             if _results:
                 try:
+                    from sqlalchemy import func
+                    from src.db.models import Odds, get_session as _get_session
+
                     final = _build_final_state(_results)
+                    now_iso = datetime.now(timezone.utc).isoformat()
+
+                    # Global state uses pipeline totals
                     update_extraction_state(
                         total_events=_results.get("total_events", 0),
                         total_odds=_results.get("total_odds", 0),
@@ -206,28 +449,67 @@ class ExtractionScheduler:
                         completed_providers=final["completed_providers"],
                         total_providers=final["total_providers"],
                         current_provider=None,
-                        last_run=datetime.now(timezone.utc).isoformat(),
+                        last_run=now_iso,
+                    )
+
+                    # Per-tier state: only events matched with Pinnacle
+                    tier_events = 0
+                    tier_odds = 0
+                    db = _get_session()
+                    try:
+                        # Events that have odds from BOTH this tier's providers AND pinnacle
+                        from sqlalchemy import and_
+                        pin_event_ids = db.query(Odds.event_id).filter(
+                            Odds.provider_id == "pinnacle"
+                        ).distinct().subquery()
+                        row = db.query(
+                            func.count(func.distinct(Odds.event_id)),
+                            func.count(Odds.id),
+                        ).filter(
+                            Odds.provider_id.in_(providers),
+                            Odds.event_id.in_(db.query(pin_event_ids)),
+                        ).first()
+                        if row:
+                            tier_events = row[0] or 0
+                            tier_odds = row[1] or 0
+                    finally:
+                        db.close()
+
+                    update_tier_state(tier_name,
+                        total_events=tier_events,
+                        total_odds=tier_odds,
+                        providers=final["providers"],
+                        completed_providers=final["completed_providers"],
+                        total_providers=final["total_providers"],
+                        current_provider=None,
+                        last_run=now_iso,
                     )
                 except Exception:
                     pass
             # Compute final elapsed time before clearing running flag
-            from src.api.state import extraction_state
             start = extraction_state.get("start_time")
             if start:
                 final_elapsed = (datetime.now(timezone.utc) - start).total_seconds()
                 update_extraction_state(elapsed_seconds=final_elapsed)
+                update_tier_state(tier_name, elapsed_seconds=final_elapsed)
             update_extraction_state(running=False)
+            update_tier_state(tier_name, running=False)
 
         return _results or {}
 
-    async def _poll_metrics_loop(self, stop_event: asyncio.Event):
-        """Poll metrics and update extraction state.
+    async def _poll_metrics_loop(
+        self,
+        stop_event: asyncio.Event,
+        tier_name: str = "default",
+        tier_providers: list[str] | None = None,
+    ):
+        """Poll metrics and update extraction state (both global and per-tier).
 
-        Uses a single DB session for the entire loop, calling expire_all()
-        each iteration so COUNT queries see fresh data without creating
-        hundreds of sessions during a run.
+        Per-tier state uses provider-filtered counts so each tier shows
+        only its own events/odds. Global state uses full DB counts.
         """
-        from src.api.state import update_extraction_state
+        from sqlalchemy import func
+        from src.api.state import update_extraction_state, update_tier_state
         from src.db.models import Event, Odds, get_session
 
         db = get_session()
@@ -266,17 +548,46 @@ class ExtractionScheduler:
                         "sports_total": pm.sports_attempted,
                     }
 
-                # Expire cached objects so COUNT sees rows committed by
-                # the extraction pipeline running in the same process
                 db.expire_all()
 
+                # Global counts (all providers)
                 total_events = db.query(Event).count()
                 total_odds = db.query(Odds).count()
+
+                # Per-tier counts: only events matched with Pinnacle
+                tier_events = 0
+                tier_odds = 0
+                if tier_providers:
+                    pin_event_ids = db.query(Odds.event_id).filter(
+                        Odds.provider_id == "pinnacle"
+                    ).distinct().subquery()
+                    row = db.query(
+                        func.count(func.distinct(Odds.event_id)),
+                        func.count(Odds.id),
+                    ).filter(
+                        Odds.provider_id.in_(tier_providers),
+                        Odds.event_id.in_(db.query(pin_event_ids)),
+                    ).first()
+                    if row:
+                        tier_events = row[0] or 0
+                        tier_odds = row[1] or 0
+                else:
+                    tier_events = total_events
+                    tier_odds = total_odds
 
                 # Update global state
                 update_extraction_state(
                     total_events=total_events,
                     total_odds=total_odds,
+                    providers=providers_state,
+                    current_provider=current_provider,
+                    completed_providers=completed_count,
+                )
+
+                # Update per-tier state with tier-specific counts
+                update_tier_state(tier_name,
+                    total_events=tier_events,
+                    total_odds=tier_odds,
                     providers=providers_state,
                     current_provider=current_provider,
                     completed_providers=completed_count,
@@ -293,60 +604,6 @@ class ExtractionScheduler:
             update_extraction_state(running=False)
         except Exception:
             pass
-
-    def stop(self):
-        """Stop continuous extraction."""
-        if not self._running:
-            logger.warning("[Scheduler] Continuous extraction not running")
-            return
-
-        self._running = False
-        self._interval_seconds = None
-        self._providers = None
-
-        if self._task:
-            self._task.cancel()
-            self._task = None
-
-        logger.info(
-            f"[Scheduler] Stopped continuous extraction after {self._run_count} runs"
-        )
-
-    async def run_once(self, providers: list[str] = None) -> dict:
-        """
-        Run a single extraction (for manual tier).
-
-        Args:
-            providers: Providers to extract (default: all enabled)
-
-        Returns:
-            Extraction results dict
-        """
-        if providers is None:
-            providers = self.pipeline.engine.get_enabled_providers()
-
-        logger.info(f"[Scheduler] Running one-time extraction: {providers}")
-        results = await self.pipeline.run(providers=providers)
-
-        return results
-
-    def get_status(self) -> dict:
-        """Get scheduler status."""
-        # Calculate next run time
-        next_run = None
-        if self._running and self._last_run and self._interval_seconds:
-            from datetime import timedelta
-            next_run_dt = self._last_run + timedelta(seconds=self._interval_seconds)
-            next_run = next_run_dt.isoformat()
-
-        return {
-            "running": self._running,
-            "last_run": self._last_run.isoformat() if self._last_run else None,
-            "run_count": self._run_count,
-            "interval_seconds": self._interval_seconds,
-            "providers": self._providers,
-            "next_run": next_run,
-        }
 
 
 # Global scheduler instance
@@ -365,5 +622,5 @@ def reset_scheduler():
     """Reset global scheduler (for testing)."""
     global _scheduler
     if _scheduler and _scheduler.running:
-        _scheduler.stop()
+        _scheduler.stop_all()
     _scheduler = None

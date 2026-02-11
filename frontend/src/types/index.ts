@@ -45,10 +45,10 @@ export interface Opportunity {
   starts_at?: string;
   // Stake recommendations (for value bets)
   suggested_stake?: number | null;
-  risk_adjusted_stake?: number | null;
   final_stake?: number | null;
-  risk_level?: 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+  kelly_fraction?: number | null;
   skip_reason?: string | null;
+  bonus_cleared?: boolean | null;
 }
 
 // Events
