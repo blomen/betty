@@ -333,11 +333,7 @@ class InterwettenRetriever(BrowserRetriever):
         await self.transport._ensure_browser()
         page = self.transport.page
 
-        # Apply stealth
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => false});
-            window.chrome = {runtime: {}};
-        """)
+        # Patchright handles stealth at CDP level — no add_init_script() needed
 
         # Navigate to main sportsbook first to establish session
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")

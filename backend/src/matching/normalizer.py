@@ -399,7 +399,7 @@ def normalize_outcome(outcome: str, home: str = "", away: str = "") -> str:
 
     # Fuzzy match for cases like "chattanooga mocs" vs "chattanooga"
     if home_norm and away_norm and outcome_norm:
-        from thefuzz import fuzz
+        from rapidfuzz import fuzz
 
         # token_set_ratio handles subsets and reordering well
         home_score = fuzz.token_set_ratio(outcome_norm, home_norm)

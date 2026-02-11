@@ -9,6 +9,7 @@ from ..state import (
     extraction_state,
     update_extraction_state,
     get_extraction_state,
+    get_tier_states,
     ws_manager,
 )
 from ...db.models import Event, Odds, get_session
@@ -283,6 +284,53 @@ async def get_extraction_progress():
     }
 
 
+@router.get("/tiers/progress")
+async def get_tier_progress():
+    """
+    Get per-tier extraction progress.
+
+    Returns progress for each scheduler tier (sharp, api_soft, browser_soft)
+    independently. Unlike /progress which shows one global state,
+    this shows each tier separately so the UI can render individual bars.
+    """
+    tier_states_raw = get_tier_states()
+
+    tiers = {}
+    for tier_name, state in tier_states_raw.items():
+        # Calculate elapsed time
+        if state.get("running") and state.get("start_time"):
+            elapsed = (datetime.now(timezone.utc) - state["start_time"]).total_seconds()
+        else:
+            elapsed = state.get("elapsed_seconds", 0)
+
+        # Calculate progress percentage
+        progress_pct = 0
+        total_p = state.get("total_providers", 0)
+        completed_p = state.get("completed_providers", 0)
+        if total_p > 0:
+            progress_pct = (completed_p / total_p) * 100
+
+        tiers[tier_name] = {
+            "running": state.get("running", False),
+            "last_run": state.get("last_run"),
+            "elapsed_seconds": elapsed,
+            "progress_pct": progress_pct,
+            "total_events": state.get("total_events", 0),
+            "total_odds": state.get("total_odds", 0),
+            "current_provider": state.get("current_provider"),
+            "completed_providers": completed_p,
+            "total_providers": total_p,
+        }
+
+    # Check if ANY tier is running
+    any_running = any(t["running"] for t in tiers.values())
+
+    return {
+        "any_running": any_running,
+        "tiers": tiers,
+    }
+
+
 @router.post("/run")
 async def run_extraction(
     background_tasks: BackgroundTasks,
@@ -422,15 +470,18 @@ async def run_soft_extraction(
     tier: str = "all",
 ):
     """
-    Run manual soft book extraction (rate-limited providers).
+    Run manual soft book extraction.
 
     Args:
         tier: Which tier to run:
-            - "all": All manual tier providers (default)
+            - "all": All soft providers (default)
+            - "api": API-based soft providers (Kambi, Altenar, Gecko V2, Vbet)
+            - "browser": Browser-based soft providers (Spectate, ComeOn, etc.)
             - "kambi": Only Kambi providers (8)
+            - "altenar": Only Altenar providers (6)
             - "spectate": Only Spectate providers (2)
-            - "gecko": Only Gecko V2 providers (3)
-            - "comeon": Only ComeOn group (2)
+            - "gecko": Only Gecko V2 providers (4)
+            - "comeon": Only ComeOn group (3)
             - Or comma-separated provider names
 
     Returns:
@@ -442,24 +493,48 @@ async def run_soft_extraction(
     # Define tier mappings
     tier_providers = {
         "kambi": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "altenar": ["betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino"],
+        "gecko": ["betsson", "nordicbet", "spelklubben", "bethard"],
         "spectate": ["mrgreen", "888sport"],
-        "gecko": ["betsson", "betsafe", "nordicbet"],
-        "comeon": ["comeon", "hajper"],
-        "sbtech": ["bethard"],
+        "comeon": ["comeon", "hajper", "lyllo"],
         "snabbare": ["snabbare"],
+        "vbet": ["vbet"],
+        "10bet": ["10bet"],
+        "interwetten": ["interwetten"],
+        "coolbet": ["coolbet"],
+        "tipwin": ["tipwin"],
     }
+
+    # Composite tiers
+    api_providers = (
+        tier_providers["kambi"] + tier_providers["altenar"] +
+        tier_providers["gecko"] + tier_providers["vbet"]
+    )
+    browser_providers = (
+        tier_providers["spectate"] + tier_providers["comeon"] +
+        tier_providers["snabbare"] + tier_providers["10bet"] +
+        tier_providers["interwetten"] + tier_providers["coolbet"] +
+        tier_providers["tipwin"]
+    )
 
     # Resolve tier to provider list
     if tier == "all":
-        provider_list = []
-        for providers in tier_providers.values():
-            provider_list.extend(providers)
+        provider_list = api_providers + browser_providers
+    elif tier == "api":
+        provider_list = api_providers
+    elif tier == "browser":
+        provider_list = browser_providers
     elif tier in tier_providers:
         provider_list = tier_providers[tier]
     elif "," in tier:
         provider_list = [p.strip() for p in tier.split(",")]
     else:
-        raise HTTPException(400, f"Unknown tier: {tier}. Use: all, kambi, spectate, gecko, comeon, sbtech, snabbare, or comma-separated providers")
+        raise HTTPException(
+            400,
+            f"Unknown tier: {tier}. Use: all, api, browser, kambi, altenar, "
+            f"gecko, spectate, comeon, snabbare, vbet, 10bet, interwetten, "
+            f"coolbet, tipwin, or comma-separated providers"
+        )
 
     background_tasks.add_task(run_extraction_task, provider_list)
 
@@ -468,3 +543,72 @@ async def run_soft_extraction(
         "tier": tier,
         "providers": provider_list,
     }
+
+
+# =============================================================================
+# Tier Control Endpoints
+# =============================================================================
+
+@router.post("/tier/{tier_name}/start")
+async def start_tier(tier_name: str):
+    """Start a specific extraction tier.
+
+    Valid tier names: sharp, api_soft, browser_soft
+    """
+    from ...pipeline.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+
+    tier_configs = {
+        "sharp": {
+            "providers": ["polymarket", "pinnacle"],
+            "interval_seconds": 300,
+        },
+        "api_soft": {
+            "providers": [
+                "unibet", "leovegas", "expekt", "betmgm",
+                "speedybet", "x3000", "goldenbull", "1x2",
+                "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",
+                "betsson", "nordicbet", "spelklubben", "bethard",
+                "vbet",
+            ],
+            "interval_seconds": 3600,
+        },
+        "browser_soft": {
+            "providers": [
+                "mrgreen", "888sport",
+                "comeon", "hajper", "lyllo",
+                "snabbare", "10bet", "interwetten",
+                "coolbet", "tipwin",
+            ],
+            "interval_seconds": 7200,
+        },
+    }
+
+    if tier_name not in tier_configs:
+        raise HTTPException(400, f"Unknown tier: {tier_name}. Use: sharp, api_soft, browser_soft")
+
+    config = tier_configs[tier_name]
+    await scheduler.start_tier(
+        name=tier_name,
+        providers=config["providers"],
+        interval_seconds=config["interval_seconds"],
+    )
+
+    return {
+        "status": "started",
+        "tier": tier_name,
+        "providers": config["providers"],
+        "interval_seconds": config["interval_seconds"],
+    }
+
+
+@router.post("/tier/{tier_name}/stop")
+async def stop_tier(tier_name: str):
+    """Stop a specific extraction tier."""
+    from ...pipeline.scheduler import get_scheduler
+
+    scheduler = get_scheduler()
+    scheduler.stop_tier(tier_name)
+
+    return {"status": "stopped", "tier": tier_name}

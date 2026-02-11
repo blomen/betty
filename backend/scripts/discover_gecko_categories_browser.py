@@ -7,7 +7,10 @@ Discover OBG/Gecko V2 sport category IDs using browser session.
 """
 import asyncio
 import json
-from playwright.async_api import async_playwright
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    from playwright.async_api import async_playwright
 
 
 SPORT_SLUGS = {

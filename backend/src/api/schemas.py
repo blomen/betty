@@ -64,11 +64,26 @@ class BetCreate(BaseModel):
     stake: float
     is_bonus: bool = False
     bonus_type: Optional[str] = None
+    # Risk management (optional, populated by auto-stake flow)
+    utility_score: Optional[float] = None
+    selection_probability: Optional[float] = None
+    stake_noise_applied: Optional[float] = None
 
 
 class BetUpdate(BaseModel):
     result: str  # "won", "lost", "void"
     payout: float = 0.0
+
+
+class AutoPlaceBetRequest(BaseModel):
+    """Auto-place a bet with full pipeline: edge → Kelly stake → risk → noise → record."""
+    event_id: str
+    provider_id: str
+    market: str
+    outcome: str
+    odds: float
+    is_bonus: bool = False
+    bonus_type: Optional[str] = None
 
 
 # ============ Profile Schemas ============

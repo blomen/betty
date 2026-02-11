@@ -186,7 +186,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
             # Handle cookie consent
             await self._handle_cookie_consent(page)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             await page.unroute('**/api/sb/**')
 

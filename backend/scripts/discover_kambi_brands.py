@@ -55,10 +55,13 @@ async def discover_slug_playwright(name: str, url: str, timeout: int = 30) -> Op
     Returns the brand slug or None.
     """
     try:
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
     except ImportError:
-        print("ERROR: playwright not installed. Run: pip install playwright && playwright install")
-        sys.exit(1)
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            print("ERROR: playwright not installed. Run: pip install playwright && playwright install")
+            sys.exit(1)
 
     found_slug = None
 
@@ -135,10 +138,13 @@ async def discover_slug_altenar(name: str, url: str, timeout: int = 30) -> Optio
     Visit a sportsbook URL and intercept biahosted.com requests to find the Altenar integration ID.
     """
     try:
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
     except ImportError:
-        print("ERROR: playwright not installed.")
-        sys.exit(1)
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            print("ERROR: playwright not installed.")
+            sys.exit(1)
 
     found_integration = None
 

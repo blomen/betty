@@ -20,6 +20,9 @@ dependencies = [
     # Data
     "pydantic>=2.5.0",
 
+    # Matching
+    "rapidfuzz>=3.6.0",
+
     # CLI
     "typer>=0.9.0",
     "rich>=13.7.0",
@@ -36,7 +39,9 @@ dev = [
     "pytest-asyncio>=0.21.0",
 ]
 scrape = [
-    # Only needed if scraping (Pinnacle fallback)
+    # Patchright = undetected Playwright fork (bypasses Cloudflare/Imperva)
+    # Falls back to playwright if patchright not installed
+    "patchright>=1.48.0",
     "playwright>=1.40.0",
 ]
 

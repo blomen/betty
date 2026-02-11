@@ -81,16 +81,9 @@ export function PolymarketPage() {
           <span className="w-2 h-2 rounded-full bg-tabPolymarket" />
           Polymarket
         </h2>
-        <button
-          onClick={fetchData}
-          disabled={isLoading}
-          className="px-3 py-1 bg-panel2 border border-border text-text rounded text-sm font-medium hover:bg-border disabled:opacity-50"
-        >
-          {isLoading ? 'Loading...' : 'Refresh'}
-        </button>
       </div>
 
-      <ExtractionProgressBar />
+      <ExtractionProgressBar tiers={['sharp']} />
 
       {/* Value Bets Card */}
       <Card title={`Value Bets (${valueBets.length})`}>

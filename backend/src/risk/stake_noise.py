@@ -134,7 +134,7 @@ class StakeNoiseInjector:
 
         # Scale noise with risk score
         # Base noise + additional noise for high risk
-        base_noise_pct = config.stake_noise_pct / 100
+        base_noise_pct = (config.stake_noise_pct or 5.0) / 100
         risk_bonus = risk_score * 0.05  # Extra 5% at max risk
         total_noise_pct = base_noise_pct + risk_bonus
 

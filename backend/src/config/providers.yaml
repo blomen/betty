@@ -781,18 +781,15 @@ providers:
 # ============================================================================
 
 extraction_tiers:
-  continuous:
+  sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
+    # Runs on startup, then every 5 minutes
     providers: [pinnacle, polymarket]
     interval_minutes: 5
 
-  scheduled:
-    # Easy REST API soft books
-    providers: [betinia, campobet, swiper, lodur, dbet, quickcasino]
-    interval_minutes: 240
-
-  manual:
-    # Rate-limited / browser-based providers — on-demand only
+  api_soft:
+    # Fast REST/WS/API-interception providers — every 60 minutes
+    # Runs on startup, then every 60 minutes
     providers:
       # Kambi API (8)
       - unibet
@@ -803,31 +800,44 @@ extraction_tiers:
       - x3000
       - goldenbull
       - 1x2
-      # Spectate (2)
-      - mrgreen
-      - 888sport
-      # Gecko V2 (4) — betsafe disabled (Swedish site not on OBG platform)
+      # Altenar API (6)
+      - betinia
+      - campobet
+      - swiper
+      - lodur
+      - dbet
+      - quickcasino
+      # Gecko V2 (4) — API interception, fast
       - betsson
-      # - betsafe  # BROKEN: /sv/odds makes 0 api/sb/ requests, needs platform investigation
       - nordicbet
       - spelklubben
       - bethard
-      # 10Bet (1)
-      - 10bet
-      # Snabbare (1)
-      - snabbare
+      # BetConstruct (1) — WebSocket API
+      - vbet
+    interval_minutes: 60
+
+  browser_soft:
+    # Heavy browser-based extractors — every 120 minutes
+    # Runs on startup, then every 120 minutes
+    providers:
+      # Spectate (2)
+      - mrgreen
+      - 888sport
       # ComeOn Group (3)
       - comeon
       - hajper
       - lyllo
-      # BetConstruct (1)
-      - vbet
+      # Snabbare (1)
+      - snabbare
+      # 10Bet (1)
+      - 10bet
       # Interwetten (1)
       - interwetten
       # Coolbet (1)
       - coolbet
       # Tipwin (1)
       - tipwin
+    interval_minutes: 120
 
 # ============================================================================
 # Active providers (subset used for extraction)

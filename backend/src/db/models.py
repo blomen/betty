@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float,
+    create_engine, event, Column, Integer, String, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -576,9 +576,22 @@ def get_engine():
             pool_size=5,
             pool_recycle=3600,
             pool_pre_ping=True,
-            # SQLite-specific: enable WAL mode for better concurrency
-            connect_args={"check_same_thread": False},
+            # SQLite-specific: allow multi-thread access + 30s busy timeout
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 30,  # Wait up to 30s for locks instead of default 5s
+            },
         )
+
+        # Enable WAL mode + busy timeout on every new connection
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
         # Create tables on first engine creation
         Base.metadata.create_all(_engine)
         # Migrate existing tables (add new columns)

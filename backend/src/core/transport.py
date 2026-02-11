@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 import asyncio
+import random
 import aiohttp
 import logging
-from playwright.async_api import async_playwright
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    from playwright.async_api import async_playwright
 
 try:
     from playwright_stealth import stealth_async
@@ -11,6 +15,9 @@ except ImportError:
     stealth_async = None
 
 logger = logging.getLogger(__name__)
+
+# Modern Chrome UA — updated periodically
+_CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 class Transport(ABC):
     """
@@ -41,10 +48,9 @@ class HttpTransport(Transport):
     """
     def __init__(self, headers: Optional[Dict] = None, circuit_breaker: Any = None, rate_limit_config: Any = None):
         self.session = None
+        self._session_lock = asyncio.Lock()
         self._owns_session = True  # Track if we created the session
-        self.headers = headers or {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+        self.headers = headers or {"User-Agent": _CHROME_UA}
         self.circuit_breaker = circuit_breaker
         self.rate_limit_config = rate_limit_config
         # Track consecutive 429s per provider for circuit breaker notification
@@ -62,7 +68,9 @@ class HttpTransport(Transport):
 
     async def _ensure_session(self):
         if not self.session:
-            self.session = aiohttp.ClientSession(headers=self.headers)
+            async with self._session_lock:
+                if not self.session:  # Double-check after lock
+                    self.session = aiohttp.ClientSession(headers=self.headers)
 
     async def get(
         self,
@@ -235,11 +243,13 @@ class BrowserTransport(Transport):
                  This bypasses all bot detection since it attaches to a real human-controlled browser.
     """
     def __init__(self, headless: bool = True, user_data_dir: Optional[str] = None,
-                 channel: Optional[str] = None, cdp_url: Optional[str] = None):
+                 channel: Optional[str] = None, cdp_url: Optional[str] = None,
+                 circuit_breaker: Any = None):
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
         self.cdp_url = cdp_url
+        self.circuit_breaker = circuit_breaker
         self.playwright = None
         self.browser = None
         self.context = None
@@ -264,9 +274,12 @@ class BrowserTransport(Transport):
             return
 
         context_opts = dict(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            user_agent=_CHROME_UA,
             locale='sv-SE',
-            geolocation={'latitude': 59.3293, 'longitude': 18.0686},  # Stockholm
+            geolocation={
+                'latitude': 59.3293 + (random.random() - 0.5) * 0.01,
+                'longitude': 18.0686 + (random.random() - 0.5) * 0.01,
+            },  # Stockholm ±500m jitter
         )
         launch_args = [
             '--disable-blink-features=AutomationControlled',
@@ -300,22 +313,11 @@ class BrowserTransport(Transport):
             self.context = await self.browser.new_context(**context_opts)
             self.page = await self.context.new_page()
 
-        # NOTE: playwright-stealth was interfering with Gecko sites
-        # Using only minimal custom init scripts
-        # await stealth_async(self.page)  # DISABLED
+        # Patchright handles all stealth at CDP level (webdriver, plugins, WebGL, etc.)
+        # No add_init_script() needed — it conflicts with patchright's internal patching
+        # and causes net::ERR_NAME_NOT_RESOLVED on Windows
 
-        # Custom stealth: Override navigator.webdriver
-        # This is critical for bypassing Gecko/Betsson bot detection
-        await self.page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false
-            });
-            window.chrome = {
-                runtime: {}
-            };
-        """)
-
-        logger.info("Browser initialized with stealth mode")
+        logger.info("Browser initialized with patchright stealth")
 
     async def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         await self._ensure_browser()

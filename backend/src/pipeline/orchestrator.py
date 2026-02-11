@@ -44,11 +44,18 @@ class ExtractionPipeline:
 
         # Cache for ALL events to enable cross-provider fuzzy matching
         # Dict indexed by sport for O(1) sport lookup
-        # {sport: [(id, home, away, date_str), ...]}
+        # {sport: {event_id: (home, away, date_str)}}
         # Events from Polymarket, Pinnacle, and all providers are added here
         self.event_cache = {}
+        # Secondary date index for O(1) date-based candidate lookup
+        # {sport: {date_str: set(event_ids)}}
+        self.event_cache_by_date = {}
         # Thread-safe lock for async access to event_cache
         self._cache_lock = asyncio.Lock()
+
+        # Pre-warmed Pinnacle caches (populated after sharp extraction)
+        self._pinnacle_points_cache = {}
+        self._sharp_odds_cache = {}
 
         # Initialize orchestrator components
         self._init_orchestrator()
@@ -64,28 +71,78 @@ class ExtractionPipeline:
             self.event_cache.clear()
 
     def _populate_cache_from_db(self):
-        """Pre-populate event_cache from existing DB events for fuzzy matching.
+        """Pre-populate event_cache + date index from existing DB events for fuzzy matching.
 
         This is critical when extracting a subset of providers (e.g., just '10bet')
         against an existing DB with Pinnacle events. Without this, the fuzzy matching
         has no candidates and events with slight name/date differences won't match.
         """
         from ..db.models import Event
+        from .storage import _update_event_cache
         events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time).all()
         for eid, sport, home, away, start_time in events:
-            if sport not in self.event_cache:
-                self.event_cache[sport] = {}
             if hasattr(start_time, 'strftime'):
                 date_str = start_time.strftime('%Y%m%d')
             elif isinstance(start_time, str):
                 date_str = start_time.split('T')[0].replace('-', '')
             else:
                 date_str = "00000000"
-            if eid not in self.event_cache[sport]:
-                self.event_cache[sport][eid] = (home, away, date_str)
+            _update_event_cache(
+                self.event_cache, self.event_cache_by_date,
+                sport, eid, home, away, date_str,
+            )
         total = sum(len(v) for v in self.event_cache.values())
         if total > 0:
             logger.info(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
+
+    def _pre_warm_pinnacle_caches(self):
+        """Pre-load ALL Pinnacle odds into shared caches to eliminate per-event DB queries.
+
+        After Pinnacle extraction, this loads:
+        1. Spread/total point values (for _point_matches_pinnacle)
+        2. 1x2/moneyline odds (for detect_and_fix_inversion)
+
+        This eliminates thousands of per-event DB round-trips across 30+ soft providers.
+        """
+        from sqlalchemy import func
+
+        # 1. Pre-warm spread/total points cache
+        point_rows = self.session.query(
+            Odds.event_id, Odds.market, Odds.outcome, Odds.point
+        ).filter(
+            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.market.in_(['spread', 'total']),
+            Odds.point.isnot(None),
+        ).all()
+
+        self._pinnacle_points_cache = {}
+        for event_id, market, outcome, point in point_rows:
+            if event_id not in self._pinnacle_points_cache:
+                self._pinnacle_points_cache[event_id] = {"spread": set(), "total": set()}
+            if market == "spread" and outcome == "home":
+                self._pinnacle_points_cache[event_id]["spread"].add(point)
+            elif market == "total" and outcome in ("over", "under"):
+                self._pinnacle_points_cache[event_id]["total"].add(point)
+
+        # 2. Pre-warm sharp odds cache (1x2/moneyline for inversion detection)
+        sharp_rows = self.session.query(
+            Odds.event_id, Odds.outcome, Odds.odds
+        ).filter(
+            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.outcome.in_(['home', 'away']),
+            Odds.market.in_(['1x2', 'moneyline']),
+        ).all()
+
+        self._sharp_odds_cache = {}
+        for event_id, outcome, odds in sharp_rows:
+            if event_id not in self._sharp_odds_cache:
+                self._sharp_odds_cache[event_id] = {}
+            self._sharp_odds_cache[event_id][outcome] = odds
+
+        logger.info(
+            f"Pre-warmed Pinnacle caches: {len(self._pinnacle_points_cache)} point entries, "
+            f"{len(self._sharp_odds_cache)} sharp odds entries"
+        )
 
     def _init_orchestrator(self):
         """Initialize orchestrator components (called from __init__)."""
@@ -190,6 +247,11 @@ class ExtractionPipeline:
     def _register_signal_handlers(self):
         """Register SIGINT/SIGTERM handlers for graceful shutdown."""
         import signal
+        import threading
+
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Skipping signal handlers (not on main thread)")
+            return
 
         def signal_handler(signum, frame):
             logger.info(f"Received signal {signum}, initiating graceful shutdown...")
@@ -428,6 +490,8 @@ class ExtractionPipeline:
                 # Commit Pinnacle data so Polymarket can query it for inversion detection
                 self.session.commit()
 
+                # Pre-warm shared Pinnacle caches (eliminates thousands of per-event DB queries)
+                self._pre_warm_pinnacle_caches()
 
             # Extract from Polymarket (will fuzzy match against Pinnacle events)
             if polymarket:
@@ -756,9 +820,9 @@ class ExtractionPipeline:
 
         extractor = self.engine.get_extractor("polymarket")
 
-        # Caches for Pinnacle data (static during a run)
-        pinnacle_points_cache = {}
-        sharp_odds_cache = {}
+        # Use pre-warmed Pinnacle caches (shared across all providers)
+        pinnacle_points_cache = self._pinnacle_points_cache
+        sharp_odds_cache = self._sharp_odds_cache
         api_elapsed = 0.0
         db_elapsed = 0.0
 
@@ -797,6 +861,7 @@ class ExtractionPipeline:
                             odds_batch=odds_batch,
                             pinnacle_points_cache=pinnacle_points_cache,
                             sharp_odds_cache=sharp_odds_cache,
+                            date_index=self.event_cache_by_date,
                         )
 
                         sport_counts[sport]["events"] += 1
@@ -903,9 +968,9 @@ class ExtractionPipeline:
             if no_sharp:
                 logger.info(f"[{provider_id}] Sports without sharp data (extracting anyway): {', '.join(no_sharp)}")
 
-        # Caches for Pinnacle data (static during a run, shared across sports)
-        pinnacle_points_cache = {}
-        sharp_odds_cache = {}
+        # Use pre-warmed Pinnacle caches (shared across all providers)
+        pinnacle_points_cache = self._pinnacle_points_cache
+        sharp_odds_cache = self._sharp_odds_cache
 
         # Use larger batch size for sharp sources (fresh DB = all inserts)
         is_sharp = provider_id in SHARP_PROVIDERS
@@ -966,6 +1031,7 @@ class ExtractionPipeline:
                                 sharp_odds_cache=sharp_odds_cache,
                                 max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
                                 min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
+                                date_index=self.event_cache_by_date,
                             )
                             events_processed += 1
                             if is_new:

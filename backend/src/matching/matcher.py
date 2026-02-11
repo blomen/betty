@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional, List
 import logging
 
-from thefuzz import fuzz
+from rapidfuzz import fuzz
 
 from .normalizer import normalize_team_name, generate_canonical_id
 

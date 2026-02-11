@@ -139,11 +139,14 @@ def _load_boost_config() -> list[dict]:
 async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
     """Scrape odds boosts from all configured providers in providers.yaml."""
     try:
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
     except ImportError:
-        if verbose:
-            print("  [provider_boosts] playwright not installed, skipping")
-        return []
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            if verbose:
+                print("  [provider_boosts] playwright not installed, skipping")
+            return []
 
     boost_configs = _load_boost_config()
     if not boost_configs:

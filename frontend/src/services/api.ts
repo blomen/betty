@@ -283,10 +283,32 @@ export interface ExtractionProgress {
   }>;
 }
 
+// Per-tier progress
+export interface TierProgress {
+  running: boolean;
+  last_run: string | null;
+  elapsed_seconds: number;
+  progress_pct: number;
+  total_events: number;
+  total_odds: number;
+  current_provider: string | null;
+  completed_providers: number;
+  total_providers: number;
+}
+
+export interface TiersProgressResponse {
+  any_running: boolean;
+  tiers: Record<string, TierProgress>;
+}
+
 export const api = {
   // ============ Extraction ============
   async getExtractionProgress(): Promise<ExtractionProgress> {
     return fetchJson<ExtractionProgress>('/extraction/progress');
+  },
+
+  async getTiersProgress(): Promise<TiersProgressResponse> {
+    return fetchJson<TiersProgressResponse>('/extraction/tiers/progress');
   },
 
   // ============ Providers ============

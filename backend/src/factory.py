@@ -130,20 +130,20 @@ class ExtractorFactory:
         elif retriever_type == "spectate":
             # Spectate providers (888sport, MrGreen) - headless mode works
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = SpectateRetriever(config, transport=transport)
         elif retriever_type == "gecko_v2":
             # Gecko V2 - API interception approach (faster than DOM parsing)
             # Using headless=True for better performance (2-3s faster per sport)
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = GeckoV2Retriever(config, transport=transport)
         elif retriever_type == "snabbare":
             # Snabbare - Sportradar MTS platform, WebSocket interception
             # Headed required: headless drops from ~900 to ~249 events (WS data not delivered)
             from .core import BrowserTransport
             from .providers.snabbare import SnabbareRetriever
-            transport = BrowserTransport(headless=False)
+            transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
             retriever = SnabbareRetriever(config, transport=transport)
         elif retriever_type == "pinnacle":
             retriever = PinnacleRetriever(config)
@@ -151,7 +151,7 @@ class ExtractorFactory:
             # 10Bet - Playtech/Mojito SPA, DOM scraping with ta-* selectors
             from .core import BrowserTransport
             from .providers.tenbet import TenBetRetriever
-            transport = BrowserTransport(headless=False)  # Headed: SPA needs full rendering
+            transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
             retriever = TenBetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
@@ -162,7 +162,7 @@ class ExtractorFactory:
         elif retriever_type == "interwetten":
             # Interwetten SSR - browser-based DOM parsing (headed for Cloudflare)
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=False)
+            transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected
@@ -170,18 +170,18 @@ class ExtractorFactory:
             # Must connect via CDP to an existing user Chrome instance.
             # Start Chrome with: chrome --remote-debugging-port=9222
             from .core import BrowserTransport
-            transport = BrowserTransport(cdp_url='http://localhost:9222')
+            transport = BrowserTransport(cdp_url='http://localhost:9222', circuit_breaker=self._circuit_breaker)
             retriever = CoolbetRetriever(config, transport=transport)
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
             # Headless works fine (tested: 1,221 events vs 1,077 headed)
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = TipwinRetriever(config, transport=transport)
         elif retriever_type == "custom":
             # Custom provider implementations
             from .core import BrowserTransport
-            transport = BrowserTransport(headless=True)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
 
             if provider_id == "comeon":
                 from .providers.comeon_multileague import ComeOnMultiLeagueRetriever

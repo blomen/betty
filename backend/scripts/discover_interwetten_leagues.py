@@ -2,7 +2,10 @@
 Discover Interwetten league IDs by scraping their sportsbook navigation.
 """
 import asyncio
-from playwright.async_api import async_playwright
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    from playwright.async_api import async_playwright
 
 
 JS_EXTRACT = """() => {

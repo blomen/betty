@@ -1,5 +1,8 @@
 import asyncio, json
-from playwright.async_api import async_playwright
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    from playwright.async_api import async_playwright
 
 async def main():
     async with async_playwright() as p:

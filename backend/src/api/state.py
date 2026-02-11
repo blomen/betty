@@ -18,6 +18,10 @@ extraction_state = {
     "elapsed_seconds": 0,
 }
 
+# Per-tier extraction state (thread-safe)
+tier_state_lock = Lock()
+tier_states: dict[str, dict] = {}
+
 
 def update_extraction_state(**kwargs):
     """Thread-safe update to extraction state."""
@@ -29,6 +33,31 @@ def get_extraction_state():
     """Thread-safe read of extraction state."""
     with extraction_state_lock:
         return extraction_state.copy()
+
+
+def update_tier_state(tier_name: str, **kwargs):
+    """Thread-safe update to per-tier extraction state."""
+    with tier_state_lock:
+        if tier_name not in tier_states:
+            tier_states[tier_name] = {
+                "running": False,
+                "last_run": None,
+                "start_time": None,
+                "total_events": 0,
+                "total_odds": 0,
+                "providers": {},
+                "current_provider": None,
+                "completed_providers": 0,
+                "total_providers": 0,
+                "elapsed_seconds": 0,
+            }
+        tier_states[tier_name].update(kwargs)
+
+
+def get_tier_states() -> dict[str, dict]:
+    """Thread-safe read of all tier states."""
+    with tier_state_lock:
+        return {k: v.copy() for k, v in tier_states.items()}
 
 
 # WebSocket connection manager for real-time progress

@@ -23,6 +23,59 @@ logger = logging.getLogger(__name__)
 _POINT_TOLERANCE = 0.01
 
 
+def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_date: str) -> list:
+    """
+    Get fuzzy-match candidates for a sport+date using the date index.
+
+    Returns list of (event_id, home, away, date) tuples for the target date ±1 day.
+    Uses O(1) set lookups instead of scanning all events in the sport.
+    """
+    sport_events = event_cache.get(sport, {})
+    sport_dates = date_index.get(sport, {})
+
+    # Collect candidate IDs from exact date + adjacent dates
+    candidate_ids = set()
+    if event_date in sport_dates:
+        candidate_ids.update(sport_dates[event_date])
+
+    # ±1 day for timezone issues
+    try:
+        d = datetime.strptime(event_date, "%Y%m%d")
+        from datetime import timedelta
+        for delta in (-1, 1):
+            adj_date = (d + timedelta(days=delta)).strftime("%Y%m%d")
+            if adj_date in sport_dates:
+                candidate_ids.update(sport_dates[adj_date])
+    except (ValueError, TypeError):
+        pass
+
+    # Resolve IDs to full candidate tuples
+    candidates = []
+    for pid in candidate_ids:
+        entry = sport_events.get(pid)
+        if entry:
+            home, away, date = entry
+            candidates.append((pid, home, away, date))
+    return candidates
+
+
+def _update_event_cache(event_cache: dict, date_index: dict,
+                        sport: str, event_id: str,
+                        home: str, away: str, date_str: str):
+    """Update both event_cache and date_index atomically."""
+    if sport not in event_cache:
+        event_cache[sport] = {}
+    if event_id not in event_cache[sport]:
+        event_cache[sport][event_id] = (home, away, date_str)
+
+        # Update date index
+        if sport not in date_index:
+            date_index[sport] = {}
+        if date_str not in date_index[sport]:
+            date_index[sport][date_str] = set()
+        date_index[sport][date_str].add(event_id)
+
+
 def _get_pinnacle_points(session, event_id: str, cache: dict = None) -> dict[str, set[float]]:
     """
     Get Pinnacle's spread and total point values for a matched event.
@@ -172,6 +225,7 @@ def store_polymarket_event(
     odds_batch: "OddsBatchProcessor" = None,
     pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
+    date_index: dict = None,
 ) -> tuple[bool, int, int]:
     """
     Store Polymarket event in database with fuzzy matching.
@@ -221,13 +275,14 @@ def store_polymarket_event(
     matched_id = None
     teams_swapped = False
 
-    # 1. Check if default ID exists (exact match)
-    if session.query(Event.id).filter(Event.id == default_id).first():
+    # 1. Check if default ID exists (exact match) — memory cache first, DB fallback
+    sport_events_poly = event_cache.get(kambi_sport, {})
+    if default_id in sport_events_poly or session.query(Event.id).filter(Event.id == default_id).first():
         matched_id = default_id
     else:
         # 2. Check swapped team order
         swapped_id = generate_canonical_id(kambi_sport, away_team, home_team, event.start_time)
-        if session.query(Event.id).filter(Event.id == swapped_id).first():
+        if swapped_id in sport_events_poly or session.query(Event.id).filter(Event.id == swapped_id).first():
             matched_id = swapped_id
             teams_swapped = True
             logger.info(
@@ -236,23 +291,17 @@ def store_polymarket_event(
             )
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
-            # Cache structure: {sport: {event_id: (home, away, date)}}
-            sport_events = event_cache.get(kambi_sport, {})
-
-            # Filter by date (allow +/- 1 day for timezone issues)
-            candidates = []
-            for pid, (cached_home, cached_away, cached_date) in sport_events.items():
-                if cached_date == date_str:
-                    candidates.append((pid, cached_home, cached_away))
-                else:
-                    try:
-                        if cached_date and date_str:
-                            d1 = datetime.strptime(date_str, "%Y%m%d")
-                            d2 = datetime.strptime(cached_date, "%Y%m%d")
-                            if abs((d1 - d2).days) <= 1:
-                                candidates.append((pid, cached_home, cached_away))
-                    except (ValueError, TypeError):
-                        pass
+            # Use date index for O(1) candidate lookup instead of O(N) scan
+            if date_index is not None:
+                raw_candidates = _get_date_candidates(event_cache, date_index, kambi_sport, date_str)
+                candidates = [(pid, home, away) for pid, home, away, _date in raw_candidates]
+            else:
+                # Fallback: O(N) scan if no date index provided
+                sport_events = event_cache.get(kambi_sport, {})
+                candidates = []
+                for pid, (cached_home, cached_away, cached_date) in sport_events.items():
+                    if cached_date == date_str:
+                        candidates.append((pid, cached_home, cached_away))
 
             best_score = 0
             best_match_id = None
@@ -311,12 +360,10 @@ def store_polymarket_event(
         return False, 0, 0
 
     # Add to sport-indexed cache (use Polymarket's team order for cache key)
-    # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup
-    if kambi_sport not in event_cache:
-        event_cache[kambi_sport] = {}
-    # O(1) dict update instead of O(N) list append with duplicate check
-    if matched_id not in event_cache[kambi_sport]:
-        event_cache[kambi_sport][matched_id] = (home_team, away_team, date_str)
+    _update_event_cache(
+        event_cache, date_index or {},
+        kambi_sport, matched_id, home_team, away_team, date_str,
+    )
 
     # Create/get event
     db_event = session.query(Event).filter(Event.id == matched_id).first()
@@ -480,6 +527,7 @@ def _resolve_event_id(
     require_match: bool,
     max_asymmetry_diff: int = 25,
     min_for_asymmetry_check: int = 80,
+    date_index: dict = None,
 ) -> tuple[str | None, bool]:
     """
     Resolve event to a canonical ID via exact match, fuzzy match, or swapped-team fallback.
@@ -491,7 +539,10 @@ def _resolve_event_id(
 
     default_id = generate_canonical_id(event.sport, event.home_team, event.away_team, event.start_time)
 
-    # 1. Exact match on canonical ID
+    # 1. Exact match on canonical ID — check memory cache first, DB fallback
+    sport_events = event_cache.get(event.sport, {})
+    if default_id in sport_events:
+        return default_id, False
     if session.query(Event.id).filter(Event.id == default_id).first():
         return default_id, False
 
@@ -503,22 +554,25 @@ def _resolve_event_id(
     else:
         event_date = "00000000"
 
-    sport_events = event_cache.get(event.sport, {})
-
-    # Filter by date (allow +/- 1 day for timezone issues)
-    candidates = []
-    for pid, (home, away, date) in sport_events.items():
-        if date == event_date:
-            candidates.append((pid, home, away, date))
-        else:
-            try:
-                if date and event_date:
-                    d1 = datetime.strptime(event_date, "%Y%m%d")
-                    d2 = datetime.strptime(date, "%Y%m%d")
-                    if abs((d1 - d2).days) <= 1:
-                        candidates.append((pid, home, away, date))
-            except (ValueError, TypeError):
-                pass
+    # Use date index for O(1) candidate lookup instead of O(N) scan
+    if date_index is not None:
+        candidates = _get_date_candidates(event_cache, date_index, event.sport, event_date)
+    else:
+        # Fallback: O(N) scan if no date index provided
+        sport_events = event_cache.get(event.sport, {})
+        candidates = []
+        for pid, (home, away, date) in sport_events.items():
+            if date == event_date:
+                candidates.append((pid, home, away, date))
+            else:
+                try:
+                    if date and event_date:
+                        d1 = datetime.strptime(event_date, "%Y%m%d")
+                        d2 = datetime.strptime(date, "%Y%m%d")
+                        if abs((d1 - d2).days) <= 1:
+                            candidates.append((pid, home, away, date))
+                except (ValueError, TypeError):
+                    pass
 
     # Pre-filter by team name prefix for better performance
     if prefix_filter_length > 0 and len(candidates) > 10:
@@ -609,7 +663,7 @@ def _resolve_event_id(
 
     # 3. No fuzzy match - check if canonical event exists with swapped teams
     swapped_id = generate_canonical_id(event.sport, event.away_team, event.home_team, event.start_time)
-    if session.query(Event.id).filter(Event.id == swapped_id).first():
+    if swapped_id in sport_events or session.query(Event.id).filter(Event.id == swapped_id).first():
         logger.info(
             f"[{provider}] Aligned '{event.home_team} vs {event.away_team}' -> "
             f"canonical event with swapped teams (using {swapped_id})"
@@ -623,21 +677,21 @@ def _resolve_event_id(
         )
         return None, False
 
-    # Use default ID — log diagnostic info
+    # Use default ID — sharp providers creating new events (expected, log at DEBUG)
     if near_miss_details:
         nm_home, nm_away, nm_t1, nm_t2 = near_miss_details
-        logger.info(
+        logger.debug(
             f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
             f"({len(candidates)} candidates, best: '{nm_home} vs {nm_away}' "
             f"score {near_miss_score:.0f}, reason: {near_miss_reason})"
         )
     elif candidates:
-        logger.info(
+        logger.debug(
             f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
             f"({len(candidates)} candidates, all below scoring threshold)"
         )
     else:
-        logger.info(
+        logger.debug(
             f"[{provider}] No match for '{event.home_team} vs {event.away_team}' "
             f"(0 candidates for {event.sport})"
         )
@@ -659,6 +713,7 @@ def store_provider_event(
     sharp_odds_cache: dict = None,
     max_asymmetry_diff: int = 25,
     min_for_asymmetry_check: int = 80,
+    date_index: dict = None,
 ) -> tuple[bool, int, int]:
     """
     Store provider event with STRICT fuzzy matching against existing events.
@@ -671,6 +726,7 @@ def store_provider_event(
         session, event, provider, event_cache,
         fuzzy_threshold, min_individual_score, prefix_filter_length, require_match,
         max_asymmetry_diff, min_for_asymmetry_check,
+        date_index=date_index,
     )
 
     if matched_id is None:
@@ -702,8 +758,6 @@ def store_provider_event(
         is_new_event = True
 
         # Add to cache for subsequent providers to match against
-        # This enables cross-provider matching (e.g., LeoVegas ↔ Pinnacle)
-        # Cache structure: {sport: {event_id: (home, away, date)}} for O(1) lookup
         if isinstance(event.start_time, str):
             date_str = event.start_time.split('T')[0].replace('-', '')
         elif hasattr(event.start_time, 'strftime'):
@@ -711,11 +765,10 @@ def store_provider_event(
         else:
             date_str = "00000000"
 
-        if event.sport not in event_cache:
-            event_cache[event.sport] = {}
-        # O(1) dict lookup instead of O(N) list scan
-        if final_id not in event_cache[event.sport]:
-            event_cache[event.sport][final_id] = (db_event.home_team, db_event.away_team, date_str)
+        _update_event_cache(
+            event_cache, date_index or {},
+            event.sport, final_id, db_event.home_team, db_event.away_team, date_str,
+        )
 
     # Extract home/away odds from event markets for inversion detection
     # Only use 1x2/moneyline — spread odds have inverted favorite semantics
