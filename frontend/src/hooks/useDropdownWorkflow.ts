@@ -296,7 +296,6 @@ export function useDropdownWorkflow({
             '```\n' +
             `Bet on: ${betOn} | ${opp.provider1} @ ${opp.odds1.toFixed(2)}\n` +
             `Stake: $${stake.toFixed(0)} | Return: $${potentialReturn.toFixed(0)} (+$${potentialProfit.toFixed(0)})\n` +
-            `Risk: ${opp.risk_level || 'unknown'}\n` +
             '```\n' +
             `Place bet manually, then confirm to record.`
           );
