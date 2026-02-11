@@ -17,8 +17,8 @@ venv/
 
 # Environment
 .env
-.claude/mcp_config.json
-.claude/settings.local.json
+.mcp.json
+.claude/
 
 # Data
 backend/data/
