@@ -10,7 +10,7 @@ const TIER_CONFIG: Record<string, { label: string; color: string; icon: string }
   browser_soft: { label: 'BROWSER', color: 'text-amber-400',   icon: '●' },
 };
 
-function TierBar({ name, running, progressPct, currentProvider, completedProviders, totalProviders, lastRun, totalEvents, totalOdds }: {
+function TierBar({ name, running, progressPct, currentProvider, completedProviders, totalProviders, lastRun, totalEvents }: {
   name: string;
   running: boolean;
   progressPct: number;
@@ -19,7 +19,6 @@ function TierBar({ name, running, progressPct, currentProvider, completedProvide
   totalProviders: number;
   lastRun: string | null;
   totalEvents: number;
-  totalOdds: number;
 }) {
   const config = TIER_CONFIG[name] || { label: name.toUpperCase(), color: 'text-muted', icon: '●' };
   const filled = Math.round((progressPct / 100) * 12);
@@ -50,7 +49,7 @@ function TierBar({ name, running, progressPct, currentProvider, completedProvide
         <span className="text-muted2/60 w-16">{config.label}</span>
         <span className="text-muted2/40">{'░'.repeat(12)}</span>
         <span className="text-muted2/50 ml-auto">
-          {totalEvents} {name === 'sharp' ? 'events' : 'matched'} | {totalOdds} odds | {ago}
+          {totalEvents} {name === 'sharp' ? 'events' : 'pin matched'} | {ago}
         </span>
       </div>
     );
@@ -114,7 +113,6 @@ export function ExtractionProgressBar({ tiers: visibleTiers }: ExtractionProgres
           totalProviders={tier.total_providers}
           lastRun={tier.last_run}
           totalEvents={tier.total_events}
-          totalOdds={tier.total_odds}
         />
       ))}
     </div>

@@ -10,7 +10,6 @@ export function SpecialsPage() {
   const [filters, setFilters] = useState<SpecialsFilters | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isScraping, setIsScraping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Active filters
@@ -29,7 +28,6 @@ export function SpecialsPage() {
     setError(null);
     try {
       const data = await api.getSpecials({
-        provider: providerFilter || undefined,
         category: categoryFilter || undefined,
       });
       setSpecials(data.specials || []);
@@ -40,22 +38,7 @@ export function SpecialsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [providerFilter, categoryFilter]);
-
-  const handleScrape = useCallback(async () => {
-    setIsScraping(true);
-    setError(null);
-    try {
-      const data = await api.scrapeSpecials();
-      setSpecials(data.specials || []);
-      setScrapedAt(data.scraped_at);
-      if (data.filters) setFilters(data.filters);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Scraping failed');
-    } finally {
-      setIsScraping(false);
-    }
-  }, []);
+  }, [categoryFilter]);
 
   useEffect(() => {
     fetchData();
@@ -64,11 +47,29 @@ export function SpecialsPage() {
   useRefreshOnExtraction(fetchData);
 
   // Filter out expired specials client-side as extra safety
-  const activeSpecials = specials.filter(s => {
+  const nonExpired = specials.filter(s => {
     if (!s.expires_at) return true;
     try { return new Date(s.expires_at).getTime() > Date.now(); }
     catch { return true; }
   });
+
+  // Expand shared providers: each boost gets its own row per provider
+  const expandedSpecials = nonExpired.flatMap(s => {
+    const rows: (SpecialItem & { display_provider: string })[] = [
+      { ...s, display_provider: s.provider },
+    ];
+    if (s.shared_providers) {
+      for (const sp of s.shared_providers) {
+        rows.push({ ...s, display_provider: sp });
+      }
+    }
+    return rows;
+  });
+
+  // Apply provider filter on frontend (after expansion)
+  const activeSpecials = providerFilter
+    ? expandedSpecials.filter(s => s.display_provider.toLowerCase() === providerFilter.toLowerCase())
+    : expandedSpecials;
 
   // When a row is expanded, fetch the stake preview
   const handleRowClick = async (idx: number, special: SpecialItem) => {
@@ -156,24 +157,9 @@ export function SpecialsPage() {
           Oddsboost
           <span className="text-muted text-sm font-normal ml-1">({activeSpecials.length})</span>
         </h2>
-        <div className="flex items-center gap-3">
-          {timeAgo && (
-            <span className="text-muted text-xs">{timeAgo}</span>
-          )}
-          <button
-            onClick={handleScrape}
-            disabled={isScraping}
-            className={`
-              px-3 py-1 text-xs rounded font-medium transition-colors
-              ${isScraping
-                ? 'bg-border text-muted cursor-not-allowed'
-                : 'bg-panel2 text-text hover:bg-border'
-              }
-            `}
-          >
-            {isScraping ? 'Scraping...' : 'Scrape Boosts'}
-          </button>
-        </div>
+        {timeAgo && (
+          <span className="text-muted text-xs">{timeAgo}</span>
+        )}
       </div>
 
       {error && (
@@ -205,18 +191,18 @@ export function SpecialsPage() {
       {/* Table */}
       {activeSpecials.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
-          No active boosts. Click Refresh to scrape latest data.
+          No active boosts. Boosts are scraped automatically every 2 hours.
         </div>
       ) : (
         <div className="bg-panel border border-border rounded-lg overflow-hidden">
           {/* Column header */}
-          <div className="grid grid-cols-[100px_1.5fr_2fr_110px_60px_80px_60px] gap-2 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
+          <div className="grid grid-cols-[90px_1fr_1.5fr_100px_55px_70px_55px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
             <div>Provider</div>
             <div>Event</div>
             <div>Bet</div>
             <div className="text-right">Odds</div>
             <div className="text-right">Boost</div>
-            <div className="text-right">Expires</div>
+            <div className="text-right">Kickoff</div>
             <div className="text-right">Max</div>
           </div>
 
@@ -227,26 +213,17 @@ export function SpecialsPage() {
               const boostPct = s.boost_pct;
 
               return (
-                <div key={`${s.provider}-${idx}`}>
+                <div key={`${s.display_provider}-${idx}`}>
                   {/* Main row */}
                   <div
-                    className={`grid grid-cols-[100px_1.5fr_2fr_110px_60px_80px_60px] gap-2 px-4 py-2.5 cursor-pointer transition-colors text-sm
+                    className={`grid grid-cols-[90px_1fr_1.5fr_100px_55px_70px_55px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm
                       ${isExpanded ? 'bg-tabBonus/5' : 'hover:bg-panel2'}
                     `}
                     onClick={() => handleRowClick(idx, s)}
                   >
                     {/* Provider */}
-                    <div className="flex flex-col justify-center min-w-0">
-                      <span className="text-text text-sm truncate">{formatProviderName(s.provider)}</span>
-                      {s.shared_providers && s.shared_providers.length > 0 && (
-                        <div className="flex gap-1 mt-0.5 flex-wrap">
-                          {s.shared_providers.map(sp => (
-                            <span key={sp} className="text-[9px] text-muted bg-border px-1 rounded">
-                              {formatProviderName(sp)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                    <div className="flex items-center min-w-0">
+                      <span className="text-text text-sm truncate">{formatProviderName(s.display_provider)}</span>
                     </div>
 
                     {/* Event + sport badge + league */}
@@ -300,9 +277,11 @@ export function SpecialsPage() {
                       )}
                     </div>
 
-                    {/* Expires */}
+                    {/* Kickoff / Expires */}
                     <div className="flex flex-col items-end justify-center">
-                      {s.expires_at ? (
+                      {s.event_time && isFutureDate(s.event_time) ? (
+                        <span className="text-muted text-xs">{formatEventTime(s.event_time)}</span>
+                      ) : s.expires_at ? (
                         <span className={`text-xs ${
                           isExpiringSoon(s.expires_at) ? 'text-amber-400' : 'text-muted'
                         }`}>
@@ -310,9 +289,6 @@ export function SpecialsPage() {
                         </span>
                       ) : (
                         <span className="text-muted text-xs">-</span>
-                      )}
-                      {s.event_time && isFutureDate(s.event_time) && (
-                        <span className="text-muted text-[10px]">{formatEventTime(s.event_time)}</span>
                       )}
                     </div>
 

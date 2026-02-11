@@ -916,64 +916,176 @@ boosts:
   # Listed on aggregators as having oddsboost, but not scrapeable.
   # ═══════════════════════════════════════════════════════
   unibet:
-    type: null
+    type: kambi
+    url: "https://eu1.offering-api.kambicdn.com/offering/v2018/ubse/listView/unibet_featured.json?lang=sv_SE&market=SE&channel_id=1"
     primary_provider: unibet
     shared_with: []
-    enabled: false
-    note: "Kambi — no original odds. Listed on aggregators but only boosted odds visible."
+    enabled: true
+    note: "Kambi — prop boosts via unibet_featured group. No original odds (only boosted)."
 
   leovegas:
     type: null
     primary_provider: leovegas
     shared_with: []
     enabled: false
-    note: "Kambi — same limitation as unibet"
+    note: "Kambi — confirmed no featured/boost group in API (34 top-level groups, none boost-related)"
 
   expekt:
-    type: null
+    type: kambi
+    url: "https://eu1.offering-api.kambicdn.com/offering/v2018/expektse/listView/expekt_specials.json?lang=sv_SE&market=SE&channel_id=1"
     primary_provider: expekt
     shared_with: []
-    enabled: false
-    note: "Kambi — listed on bettingkollen as 5/5 oddsboost but no original odds via API"
+    enabled: true
+    note: "Kambi — expekt_specials group. No original odds (only boosted). Events may be 0 outside promo periods."
 
   betmgm:
     type: null
     primary_provider: betmgm
     shared_with: []
     enabled: false
-    note: "Kambi — listed on bettingkollen as 5/5 oddsboost but no original odds via API"
+    note: "Kambi (betmgmse) — confirmed no featured/boost group in API"
 
   goldenbull:
     type: null
     primary_provider: goldenbull
     shared_with: []
     enabled: false
-    note: "Kambi — listed on bettingkollen as 4/5 oddsboost but no original odds via API"
+    note: "Kambi (pafgoldense) — confirmed no featured/boost group in API (Paf family, 31 groups)"
 
   # ═══════════════════════════════════════════════════════
-  # ALTENAR PROVIDERS — needs API investigation
-  # Listed on aggregators as having oddsboost.
-  # Altenar API may expose boost data — needs reverse engineering.
+  # ALTENAR PROVIDERS — API: GetHighlights + GetEventDetails
+  # Boosts found via boostInfo in event details. Each brand has
+  # independent boosts (not shared). All use same API pattern.
+  # Keywords: förhöjda odds, guldboost, dagens spel, ökade odds
   # ═══════════════════════════════════════════════════════
   betinia:
-    type: null
+    type: altenar
+    integration: betiniase2
     primary_provider: betinia
-    shared_with: [campobet, swiper]
-    enabled: false
-    note: "Altenar — listed on bettingkollen (4/5). Likely shared boosts across Altenar brands. API investigation needed."
+    shared_with: []
+    enabled: true
+    note: "Altenar — GetHighlights + GetEventDetails API. ~65 boosts across football/basketball/hockey."
+
+  campobet:
+    type: altenar
+    integration: campose
+    primary_provider: campobet
+    shared_with: []
+    enabled: true
+    note: "Altenar — förhöjda odds on startpage. ~38 boosts, mostly football."
+
+  swiper:
+    type: altenar
+    integration: swiperse
+    primary_provider: swiper
+    shared_with: []
+    enabled: true
+    note: "Altenar — ~49 boosts across football/hockey."
+
+  lodur:
+    type: altenar
+    integration: lodurse
+    primary_provider: lodur
+    shared_with: []
+    enabled: true
+    note: "Altenar — ~69 boosts across football/hockey."
+
+  dbet:
+    type: altenar
+    integration: dbet
+    primary_provider: dbet
+    shared_with: []
+    enabled: true
+    note: "Altenar — ~91 boosts across football/basketball."
+
+  quickcasino:
+    type: altenar
+    integration: quickcasinose
+    primary_provider: quickcasino
+    shared_with: []
+    enabled: true
+    note: "Altenar — ~61 boosts across football/hockey."
 
   # ═══════════════════════════════════════════════════════
-  # SBTECH — needs investigation
+  # OBG/GECKO V2 BOOST PAGES — same globalbonuses API as Betsson
   # ═══════════════════════════════════════════════════════
   bethard:
-    type: null
+    type: gecko_v2
+    url: "https://www.bethard.com/sv/sports/oddsboost"
     primary_provider: bethard
     shared_with: []
-    enabled: false
-    note: "SBTech — Combo Booster (7-30% on combos). Single-bet boosts need investigation."
+    enabled: true
+    note: "OBG — /sv/sports/oddsboost loads playground iframe with globalbonuses + event-market APIs."
+
+  spelklubben:
+    type: gecko_v2
+    url: "https://www.spelklubben.se/sv/betting/oddsboost"
+    primary_provider: spelklubben
+    shared_with: []
+    enabled: true
+    note: "OBG — /sv/betting/oddsboost loads playground iframe with globalbonuses + event-market APIs."
 
   # ═══════════════════════════════════════════════════════
-  # OTHER PLATFORMS
+  # VBET — BetConstruct Swarm WS get_boosted_selections
+  # ═══════════════════════════════════════════════════════
+  vbet:
+    type: betconstruct
+    primary_provider: vbet
+    shared_with: []
+    enabled: true
+    note: "BetConstruct Swarm WS — get_boosted_selections command. useGetBoostedOdds JS confirms boost API."
+
+  # ═══════════════════════════════════════════════════════
+  # INTERWETTEN — visible boosts on frontpage (DOM scrape)
+  # ═══════════════════════════════════════════════════════
+  interwetten:
+    type: interwetten
+    url: "https://www.interwetten.se"
+    primary_provider: interwetten
+    shared_with: []
+    enabled: true
+    note: "Proprietary SSR — boosts visible on frontpage as ODDS BOOST with original + boosted odds."
+
+  # ═══════════════════════════════════════════════════════
+  # COMEON GROUP — RSocket WS, sport/37-odds-boosts
+  # ═══════════════════════════════════════════════════════
+  comeon:
+    type: comeon
+    url: "https://www.comeon.com/sv/sportsbook/sport/37-odds-boosts"
+    primary_provider: comeon
+    shared_with: []
+    enabled: true
+    note: "ComeOn RSocket SPA — sport/37 = Odds Boosts section. Data via WS."
+
+  hajper:
+    type: comeon
+    url: "https://www.hajper.com/sv/sportsbook/sport/37-odds-boosts"
+    primary_provider: hajper
+    shared_with: []
+    enabled: true
+    note: "Same as ComeOn — sport/37 boost page."
+
+  lyllo:
+    type: comeon
+    url: "https://www.lyllocasino.com/sv/sportsbook/sport/37-odds-boosts"
+    primary_provider: lyllo
+    shared_with: []
+    enabled: true
+    note: "Same as ComeOn — sport/37 boost page."
+
+  # ═══════════════════════════════════════════════════════
+  # SPECTATE — MrGreen boost page with section s-8337
+  # ═══════════════════════════════════════════════════════
+  mrgreen:
+    type: spectate
+    url: "https://www.mrgreen.se/sport/odds-boost/"
+    primary_provider: mrgreen
+    shared_with: []
+    enabled: true
+    note: "Spectate — /sport/odds-boost/ with section s-8337. Needs browser cookies for API."
+
+  # ═══════════════════════════════════════════════════════
+  # NOT SCRAPEABLE / DISABLED
   # ═══════════════════════════════════════════════════════
   coolbet:
     type: null
@@ -981,30 +1093,11 @@ boosts:
     primary_provider: coolbet
     shared_with: []
     enabled: false
-    note: "GAN/Coolbet — has /sv/oddsboost page but Imperva blocks scraping. CDP connection needed."
-
-  interwetten:
-    type: null
-    primary_provider: interwetten
-    shared_with: []
-    enabled: false
-    note: "Proprietary SSR — no boost page found in search. May not offer oddsboost."
+    note: "GAN/Coolbet — Imperva blocks all access. Needs CDP."
 
   tipwin:
     type: null
     primary_provider: tipwin
     shared_with: []
     enabled: false
-    note: "Proprietary SPA — no boost page found. May not offer oddsboost."
-
-  # ═══════════════════════════════════════════════════════
-  # SPECTATE/COMEON GROUP — listed on aggregators
-  # ComeOn 5/5, Hajper listed, Snabbare 4/5
-  # These use browser-based extraction — would need Playwright interception.
-  # ═══════════════════════════════════════════════════════
-  comeon_group:
-    type: null
-    primary_provider: comeon
-    shared_with: [hajper, snabbare]
-    enabled: false
-    note: "Spectate/ComeOn — listed on aggregators. Browser-based, needs Playwright boost page scraping."
+    note: "BetBooster = bet builder tips, NOT odds boosts. No boost feature."

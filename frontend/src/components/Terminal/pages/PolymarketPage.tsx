@@ -1,14 +1,25 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
 import { api } from '@/services/api';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { ExtractionProgressBar } from '../ExtractionProgressBar';
-import type { PolymarketValueBet } from '@/types';
+import { useRefreshOnExtraction, useTiersProgress } from '@/hooks/useExtractionStatus';
+import type { PolymarketValueBet, PolymarketStats } from '@/types';
+
+function getTimeAgo(isoStr: string): string {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 export function PolymarketPage() {
   const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
   const [totalScanned, setTotalScanned] = useState(0);
+  const [polyStats, setPolyStats] = useState<PolymarketStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const tiersProgress = useTiersProgress();
 
   // Betting workflow state
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
@@ -17,9 +28,13 @@ export function PolymarketPage() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const valueRes = await api.getPolymarketValue(3, undefined, 50);
+      const [valueRes, stats] = await Promise.all([
+        api.getPolymarketValue(3, undefined, 50),
+        api.getPolymarketStats(),
+      ]);
       setValueBets(valueRes.value_bets);
       setTotalScanned(valueRes.total_scanned);
+      setPolyStats(stats);
     } catch (err) {
       console.error('Failed to fetch Polymarket data:', err);
     } finally {
@@ -83,7 +98,19 @@ export function PolymarketPage() {
         </h2>
       </div>
 
-      <ExtractionProgressBar tiers={['sharp']} />
+      {/* Polymarket stats bar */}
+      <div className="bg-panel2 border border-border rounded px-4 py-2 mb-3">
+        <div className="flex items-center gap-2 text-xs font-mono">
+          <span className="text-muted2/50">◆</span>
+          <span className="text-muted2/60 w-16">POLY</span>
+          <span className="text-muted2/40">{'░'.repeat(12)}</span>
+          <span className="text-muted2/50 ml-auto">
+            {polyStats
+              ? `${polyStats.matched_events} pin matched | ${tiersProgress?.tiers?.sharp?.last_run ? getTimeAgo(tiersProgress.tiers.sharp.last_run) : ''}`
+              : 'loading...'}
+          </span>
+        </div>
+      </div>
 
       {/* Value Bets Card */}
       <Card title={`Value Bets (${valueBets.length})`}>
