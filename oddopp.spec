@@ -24,6 +24,10 @@ a = Analysis(
 
         # Team name aliases
         ('backend/src/matching/aliases.yaml', 'matching'),
+
+        # Boost scraper scripts (imported as package by scheduler)
+        ('backend/scripts/__init__.py', 'scripts'),
+        ('backend/scripts/scrape_specials.py', 'scripts'),
     ],
     hiddenimports=[
         # --- SQLAlchemy ---
@@ -84,6 +88,9 @@ a = Analysis(
         'thefuzz',
         'thefuzz.fuzz',
         'thefuzz.process',
+
+        # --- Boost scraper ---
+        'scripts.scrape_specials',
 
         # --- Other ---
         'yaml',

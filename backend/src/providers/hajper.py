@@ -142,7 +142,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not supported")
             return []
 
-        logger.info(f"[{self.provider_id}] Starting extraction for {sport}")
+        logger.debug(f"[{self.provider_id}] Starting extraction for {sport}")
 
         ws_messages = []
         all_events_data = {}
@@ -163,7 +163,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
             # Load sport page
             sport_url = f"{self.site_url}/sv{sport_path}"
-            logger.info(f"[{self.provider_id}] Loading {sport_url}")
+            logger.debug(f"[{self.provider_id}] Loading {sport_url}")
             await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
             await page.wait_for_timeout(1500)
 
@@ -173,7 +173,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             # Check if cookie redirect moved us off the sport page
             current_url = page.url
             if sport_path not in current_url:
-                logger.info(f"[{self.provider_id}] Cookie redirect detected, navigating back to {sport_url}")
+                logger.debug(f"[{self.provider_id}] Cookie redirect detected, navigating back to {sport_url}")
                 await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
 
             # Wait for WS data to arrive
@@ -181,7 +181,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
-            logger.info(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
+            logger.debug(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
 
             # Step 2: Find all date buttons and click through them
             date_buttons = await page.evaluate(r'''() => {
@@ -197,7 +197,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             }''')
 
             if date_buttons:
-                logger.info(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
+                logger.debug(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
                 for btn_idx in date_buttons:
                     try:
                         await page.evaluate(f'document.querySelectorAll("button")[{btn_idx}].click()')
@@ -206,7 +206,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     except Exception as e:
                         logger.debug(f"[{self.provider_id}] Date button {btn_idx} failed: {e}")
 
-            logger.info(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
+            logger.debug(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 
             # Step 3: Parse WS data into structured events
             all_markets = {}
@@ -230,8 +230,8 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                         if sid:
                             all_selections[sid] = sel
 
-            logger.info(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
-                        f"{len(all_markets)} markets, {len(all_selections)} selections")
+            logger.debug(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
+                         f"{len(all_markets)} markets, {len(all_selections)} selections")
 
             # Build event->markets and market->selections mappings
             event_markets_map: Dict[int, List[int]] = {}
@@ -254,7 +254,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 if event:
                     events.append(event)
 
-            logger.info(f"[{self.provider_id}] Parsed {len(events)} events for {sport}")
+            logger.debug(f"[{self.provider_id}] Parsed {len(events)} events for {sport}")
             return events[:limit] if limit else events
 
         except Exception as e:

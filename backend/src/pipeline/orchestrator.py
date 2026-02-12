@@ -93,7 +93,7 @@ class ExtractionPipeline:
             )
         total = sum(len(v) for v in self.event_cache.values())
         if total > 0:
-            logger.info(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
+            logger.debug(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
 
     def _pre_warm_pinnacle_caches(self):
         """Pre-load ALL Pinnacle odds into shared caches to eliminate per-event DB queries.
@@ -139,7 +139,7 @@ class ExtractionPipeline:
                 self._sharp_odds_cache[event_id] = {}
             self._sharp_odds_cache[event_id][outcome] = odds
 
-        logger.info(
+        logger.debug(
             f"Pre-warmed Pinnacle caches: {len(self._pinnacle_points_cache)} point entries, "
             f"{len(self._sharp_odds_cache)} sharp odds entries"
         )
@@ -162,10 +162,10 @@ class ExtractionPipeline:
                 orchestrator_config,
                 self.engine.config_loader.providers
             )
-            logger.info("[Orchestrator] Type-aware pool manager enabled")
+            logger.debug("[Orchestrator] Type-aware pool manager enabled")
         else:
             self.pool_manager = None
-            logger.info("[Orchestrator] Using flat semaphore (no provider groups configured)")
+            logger.debug("[Orchestrator] Using flat semaphore (no provider groups configured)")
 
         # Initialize metrics collector if enabled
         if orchestrator_config.metrics.enabled:
@@ -173,7 +173,7 @@ class ExtractionPipeline:
             self.metrics = MetricsCollector(
                 max_history=orchestrator_config.metrics.retention_count
             )
-            logger.info("[Orchestrator] Metrics collection enabled")
+            logger.debug("[Orchestrator] Metrics collection enabled")
         else:
             self.metrics = None
 
@@ -187,7 +187,7 @@ class ExtractionPipeline:
             )
             # Inject circuit breaker into factory for transport-level 429 detection
             self.engine.set_circuit_breaker(self.circuit_breaker)
-            logger.info("[Orchestrator] Circuit breaker enabled (injected into factory)")
+            logger.debug("[Orchestrator] Circuit breaker enabled (injected into factory)")
         else:
             self.circuit_breaker = None
 
@@ -199,7 +199,7 @@ class ExtractionPipeline:
                 max_entries=orchestrator_config.cache.max_entries,
                 per_provider=orchestrator_config.cache.cache_per_provider
             )
-            logger.info("[Orchestrator] Response cache enabled")
+            logger.debug("[Orchestrator] Response cache enabled")
         else:
             self.cache = None
 
@@ -209,7 +209,7 @@ class ExtractionPipeline:
             self.health_checker = HealthChecker(
                 timeout_seconds=orchestrator_config.health_check.timeout_seconds
             )
-            logger.info("[Orchestrator] Health checker enabled")
+            logger.debug("[Orchestrator] Health checker enabled")
         else:
             self.health_checker = None
 
@@ -220,7 +220,7 @@ class ExtractionPipeline:
             self._shutdown_timeout = orchestrator_config.graceful_shutdown.shutdown_timeout_seconds
             self._cancel_pending = orchestrator_config.graceful_shutdown.cancel_pending_tasks
             self._register_signal_handlers()
-            logger.info("[Orchestrator] Graceful shutdown enabled")
+            logger.debug("[Orchestrator] Graceful shutdown enabled")
         else:
             self._shutdown_event = None
 
@@ -528,7 +528,7 @@ class ExtractionPipeline:
                 skipped = sorted(set(kambi_sports) - sharp_sports)
                 kambi_sports = sorted(s for s in kambi_sports if s in sharp_sports)
                 if skipped:
-                    logger.info(
+                    logger.debug(
                         f"[Orchestrator] Skipping {len(skipped)} sports with no Pinnacle events: "
                         f"{', '.join(skipped)}"
                     )
@@ -551,7 +551,7 @@ class ExtractionPipeline:
             if pin_event_counts:
                 kambi_sports = sorted(kambi_sports, key=lambda s: pin_event_counts.get(s, 0), reverse=True)
                 top3 = [(s, pin_event_counts.get(s, 0)) for s in kambi_sports[:3]]
-                logger.info(
+                logger.debug(
                     f"[Orchestrator] Extracting {len(kambi_sports)} sports ordered by Pinnacle coverage: "
                     f"{', '.join(f'{s}({c})' for s, c in top3)}..."
                 )
@@ -581,7 +581,7 @@ class ExtractionPipeline:
 
             if self.sharp_leagues:
                 total_leagues = sum(len(v) for v in self.sharp_leagues.values())
-                logger.info(f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports")
+                logger.debug(f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports")
 
             if target_providers:
                 # Filter providers by circuit breaker status and health checks
@@ -644,10 +644,26 @@ class ExtractionPipeline:
                         if self.circuit_breaker and not self.circuit_breaker.call(provider_id):
                             raise Exception("Circuit breaker open")
 
+                        # Determine sports for this provider:
+                        # If provider has supported_sports config, use intersection with
+                        # Pinnacle-available sports. Otherwise use global kambi_sports.
+                        provider_cfg = self.engine.get_provider(provider_id)
+                        provider_supported = getattr(provider_cfg, 'supported_sports', None)
+                        if provider_supported:
+                            # Use provider's supported sports, filtered to ALLOWED + sharp
+                            provider_sports = [s for s in provider_supported if s in ALLOWED_SPORTS]
+                            if sharp_sports:
+                                provider_sports = [s for s in provider_sports if s in sharp_sports]
+                            # Order by Pinnacle event count (same as global ordering)
+                            if pin_event_counts:
+                                provider_sports.sort(key=lambda s: pin_event_counts.get(s, 0), reverse=True)
+                        else:
+                            provider_sports = kambi_sports
+
                         # Use retry wrapper with timeout enforcement
                         provider_results = await asyncio.wait_for(
                             self._extract_provider_with_retry(
-                                provider_id, kambi_sports, max_events_per_sport, sharp_sports,
+                                provider_id, provider_sports, max_events_per_sport, sharp_sports,
                                 sharp_leagues=getattr(self, 'sharp_leagues', None),
                             ),
                             timeout=provider_timeout,
@@ -966,7 +982,7 @@ class ExtractionPipeline:
         if sharp_sports:
             no_sharp = [s for s in sports if s not in sharp_sports]
             if no_sharp:
-                logger.info(f"[{provider_id}] Sports without sharp data (extracting anyway): {', '.join(no_sharp)}")
+                logger.debug(f"[{provider_id}] Sports without sharp data (extracting anyway): {', '.join(no_sharp)}")
 
         # Use pre-warmed Pinnacle caches (shared across all providers)
         pinnacle_points_cache = self._pinnacle_points_cache
@@ -1044,6 +1060,14 @@ class ExtractionPipeline:
 
                         # Get actual insert/update counts from batch processor
                         odds_new, odds_updated = odds_batch.get_stats()
+
+                    # Commit after each sport to release SQLite locks sooner
+                    # and prevent accumulating dirty session state across concurrent providers
+                    try:
+                        self.session.commit()
+                    except Exception as e:
+                        logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
+                        self.session.rollback()
 
                     sport_elapsed = time.time() - sport_start_time
                     match_info = ""

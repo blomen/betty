@@ -285,7 +285,7 @@ def store_polymarket_event(
         if swapped_id in sport_events_poly or session.query(Event.id).filter(Event.id == swapped_id).first():
             matched_id = swapped_id
             teams_swapped = True
-            logger.info(
+            logger.debug(
                 f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
                 f"canonical event with swapped teams"
             )
@@ -346,7 +346,7 @@ def store_polymarket_event(
             if best_match_id and session.query(Event.id).filter(Event.id == best_match_id).first():
                 matched_id = best_match_id
                 teams_swapped = best_is_swapped
-                logger.info(
+                logger.debug(
                     f"[polymarket] Fuzzy matched '{home_team} vs {away_team}' -> "
                     f"existing event (score: {best_score:.0f}, swapped: {best_is_swapped})"
                 )
@@ -655,7 +655,7 @@ def _resolve_event_id(
     if best_match_id:
         poly_home, poly_away, t1, t2 = best_match_details
         swap_note = " [SWAPPED]" if best_is_swapped else ""
-        logger.info(
+        logger.debug(
             f"[{provider}] Matched '{event.home_team} vs {event.away_team}' -> "
             f"'{poly_home} vs {poly_away}' (scores: {t1:.0f}/{t2:.0f}, avg: {best_score:.0f}){swap_note}"
         )
@@ -664,7 +664,7 @@ def _resolve_event_id(
     # 3. No fuzzy match - check if canonical event exists with swapped teams
     swapped_id = generate_canonical_id(event.sport, event.away_team, event.home_team, event.start_time)
     if swapped_id in sport_events or session.query(Event.id).filter(Event.id == swapped_id).first():
-        logger.info(
+        logger.debug(
             f"[{provider}] Aligned '{event.home_team} vs {event.away_team}' -> "
             f"canonical event with swapped teams (using {swapped_id})"
         )
@@ -978,10 +978,36 @@ class OddsBatchProcessor:
             self.flush()
 
     def flush(self):
-        """Process pending records with bulk operations."""
+        """Process pending records with bulk operations.
+
+        Includes retry logic for SQLite "database is locked" errors that occur
+        during concurrent extraction (multiple providers flushing simultaneously).
+        """
         if not self._pending:
             return
 
+        import time
+        from sqlalchemy.exc import OperationalError as SAOperationalError
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self._flush_inner()
+                return
+            except SAOperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    logger.warning(
+                        f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {wait:.1f}s..."
+                    )
+                    self.session.rollback()
+                    time.sleep(wait)
+                else:
+                    raise
+
+    def _flush_inner(self):
+        """Inner flush logic — separated for retry wrapper."""
         now = datetime.now(timezone.utc)
 
         # Fetch existing records in one query using 5-column key

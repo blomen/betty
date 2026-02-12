@@ -26,7 +26,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const renderPage = () => {
     switch (activeTab) {
       case 'value':
-        return <ValuePage />;
+        return <ValuePage providers={context.providers} />;
       case 'polymarket':
         return <PolymarketPage />;
       case 'bets':

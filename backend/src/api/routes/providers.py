@@ -149,8 +149,8 @@ async def update_bonus_status(
     if not provider:
         raise HTTPException(404, f"Provider {provider_id} not found")
 
-    if status not in ('available', 'in_progress', 'completed'):
-        raise HTTPException(400, f"Invalid status: {status}. Must be 'available', 'in_progress', or 'completed'")
+    if status not in ('available', 'in_progress', 'completed', 'claimed'):
+        raise HTTPException(400, f"Invalid status: {status}. Must be 'available', 'in_progress', 'completed', or 'claimed'")
 
     # Get active profile
     active_profile = db.query(Profile).filter(Profile.is_active == True).first()

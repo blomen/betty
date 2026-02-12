@@ -31,7 +31,7 @@ async def get_polymarket_value(
     # Filter to polymarket only
     poly_values = [vb for vb in all_values if vb.provider == "polymarket"]
 
-    # Initialize stake calculator
+    # Initialize stake calculator with profile risk settings
     stake_calculator = None
     profile = None
     if poly_values:
@@ -39,7 +39,12 @@ async def get_polymarket_value(
             profile_repo = ProfileRepo(db)
             profile = profile_repo.get_active()
             bankroll = profile_repo.get_total_bankroll(profile.id)
-            stake_calculator = StakeCalculator(bankroll=bankroll)
+            stake_calculator = StakeCalculator(
+                bankroll=bankroll,
+                max_kelly=profile.kelly_fraction,
+                single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                min_edge=profile.min_edge_pct / 100.0,
+            )
         except Exception as e:
             logger.warning(f"Could not initialize stake calculator: {e}")
 

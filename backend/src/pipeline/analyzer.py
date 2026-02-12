@@ -200,17 +200,18 @@ class OpportunityAnalyzer:
         if not value_bets:
             return result
 
-        # Keep best per outcome (highest edge)
-        best_by_outcome: dict = {}
+        # Keep best per (outcome, provider) — each provider gets its own opportunity
+        best_by_outcome_provider: dict = {}
         for vb in value_bets:
-            existing_best = best_by_outcome.get(vb.outcome)
+            key = (vb.outcome, vb.provider)
+            existing_best = best_by_outcome_provider.get(key)
             if existing_best is None or vb.edge_pct > existing_best.edge_pct:
-                best_by_outcome[vb.outcome] = vb
+                best_by_outcome_provider[key] = vb
 
-        for outcome, vb in best_by_outcome.items():
+        for (outcome, _provider), vb in best_by_outcome_provider.items():
             result["found"] += 1
 
-            logger.info(
+            logger.debug(
                 f"[Analyzer] Value found: {event_id} {market} {outcome} "
                 f"@ {vb.provider} {vb.provider_odds} (+{vb.edge_pct}% vs pinnacle)"
             )

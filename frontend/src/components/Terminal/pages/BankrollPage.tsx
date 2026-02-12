@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from './Card';
+import { BonusPopup } from '../BonusPopup';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import type { BankrollExposure, Provider } from '@/types';
@@ -17,6 +18,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   const [depositResult, setDepositResult] = useState<{
     success: boolean;
     message: string;
+  } | null>(null);
+
+  // Bonus deposit popup state
+  const [bonusPopup, setBonusPopup] = useState<{
+    providerId: string;
+    amount: number;
+    bonusAmount: number;
   } | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -50,20 +58,30 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     return {
       bonus: provider.bonus,
       status: provider.bonus_status,
-      hasUnclaimedBonus: provider.bonus_status !== 'completed' && provider.bonus_status !== 'in_progress',
+      hasUnclaimedBonus: provider.bonus_status !== 'completed' && provider.bonus_status !== 'in_progress' && provider.bonus_status !== 'claimed',
     };
   };
 
-  const handleAdjust = async (providerId: string, isDeposit: boolean) => {
+  const handleDeposit = (providerId: string) => {
     const amount = parseFloat(adjustAmount);
     if (isNaN(amount) || amount <= 0) return;
 
     const bonusInfo = getProviderBonus(providerId);
-    const hasUnclaimedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit';
+    const hasBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit';
 
+    if (hasBonus) {
+      // Show popup for bonus decision
+      const bonusAmount = Math.min(amount, bonusInfo!.bonus!.amount);
+      setBonusPopup({ providerId, amount, bonusAmount });
+    } else {
+      // Regular deposit — no bonus available
+      executeDeposit(providerId, amount, false);
+    }
+  };
+
+  const executeDeposit = async (providerId: string, amount: number, withBonus: boolean) => {
     try {
-      if (isDeposit && hasUnclaimedBonus) {
-        // Use deposit-with-bonus API
+      if (withBonus) {
         const result = await api.depositWithBonus(providerId, amount);
         const bonusMsg = result.bonus_claimed > 0
           ? ` + ${result.bonus_claimed.toFixed(0)} kr bonus`
@@ -73,13 +91,36 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
           message: `Deposited ${result.deposit.toFixed(0)} kr${bonusMsg}. New balance: ${result.new_balance.toFixed(0)} kr`,
         });
       } else {
-        // Regular adjustment
-        await api.adjustBalance(providerId, isDeposit ? amount : -amount);
+        await api.adjustBalance(providerId, amount);
         setDepositResult({
           success: true,
-          message: `${isDeposit ? 'Deposited' : 'Withdrew'} ${amount.toFixed(0)} kr`,
+          message: `Deposited ${amount.toFixed(0)} kr`,
         });
       }
+      setAdjustingProvider(null);
+      setAdjustAmount('');
+      setBonusPopup(null);
+      fetchData();
+      onRefresh();
+    } catch (err) {
+      setDepositResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Operation failed',
+      });
+      setBonusPopup(null);
+    }
+  };
+
+  const handleWithdraw = async (providerId: string) => {
+    const amount = parseFloat(adjustAmount);
+    if (isNaN(amount) || amount <= 0) return;
+
+    try {
+      await api.adjustBalance(providerId, -amount);
+      setDepositResult({
+        success: true,
+        message: `Withdrew ${amount.toFixed(0)} kr`,
+      });
       setAdjustingProvider(null);
       setAdjustAmount('');
       fetchData();
@@ -87,7 +128,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     } catch (err) {
       setDepositResult({
         success: false,
-        message: err instanceof Error ? err.message : 'Operation failed',
+        message: err instanceof Error ? err.message : 'Withdrawal failed',
       });
     }
   };
@@ -154,13 +195,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
               </thead>
               <tbody>
                 {exposure.providers.map(provider => {
-                  const bonusInfo = getProviderBonus(provider.provider_id);
                   const isAdjusting = adjustingProvider === provider.provider_id;
-                  const depositNum = parseFloat(adjustAmount) || 0;
-                  const bonusAmount = bonusInfo?.bonus?.amount || 0;
-                  const matchedBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit'
-                    ? Math.min(depositNum, bonusAmount)
-                    : 0;
 
                   return (
                     <tr key={provider.provider_id} className="border-t border-border">
@@ -175,56 +210,33 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                       <td className="py-3 pr-4 text-right text-success">{provider.available.toFixed(0)} kr</td>
                       <td className="py-3">
                         {isAdjusting ? (
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                value={adjustAmount}
-                                onChange={(e) => setAdjustAmount(e.target.value)}
-                                placeholder="Amount"
-                                className="w-20 px-2 py-1 bg-panel2 border border-border rounded text-text text-xs"
-                                autoFocus
-                              />
-                              <button
-                                onClick={() => handleAdjust(provider.provider_id, true)}
-                                className={`px-2 py-1 text-xs rounded hover:opacity-80 ${
-                                  matchedBonus > 0
-                                    ? 'bg-tabBonus/20 text-tabBonus'
-                                    : 'bg-success/20 text-success'
-                                }`}
-                              >
-                                {matchedBonus > 0 ? '+Bonus' : '+'}
-                              </button>
-                              <button
-                                onClick={() => handleAdjust(provider.provider_id, false)}
-                                className="px-2 py-1 text-xs bg-error/20 text-error rounded hover:bg-error/30"
-                              >
-                                -
-                              </button>
-                              <button
-                                onClick={() => { setAdjustingProvider(null); setAdjustAmount(''); }}
-                                className="px-2 py-1 text-xs text-muted hover:text-text"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                            {/* Bonus preview */}
-                            {matchedBonus > 0 && depositNum > 0 && (
-                              <div className="text-xs space-y-0.5 p-2 bg-panel rounded border border-border">
-                                <div className="flex justify-between">
-                                  <span className="text-muted">Deposit:</span>
-                                  <span className="text-text">{depositNum.toFixed(0)} kr</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="text-muted">Bonus (matched):</span>
-                                  <span className="text-tabBonus">+{matchedBonus.toFixed(0)} kr</span>
-                                </div>
-                                <div className="flex justify-between border-t border-border pt-1 mt-1">
-                                  <span className="text-muted">Total:</span>
-                                  <span className="text-text font-medium">{(depositNum + matchedBonus).toFixed(0)} kr</span>
-                                </div>
-                              </div>
-                            )}
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              value={adjustAmount}
+                              onChange={(e) => setAdjustAmount(e.target.value)}
+                              placeholder="Amount"
+                              className="w-20 px-2 py-1 bg-panel2 border border-border rounded text-text text-xs"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => handleDeposit(provider.provider_id)}
+                              className="px-2 py-1 text-xs bg-success/20 text-success rounded hover:bg-success/30"
+                            >
+                              +
+                            </button>
+                            <button
+                              onClick={() => handleWithdraw(provider.provider_id)}
+                              className="px-2 py-1 text-xs bg-error/20 text-error rounded hover:bg-error/30"
+                            >
+                              -
+                            </button>
+                            <button
+                              onClick={() => { setAdjustingProvider(null); setAdjustAmount(''); }}
+                              className="px-2 py-1 text-xs text-muted hover:text-text"
+                            >
+                              Cancel
+                            </button>
                           </div>
                         ) : (
                           <button
@@ -242,6 +254,47 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
             </table>
           </div>
         </Card>
+      )}
+
+      {/* Bonus Deposit Popup */}
+      {bonusPopup && (
+        <BonusPopup
+          title="Bonus Available"
+          onClose={() => setBonusPopup(null)}
+        >
+          <div className="space-y-3">
+            <div className="text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-muted">Deposit</span>
+                <span className="text-text">{bonusPopup.amount.toFixed(0)} kr</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">Bonus (matched)</span>
+                <span className="text-tabBonus">+{bonusPopup.bonusAmount.toFixed(0)} kr</span>
+              </div>
+              <div className="flex justify-between border-t border-border pt-1.5 mt-1.5">
+                <span className="text-muted">Total</span>
+                <span className="text-text font-medium">
+                  {(bonusPopup.amount + bonusPopup.bonusAmount).toFixed(0)} kr
+                </span>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => executeDeposit(bonusPopup.providerId, bonusPopup.amount, true)}
+                className="flex-1 px-3 py-2 text-xs font-medium bg-tabBonus text-bg rounded hover:opacity-90 transition-opacity"
+              >
+                Accept Bonus
+              </button>
+              <button
+                onClick={() => executeDeposit(bonusPopup.providerId, bonusPopup.amount, false)}
+                className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted rounded hover:text-text transition-colors"
+              >
+                Decline
+              </button>
+            </div>
+          </div>
+        </BonusPopup>
       )}
     </div>
   );

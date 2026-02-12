@@ -101,13 +101,13 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
     async def extract(self, sport: str | List[str], limit: Optional[int] = None, **kwargs) -> List[StandardEvent]:
         """Extract events from one or more sports."""
         sports_to_extract = self._resolve_sports(sport)
-        logger.info(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
+        logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
         all_events = []
         for sport_key in sports_to_extract:
             try:
                 sport_events = await self._extract_single_sport(sport_key, limit)
-                logger.info(f"[{self.provider_id}] {sport_key}: {len(sport_events)} events")
+                logger.debug(f"[{self.provider_id}] {sport_key}: {len(sport_events)} events")
                 all_events.extend(sport_events)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Failed to extract {sport_key}: {e}")
@@ -163,7 +163,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             logger.warning(f"[{self.provider_id}] Sport '{sport_normalized}' not supported")
             return []
 
-        logger.info(f"[{self.provider_id}] Starting extraction for {sport_normalized}")
+        logger.debug(f"[{self.provider_id}] Starting extraction for {sport_normalized}")
 
         ws_messages = []
         all_events_data = {}  # event_id -> event_data dict
@@ -184,7 +184,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
             # Load sport page
             main_url = f"{self.site_url}/sv{sport_path}"
-            logger.info(f"[{self.provider_id}] Loading {main_url}")
+            logger.debug(f"[{self.provider_id}] Loading {main_url}")
             await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
             await page.wait_for_timeout(1500)
 
@@ -194,7 +194,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             # Check if we're still on the sport page, if not navigate back
             current_url = page.url
             if sport_path not in current_url:
-                logger.info(f"[{self.provider_id}] Cookie redirect detected, navigating back to {main_url}")
+                logger.debug(f"[{self.provider_id}] Cookie redirect detected, navigating back to {main_url}")
                 await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
 
             # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
@@ -202,7 +202,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
-            logger.info(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
+            logger.debug(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
 
             # Step 2: Find all date buttons and click through them
             date_buttons = await page.evaluate(r'''() => {
@@ -218,7 +218,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             }''')
 
             if date_buttons:
-                logger.info(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
+                logger.debug(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
                 for btn_idx in date_buttons:
                     before_count = len(all_events_data)
                     try:
@@ -230,7 +230,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                     except Exception as e:
                         logger.debug(f"[{self.provider_id}] Date button {btn_idx} failed: {e}")
 
-            logger.info(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
+            logger.debug(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 
             # Step 3: Parse WS data into structured events
             all_markets = {}
@@ -254,8 +254,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                         if sid:
                             all_selections[sid] = sel
 
-            logger.info(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
-                        f"{len(all_markets)} markets, {len(all_selections)} selections")
+            logger.debug(f"[{self.provider_id}] WS totals: {len(all_events_data)} events, "
+                         f"{len(all_markets)} markets, {len(all_selections)} selections")
 
             # Build event->markets and market->selections mappings
             event_markets_map: Dict[int, List[int]] = {}
@@ -278,7 +278,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 if event:
                     parsed_events.append(event)
 
-            logger.info(f"[{self.provider_id}] Parsed {len(parsed_events)} events for {sport_normalized}")
+            logger.debug(f"[{self.provider_id}] Parsed {len(parsed_events)} events for {sport_normalized}")
             return parsed_events
 
         except Exception as e:

@@ -86,7 +86,7 @@ export interface Provider {
   is_enabled: boolean;
   balance: number;
   bonus?: ProviderBonus | null;
-  bonus_status?: 'available' | 'in_progress' | 'completed' | null;
+  bonus_status?: 'available' | 'in_progress' | 'completed' | 'claimed' | null;
 }
 
 export interface ProvidersResponse {

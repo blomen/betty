@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { FilterBar, MultiSelectPills, SingleSelectPills } from '../FilterBar';
 
 
 export function SpecialsPage() {
@@ -12,8 +13,8 @@ export function SpecialsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Active filters
-  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  // Active filters — providers is now multi-select
+  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
   // Expanded row + bet placement
@@ -66,10 +67,24 @@ export function SpecialsPage() {
     return rows;
   });
 
-  // Apply provider filter on frontend (after expansion)
-  const activeSpecials = providerFilter
-    ? expandedSpecials.filter(s => s.display_provider.toLowerCase() === providerFilter.toLowerCase())
-    : expandedSpecials;
+  // Apply provider filter on frontend (after expansion) — now multi-select
+  const activeSpecials = useMemo(() => {
+    if (selectedProviders.size === 0) return expandedSpecials;
+    return expandedSpecials.filter(s =>
+      selectedProviders.has(s.display_provider.toLowerCase())
+    );
+  }, [expandedSpecials, selectedProviders]);
+
+  const toggleProvider = (p: string) => {
+    setSelectedProviders(prev => {
+      const next = new Set(prev);
+      const key = p.toLowerCase();
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setExpandedIdx(null);
+  };
 
   // When a row is expanded, fetch the stake preview
   const handleRowClick = async (idx: number, special: SpecialItem) => {
@@ -105,7 +120,6 @@ export function SpecialsPage() {
     if (!stakePreview || !special.boosted_odds) return;
 
     let stake = stakePreview.recommended_stake;
-    // Cap at max_stake if set
     if (special.max_stake != null && stake > special.max_stake) {
       stake = special.max_stake;
     }
@@ -136,7 +150,7 @@ export function SpecialsPage() {
 
   if (isLoading && specials.length === 0) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-text flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-tabBonus" />
@@ -149,7 +163,7 @@ export function SpecialsPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -166,26 +180,32 @@ export function SpecialsPage() {
         <div className="text-red-400 text-sm bg-red-400/10 px-3 py-2 rounded">{error}</div>
       )}
 
-      {/* Filter pills */}
+      {/* Filter bar */}
       {filters && (
-        <div className="flex flex-wrap gap-2">
-          {/* Provider filter */}
-          <FilterGroup
+        <FilterBar>
+          <MultiSelectPills
             label="Provider"
             options={filters.providers}
-            active={providerFilter}
-            onSelect={(v) => { setProviderFilter(v); setExpandedIdx(null); }}
+            selected={selectedProviders}
+            onToggle={toggleProvider}
+            onClear={() => { setSelectedProviders(new Set()); setExpandedIdx(null); }}
             format={formatProviderName}
+            accentColor="tabBonus"
           />
-          {/* Category filter */}
-          <FilterGroup
-            label="Type"
-            options={filters.categories}
-            active={categoryFilter}
-            onSelect={(v) => { setCategoryFilter(v); setExpandedIdx(null); }}
-            format={(v) => v === 'superboost' ? 'Superboost' : 'Boost'}
-          />
-        </div>
+          {filters.categories.length > 0 && (
+            <>
+              <div className="w-px h-5 bg-border/50" />
+              <SingleSelectPills
+                label="Type"
+                options={filters.categories}
+                active={categoryFilter}
+                onSelect={(v) => { setCategoryFilter(v); setExpandedIdx(null); }}
+                format={(v) => v === 'superboost' ? 'Superboost' : 'Boost'}
+                accentColor="tabBonus"
+              />
+            </>
+          )}
+        </FilterBar>
       )}
 
       {/* Table */}
@@ -317,54 +337,6 @@ export function SpecialsPage() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-
-// ============ Filter Group ============
-
-function FilterGroup({
-  label,
-  options,
-  active,
-  onSelect,
-  format,
-}: {
-  label: string;
-  options: string[];
-  active: string | null;
-  onSelect: (value: string | null) => void;
-  format?: (value: string) => string;
-}) {
-  if (options.length === 0) return null;
-
-  return (
-    <div className="flex items-center gap-1">
-      <span className="text-muted text-[10px] uppercase tracking-wider mr-1">{label}</span>
-      <button
-        onClick={() => onSelect(null)}
-        className={`px-2 py-0.5 text-[11px] rounded-full transition-colors ${
-          active === null
-            ? 'bg-tabBonus/20 text-tabBonus'
-            : 'bg-panel2 text-muted hover:text-text'
-        }`}
-      >
-        All
-      </button>
-      {options.map(opt => (
-        <button
-          key={opt}
-          onClick={() => onSelect(active === opt ? null : opt)}
-          className={`px-2 py-0.5 text-[11px] rounded-full transition-colors ${
-            active === opt
-              ? 'bg-tabBonus/20 text-tabBonus'
-              : 'bg-panel2 text-muted hover:text-text'
-          }`}
-        >
-          {format ? format(opt) : opt}
-        </button>
-      ))}
     </div>
   );
 }
@@ -503,14 +475,12 @@ function formatEventTime(isoString: string): string {
     const diffHrs = Math.floor(diffMin / 60);
     const diffDays = Math.floor(diffHrs / 24);
 
-    // If within 24h, show "in Xh Xm"
     if (diffHrs < 24) {
       if (diffMin < 60) return `in ${diffMin}m`;
       const remMin = diffMin % 60;
       return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`;
     }
 
-    // Otherwise show date + time
     if (diffDays < 7) {
       return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
     }
@@ -560,7 +530,6 @@ function isExpiringSoon(isoString: string): boolean {
   try {
     const date = new Date(isoString);
     const diffMs = date.getTime() - Date.now();
-    // Expiring within 6 hours
     return diffMs > 0 && diffMs < 6 * 60 * 60 * 1000;
   } catch {
     return false;

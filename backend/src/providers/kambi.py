@@ -102,7 +102,7 @@ class KambiRetriever(Retriever):
         else:
             if cached_entry and cached_entry.is_expired():
                 logger.debug(f"[{self.provider_id}] Cache expired, refetching")
-            logger.info(f"[{self.provider_id}] Fetching groups from: {groups_url}")
+            logger.debug(f"[{self.provider_id}] Fetching groups from: {groups_url}")
             group_data = await self.transport.get(
                 groups_url,
                 params=self.default_params,
@@ -138,9 +138,9 @@ class KambiRetriever(Retriever):
                 target_groups = filtered
                 skipped = original - len(target_groups)
                 if skipped > 0:
-                    logger.info(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
+                    logger.debug(f"[{self.provider_id}] {sport}: filtered to {len(target_groups)}/{original} league groups (Pinnacle coverage)")
             else:
-                logger.info(f"[{self.provider_id}] {sport}: league filter matched 0/{original} groups, using all")
+                logger.debug(f"[{self.provider_id}] {sport}: league filter matched 0/{original} groups, using all")
 
         if not target_groups:
             logger.warning(f"[{self.provider_id}] No groups found for {sport}")

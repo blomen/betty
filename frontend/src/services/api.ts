@@ -449,6 +449,14 @@ export const api = {
     });
   },
 
+  async claimBonus(providerId: string): Promise<{ success: boolean; provider_id: string; status: string }> {
+    return fetchJson(`/bankroll/claim-bonus/${providerId}`, { method: 'POST' });
+  },
+
+  async unclaimBonus(providerId: string): Promise<{ success: boolean; provider_id: string; status: string }> {
+    return fetchJson(`/bankroll/unclaim-bonus/${providerId}`, { method: 'POST' });
+  },
+
   // ============ Events ============
   async getEvents(sport?: string, limit = 50): Promise<{ events: EventSummary[]; count: number }> {
     const params = new URLSearchParams();

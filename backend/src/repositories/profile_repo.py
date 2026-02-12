@@ -1,11 +1,13 @@
 """Profile repository - balance, bonus, and profile data access."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from ..db.models import (
     Profile, ProfileProviderBalance, ProfileProviderBonus, BONUS_MIN_ODDS,
 )
+
+BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
 
 
 class ProfileRepo:
@@ -127,17 +129,30 @@ class ProfileRepo:
                 "min_odds": 0.0,
                 "progress_pct": 100.0,
                 "is_cleared": True,
+                "claimed_at": None,
+                "expires_at": None,
+                "days_remaining": None,
             }
 
+        # Auto-expire: if wagering deadline has passed, mark as completed
+        if (record.bonus_status == "in_progress" and record.expires_at
+                and datetime.utcnow() > record.expires_at):
+            record.bonus_status = "completed"
+            record.updated_at = datetime.utcnow()
+
         is_cleared = (
-            record.bonus_status == "completed" or
-            record.bonus_status == "available" or
+            record.bonus_status in ("completed", "available", "claimed") or
             (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
         )
 
         progress_pct = 0.0
         if record.wagering_requirement > 0:
             progress_pct = min(100.0, record.wagered_amount / record.wagering_requirement * 100)
+
+        days_remaining = None
+        if record.expires_at and record.bonus_status == "in_progress":
+            delta = record.expires_at - datetime.utcnow()
+            days_remaining = max(0, delta.days)
 
         return {
             "status": record.bonus_status,
@@ -147,6 +162,9 @@ class ProfileRepo:
             "min_odds": record.min_odds if record.min_odds else BONUS_MIN_ODDS,
             "progress_pct": progress_pct,
             "is_cleared": is_cleared,
+            "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+            "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+            "days_remaining": days_remaining,
         }
 
     def record_wagering(self, profile_id: int, provider_id: str, stake: float, odds: float) -> dict:
@@ -157,6 +175,12 @@ class ProfileRepo:
         ).first()
 
         if not record or record.bonus_status != "in_progress":
+            return self.get_bonus_status(profile_id, provider_id)
+
+        # Check if bonus has expired
+        if record.expires_at and datetime.utcnow() > record.expires_at:
+            record.bonus_status = "completed"
+            record.updated_at = datetime.utcnow()
             return self.get_bonus_status(profile_id, provider_id)
 
         provider_min_odds = record.min_odds if record.min_odds else BONUS_MIN_ODDS
@@ -186,6 +210,8 @@ class ProfileRepo:
         ).first()
 
         wagering_requirement = bonus_amount * wagering_multiplier
+        now = datetime.utcnow()
+        expires = now + timedelta(days=BONUS_WAGERING_DAYS)
 
         if record:
             record.bonus_status = "in_progress"
@@ -194,7 +220,9 @@ class ProfileRepo:
             record.wagering_requirement = wagering_requirement
             record.wagered_amount = 0.0
             record.min_odds = min_odds
-            record.updated_at = datetime.utcnow()
+            record.claimed_at = now
+            record.expires_at = expires
+            record.updated_at = now
         else:
             record = ProfileProviderBonus(
                 profile_id=profile_id,
@@ -205,7 +233,51 @@ class ProfileRepo:
                 wagering_requirement=wagering_requirement,
                 wagered_amount=0.0,
                 min_odds=min_odds,
+                claimed_at=now,
+                expires_at=expires,
             )
             self.db.add(record)
+
+        return self.get_bonus_status(profile_id, provider_id)
+
+    def claim_bonus(self, profile_id: int, provider_id: str) -> dict:
+        """Mark a bonus as already claimed (used on another account)."""
+        record = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile_id,
+            ProfileProviderBonus.provider_id == provider_id
+        ).first()
+
+        now = datetime.utcnow()
+        if record:
+            record.bonus_status = "claimed"
+            record.claimed_at = now
+            record.expires_at = None
+            record.updated_at = now
+        else:
+            record = ProfileProviderBonus(
+                profile_id=profile_id,
+                provider_id=provider_id,
+                bonus_status="claimed",
+                claimed_at=now,
+            )
+            self.db.add(record)
+
+        return self.get_bonus_status(profile_id, provider_id)
+
+    def unclaim_bonus(self, profile_id: int, provider_id: str) -> dict:
+        """Reset a claimed bonus back to available."""
+        record = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile_id,
+            ProfileProviderBonus.provider_id == provider_id
+        ).first()
+
+        if record:
+            record.bonus_status = "available"
+            record.claimed_at = None
+            record.expires_at = None
+            record.bonus_amount = 0.0
+            record.wagering_requirement = 0.0
+            record.wagered_amount = 0.0
+            record.updated_at = datetime.utcnow()
 
         return self.get_bonus_status(profile_id, provider_id)

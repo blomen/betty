@@ -397,7 +397,7 @@ class AltenarRetriever(Retriever):
         Returns:
             List of StandardEvents
         """
-        logger.info(f"[{self.provider_id}] Starting extraction for {sport}")
+        logger.debug(f"[{self.provider_id}] Starting extraction for {sport}")
 
         # Find sport ID
         sport_id = None
@@ -412,7 +412,7 @@ class AltenarRetriever(Retriever):
 
         try:
             # Fetch upcoming events with sport filter
-            logger.info(f"[{self.provider_id}] Fetching upcoming events for {sport} (sportId={sport_id})")
+            logger.debug(f"[{self.provider_id}] Fetching upcoming events for {sport} (sportId={sport_id})")
             data = await self._fetch_events('widget/GetUpcoming', sport_id=sport_id)
 
             if not data or 'events' not in data:
@@ -422,7 +422,7 @@ class AltenarRetriever(Retriever):
             # All events should match the requested sport (no client-side filtering needed)
             sport_events = data.get('events', [])
 
-            logger.info(f"[{self.provider_id}] Found {len(sport_events)} {sport} events")
+            logger.debug(f"[{self.provider_id}] Found {len(sport_events)} {sport} events")
 
             # Build O(1) lookup indexes (called once, used per-event)
             # Without indexing: ~4 list scans per market × ~3 markets × ~500 events = ~6000 O(n) scans
@@ -450,7 +450,7 @@ class AltenarRetriever(Retriever):
                 if limit and len(events) >= limit:
                     break
 
-            logger.info(f"[{self.provider_id}] Parsed {len(events)} {sport} events")
+            logger.debug(f"[{self.provider_id}] Parsed {len(events)} {sport} events")
 
             return events
 

@@ -53,37 +53,44 @@ class StakeResult:
     skip_reason: Optional[str] = None
 
 
-def get_kelly_fraction(edge_used: float, high_confidence: bool = True) -> float:
+def get_kelly_fraction(
+    edge_used: float,
+    high_confidence: bool = True,
+    max_kelly: float = 0.75,
+) -> float:
     """
-    Dynamic Kelly fraction based on edge (after haircut).
+    Dynamic Kelly fraction based on edge (after haircut), capped by profile setting.
 
     Scaling:
-    - <= 2% edge: 0.25 (Quarter Kelly) - conservative base
-    - 2-6% edge: Linear scale 0.25 -> 0.75
-    - >= 6% edge: 0.75 (capped) - never full degen
+    - <= 2% edge: min(0.25, max_kelly) - conservative base
+    - 2-6% edge: Linear scale up to max_kelly
+    - >= 6% edge: max_kelly (capped by profile)
 
-    If low confidence, clamp to Quarter Kelly regardless of edge.
+    If low confidence, clamp to min(0.25, max_kelly) regardless of edge.
 
     Args:
         edge_used: Edge after haircut (decimal, e.g., 0.03 for 3%)
         high_confidence: Whether this is a high-confidence bet (strong match, fresh odds)
+        max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
 
     Returns:
-        Kelly fraction (0.25 to 0.75)
+        Kelly fraction (up to max_kelly)
     """
-    # Low confidence = always Quarter Kelly
-    if not high_confidence:
-        return 0.25
+    base = min(0.25, max_kelly)
 
-    # Normalized interpolation (cleaner, avoids unit mistakes)
+    # Low confidence = always base Kelly
+    if not high_confidence:
+        return base
+
+    # Normalized interpolation capped by profile max_kelly
     if edge_used <= 0.02:
-        return 0.25
+        return base
     elif edge_used >= 0.06:
-        return 0.75
+        return max_kelly
     else:
-        # Linear interpolation: 2% -> 0.25, 6% -> 0.75
+        # Linear interpolation: 2% -> base, 6% -> max_kelly
         t = (edge_used - 0.02) / 0.04  # 0..1
-        return 0.25 + t * 0.50
+        return base + t * (max_kelly - base)
 
 
 def calculate_stake(
@@ -99,6 +106,7 @@ def calculate_stake(
     min_odds_sanity: float = 1.10,
     min_stake: float = DEFAULT_MIN_STAKE,
     high_confidence: bool = True,
+    max_kelly: float = 0.75,
 ) -> StakeResult:
     """
     Calculate optimal stake using dynamic Kelly with safety rails.
@@ -116,6 +124,7 @@ def calculate_stake(
         min_odds_sanity: Minimum odds for sanity (avoid division issues)
         min_stake: Minimum stake (skip tiny bets)
         high_confidence: Whether this is a high-confidence bet
+        max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
 
     Returns:
         StakeResult with stake amount and full breakdown
@@ -187,8 +196,8 @@ def calculate_stake(
     # Apply edge haircut (accounts for estimation error)
     edge_used = edge_raw * edge_haircut
 
-    # Get dynamic Kelly fraction (clamped if low confidence)
-    kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence)
+    # Get dynamic Kelly fraction (capped by profile max_kelly, clamped if low confidence)
+    kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
 
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
@@ -434,12 +443,14 @@ class StakeCalculator:
         daily_cap_pct: float = 0.10,
         min_edge: float = 0.01,
         min_stake: float = DEFAULT_MIN_STAKE,
+        max_kelly: float = 0.75,
     ):
         self.bankroll = bankroll
         self.edge_haircut = edge_haircut
         self.single_bet_cap_pct = single_bet_cap_pct
         self.min_edge = min_edge
         self.min_stake = min_stake
+        self.max_kelly = max_kelly
 
         self.event_tracker = EventExposureTracker(event_cap_pct)
         self.daily_tracker = DailyExposureTracker(daily_cap_pct)
@@ -513,6 +524,7 @@ class StakeCalculator:
             min_odds=min_odds,
             min_stake=self.min_stake,
             high_confidence=high_confidence,
+            max_kelly=self.max_kelly,
         )
 
     def record_bet(

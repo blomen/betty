@@ -95,6 +95,7 @@ async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         currency="SEK",
         kelly_fraction=data.kelly_fraction or 0.25,
         max_stake_pct=data.max_stake_pct or 5.0,
+        min_edge_pct=data.min_edge_pct or 2.0,
         is_active=False,
     )
     db.add(profile)

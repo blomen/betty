@@ -62,7 +62,7 @@ class PinnacleRetriever(Retriever):
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not mapped for Pinnacle")
             return []
 
-        logger.info(f"[{self.provider_id}] Fetching {sport} (sport_id={sport_id})")
+        logger.debug(f"[{self.provider_id}] Fetching {sport} (sport_id={sport_id})")
 
         # Get active leagues
         leagues_url = f"{self.base_url}/sports/{sport_id}/leagues"
@@ -79,10 +79,10 @@ class PinnacleRetriever(Retriever):
         active_leagues = [l for l in leagues_data if l.get("matchupCount", 0) > 0]
 
         if not active_leagues:
-            logger.info(f"[{self.provider_id}] No active leagues for {sport}")
+            logger.debug(f"[{self.provider_id}] No active leagues for {sport}")
             return []
 
-        logger.info(f"[{self.provider_id}] Found {len(active_leagues)} active leagues")
+        logger.debug(f"[{self.provider_id}] Found {len(active_leagues)} active leagues")
         metrics.leagues_fetched = len(active_leagues)
 
         # Parallel fetch all leagues with semaphore to limit concurrency
@@ -126,7 +126,7 @@ class PinnacleRetriever(Retriever):
         if limit and len(all_events) > limit:
             all_events = all_events[:limit]
 
-        logger.info(f"[{self.provider_id}] Extracted {len(all_events)} events for {sport}")
+        logger.debug(f"[{self.provider_id}] Extracted {len(all_events)} events for {sport}")
 
         # Log extraction summary with any warnings
         metrics.log_summary(self.provider_id, sport)

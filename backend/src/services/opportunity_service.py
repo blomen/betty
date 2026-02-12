@@ -47,14 +47,19 @@ class OpportunityService:
             exclude_provider1=None if provider1 else "polymarket",
         )
 
-        # Initialize stake calculator for value bets
+        # Initialize stake calculator for value bets using profile risk settings
         stake_calculator = None
         profile = None
         if type == 'value' and rows:
             try:
                 profile = self.profile_repo.get_active()
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
-                stake_calculator = StakeCalculator(bankroll=bankroll)
+                stake_calculator = StakeCalculator(
+                    bankroll=bankroll,
+                    max_kelly=profile.kelly_fraction,
+                    single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                    min_edge=profile.min_edge_pct / 100.0,
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize stake calculator: {e}")
 
@@ -66,6 +71,7 @@ class OpportunityService:
                 "type": opp.type,
                 "event_id": opp.event_id,
                 "market": opp.market,
+                "point": opp.point,
                 "provider1": opp.provider1_id,
                 "provider2": opp.provider2_id,
                 "odds1": opp.odds1,
@@ -161,12 +167,17 @@ class OpportunityService:
         if not include_negative:
             opportunities = [o for o in opportunities if o.edge_pct > 0]
 
-        # Get bankroll for Kelly calculation
+        # Get bankroll and profile settings for Kelly calculation
+        profile = self.profile_repo.get_active()
+        total_bankroll = self.profile_repo.get_total_bankroll(profile.id)
         providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
-        total_bankroll = sum(p.balance for p in providers)
         anchor_balance = next(
-            (p.balance for p in providers if p.id == anchor_provider), 0
+            (self.profile_repo.get_balance(profile.id, p.id) for p in providers if p.id == anchor_provider), 0
         )
+
+        # Profile risk settings
+        max_kelly = profile.kelly_fraction if profile else 0.25
+        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
 
         results = []
         for o in opportunities[:limit]:
@@ -178,6 +189,8 @@ class OpportunityService:
                     edge_raw=edge_raw,
                     odds=o.anchor_odds,
                     min_odds=0.0,
+                    max_kelly=max_kelly,
+                    single_bet_cap_pct=single_bet_cap_pct,
                 )
                 suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
                 kelly_amount = rec.raw_kelly_stake

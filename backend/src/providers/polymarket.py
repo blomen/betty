@@ -181,7 +181,7 @@ class PolymarketRetriever(Retriever):
             offset += page_limit
             page += 1
 
-        logger.info(f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket ({page} pages)")
+        logger.debug(f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket ({page} pages)")
         return all_events
 
     async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:

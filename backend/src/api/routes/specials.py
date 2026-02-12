@@ -8,14 +8,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ...paths import get_app_data_dir
+from ...paths import get_bundle_dir
 from ..deps import get_db
 from ...db.models import Event, Odds
 from ...analysis.devig import get_fair_odds_for_outcome
 from ...matching.normalizer import normalize_team_name
 
-# Add backend root to path for script import
-_backend_root = str(get_app_data_dir())
+# Ensure scripts/ package is importable (lives in bundle root / backend/)
+_backend_root = str(get_bundle_dir())
 if _backend_root not in sys.path:
     sys.path.insert(0, _backend_root)
 

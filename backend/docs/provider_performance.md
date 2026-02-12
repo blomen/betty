@@ -1,32 +1,38 @@
 # Provider Performance Report
 
-> Last updated: 2026-02-10
+> Last updated: 2026-02-12
 
 ## Overview
 
 | Metric | Value |
 |--------|-------|
-| Active providers | 31 (2 sharp + 29 soft) |
+| Active providers | 30 (2 sharp + 28 soft) |
 | Disabled providers | 1 (betsafe — Swedish site not on OBG platform) |
-| Pinnacle baseline | ~1,288 events / ~7,673 odds |
-| Cross-provider matching | **~95%+** (improved from 77.7% via cache pre-population + threshold tuning) |
+| Pinnacle baseline | ~1,469 events / ~8,764 odds |
+| Total odds | **78,748** |
+| Cross-provider matching | **85.4%** (1,254/1,469 events) |
 
 ### Pinnacle Sport Baseline
 
-| Sport | Events | 1x2 | ML | Spread | Total |
-|-------|-------:|----:|---:|-------:|------:|
-| Football | 688 | 2,049 | — | ~600 | ~600 |
-| Ice Hockey | 113 | — | ~113 | ~113 | ~113 |
-| Basketball | 78 | — | ~78 | ~78 | ~78 |
-| Tennis | 67 | — | ~67 | ~67 | ~67 |
-| Esports | 36 | — | ~36 | ~36 | ~36 |
-| Handball | 13 | ~13 | — | ~13 | ~13 |
-| Cricket | 13 | — | ~13 | ~13 | ~13 |
-| Volleyball | 7 | ~7 | — | ~7 | ~7 |
-| Curling | 4 | ~4 | — | — | — |
-| Am. Football | 1 | — | ~1 | ~1 | ~1 |
-| Golf | 1 | — | ~1 | — | — |
-| **TOTAL** | **~1,021** | **~2,049** | **~662** | **~1,790** | **~1,790** |
+| Sport | Events | Odds |
+|-------|-------:|-----:|
+| Football | 736 | 5,348 |
+| Ice Hockey | 183 | 494 |
+| Basketball | 174 | 1,400 |
+| Tennis | 115 | 648 |
+| Golf | 100 | 200 |
+| Esports | 55 | 256 |
+| Handball | 24 | 146 |
+| Cycling | 16 | 32 |
+| MMA | 13 | 26 |
+| Snooker | 11 | 44 |
+| Rugby | 10 | 52 |
+| Cricket | 9 | 18 |
+| Volleyball | 7 | 40 |
+| Boxing | 7 | 14 |
+| Curling | 5 | 30 |
+| Darts | 4 | 16 |
+| **TOTAL** | **1,469** | **8,764** |
 
 ---
 
@@ -40,9 +46,9 @@
 | Retriever | `pinnacle` |
 | API | `guest.api.arcadia.pinnacle.com/0.1` |
 | Extraction time | ~7s |
-| Events | ~1,288 |
-| Odds | ~7,673 |
-| Ratio | 5.96 |
+| Events | ~1,469 |
+| Odds | ~8,764 |
+| Ratio | 5.97 |
 | Markets | 1x2, moneyline, spread, total |
 | Normalization | 100% |
 
@@ -56,9 +62,9 @@
 | Retriever | `polymarket` |
 | API | `gamma-api.polymarket.com` |
 | Extraction time | <1s |
-| Events | ~121 |
-| Odds | ~291 |
-| Ratio | 2.40 |
+| Events | ~185 |
+| Odds | ~473 |
+| Ratio | 2.56 |
 | Markets | 1x2, moneyline |
 
 **Role:** Event matching only. NOT used as sharp source.
@@ -75,16 +81,16 @@
 
 ### Summary Table
 
-| Brand | Slug | Pin Match | Bonus | Min Odds |
-|-------|------|----------:|-------|----------|
-| **Unibet** | `ubse` | ~511 (84.5%) | Freebet 1,000 kr / 1x | 1.80 |
-| **LeoVegas** | `leose` | ~511 | BonusDep 600 kr / 6x | 1.80 |
-| **Expekt** | `expektse` | ~511 | BonusDep 1,000 kr / 20x | 1.80 |
-| **BetMGM** | `betmgmse` | ~511 | Freebet 500 kr / 1x | 1.80 |
-| **SpeedyBet** | `speedybetse` | ~511 | BonusDep 500 kr / 12x | 1.80 |
-| **X3000** | `speedyspelse` | ~511 | BonusDep 500 kr / 12x | 1.80 |
-| **Golden Bull** | `pafgoldense` | ~511 | BonusDep 500 kr / 12x | 1.80 |
-| **1X2** | `pafpre1x2se` | ~511 | BonusDep 500 kr / 12x | 1.80 |
+| Brand | Slug | Events | Odds | Bonus | Min Odds |
+|-------|------|-------:|-----:|-------|----------|
+| **Unibet** | `ubse` | 644 | 3,145 | Freebet 1,000 kr / 1x | 1.80 |
+| **LeoVegas** | `leose` | 644 | 3,145 | BonusDep 600 kr / 6x | 1.80 |
+| **Expekt** | `expektse` | 644 | 3,145 | BonusDep 1,000 kr / 20x | 1.80 |
+| **BetMGM** | `betmgmse` | 608 | 2,966 | Freebet 500 kr / 1x | 1.80 |
+| **SpeedyBet** | `speedybetse` | 608 | 2,966 | BonusDep 500 kr / 12x | 1.80 |
+| **X3000** | `speedyspelse` | 608 | 2,966 | BonusDep 500 kr / 12x | 1.80 |
+| **Golden Bull** | `pafgoldense` | 608 | 2,966 | BonusDep 500 kr / 12x | 1.80 |
+| **1X2** | `pafpre1x2se` | 608 | 2,966 | BonusDep 500 kr / 12x | 1.80 |
 
 **Oddsboost:** Not extractable (Kambi shows only boosted price, no original odds)
 
@@ -132,14 +138,14 @@
 
 ### Summary Table
 
-| Brand | Integration | Events | Pin Match | Bonus | Min Odds |
-|-------|-------------|-------:|----------:|-------|----------|
-| **Betinia** | `betiniase2` | 1,738 | 443 | BonusDep 1,000 kr / 6x | 1.80 |
-| **Lodur** | `lodurse` | 1,896 | 462 | BonusDep 1,000 kr / 6x | 1.80 |
-| **CampoBet** | `campose` | 578 | 448 (77.5%) | BonusDep 500 kr / 6x | 1.80 |
-| **Swiper** | `swiperse` | 578 | 448 (77.5%) | BonusDep 1,000 kr / 6x | **1.50** |
-| **Dbet** | `dbet` | 545 | 415 (76.1%) | Freebet 500 kr / 1x | 1.80 |
-| **QuickCasino** | `quickcasinose` | 578 | 448 (77.5%) | BonusDep 500 kr / 6x | 1.80 |
+| Brand | Integration | Events | Odds | Bonus | Min Odds |
+|-------|-------------|-------:|-----:|-------|----------|
+| **Betinia** | `betiniase2` | 953 | 3,400 | BonusDep 1,000 kr / 6x | 1.80 |
+| **Lodur** | `lodurse` | 986 | 3,361 | BonusDep 1,000 kr / 6x | 1.80 |
+| **CampoBet** | `campose` | 953 | 3,284 | BonusDep 500 kr / 6x | 1.80 |
+| **Swiper** | `swiperse` | 953 | 3,284 | BonusDep 1,000 kr / 6x | **1.50** |
+| **Dbet** | `dbet` | 938 | 3,536 | Freebet 500 kr / 1x | 1.80 |
+| **QuickCasino** | `quickcasinose` | 950 | 3,256 | BonusDep 500 kr / 6x | 1.80 |
 
 **Oddsboost:** Not implemented (listed 4/5 on aggregators, API investigation needed)
 
@@ -191,10 +197,10 @@
 |--------|-------|
 | Site | `betsson.com` |
 | Extraction time | ~60s |
-| Events | 787 |
-| Odds | 2,860 |
-| Ratio | 3.63 |
-| Pin matches | **729** (92.6%) |
+| Events | 830 |
+| Odds | 3,164 |
+| Ratio | 3.81 |
+| Pin matches | 830 (100%) |
 | Markets | 1x2/ml/spread/total |
 
 | Sport | Events | Pin Match |
@@ -234,9 +240,9 @@
 | Metric | Value |
 |--------|-------|
 | Site | `nordicbet.com` |
-| Events | 1,771 |
-| Odds | 2,795 |
-| Pin matches | **857** |
+| Events | 830 |
+| Odds | 3,158 |
+| Pin matches | 830 (100%) |
 | Markets | 1x2/ml/spread/total |
 
 **Bonus:** Freebet 100 kr / 1x wager / min 1.80
@@ -249,10 +255,10 @@
 | Site | `spelklubben.se` (API at `d-cf.spelklubbenplayground.net`) |
 | init_path | `/sv/betting` |
 | Extraction time | ~47s |
-| Events | 1,766 |
-| Odds | 2,985 |
-| Ratio | 1.69 |
-| Pin matches | **1,187** (67.2%) |
+| Events | 812 |
+| Odds | 3,078 |
+| Ratio | 3.79 |
+| Pin matches | 812 (100%) |
 | Markets | 1x2/ml/spread/total |
 
 **Bonus:** BonusDep 500 kr / 15x wager / min 1.90 (bad bonus)
@@ -265,10 +271,10 @@
 | Site | `bethard.com` (API at `d-cf.bethardplayground.net`) |
 | init_path | `/sv/sports` |
 | Extraction time | ~45s |
-| Events | ~895 |
-| Odds | ~3,192 |
-| Ratio | 3.57 |
-| Pin matches | **874** (97.7%) |
+| Events | 812 |
+| Odds | 3,080 |
+| Ratio | 3.79 |
+| Pin matches | 812 (100%) |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
@@ -299,10 +305,10 @@
 
 ### Summary Table
 
-| Brand | API | Events | Pin Match | Bonus |
-|-------|-----|-------:|----------:|-------|
-| **Mr Green** | `spectate-web.mrgreen.se` | ~789 | ~367 | Freebet 500 kr / 1x / 1.80 |
-| **888sport** | `spectate-web.888sport.se` | ~789 | ~369 | BonusDep 500 kr / 1x / 1.80 |
+| Brand | API | Events | Odds | Bonus |
+|-------|-----|-------:|-----:|-------|
+| **Mr Green** | `spectate-web.mrgreen.se` | 665 | 1,885 | Freebet 500 kr / 1x / 1.80 |
+| **888sport** | `spectate-web.888sport.se` | 664 | 1,883 | BonusDep 500 kr / 1x / 1.80 |
 
 **Oddsboost:** Not implemented (both sites have boost sections)
 
@@ -320,10 +326,10 @@
 | Retriever | `betconstruct` |
 | WS URL | `wss://eu-swarm-newm.vbet.se/` |
 | Extraction time | ~17s |
-| Events | 945 |
-| Odds | 3,900 |
-| Ratio | 4.13 |
-| Pin matches | **667** (70.6%) |
+| Events | 905 |
+| Odds | 5,266 |
+| Ratio | 5.82 |
+| Pin matches | 905 (100%) |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 
@@ -346,29 +352,35 @@
 | Retriever | `tenbet` |
 | Site | `10bet.se` |
 | Extraction time | ~547s |
-| Events | ~773 (varies by session) |
-| Odds | ~1,602 |
-| Ratio | 2.94 |
-| Pin matches | **544** (99.6%) |
+| Events | **21** (BROKEN — orchestrator sport fix applied 2026-02-12) |
+| Odds | **50** |
+| Ratio | 2.38 |
+| Pin matches | 21 (100% of extracted) |
 | Markets | 1x2/ml/spread/total |
 | Normalization | 100% |
 | Mode | Headed browser (SPA needs full rendering) |
+
+> **FIX APPLIED 2026-02-12**: Orchestrator was sending global kambi_sports instead of
+> provider's own `supported_sports` config. Missing football entirely.
+> Expected after fix: ~773 events, ~1,602 odds (matching previous performance).
 
 **Technical details:**
 - DOM selectors: `ta-EventListItem`, `ta-participantName`, `ta-price_text`
 - Market type codes: MRES=1x2, H2HT/HTOH=ML, HCTG/TPOT/OUTG/FTPO=total, HCMR/HCOT/FHOT/TGHC=spread
 - Sport slugs: `martial_arts` for MMA (not `mma`)
-- 3 concurrent tabs per sport, 10-competition batches
+- 5 concurrent tabs per sport, 10-competition batches
 
 **Bonus:** BonusDep 1,000 kr / 8x wager / min 1.80
 **Oddsboost:** Unknown
 
 #### Log
+- **2026-02-12**: **CRITICAL FIX** — Orchestrator was sending global `kambi_sports` (Pinnacle-filtered) instead of provider's own `supported_sports` config. 10Bet only received 4 sports instead of 14 → missed football entirely (21 events instead of ~773). Fixed in `orchestrator.py`.
 - **2026-02-10**: Cache pre-population + threshold relaxation → 519→544 pin (99.6%). Event count varies by session (773-1409).
 - **2026-02-09**: Added 11 market type codes, 5 new sports, cookie fix. 75→235 pin (3.2x).
 - **2026-02-08**: NEW — Built DOM scraping extractor.
 
 #### TODO
+- [ ] **RE-EXTRACT to validate orchestrator sport fix** (expected ~773 events)
 - [x] **FIXED**: Match rate 36.8% → 99.6% (cache pre-population + threshold relaxation)
 - [ ] Extraction time could be faster with more concurrent tabs
 
@@ -382,23 +394,29 @@
 | Retriever | `snabbare` |
 | Site | `snabbare.com` |
 | Extraction time | ~283s (was 751s) |
-| Events | ~900 |
-| Odds | 1,729 |
-| Ratio | 2.79 |
-| Pin matches | **619** (100% of extracted) |
+| Events | **4** (BROKEN — multi-tab WS fixed 2026-02-12) |
+| Odds | **12** |
+| Ratio | 3.0 |
+| Pin matches | 4 (100% of extracted) |
 | Markets | 1x2/ml |
 | Normalization | 100% |
+| Mode | Headed browser |
 
-> Concurrent tabs (3) with 2.0s settle time per league navigation. 8 sports active.
+> **FIX APPLIED 2026-02-12**: Converted from multi-tab WS to single-tab sequential navigation.
+> Same root cause as ComeOn Group: WS only delivers data to originating page.
+> Expected after fix: ~900 events, ~1,700 odds (matching previous performance).
 
 **Bonus:** BonusDep 600 kr / 8x wager / min 1.80
 **Oddsboost:** Not implemented (listed 4/5 on aggregators)
 
 #### Log
+- **2026-02-12**: **CRITICAL FIX** — Multi-tab WS broken (same as ComeOn Group issue). WS connection only delivers INITIAL_STATE frames to originating page — 7 extra tabs received 0 data. Converted to single-tab sequential league navigation. Needs re-extraction to validate.
+- **2026-02-12**: Orchestrator sport filtering fix — was receiving global kambi_sports instead of provider's own `supported_sports` config.
 - **2026-02-09**: Concurrent tab optimization — 751s→283s (2.7x), 435→619 pin (+42%).
 - **2026-02-09**: REWRITTEN — WebSocket/RSocket interception. 172→435 pin (2.5x).
 
 #### TODO
+- [ ] **RE-EXTRACT to validate single-tab fix** (expected ~900 events)
 - [ ] Event detail pages may have spread/total markets
 - [ ] Boost extraction (4/5 on aggregators)
 
@@ -416,11 +434,14 @@
 
 ### Summary Table
 
-| Brand | Events | Odds | Pin Match | Ratio | Bonus |
-|-------|-------:|-----:|----------:|------:|-------|
-| **ComeOn** | 376 | 623 | **219** | 2.84 | BonusDep 500 kr / 6x / 1.80 |
-| **Hajper** | 400 | 623 | **219** | 2.84 | Freebet 500 kr / 1x / 1.80 |
-| **Lyllo Casino** | 394 | 625 | **219** | 2.85 | Freebet 100 kr / 1x / 1.80 |
+| Brand | Events | Odds | Ratio | Bonus |
+|-------|-------:|-----:|------:|-------|
+| **ComeOn** | 189 | 554 | 2.93 | BonusDep 500 kr / 6x / 1.80 |
+| **Hajper** | 192 | 563 | 2.93 | Freebet 500 kr / 1x / 1.80 |
+| **Lyllo Casino** | 192 | 563 | 2.93 | Freebet 100 kr / 1x / 1.80 |
+
+> ComeOn Group event counts reduced from ~376 to ~192 due to orchestrator sport filtering bug
+> (same fix applied 2026-02-12). Expected to improve after re-extraction.
 
 **Market types:** 1x2: 531, moneyline: 84, total: 8-10 per provider.
 **Normalization:** 100% across all three providers.
@@ -466,22 +487,28 @@
 | Retriever | `interwetten` |
 | Site | `interwetten.se` |
 | Extraction time | ~332s (two-pass: listing + detail pages) |
-| Events | ~714 (12 sports) |
-| Odds | 745 |
-| Ratio | 3.23 |
-| Pin matches | **183** |
+| Events | **81** (DEGRADED — orchestrator sport fix applied 2026-02-12) |
+| Odds | **219** |
+| Ratio | 2.70 |
+| Pin matches | 81 (100% of extracted) |
 | Markets | 1x2/ml/spread/total |
 | Mode | Headed (Cloudflare protection) |
 
-**Two-pass extraction:** listing pages → 1x2/ML (~100s), then event detail pages → spread+total (3 concurrent tabs, ~230s).
+> **FIX APPLIED 2026-02-12**: Orchestrator was sending global kambi_sports instead of
+> provider's own `supported_sports` config. Missing football entirely.
+> Expected after fix: ~714 events (matching previous performance).
+
+**Two-pass extraction:** listing pages → 1x2/ML (~100s), then event detail pages → spread+total (5 concurrent tabs, ~230s).
 
 **Bonus:** BonusDep 1,000 kr / 5x wager / min **1.70** (best wagering ratio of all providers!)
 **Oddsboost:** Exists on site but not implemented
 
 #### Log
+- **2026-02-12**: **CRITICAL FIX** — Same orchestrator sport filtering bug as 10Bet/Snabbare/Tipwin. Interwetten only received 3 sports instead of 12 → missed football entirely (81 events instead of ~714).
 - **2026-02-09**: Expanded from 27 to 155+ leagues, 12 sports. 4→166→183 pin.
 
 #### TODO
+- [ ] **RE-EXTRACT to validate orchestrator sport fix** (expected ~714 events)
 - [x] **FIXED**: Spread/total markets (88 spread + 52 total odds)
 - [ ] Best bonus in the system (1,000 kr / 5x / 1.70) — maximizing coverage is valuable
 - [ ] Further league expansion possible
@@ -528,12 +555,16 @@
 | Site | `tipwin.se` |
 | API | `api-web.tipwin.se/v2/{agencyId}/offer/data` (agency 100683) |
 | Extraction time | ~58s |
-| Events | ~824 |
-| Odds | ~2,882 |
-| Ratio | 3.50 |
-| Pin matches | **784** (95.1%) |
+| Events | **460** (DEGRADED — only football, orchestrator fix applied 2026-02-12) |
+| Odds | **1,650** |
+| Ratio | 3.59 |
+| Pin matches | 460 (100% of extracted) |
 | Markets | 1x2/total/spread |
 | Normalization | 100% |
+
+> **FIX APPLIED 2026-02-12**: Orchestrator was sending global kambi_sports instead of
+> provider's own `supported_sports` config. Only football extracted instead of 11 sports.
+> Expected after fix: ~824 events, ~2,882 odds (matching previous performance).
 
 **Technical details:**
 - `bettingTypes[id].abrv`: "3way"=1x2, "over-under"=total, "handicap-hcp"=spread
@@ -544,16 +575,31 @@
 **Oddsboost:** Unknown
 
 #### Log
+- **2026-02-12**: **CRITICAL FIX** — Same orchestrator sport filtering bug. Only football extracted (460 events) instead of all 11 supported sports (~824 events). Fixed.
 - **2026-02-10**: Cache pre-population + threshold relaxation → 390→784 pin (95.1%, +101%).
 - **2026-02-09**: Optimized pagination 420s→58s (7x). 72→390 pin (5.4x).
 
 #### TODO
+- [ ] **RE-EXTRACT to validate orchestrator sport fix** (expected ~824 events)
 - [x] **FIXED**: Match rate 36.2% → 95.1%
 - [ ] European handicap → Asian handicap conversion for spread markets
 
 ---
 
 ## Changelog
+
+### 2026-02-12
+- **CRITICAL: Orchestrator sport filtering fix** — `orchestrator.py` was sending the same global `kambi_sports` list (Pinnacle-filtered) to ALL providers, completely ignoring each provider's `supported_sports` config from `providers.yaml`. Effect: providers only received sports that happened to overlap with the global list. Impact:
+  - Snabbare: ~900 → 4 events (only ice_hockey survived)
+  - 10Bet: ~773 → 21 events (missed football entirely)
+  - Interwetten: ~714 → 81 events (missed football entirely)
+  - Tipwin: ~824 → 460 events (only football survived)
+  - ComeOn Group: ~376 → ~192 events (reduced)
+  - Fix: `orchestrator.py` line 647-661 now checks `getattr(provider_cfg, 'supported_sports', None)` and uses provider-specific sports list when available, intersected with `sharp_sports` and ordered by Pinnacle event count.
+- **CRITICAL: Snabbare multi-tab WS fix** — Same root cause as ComeOn Group (2026-02-10): WS connections only deliver INITIAL_STATE frames to the originating page. 7 extra tabs received 0 data → only 4 events extracted. Converted from 8-concurrent-tab to single-tab sequential league navigation.
+- **DB locked fix** — Added retry logic with exponential backoff (3 retries, 0.5s → 1s → 2s) to `OddsBatchProcessor.flush()` for SQLite "database is locked" errors during concurrent extraction. Also added per-sport `session.commit()` in orchestrator to release locks sooner.
+- **Profile settings wired to StakeCalculator** — Profile stores `kelly_fraction`, `max_stake_pct`, `min_edge_pct` but StakeCalculator was using hardcoded defaults (0.75 max Kelly, 3% cap, 1% min edge). Now profile settings control the calculator in `bankroll_service.py`, `opportunity_service.py`, and `polymarket.py`.
+- **Pinnacle pagination warnings** — Confirmed as expected behavior. `matchupCount` from API includes live events and non-1x2 markets. `no_markets=273` for football = events with only prop/special markets.
 
 ### 2026-02-10
 - **ComeOn Group date-based rewrite** — Discovered WS connections only deliver data to originating page (league page navigation in new tabs gets 0 frames). Rewrote all 3 extractors (ComeOn, Hajper, Lyllo) to click through date buttons on sport pages instead. ComeOn: 84→623 odds (+642%), Hajper: 48→623 (+1198%), Lyllo: 44→625 (+1320%). All at 219 pin matches, 100% normalization, 2.84-2.85 ratio.
@@ -593,12 +639,17 @@
 
 ## Priority Roadmap
 
+### Immediate (validate fixes)
+
+| Task | Provider(s) | Expected Impact | Effort |
+|------|-------------|-----------------|--------|
+| **Re-extract all providers** | ALL | Validate orchestrator sport fix + Snabbare single-tab fix | Low |
+| Coolbet CDP re-test | coolbet | Validate match rate with ALL-lines fix (expected 39→100+ pin) | Low |
+
 ### High Priority
 
 | Task | Provider(s) | Expected Impact | Effort |
 |------|-------------|-----------------|--------|
-| Coolbet CDP re-test | coolbet | Validate match rate with ALL-lines fix (expected 39→100+ pin) | Low |
-| Validate speed optimizations | 10bet, snabbare, interwetten | Verify reduced timeouts don't drop data quality | Low |
 | Altenar boost API | 6 Altenar | Boost data for 6 providers | Medium |
 | ComeOn Group boost extraction | comeon, hajper, lyllo | Boost data (5/5 on aggregators) | Medium |
 
@@ -621,6 +672,10 @@
 
 | Task | Provider(s) | Result |
 |------|-------------|--------|
+| ~~Orchestrator sport filtering~~ | ALL | Providers now get their own `supported_sports` instead of global kambi_sports |
+| ~~Snabbare multi-tab WS fix~~ | snabbare | Converted to single-tab sequential (WS only delivers to originating page) |
+| ~~DB locked fix~~ | ALL | Retry logic + per-sport commits for concurrent extraction |
+| ~~Profile → StakeCalculator wiring~~ | ALL | Profile risk settings now control stake calculator |
 | ~~Kambi event caching~~ | 8 Kambi | Saves ~350 HTTP requests per run |
 | ~~Altenar esports normalization~~ | 6 Altenar | Positional fallback for 2-way markets |
 | ~~Coolbet ALL-lines storage~~ | coolbet | Store all spread/total lines |

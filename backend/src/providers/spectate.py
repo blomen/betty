@@ -54,7 +54,7 @@ class SpectateRetriever(BrowserRetriever):
         if not self._session_ready:
             slug = self.SITE_SLUGS.get(sport, sport)
             www_url = f"{self.site_url}/sport/{slug}/"
-            logger.info(f"[{self.provider_id}] Initializing session via {www_url}")
+            logger.debug(f"[{self.provider_id}] Initializing session via {www_url}")
 
             # Initialize browser and visit page
             await self.transport._ensure_browser()
@@ -75,7 +75,7 @@ class SpectateRetriever(BrowserRetriever):
 
             self._session_ready = True
             self._initialized_pages.add("spectate_session")
-            logger.info(f"[{self.provider_id}] Session initialized")
+            logger.debug(f"[{self.provider_id}] Session initialized")
 
     async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
         # 1. Ensure session is initialized for this sport

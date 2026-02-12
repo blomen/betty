@@ -181,7 +181,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
             # Navigate to site
             url = f"{self.site_url}{self._init_path}"
-            logger.info(f"[{self.provider_id}] Loading {url} for session init")
+            logger.debug(f"[{self.provider_id}] Loading {url} for session init")
             await page.goto(url, wait_until='load', timeout=60000)
 
             # Handle cookie consent
@@ -208,7 +208,7 @@ class GeckoV2Retriever(BrowserRetriever):
             self._api_headers = headers
             self._api_base = api_base_holder[0] if api_base_holder else self.site_url
             self._session_ready = True
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Session established with {len(headers)} headers, "
                 f"API base: {self._api_base}"
             )
@@ -227,7 +227,7 @@ class GeckoV2Retriever(BrowserRetriever):
         ]:
             try:
                 await page.click(selector, timeout=3000)
-                logger.info(f"[{self.provider_id}] Clicked cookie consent")
+                logger.debug(f"[{self.provider_id}] Clicked cookie consent")
                 await asyncio.sleep(1)
                 return
             except Exception:
@@ -251,7 +251,7 @@ class GeckoV2Retriever(BrowserRetriever):
                 data = (await resp.json()).get("data", {})
                 cat_id = data.get("id")
                 if cat_id:
-                    logger.info(f"[{self.provider_id}] Discovered category ID for {sport}: {cat_id}")
+                    logger.debug(f"[{self.provider_id}] Discovered category ID for {sport}: {cat_id}")
                     # Cache for future use in this session
                     self.SPORT_CATEGORY_IDS[sport] = cat_id
                     return cat_id
@@ -338,7 +338,7 @@ class GeckoV2Retriever(BrowserRetriever):
                 if total_pages is None:
                     total_pages = data.get('totalPages', 1)
                     total_items = data.get('totalItemCount', 0)
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] {sport}: {total_items} events, "
                         f"{total_pages} pages"
                     )
@@ -360,7 +360,7 @@ class GeckoV2Retriever(BrowserRetriever):
                     break
                 page_num += 1
 
-            logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events parsed")
+            logger.debug(f"[{self.provider_id}] {sport}: {len(all_events)} events parsed")
             return all_events[:limit]
 
         except Exception as e:

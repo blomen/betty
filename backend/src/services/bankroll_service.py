@@ -4,7 +4,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, ProfileProviderBonus
+from ..db.models import Profile, Provider, ProfileProviderBonus
 from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 
 logger = logging.getLogger(__name__)
@@ -100,16 +100,34 @@ class BankrollService:
         }
 
     def get_stake_calculator(self, profile_id: int) -> StakeCalculator:
-        """Get or create a StakeCalculator for a profile."""
+        """Get or create a StakeCalculator for a profile, using profile risk settings."""
+        # Load profile settings
+        profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
+        bankroll = self.profile_repo.get_total_bankroll(profile_id)
+
+        # Profile settings -> calculator params
+        # kelly_fraction (0.25 = Quarter Kelly) caps the dynamic Kelly scaling
+        # max_stake_pct (5.0 = 5%) -> single_bet_cap_pct (0.05)
+        # min_edge_pct (2.0 = 2%) -> min_edge (0.02)
+        max_kelly = profile.kelly_fraction if profile else 0.25
+        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
+        min_edge = (profile.min_edge_pct / 100.0) if profile else 0.01
+
         if profile_id not in _stake_calculators:
-            bankroll = self.profile_repo.get_total_bankroll(profile_id)
-            _stake_calculators[profile_id] = StakeCalculator(bankroll=bankroll)
+            _stake_calculators[profile_id] = StakeCalculator(
+                bankroll=bankroll,
+                max_kelly=max_kelly,
+                single_bet_cap_pct=single_bet_cap_pct,
+                min_edge=min_edge,
+            )
 
         calc = _stake_calculators[profile_id]
 
-        # Always update bankroll to current value
-        bankroll = self.profile_repo.get_total_bankroll(profile_id)
+        # Always update to current values (profile settings may have changed)
         calc.update_bankroll(bankroll)
+        calc.max_kelly = max_kelly
+        calc.single_bet_cap_pct = single_bet_cap_pct
+        calc.min_edge = min_edge
 
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()
@@ -138,9 +156,23 @@ class BankrollService:
             ProfileProviderBonus.profile_id == profile.id
         ).all()
 
+        from datetime import datetime
+
         bonus_progress = {}
         for bonus in bonuses:
             provider_min_odds = bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS
+
+            # Auto-expire in-progress bonuses past deadline
+            if (bonus.bonus_status == "in_progress" and bonus.expires_at
+                    and datetime.utcnow() > bonus.expires_at):
+                bonus.bonus_status = "completed"
+                bonus.updated_at = datetime.utcnow()
+
+            days_remaining = None
+            if bonus.expires_at and bonus.bonus_status == "in_progress":
+                delta = bonus.expires_at - datetime.utcnow()
+                days_remaining = max(0, delta.days)
+
             bonus_progress[bonus.provider_id] = {
                 "status": bonus.bonus_status,
                 "bonus_amount": bonus.bonus_amount or 0.0,
@@ -153,10 +185,12 @@ class BankrollService:
                     else 100.0
                 ),
                 "is_cleared": (
-                    bonus.bonus_status == "completed" or
-                    bonus.bonus_status == "available" or
+                    bonus.bonus_status in ("completed", "available", "claimed") or
                     (bonus.wagering_requirement and (bonus.wagered_amount or 0.0) >= bonus.wagering_requirement)
                 ),
+                "claimed_at": bonus.claimed_at.isoformat() if bonus.claimed_at else None,
+                "expires_at": bonus.expires_at.isoformat() if bonus.expires_at else None,
+                "days_remaining": days_remaining,
             }
 
         status = calc.get_status()

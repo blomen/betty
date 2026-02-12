@@ -79,8 +79,15 @@ SPORT_KEYWORDS: dict[str, list[str]] = {
                           "patriots", "seahawks", "touchdown"],
 }
 
-# Output path
-DATA_DIR = Path(__file__).parent.parent / "data"
+# Output path — use centralized paths for bundled mode support
+def _get_data_dir() -> Path:
+    try:
+        from src.paths import get_app_data_dir
+        return get_app_data_dir() / "data"
+    except ImportError:
+        return Path(__file__).parent.parent / "data"
+
+DATA_DIR = _get_data_dir()
 
 
 @dataclass
@@ -117,8 +124,15 @@ def detect_sport(text: str) -> str:
 
 # ============ Provider Boost Pages ============
 
-# Config path for boost definitions
-CONFIG_DIR = Path(__file__).parent.parent / "src" / "config"
+# Config path for boost definitions — use centralized paths for bundled mode
+def _get_config_dir() -> Path:
+    try:
+        from src.paths import get_config_dir
+        return get_config_dir()
+    except ImportError:
+        return Path(__file__).parent.parent / "src" / "config"
+
+CONFIG_DIR = _get_config_dir()
 
 
 def _load_boost_config() -> list[dict]:

@@ -23,7 +23,7 @@ class OpportunityRepo:
         sport: str | None = None,
         min_edge: float | None = None,
         exclude_provider1: str | None = None,
-        limit: int = 50,
+        limit: int = 2000,
     ) -> list[tuple[Opportunity, Event]]:
         """
         Find active opportunities with event data.
@@ -89,7 +89,8 @@ class OpportunityRepo:
             Opportunity.event_id == event_id,
             Opportunity.market == market,
             Opportunity.type == "value",
-            Opportunity.outcome1 == outcome
+            Opportunity.outcome1 == outcome,
+            Opportunity.provider1_id == provider_id
         ).first()
 
         now = datetime.now(timezone.utc)

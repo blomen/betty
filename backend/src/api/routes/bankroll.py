@@ -201,6 +201,36 @@ async def record_bet_exposure(data: RecordBetRequest, service: BankrollService =
     }
 
 
+@router.post("/claim-bonus/{provider_id}")
+async def claim_bonus(provider_id: str, db: Session = Depends(get_db)):
+    """Mark a provider's bonus as already claimed for active profile."""
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    result = profile_repo.claim_bonus(profile.id, provider_id)
+    db.commit()
+
+    return {"success": True, "provider_id": provider_id, **result}
+
+
+@router.post("/unclaim-bonus/{provider_id}")
+async def unclaim_bonus(provider_id: str, db: Session = Depends(get_db)):
+    """Reset a claimed bonus back to available for active profile."""
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    result = profile_repo.unclaim_bonus(profile.id, provider_id)
+    db.commit()
+
+    return {"success": True, "provider_id": provider_id, **result}
+
+
 @router.post("/reset-calculator")
 async def reset_calculator(service: BankrollService = Depends(_get_service)):
     """Reset the stake calculator's exposure tracking."""

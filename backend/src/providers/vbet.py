@@ -291,7 +291,7 @@ class VbetRetriever(Retriever):
             logger.warning(f"[{self.provider_id}] Sport '{sport}' not mapped to BetConstruct alias")
             return []
 
-        logger.info(f"[{self.provider_id}] Starting extraction for {sport} (alias={bc_alias})")
+        logger.debug(f"[{self.provider_id}] Starting extraction for {sport} (alias={bc_alias})")
 
         all_events = []
 
@@ -351,7 +351,7 @@ class VbetRetriever(Retriever):
                     winner_events = self._parse_games(
                         match_winner_resp, sport, ["P1XP2", "P1P2"]
                     )
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
                     )
                     all_events.extend(winner_events)
@@ -394,7 +394,7 @@ class VbetRetriever(Retriever):
                     st_events = self._parse_games(
                         spread_total_resp, sport, ["OverUnder", "Handicap", "AsianHandicap"]
                     )
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total"
                     )
 
@@ -422,7 +422,7 @@ class VbetRetriever(Retriever):
         if limit and len(all_events) > limit:
             all_events = all_events[:limit]
 
-        logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} total events extracted")
+        logger.debug(f"[{self.provider_id}] {sport}: {len(all_events)} total events extracted")
         return all_events
 
     async def close(self):

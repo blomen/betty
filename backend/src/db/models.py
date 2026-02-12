@@ -267,6 +267,7 @@ class ProfileProviderBonus(Base):
     # 'available' = bonus ready to use
     # 'in_progress' = deposited with double deposit, needs wagering
     # 'completed' = bonus fully wagered, no more min odds restriction
+    # 'claimed' = bonus already used (e.g., from previous account), skip in workflows
     bonus_status = Column(String, default="available")
 
     # Bonus wagering tracking
@@ -275,6 +276,10 @@ class ProfileProviderBonus(Base):
     wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
     wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
     min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
+
+    # Timer tracking
+    claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
+    expires_at = Column(DateTime, nullable=True)        # Deadline to complete wagering (claimed_at + 60 days)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -325,8 +330,12 @@ class Opportunity(Base):
 
     Stores snapshots of opportunities at time of detection.
     Can be marked inactive when odds change.
+    One row per (event, market, outcome, provider) combination.
     """
     __tablename__ = "opportunities"
+    __table_args__ = (
+        Index("ix_opp_upsert", "event_id", "market", "outcome1", "provider1_id", "type"),
+    )
 
     id = Column(Integer, primary_key=True)
     type = Column(String, nullable=False)  # "arbitrage", "value", "bonus"
@@ -614,6 +623,36 @@ def _run_migrations(engine):
                 raw.commit()
             except sqlite3.OperationalError:
                 pass  # Column already exists or table doesn't exist
+
+        # Add claimed_at to profile_provider_bonuses if missing
+        try:
+            cursor.execute("SELECT claimed_at FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN claimed_at DATETIME")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add expires_at to profile_provider_bonuses if missing
+        try:
+            cursor.execute("SELECT expires_at FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN expires_at DATETIME")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add index for per-provider opportunity upsert lookups
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS ix_opp_upsert "
+                "ON opportunities (event_id, market, outcome1, provider1_id, type)"
+            )
+            raw.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
 def init_db() -> None:

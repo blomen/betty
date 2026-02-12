@@ -18,12 +18,14 @@ interface ProfileFormData {
   name: string;
   kelly_fraction: string;
   max_stake_pct: string;
+  min_edge_pct: string;
 }
 
 const defaultFormData: ProfileFormData = {
   name: '',
   kelly_fraction: '0.25',
   max_stake_pct: '5.0',
+  min_edge_pct: '2.0',
 };
 
 function profileToFormData(profile: Profile): ProfileFormData {
@@ -31,6 +33,7 @@ function profileToFormData(profile: Profile): ProfileFormData {
     name: profile.name,
     kelly_fraction: profile.kelly_fraction.toString(),
     max_stake_pct: profile.max_stake_pct.toString(),
+    min_edge_pct: profile.min_edge_pct.toString(),
   };
 }
 
@@ -73,6 +76,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
         name: formData.name.trim(),
         kelly_fraction: parseFloat(formData.kelly_fraction) || 0.25,
         max_stake_pct: parseFloat(formData.max_stake_pct) || 5.0,
+        min_edge_pct: parseFloat(formData.min_edge_pct) || 2.0,
       };
       await createProfile(data);
       setIsCreating(false);
@@ -90,6 +94,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
         name: formData.name.trim() || undefined,
         kelly_fraction: parseFloat(formData.kelly_fraction) || undefined,
         max_stake_pct: parseFloat(formData.max_stake_pct) || undefined,
+        min_edge_pct: parseFloat(formData.min_edge_pct) || undefined,
       };
       await updateProfile(id, data);
       setEditingId(null);
@@ -247,8 +252,10 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-muted mt-1">
-                      <span>Bankroll: {profile.bankroll.toLocaleString()} {profile.currency}</span>
+                    <div className="text-xs text-muted mt-1 flex gap-3">
+                      <span>Kelly: {(profile.kelly_fraction * 100).toFixed(0)}%</span>
+                      <span>Max stake: {profile.max_stake_pct}%</span>
+                      <span>Min edge: {profile.min_edge_pct}%</span>
                     </div>
                   </div>
                 </div>
@@ -304,7 +311,7 @@ function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }:
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {/* Name */}
         <div>
           <label className="block text-xs text-muted mb-1">Profile Name</label>
@@ -317,9 +324,9 @@ function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }:
           />
         </div>
 
-        {/* Kelly Fraction */}
+        {/* Kelly Fraction — caps the dynamic Kelly scaling */}
         <div>
-          <label className="block text-xs text-muted mb-1">Kelly Fraction</label>
+          <label className="block text-xs text-muted mb-1">Max Kelly</label>
           <select
             value={formData.kelly_fraction}
             onChange={(e) => handleChange('kelly_fraction', e.target.value)}
@@ -331,9 +338,10 @@ function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }:
               </option>
             ))}
           </select>
+          <span className="text-[10px] text-muted mt-0.5 block">Caps auto-scaling Kelly</span>
         </div>
 
-        {/* Max Stake */}
+        {/* Max Stake per bet */}
         <div>
           <label className="block text-xs text-muted mb-1">Max Stake (%)</label>
           <input
@@ -344,6 +352,21 @@ function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }:
             placeholder="5.0"
             className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
           />
+          <span className="text-[10px] text-muted mt-0.5 block">% of bankroll per bet</span>
+        </div>
+
+        {/* Min Edge — skip bets below this edge */}
+        <div>
+          <label className="block text-xs text-muted mb-1">Min Edge (%)</label>
+          <input
+            type="number"
+            step="0.5"
+            value={formData.min_edge_pct}
+            onChange={(e) => handleChange('min_edge_pct', e.target.value)}
+            placeholder="2.0"
+            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
+          />
+          <span className="text-[10px] text-muted mt-0.5 block">Skip bets below this edge</span>
         </div>
       </div>
 

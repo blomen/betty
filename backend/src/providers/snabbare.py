@@ -109,7 +109,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             self._all_events = await self._extract_all()
 
         events = self._all_events.get(sport, [])
-        logger.info(f"[{self.provider_id}] {sport}: {len(events)} events")
+        logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events")
         return events[:limit]
 
     async def _quick_health_check(self) -> List[StandardEvent]:
@@ -131,13 +131,17 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    CONCURRENT_TABS = 8
-    LEAGUE_SETTLE_TIME = 0.8  # seconds to wait for WS data after navigation (reduced from 1.2)
+    LEAGUE_SETTLE_TIME = 1.2  # seconds to wait for WS data after navigation
 
     async def _extract_all(self) -> Dict[str, List[StandardEvent]]:
         """
-        Discover all leagues via REST API, then navigate per-league
-        using concurrent tabs to collect WS event data across all sports.
+        Discover all leagues via REST API, then navigate to each league
+        sequentially on the main page to collect WS event data.
+
+        IMPORTANT: Snabbare's WS connection only delivers data to the page
+        that established it. Opening new tabs creates new WS connections that
+        receive 0 INITIAL_STATE frames. All navigation must happen on the
+        single main page.
         """
         try:
             if not isinstance(self.transport, BrowserTransport):
@@ -147,7 +151,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             await self.transport._ensure_browser()
             page = self.transport.page
 
-            # Shared WS message store — all tabs feed into this list
+            # WS message store — single page feeds into this list
             ws_messages: List = []
 
             # Setup WS interception on main page
@@ -176,7 +180,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Filter to leagues with events
             active_leagues = [l for l in all_leagues if l.get("eventCount", 0) > 0]
             total_events = sum(l.get("eventCount", 0) for l in active_leagues)
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Discovered {len(active_leagues)} active leagues "
                 f"with {total_events} total events"
             )
@@ -184,77 +188,46 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Sort by event count descending (biggest leagues first)
             active_leagues.sort(key=lambda x: x.get("eventCount", 0), reverse=True)
 
-            # Open extra tabs for concurrent navigation
-            context = page.context
-            extra_pages = []
-            for _ in range(self.CONCURRENT_TABS - 1):
-                try:
-                    p = await context.new_page()
-                    self._setup_ws_interception_into(p, ws_messages)
-                    extra_pages.append(p)
-                except Exception:
-                    break
-
-            all_pages = [page] + extra_pages
-            page_pool = asyncio.Queue()
-            for p in all_pages:
-                await page_pool.put(p)
-
+            # Navigate sequentially to each league on the same page
+            # WS only delivers data to the originating page (same as ComeOn Group)
             leagues_processed = 0
             errors = 0
 
-            async def visit_league(league: Dict):
-                nonlocal leagues_processed, errors
-                worker = await page_pool.get()
+            for i, league in enumerate(active_leagues):
+                lid = league.get("id", "")
+                lname = league.get("name", "")
+                sport_slug = league["_slug"]
+                sport_id = league["_sport_id"]
+
+                name_slug = re.sub(r'[^a-z0-9]+', '-', lname.lower()).strip('-')
+                league_url = (
+                    f"{self.site_url}/sv/sportsbook/sport/"
+                    f"{sport_id}-{sport_slug}/leagues/{lid}-{name_slug}"
+                )
+
                 try:
-                    lid = league.get("id", "")
-                    lname = league.get("name", "")
-                    sport_slug = league["_slug"]
-                    sport_id = league["_sport_id"]
-
-                    name_slug = re.sub(r'[^a-z0-9]+', '-', lname.lower()).strip('-')
-                    league_url = (
-                        f"{self.site_url}/sv/sportsbook/sport/"
-                        f"{sport_id}-{sport_slug}/leagues/{lid}-{name_slug}"
-                    )
-
-                    await worker.goto(
+                    await page.goto(
                         league_url,
                         wait_until="domcontentloaded",
                         timeout=15000,
                     )
                     await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
                     leagues_processed += 1
-
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] League {league.get('name', '?')} error: {e}")
+                    logger.debug(f"[{self.provider_id}] League {lname} error: {e}")
                     errors += 1
-                finally:
-                    await page_pool.put(worker)
 
-            # Process in batches matching concurrency
-            batch_size = self.CONCURRENT_TABS * 5
-            for i in range(0, len(active_leagues), batch_size):
-                batch = active_leagues[i:i + batch_size]
-                await asyncio.gather(*(visit_league(l) for l in batch))
-
-                if (i + batch_size) % 60 < batch_size:
-                    logger.info(
-                        f"[{self.provider_id}] Processed {leagues_processed} leagues, "
+                # Progress logging every 20 leagues
+                if (i + 1) % 20 == 0:
+                    logger.debug(
+                        f"[{self.provider_id}] Progress: {leagues_processed}/{len(active_leagues)} leagues, "
                         f"{len(ws_messages)} WS messages"
                     )
 
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Processed {leagues_processed} leagues, "
                 f"collected {len(ws_messages)} WS messages ({errors} errors)"
             )
-
-            # Close extra pages
-            for p in extra_pages:
-                try:
-                    await p.close()
-                except Exception:
-                    pass
 
             # Parse all WS messages into events
             events_by_sport = self._parse_ws_data(ws_messages)
@@ -263,7 +236,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             sport_summary = ", ".join(
                 f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items())
             )
-            logger.info(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
+            logger.debug(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
 
             return events_by_sport
 
@@ -292,7 +265,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 canonical = self.SPORT_MAP.get(sport_id, ("unknown", ""))[0]
                 if active:
                     total = sum(l.get("eventCount", 0) for l in active)
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] {canonical}: "
                         f"{len(active)} active leagues, {total} events"
                     )

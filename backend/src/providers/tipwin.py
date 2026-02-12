@@ -100,7 +100,7 @@ class TipwinRetriever(BrowserRetriever):
             self._all_events = await self._extract_all()
 
         events = self._all_events.get(sport, [])
-        logger.info(f"[{self.provider_id}] {sport}: {len(events)} events")
+        logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events")
         return events[:limit]
 
     async def _quick_health_check(self) -> List[StandardEvent]:
@@ -173,7 +173,7 @@ class TipwinRetriever(BrowserRetriever):
 
             # Navigate to full sports listing (page 1)
             full_url = f"{self.site_url}/sv/sports/full/"
-            logger.info(f"[{self.provider_id}] Loading {full_url}")
+            logger.debug(f"[{self.provider_id}] Loading {full_url}")
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
             await asyncio.sleep(2)
 
@@ -192,7 +192,7 @@ class TipwinRetriever(BrowserRetriever):
                         break
 
             max_pages = min(total_pages, 120)  # Safety cap
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Full listing: {max_pages} pages "
                 f"(initial captured: {len(api_responses)} responses)"
             )
@@ -221,7 +221,7 @@ class TipwinRetriever(BrowserRetriever):
                             break
 
                     if pg % 20 == 0:
-                        logger.info(
+                        logger.debug(
                             f"[{self.provider_id}] Page {pg}/{max_pages}, "
                             f"{len(api_responses)} responses captured"
                         )
@@ -234,7 +234,7 @@ class TipwinRetriever(BrowserRetriever):
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Collected {len(api_responses)} API responses "
                 f"across {max_pages} pages"
             )
@@ -289,7 +289,7 @@ class TipwinRetriever(BrowserRetriever):
 
             total = sum(len(v) for v in events_by_sport.values())
             sport_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items()))
-            logger.info(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
+            logger.debug(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
 
             return events_by_sport
 
@@ -508,7 +508,7 @@ class TipwinRetriever(BrowserRetriever):
         for sel in selectors:
             try:
                 await page.click(sel, timeout=3000)
-                logger.info(f"[{self.provider_id}] Clicked cookie consent")
+                logger.debug(f"[{self.provider_id}] Clicked cookie consent")
                 await asyncio.sleep(1)
                 return
             except Exception:

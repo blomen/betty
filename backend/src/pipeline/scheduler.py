@@ -279,8 +279,9 @@ class ExtractionScheduler:
     async def _run_boost_scrape(self):
         """Execute the boost scraper in a thread executor."""
         import sys
-        from src.paths import get_app_data_dir
-        _root = str(get_app_data_dir())
+        from src.paths import get_bundle_dir
+        # Ensure scripts/ package is importable (lives in bundle root / backend/)
+        _root = str(get_bundle_dir())
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import scrape_all, save_specials
