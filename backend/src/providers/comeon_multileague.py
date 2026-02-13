@@ -216,31 +216,83 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             self._collect_ws_events(ws_messages, all_events_data)
             logger.debug(f"[{self.provider_id}] Today: {len(all_events_data)} events from WS")
 
-            # Step 2: Find all date buttons and click through them
-            date_buttons = await page.evaluate(r'''() => {
-                const btns = [];
-                document.querySelectorAll('button').forEach((btn, idx) => {
+            # Step 2: Scroll date container to reveal all dates, then click through them
+            # The date strip is horizontally scrollable — only ~7-10 buttons visible initially.
+            # Scrolling right reveals 14+ additional dates (up to ~21 total).
+            await page.evaluate(r'''() => {
+                // Find the scrollable container holding date buttons
+                // Strategy: find a date button, walk up to find its scrollable parent
+                const allBtns = document.querySelectorAll('button');
+                let dateBtn = null;
+                for (const btn of allBtns) {
                     const text = btn.textContent.trim().toLowerCase();
+                    if (/\d+\s+\w{3}\.?$/.test(text)) {
+                        dateBtn = btn;
+                        break;
+                    }
+                }
+                if (!dateBtn) return;
+
+                // Walk up to find scrollable container (overflow-x: auto/scroll)
+                let container = dateBtn.parentElement;
+                for (let i = 0; i < 5 && container; i++) {
+                    const style = window.getComputedStyle(container);
+                    if (style.overflowX === 'auto' || style.overflowX === 'scroll' ||
+                        container.scrollWidth > container.clientWidth) {
+                        // Scroll to the far right to load all date buttons
+                        container.scrollLeft = container.scrollWidth;
+                        return;
+                    }
+                    container = container.parentElement;
+                }
+
+                // Fallback: if no scrollable parent found, try scrolling the date button's
+                // immediate parent to the right
+                if (dateBtn.parentElement) {
+                    dateBtn.parentElement.scrollLeft = dateBtn.parentElement.scrollWidth;
+                }
+            }''')
+            # Wait for any lazy-loaded date buttons to render after scroll
+            await page.wait_for_timeout(500)
+
+            # Now discover ALL date buttons (including newly revealed ones)
+            # Collect button text labels instead of indices — indices shift when
+            # clicking dates renders new event buttons in the DOM.
+            date_labels = await page.evaluate(r'''() => {
+                const labels = [];
+                document.querySelectorAll('button').forEach(btn => {
+                    const text = btn.textContent.trim();
+                    const lower = text.toLowerCase();
                     // Match date patterns like "11 feb.", "ons11 feb."
-                    if (/\d+\s+\w{3}\.?$/.test(text) && !text.startsWith('idag')) {
-                        btns.push(idx);
+                    if (/\d+\s+\w{3}\.?$/.test(lower) && !lower.startsWith('idag')) {
+                        labels.push(text);
                     }
                 });
-                return btns;
+                return labels;
             }''')
 
-            if date_buttons:
-                logger.debug(f"[{self.provider_id}] Found {len(date_buttons)} date buttons")
-                for btn_idx in date_buttons:
-                    before_count = len(all_events_data)
+            if date_labels:
+                logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
+                for label in date_labels:
                     try:
-                        await page.evaluate(f'document.querySelectorAll("button")[{btn_idx}].click()')
-                        await page.wait_for_timeout(2000)
+                        # Find and click button by its exact text content (DOM-safe)
+                        clicked = await page.evaluate('''(targetLabel) => {
+                            const btns = document.querySelectorAll('button');
+                            for (const btn of btns) {
+                                if (btn.textContent.trim() === targetLabel) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }''', label)
 
-                        # Collect new events from WS
-                        self._collect_ws_events(ws_messages, all_events_data)
+                        if clicked:
+                            await page.wait_for_timeout(2000)
+                            # Collect new events from WS
+                            self._collect_ws_events(ws_messages, all_events_data)
                     except Exception as e:
-                        logger.debug(f"[{self.provider_id}] Date button {btn_idx} failed: {e}")
+                        logger.debug(f"[{self.provider_id}] Date button '{label}' failed: {e}")
 
             logger.debug(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 

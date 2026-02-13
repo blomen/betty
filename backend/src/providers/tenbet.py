@@ -193,7 +193,7 @@ class TenBetRetriever(BrowserRetriever):
         page = self.transport.page
 
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
             # Try to wait for competition links to appear
             try:
@@ -201,8 +201,7 @@ class TenBetRetriever(BrowserRetriever):
                     'a[href*="competitions/"]', timeout=8000
                 )
             except Exception:
-                # SPA might need more time in headed mode
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2000)
 
             competitions = await page.evaluate("""() => {
                 const links = document.querySelectorAll('a[href*="competitions/"]');
@@ -226,7 +225,7 @@ class TenBetRetriever(BrowserRetriever):
             # If no competitions found, retry once with longer wait
             if not competitions:
                 logger.debug(f"[{self.provider_id}] No competitions on first try for {sport_slug}, retrying...")
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2000)
                 competitions = await page.evaluate("""() => {
                     const links = document.querySelectorAll('a[href*="competitions/"]');
                     return Array.from(links)
@@ -270,11 +269,11 @@ class TenBetRetriever(BrowserRetriever):
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
-            # Wait for event items to render (SPA widget needs time — headed mode slower)
+            # Wait for event items to render
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=15000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
             except Exception:
                 # Check for empty state
                 empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')

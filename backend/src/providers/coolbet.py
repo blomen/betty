@@ -21,6 +21,7 @@ from typing import Dict, Any, List, Optional
 import asyncio
 import logging
 import json
+import time
 from datetime import datetime
 
 from ..core import StandardEvent
@@ -111,16 +112,17 @@ class CoolbetRetriever(BrowserRetriever):
             return None
 
         logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
+        t0 = time.time()
         try:
             self._camoufox_browser = await AsyncCamoufox(
-                headless=False,
+                headless=True,
                 geoip=True,
-                humanize=1.5,
+                humanize=0.2,
                 os="windows",
             ).__aenter__()
 
             self._camoufox_page = await self._camoufox_browser.new_page()
-            logger.info(f"[{self.provider_id}] Camoufox browser ready")
+            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")
             return self._camoufox_page
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
@@ -182,7 +184,7 @@ class CoolbetRetriever(BrowserRetriever):
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
                 # Check for Imperva block
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 body_text = await page.evaluate(
                     'document.body ? document.body.innerText.substring(0, 500) : ""'
                 )
@@ -195,7 +197,6 @@ class CoolbetRetriever(BrowserRetriever):
                     return []
 
                 logger.info(f"[{self.provider_id}] Session established — Imperva bypassed")
-                await asyncio.sleep(2)
                 self._session_ready = True
 
             # Fetch ALL categories with pagination

@@ -93,7 +93,7 @@ pytest tests/                      # Run test suite
 ```
 
 ### Adding a New Provider
-1. Check provider type in `config/providers.yaml` (Kambi, Gecko V2, Spectate, SBTech, Altenar, etc.)
+1. Check provider type in `src/config/providers.yaml` (Kambi, Gecko V2, Spectate, SBTech, Altenar, etc.)
 2. If existing type: add config entry only
 3. If new type: create extractor in `providers/`, register in `factory.py`
 4. For WebSocket/RSocket providers: use `RSocketMixin` from `providers/mixins/`
@@ -118,8 +118,8 @@ This keeps the system focused on the highest-value, most comparable market types
 
 ## Configuration
 
-- `config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
-- `config/sports.yaml` - Sport/league mappings with provider-specific IDs
+- `src/config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
+- `src/config/sports.yaml` - Sport/league mappings with provider-specific IDs
 - `backend/data/oddopp.db` - SQLite database
 
 ### Extraction Volume Audit (IMPORTANT)
@@ -366,7 +366,7 @@ LIMIT 30;
    "
    ```
 
-4. **Performance tuning parameters** (in `config/providers.yaml`):
+4. **Performance tuning parameters** (in `src/config/providers.yaml`):
    ```yaml
    kambi_api:
      health_check_delay_ms: 1000    # Delay between health checks

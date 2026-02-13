@@ -154,6 +154,8 @@ altenar_defaults: &altenar_defaults
     - mma
     - rugby
     - esports
+    - boxing
+    - cricket
 
 spectate_tournaments: &spectate_tournaments
   football:
@@ -528,21 +530,18 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
+    provider_timeout: 600              # DOM scraping needs time for many competitions
+    sport_timeout: 180                 # Many competitions per sport, 5 concurrent tabs
     supported_sports:
       - football
       - basketball
-      - tennis
       - ice_hockey
+      - tennis
+      - handball
       - american_football
       - baseball
       - mma
       - esports
-      - handball
-      - volleyball
-      - cricket
-      - table_tennis
-      - boxing
-      - curling
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -559,16 +558,19 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
+    provider_timeout: 900              # 10 sports × up to 180s each (sequential, browser-based)
+    sport_timeout: 180                 # Many leagues per sport, SPA link-clicking approach
     supported_sports:
       - football
       - basketball
-      - tennis
       - ice_hockey
+      - tennis
+      - handball
       - american_football
-      - baseball
       - mma
       - esports
-      - handball
+      - cricket
+      - rugby
       - volleyball
       - table_tennis
       - rugby
@@ -591,6 +593,8 @@ providers:
     domain: comeon.com
     retriever_type: custom
     site_url: https://www.comeon.com
+    provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: bonusdeposit
       amount: 500
@@ -618,6 +622,8 @@ providers:
     domain: hajper.com
     retriever_type: custom
     site_url: https://www.hajper.com
+    provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: freebet
       amount: 500
@@ -642,6 +648,8 @@ providers:
     domain: lyllocasino.com
     retriever_type: custom
     site_url: https://www.lyllocasino.com
+    provider_timeout: 900              # 12 sports × ~45s each (date scrolling)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: freebet
       amount: 100
@@ -703,19 +711,15 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
+    provider_timeout: 900              # 5 sports × concurrent tabs + detail enrichment
+    sport_timeout: 300                 # ~130 football leagues × 5 concurrent tabs + detail pages
     supported_sports:
       - football
       - ice_hockey
       - basketball
       - tennis
       - handball
-      - volleyball
-      - rugby
-      - cricket
-      - darts
-      - boxing
       - american_football
-      - baseball
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -732,16 +736,18 @@ providers:
     domain: coolbet.com
     retriever_type: coolbet
     site_url: https://www.coolbet.com
+    provider_timeout: 300              # Camoufox headless startup ~30s + 9 sports ~120s
+    sport_timeout: 180                 # Football has heavy pagination (50+ categories)
     supported_sports:
       - football
       - basketball
-      - tennis
       - ice_hockey
+      - handball
+      - tennis
+      - esports
+      - mma
       - american_football
       - baseball
-      - mma
-      - esports
-      - handball
     bonus:
       type: bonusdeposit
       amount: 1000

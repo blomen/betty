@@ -149,9 +149,10 @@ class ExtractorFactory:
             retriever = PinnacleRetriever(config)
         elif retriever_type == "tenbet":
             # 10Bet - Playtech/Mojito SPA, DOM scraping with ta-* selectors
+            # Headless works (no anti-bot protection) and is much faster
             from .core import BrowserTransport
             from .providers.tenbet import TenBetRetriever
-            transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
+            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker)
             retriever = TenBetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)

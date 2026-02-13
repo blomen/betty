@@ -48,6 +48,12 @@ class ProviderConfig(BaseModel):
     # Gecko V2 session init path (default /sv/odds, bethard needs /sv/sports)
     init_path: Optional[str] = None
 
+    # Per-provider timeout override (seconds). None = use global provider_timeout.
+    provider_timeout: Optional[int] = None
+
+    # Per-provider sport timeout override (seconds). None = use global sport_timeout.
+    sport_timeout: Optional[int] = None
+
     # ComeOn-specific depth extraction configuration
     extract_full_markets: Optional[bool] = False  # Enable event detail page extraction
     concurrent_event_details: Optional[int] = 10  # Parallel event detail page loads

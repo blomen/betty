@@ -632,9 +632,14 @@ class ExtractionPipeline:
 
                 # Create tasks for parallel extraction
                 # Provider timeout from config (default 300s = 5 min)
-                provider_timeout = self.orchestrator_config.provider_timeout
+                default_provider_timeout = self.orchestrator_config.provider_timeout
 
                 async def extract_with_error_handling(provider_id):
+                    # Per-provider timeout override (e.g., Coolbet needs longer for Camoufox)
+                    provider_cfg = self.engine.get_provider(provider_id)
+                    per_provider_timeout = getattr(provider_cfg, 'provider_timeout', None)
+                    provider_timeout = per_provider_timeout if per_provider_timeout else default_provider_timeout
+
                     # Start provider metrics
                     if self.metrics:
                         self.metrics.start_provider(provider_id)
@@ -647,7 +652,6 @@ class ExtractionPipeline:
                         # Determine sports for this provider:
                         # If provider has supported_sports config, use intersection with
                         # Pinnacle-available sports. Otherwise use global kambi_sports.
-                        provider_cfg = self.engine.get_provider(provider_id)
                         provider_supported = getattr(provider_cfg, 'supported_sports', None)
                         if provider_supported:
                             # Use provider's supported sports, filtered to ALLOWED + sharp
@@ -994,8 +998,13 @@ class ExtractionPipeline:
 
         # Sport timeout from config (default 60s)
         # Browser-based providers need longer: page load + rendering + data extraction
-        base_sport_timeout = self.orchestrator_config.sport_timeout
-        sport_timeout = base_sport_timeout * 2 if is_single_page else base_sport_timeout
+        # Per-provider sport_timeout override takes precedence (e.g., 10Bet has many competitions)
+        per_provider_sport_timeout = getattr(provider_config, 'sport_timeout', None)
+        if per_provider_sport_timeout:
+            sport_timeout = per_provider_sport_timeout
+        else:
+            base_sport_timeout = self.orchestrator_config.sport_timeout
+            sport_timeout = base_sport_timeout * 2 if is_single_page else base_sport_timeout
 
         # Define per-sport extraction function
         async def extract_sport(sport: str, sport_index: int):

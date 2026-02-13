@@ -154,6 +154,8 @@ altenar_defaults: &altenar_defaults
     - mma
     - rugby
     - esports
+    - boxing
+    - cricket
 
 spectate_tournaments: &spectate_tournaments
   football:
@@ -559,6 +561,8 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
+    provider_timeout: 900              # 15 min — 113 football leagues, 275+ total leagues across all sports
+    sport_timeout: 300                 # 5 min per sport — football has 113 leagues at ~0.45s each
     supported_sports:
       - football
       - basketball
@@ -591,6 +595,8 @@ providers:
     domain: comeon.com
     retriever_type: custom
     site_url: https://www.comeon.com
+    provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: bonusdeposit
       amount: 500
@@ -618,6 +624,8 @@ providers:
     domain: hajper.com
     retriever_type: custom
     site_url: https://www.hajper.com
+    provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: freebet
       amount: 500
@@ -642,6 +650,8 @@ providers:
     domain: lyllocasino.com
     retriever_type: custom
     site_url: https://www.lyllocasino.com
+    provider_timeout: 900              # 12 sports × ~45s each (date scrolling)
+    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: freebet
       amount: 100

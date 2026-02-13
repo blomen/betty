@@ -316,11 +316,13 @@ class InterwettenRetriever(BrowserRetriever):
         super().__init__(config, transport=transport)
         self.base_url = config.get("site_url", "https://www.interwetten.se")
 
+    CONCURRENT_LEAGUE_PAGES = 5  # Parallel league navigation tabs (Pass 1)
+
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
-        Extract events via two-pass strategy:
-        1. League pages: get all events with 1x2/moneyline odds + event detail hrefs
-        2. Event detail pages: navigate to each event to get spread + total markets
+        Extract events via two-pass strategy with concurrent navigation:
+        1. League pages (concurrent): get events with 1x2/moneyline odds + event detail hrefs
+        2. Event detail pages (concurrent): navigate to each event for spread + total markets
         """
         leagues = self.SPORT_LEAGUES.get(sport, [])
         if not leagues:
@@ -333,45 +335,79 @@ class InterwettenRetriever(BrowserRetriever):
         await self.transport._ensure_browser()
         page = self.transport.page
 
-        # Patchright handles stealth at CDP level — no add_init_script() needed
-
         # Navigate to main sportsbook first to establish session
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")
 
-        # --- Pass 1: League listing pages (1x2/moneyline) ---
+        # --- Pass 1: League listing pages with CONCURRENT tabs ---
         all_events = []
-        event_hrefs = {}  # event_id -> href for detail page
+        event_hrefs = {}
         seen_event_ids = set()
 
-        for league_id, league_slug in leagues:
+        context = page.context
+        sem = asyncio.Semaphore(self.CONCURRENT_LEAGUE_PAGES)
+
+        # Create extra pages for concurrent league navigation
+        extra_pages = []
+        for _ in range(self.CONCURRENT_LEAGUE_PAGES - 1):
+            try:
+                p = await context.new_page()
+                extra_pages.append(p)
+            except Exception:
+                break
+        all_pages = [page] + extra_pages
+        page_pool = asyncio.Queue()
+        for p in all_pages:
+            await page_pool.put(p)
+
+        errors = 0
+
+        async def extract_league_concurrent(league_id, league_slug):
+            nonlocal errors
+            if errors > 30:
+                return [], {}
+            worker_page = await page_pool.get()
+            try:
+                async with sem:
+                    return await self._extract_league(
+                        worker_page, league_id, league_slug, sport
+                    )
+            except Exception as e:
+                errors += 1
+                logger.debug(f"[{self.provider_id}] League {league_slug} error: {e}")
+                return [], {}
+            finally:
+                await page_pool.put(worker_page)
+
+        # Process leagues in batches
+        batch_size = 20
+        for batch_start in range(0, len(leagues), batch_size):
             if limit and len(all_events) >= limit:
                 break
+            if errors > 30:
+                logger.warning(f"[{self.provider_id}] Too many league errors ({errors}), stopping")
+                break
 
-            try:
-                league_events, league_hrefs = await self._extract_league(
-                    page, league_id, league_slug, sport
-                )
+            batch = leagues[batch_start:batch_start + batch_size]
+            tasks = [extract_league_concurrent(lid, lslug) for lid, lslug in batch]
+            results = await asyncio.gather(*tasks)
 
+            for league_events, league_hrefs in results:
                 if league_events:
-                    new_count = 0
                     for event in league_events:
                         if event.id not in seen_event_ids:
                             seen_event_ids.add(event.id)
                             all_events.append(event)
-                            new_count += 1
                     event_hrefs.update(league_hrefs)
-                    if new_count > 0:
-                        logger.debug(
-                            f"[{self.provider_id}] {league_slug}: {new_count} events"
-                        )
 
-            except Exception as e:
-                logger.warning(
-                    f"[{self.provider_id}] Error extracting league {league_slug}: {e}"
-                )
+        # Close extra pages from Pass 1
+        for p in extra_pages:
+            try:
+                await p.close()
+            except Exception:
+                pass
 
         logger.info(
-            f"[{self.provider_id}] {sport}: {len(all_events)} events from {len(leagues)} leagues"
+            f"[{self.provider_id}] {sport}: {len(all_events)} events from {len(leagues)} leagues ({errors} errors)"
         )
 
         # --- Pass 2: Event detail pages (spread + total) ---

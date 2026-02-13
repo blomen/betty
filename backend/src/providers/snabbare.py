@@ -1,13 +1,21 @@
 """
 Snabbare Retriever - WebSocket-based sportsbook extraction
 
-Snabbare (Sportradar MTS platform) uses WebSocket for real-time event data.
+Snabbare (Sportradar MTS platform / Komigen) uses WebSocket for real-time event data.
 Binary frames contain JSON payloads with events, markets, and selections arrays.
 
 Strategy:
-1. REST API to discover leagues per sport (/v2/leagues?filter.sportId=N)
-2. Navigate to each league page to trigger WS data
-3. Parse events/markets/selections from WS payloads
+1. page.goto() to each sport page (React Router SPA)
+2. DOM sidebar contains league <a> links (React Router <Link> components)
+3. Click each link via el.click() → React Router navigates → WS delivers league data
+4. history.back() → back to sport page → click next league
+
+CRITICAL: Only DOM link clicks trigger WS data delivery. pushState/popstate
+does NOT work — React Router updates the route but component lifecycle hooks
+don't fire → no WS subscription → no data.
+
+Event data (odds/markets) is exclusively delivered via WebSocket.
+REST API (/sportsbook-api/api/) only provides metadata (sports, leagues, config).
 
 Data structure (from WS frames):
 - payload.events[]: {id, eventName, startingOn, sportId, leagueId, leagueName, status, ...}
@@ -136,7 +144,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    LEAGUE_SETTLE_TIME = 1.5  # seconds to wait for WS data after SPA link click
+    LEAGUE_SETTLE_TIME = 0.15  # min seconds to wait for WS data after SPA link click
+    MAX_LEAGUE_SETTLE_TIME = 0.6  # max seconds to wait (if WS data still arriving)
 
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
@@ -145,9 +154,12 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
         Strategy:
         1. page.goto() to the sport page (1 full navigation per sport)
-        2. DOM sidebar contains league links
-        3. Click each link via JS → React Router navigates → same WS delivers data
+        2. DOM sidebar contains league <a> links (React Router <Link> components)
+        3. Click each link via JS el.click() → React Router navigates → same WS delivers data
         4. history.back() → back to sport page → click next league
+
+        IMPORTANT: Only DOM link clicks trigger WS data delivery. pushState/popstate
+        does NOT trigger React component lifecycle → no WS subscription → no data.
 
         Each sport fits within the orchestrator's per-sport timeout (~120s).
         """
@@ -191,51 +203,105 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Re-register WS after goto (goto destroys page context)
             self._setup_snabbare_ws(page, ws_messages)
             await self._remove_overlays(page)
-            await asyncio.sleep(1.5)
 
-            # Get league links from DOM sidebar
+            # Wait for league links to appear in the sidebar (React renders async)
+            try:
+                await page.wait_for_selector(
+                    'a[href*="/leagues/"]', timeout=8000
+                )
+            except Exception:
+                logger.debug(f"[{self.provider_id}] {canonical}: no league links after 8s wait")
+            await asyncio.sleep(0.5)
+
+            # Discover league links from DOM sidebar
+            # These are React Router <Link> components — clicking them triggers
+            # SPA navigation and WS subscription for that league's events.
+            # IMPORTANT: Filter OUT event-level links (/events/) — we only want
+            # league-level links like /leagues/123-premier-league (not /events/456-team-a-team-b)
             league_links = await page.evaluate("""() => {
                 const links = document.querySelectorAll('a[href*="/leagues/"]');
-                return Array.from(links).map(l => ({
-                    href: l.getAttribute('href'),
-                    text: l.textContent.trim().substring(0, 60)
-                }));
+                return Array.from(links)
+                    .filter(l => !l.getAttribute('href').includes('/events/'))
+                    .map(l => ({
+                        href: l.getAttribute('href'),
+                        text: l.textContent.trim().substring(0, 60)
+                    }));
             }""")
+            league_links = league_links or []
+
+            # Dedup by league ID (sidebar has duplicate links: e.g.
+            # "898-fa-cup" AND "898-england-fa-cup" are the same league)
+            seen_league_ids = set()
+            unique_links = []
+            for link in league_links:
+                href = link.get("href", "")
+                if not href:
+                    continue
+                lid = self._extract_league_id(href)
+                if lid and lid not in seen_league_ids:
+                    seen_league_ids.add(lid)
+                    unique_links.append(link)
+                elif not lid and href not in seen_league_ids:
+                    # Fallback: dedup by full href if no ID extractable
+                    seen_league_ids.add(href)
+                    unique_links.append(link)
+            league_links = unique_links
 
             if not league_links:
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links in DOM")
                 return []
 
-            logger.debug(
-                f"[{self.provider_id}] {canonical}: {len(league_links)} leagues in DOM"
+            # Cap leagues per sport to stay within sport_timeout (~300s)
+            # Top leagues appear first in DOM (ordered by popularity/event count)
+            MAX_LEAGUES_PER_SPORT = 60
+            if len(league_links) > MAX_LEAGUES_PER_SPORT:
+                logger.info(
+                    f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
+                    f"to top {MAX_LEAGUES_PER_SPORT}"
+                )
+                league_links = league_links[:MAX_LEAGUES_PER_SPORT]
+
+            logger.info(
+                f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process"
             )
 
             # Click each league link via SPA router
             leagues_processed = 0
+            leagues_with_data = 0
             errors = 0
 
             for j, link in enumerate(league_links):
                 ws_before = len(ws_messages)
                 try:
-                    # JS click triggers React Router — no page reload, same WS
-                    await page.evaluate(
+                    href = link["href"]
+                    # Click the DOM link — React Router intercepts → component mount → WS subscription
+                    clicked = await page.evaluate(
                         f"""() => {{
-                            const el = document.querySelector('a[href="{link["href"]}"]');
-                            if (el) el.click();
+                            const el = document.querySelector('a[href="{href}"]');
+                            if (el) {{ el.click(); return true; }}
+                            return false;
                         }}"""
                     )
-                    await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
-                    leagues_processed += 1
+                    if not clicked:
+                        errors += 1
+                        continue
 
+                    # Adaptive wait: wait minimum time, then check for WS data
+                    await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
+                    elapsed = self.LEAGUE_SETTLE_TIME
+                    # If no data yet, wait a bit more (up to MAX)
+                    while len(ws_messages) == ws_before and elapsed < self.MAX_LEAGUE_SETTLE_TIME:
+                        await asyncio.sleep(0.1)
+                        elapsed += 0.1
+
+                    leagues_processed += 1
                     ws_delta = len(ws_messages) - ws_before
                     if ws_delta > 0:
-                        logger.debug(
-                            f"[{self.provider_id}] {link['text']}: +{ws_delta} WS msgs"
-                        )
+                        leagues_with_data += 1
 
                     # Navigate back to sport page for next league
                     await page.evaluate("window.history.back()")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)
 
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] {link['text']} error: {e}")
@@ -253,7 +319,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             events = events_by_sport.get(canonical, [])
 
             logger.info(
-                f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues, "
+                f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues clicked, "
+                f"{leagues_with_data} delivered data, "
                 f"{len(ws_messages)} WS msgs → {len(events)} events ({errors} errors)"
             )
 
@@ -265,6 +332,13 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             )
             return []
 
+    @staticmethod
+    def _extract_league_id(href: str) -> str:
+        """Extract league ID from a URL like /sv/sportsbook/sport/1-fotboll/leagues/123-premier-league."""
+        import re as _re
+        match = _re.search(r'/leagues/(\d+)', href)
+        return match.group(1) if match else ""
+
     async def _remove_overlays(self, page) -> None:
         """Remove OneTrust cookie overlay and other blocking elements."""
         try:
@@ -275,36 +349,6 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             }""")
         except Exception:
             pass
-
-    async def _fetch_leagues(self, page, sport_id: int) -> List[Dict]:
-        """Fetch all leagues for a sport via REST API using browser context."""
-        try:
-            url = (
-                f"{self.api_base}/v2/leagues?"
-                f"franchiseCode=SWEDEN_SNABBARE&locale=sv"
-                f"&filter.sportId={sport_id}"
-                f"&page=1&pageSize=200"
-            )
-            data = await page.evaluate(
-                f"""async () => {{
-                    const r = await fetch('{url}');
-                    if (!r.ok) return [];
-                    return await r.json();
-                }}"""
-            )
-            if isinstance(data, list):
-                active = [l for l in data if l.get("eventCount", 0) > 0]
-                canonical = self.SPORT_MAP.get(sport_id, ("unknown", ""))[0]
-                if active:
-                    total = sum(l.get("eventCount", 0) for l in active)
-                    logger.debug(
-                        f"[{self.provider_id}] {canonical}: "
-                        f"{len(active)} active leagues, {total} events"
-                    )
-                return data
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Failed to fetch leagues for sport {sport_id}: {e}")
-        return []
 
     def _parse_ws_data(self, ws_messages: List) -> Dict[str, List[StandardEvent]]:
         """
