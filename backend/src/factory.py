@@ -166,12 +166,10 @@ class ExtractorFactory:
             retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected
-            # Imperva blocks ALL Playwright-launched browsers (even real Chrome channel).
-            # Must connect via CDP to an existing user Chrome instance.
-            # Start Chrome with: chrome --remote-debugging-port=9222
-            from .core import BrowserTransport
-            transport = BrowserTransport(cdp_url='http://localhost:9222', circuit_breaker=self._circuit_breaker)
-            retriever = CoolbetRetriever(config, transport=transport)
+            # Uses Camoufox (anti-detect Firefox) to bypass Imperva automatically.
+            # Falls back to CDP if camoufox unavailable.
+            # Install: pip install camoufox[geoip] && python -m camoufox fetch
+            retriever = CoolbetRetriever(config, transport=None)
         elif retriever_type == "tipwin":
             # Tipwin - proprietary platform, browser-based API interception
             # Headless works fine (tested: 1,221 events vs 1,077 headed)

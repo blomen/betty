@@ -18,7 +18,7 @@ def load_provider_bonuses() -> dict[str, dict]:
     from ...paths import get_config_path
     config_path = get_config_path("providers.yaml")
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return {
             pid: p['bonus']

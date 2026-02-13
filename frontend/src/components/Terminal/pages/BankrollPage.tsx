@@ -5,6 +5,19 @@ import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import type { BankrollExposure, Provider } from '@/types';
 
+interface BonusProgressEntry {
+  status: string;
+  bonus_amount: number;
+  wagering_requirement: number;
+  wagered_amount: number;
+  min_odds: number;
+  progress_pct: number;
+  is_cleared: boolean;
+  claimed_at: string | null;
+  expires_at: string | null;
+  days_remaining: number | null;
+}
+
 interface BankrollPageProps {
   providers: Provider[];
   onRefresh: () => void;
@@ -19,6 +32,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     success: boolean;
     message: string;
   } | null>(null);
+  const [bonusProgress, setBonusProgress] = useState<Record<string, BonusProgressEntry>>({});
 
   // Bonus deposit popup state
   const [bonusPopup, setBonusPopup] = useState<{
@@ -30,8 +44,14 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const exposureData = await api.getBankrollExposure();
+      const [exposureData, statusData] = await Promise.all([
+        api.getBankrollExposure(),
+        api.getBankrollStatus().catch(() => null),
+      ]);
       setExposure(exposureData);
+      if (statusData?.bonus_progress) {
+        setBonusProgress(statusData.bonus_progress);
+      }
     } catch (err) {
       console.error('Failed to fetch bankroll data:', err);
     } finally {
@@ -70,7 +90,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     const hasBonus = bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit';
 
     if (hasBonus) {
-      // Show popup for bonus decision
+      // Show popup for bonus decision (accept or decline)
       const bonusAmount = Math.min(amount, bonusInfo!.bonus!.amount);
       setBonusPopup({ providerId, amount, bonusAmount });
     } else {
@@ -256,7 +276,62 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
         </Card>
       )}
 
-      {/* Bonus Deposit Popup */}
+      {/* Active Bonus Wagering Progress */}
+      {Object.keys(bonusProgress).length > 0 && (() => {
+        const activeEntries = Object.entries(bonusProgress).filter(
+          ([, b]) => b.status === 'in_progress' && b.wagering_requirement > 0
+        );
+        if (activeEntries.length === 0) return null;
+        return (
+          <Card title="Bonus Wagering">
+            <div className="space-y-3">
+              {activeEntries.map(([providerId, bonus]) => {
+                const remaining = Math.max(0, bonus.wagering_requirement - bonus.wagered_amount);
+                const pct = Math.min(100, bonus.progress_pct);
+                const days = bonus.days_remaining;
+                const urgent = days !== null && days <= 10;
+                const warning = days !== null && days > 10 && days <= 30;
+
+                return (
+                  <div key={providerId} className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-text font-medium">{formatProviderName(providerId)}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-muted">
+                          {bonus.wagered_amount.toFixed(0)} / {bonus.wagering_requirement.toFixed(0)} kr
+                        </span>
+                        {days !== null && (
+                          <span className={`font-mono ${urgent ? 'text-error' : warning ? 'text-amber-400' : 'text-success'}`}>
+                            {days}d left
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Progress bar */}
+                    <div className="h-1.5 bg-panel rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          urgent ? 'bg-error' : warning ? 'bg-amber-400' : 'bg-tabBonus'
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-muted2">
+                      <span>{pct.toFixed(0)}% wagered</span>
+                      <span>
+                        {remaining.toFixed(0)} kr remaining
+                        {bonus.min_odds > 0 && ` · min odds ${bonus.min_odds.toFixed(2)}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* Bonus Deposit Popup — shown when clicking +Bonus, lets user accept or decline */}
       {bonusPopup && (
         <BonusPopup
           title="Bonus Available"

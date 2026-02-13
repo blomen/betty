@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import { FilterBar, MultiSelectPills } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import type { Opportunity, Provider } from '@/types';
@@ -143,8 +142,6 @@ export function ValuePage({ providers }: ValuePageProps) {
           <span className="text-muted text-sm font-normal ml-1">({filtered.length})</span>
         </h2>
       </div>
-
-      <ExtractionProgressBar tiers={['api_soft', 'browser_soft']} />
 
       {/* Filters */}
       {availableProviders.length > 0 && (

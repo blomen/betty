@@ -2,7 +2,8 @@
 Coolbet Retriever - Proprietary GAN Sports platform
 
 Coolbet uses a proprietary sportsbook (formerly GAN Sports) with Imperva/Incapsula
-bot protection. Uses browser-based API interception via Playwright CDP.
+bot protection. Uses Camoufox (anti-detect Firefox) to bypass Imperva automatically.
+Falls back to CDP connection if camoufox is unavailable.
 
 API endpoints (proxied through coolbet.com):
 - GET /s/sbgate/sports/fo-category/?categoryId={id}&offset=N — paginated category/league listing
@@ -33,9 +34,17 @@ logger = logging.getLogger(__name__)
 CATEGORY_PAGE_SIZE = 10
 MAX_OFFSET = 500
 
+# Camoufox persistent profile directory (preserves cookies between runs)
+CAMOUFOX_PROFILE_DIR = None  # Will use temp dir; set for cookie persistence
+
 
 class CoolbetRetriever(BrowserRetriever):
-    """Retriever for Coolbet sportsbook (GAN Sports platform)."""
+    """Retriever for Coolbet sportsbook (GAN Sports platform).
+
+    Uses Camoufox (anti-detect Firefox) to bypass Imperva bot detection.
+    Camoufox patches fingerprints at C++ level, making it undetectable
+    to Imperva's Reese84 challenge. Falls back to CDP if unavailable.
+    """
 
     SPORT_CONFIG: Dict[str, Dict] = {
         "football":          {"slug": "fotboll",             "category_id": 62},
@@ -59,6 +68,7 @@ class CoolbetRetriever(BrowserRetriever):
         "Moneyline":                    "moneyline",
         "Money Line":                   "moneyline",
         "Match Result":                 "moneyline",
+        "Fight Result (Draw No Bet)":   "moneyline",
         # Total
         "Total Goals Over / Under":     "total",
         "Total Goals Over/Under":       "total",
@@ -83,6 +93,74 @@ class CoolbetRetriever(BrowserRetriever):
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.coolbet.com")
+        self._camoufox_browser = None
+        self._camoufox_page = None
+
+    async def _ensure_camoufox(self):
+        """Launch Camoufox anti-detect browser if not already running."""
+        if self._camoufox_page is not None:
+            return self._camoufox_page
+
+        try:
+            from camoufox.async_api import AsyncCamoufox
+        except ImportError:
+            logger.error(
+                f"[{self.provider_id}] camoufox not installed. "
+                f"Install with: pip install camoufox[geoip] && python -m camoufox fetch"
+            )
+            return None
+
+        logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
+        try:
+            self._camoufox_browser = await AsyncCamoufox(
+                headless=False,
+                geoip=True,
+                humanize=1.5,
+                os="windows",
+            ).__aenter__()
+
+            self._camoufox_page = await self._camoufox_browser.new_page()
+            logger.info(f"[{self.provider_id}] Camoufox browser ready")
+            return self._camoufox_page
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
+            self._camoufox_browser = None
+            self._camoufox_page = None
+            return None
+
+    async def _cleanup_camoufox(self):
+        """Close camoufox browser (suppresses pipe errors from subprocess cleanup)."""
+        if self._camoufox_browser:
+            try:
+                await self._camoufox_browser.__aexit__(None, None, None)
+            except (Exception, OSError, ValueError):
+                # Camoufox subprocess may raise "I/O operation on closed pipe"
+                # during shutdown — this is benign and expected
+                pass
+            finally:
+                self._camoufox_browser = None
+                self._camoufox_page = None
+
+    async def _get_page(self) -> Optional[Any]:
+        """Get a browser page — tries Camoufox first, falls back to CDP transport."""
+        # Strategy 1: Camoufox (anti-detect Firefox, bypasses Imperva)
+        page = await self._ensure_camoufox()
+        if page:
+            return page
+
+        # Strategy 2: CDP fallback (requires manual Chrome with --remote-debugging-port=9222)
+        if isinstance(self.transport, BrowserTransport):
+            try:
+                await self.transport._ensure_browser()
+                return self.transport.page
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] CDP fallback failed: {e}")
+
+        logger.error(
+            f"[{self.provider_id}] No browser available. "
+            f"Install camoufox: pip install camoufox[geoip] && python -m camoufox fetch"
+        )
+        return None
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """Extract events using Coolbet's internal API via browser context."""
@@ -92,20 +170,9 @@ class CoolbetRetriever(BrowserRetriever):
             return []
 
         try:
-            if not isinstance(self.transport, BrowserTransport):
-                logger.error(f"[{self.provider_id}] CoolbetRetriever requires BrowserTransport")
+            page = await self._get_page()
+            if not page:
                 return []
-
-            try:
-                await self.transport._ensure_browser()
-            except Exception as e:
-                logger.error(
-                    f"[{self.provider_id}] Failed to connect browser. "
-                    f"Coolbet requires CDP connection to bypass Imperva. "
-                    f"Start Chrome with: chrome --remote-debugging-port=9222  |  Error: {e}"
-                )
-                return []
-            page = self.transport.page
 
             # Navigate to sport page to establish session (needed for API auth)
             if not self._session_ready:
@@ -122,11 +189,12 @@ class CoolbetRetriever(BrowserRetriever):
                 if 'Incapsula' in body_text or 'security check' in body_text.lower() or \
                    'Access denied' in body_text or 'Error 15' in body_text:
                     logger.error(
-                        f"[{self.provider_id}] Imperva block detected. "
-                        f"Start Chrome with: chrome --remote-debugging-port=9222"
+                        f"[{self.provider_id}] Imperva block detected even with Camoufox. "
+                        f"This may require a manual CDP session."
                     )
                     return []
 
+                logger.info(f"[{self.provider_id}] Session established — Imperva bypassed")
                 await asyncio.sleep(2)
                 self._session_ready = True
 
@@ -476,6 +544,8 @@ class CoolbetRetriever(BrowserRetriever):
             return "1x2"
         if "match result" in name_lower:
             return "1x2"
+        if "fight result" in name_lower and "3" not in name_lower:
+            return "moneyline"
         if "winner" in name_lower or "moneyline" in name_lower or "money line" in name_lower:
             return "moneyline"
         if "over" in name_lower and "under" in name_lower:
@@ -522,6 +592,11 @@ class CoolbetRetriever(BrowserRetriever):
                 return "under"
 
         return None
+
+    async def close(self):
+        """Close Camoufox browser and transport."""
+        await self._cleanup_camoufox()
+        await super().close()
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         """Not used — browser-based extraction."""

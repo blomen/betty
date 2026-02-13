@@ -55,6 +55,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         175: 'moneyline',   # Vinnare (Winner, 2-way)
         206: 'moneyline',   # Vinnare inkl. övertid (Winner incl. overtime)
         212: 'total',        # Totalt inkl. övertid (Total incl. overtime)
+        213: 'spread',       # Handikapp inkl. övertid (Handicap incl. overtime)
+        202: 'total',        # Totalt antal mål (Total goals)
+        203: 'spread',       # Handikapp (Handicap)
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -91,6 +94,15 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 return {'name': 'over', 'odds': float(odds), 'point': float(points)}
             if outcome_type == 'under' or name.startswith('under'):
                 return {'name': 'under', 'odds': float(odds), 'point': float(points)}
+
+        elif market_type == 'spread':
+            points = selection.get('points')
+            if points is None:
+                return None
+            if outcome_type == 'home':
+                return {'name': 'home', 'odds': float(odds), 'point': float(points)}
+            if outcome_type == 'away':
+                return {'name': 'away', 'odds': float(odds), 'point': float(points)}
 
         return None
 
@@ -337,6 +349,10 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 market_type = self._normalize_market_type(mt_id)
 
                 if market_type == 'other':
+                    mt_name = mt.get('originalName', mt.get('name', ''))
+                    logger.debug(
+                        f"[{self.provider_id}] Unknown market typeId={mt_id} "
+                        f"name='{mt_name}'")
                     continue
 
                 if mkt.get('isSuspended'):

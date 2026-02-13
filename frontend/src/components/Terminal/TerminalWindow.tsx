@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import type { BettingContext } from '@/types';
 import { Sidebar, type TabName } from './Sidebar';
+import { ExtractionProgressBar } from './ExtractionProgressBar';
 import {
   ValuePage,
   PolymarketPage,
@@ -48,6 +49,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
     <div className="flex h-full bg-bg">
       <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />
       <div className="flex-1 overflow-y-auto p-6">
+        <ExtractionProgressBar />
         {renderPage()}
       </div>
     </div>

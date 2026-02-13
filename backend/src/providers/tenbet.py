@@ -187,13 +187,22 @@ class TenBetRetriever(BrowserRetriever):
         Discover competition IDs by navigating to the sport's competitions page.
 
         Returns list of {id, name} dicts.
+        Uses retry with increasing wait times for headed mode SPA rendering.
         """
         url = f"{self.site_url}/sports/{sport_slug}/competitions"
         page = self.transport.page
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)  # Wait for SPA to render (reduced from 3s)
+
+            # Try to wait for competition links to appear
+            try:
+                await page.wait_for_selector(
+                    'a[href*="competitions/"]', timeout=8000
+                )
+            except Exception:
+                # SPA might need more time in headed mode
+                await page.wait_for_timeout(3000)
 
             competitions = await page.evaluate("""() => {
                 const links = document.querySelectorAll('a[href*="competitions/"]');
@@ -213,6 +222,29 @@ class TenBetRetriever(BrowserRetriever):
                     })
                     .filter(c => c.id);
             }""")
+
+            # If no competitions found, retry once with longer wait
+            if not competitions:
+                logger.debug(f"[{self.provider_id}] No competitions on first try for {sport_slug}, retrying...")
+                await page.wait_for_timeout(3000)
+                competitions = await page.evaluate("""() => {
+                    const links = document.querySelectorAll('a[href*="competitions/"]');
+                    return Array.from(links)
+                        .map(a => ({
+                            text: a.textContent.trim(),
+                            href: a.getAttribute('href')
+                        }))
+                        .filter(l => l.href && /\\/competitions\\/\\d+/.test(l.href))
+                        .filter((v, i, a) => a.findIndex(x => x.href === v.href) === i)
+                        .map(l => {
+                            const match = l.href.match(/\\/competitions\\/(\\d+)/);
+                            return {
+                                id: match ? match[1] : null,
+                                name: l.text
+                            };
+                        })
+                        .filter(c => c.id);
+                }""")
 
             return competitions
 
@@ -240,9 +272,9 @@ class TenBetRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            # Wait for event items to render (SPA widget needs time)
+            # Wait for event items to render (SPA widget needs time — headed mode slower)
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=15000)
             except Exception:
                 # Check for empty state
                 empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')

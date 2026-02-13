@@ -76,10 +76,21 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         "Under": "under",
     }
 
-    # Market type IDs we want
-    # typeId=1 is "1x2", typeId=8 is goal scorer (skip)
+    # Market type IDs we want (discovered via diag_snabbare_markets.py)
     MARKET_TYPE_MAP = {
+        # 1x2 (3-way)
         1: "1x2",
+        # Moneyline (2-way)
+        175: "moneyline",   # Winner
+        206: "moneyline",   # Winner (incl. overtime)
+        376: "moneyline",   # Winner (incl. overtime and penalties)
+        # Total (over/under)
+        212: "total",        # Total (incl. overtime) — basketball
+        1621: "total",       # Total Goals Over/Under (Regular Time) — ice hockey
+        1622: "total",       # Total Goals Over/Under — ice hockey
+        # Spread (handicap)
+        1619: "spread",      # Puck Line (Regular Time) — ice hockey
+        1625: "spread",      # Puck Line — ice hockey
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -90,26 +101,20 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             "franchiseCode": "SWEDEN_SNABBARE",
             "locale": "sv",
         }
-        # Cache all events on first extraction, then filter by sport
-        self._all_events: Optional[Dict[str, List[StandardEvent]]] = None
 
     async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
         """
-        Extract events for a given sport.
+        Extract events for a given sport via SPA league-link clicking.
 
-        On first call, collects all events via WS interception across sports.
-        Subsequent calls return cached results filtered by sport.
+        Each sport call navigates to that sport's page, clicks league links
+        via React Router (SPA, no page reload), and collects WS data.
+        Fits within the orchestrator's per-sport timeout (~120s).
         """
         # Health check — return quickly without full extraction
-        if limit <= 1 and self._all_events is None:
+        if limit <= 1:
             return await self._quick_health_check()
 
-        # Extract all sports on first call
-        if self._all_events is None:
-            self._all_events = await self._extract_all()
-
-        events = self._all_events.get(sport, [])
-        logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events")
+        events = await self._extract_sport(sport)
         return events[:limit]
 
     async def _quick_health_check(self) -> List[StandardEvent]:
@@ -131,118 +136,145 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    LEAGUE_SETTLE_TIME = 1.2  # seconds to wait for WS data after navigation
+    LEAGUE_SETTLE_TIME = 1.5  # seconds to wait for WS data after SPA link click
 
-    async def _extract_all(self) -> Dict[str, List[StandardEvent]]:
+    async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
-        Discover all leagues via REST API, then navigate to each league
-        sequentially on the main page to collect WS event data.
+        Extract events for one sport by navigating to the sport page and
+        clicking each league link via React Router (SPA, no page reload).
 
-        IMPORTANT: Snabbare's WS connection only delivers data to the page
-        that established it. Opening new tabs creates new WS connections that
-        receive 0 INITIAL_STATE frames. All navigation must happen on the
-        single main page.
+        Strategy:
+        1. page.goto() to the sport page (1 full navigation per sport)
+        2. DOM sidebar contains league links
+        3. Click each link via JS → React Router navigates → same WS delivers data
+        4. history.back() → back to sport page → click next league
+
+        Each sport fits within the orchestrator's per-sport timeout (~120s).
         """
+        sport_id = self.SPORT_ID_BY_NAME.get(sport)
+        if sport_id is None:
+            return []
+
+        sport_info = self.SPORT_MAP.get(sport_id)
+        if not sport_info:
+            return []
+        canonical, slug = sport_info
+
         try:
             if not isinstance(self.transport, BrowserTransport):
                 logger.error(f"[{self.provider_id}] Requires BrowserTransport")
-                return {}
+                return []
 
             await self.transport._ensure_browser()
             page = self.transport.page
 
-            # WS message store — single page feeds into this list
+            # WS message store for this sport
             ws_messages: List = []
 
-            # Setup WS interception on main page
-            self._setup_ws_interception_into(page, ws_messages)
+            # Setup WS interception (handles binary RSocket + text JSON)
+            self._setup_snabbare_ws(page, ws_messages)
 
-            # Initial page load to establish session + cookies
+            # Initial session setup (cookie consent, etc.) — only once
             if not self._session_ready:
                 await page.goto(
                     f"{self.site_url}/sv/sportsbook",
                     wait_until="load", timeout=30000
                 )
                 await self._handle_cookie_consent(page)
+                await self._remove_overlays(page)
                 await asyncio.sleep(2)
                 self._session_ready = True
 
-            # Discover leagues per sport via REST API
-            all_leagues: List[Dict] = []
-            for sport_id, (canonical, slug) in self.SPORT_MAP.items():
-                leagues = await self._fetch_leagues(page, sport_id)
-                for league in leagues:
-                    league["_sport_id"] = sport_id
-                    league["_canonical"] = canonical
-                    league["_slug"] = slug
-                all_leagues.extend(leagues)
+            # Navigate to sport page
+            sport_url = f"{self.site_url}/sv/sportsbook/sport/{sport_id}-{slug}"
+            await page.goto(sport_url, wait_until="load", timeout=30000)
+            # Re-register WS after goto (goto destroys page context)
+            self._setup_snabbare_ws(page, ws_messages)
+            await self._remove_overlays(page)
+            await asyncio.sleep(1.5)
 
-            # Filter to leagues with events
-            active_leagues = [l for l in all_leagues if l.get("eventCount", 0) > 0]
-            total_events = sum(l.get("eventCount", 0) for l in active_leagues)
+            # Get league links from DOM sidebar
+            league_links = await page.evaluate("""() => {
+                const links = document.querySelectorAll('a[href*="/leagues/"]');
+                return Array.from(links).map(l => ({
+                    href: l.getAttribute('href'),
+                    text: l.textContent.trim().substring(0, 60)
+                }));
+            }""")
+
+            if not league_links:
+                logger.debug(f"[{self.provider_id}] {canonical}: no league links in DOM")
+                return []
+
             logger.debug(
-                f"[{self.provider_id}] Discovered {len(active_leagues)} active leagues "
-                f"with {total_events} total events"
+                f"[{self.provider_id}] {canonical}: {len(league_links)} leagues in DOM"
             )
 
-            # Sort by event count descending (biggest leagues first)
-            active_leagues.sort(key=lambda x: x.get("eventCount", 0), reverse=True)
-
-            # Navigate sequentially to each league on the same page
-            # WS only delivers data to the originating page (same as ComeOn Group)
+            # Click each league link via SPA router
             leagues_processed = 0
             errors = 0
 
-            for i, league in enumerate(active_leagues):
-                lid = league.get("id", "")
-                lname = league.get("name", "")
-                sport_slug = league["_slug"]
-                sport_id = league["_sport_id"]
-
-                name_slug = re.sub(r'[^a-z0-9]+', '-', lname.lower()).strip('-')
-                league_url = (
-                    f"{self.site_url}/sv/sportsbook/sport/"
-                    f"{sport_id}-{sport_slug}/leagues/{lid}-{name_slug}"
-                )
-
+            for j, link in enumerate(league_links):
+                ws_before = len(ws_messages)
                 try:
-                    await page.goto(
-                        league_url,
-                        wait_until="domcontentloaded",
-                        timeout=15000,
+                    # JS click triggers React Router — no page reload, same WS
+                    await page.evaluate(
+                        f"""() => {{
+                            const el = document.querySelector('a[href="{link["href"]}"]');
+                            if (el) el.click();
+                        }}"""
                     )
                     await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
                     leagues_processed += 1
+
+                    ws_delta = len(ws_messages) - ws_before
+                    if ws_delta > 0:
+                        logger.debug(
+                            f"[{self.provider_id}] {link['text']}: +{ws_delta} WS msgs"
+                        )
+
+                    # Navigate back to sport page for next league
+                    await page.evaluate("window.history.back()")
+                    await asyncio.sleep(0.5)
+
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] League {lname} error: {e}")
+                    logger.debug(f"[{self.provider_id}] {link['text']} error: {e}")
                     errors += 1
+                    # Try to recover to sport page
+                    try:
+                        await page.goto(sport_url, wait_until="load", timeout=15000)
+                        self._setup_snabbare_ws(page, ws_messages)
+                        await asyncio.sleep(1)
+                    except Exception:
+                        break
 
-                # Progress logging every 20 leagues
-                if (i + 1) % 20 == 0:
-                    logger.debug(
-                        f"[{self.provider_id}] Progress: {leagues_processed}/{len(active_leagues)} leagues, "
-                        f"{len(ws_messages)} WS messages"
-                    )
-
-            logger.debug(
-                f"[{self.provider_id}] Processed {leagues_processed} leagues, "
-                f"collected {len(ws_messages)} WS messages ({errors} errors)"
-            )
-
-            # Parse all WS messages into events
+            # Parse WS messages into events
             events_by_sport = self._parse_ws_data(ws_messages)
+            events = events_by_sport.get(canonical, [])
 
-            total = sum(len(v) for v in events_by_sport.values())
-            sport_summary = ", ".join(
-                f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items())
+            logger.info(
+                f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues, "
+                f"{len(ws_messages)} WS msgs → {len(events)} events ({errors} errors)"
             )
-            logger.debug(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
 
-            return events_by_sport
+            return events
 
         except Exception as e:
-            logger.error(f"[{self.provider_id}] Error extracting: {e}", exc_info=True)
-            return {}
+            logger.error(
+                f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True
+            )
+            return []
+
+    async def _remove_overlays(self, page) -> None:
+        """Remove OneTrust cookie overlay and other blocking elements."""
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll(
+                    '.onetrust-pc-dark-filter, #onetrust-consent-sdk, .ot-fade-in'
+                ).forEach(e => e.remove());
+            }""")
+        except Exception:
+            pass
 
     async def _fetch_leagues(self, page, sport_id: int) -> List[Dict]:
         """Fetch all leagues for a sport via REST API using browser context."""
@@ -281,10 +313,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         WS messages from RSocketMixin are already decoded to JSON lists.
         Each message is a list of dicts with 'payload' containing events/markets/selections.
         """
-        # Collect all raw data
+        # Collect all raw data (dedup by ID to avoid duplicates from repeated WS messages)
         all_events: Dict[str, Dict] = {}
-        all_markets: Dict[str, List[Dict]] = {}
-        all_selections: Dict[str, List[Dict]] = {}
+        all_markets_by_id: Dict[str, Dict] = {}  # market_id -> market dict
+        all_selections_by_id: Dict[str, Dict] = {}  # selection unique key -> selection dict
 
         for msg_list in ws_messages:
             if not isinstance(msg_list, list):
@@ -302,14 +334,29 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         all_events[eid] = ev
 
                 for mkt in payload.get("markets", []):
-                    eid = str(mkt.get("eventId", ""))
-                    if eid:
-                        all_markets.setdefault(eid, []).append(mkt)
+                    mid = str(mkt.get("id", ""))
+                    if mid:
+                        all_markets_by_id[mid] = mkt
 
                 for sel in payload.get("selections", []):
+                    # Dedup selections by (marketId, outcomeType) or (marketId, name)
                     mid = str(sel.get("marketId", ""))
+                    sel_key = f"{mid}:{sel.get('outcomeType', '')}:{sel.get('name', '')}"
                     if mid:
-                        all_selections.setdefault(mid, []).append(sel)
+                        all_selections_by_id[sel_key] = sel
+
+        # Rebuild grouped structures from deduped data
+        all_markets: Dict[str, List[Dict]] = {}
+        for mkt in all_markets_by_id.values():
+            eid = str(mkt.get("eventId", ""))
+            if eid:
+                all_markets.setdefault(eid, []).append(mkt)
+
+        all_selections: Dict[str, List[Dict]] = {}
+        for sel in all_selections_by_id.values():
+            mid = str(sel.get("marketId", ""))
+            if mid:
+                all_selections.setdefault(mid, []).append(sel)
 
         logger.info(
             f"[{self.provider_id}] WS data: "
@@ -418,6 +465,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 # Fallback: check name patterns
                 mt_name = (mt_info.get("originalName", "") or mt_info.get("name", "")).lower()
                 market_type = self._classify_market_by_name(mt_name)
+                if not market_type:
+                    logger.debug(
+                        f"[{self.provider_id}] Unknown market typeId={mt_id} "
+                        f"name='{mt_info.get('originalName', mt_info.get('name', ''))}'")
 
             if not market_type or market_type in seen_types:
                 continue
@@ -525,6 +576,43 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         except Exception:
             pass
         return None
+
+    def _setup_snabbare_ws(self, page, messages: list) -> None:
+        """Setup WS interception that handles both binary and text frames.
+
+        Snabbare may send data as binary (RSocket) or text (JSON) frames.
+        The standard RSocketMixin only handles binary — this also captures text.
+        """
+        ws_count = [0]
+
+        def on_websocket(ws):
+            ws_count[0] += 1
+            ws_url = ws.url if hasattr(ws, 'url') else 'unknown'
+            logger.info(
+                f"[{self.provider_id}] WS #{ws_count[0]} connected: "
+                f"{ws_url[:80]}"
+            )
+
+            def on_frame_received(payload):
+                if isinstance(payload, bytes):
+                    decoded = self._decode_rsocket_frame(payload)
+                    if decoded:
+                        messages.append(decoded)
+                elif isinstance(payload, str):
+                    # Text frame — try direct JSON parse
+                    try:
+                        if payload.startswith('[{') or payload.startswith('{"'):
+                            data = json.loads(payload)
+                            if isinstance(data, list):
+                                messages.append(data)
+                            elif isinstance(data, dict):
+                                messages.append([data])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+            ws.on("framereceived", on_frame_received)
+
+        page.on("websocket", on_websocket)
 
     async def _handle_cookie_consent(self, page):
         """Handle cookie consent dialogs."""

@@ -37,8 +37,20 @@ if sys.platform == "win32":
 
 
 def find_free_port(start: int = 8000, end: int = 8100) -> int:
-    """Find an available port in the given range."""
+    """Find an available port in the given range.
+
+    Uses connect() to check if something is already listening, then bind()
+    to verify the port is truly available.  This avoids the race where
+    bind() succeeds on a TIME_WAIT socket but uvicorn then fails.
+    """
     for port in range(start, end):
+        # First check: is anything already listening?
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                # Something is listening → skip
+                continue
+        # Second check: can we actually bind?
         with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
             try:
                 sock.bind(("127.0.0.1", port))
@@ -55,7 +67,7 @@ def start_server(port: int):
         import uvicorn
         logger.info("Importing FastAPI app...")
         from src.api import app
-        logger.info("FastAPI app imported OK, starting uvicorn...")
+        logger.info("FastAPI app imported OK, starting uvicorn on port %d...", port)
 
         config = uvicorn.Config(
             app,
@@ -66,27 +78,52 @@ def start_server(port: int):
         )
         server = uvicorn.Server(config)
         server.run()
+        logger.info("Uvicorn server stopped")
+    except OSError as e:
+        if "address already in use" in str(e).lower() or "10048" in str(e):
+            logger.error("Port %d is already in use — is another OddOpp instance running?", port)
+        else:
+            logger.exception("Server thread crashed (OSError)")
     except Exception:
         logger.exception("Server thread crashed")
 
 
-def wait_for_server(port: int, timeout: float = 30.0) -> bool:
-    """Poll the health endpoint until the server is ready."""
+def wait_for_server(port: int, timeout: float = 60.0) -> bool:
+    """Poll the health endpoint until the server is ready.
+
+    Args:
+        port: Port to check.
+        timeout: Maximum seconds to wait (default 60s to handle cold starts).
+    """
     import urllib.request
     import urllib.error
 
+    logger = logging.getLogger("launcher.wait")
     url = f"http://127.0.0.1:{port}/health"
-    deadline = time.time() + timeout
+    start = time.time()
+    deadline = start + timeout
+    logged_5s = logged_15s = False
 
     while time.time() < deadline:
+        elapsed = time.time() - start
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
+                    logger.info("Health check passed after %.1fs", elapsed)
                     return True
         except (urllib.error.URLError, OSError):
             pass
+
+        if elapsed > 5 and not logged_5s:
+            logger.info("Still waiting for server (%.0fs)...", elapsed)
+            logged_5s = True
+        if elapsed > 15 and not logged_15s:
+            logger.warning("Server slow to start (%.0fs) — may be a cold start", elapsed)
+            logged_15s = True
+
         time.sleep(0.25)
 
+    logger.error("Server did not respond within %.0fs", timeout)
     return False
 
 
@@ -141,7 +178,7 @@ def _run(logger: logging.Logger, bundled: bool):
 
     # Wait for server readiness
     if not wait_for_server(port):
-        logger.error("Server failed to start within 30 seconds")
+        logger.error("Server failed to start — check logs/launcher.log for details")
         sys.exit(1)
 
     logger.info("Server ready at http://127.0.0.1:%d", port)

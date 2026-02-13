@@ -45,8 +45,9 @@ def run_first_time_setup():
     from .db.models import init_db
     init_db()
 
-    # 5. Check Playwright browsers (non-blocking)
-    _check_playwright()
+    # 5. Skip Playwright check on startup — it launches a full Chromium browser
+    # which takes 10-17s and isn't necessary for the app to run. Browser-based
+    # providers will fail gracefully at extraction time if browsers aren't installed.
 
     logger.info("Setup complete. Data directory: %s", app_dir)
 

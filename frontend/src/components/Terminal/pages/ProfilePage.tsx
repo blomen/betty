@@ -7,36 +7,6 @@ interface ProfilePageProps {
   onRefresh: () => void;
 }
 
-const KELLY_PRESETS = [
-  { value: 0.1, label: '10% (Very Conservative)' },
-  { value: 0.25, label: '25% (Quarter Kelly)' },
-  { value: 0.5, label: '50% (Half Kelly)' },
-  { value: 1.0, label: '100% (Full Kelly)' },
-];
-
-interface ProfileFormData {
-  name: string;
-  kelly_fraction: string;
-  max_stake_pct: string;
-  min_edge_pct: string;
-}
-
-const defaultFormData: ProfileFormData = {
-  name: '',
-  kelly_fraction: '0.25',
-  max_stake_pct: '5.0',
-  min_edge_pct: '2.0',
-};
-
-function profileToFormData(profile: Profile): ProfileFormData {
-  return {
-    name: profile.name,
-    kelly_fraction: profile.kelly_fraction.toString(),
-    max_stake_pct: profile.max_stake_pct.toString(),
-    min_edge_pct: profile.min_edge_pct.toString(),
-  };
-}
-
 export function ProfilePage({ onRefresh }: ProfilePageProps) {
   const {
     profiles,
@@ -50,7 +20,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
 
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [formData, setFormData] = useState<ProfileFormData>(defaultFormData);
+  const [nameInput, setNameInput] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
@@ -66,21 +36,21 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
   }, [actionError, actionSuccess]);
 
   const handleCreate = async () => {
-    if (!formData.name.trim()) {
+    if (!nameInput.trim()) {
       setActionError('Profile name is required');
       return;
     }
 
     try {
       const data: ProfileCreate = {
-        name: formData.name.trim(),
-        kelly_fraction: parseFloat(formData.kelly_fraction) || 0.25,
-        max_stake_pct: parseFloat(formData.max_stake_pct) || 5.0,
-        min_edge_pct: parseFloat(formData.min_edge_pct) || 2.0,
+        name: nameInput.trim(),
+        kelly_fraction: 0.25,
+        max_stake_pct: 5.0,
+        min_edge_pct: 2.0,
       };
       await createProfile(data);
       setIsCreating(false);
-      setFormData(defaultFormData);
+      setNameInput('');
       setActionSuccess(`Profile "${data.name}" created`);
       onRefresh();
     } catch (err) {
@@ -91,14 +61,11 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
   const handleUpdate = async (id: number) => {
     try {
       const data: ProfileUpdate = {
-        name: formData.name.trim() || undefined,
-        kelly_fraction: parseFloat(formData.kelly_fraction) || undefined,
-        max_stake_pct: parseFloat(formData.max_stake_pct) || undefined,
-        min_edge_pct: parseFloat(formData.min_edge_pct) || undefined,
+        name: nameInput.trim() || undefined,
       };
       await updateProfile(id, data);
       setEditingId(null);
-      setFormData(defaultFormData);
+      setNameInput('');
       setActionSuccess('Profile updated');
       onRefresh();
     } catch (err) {
@@ -132,20 +99,20 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
 
   const startEditing = (profile: Profile) => {
     setEditingId(profile.id);
-    setFormData(profileToFormData(profile));
+    setNameInput(profile.name);
     setIsCreating(false);
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setIsCreating(false);
-    setFormData(defaultFormData);
+    setNameInput('');
   };
 
   const startCreating = () => {
     setIsCreating(true);
     setEditingId(null);
-    setFormData(defaultFormData);
+    setNameInput('');
   };
 
   if (isLoading) {
@@ -192,13 +159,34 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       {/* Create Form */}
       {isCreating && (
         <Card title="Create Profile">
-          <ProfileForm
-            formData={formData}
-            setFormData={setFormData}
-            onSubmit={handleCreate}
-            onCancel={cancelEdit}
-            submitLabel="Create"
-          />
+          <div className="space-y-4">
+            <div className="max-w-sm">
+              <label className="block text-xs text-muted mb-1">Profile Name</label>
+              <input
+                type="text"
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                placeholder="My Profile"
+                className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
+                autoFocus
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCreate}
+                className="px-4 py-2 text-sm bg-tabProfiles text-white rounded hover:bg-tabProfiles/90 transition-colors"
+              >
+                Create
+              </button>
+              <button
+                onClick={cancelEdit}
+                className="px-4 py-2 text-sm text-muted hover:text-text transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </Card>
       )}
 
@@ -211,13 +199,33 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
           if (isEditing) {
             return (
               <Card key={profile.id} title={`Edit: ${profile.name}`}>
-                <ProfileForm
-                  formData={formData}
-                  setFormData={setFormData}
-                  onSubmit={() => handleUpdate(profile.id)}
-                  onCancel={cancelEdit}
-                  submitLabel="Save"
-                />
+                <div className="space-y-4">
+                  <div className="max-w-sm">
+                    <label className="block text-xs text-muted mb-1">Profile Name</label>
+                    <input
+                      type="text"
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleUpdate(profile.id)}
+                      className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleUpdate(profile.id)}
+                      className="px-4 py-2 text-sm bg-tabProfiles text-white rounded hover:bg-tabProfiles/90 transition-colors"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      className="px-4 py-2 text-sm text-muted hover:text-text transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               </Card>
             );
           }
@@ -232,7 +240,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                   : 'bg-panel border-border hover:border-tabProfiles/50 cursor-pointer'
               } transition-colors`}
             >
-              <div className="flex items-start justify-between">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span
                     className={`w-3 h-3 rounded-full border-2 ${
@@ -241,22 +249,15 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                         : 'border-muted'
                     }`}
                   />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className={`font-medium ${isActive ? 'text-text' : 'text-muted'}`}>
-                        {profile.name}
+                  <div className="flex items-center gap-2">
+                    <span className={`font-medium ${isActive ? 'text-text' : 'text-muted'}`}>
+                      {profile.name}
+                    </span>
+                    {isActive && (
+                      <span className="text-xs px-1.5 py-0.5 bg-tabProfiles/20 text-tabProfiles rounded">
+                        Active
                       </span>
-                      {isActive && (
-                        <span className="text-xs px-1.5 py-0.5 bg-tabProfiles/20 text-tabProfiles rounded">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted mt-1 flex gap-3">
-                      <span>Kelly: {(profile.kelly_fraction * 100).toFixed(0)}%</span>
-                      <span>Max stake: {profile.max_stake_pct}%</span>
-                      <span>Min edge: {profile.min_edge_pct}%</span>
-                    </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -292,99 +293,6 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-interface ProfileFormProps {
-  formData: ProfileFormData;
-  setFormData: (data: ProfileFormData) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-  submitLabel: string;
-}
-
-function ProfileForm({ formData, setFormData, onSubmit, onCancel, submitLabel }: ProfileFormProps) {
-  const handleChange = (field: keyof ProfileFormData, value: string) => {
-    setFormData({ ...formData, [field]: value });
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {/* Name */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Profile Name</label>
-          <input
-            type="text"
-            value={formData.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            placeholder="My Profile"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-        </div>
-
-        {/* Kelly Fraction — caps the dynamic Kelly scaling */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Max Kelly</label>
-          <select
-            value={formData.kelly_fraction}
-            onChange={(e) => handleChange('kelly_fraction', e.target.value)}
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          >
-            {KELLY_PRESETS.map((preset) => (
-              <option key={preset.value} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-          <span className="text-[10px] text-muted mt-0.5 block">Caps auto-scaling Kelly</span>
-        </div>
-
-        {/* Max Stake per bet */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Max Stake (%)</label>
-          <input
-            type="number"
-            step="0.5"
-            value={formData.max_stake_pct}
-            onChange={(e) => handleChange('max_stake_pct', e.target.value)}
-            placeholder="5.0"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-          <span className="text-[10px] text-muted mt-0.5 block">% of bankroll per bet</span>
-        </div>
-
-        {/* Min Edge — skip bets below this edge */}
-        <div>
-          <label className="block text-xs text-muted mb-1">Min Edge (%)</label>
-          <input
-            type="number"
-            step="0.5"
-            value={formData.min_edge_pct}
-            onChange={(e) => handleChange('min_edge_pct', e.target.value)}
-            placeholder="2.0"
-            className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
-          />
-          <span className="text-[10px] text-muted mt-0.5 block">Skip bets below this edge</span>
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center gap-2 pt-2">
-        <button
-          onClick={onSubmit}
-          className="px-4 py-2 text-sm bg-tabProfiles text-white rounded hover:bg-tabProfiles/90 transition-colors"
-        >
-          {submitLabel}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-2 text-sm text-muted hover:text-text transition-colors"
-        >
-          Cancel
-        </button>
-      </div>
     </div>
   );
 }

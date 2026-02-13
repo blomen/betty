@@ -494,7 +494,7 @@ class InterwettenRetriever(BrowserRetriever):
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 8
+    CONCURRENT_DETAIL_PAGES = 5  # Reduced from 8 — headed mode more stable with lower concurrency
 
     async def _enrich_with_detail_markets(
         self,
@@ -534,14 +534,14 @@ class InterwettenRetriever(BrowserRetriever):
 
         async def enrich_one(event: StandardEvent, href: str):
             nonlocal enriched, errors
-            if errors > 5:
+            if errors > 20:
                 return
 
             worker_page = await page_pool.get()
             try:
                 async with sem:
                     url = f"{self.base_url}{href}"
-                    resp = await worker_page.goto(url, wait_until="load", timeout=10000)
+                    resp = await worker_page.goto(url, wait_until="load", timeout=20000)
                     if not resp or resp.status != 200:
                         errors += 1
                         return
@@ -572,8 +572,8 @@ class InterwettenRetriever(BrowserRetriever):
         # Process in batches to allow early exit on too many errors
         batch_size = 20
         for i in range(0, len(todo), batch_size):
-            if errors > 5:
-                logger.warning(f"[{self.provider_id}] Too many detail page errors, stopping enrichment")
+            if errors > 20:
+                logger.warning(f"[{self.provider_id}] Too many detail page errors ({errors}), stopping enrichment")
                 break
             batch = todo[i:i + batch_size]
             await asyncio.gather(*(enrich_one(ev, href) for ev, href in batch))

@@ -375,6 +375,9 @@ export const api = {
       min_odds: number;
       progress_pct: number;
       is_cleared: boolean;
+      claimed_at: string | null;
+      expires_at: string | null;
+      days_remaining: number | null;
     }>;
   }> {
     return fetchJson('/bankroll/status');
