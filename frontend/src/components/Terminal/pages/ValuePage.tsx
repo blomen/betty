@@ -6,16 +6,47 @@ import { FilterBar, MultiSelectPills } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import type { Opportunity, Provider } from '@/types';
 
+interface DutchLeg {
+  outcome: string;
+  provider: string;
+  odds: number;
+  edge_pct: number;
+  fair_odds: number;
+  stake_pct: number;
+  is_sharp: boolean;
+  stake?: number;
+  potential_return?: number;
+}
+
+interface DutchOpp {
+  id: number;
+  type: string;
+  event_id: string;
+  market: string;
+  point?: number | null;
+  profit_pct: number | null;
+  edge_pct: number | null;
+  sport?: string;
+  home_team?: string;
+  away_team?: string;
+  starts_at?: string;
+  guaranteed_profit_pct?: number;
+  total_stake?: number;
+  legs?: DutchLeg[];
+}
+
 interface ValuePageProps {
   providers: Provider[];
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [dutchOpps, setDutchOpps] = useState<DutchOpp[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Betting workflow state
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
+  const [selectedDutch, setSelectedDutch] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
 
   // Freebet popup state
@@ -30,8 +61,12 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3);
-      setOpportunities(response.opportunities);
+      const [valueRes, dutchRes] = await Promise.all([
+        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+        api.getOpportunities('dutch', true),
+      ]);
+      setOpportunities(valueRes.opportunities);
+      setDutchOpps(dutchRes.opportunities as unknown as DutchOpp[]);
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {
@@ -81,6 +116,12 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
+    setSelectedDutch(null);
+  };
+
+  const handleSelectDutch = (idx: number) => {
+    setSelectedDutch(selectedDutch === idx ? null : idx);
+    setSelectedOpp(null);
   };
 
   // Check if a provider has an available freebet
@@ -98,10 +139,8 @@ export function ValuePage({ providers }: ValuePageProps) {
 
     const freebetInfo = getFreebetInfo(opp.provider1);
     if (freebetInfo) {
-      // Show freebet popup
       setFreebetPopup({ opp, freebetAmount: freebetInfo.amount });
     } else {
-      // Place directly with balance
       executePlaceBet(opp, false);
     }
   };
@@ -132,6 +171,16 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
+  const resolveOutcome = (outcome: string, home?: string, away?: string, point?: number | null): string => {
+    const p = point != null ? ` ${point}` : '';
+    if (outcome === 'home' && home) return home;
+    if (outcome === 'away' && away) return away;
+    if (outcome === 'draw') return 'Draw';
+    if (outcome === 'over') return `Over${p}`;
+    if (outcome === 'under') return `Under${p}`;
+    return outcome;
+  };
+
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -140,8 +189,165 @@ export function ValuePage({ providers }: ValuePageProps) {
           <span className="w-2 h-2 rounded-full bg-tabValue" />
           Soft
           <span className="text-muted text-sm font-normal ml-1">({filtered.length})</span>
+          {dutchOpps.length > 0 && (
+            <span className="text-success text-sm font-normal">
+              · {dutchOpps.length} dutch
+            </span>
+          )}
         </h2>
       </div>
+
+      {/* Dutch section */}
+      {dutchOpps.length > 0 && (
+        <div className="bg-panel border border-success/30 rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b border-success/20 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-success" />
+            <span className="text-[11px] text-success uppercase tracking-wider font-semibold">
+              Dutch — all legs +EV
+            </span>
+          </div>
+          <div className="divide-y divide-border/50">
+            {dutchOpps.map((opp, idx) => {
+              const isSelected = selectedDutch === idx;
+              const gp = opp.guaranteed_profit_pct ?? opp.profit_pct ?? 0;
+              const legs = opp.legs || [];
+              const totalStake = opp.total_stake || 0;
+              const uniqueProviders = [...new Set(legs.map(l => l.provider))];
+
+              return (
+                <div key={opp.id}>
+                  <div
+                    className={`grid grid-cols-[1fr_140px_80px_80px_90px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm ${
+                      isSelected ? 'bg-success/5' : 'hover:bg-panel2'
+                    }`}
+                    onClick={() => handleSelectDutch(idx)}
+                  >
+                    {/* Event */}
+                    <div className="flex flex-col justify-center min-w-0">
+                      <span className="text-text text-sm truncate">
+                        {opp.home_team} vs {opp.away_team}
+                      </span>
+                      <span className="text-muted text-[11px] truncate">
+                        {opp.sport}
+                        {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline'
+                          ? ` · ${opp.market}` : ''}
+                        {' · '}{formatTime(opp.starts_at)}
+                      </span>
+                    </div>
+
+                    {/* Providers */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-muted text-sm truncate">
+                        {uniqueProviders.map(formatProviderName).join(' · ')}
+                      </span>
+                    </div>
+
+                    {/* Combined edge */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-success font-semibold text-sm">
+                        {opp.edge_pct != null ? `+${opp.edge_pct.toFixed(1)}%` : '-'}
+                      </span>
+                    </div>
+
+                    {/* Total stake */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-text text-sm font-medium">
+                        {totalStake > 0 ? `${totalStake.toFixed(0)} kr` : '-'}
+                      </span>
+                    </div>
+
+                    {/* Profit */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-success font-semibold text-sm">
+                        {gp > 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expanded legs */}
+                  {isSelected && (
+                    <div
+                      className="px-4 py-3 bg-panel2/50 border-t border-border/30"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="grid grid-cols-[1fr_100px_65px_65px_65px_80px_80px] gap-2 text-[10px] text-muted2 uppercase tracking-wider font-semibold">
+                          <div>Outcome</div>
+                          <div className="text-right">Provider</div>
+                          <div className="text-right">Odds</div>
+                          <div className="text-right">Fair</div>
+                          <div className="text-right">Edge</div>
+                          <div className="text-right">Stake</div>
+                          <div className="text-right">Return</div>
+                        </div>
+
+                        {legs.map((leg, legIdx) => {
+                          const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+                          const legReturn = leg.potential_return ?? (legStake * leg.odds);
+
+                          return (
+                            <div
+                              key={legIdx}
+                              className="grid grid-cols-[1fr_100px_65px_65px_65px_80px_80px] gap-2 text-sm py-1"
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-success" />
+                                <span className="text-text truncate">
+                                  {resolveOutcome(leg.outcome, opp.home_team, opp.away_team, opp.point)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-text text-sm">{formatProviderName(leg.provider)}</span>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-text font-medium">{leg.odds.toFixed(2)}</span>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-muted">{leg.fair_odds.toFixed(2)}</span>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-success font-medium">+{leg.edge_pct.toFixed(1)}%</span>
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-text">
+                                  {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
+                                </span>
+                                {legStake > 0 && (
+                                  <span className="text-muted2 text-[10px] ml-1">({leg.stake_pct.toFixed(0)}%)</span>
+                                )}
+                              </div>
+                              <div className="flex items-center justify-end">
+                                <span className="text-text">
+                                  {legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {totalStake > 0 && (
+                        <div className="mt-3 pt-2 border-t border-border/30 flex items-center gap-4 text-sm text-muted">
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-muted2 block">Total Stake</span>
+                            <span className="text-text font-medium">{totalStake.toFixed(0)} kr</span>
+                          </div>
+                          {gp > 0 && (
+                            <div>
+                              <span className="text-[10px] uppercase tracking-wider text-muted2 block">Guaranteed Profit</span>
+                              <span className="text-success font-medium">+{(totalStake * gp / 100).toFixed(0)} kr</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       {availableProviders.length > 0 && (
@@ -158,7 +364,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         </FilterBar>
       )}
 
-      {/* Table */}
+      {/* Value bets table */}
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
           Loading...
