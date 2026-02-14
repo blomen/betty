@@ -84,7 +84,7 @@ class TenBetRetriever(BrowserRetriever):
     }
 
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
-    MAX_COMPETITIONS_PER_SPORT = 60
+    MAX_COMPETITIONS_PER_SPORT = 80
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
@@ -233,10 +233,10 @@ class TenBetRetriever(BrowserRetriever):
                     .filter(c => c.id);
             }""")
 
-            # If no competitions found, retry once with longer wait
+            # If no competitions found, retry once with shorter wait
             if not competitions:
                 logger.debug(f"[{self.provider_id}] No competitions on first try for {sport_slug}, retrying...")
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(1500)
                 competitions = await page.evaluate("""() => {
                     const links = document.querySelectorAll('a[href*="competitions/"]');
                     return Array.from(links)
@@ -294,8 +294,11 @@ class TenBetRetriever(BrowserRetriever):
                     logger.debug(f"[{self.provider_id}] No EventListItem found for {comp_name}")
                 return []
 
-            # Brief pause for remaining odds to load
-            await page.wait_for_timeout(200)
+            # Wait for odds to render (selector-based, faster than fixed timeout)
+            try:
+                await page.wait_for_selector('[class*="ta-price_text"]', timeout=500)
+            except Exception:
+                pass  # Some pages may not have odds yet — proceed with what's available
 
             # Scrape event data from DOM
             scraped = await page.evaluate("""() => {

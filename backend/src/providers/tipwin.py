@@ -176,14 +176,14 @@ class TipwinRetriever(BrowserRetriever):
             if not self._session_ready:
                 await page.goto(self.site_url, wait_until='load', timeout=30000)
                 await self._handle_cookie_consent(page)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1.5)
                 self._session_ready = True
 
             # Navigate to full sports listing (page 1)
             full_url = f"{self.site_url}/sv/sports/full/"
             logger.info(f"[{self.provider_id}] Navigating to {full_url}")
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
             # Wait for pending tasks from initial load
             if pending_tasks:
@@ -212,7 +212,7 @@ class TipwinRetriever(BrowserRetriever):
                     prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
 
                     # Drain all pending response tasks (clear after gather to avoid
                     # re-gathering already-completed tasks on subsequent iterations)
@@ -222,7 +222,7 @@ class TipwinRetriever(BrowserRetriever):
 
                     if len(api_responses) == prev_count:
                         # No response yet — yield to event loop then retry
-                        await asyncio.sleep(0.8)
+                        await asyncio.sleep(0.5)
                         if pending_tasks:
                             await asyncio.gather(*pending_tasks, return_exceptions=True)
                             pending_tasks.clear()

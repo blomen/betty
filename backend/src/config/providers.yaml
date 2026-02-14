@@ -18,7 +18,7 @@ orchestrator:
       max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
       health_check_delay_ms: 1000      # 1s between Kambi health checks (reduced from 3s)
-      post_extraction_delay_ms: 15000  # 15s delay between providers (reduced from 60s)
+      post_extraction_delay_ms: 10000  # 10s delay between providers (reduced from 15s)
 
     - name: gecko_browser
       retriever_types: [gecko_v2]

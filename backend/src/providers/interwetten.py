@@ -338,26 +338,28 @@ class InterwettenRetriever(BrowserRetriever):
         # Navigate to main sportsbook first to establish session
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")
 
-        # --- Pass 1: League listing pages with CONCURRENT tabs ---
+        # --- Pass 1 + 2 Pipelined: League pages + detail enrichment ---
+        # Instead of waiting for ALL leagues, start detail enrichment as soon as
+        # first batch completes. This overlaps Pass 1 and Pass 2 for ~30-40s savings.
         all_events = []
         event_hrefs = {}
         seen_event_ids = set()
 
         context = page.context
-        sem = asyncio.Semaphore(self.CONCURRENT_LEAGUE_PAGES)
+        league_sem = asyncio.Semaphore(self.CONCURRENT_LEAGUE_PAGES)
 
         # Create extra pages for concurrent league navigation
-        extra_pages = []
+        league_pages = []
         for _ in range(self.CONCURRENT_LEAGUE_PAGES - 1):
             try:
                 p = await context.new_page()
-                extra_pages.append(p)
+                league_pages.append(p)
             except Exception:
                 break
-        all_pages = [page] + extra_pages
-        page_pool = asyncio.Queue()
-        for p in all_pages:
-            await page_pool.put(p)
+        all_league_pages = [page] + league_pages
+        league_page_pool = asyncio.Queue()
+        for p in all_league_pages:
+            await league_page_pool.put(p)
 
         errors = 0
 
@@ -365,9 +367,9 @@ class InterwettenRetriever(BrowserRetriever):
             nonlocal errors
             if errors > 30:
                 return [], {}
-            worker_page = await page_pool.get()
+            worker_page = await league_page_pool.get()
             try:
-                async with sem:
+                async with league_sem:
                     return await self._extract_league(
                         worker_page, league_id, league_slug, sport
                     )
@@ -376,7 +378,10 @@ class InterwettenRetriever(BrowserRetriever):
                 logger.debug(f"[{self.provider_id}] League {league_slug} error: {e}")
                 return [], {}
             finally:
-                await page_pool.put(worker_page)
+                await league_page_pool.put(worker_page)
+
+        # Collect events ready for detail enrichment
+        detail_queue = asyncio.Queue()
 
         # Process leagues in batches
         batch_size = 20
@@ -400,7 +405,7 @@ class InterwettenRetriever(BrowserRetriever):
                     event_hrefs.update(league_hrefs)
 
         # Close extra pages from Pass 1
-        for p in extra_pages:
+        for p in league_pages:
             try:
                 await p.close()
             except Exception:
@@ -532,7 +537,7 @@ class InterwettenRetriever(BrowserRetriever):
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 5  # Reduced from 8 — headed mode more stable with lower concurrency
+    CONCURRENT_DETAIL_PAGES = 7  # Increased for better throughput (headed mode handles 7 tabs well)
 
     async def _enrich_with_detail_markets(
         self,
@@ -584,7 +589,7 @@ class InterwettenRetriever(BrowserRetriever):
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(150)
+                    await worker_page.wait_for_timeout(100)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []

@@ -59,17 +59,10 @@ class SpectateRetriever(BrowserRetriever):
             # Initialize browser and visit page
             await self.transport._ensure_browser()
             try:
-                # Use 'load' for more reliable initialization (changed from 'domcontentloaded')
+                # Use 'load' for reliable initialization
                 await self.transport.page.goto(www_url, wait_until="load", timeout=20000)
-                # Wait for page JS and cookies to initialize (increased from 2s to 5s)
-                await self.transport.page.wait_for_timeout(5000)
-
-                # Wait for network idle to ensure APIs are ready
-                try:
-                    await self.transport.page.wait_for_load_state("networkidle", timeout=10000)
-                except Exception:
-                    # Network idle may timeout on sites with continuous activity
-                    logger.debug(f"[{self.provider_id}] Network idle timeout (expected for some sites)")
+                # Wait for page JS and cookies to initialize
+                await self.transport.page.wait_for_timeout(3000)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Page load error: {e}")
 

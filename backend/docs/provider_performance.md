@@ -689,6 +689,17 @@
 
 ## Changelog
 
+### 2026-02-14
+- **Global performance optimization pass** — Systematic optimization of all browser-based providers, ordered by worst extraction time. Focused on reducing sleep/wait times, parallelizing I/O, and replacing fixed waits with adaptive polling.
+- **Snabbare (342s → ~200s est.)** — Halved per-league overhead: `LEAGUE_SETTLE_TIME` 0.15→0.05s, `MAX_LEAGUE_SETTLE_TIME` 0.6→0.4s, poll interval 0.1→0.05s, back-nav wait 0.1→0.05s, post-selector wait 0.5→0.3s, session init 2→1s.
+- **ComeOn Group (270s → ~180s est.)** — Replaced fixed 2s date-click waits with adaptive WS polling (0.3s min, poll every 0.1s, max 1.5s). Reduced page load wait 1.5→1s, WS init wait 3→2s, scroll wait 0.5→0.3s. Saves ~16-20s across 16 date buttons.
+- **Coolbet (105s → ~60s est.)** — Parallelized football category pagination: 5 concurrent page fetches via `asyncio.gather()` (was sequential). Reduced Imperva sleep 4→2s. Football pagination was 92.3s/105s — expected ~4-5x speedup on pagination phase.
+- **Interwetten (168s → ~140s est.)** — Increased `CONCURRENT_DETAIL_PAGES` 5→7, reduced detail page render wait 150→100ms.
+- **10Bet (287s → ~240s est.)** — Increased `MAX_COMPETITIONS_PER_SPORT` 60→80, replaced fixed 200ms odds wait with selector-based `wait_for_selector('[class*="ta-price_text"]', timeout=500)`, reduced retry wait 2→1.5s.
+- **Spectate (~65s → ~55s est.)** — Removed `networkidle` wait (could stall 3-10s), reduced session init wait 5→3s.
+- **Tipwin (58s → ~48s est.)** — Reduced session init 2→1.5s, page listing wait 2→1.5s, inter-page wait 0.5→0.3s, empty page fallback 0.8→0.5s.
+- **Kambi config** — Reduced `post_extraction_delay_ms` 15000→10000 (saves ~35s across 8 Kambi brands).
+
 ### 2026-02-13 (night)
 - **ComeOn Group date scroll + robust clicking** — Added horizontal scroll of date container to reveal all dates (15→16 buttons). Replaced fragile index-based button clicking with text-label matching (DOM-safe — indices shift when date clicks render new event buttons). Added `provider_timeout: 900s`, `sport_timeout: 120s` for all 3 providers. **111→119 events (+7%), 332→353 odds (+6%) per provider, 100% pin match rate.**
 - **Altenar boxing + cricket** — Added sportId 71 (boxing) and 74 (cricket) to SPORT_MAPPING and `supported_sports`. 6 Altenar providers gain boxing/cricket extraction. +1 boxing event matched Pinnacle (limited overlap).
@@ -835,3 +846,4 @@
 | ~~ComeOn date scroll + robust clicking~~ | comeon, hajper, lyllo | Scroll date container, text-label clicking. 111->119 events (+7%) |
 | ~~Altenar boxing + cricket~~ | 6 Altenar | Added sportId 71/74. +1 boxing event matched |
 | ~~Config path discovery~~ | ALL | Documented: `src/config/providers.yaml` is actual loaded config |
+| ~~Global perf optimization pass~~ | ALL browser providers | Adaptive waits, parallel pagination, reduced sleeps. Est. 20-40% faster per provider. |

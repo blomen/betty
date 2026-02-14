@@ -185,8 +185,8 @@ class CoolbetRetriever(BrowserRetriever):
 
                 # Imperva sets session cookies asynchronously after page load.
                 # The API returns 403 if called too early (cookies not yet valid).
-                # 4s is sufficient for Imperva Reese84 challenge to complete.
-                await asyncio.sleep(4)
+                # 2s is sufficient for Imperva Reese84 challenge to complete with Camoufox.
+                await asyncio.sleep(2)
                 body_text = await page.evaluate(
                     'document.body ? document.body.innerText.substring(0, 500) : ""'
                 )
@@ -240,11 +240,16 @@ class CoolbetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
+    CONCURRENT_CATEGORY_FETCHES = 5  # Parallel category page fetches
+
     async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
         """Fetch all categories with pagination (API returns 10 per page).
 
-        First fetches without offset (gets first 10), then paginates with offset
-        starting from 11 to get the rest.
+        Uses concurrent fetching for massive speedup on sports with many leagues
+        (football: 92s sequential → ~20s with 5 concurrent).
+
+        Strategy: fetch first page to probe, then fan out concurrent requests
+        for remaining pages.
         """
         all_categories = []
         seen_cat_ids = set()
@@ -258,33 +263,46 @@ class CoolbetRetriever(BrowserRetriever):
                     seen_cat_ids.add(cid)
                     all_categories.append(cat)
 
-        # Paginate remaining pages
-        empty_count = 0
+        if not first_page:
+            return all_categories
+
+        # Fan out: fetch pages concurrently in batches
+        # Each batch of CONCURRENT_CATEGORY_FETCHES offsets runs in parallel
         offset = CATEGORY_PAGE_SIZE + 1  # Start after first page
+        consecutive_empty_batches = 0
 
-        while offset < MAX_OFFSET:
-            cats = await self._fetch_category_page(page, category_id, offset)
+        while offset < MAX_OFFSET and consecutive_empty_batches < 2:
+            # Build batch of offsets to fetch concurrently
+            batch_offsets = []
+            for i in range(self.CONCURRENT_CATEGORY_FETCHES):
+                o = offset + i * CATEGORY_PAGE_SIZE
+                if o < MAX_OFFSET:
+                    batch_offsets.append(o)
 
-            if not cats:
-                empty_count += 1
-                if empty_count >= 2:
-                    break
-                offset += CATEGORY_PAGE_SIZE
-                continue
+            # Fetch all pages in this batch concurrently
+            tasks = [
+                self._fetch_category_page(page, category_id, o)
+                for o in batch_offsets
+            ]
+            results = await asyncio.gather(*tasks)
 
-            empty_count = 0
-            new_count = 0
-            for cat in cats:
-                cid = cat.get("id")
-                if cid not in seen_cat_ids:
-                    seen_cat_ids.add(cid)
-                    all_categories.append(cat)
-                    new_count += 1
+            batch_has_data = False
+            for cats in results:
+                if not cats:
+                    continue
+                for cat in cats:
+                    cid = cat.get("id")
+                    if cid not in seen_cat_ids:
+                        seen_cat_ids.add(cid)
+                        all_categories.append(cat)
+                        batch_has_data = True
 
-            if new_count == 0:
-                break
+            if not batch_has_data:
+                consecutive_empty_batches += 1
+            else:
+                consecutive_empty_batches = 0
 
-            offset += CATEGORY_PAGE_SIZE
+            offset += len(batch_offsets) * CATEGORY_PAGE_SIZE
 
         logger.info(
             f"[{self.provider_id}] Category API: {len(all_categories)} categories "

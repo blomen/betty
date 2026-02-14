@@ -16,6 +16,7 @@ the main page is the correct approach.
 """
 
 from typing import Dict, Any, List, Optional
+import asyncio
 import logging
 from datetime import datetime
 
@@ -198,7 +199,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             main_url = f"{self.site_url}/sv{sport_path}"
             logger.debug(f"[{self.provider_id}] Loading {main_url}")
             await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(1000)
 
             # Dismiss cookie overlay — may trigger SPA navigation
             await self._dismiss_cookie_overlay(page)
@@ -210,7 +211,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
 
             # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
@@ -253,7 +254,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 }
             }''')
             # Wait for any lazy-loaded date buttons to render after scroll
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(300)
 
             # Now discover ALL date buttons (including newly revealed ones)
             # Collect button text labels instead of indices — indices shift when
@@ -275,6 +276,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
                 for label in date_labels:
                     try:
+                        ws_before = len(ws_messages)
                         # Find and click button by its exact text content (DOM-safe)
                         clicked = await page.evaluate('''(targetLabel) => {
                             const btns = document.querySelectorAll('button');
@@ -288,7 +290,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                         }''', label)
 
                         if clicked:
-                            await page.wait_for_timeout(2000)
+                            # Adaptive wait: min 0.3s, poll for WS data, max 1.5s
+                            await asyncio.sleep(0.3)
+                            elapsed = 0.3
+                            while len(ws_messages) == ws_before and elapsed < 1.5:
+                                await asyncio.sleep(0.1)
+                                elapsed += 0.1
                             # Collect new events from WS
                             self._collect_ws_events(ws_messages, all_events_data)
                     except Exception as e:
