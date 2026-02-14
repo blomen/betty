@@ -197,9 +197,19 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 await asyncio.sleep(2)
                 self._session_ready = True
 
-            # Navigate to sport page
+            # Navigate to sport page (retry once on connection error)
             sport_url = f"{self.site_url}/sv/sportsbook/sport/{sport_id}-{slug}"
-            await page.goto(sport_url, wait_until="load", timeout=30000)
+            try:
+                await page.goto(sport_url, wait_until="load", timeout=30000)
+            except Exception as nav_err:
+                if "Connection closed" in str(nav_err) or "closed" in str(nav_err).lower():
+                    logger.warning(
+                        f"[{self.provider_id}] Browser connection lost for {sport}, reconnecting..."
+                    )
+                    page = await self._reconnect_browser()
+                    await page.goto(sport_url, wait_until="load", timeout=30000)
+                else:
+                    raise
             # Re-register WS after goto (goto destroys page context)
             self._setup_snabbare_ws(page, ws_messages)
             await self._remove_overlays(page)
@@ -251,9 +261,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links in DOM")
                 return []
 
-            # Cap leagues per sport to stay within sport_timeout (~300s)
+            # Cap leagues per sport to stay within sport_timeout (~240s)
             # Top leagues appear first in DOM (ordered by popularity/event count)
-            MAX_LEAGUES_PER_SPORT = 60
+            # 40 leagues × ~3s/league = ~120s, well within timeout
+            MAX_LEAGUES_PER_SPORT = 40
             if len(league_links) > MAX_LEAGUES_PER_SPORT:
                 logger.info(
                     f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
@@ -304,9 +315,26 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     await asyncio.sleep(0.1)
 
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] {link['text']} error: {e}")
+                    err_str = str(e)
+                    logger.debug(f"[{self.provider_id}] {link['text']} error: {err_str}")
                     errors += 1
-                    # Try to recover to sport page
+                    # Browser connection lost — reconnect and retry remaining leagues
+                    if "Connection closed" in err_str or "closed" in err_str.lower() or "Target crashed" in err_str:
+                        logger.warning(
+                            f"[{self.provider_id}] {canonical}: browser lost at league {j+1}/{len(league_links)}, reconnecting..."
+                        )
+                        try:
+                            page = await self._reconnect_browser()
+                            self._setup_snabbare_ws(page, ws_messages)
+                            await page.goto(sport_url, wait_until="load", timeout=30000)
+                            self._setup_snabbare_ws(page, ws_messages)
+                            await self._remove_overlays(page)
+                            await asyncio.sleep(1)
+                            continue  # Retry remaining leagues
+                        except Exception as reconn_err:
+                            logger.error(f"[{self.provider_id}] Reconnection failed: {reconn_err}")
+                            break
+                    # Non-connection error — try to recover to sport page
                     try:
                         await page.goto(sport_url, wait_until="load", timeout=15000)
                         self._setup_snabbare_ws(page, ws_messages)
@@ -318,10 +346,12 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             events_by_sport = self._parse_ws_data(ws_messages)
             events = events_by_sport.get(canonical, [])
 
+            events_with_markets = sum(1 for e in events if e.markets)
             logger.info(
-                f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues clicked, "
-                f"{leagues_with_data} delivered data, "
-                f"{len(ws_messages)} WS msgs → {len(events)} events ({errors} errors)"
+                f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues, "
+                f"{leagues_with_data} with WS data, "
+                f"{len(ws_messages)} msgs -> {len(events)} events "
+                f"({events_with_markets} with markets, {errors} errors)"
             )
 
             return events
@@ -657,6 +687,38 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             ws.on("framereceived", on_frame_received)
 
         page.on("websocket", on_websocket)
+
+    async def _reconnect_browser(self):
+        """Kill dead browser and start a fresh one after a crash.
+
+        _ensure_browser() checks `self.page` and returns early if set,
+        so we must clear all references first to force a full restart.
+        """
+        # Clear dead references so _ensure_browser() actually restarts
+        try:
+            if self.transport.browser:
+                await self.transport.browser.close()
+        except Exception:
+            pass
+        self.transport.page = None
+        self.transport.context = None
+        self.transport.browser = None
+        if self.transport.playwright:
+            try:
+                await self.transport.playwright.stop()
+            except Exception:
+                pass
+            self.transport.playwright = None
+
+        # Start fresh browser
+        await self.transport._ensure_browser()
+        page = self.transport.page
+        self._session_ready = False
+        await page.goto(f"{self.site_url}/sv/sportsbook", wait_until="load", timeout=30000)
+        await self._handle_cookie_consent(page)
+        await self._remove_overlays(page)
+        self._session_ready = True
+        return page
 
     async def _handle_cookie_consent(self, page):
         """Handle cookie consent dialogs."""

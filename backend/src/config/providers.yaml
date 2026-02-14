@@ -558,8 +558,8 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
-    provider_timeout: 900              # 10 sports × up to 180s each (sequential, browser-based)
-    sport_timeout: 180                 # Many leagues per sport, SPA link-clicking approach
+    provider_timeout: 900              # 12 sports × up to 240s each (sequential, browser-based)
+    sport_timeout: 240                 # 40 leagues × ~3s/league + DOM overhead, needs margin
     supported_sports:
       - football
       - basketball
@@ -764,6 +764,8 @@ providers:
     domain: tipwin.se
     retriever_type: tipwin
     site_url: https://www.tipwin.se
+    provider_timeout: 420  # Full pagination (~180s standalone) + processing all 11 sports
+    sport_timeout: 300  # Loads ALL sports on first call (~180s pagination), needs full timeout
     supported_sports:
       - football
       - basketball

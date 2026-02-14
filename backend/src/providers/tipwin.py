@@ -97,7 +97,15 @@ class TipwinRetriever(BrowserRetriever):
 
         # Extract all sports on first call
         if self._all_events is None:
+            logger.info(f"[{self.provider_id}] Loading all events (triggered by {sport})...")
             self._all_events = await self._extract_all()
+            total = sum(len(v) for v in self._all_events.values())
+            sports_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(self._all_events.items()))
+            logger.info(f"[{self.provider_id}] Loaded {total} events across {len(self._all_events)} sports ({sports_summary})")
+        elif not self._all_events:
+            # _extract_all() returned empty dict — don't keep retrying
+            logger.warning(f"[{self.provider_id}] No events cached (extraction may have failed)")
+            return []
 
         events = self._all_events.get(sport, [])
         logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events")
@@ -173,7 +181,7 @@ class TipwinRetriever(BrowserRetriever):
 
             # Navigate to full sports listing (page 1)
             full_url = f"{self.site_url}/sv/sports/full/"
-            logger.debug(f"[{self.provider_id}] Loading {full_url}")
+            logger.info(f"[{self.provider_id}] Navigating to {full_url}")
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
             await asyncio.sleep(2)
 
@@ -192,12 +200,13 @@ class TipwinRetriever(BrowserRetriever):
                         break
 
             max_pages = min(total_pages, 120)  # Safety cap
-            logger.debug(
+            logger.info(
                 f"[{self.provider_id}] Full listing: {max_pages} pages "
                 f"(initial captured: {len(api_responses)} responses)"
             )
 
             # Paginate via direct ?page=N URL navigation (faster than button clicks)
+            empty_streak = 0
             for pg in range(2, max_pages + 1):
                 try:
                     prev_count = len(api_responses)
@@ -205,23 +214,31 @@ class TipwinRetriever(BrowserRetriever):
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
                     await asyncio.sleep(0.5)
 
-                    # Wait for intercepted response
+                    # Drain all pending response tasks (clear after gather to avoid
+                    # re-gathering already-completed tasks on subsequent iterations)
                     if pending_tasks:
                         await asyncio.gather(*pending_tasks, return_exceptions=True)
+                        pending_tasks.clear()
 
                     if len(api_responses) == prev_count:
-                        # No response yet — short retry
-                        await asyncio.sleep(0.5)
+                        # No response yet — yield to event loop then retry
+                        await asyncio.sleep(0.8)
                         if pending_tasks:
                             await asyncio.gather(*pending_tasks, return_exceptions=True)
-                        if len(api_responses) == prev_count:
+                            pending_tasks.clear()
+
+                    if len(api_responses) == prev_count:
+                        empty_streak += 1
+                        if empty_streak >= 3:
                             logger.debug(
-                                f"[{self.provider_id}] No data at page {pg}, stopping"
+                                f"[{self.provider_id}] No data for {empty_streak} pages, stopping at page {pg}"
                             )
                             break
+                    else:
+                        empty_streak = 0
 
                     if pg % 20 == 0:
-                        logger.debug(
+                        logger.info(
                             f"[{self.provider_id}] Page {pg}/{max_pages}, "
                             f"{len(api_responses)} responses captured"
                         )
@@ -234,7 +251,7 @@ class TipwinRetriever(BrowserRetriever):
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-            logger.debug(
+            logger.info(
                 f"[{self.provider_id}] Collected {len(api_responses)} API responses "
                 f"across {max_pages} pages"
             )
@@ -289,7 +306,7 @@ class TipwinRetriever(BrowserRetriever):
 
             total = sum(len(v) for v in events_by_sport.values())
             sport_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items()))
-            logger.debug(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
+            logger.info(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
 
             return events_by_sport
 
