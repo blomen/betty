@@ -11,6 +11,7 @@
 // Map accent color tokens to their hex values (avoids Tailwind purge issues with dynamic classes)
 const ACCENT_COLORS: Record<string, string> = {
   tabValue: '#f59e0b',
+  tabDutch: '#10b981',
   tabBonus: '#a78bfa',
   tabArb: '#22c55e',
   tabBets: '#22d3d8',

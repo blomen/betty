@@ -25,6 +25,7 @@ export default {
         // Tab colors
         tabExtract: '#60a5fa',
         tabArb: '#22c55e',
+        tabDutch: '#10b981',
         tabValue: '#f59e0b',
         tabBonus: '#a78bfa',
         tabBets: '#22d3d8',

@@ -438,10 +438,12 @@ class InterwettenRetriever(BrowserRetriever):
         try:
             resp = await page.goto(url, wait_until="load", timeout=20000)
             if not resp or resp.status != 200:
-                logger.debug(f"[{self.provider_id}] League {league_slug}: status {resp.status if resp else '?'}")
+                status = resp.status if resp else '?'
+                if status != 404:  # 404 = league doesn't exist, not worth logging
+                    logger.info(f"[{self.provider_id}] League {league_slug}: HTTP {status}")
                 return [], {}
         except Exception as e:
-            logger.debug(f"[{self.provider_id}] League {league_slug} navigation error: {e}")
+            logger.info(f"[{self.provider_id}] League {league_slug} navigation: {e}")
             return [], {}
 
         # Wait for content to render — try to detect events quickly
@@ -582,7 +584,7 @@ class InterwettenRetriever(BrowserRetriever):
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(250)
+                    await worker_page.wait_for_timeout(150)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []

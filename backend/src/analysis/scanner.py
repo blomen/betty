@@ -45,6 +45,28 @@ MAX_ODDS_AGE_HOURS = 2
 
 
 @dataclass
+class DutchOpportunity:
+    """A dutch betting opportunity: opposing outcomes both +EV at different providers."""
+
+    event_id: str
+    market: str
+
+    # Each leg: {outcome, provider, odds, edge_pct, fair_odds, stake_pct}
+    legs: list[dict]
+
+    # Combined metrics
+    combined_edge_pct: float       # Weighted average edge across legs
+    guaranteed_profit_pct: float   # >0 = guaranteed profit regardless of outcome
+
+    # Event context
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    sport: Optional[str] = None
+    league: Optional[str] = None
+    start_time: Optional[str] = None
+
+
+@dataclass
 class BonusOpportunity:
     """An opportunity for bonus clearing (edge vs fair odds)."""
 
@@ -286,6 +308,203 @@ class OpportunityScanner:
             f"[Scanner] Found {len(opportunities)} bonus opportunities for {anchor_provider}"
         )
         return opportunities
+
+    def scan_dutch(self, min_edge_pct: float = 0.0) -> list[DutchOpportunity]:
+        """
+        Find dutch opportunities: opposing outcomes both +EV at different providers.
+
+        Looks for events where the best odds on outcome A (at provider X) and the
+        best odds on outcome B (at provider Y) both exceed Pinnacle fair odds.
+        Staking both sides optimally can guarantee profit or reduce variance.
+
+        Args:
+            min_edge_pct: Minimum combined edge % to include (default 0 = all)
+
+        Returns:
+            List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
+        """
+        opportunities = []
+
+        events = self._get_multi_provider_events(min_providers=2)
+
+        for event in events:
+            odds_grouped = self.group_odds(event)
+
+            for market, odds_by_outcome in odds_grouped.items():
+                dutch = self._find_dutch_in_market(
+                    event=event,
+                    market=market,
+                    odds_by_outcome=odds_by_outcome,
+                )
+                if dutch and dutch.combined_edge_pct >= min_edge_pct:
+                    opportunities.append(dutch)
+
+        opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
+
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} dutch opportunities "
+            f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
+        )
+        return opportunities
+
+    def _find_dutch_in_market(
+        self,
+        event: Event,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]],
+    ) -> Optional[DutchOpportunity]:
+        """
+        Find a dutch opportunity in a single market.
+
+        Cross-book dutch: uses best odds per outcome from ANY provider (soft or
+        Pinnacle raw). Edge is always computed vs Pinnacle de-vigged fair odds.
+        Requires at least one soft +EV leg (otherwise no edge exists).
+        """
+        # Count outcomes per provider for market type mismatch detection
+        provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
+        sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
+
+        if sharp_outcome_count < 2:
+            return None  # Need Pinnacle on 2+ outcomes for fair odds
+
+        # Pre-compute Pinnacle market dict (raw odds)
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
+        # Odds discrepancy check (likely event mismatch)
+        for outcome, provider_odds_list in odds_by_outcome.items():
+            if len(provider_odds_list) >= 3:
+                odds_values = [po["odds"] for po in provider_odds_list]
+                odds_ratio = max(odds_values) / min(odds_values)
+                if odds_ratio > MAX_ODDS_RATIO:
+                    return None  # Skip entire market
+
+        # For each outcome: find best odds (soft OR Pinnacle raw) and compute edge vs fair
+        best_per_outcome = {}  # {outcome: {provider, odds, edge_pct, fair_odds, is_sharp}}
+
+        for outcome, provider_odds_list in odds_by_outcome.items():
+            fair_result = self._get_fair_odds(
+                outcome=outcome,
+                odds_by_outcome=odds_by_outcome,
+                pinnacle_market=pinnacle_market,
+            )
+            if fair_result is None:
+                continue
+
+            fair_odds, _ = fair_result
+
+            if fair_odds <= 1:
+                continue
+
+            # Find best soft provider for this outcome
+            best_soft_odds = 0.0
+            best_soft_provider = None
+            for po in provider_odds_list:
+                if po["provider"] in SHARP_PROVIDERS:
+                    continue
+                # Market type mismatch check
+                soft_count = provider_outcome_counts.get(po["provider"], 0)
+                if soft_count > 0 and soft_count != sharp_outcome_count:
+                    continue
+                if po["odds"] > best_soft_odds:
+                    best_soft_odds = po["odds"]
+                    best_soft_provider = po["provider"]
+
+            # Get Pinnacle raw odds for this outcome
+            pinnacle_raw = pinnacle_market.get(outcome, 0.0)
+
+            # Pick the best overall: soft or Pinnacle raw
+            if best_soft_provider and best_soft_odds >= pinnacle_raw:
+                # Soft book has better or equal odds
+                best_odds = best_soft_odds
+                best_provider = best_soft_provider
+                is_sharp = False
+            elif pinnacle_raw > 1:
+                # Pinnacle raw has better odds
+                best_odds = pinnacle_raw
+                best_provider = "pinnacle"
+                is_sharp = True
+            else:
+                continue  # No valid odds
+
+            edge_pct = (best_odds / fair_odds - 1) * 100
+
+            # Skip suspicious edges (data quality)
+            if abs(edge_pct) > 100:
+                return None  # Entire market suspect
+
+            best_per_outcome[outcome] = {
+                "provider": best_provider,
+                "odds": best_odds,
+                "edge_pct": round(edge_pct, 2),
+                "fair_odds": round(fair_odds, 3),
+                "is_sharp": is_sharp,
+            }
+
+        # Need all outcomes covered
+        all_outcomes = list(best_per_outcome.keys())
+        if len(all_outcomes) < 2:
+            return None
+
+        # Require at least one soft +EV leg (otherwise no exploitable edge)
+        soft_ev_legs = [
+            out for out, data in best_per_outcome.items()
+            if data["edge_pct"] > 0 and not data["is_sharp"]
+        ]
+        if not soft_ev_legs:
+            return None
+
+        # Require at least 2 different providers across all legs
+        all_providers = set(data["provider"] for data in best_per_outcome.values())
+        if len(all_providers) < 2:
+            return None
+
+        # Dutch calculation: stake all outcomes, guaranteed return = 1/sum(1/odds)
+        dutch_sum = sum(1.0 / best_per_outcome[out]["odds"] for out in all_outcomes)
+        guaranteed_return_per_unit = 1.0 / dutch_sum
+        guaranteed_profit_pct = round((guaranteed_return_per_unit - 1) * 100, 2)
+
+        # Per-leg stake percentages (how much of total stake goes to each leg)
+        legs = []
+        for out in all_outcomes:
+            data = best_per_outcome[out]
+            stake_pct = round((1.0 / data["odds"]) / dutch_sum * 100, 2)
+            legs.append({
+                "outcome": out,
+                "provider": data["provider"],
+                "odds": data["odds"],
+                "edge_pct": data["edge_pct"],
+                "fair_odds": data["fair_odds"],
+                "stake_pct": stake_pct,
+                "is_sharp": data["is_sharp"],
+            })
+
+        # Sort legs: highest edge first
+        legs.sort(key=lambda x: x["edge_pct"], reverse=True)
+
+        # Combined edge = weighted average of individual edges (weighted by stake)
+        total_stake_pct = sum(leg["stake_pct"] for leg in legs)
+        combined_edge = sum(
+            leg["edge_pct"] * leg["stake_pct"] / total_stake_pct
+            for leg in legs
+        ) if total_stake_pct > 0 else 0
+
+        return DutchOpportunity(
+            event_id=event.id,
+            market=market,
+            legs=legs,
+            combined_edge_pct=round(combined_edge, 2),
+            guaranteed_profit_pct=guaranteed_profit_pct,
+            home_team=event.home_team,
+            away_team=event.away_team,
+            sport=event.sport,
+            league=event.league,
+            start_time=event.start_time.isoformat() if event.start_time else None,
+        )
 
     def _get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:
         """Get events with odds from N+ providers."""

@@ -47,10 +47,10 @@ class OpportunityService:
             exclude_provider1=None if provider1 else "polymarket",
         )
 
-        # Initialize stake calculator for value bets using profile risk settings
+        # Initialize stake calculator for value/dutch bets using profile risk settings
         stake_calculator = None
         profile = None
-        if type == 'value' and rows:
+        if type in ('value', 'dutch') and rows:
             try:
                 profile = self.profile_repo.get_active()
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
@@ -92,6 +92,10 @@ class OpportunityService:
             # Add stake recommendations for value bets
             if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
                 self._add_stake_recommendation(result, opp, profile, stake_calculator)
+
+            # Add dutch-specific fields
+            if type == 'dutch' and stake_calculator and profile:
+                self._add_dutch_recommendation(result, opp, stake_calculator)
 
             results.append(result)
 
@@ -250,3 +254,47 @@ class OpportunityService:
             result["kelly_fraction"] = None
             result["skip_reason"] = None
             result["bonus_cleared"] = None
+
+    def _add_dutch_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
+        """Add dutch stake recommendation fields to an opportunity result dict."""
+        try:
+            guaranteed_profit_pct = opp.profit_pct or 0
+            total_stake = 0.0
+
+            if guaranteed_profit_pct > 0:
+                # Guaranteed profit dutch: use max single bet cap (no Kelly needed, it's riskless)
+                total_stake = stake_calculator.bankroll * stake_calculator.single_bet_cap_pct
+            else:
+                # Partial coverage: use Kelly on the best EV leg's edge
+                ev_legs = [l for l in (opp.outcomes or []) if l.get("edge_pct", 0) > 0]
+                if ev_legs:
+                    best_edge = max(l["edge_pct"] for l in ev_legs) / 100.0
+                    best_odds = next(l["odds"] for l in ev_legs if l["edge_pct"] == max(l["edge_pct"] for l in ev_legs))
+                    stake_rec = stake_calculator.calculate(
+                        edge_raw=best_edge,
+                        odds=best_odds,
+                        event_id=opp.event_id,
+                    )
+                    total_stake = stake_rec.stake
+
+            # Split into per-leg stakes using dutch formula
+            legs_with_stakes = []
+            if opp.outcomes and total_stake > 0:
+                total_inv = sum(1.0 / leg["odds"] for leg in opp.outcomes)
+                for leg in opp.outcomes:
+                    leg_stake = round(total_stake * (1.0 / leg["odds"]) / total_inv, 2)
+                    leg_return = round(leg_stake * leg["odds"], 2)
+                    legs_with_stakes.append({
+                        **leg,
+                        "stake": leg_stake,
+                        "potential_return": leg_return,
+                    })
+
+            result["guaranteed_profit_pct"] = guaranteed_profit_pct
+            result["total_stake"] = round(total_stake, 2)
+            result["legs"] = legs_with_stakes or opp.outcomes or []
+        except Exception as e:
+            logger.debug(f"Dutch stake calculation failed for opp {opp.id}: {e}")
+            result["guaranteed_profit_pct"] = opp.profit_pct or 0
+            result["total_stake"] = 0
+            result["legs"] = opp.outcomes or []

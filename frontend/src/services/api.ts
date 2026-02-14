@@ -474,7 +474,7 @@ export const api = {
 
   // ============ Opportunities ============
   async getOpportunities(
-    type?: 'arbitrage' | 'value' | 'bonus',
+    type?: 'arbitrage' | 'value' | 'bonus' | 'dutch',
     activeOnly = true,
     provider1?: string,
     provider2?: string,

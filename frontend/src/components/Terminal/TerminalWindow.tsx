@@ -4,6 +4,7 @@ import { Sidebar, type TabName } from './Sidebar';
 import { ExtractionProgressBar } from './ExtractionProgressBar';
 import {
   ValuePage,
+  DutchPage,
   PolymarketPage,
   BetsPage,
   BankrollPage,
@@ -28,6 +29,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
     switch (activeTab) {
       case 'value':
         return <ValuePage providers={context.providers} />;
+      case 'dutch':
+        return <DutchPage />;
       case 'polymarket':
         return <PolymarketPage />;
       case 'bets':

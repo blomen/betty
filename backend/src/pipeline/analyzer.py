@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import Profile
 from ..repositories import EventRepo, OpportunityRepo
-from ..analysis.scanner import OpportunityScanner, BonusOpportunity
+from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ class OpportunityAnalyzer:
 
         results = {
             "value": {"found": 0, "new": 0},
+            "dutch": {"found": 0, "new": 0},
             "events_analyzed": len(events),
             "cleanup": cleanup_stats
         }
@@ -101,11 +102,17 @@ class OpportunityAnalyzer:
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
 
+                # Detect dutch (opposing outcomes both +EV at different providers)
+                dutch_count = self._detect_dutch(event, market, odds_by_outcome)
+                results["dutch"]["found"] += dutch_count["found"]
+                results["dutch"]["new"] += dutch_count["new"]
+
         self.session.commit()
 
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
-            f"{results['value']['found']} value bets"
+            f"{results['value']['found']} value bets, "
+            f"{results['dutch']['found']} dutch opportunities"
         )
 
         return results
@@ -258,5 +265,64 @@ class OpportunityAnalyzer:
             )
             if is_new:
                 result["new"] += 1
+
+        return result
+
+    def _detect_dutch(
+        self,
+        event,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]]
+    ) -> dict:
+        """
+        Detect dutch opportunities for a market.
+
+        Delegates to scanner._find_dutch_in_market() which finds cases where
+        opposing outcomes both have +EV at different soft providers.
+
+        Returns:
+            {"found": int, "new": int}
+        """
+        result = {"found": 0, "new": 0}
+
+        dutch = self.scanner._find_dutch_in_market(
+            event=event,
+            market=market,
+            odds_by_outcome=odds_by_outcome,
+        )
+
+        if dutch is None:
+            return result
+
+        result["found"] = 1
+
+        # Extract point from market key
+        point_value = None
+        clean_market = market
+        if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
+            parts = market.rsplit("_", 1)
+            if len(parts) == 2:
+                try:
+                    point_value = float(parts[-1])
+                    clean_market = parts[0]
+                except ValueError:
+                    pass
+
+        providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in dutch.legs)
+        logger.debug(
+            f"[Analyzer] Dutch found: {event.id} {market} "
+            f"GP={dutch.guaranteed_profit_pct:+.2f}% [{providers_str}]"
+        )
+
+        is_new = self.opp_repo.upsert_dutch(
+            event_id=event.id,
+            market=clean_market,
+            legs=dutch.legs,
+            combined_edge_pct=dutch.combined_edge_pct,
+            guaranteed_profit_pct=dutch.guaranteed_profit_pct,
+            point=point_value,
+        )
+        if is_new:
+            result["new"] = 1
 
         return result

@@ -183,8 +183,10 @@ class CoolbetRetriever(BrowserRetriever):
 
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
-                # Check for Imperva block
-                await asyncio.sleep(1)
+                # Imperva sets session cookies asynchronously after page load.
+                # The API returns 403 if called too early (cookies not yet valid).
+                # 4s is sufficient for Imperva Reese84 challenge to complete.
+                await asyncio.sleep(4)
                 body_text = await page.evaluate(
                     'document.body ? document.body.innerText.substring(0, 500) : ""'
                 )
@@ -293,26 +295,60 @@ class CoolbetRetriever(BrowserRetriever):
     async def _fetch_category_page(
         self, page, category_id: int, offset: Optional[int] = None
     ) -> List[Dict]:
-        """Fetch a single page of categories."""
-        try:
-            url = (
-                f"{self.site_url}/s/sbgate/sports/fo-category/"
-                f"?categoryId={category_id}&country=SE&isMobile=0"
-                f"&language=sv&layout=EUROPEAN&limit=500"
-            )
-            if offset is not None:
-                url += f"&offset={offset}"
-            resp = await page.evaluate(f"""
-                (async () => {{
-                    const resp = await fetch('{url}', {{credentials: 'include'}});
-                    if (!resp.ok) return null;
-                    return await resp.json();
-                }})();
-            """)
-            if isinstance(resp, list):
-                return resp
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Category page offset={offset} failed: {e}")
+        """Fetch a single page of categories with retry on 403 (Imperva not ready)."""
+        url = (
+            f"{self.site_url}/s/sbgate/sports/fo-category/"
+            f"?categoryId={category_id}&country=SE&isMobile=0"
+            f"&language=sv&layout=EUROPEAN&limit=500"
+        )
+        if offset is not None:
+            url += f"&offset={offset}"
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = await page.evaluate(f"""
+                    (async () => {{
+                        const resp = await fetch('{url}', {{credentials: 'include'}});
+                        if (!resp.ok) return {{__status: resp.status, __ok: false}};
+                        return await resp.json();
+                    }})();
+                """)
+
+                # Check for HTTP error response
+                if isinstance(resp, dict) and resp.get("__ok") is False:
+                    status = resp.get("__status", "?")
+                    if status == 403 and attempt < max_retries - 1:
+                        wait = 3 * (attempt + 1)
+                        logger.warning(
+                            f"[{self.provider_id}] Category API returned 403 "
+                            f"(Imperva not ready), retrying in {wait}s..."
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.warning(
+                        f"[{self.provider_id}] Category API returned {status} "
+                        f"for categoryId={category_id} offset={offset}"
+                    )
+                    return []
+
+                if isinstance(resp, list):
+                    return resp
+
+                logger.warning(
+                    f"[{self.provider_id}] Unexpected response type "
+                    f"{type(resp).__name__} for categoryId={category_id}"
+                )
+                return []
+
+            except Exception as e:
+                logger.warning(
+                    f"[{self.provider_id}] Category page "
+                    f"categoryId={category_id} offset={offset} failed: {e}"
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                    continue
         return []
 
     async def _fetch_odds_api(self, page, market_ids: List) -> Dict:

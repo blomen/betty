@@ -1,5 +1,6 @@
 export { Card } from './Card';
 export { ValuePage } from './ValuePage';
+export { DutchPage } from './DutchPage';
 export { PolymarketPage } from './PolymarketPage';
 export { BetsPage } from './BetsPage';
 export { BankrollPage } from './BankrollPage';

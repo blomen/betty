@@ -696,7 +696,7 @@ providers:
       - boxing
       - esports
     bonus:
-      type: freebet
+      type: bonusdeposit
       amount: 800
       wagering_multiplier: 10
       min_odds: 1.80
@@ -712,7 +712,7 @@ providers:
     retriever_type: interwetten
     site_url: https://www.interwetten.se
     provider_timeout: 900              # 5 sports × concurrent tabs + detail enrichment
-    sport_timeout: 300                 # ~130 football leagues × 5 concurrent tabs + detail pages
+    sport_timeout: 420                 # 69 football leagues + detail enrichment: ~220s standalone, needs margin for contention
     supported_sports:
       - football
       - ice_hockey

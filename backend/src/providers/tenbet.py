@@ -83,6 +83,9 @@ class TenBetRetriever(BrowserRetriever):
         "curling": "curling",
     }
 
+    # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
+    MAX_COMPETITIONS_PER_SPORT = 60
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.10bet.se")
@@ -110,6 +113,14 @@ class TenBetRetriever(BrowserRetriever):
         if not competitions:
             logger.info(f"[{self.provider_id}] No competitions found for {sport}")
             return []
+
+        # Cap competitions to avoid timeout (football has 100+ but most are tiny)
+        if len(competitions) > self.MAX_COMPETITIONS_PER_SPORT:
+            logger.info(
+                f"[{self.provider_id}] Capping {sport} from {len(competitions)} to "
+                f"{self.MAX_COMPETITIONS_PER_SPORT} competitions"
+            )
+            competitions = competitions[:self.MAX_COMPETITIONS_PER_SPORT]
 
         logger.info(f"[{self.provider_id}] Found {len(competitions)} competitions for {sport}")
 
@@ -284,7 +295,7 @@ class TenBetRetriever(BrowserRetriever):
                 return []
 
             # Brief pause for remaining odds to load
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(200)
 
             # Scrape event data from DOM
             scraped = await page.evaluate("""() => {
