@@ -49,7 +49,6 @@ export function DutchPage() {
 
   // Filters
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
-  const [selectedSports, setSelectedSports] = useState<Set<string>>(new Set());
   const [showGuaranteedOnly, setShowGuaranteedOnly] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -80,15 +79,6 @@ export function DutchPage() {
     return Array.from(set).sort();
   }, [opportunities]);
 
-  // Derive available sports
-  const availableSports = useMemo(() => {
-    const set = new Set<string>();
-    for (const opp of opportunities) {
-      if (opp.sport) set.add(opp.sport);
-    }
-    return Array.from(set).sort();
-  }, [opportunities]);
-
   // Apply filters
   const filtered = useMemo(() => {
     let result = opportunities;
@@ -103,27 +93,14 @@ export function DutchPage() {
       );
     }
 
-    if (selectedSports.size > 0) {
-      result = result.filter(o => o.sport && selectedSports.has(o.sport));
-    }
-
     return result;
-  }, [opportunities, selectedProviders, selectedSports, showGuaranteedOnly]);
+  }, [opportunities, selectedProviders, showGuaranteedOnly]);
 
   const toggleProvider = (p: string) => {
     setSelectedProviders(prev => {
       const next = new Set(prev);
       if (next.has(p)) next.delete(p);
       else next.add(p);
-      return next;
-    });
-  };
-
-  const toggleSport = (s: string) => {
-    setSelectedSports(prev => {
-      const next = new Set(prev);
-      if (next.has(s)) next.delete(s);
-      else next.add(s);
       return next;
     });
   };
@@ -173,29 +150,17 @@ export function DutchPage() {
       </div>
 
       {/* Filters */}
-      {(availableProviders.length > 0 || availableSports.length > 0) && (
+      {availableProviders.length > 0 && (
         <FilterBar>
-          {availableProviders.length > 0 && (
-            <MultiSelectPills
-              label="Provider"
-              options={availableProviders}
-              selected={selectedProviders}
-              onToggle={toggleProvider}
-              onClear={() => setSelectedProviders(new Set())}
-              format={formatProviderName}
-              accentColor="tabDutch"
-            />
-          )}
-          {availableSports.length > 0 && (
-            <MultiSelectPills
-              label="Sport"
-              options={availableSports}
-              selected={selectedSports}
-              onToggle={toggleSport}
-              onClear={() => setSelectedSports(new Set())}
-              accentColor="tabDutch"
-            />
-          )}
+          <MultiSelectPills
+            label="Provider"
+            options={availableProviders}
+            selected={selectedProviders}
+            onToggle={toggleProvider}
+            onClear={() => setSelectedProviders(new Set())}
+            format={formatProviderName}
+            accentColor="tabDutch"
+          />
           <button
             onClick={() => setShowGuaranteedOnly(!showGuaranteedOnly)}
             className={`px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
