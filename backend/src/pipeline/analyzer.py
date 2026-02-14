@@ -88,6 +88,7 @@ class OpportunityAnalyzer:
         results = {
             "value": {"found": 0, "new": 0},
             "dutch": {"found": 0, "new": 0},
+            "reverse": {"found": 0, "new": 0},
             "events_analyzed": len(events),
             "cleanup": cleanup_stats
         }
@@ -102,17 +103,20 @@ class OpportunityAnalyzer:
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
 
-                # Detect dutch (opposing outcomes both +EV at different providers)
+                # Detect dutch/reverse (cross-book opportunities)
                 dutch_count = self._detect_dutch(event, market, odds_by_outcome)
-                results["dutch"]["found"] += dutch_count["found"]
-                results["dutch"]["new"] += dutch_count["new"]
+                results["dutch"]["found"] += dutch_count["dutch_found"]
+                results["dutch"]["new"] += dutch_count["dutch_new"]
+                results["reverse"]["found"] += dutch_count["reverse_found"]
+                results["reverse"]["new"] += dutch_count["reverse_new"]
 
         self.session.commit()
 
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
             f"{results['value']['found']} value bets, "
-            f"{results['dutch']['found']} dutch opportunities"
+            f"{results['dutch']['found']} dutch, "
+            f"{results['reverse']['found']} reverse"
         )
 
         return results
@@ -275,26 +279,24 @@ class OpportunityAnalyzer:
         odds_by_outcome: dict[str, list[dict]]
     ) -> dict:
         """
-        Detect dutch opportunities for a market.
+        Detect dutch and reverse dutch opportunities for a market.
 
-        Delegates to scanner._find_dutch_in_market() which finds cases where
-        opposing outcomes both have +EV at different soft providers.
+        Dutch: ALL legs have positive edge (pure cross-book value).
+        Reverse: At least one soft +EV leg, others covered at negative edge.
 
         Returns:
-            {"found": int, "new": int}
+            {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
         """
-        result = {"found": 0, "new": 0}
+        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0}
 
-        dutch = self.scanner._find_dutch_in_market(
+        opp = self.scanner._find_dutch_in_market(
             event=event,
             market=market,
             odds_by_outcome=odds_by_outcome,
         )
 
-        if dutch is None:
+        if opp is None:
             return result
-
-        result["found"] = 1
 
         # Extract point from market key
         point_value = None
@@ -308,21 +310,28 @@ class OpportunityAnalyzer:
                 except ValueError:
                     pass
 
-        providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in dutch.legs)
+        # Classify: all legs +EV = dutch, otherwise = reverse
+        all_positive = all(leg["edge_pct"] > 0 for leg in opp.legs)
+        opp_type = "dutch" if all_positive else "reverse"
+
+        providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in opp.legs)
         logger.debug(
-            f"[Analyzer] Dutch found: {event.id} {market} "
-            f"GP={dutch.guaranteed_profit_pct:+.2f}% [{providers_str}]"
+            f"[Analyzer] {opp_type.capitalize()} found: {event.id} {market} "
+            f"GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
         )
 
-        is_new = self.opp_repo.upsert_dutch(
+        result[f"{opp_type}_found"] = 1
+
+        upsert_fn = self.opp_repo.upsert_dutch if opp_type == "dutch" else self.opp_repo.upsert_reverse
+        is_new = upsert_fn(
             event_id=event.id,
             market=clean_market,
-            legs=dutch.legs,
-            combined_edge_pct=dutch.combined_edge_pct,
-            guaranteed_profit_pct=dutch.guaranteed_profit_pct,
+            legs=opp.legs,
+            combined_edge_pct=opp.combined_edge_pct,
+            guaranteed_profit_pct=opp.guaranteed_profit_pct,
             point=point_value,
         )
         if is_new:
-            result["new"] = 1
+            result[f"{opp_type}_new"] = 1
 
         return result

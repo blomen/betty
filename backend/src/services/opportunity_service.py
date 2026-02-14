@@ -47,10 +47,10 @@ class OpportunityService:
             exclude_provider1=None if provider1 else "polymarket",
         )
 
-        # Initialize stake calculator for value/dutch bets using profile risk settings
+        # Initialize stake calculator for value/dutch/reverse bets using profile risk settings
         stake_calculator = None
         profile = None
-        if type in ('value', 'dutch') and rows:
+        if type in ('value', 'dutch', 'reverse') and rows:
             try:
                 profile = self.profile_repo.get_active()
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
@@ -93,8 +93,8 @@ class OpportunityService:
             if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
                 self._add_stake_recommendation(result, opp, profile, stake_calculator)
 
-            # Add dutch-specific fields
-            if type == 'dutch' and stake_calculator and profile:
+            # Add dutch/reverse-specific fields
+            if type in ('dutch', 'reverse') and stake_calculator and profile:
                 self._add_dutch_recommendation(result, opp, stake_calculator)
 
             results.append(result)

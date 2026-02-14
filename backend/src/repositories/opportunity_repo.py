@@ -196,6 +196,76 @@ class OpportunityRepo:
             self.db.add(opp)
             return True
 
+    def upsert_reverse(
+        self,
+        event_id: str,
+        market: str,
+        legs: list[dict],
+        combined_edge_pct: float,
+        guaranteed_profit_pct: float,
+        point: float | None = None,
+    ) -> bool:
+        """Upsert a reverse dutch opportunity. Returns True if new."""
+        sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
+        primary = sorted_legs[0]
+        secondary = sorted_legs[1] if len(sorted_legs) > 1 else sorted_legs[0]
+
+        existing = self.db.query(Opportunity).filter(
+            Opportunity.event_id == event_id,
+            Opportunity.market == market,
+            Opportunity.type == "reverse",
+        ).first()
+
+        now = datetime.now(timezone.utc)
+
+        outcomes_json = [
+            {
+                "outcome": leg["outcome"],
+                "provider": leg["provider"],
+                "odds": leg["odds"],
+                "edge_pct": leg["edge_pct"],
+                "fair_odds": leg["fair_odds"],
+                "stake_pct": leg["stake_pct"],
+                "is_sharp": leg.get("is_sharp", False),
+            }
+            for leg in sorted_legs
+        ]
+
+        if existing:
+            existing.is_active = True
+            existing.provider1_id = primary["provider"]
+            existing.provider2_id = secondary["provider"]
+            existing.odds1 = primary["odds"]
+            existing.odds2 = secondary["odds"]
+            existing.outcome1 = primary["outcome"]
+            existing.outcome2 = secondary["outcome"]
+            existing.profit_pct = guaranteed_profit_pct
+            existing.edge_pct = combined_edge_pct
+            existing.outcomes = outcomes_json
+            existing.point = point
+            existing.detected_at = now
+            return False
+        else:
+            opp = Opportunity(
+                type="reverse",
+                event_id=event_id,
+                market=market,
+                outcome1=primary["outcome"],
+                outcome2=secondary["outcome"],
+                provider1_id=primary["provider"],
+                provider2_id=secondary["provider"],
+                odds1=primary["odds"],
+                odds2=secondary["odds"],
+                profit_pct=guaranteed_profit_pct,
+                edge_pct=combined_edge_pct,
+                outcomes=outcomes_json,
+                point=point,
+                is_active=True,
+                detected_at=now,
+            )
+            self.db.add(opp)
+            return True
+
     def cleanup_stale(self) -> dict:
         """
         Clean up stale data from database.

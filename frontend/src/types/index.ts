@@ -23,7 +23,7 @@ export interface BettingContext {
 // Opportunities (Arbitrage + Value + Bonus)
 export interface Opportunity {
   id: number;
-  type: 'arbitrage' | 'value' | 'bonus' | 'dutch';
+  type: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse';
   event_id: string;
   market: string;
   provider1: string;

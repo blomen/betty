@@ -311,11 +311,10 @@ class OpportunityScanner:
 
     def scan_dutch(self, min_edge_pct: float = 0.0) -> list[DutchOpportunity]:
         """
-        Find dutch opportunities: opposing outcomes both +EV at different providers.
+        Find pure dutch opportunities: ALL legs +EV at different providers.
 
-        Looks for events where the best odds on outcome A (at provider X) and the
-        best odds on outcome B (at provider Y) both exceed Pinnacle fair odds.
-        Staking both sides optimally can guarantee profit or reduce variance.
+        Every outcome must beat Pinnacle fair odds (positive edge on every leg).
+        These are the highest-quality cross-book opportunities.
 
         Args:
             min_edge_pct: Minimum combined edge % to include (default 0 = all)
@@ -337,12 +336,54 @@ class OpportunityScanner:
                     odds_by_outcome=odds_by_outcome,
                 )
                 if dutch and dutch.combined_edge_pct >= min_edge_pct:
-                    opportunities.append(dutch)
+                    # Pure dutch: ALL legs must have positive edge
+                    if all(leg["edge_pct"] > 0 for leg in dutch.legs):
+                        opportunities.append(dutch)
 
         opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
 
         logger.info(
             f"[Scanner] Found {len(opportunities)} dutch opportunities "
+            f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
+        )
+        return opportunities
+
+    def scan_reverse(self, min_edge_pct: float = 0.0) -> list[DutchOpportunity]:
+        """
+        Find reverse dutch opportunities: at least one soft +EV leg, others covered.
+
+        Unlike pure dutch (all legs +EV), reverse dutch has some legs at negative
+        edge (typically covered by Pinnacle raw odds). Useful for reducing variance
+        on strong single-leg value bets.
+
+        Args:
+            min_edge_pct: Minimum combined edge % to include (default 0 = all)
+
+        Returns:
+            List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
+        """
+        opportunities = []
+
+        events = self._get_multi_provider_events(min_providers=2)
+
+        for event in events:
+            odds_grouped = self.group_odds(event)
+
+            for market, odds_by_outcome in odds_grouped.items():
+                dutch = self._find_dutch_in_market(
+                    event=event,
+                    market=market,
+                    odds_by_outcome=odds_by_outcome,
+                )
+                if dutch and dutch.combined_edge_pct >= min_edge_pct:
+                    # Reverse: has at least one negative-edge leg
+                    if any(leg["edge_pct"] <= 0 for leg in dutch.legs):
+                        opportunities.append(dutch)
+
+        opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
+
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} reverse dutch opportunities "
             f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
         )
         return opportunities
