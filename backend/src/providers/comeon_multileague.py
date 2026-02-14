@@ -290,10 +290,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                         }''', label)
 
                         if clicked:
-                            # Adaptive wait: min 0.3s, poll for WS data, max 1.5s
-                            await asyncio.sleep(0.3)
-                            elapsed = 0.3
-                            while len(ws_messages) == ws_before and elapsed < 1.5:
+                            # Adaptive wait: min 0.5s, poll for WS data, max 2.0s
+                            await asyncio.sleep(0.5)
+                            elapsed = 0.5
+                            while len(ws_messages) == ws_before and elapsed < 2.0:
                                 await asyncio.sleep(0.1)
                                 elapsed += 0.1
                             # Collect new events from WS

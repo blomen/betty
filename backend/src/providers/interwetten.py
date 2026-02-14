@@ -537,7 +537,7 @@ class InterwettenRetriever(BrowserRetriever):
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 7  # Increased for better throughput (headed mode handles 7 tabs well)
+    CONCURRENT_DETAIL_PAGES = 5  # Conservative for headed mode stability
 
     async def _enrich_with_detail_markets(
         self,
@@ -589,7 +589,7 @@ class InterwettenRetriever(BrowserRetriever):
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(100)
+                    await worker_page.wait_for_timeout(150)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []

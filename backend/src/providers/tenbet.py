@@ -84,7 +84,7 @@ class TenBetRetriever(BrowserRetriever):
     }
 
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
-    MAX_COMPETITIONS_PER_SPORT = 80
+    MAX_COMPETITIONS_PER_SPORT = 60
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)

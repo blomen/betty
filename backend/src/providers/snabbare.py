@@ -144,8 +144,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    LEAGUE_SETTLE_TIME = 0.05  # min seconds to wait for WS data after SPA link click
-    MAX_LEAGUE_SETTLE_TIME = 0.4  # max seconds to wait (if WS data still arriving)
+    LEAGUE_SETTLE_TIME = 0.15  # min seconds to wait for WS data after SPA link click
+    MAX_LEAGUE_SETTLE_TIME = 0.6  # max seconds to wait (if WS data still arriving)
 
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
@@ -194,7 +194,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 )
                 await self._handle_cookie_consent(page)
                 await self._remove_overlays(page)
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 self._session_ready = True
 
             # Navigate to sport page (retry once on connection error)
@@ -221,7 +221,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 )
             except Exception:
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links after 8s wait")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             # Discover league links from DOM sidebar
             # These are React Router <Link> components — clicking them triggers
@@ -302,8 +302,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     elapsed = self.LEAGUE_SETTLE_TIME
                     # If no data yet, wait a bit more (up to MAX)
                     while len(ws_messages) == ws_before and elapsed < self.MAX_LEAGUE_SETTLE_TIME:
-                        await asyncio.sleep(0.05)
-                        elapsed += 0.05
+                        await asyncio.sleep(0.1)
+                        elapsed += 0.1
 
                     leagues_processed += 1
                     ws_delta = len(ws_messages) - ws_before
@@ -312,7 +312,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
                     # Navigate back to sport page for next league
                     await page.evaluate("window.history.back()")
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.1)
 
                 except Exception as e:
                     err_str = str(e)
