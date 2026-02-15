@@ -2,11 +2,14 @@
  * Shared filter bar component used across Value Bets and Specials pages.
  *
  * Supports:
+ * - Multi-select dropdown (compact popover with checkboxes + search)
  * - Multi-select pill groups (providers, sports, categories)
  * - Single-select pill groups (category type)
  * - Range inputs (min/max edge)
  * - Consistent dark theme styling with configurable accent colors
  */
+
+import { useState, useRef, useEffect, useCallback } from 'react';
 
 // Map accent color tokens to their hex values (avoids Tailwind purge issues with dynamic classes)
 const ACCENT_COLORS: Record<string, string> = {
@@ -19,6 +22,192 @@ const ACCENT_COLORS: Record<string, string> = {
 
 function getAccent(token: string): string {
   return ACCENT_COLORS[token] || '#f59e0b';
+}
+
+
+// ── Multi-select dropdown (compact popover with checkboxes) ──────────
+
+interface MultiSelectDropdownProps {
+  label: string;
+  options: string[];
+  selected: Set<string>;
+  onToggle: (value: string) => void;
+  onClear: () => void;
+  format?: (value: string) => string;
+  accentColor?: string;
+}
+
+export function MultiSelectDropdown({
+  label,
+  options,
+  selected,
+  onToggle,
+  onClear,
+  format,
+  accentColor = 'tabValue',
+}: MultiSelectDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const hex = getAccent(accentColor);
+  const count = selected.size;
+  const hasFilter = count > 0;
+
+  // Close on outside click
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen]);
+
+  // Close on Escape
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setIsOpen(false);
+      setSearch('');
+    }
+  }, []);
+
+  // Focus search when opening
+  useEffect(() => {
+    if (isOpen && searchRef.current) {
+      searchRef.current.focus();
+    }
+  }, [isOpen]);
+
+  const filtered = options.filter(opt => {
+    if (!search) return true;
+    const display = format ? format(opt) : opt;
+    return display.toLowerCase().includes(search.toLowerCase());
+  });
+
+  const selectAll = () => {
+    // If all visible are selected, deselect them; otherwise select all visible
+    const allVisible = filtered.every(o => selected.has(o));
+    if (allVisible) {
+      onClear();
+    } else {
+      for (const opt of filtered) {
+        if (!selected.has(opt)) onToggle(opt);
+      }
+    }
+  };
+
+  if (options.length === 0) return null;
+
+  return (
+    <div className="relative" ref={containerRef} onKeyDown={handleKeyDown}>
+      {/* Trigger button */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+          hasFilter ? '' : 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80'
+        }`}
+        style={hasFilter ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+      >
+        <span className="text-muted2 text-[10px] uppercase tracking-wider mr-0.5">
+          {label}
+        </span>
+        {hasFilter ? (
+          <span style={{ color: hex }}>{count}</span>
+        ) : (
+          <span>All</span>
+        )}
+        <svg
+          className={`w-3 h-3 transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`}
+          style={{ color: hasFilter ? hex : undefined }}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Dropdown popover */}
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 z-50 w-56 bg-panel border border-border rounded-lg shadow-xl shadow-black/30 overflow-hidden">
+          {/* Search */}
+          {options.length > 6 && (
+            <div className="p-2 border-b border-border">
+              <input
+                ref={searchRef}
+                type="text"
+                placeholder="Search..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full px-2.5 py-1.5 text-[11px] bg-panel2 border border-border rounded text-text
+                  placeholder:text-muted2 focus:outline-none focus:border-muted"
+              />
+            </div>
+          )}
+
+          {/* Select all / Clear */}
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
+            <button
+              onClick={selectAll}
+              className="text-[10px] uppercase tracking-wider text-muted hover:text-text transition-colors"
+            >
+              {filtered.every(o => selected.has(o)) ? 'Deselect all' : 'Select all'}
+            </button>
+            {hasFilter && (
+              <button
+                onClick={() => { onClear(); setSearch(''); }}
+                className="text-[10px] uppercase tracking-wider text-muted hover:text-text transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {/* Options list */}
+          <div className="max-h-64 overflow-y-auto py-1 scrollbar-thin">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-muted2">No matches</div>
+            ) : (
+              filtered.map(opt => {
+                const isActive = selected.has(opt);
+                const display = format ? format(opt) : opt;
+                return (
+                  <button
+                    key={opt}
+                    onClick={() => onToggle(opt)}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left hover:bg-panel2 transition-colors"
+                  >
+                    {/* Checkbox */}
+                    <span
+                      className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150 ${
+                        isActive ? 'border-transparent' : 'border-muted/40'
+                      }`}
+                      style={isActive ? { background: hex, borderColor: hex } : undefined}
+                    >
+                      {isActive && (
+                        <svg className="w-2.5 h-2.5 text-bg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className={`text-[11px] truncate ${isActive ? 'text-text font-medium' : 'text-muted'}`}>
+                      {display}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 

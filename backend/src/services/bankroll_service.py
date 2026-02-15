@@ -199,9 +199,6 @@ class BankrollService:
             "profile_id": profile.id,
             "profile_name": profile.name,
             "bankroll": status["bankroll"],
-            "daily_exposure": status["daily_exposure"],
-            "daily_remaining": status["daily_remaining"],
-            "daily_cap_pct": calc.daily_tracker.max_daily_exposure_pct * 100,
             "event_exposures": status["event_exposures"],
             "event_cap_pct": calc.event_tracker.max_event_exposure_pct * 100,
             "bonus_progress": bonus_progress,
@@ -266,4 +263,3 @@ class BankrollService:
         """Reset stake calculator exposure tracking."""
         if profile_id and profile_id in _stake_calculators:
             _stake_calculators[profile_id].reset_event_exposures()
-            _stake_calculators[profile_id].reset_daily_exposure()

@@ -4,7 +4,6 @@ from .stake_calculator import (
     StakeCalculator,
     StakeResult,
     EventExposureTracker,
-    DailyExposureTracker,
     BonusTracker,
     calculate_stake,
     get_kelly_fraction,

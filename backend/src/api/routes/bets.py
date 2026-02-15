@@ -36,32 +36,43 @@ async def list_bets(
 
     bets = bet_repo.list_for_profile(profile.id, status=status, limit=limit)
 
+    # Pre-fetch events for team name resolution
+    event_ids = [b.event_id for b in bets if b.event_id]
+    events_map = {}
+    if event_ids:
+        events = db.query(Event).filter(Event.id.in_(event_ids)).all()
+        events_map = {e.id: e for e in events}
+
+    bet_list = []
+    for b in bets:
+        ev = events_map.get(b.event_id) if b.event_id else None
+        bet_list.append({
+            "id": b.id,
+            "event_id": b.event_id,
+            "provider": b.provider_id,
+            "market": b.market,
+            "outcome": b.outcome,
+            "odds": b.odds,
+            "stake": b.stake,
+            "is_bonus": b.is_bonus,
+            "bonus_type": b.bonus_type,
+            "result": b.result,
+            "payout": b.payout,
+            "profit": b.profit,
+            "roi_pct": b.roi_pct,
+            "placed_at": b.placed_at.isoformat() if b.placed_at else None,
+            "settled_at": b.settled_at.isoformat() if b.settled_at else None,
+            "risk_score": b.risk_score_at_bet,
+            "clv_pct": b.clv_pct,
+            "closing_odds": b.closing_odds,
+            "home_team": ev.home_team if ev else None,
+            "away_team": ev.away_team if ev else None,
+        })
+
     return {
         "profile_id": profile.id,
-        "bets": [
-            {
-                "id": b.id,
-                "event_id": b.event_id,
-                "provider": b.provider_id,
-                "market": b.market,
-                "outcome": b.outcome,
-                "odds": b.odds,
-                "stake": b.stake,
-                "is_bonus": b.is_bonus,
-                "bonus_type": b.bonus_type,
-                "result": b.result,
-                "payout": b.payout,
-                "profit": b.profit,
-                "roi_pct": b.roi_pct,
-                "placed_at": b.placed_at.isoformat() if b.placed_at else None,
-                "settled_at": b.settled_at.isoformat() if b.settled_at else None,
-                "risk_score": b.risk_score_at_bet,
-                "clv_pct": b.clv_pct,
-                "closing_odds": b.closing_odds,
-            }
-            for b in bets
-        ],
-        "count": len(bets),
+        "bets": bet_list,
+        "count": len(bet_list),
     }
 
 
@@ -108,7 +119,7 @@ async def auto_place_bet(
     """
     Auto-place a bet with full pipeline:
     1. Calculate edge vs Pinnacle fair odds (de-vigged)
-    2. Compute Kelly stake (with haircut + dynamic scaling)
+    2. Compute Kelly stake (with dynamic scaling)
     3. Apply risk assessment + stake noise
     4. Record bet + update bankroll
 
@@ -238,7 +249,6 @@ async def auto_place_bet(
         # Caps
         "was_capped_single": stake_result.was_capped_single,
         "was_capped_event": stake_result.was_capped_event,
-        "was_capped_daily": stake_result.was_capped_daily,
         # Risk
         "risk_score": bet_result.get("risk_score", 0.0),
         "noise_pct": round(noisy.noise_pct, 2),

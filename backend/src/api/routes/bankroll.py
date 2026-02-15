@@ -169,7 +169,6 @@ async def preview_stake(data: StakePreviewRequest, service: BankrollService = De
         "single_bet_cap": result.single_bet_cap,
         "was_capped_single": result.was_capped_single,
         "was_capped_event": result.was_capped_event,
-        "was_capped_daily": result.was_capped_daily,
         "skip_reason": result.skip_reason,
         "bonus_cleared": bonus_cleared,
         "min_odds_applied": 0.0 if bonus_cleared else calc.get_min_odds_for_provider(data.provider_id or ""),
@@ -196,7 +195,6 @@ async def record_bet_exposure(data: RecordBetRequest, service: BankrollService =
     return {
         "success": True,
         "event_exposure": calc.event_tracker.get_exposure(data.event_id),
-        "daily_exposure": calc.daily_tracker.get_daily_exposure(),
         "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
     }
 

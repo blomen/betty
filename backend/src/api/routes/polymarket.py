@@ -31,16 +31,18 @@ async def get_polymarket_value(
     # Filter to polymarket only
     poly_values = [vb for vb in all_values if vb.provider == "polymarket"]
 
-    # Initialize stake calculator with profile risk settings
+    # Use total bankroll (same as Value page) — Polymarket is just another provider
     stake_calculator = None
     profile = None
+    profile_repo = None
+    total_bankroll = 0.0
     if poly_values:
         try:
             profile_repo = ProfileRepo(db)
             profile = profile_repo.get_active()
-            bankroll = profile_repo.get_total_bankroll(profile.id)
+            total_bankroll = profile_repo.get_total_bankroll(profile.id)
             stake_calculator = StakeCalculator(
-                bankroll=bankroll,
+                bankroll=total_bankroll,
                 max_kelly=profile.kelly_fraction,
                 single_bet_cap_pct=profile.max_stake_pct / 100.0,
                 min_edge=profile.min_edge_pct / 100.0,
@@ -110,6 +112,7 @@ async def get_polymarket_value(
         "value_bets": results,
         "count": len(results),
         "total_scanned": len(all_values),
+        "total_bankroll": round(total_bankroll, 2),
     }
 
 

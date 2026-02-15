@@ -219,7 +219,24 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
 
                   return (
                     <tr key={provider.provider_id} className="border-t border-border">
-                      <td className="py-3 pr-4 text-text">{formatProviderName(provider.provider_name)}</td>
+                      <td className="py-3 pr-4 text-text">
+                        {formatProviderName(provider.provider_name)}
+                        {(() => {
+                          const bonus = getProviderBonus(provider.provider_id);
+                          if (!bonus?.hasUnclaimedBonus || !bonus.bonus) return null;
+                          const tag = bonus.bonus.type === 'freebet' ? 'f' : 'd';
+                          return (
+                            <span
+                              className="ml-1.5 inline-flex items-center justify-center w-3.5 h-3.5 text-[9px] font-bold rounded bg-tabBonus/20 text-tabBonus"
+                              title={bonus.bonus.type === 'freebet'
+                                ? `Freebet ${bonus.bonus.amount} kr`
+                                : `Bonus deposit up to ${bonus.bonus.amount} kr`}
+                            >
+                              {tag}
+                            </span>
+                          );
+                        })()}
+                      </td>
                       <td className="py-3 pr-4 text-right text-text">{provider.total_balance.toFixed(0)} kr</td>
                       <td className="py-3 pr-4 text-right text-muted">
                         {provider.pending_exposure.toFixed(0)} kr
@@ -230,33 +247,46 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                       <td className="py-3 pr-4 text-right text-success">{provider.available.toFixed(0)} kr</td>
                       <td className="py-3">
                         {isAdjusting ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              value={adjustAmount}
-                              onChange={(e) => setAdjustAmount(e.target.value)}
-                              placeholder="Amount"
-                              className="w-20 px-2 py-1 bg-panel2 border border-border rounded text-text text-xs"
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => handleDeposit(provider.provider_id)}
-                              className="px-2 py-1 text-xs bg-success/20 text-success rounded hover:bg-success/30"
-                            >
-                              +
-                            </button>
-                            <button
-                              onClick={() => handleWithdraw(provider.provider_id)}
-                              className="px-2 py-1 text-xs bg-error/20 text-error rounded hover:bg-error/30"
-                            >
-                              -
-                            </button>
-                            <button
-                              onClick={() => { setAdjustingProvider(null); setAdjustAmount(''); }}
-                              className="px-2 py-1 text-xs text-muted hover:text-text"
-                            >
-                              Cancel
-                            </button>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                value={adjustAmount}
+                                onChange={(e) => setAdjustAmount(e.target.value)}
+                                placeholder="Amount"
+                                className="w-20 px-2 py-1 bg-panel2 border border-border rounded text-text text-xs"
+                                autoFocus
+                              />
+                              <button
+                                onClick={() => handleDeposit(provider.provider_id)}
+                                className="px-2 py-1 text-xs bg-success/20 text-success rounded hover:bg-success/30"
+                              >
+                                +
+                              </button>
+                              <button
+                                onClick={() => handleWithdraw(provider.provider_id)}
+                                className="px-2 py-1 text-xs bg-error/20 text-error rounded hover:bg-error/30"
+                              >
+                                -
+                              </button>
+                              <button
+                                onClick={() => { setAdjustingProvider(null); setAdjustAmount(''); }}
+                                className="px-2 py-1 text-xs text-muted hover:text-text"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {(() => {
+                              const amt = parseFloat(adjustAmount);
+                              const bonus = getProviderBonus(provider.provider_id);
+                              if (!amt || amt <= 0 || !bonus?.hasUnclaimedBonus || bonus.bonus?.type !== 'bonusdeposit') return null;
+                              const matched = Math.min(amt, bonus.bonus.amount);
+                              return (
+                                <div className="text-[10px] text-tabBonus pl-0.5">
+                                  +{matched.toFixed(0)} kr bonus · total {(amt + matched).toFixed(0)} kr
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <button

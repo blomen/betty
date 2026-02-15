@@ -131,6 +131,8 @@ export interface Bet {
   profit: number;
   roi_pct: number;
   placed_at: string;
+  home_team?: string | null;
+  away_team?: string | null;
 }
 
 // Profile
@@ -420,7 +422,7 @@ export interface PolymarketValueBet {
   sport: string;
   league: string | null;
   start_time: string | null;
-  // Stake recommendations (from profile/bankroll)
+  // Stake recommendations (from profile/bankroll, in kr)
   suggested_stake?: number | null;
   final_stake?: number | null;
   kelly_fraction?: number | null;
@@ -432,6 +434,7 @@ export interface PolymarketValueResponse {
   value_bets: PolymarketValueBet[];
   count: number;
   total_scanned: number;
+  total_bankroll: number;
 }
 
 // Polymarket Stats

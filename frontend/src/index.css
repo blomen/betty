@@ -105,28 +105,16 @@ code {
   border-radius: 4px;
 }
 
-/* Markdown tables */
+/* Reset app tables — Tailwind controls all styling */
 table {
-  width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
-  font-family: JetBrains Mono, Cascadia Code, SF Mono, Fira Code, Consolas, ui-monospace, monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--text);
 }
 
 th, td {
-  border: 1px solid var(--tableBorder);
-  padding: 10px 12px;
+  border: none;
+  padding: 0;
   vertical-align: top;
   text-align: left;
-}
-
-th {
-  font-weight: 600;
-  color: var(--text);
-  background: transparent;
 }
 
 /* Links */

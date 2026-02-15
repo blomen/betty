@@ -3,7 +3,7 @@ import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { FilterBar, MultiSelectPills, SingleSelectPills } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SingleSelectPills } from '../FilterBar';
 
 
 export function SpecialsPage() {
@@ -47,8 +47,13 @@ export function SpecialsPage() {
 
   useRefreshOnExtraction(fetchData);
 
-  // Filter out expired specials client-side as extra safety
+  // Filter out expired and already-started specials client-side as extra safety
   const nonExpired = specials.filter(s => {
+    // Filter out events that have already started
+    if (s.event_time) {
+      try { if (new Date(s.event_time).getTime() <= Date.now()) return false; }
+      catch { /* keep */ }
+    }
     if (!s.expires_at) return true;
     try { return new Date(s.expires_at).getTime() > Date.now(); }
     catch { return true; }
@@ -183,7 +188,7 @@ export function SpecialsPage() {
       {/* Filter bar */}
       {filters && (
         <FilterBar>
-          <MultiSelectPills
+          <MultiSelectDropdown
             label="Provider"
             options={filters.providers}
             selected={selectedProviders}
@@ -216,14 +221,13 @@ export function SpecialsPage() {
       ) : (
         <div className="bg-panel border border-border rounded-lg overflow-hidden">
           {/* Column header */}
-          <div className="grid grid-cols-[90px_1fr_1.5fr_100px_55px_70px_55px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
-            <div>Provider</div>
-            <div>Event</div>
-            <div>Bet</div>
+          <div className="grid grid-cols-[1fr_100px_90px_55px_55px_60px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
+            <div>Boost</div>
+            <div className="text-right">Provider</div>
             <div className="text-right">Odds</div>
-            <div className="text-right">Boost</div>
-            <div className="text-right">Kickoff</div>
+            <div className="text-right">Prob</div>
             <div className="text-right">Max</div>
+            <div className="text-right">Edge</div>
           </div>
 
           {/* Rows */}
@@ -236,39 +240,36 @@ export function SpecialsPage() {
                 <div key={`${s.display_provider}-${idx}`}>
                   {/* Main row */}
                   <div
-                    className={`grid grid-cols-[90px_1fr_1.5fr_100px_55px_70px_55px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm
+                    className={`grid grid-cols-[1fr_100px_90px_55px_55px_60px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm
                       ${isExpanded ? 'bg-tabBonus/5' : 'hover:bg-panel2'}
                     `}
                     onClick={() => handleRowClick(idx, s)}
                   >
-                    {/* Provider */}
-                    <div className="flex items-center min-w-0">
-                      <span className="text-text text-sm truncate">{formatProviderName(s.display_provider)}</span>
-                    </div>
-
-                    {/* Event + sport badge + league */}
+                    {/* Boost: title on top, event · sport · kickoff below */}
                     <div className="flex flex-col justify-center min-w-0">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-text text-sm truncate">{s.event || '-'}</span>
-                        {s.sport && s.sport !== 'unknown' && (
-                          <span className="px-1 py-0.5 rounded bg-indigo-500/15 text-indigo-400 text-[9px] shrink-0">
-                            {s.sport.replace(/_/g, ' ')}
+                        <span className="text-text text-sm truncate">{s.title}</span>
+                        {s.category === 'superboost' && (
+                          <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 rounded shrink-0">
+                            SUPER
                           </span>
                         )}
                       </div>
-                      {s.league && (
-                        <span className="text-muted text-[11px] truncate">{s.league}</span>
-                      )}
+                      <span className="text-muted text-[11px] truncate">
+                        {s.event || ''}
+                        {s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}
+                        {s.league ? ` · ${s.league}` : ''}
+                        {s.event_time && isFutureDate(s.event_time)
+                          ? ` · ${formatEventTime(s.event_time)}`
+                          : s.expires_at
+                            ? ` · ${formatTimeRemaining(s.expires_at)}`
+                            : ''}
+                      </span>
                     </div>
 
-                    {/* Bet description (title) */}
-                    <div className="flex items-center min-w-0">
-                      <span className="text-text text-sm truncate leading-snug">{s.title}</span>
-                      {s.category === 'superboost' && (
-                        <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 rounded shrink-0">
-                          SUPER
-                        </span>
-                      )}
+                    {/* Provider */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-text text-sm">{formatProviderName(s.display_provider)}</span>
                     </div>
 
                     {/* Odds: original → boosted */}
@@ -284,32 +285,13 @@ export function SpecialsPage() {
                       </span>
                     </div>
 
-                    {/* Boost % */}
+                    {/* Prob (implied from original odds) */}
                     <div className="flex items-center justify-end">
-                      {boostPct != null && boostPct > 0 ? (
-                        <span className={`font-semibold text-sm ${
-                          boostPct >= 100 ? 'text-emerald-400' : 'text-emerald-400/80'
-                        }`}>
-                          +{boostPct.toFixed(0)}%
-                        </span>
-                      ) : (
-                        <span className="text-muted text-sm">-</span>
-                      )}
-                    </div>
-
-                    {/* Kickoff / Expires */}
-                    <div className="flex flex-col items-end justify-center">
-                      {s.event_time && isFutureDate(s.event_time) ? (
-                        <span className="text-muted text-xs">{formatEventTime(s.event_time)}</span>
-                      ) : s.expires_at ? (
-                        <span className={`text-xs ${
-                          isExpiringSoon(s.expires_at) ? 'text-amber-400' : 'text-muted'
-                        }`}>
-                          {formatTimeRemaining(s.expires_at)}
-                        </span>
-                      ) : (
-                        <span className="text-muted text-xs">-</span>
-                      )}
+                      <span className="text-muted text-sm">
+                        {s.original_odds != null && s.original_odds > 1
+                          ? `${(100 / s.original_odds).toFixed(0)}%`
+                          : '-'}
+                      </span>
                     </div>
 
                     {/* Max stake */}
@@ -317,6 +299,17 @@ export function SpecialsPage() {
                       <span className="text-muted text-sm">
                         {s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}
                       </span>
+                    </div>
+
+                    {/* Boost % / Edge */}
+                    <div className="flex items-center justify-end">
+                      {boostPct != null && boostPct > 0 ? (
+                        <span className="text-tabBonus font-semibold text-sm">
+                          +{boostPct.toFixed(0)}%
+                        </span>
+                      ) : (
+                        <span className="text-muted text-sm">-</span>
+                      )}
                     </div>
                   </div>
 
@@ -520,17 +513,6 @@ function formatTimeRemaining(isoString: string): string {
 function isFutureDate(isoString: string): boolean {
   try {
     return new Date(isoString).getTime() > Date.now();
-  } catch {
-    return false;
-  }
-}
-
-
-function isExpiringSoon(isoString: string): boolean {
-  try {
-    const date = new Date(isoString);
-    const diffMs = date.getTime() - Date.now();
-    return diffMs > 0 && diffMs < 6 * 60 * 60 * 1000;
   } catch {
     return false;
   }

@@ -8,12 +8,10 @@ Total bankroll approach:
 - Bonuses just add EV + wagering constraints
 
 Key safety features:
-1. Edge haircut (0.6x) - accounts for estimation error
-2. Dynamic Kelly scaling by edge
-3. Single bet cap (3% of bankroll)
-4. Event/cluster exposure cap (5%)
-5. Daily exposure cap (10%)
-6. Minimum stake guard (25 kr)
+1. Dynamic Kelly scaling by edge (quarter Kelly default)
+2. Single bet cap (3% of bankroll)
+3. Event/cluster exposure cap (5%)
+4. Minimum stake guard (25 kr)
 
 Bonus clearing:
 - Track wagered amount per provider
@@ -22,7 +20,6 @@ Bonus clearing:
 """
 
 from dataclasses import dataclass
-from datetime import date
 from typing import Optional
 
 
@@ -38,7 +35,7 @@ class StakeResult:
     """Result of stake calculation with full transparency."""
     stake: float
     kelly_fraction: float
-    edge_used: float  # After haircut
+    edge_used: float
     edge_raw: float
     bankroll: float
 
@@ -47,7 +44,6 @@ class StakeResult:
     single_bet_cap: float
     was_capped_single: bool
     was_capped_event: bool
-    was_capped_daily: bool
 
     # Reasoning
     skip_reason: Optional[str] = None
@@ -59,7 +55,7 @@ def get_kelly_fraction(
     max_kelly: float = 0.75,
 ) -> float:
     """
-    Dynamic Kelly fraction based on edge (after haircut), capped by profile setting.
+    Dynamic Kelly fraction based on edge, capped by profile setting.
 
     Scaling:
     - <= 2% edge: min(0.25, max_kelly) - conservative base
@@ -69,7 +65,7 @@ def get_kelly_fraction(
     If low confidence, clamp to min(0.25, max_kelly) regardless of edge.
 
     Args:
-        edge_used: Edge after haircut (decimal, e.g., 0.03 for 3%)
+        edge_used: Edge (decimal, e.g., 0.03 for 3%)
         high_confidence: Whether this is a high-confidence bet (strong match, fresh odds)
         max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
 
@@ -97,10 +93,8 @@ def calculate_stake(
     bankroll_total: float,
     edge_raw: float,
     odds: float,
-    edge_haircut: float = 0.60,
     single_bet_cap_pct: float = 0.03,
     event_exposure_remaining: Optional[float] = None,
-    daily_exposure_remaining: Optional[float] = None,
     min_edge: float = 0.01,
     min_odds: float = BONUS_MIN_ODDS,
     min_odds_sanity: float = 1.10,
@@ -115,10 +109,8 @@ def calculate_stake(
         bankroll_total: Total bankroll across all providers
         edge_raw: Raw estimated edge (decimal, e.g., 0.05 for 5%)
         odds: Decimal odds (e.g., 2.0)
-        edge_haircut: Multiplier to account for estimation error (0.6 = 60%)
         single_bet_cap_pct: Max stake as % of bankroll (0.03 = 3%)
         event_exposure_remaining: Max additional exposure allowed on this event
-        daily_exposure_remaining: Max additional daily exposure allowed
         min_edge: Minimum edge to place bet
         min_odds: Minimum odds (for bonus requirements, 0 to disable)
         min_odds_sanity: Minimum odds for sanity (avoid division issues)
@@ -129,8 +121,6 @@ def calculate_stake(
     Returns:
         StakeResult with stake amount and full breakdown
     """
-    was_capped_daily = False
-
     # Sanity guard: odds too close to 1.0 cause absurd stakes
     if odds <= min_odds_sanity:
         return StakeResult(
@@ -143,7 +133,6 @@ def calculate_stake(
             single_bet_cap=0.0,
             was_capped_single=False,
             was_capped_event=False,
-            was_capped_daily=False,
             skip_reason=f"Odds {odds:.2f} below sanity minimum {min_odds_sanity}"
         )
 
@@ -159,7 +148,6 @@ def calculate_stake(
             single_bet_cap=0.0,
             was_capped_single=False,
             was_capped_event=False,
-            was_capped_daily=False,
             skip_reason=f"Odds {odds:.2f} below minimum {min_odds} (bonus requirement)"
         )
 
@@ -174,7 +162,6 @@ def calculate_stake(
             single_bet_cap=0.0,
             was_capped_single=False,
             was_capped_event=False,
-            was_capped_daily=False,
             skip_reason=f"Edge {edge_raw*100:.1f}% below minimum {min_edge*100:.1f}%"
         )
 
@@ -189,12 +176,10 @@ def calculate_stake(
             single_bet_cap=0.0,
             was_capped_single=False,
             was_capped_event=False,
-            was_capped_daily=False,
             skip_reason="No bankroll"
         )
 
-    # Apply edge haircut (accounts for estimation error)
-    edge_used = edge_raw * edge_haircut
+    edge_used = edge_raw
 
     # Get dynamic Kelly fraction (capped by profile max_kelly, clamped if low confidence)
     kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
@@ -213,11 +198,6 @@ def calculate_stake(
         stake = event_exposure_remaining
         was_capped_event = True
 
-    # Apply daily exposure cap (if provided)
-    if daily_exposure_remaining is not None and stake > daily_exposure_remaining:
-        stake = daily_exposure_remaining
-        was_capped_daily = True
-
     # Ensure non-negative
     stake = max(0.0, stake)
 
@@ -233,7 +213,6 @@ def calculate_stake(
             single_bet_cap=round(single_bet_cap, 2),
             was_capped_single=was_capped_single,
             was_capped_event=was_capped_event,
-            was_capped_daily=was_capped_daily,
             skip_reason=f"Stake {stake:.0f} kr below minimum {min_stake:.0f} kr"
         )
 
@@ -247,7 +226,6 @@ def calculate_stake(
         single_bet_cap=round(single_bet_cap, 2),
         was_capped_single=was_capped_single,
         was_capped_event=was_capped_event,
-        was_capped_daily=was_capped_daily,
     )
 
 
@@ -284,51 +262,6 @@ class EventExposureTracker:
     def reset(self):
         """Reset all exposures (e.g., after events settle)."""
         self.exposures.clear()
-
-
-class DailyExposureTracker:
-    """
-    Track daily exposure to prevent over-trading.
-
-    Resets automatically at midnight.
-    """
-
-    def __init__(self, max_daily_exposure_pct: float = 0.10):
-        """
-        Args:
-            max_daily_exposure_pct: Max daily exposure as % of bankroll (0.10 = 10%)
-        """
-        self.max_daily_exposure_pct = max_daily_exposure_pct
-        self.daily_exposure: float = 0.0
-        self.last_reset: date = date.today()
-
-    def _maybe_reset(self):
-        """Reset if it's a new day."""
-        today = date.today()
-        if today > self.last_reset:
-            self.daily_exposure = 0.0
-            self.last_reset = today
-
-    def get_remaining_exposure(self, bankroll: float) -> float:
-        """Get remaining allowed exposure for today."""
-        self._maybe_reset()
-        max_daily = bankroll * self.max_daily_exposure_pct
-        return max(0.0, max_daily - self.daily_exposure)
-
-    def record_bet(self, stake: float):
-        """Record a bet's exposure."""
-        self._maybe_reset()
-        self.daily_exposure += stake
-
-    def get_daily_exposure(self) -> float:
-        """Get current daily exposure."""
-        self._maybe_reset()
-        return self.daily_exposure
-
-    def reset(self):
-        """Force reset (for testing)."""
-        self.daily_exposure = 0.0
-        self.last_reset = date.today()
 
 
 class BonusTracker:
@@ -437,23 +370,19 @@ class StakeCalculator:
     def __init__(
         self,
         bankroll: float,
-        edge_haircut: float = 0.60,
         single_bet_cap_pct: float = 0.03,
         event_cap_pct: float = 0.05,
-        daily_cap_pct: float = 0.10,
         min_edge: float = 0.01,
         min_stake: float = DEFAULT_MIN_STAKE,
         max_kelly: float = 0.75,
     ):
         self.bankroll = bankroll
-        self.edge_haircut = edge_haircut
         self.single_bet_cap_pct = single_bet_cap_pct
         self.min_edge = min_edge
         self.min_stake = min_stake
         self.max_kelly = max_kelly
 
         self.event_tracker = EventExposureTracker(event_cap_pct)
-        self.daily_tracker = DailyExposureTracker(daily_cap_pct)
         self.bonus_tracker = BonusTracker()
 
     def update_bankroll(self, new_bankroll: float):
@@ -510,16 +439,12 @@ class StakeCalculator:
                 event_id, self.bankroll
             )
 
-        daily_exposure = self.daily_tracker.get_remaining_exposure(self.bankroll)
-
         return calculate_stake(
             bankroll_total=self.bankroll,
             edge_raw=edge_raw,
             odds=odds,
-            edge_haircut=self.edge_haircut,
             single_bet_cap_pct=self.single_bet_cap_pct,
             event_exposure_remaining=event_exposure,
-            daily_exposure_remaining=daily_exposure,
             min_edge=self.min_edge,
             min_odds=min_odds,
             min_stake=self.min_stake,
@@ -544,7 +469,6 @@ class StakeCalculator:
             odds: The odds at which bet was placed
         """
         self.event_tracker.record_bet(event_id, stake)
-        self.daily_tracker.record_bet(stake)
         self.bonus_tracker.record_bet(provider_id, stake, odds)
 
     def start_bonus(
@@ -561,8 +485,6 @@ class StakeCalculator:
         """Get current calculator status."""
         return {
             "bankroll": self.bankroll,
-            "daily_exposure": self.daily_tracker.get_daily_exposure(),
-            "daily_remaining": self.daily_tracker.get_remaining_exposure(self.bankroll),
             "event_exposures": dict(self.event_tracker.exposures),
             "bonus_progress": self.bonus_tracker.get_all_progress(),
         }
@@ -571,17 +493,12 @@ class StakeCalculator:
         """Reset event exposure tracking (after events settle)."""
         self.event_tracker.reset()
 
-    def reset_daily_exposure(self):
-        """Force reset daily exposure (for testing)."""
-        self.daily_tracker.reset()
-
 
 # Convenience function for quick calculations
 def quick_stake(
     bankroll: float,
     edge: float,
     odds: float,
-    haircut: float = 0.60,
 ) -> float:
     """
     Quick stake calculation without exposure tracking.
@@ -590,7 +507,6 @@ def quick_stake(
         bankroll: Total bankroll
         edge: Raw edge estimate
         odds: Decimal odds
-        haircut: Edge haircut (default 0.60)
 
     Returns:
         Recommended stake
@@ -599,7 +515,6 @@ def quick_stake(
         bankroll_total=bankroll,
         edge_raw=edge,
         odds=odds,
-        edge_haircut=haircut,
         min_odds=0.0,  # No restriction for quick calc
     )
     return result.stake
@@ -615,14 +530,13 @@ if __name__ == "__main__":
 
     print("\n[KELLY FRACTION SCALING]")
     print("-" * 50)
-    print(f"{'Raw Edge':<12} {'Haircut Edge':<14} {'Kelly (high conf)':<18} {'Kelly (low conf)':<15}")
+    print(f"{'Edge':<12} {'Kelly (high conf)':<18} {'Kelly (low conf)':<15}")
     print("-" * 50)
     for edge_pct in [1, 2, 3, 4, 5, 6, 7, 8, 10]:
         edge = edge_pct / 100
-        edge_used = edge * 0.60  # haircut
-        kelly_high = get_kelly_fraction(edge_used, high_confidence=True)
-        kelly_low = get_kelly_fraction(edge_used, high_confidence=False)
-        print(f"{edge_pct}%{'':<10} {edge_used*100:.1f}%{'':<12} {kelly_high:.2f}{'':<16} {kelly_low:.2f}")
+        kelly_high = get_kelly_fraction(edge, high_confidence=True)
+        kelly_low = get_kelly_fraction(edge, high_confidence=False)
+        print(f"{edge_pct}%{'':<10} {kelly_high:.2f}{'':<16} {kelly_low:.2f}")
 
     print("\n[STAKE EXAMPLES - WITH BONUS REQUIREMENT (min odds 1.80)]")
     print("-" * 60)
@@ -658,18 +572,3 @@ if __name__ == "__main__":
     result_cleared = calc2.calculate(0.05, 1.50, min_odds=0.0)
     print(f"Bonus cleared (no min): odds=1.50 -> {result_cleared.stake:.0f} kr")
 
-    print("\n[DAILY CAP DEMO - 10% MAX PER DAY]")
-    print("-" * 40)
-
-    calc3 = StakeCalculator(bankroll=10000)
-    print(f"Max daily: {calc3.bankroll * 0.10:.0f} kr")
-
-    for i in range(6):
-        result = calc3.calculate(edge_raw=0.08, odds=2.0, event_id=f"event_{i}", min_odds=0.0)
-        if result.stake > 0:
-            calc3.record_bet(f"event_{i}", "provider", result.stake, 2.0)
-            print(f"Bet {i+1}: {result.stake:.0f} kr (daily capped: {result.was_capped_daily})")
-        else:
-            print(f"Bet {i+1}: SKIP - {result.skip_reason}")
-
-    print(f"\nTotal daily: {calc3.daily_tracker.get_daily_exposure():.0f} kr")

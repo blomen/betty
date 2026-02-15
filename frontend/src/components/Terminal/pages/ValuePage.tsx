@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { FilterBar, MultiSelectPills } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import type { Opportunity, Provider } from '@/types';
 
@@ -35,6 +35,16 @@ interface DutchOpp {
   legs?: DutchLeg[];
 }
 
+/** A grouped value bet: same event+outcome+odds across multiple providers */
+interface GroupedOpp {
+  key: string;
+  /** Representative opportunity (first in group) */
+  rep: Opportunity;
+  /** All opportunities in the group */
+  opps: Opportunity[];
+  providers: string[];
+}
+
 interface ValuePageProps {
   providers: Provider[];
 }
@@ -45,7 +55,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [isLoading, setIsLoading] = useState(true);
 
   // Betting workflow state
-  const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
   const [selectedDutch, setSelectedDutch] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
 
@@ -86,16 +96,40 @@ export function ValuePage({ providers }: ValuePageProps) {
     return Array.from(set).sort();
   }, [opportunities]);
 
-  // Apply filters
-  const filtered = useMemo(() => {
+  // Apply filters then group
+  const grouped = useMemo(() => {
     let result = opportunities;
 
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
     }
 
-    return result;
+    // Group by event_id + outcome + market + point + odds
+    const map = new Map<string, Opportunity[]>();
+    for (const opp of result) {
+      const key = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
+      const arr = map.get(key);
+      if (arr) arr.push(opp);
+      else map.set(key, [opp]);
+    }
+
+    const groups: GroupedOpp[] = [];
+    for (const [key, opps] of map) {
+      groups.push({
+        key,
+        rep: opps[0],
+        opps,
+        providers: opps.map(o => o.provider1),
+      });
+    }
+
+    return groups;
   }, [opportunities, selectedProviders]);
+
+  // Total individual opps for the count display
+  const filteredCount = useMemo(() =>
+    grouped.reduce((acc, g) => acc + g.opps.length, 0),
+  [grouped]);
 
   const toggleProvider = (p: string) => {
     setSelectedProviders(prev => {
@@ -114,14 +148,14 @@ export function ValuePage({ providers }: ValuePageProps) {
     });
   };
 
-  const handleSelectOpp = (idx: number) => {
-    setSelectedOpp(selectedOpp === idx ? null : idx);
+  const handleSelectGroup = (idx: number) => {
+    setSelectedGroup(selectedGroup === idx ? null : idx);
     setSelectedDutch(null);
   };
 
   const handleSelectDutch = (idx: number) => {
     setSelectedDutch(selectedDutch === idx ? null : idx);
-    setSelectedOpp(null);
+    setSelectedGroup(null);
   };
 
   // Check if a provider has an available freebet
@@ -162,7 +196,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         is_bonus: useFreebet,
         bonus_type: useFreebet ? 'freebet' : undefined,
       });
-      setSelectedOpp(null);
+      setSelectedGroup(null);
       fetchData();
     } catch (err) {
       console.error('Failed to place bet:', err);
@@ -188,7 +222,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-tabValue" />
           Soft
-          <span className="text-muted text-sm font-normal ml-1">({filtered.length})</span>
+          <span className="text-muted text-sm font-normal ml-1">({filteredCount})</span>
           {dutchOpps.length > 0 && (
             <span className="text-success text-sm font-normal">
               · {dutchOpps.length} dutch
@@ -352,7 +386,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       {/* Filters */}
       {availableProviders.length > 0 && (
         <FilterBar>
-          <MultiSelectPills
+          <MultiSelectDropdown
             label="Provider"
             options={availableProviders}
             selected={selectedProviders}
@@ -369,7 +403,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
           Loading...
         </div>
-      ) : filtered.length === 0 ? (
+      ) : grouped.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
           {opportunities.length === 0
             ? 'No value bets found. Run extraction first.'
@@ -378,130 +412,157 @@ export function ValuePage({ providers }: ValuePageProps) {
       ) : (
         <div className="bg-panel border border-border rounded-lg overflow-hidden">
           {/* Column headers */}
-          <div className="grid grid-cols-[1fr_100px_110px_70px_70px_75px_70px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
+          <div className="grid grid-cols-[1fr_140px_110px_65px_65px_55px_70px_65px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
             <div>Event</div>
-            <div className="text-right">Provider</div>
+            <div className="text-right">Providers</div>
             <div className="text-right">Outcome</div>
             <div className="text-right">Odds</div>
             <div className="text-right">Fair</div>
+            <div className="text-right">Prob</div>
             <div className="text-right">Stake</div>
             <div className="text-right">Edge</div>
           </div>
 
           {/* Rows */}
           <div className="divide-y divide-border/50">
-            {filtered.map((opp, idx) => {
-              const isSelected = selectedOpp === idx;
-              const hasStake = opp.final_stake != null && opp.final_stake > 0;
-              const isSkipped = !!opp.skip_reason;
-              const potentialReturn = hasStake ? opp.final_stake! * opp.odds1 : 0;
-              const potentialProfit = potentialReturn - (opp.final_stake || 0);
+            {grouped.map((group, idx) => {
+              const { rep, opps, providers: groupProviders } = group;
+              const isSelected = selectedGroup === idx;
+              const hasStake = rep.final_stake != null && rep.final_stake > 0;
+              const isSkipped = opps.every(o => !!o.skip_reason);
+              const providerCount = groupProviders.length;
 
               return (
-                <div key={opp.id}>
+                <div key={group.key}>
                   {/* Main row */}
                   <div
-                    className={`grid grid-cols-[1fr_100px_110px_70px_70px_75px_70px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm ${
+                    className={`grid grid-cols-[1fr_140px_110px_65px_65px_55px_70px_65px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm ${
                       isSkipped
                         ? 'opacity-50'
                         : isSelected
                           ? 'bg-tabValue/5'
                           : 'hover:bg-panel2'
                     }`}
-                    onClick={() => !isSkipped && handleSelectOpp(idx)}
+                    onClick={() => !isSkipped && handleSelectGroup(idx)}
                   >
                     {/* Event */}
                     <div className="flex flex-col justify-center min-w-0">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="text-text text-sm truncate">
-                          {opp.home_team} vs {opp.away_team}
+                          {rep.home_team} vs {rep.away_team}
                         </span>
                         {isSkipped && (
                           <span className="text-[9px] px-1.5 py-0.5 bg-muted/15 text-muted rounded shrink-0">
-                            {opp.skip_reason}
+                            {rep.skip_reason}
                           </span>
                         )}
                       </div>
                       <span className="text-muted text-[11px] truncate">
-                        {opp.sport}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatTime(opp.starts_at)}
+                        {rep.sport}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatTime(rep.starts_at)}
                       </span>
                     </div>
 
-                    {/* Provider */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-text text-sm">{formatProviderName(opp.provider1)}</span>
+                    {/* Providers */}
+                    <div className="flex items-center justify-end min-w-0">
+                      {providerCount <= 3 ? (
+                        <span className="text-text text-sm truncate">
+                          {groupProviders.map(formatProviderName).join(', ')}
+                        </span>
+                      ) : (
+                        <span className="text-text text-sm truncate">
+                          {formatProviderName(groupProviders[0])}
+                          <span className="text-muted ml-1">+{providerCount - 1}</span>
+                        </span>
+                      )}
                     </div>
 
                     {/* Outcome */}
                     <div className="flex items-center justify-end">
-                      <span className="text-text text-sm truncate">{resolveOutcomeName(opp)}</span>
+                      <span className="text-text text-sm truncate">{resolveOutcomeName(rep)}</span>
                     </div>
 
                     {/* Odds */}
                     <div className="flex items-center justify-end">
-                      <span className="text-text text-sm font-medium">{opp.odds1.toFixed(2)}</span>
+                      <span className="text-text text-sm font-medium">{rep.odds1.toFixed(2)}</span>
                     </div>
 
                     {/* Fair odds */}
                     <div className="flex items-center justify-end">
-                      <span className="text-muted text-sm">{opp.fair_odds?.toFixed(2) || '-'}</span>
+                      <span className="text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</span>
+                    </div>
+
+                    {/* Prob (Pinnacle fair probability) */}
+                    <div className="flex items-center justify-end">
+                      <span className="text-muted text-sm">
+                        {rep.fair_odds && rep.fair_odds > 1
+                          ? `${(100 / rep.fair_odds).toFixed(0)}%`
+                          : '-'}
+                      </span>
                     </div>
 
                     {/* Stake */}
                     <div className="flex items-center justify-end">
                       <span className="text-text text-sm font-medium">
-                        {hasStake ? `${opp.final_stake!.toFixed(0)} kr` : '-'}
+                        {hasStake ? `${rep.final_stake!.toFixed(0)} kr` : '-'}
                       </span>
                     </div>
 
                     {/* Edge */}
                     <div className="flex items-center justify-end">
                       <span className="text-tabValue font-semibold text-sm">
-                        +{opp.edge_pct?.toFixed(1)}%
+                        +{rep.edge_pct?.toFixed(1)}%
                       </span>
                     </div>
                   </div>
 
-                  {/* Expanded view */}
+                  {/* Expanded view — show per-provider rows with place buttons */}
                   {isSelected && !isSkipped && (
                     <div
-                      className="px-4 py-3 bg-panel2/50 border-t border-border/30"
+                      className="bg-panel2/50 border-t border-border/30"
                       onClick={e => e.stopPropagation()}
                     >
-                      <div className="flex items-center justify-between gap-6">
-                        <div className="flex items-center gap-6 text-sm text-muted">
-                          <div>
-                            <span className="text-[10px] uppercase tracking-wider text-muted block">Kelly</span>
-                            <span className="text-text">
-                              {opp.kelly_fraction != null ? `${(opp.kelly_fraction * 100).toFixed(1)}%` : '-'}
-                            </span>
-                          </div>
-                          {hasStake && (
-                            <div>
-                              <span className="text-[10px] uppercase tracking-wider text-muted block">Return</span>
-                              <span className="text-text">{potentialReturn.toFixed(0)} kr</span>
-                              <span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span>
-                            </div>
-                          )}
-                          <div>
-                            <span className="text-[10px] uppercase tracking-wider text-muted block">Market</span>
-                            <span className="text-text">{opp.market}</span>
-                          </div>
-                          {opp.point != null && (
-                            <div>
-                              <span className="text-[10px] uppercase tracking-wider text-muted block">Line</span>
-                              <span className="text-text">{opp.point}</span>
-                            </div>
-                          )}
+                      {/* Stats row */}
+                      <div className="px-4 pt-3 pb-2 flex items-center gap-6 text-sm text-muted">
+                        <div>
+                          <span className="text-[10px] uppercase tracking-wider text-muted block">Kelly</span>
+                          <span className="text-text">
+                            {rep.kelly_fraction != null ? `${(rep.kelly_fraction * 100).toFixed(1)}%` : '-'}
+                          </span>
                         </div>
+                        {hasStake && (
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-muted block">Return</span>
+                            <span className="text-text">{(rep.final_stake! * rep.odds1).toFixed(0)} kr</span>
+                            <span className="text-tabValue text-xs ml-1">(+{(rep.final_stake! * rep.odds1 - rep.final_stake!).toFixed(0)})</span>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-[10px] uppercase tracking-wider text-muted block">Market</span>
+                          <span className="text-text">{rep.market}</span>
+                        </div>
+                        {rep.point != null && (
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-muted block">Line</span>
+                            <span className="text-text">{rep.point}</span>
+                          </div>
+                        )}
+                      </div>
 
-                        <button
-                          onClick={() => handlePlaceBetClick(opp)}
-                          disabled={!hasStake || isPlacing}
-                          className="px-4 py-2 bg-tabValue text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                        >
-                          {isPlacing ? 'Placing...' : `Place ${hasStake ? opp.final_stake!.toFixed(0) : 0} kr`}
-                        </button>
+                      {/* Per-provider place buttons */}
+                      <div className="px-4 pb-3 flex flex-wrap gap-2">
+                        {opps.map((opp) => {
+                          const oppHasStake = opp.final_stake != null && opp.final_stake > 0;
+                          return (
+                            <button
+                              key={opp.id}
+                              onClick={() => handlePlaceBetClick(opp)}
+                              disabled={!oppHasStake || isPlacing}
+                              className="px-3 py-1.5 bg-tabValue text-bg rounded text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                            >
+                              {isPlacing ? '...' : `${formatProviderName(opp.provider1)} ${oppHasStake ? opp.final_stake!.toFixed(0) : 0} kr`}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

@@ -290,10 +290,22 @@ async def scrape_specials():
 
 
 def _filter_expired(specials: list[dict]) -> list[dict]:
-    """Remove specials whose expires_at is in the past."""
+    """Remove specials whose expires_at is in the past or event has already started."""
     now = datetime.now(timezone.utc)
     result = []
     for s in specials:
+        # Filter out events that have already started (live/in-play)
+        event_time = s.get("event_time")
+        if event_time:
+            try:
+                et = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                if et.tzinfo is None:
+                    et = et.replace(tzinfo=timezone.utc)
+                if et <= now:
+                    continue  # Event already kicked off
+            except (ValueError, TypeError):
+                pass
+
         exp = s.get("expires_at")
         if not exp:
             result.append(s)
