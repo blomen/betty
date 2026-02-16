@@ -91,6 +91,8 @@ class CoolbetRetriever(BrowserRetriever):
     # Market names to explicitly skip (3-way handicap not useful)
     SKIP_MARKETS = {"Handicap (3 Way)"}
 
+    _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.coolbet.com")
@@ -102,9 +104,13 @@ class CoolbetRetriever(BrowserRetriever):
         if self._camoufox_page is not None:
             return self._camoufox_page
 
+        if CoolbetRetriever._camoufox_unavailable:
+            return None
+
         try:
             from camoufox.async_api import AsyncCamoufox
         except ImportError:
+            CoolbetRetriever._camoufox_unavailable = True
             logger.error(
                 f"[{self.provider_id}] camoufox not installed. "
                 f"Install with: pip install camoufox[geoip] && python -m camoufox fetch"
@@ -240,7 +246,7 @@ class CoolbetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    CONCURRENT_CATEGORY_FETCHES = 5  # Parallel category page fetches
+    CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (was 5, increased for speed)
 
     async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
         """Fetch all categories with pagination (API returns 10 per page).
@@ -268,7 +274,7 @@ class CoolbetRetriever(BrowserRetriever):
 
         # Fan out: fetch pages concurrently in batches
         # Each batch of CONCURRENT_CATEGORY_FETCHES offsets runs in parallel
-        offset = CATEGORY_PAGE_SIZE + 1  # Start after first page
+        offset = CATEGORY_PAGE_SIZE  # Start after first page (0-indexed)
         consecutive_empty_batches = 0
 
         while offset < MAX_OFFSET and consecutive_empty_batches < 2:

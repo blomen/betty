@@ -75,13 +75,18 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     # Reverse: canonical name → sport ID
     SPORT_ID_BY_NAME = {v[0]: k for k, v in SPORT_MAP.items()}
 
-    # Outcome type → standard name
+    # Outcome type → standard name (include lowercase for inconsistent WS data)
     OUTCOME_MAP = {
         "Home":  "home",
         "Away":  "away",
         "Draw":  "draw",
         "Over":  "over",
         "Under": "under",
+        "home":  "home",
+        "away":  "away",
+        "draw":  "draw",
+        "over":  "over",
+        "under": "under",
     }
 
     # Market type IDs we want (discovered via diag_snabbare_markets.py)
@@ -93,13 +98,20 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         206: "moneyline",   # Winner (incl. overtime)
         376: "moneyline",   # Winner (incl. overtime and penalties)
         # Total (over/under)
+        18: "total",         # Over/Under (generic — football, handball)
         212: "total",        # Total (incl. overtime) — basketball
+        225: "total",        # Total Points O/U — basketball
         1621: "total",       # Total Goals Over/Under (Regular Time) — ice hockey
         1622: "total",       # Total Goals Over/Under — ice hockey
         # Spread (handicap)
+        16: "spread",        # Asian Handicap (generic — football)
+        187: "spread",       # Handicap — basketball
         1619: "spread",      # Puck Line (Regular Time) — ice hockey
         1625: "spread",      # Puck Line — ice hockey
     }
+
+    # Track unknown market type IDs for discovery (class-level set to avoid noise)
+    _logged_unknown_market_ids: set = set()
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
@@ -263,8 +275,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
             # Cap leagues per sport to stay within sport_timeout (~240s)
             # Top leagues appear first in DOM (ordered by popularity/event count)
-            # 40 leagues × ~3s/league = ~120s, well within timeout
-            MAX_LEAGUES_PER_SPORT = 40
+            # 40 leagues × ~1.5s/league = ~60s, well within timeout
+            MAX_LEAGUES_PER_SPORT = 60
             if len(league_links) > MAX_LEAGUES_PER_SPORT:
                 logger.info(
                     f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
@@ -499,7 +511,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         start_time = self._parse_start_time(ev.get("startingOn"))
 
         # Parse markets
-        markets = self._parse_markets(markets_raw, all_selections, home_raw, away_raw)
+        markets = self._parse_markets(markets_raw, all_selections, home_raw, away_raw, canonical_sport)
         if not markets:
             return None
 
@@ -525,10 +537,16 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         all_selections: Dict[str, List[Dict]],
         home_raw: str,
         away_raw: str,
+        canonical_sport: str = "",
     ) -> List[Dict]:
-        """Parse markets and their selections into standardized format."""
+        """Parse markets and their selections into standardized format.
+
+        For 1x2/moneyline: keep the appropriate one based on sport.
+        For spread/total: store ALL lines — storage pipeline filters to Pinnacle's point.
+        """
         markets: List[Dict] = []
-        seen_types: set = set()
+        has_1x2 = False
+        has_moneyline = False
 
         for mkt in markets_raw:
             mt_info = mkt.get("marketType", {})
@@ -539,12 +557,20 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 # Fallback: check name patterns
                 mt_name = (mt_info.get("originalName", "") or mt_info.get("name", "")).lower()
                 market_type = self._classify_market_by_name(mt_name)
-                if not market_type:
-                    logger.debug(
+                if not market_type and mt_id not in self._logged_unknown_market_ids:
+                    self._logged_unknown_market_ids.add(mt_id)
+                    logger.info(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
-                        f"name='{mt_info.get('originalName', mt_info.get('name', ''))}'")
+                        f"name='{mt_info.get('originalName', mt_info.get('name', ''))}'"
+                    )
 
-            if not market_type or market_type in seen_types:
+            if not market_type:
+                continue
+
+            # For winner markets (1x2/moneyline), only keep one
+            if market_type == "1x2" and has_1x2:
+                continue
+            if market_type == "moneyline" and (has_moneyline or has_1x2):
                 continue
 
             market_id = str(mkt.get("id", ""))
@@ -594,26 +620,50 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
 
             if outcomes:
                 markets.append({"type": market_type, "outcomes": outcomes})
-                seen_types.add(market_type)
+                if market_type == "1x2":
+                    has_1x2 = True
+                elif market_type == "moneyline":
+                    has_moneyline = True
 
-        # Dedup: prefer 1x2 over moneyline
+        # Dedup: if both 1x2 and moneyline present, keep the appropriate one
         types = {m["type"] for m in markets}
         if "1x2" in types and "moneyline" in types:
-            markets = [m for m in markets if m["type"] != "moneyline"]
+            # No-draw sports: keep moneyline (2-way), remove 1x2
+            # Draw sports (football, rugby, cricket): keep 1x2 (3-way)
+            no_draw_sports = {"basketball", "ice_hockey", "tennis", "esports",
+                              "mma", "table_tennis", "american_football", "baseball", "handball"}
+            if canonical_sport in no_draw_sports:
+                markets = [m for m in markets if m["type"] != "1x2"]
+            else:
+                markets = [m for m in markets if m["type"] != "moneyline"]
 
         return markets
 
     def _classify_market_by_name(self, name: str) -> Optional[str]:
-        """Fallback: classify market type from name string."""
+        """Fallback: classify market type from name string.
+
+        Enhanced to catch sport-specific market names across football, basketball,
+        handball, volleyball, tennis, etc.
+        """
         if not name:
             return None
-        if "1x2" in name:
+        nl = name.lower()
+        # 1x2 (3-way match result)
+        if "1x2" in nl:
             return "1x2"
-        if any(w in name for w in ("vinnare", "matchvinnare", "winner")):
+        # Moneyline (2-way winner)
+        if any(w in nl for w in ("vinnare", "matchvinnare", "winner", "match result",
+                                  "to win", "att vinna", "money line", "moneyline")):
             return "moneyline"
-        if any(w in name for w in ("över/under", "over/under", "totalt")):
+        # Total (over/under)
+        if any(w in nl for w in ("över/under", "over/under", "totalt", "total goals",
+                                  "total points", "total maps", "total sets",
+                                  "total games", "o/u", "antal mål")):
             return "total"
-        if any(w in name for w in ("handikapp", "handicap", "spread")):
+        # Spread (handicap)
+        if any(w in nl for w in ("handikapp", "handicap", "spread", "puck line",
+                                  "pucklinje", "run line", "asian handicap",
+                                  "poänghandikapp", "game handicap")):
             return "spread"
         return None
 

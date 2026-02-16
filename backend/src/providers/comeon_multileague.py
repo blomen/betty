@@ -272,6 +272,11 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 return labels;
             }''')
 
+            # Skip date scanning only if no events AND no date buttons
+            if not all_events_data and not date_labels:
+                logger.debug(f"[{self.provider_id}] No events and no date buttons for {sport_normalized}, skipping")
+                return []
+
             if date_labels:
                 logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
                 for label in date_labels:
@@ -436,7 +441,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
                 if market_type == 'other':
                     mt_name = mt.get('originalName', mt.get('name', ''))
-                    logger.debug(
+                    logger.info(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
                         f"name='{mt_name}'")
                     continue

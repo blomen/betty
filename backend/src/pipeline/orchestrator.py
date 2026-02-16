@@ -1067,8 +1067,9 @@ class ExtractionPipeline:
                                 events_matched += 1
                             odds_processed += odds_proc
 
-                        # Get actual insert/update counts from batch processor
-                        odds_new, odds_updated = odds_batch.get_stats()
+                    # Get actual insert/update counts from batch processor
+                    # Must be AFTER `with` block so __exit__ flushes the final batch
+                    odds_new, odds_updated = odds_batch.get_stats()
 
                     # Commit after each sport to release SQLite locks sooner
                     # and prevent accumulating dirty session state across concurrent providers

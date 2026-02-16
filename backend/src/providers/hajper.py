@@ -16,6 +16,7 @@ the main page is the correct approach.
 """
 
 from typing import Dict, Any, List, Optional
+import asyncio
 import logging
 from datetime import datetime
 
@@ -250,10 +251,16 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                 return labels;
             }''')
 
+            # Skip date scanning only if no events AND no date buttons
+            if not all_events_data and not date_labels:
+                logger.debug(f"[{self.provider_id}] No events and no date buttons for {sport}, skipping")
+                return []
+
             if date_labels:
                 logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
                 for label in date_labels:
                     try:
+                        ws_before = len(ws_messages)
                         # Find and click button by its exact text content (DOM-safe)
                         clicked = await page.evaluate('''(targetLabel) => {
                             const btns = document.querySelectorAll('button');
@@ -267,7 +274,12 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                         }''', label)
 
                         if clicked:
-                            await page.wait_for_timeout(2000)
+                            # Adaptive wait: min 0.5s, poll for WS data, max 2.0s
+                            await asyncio.sleep(0.5)
+                            elapsed = 0.5
+                            while len(ws_messages) == ws_before and elapsed < 2.0:
+                                await asyncio.sleep(0.1)
+                                elapsed += 0.1
                             self._collect_ws_events(ws_messages, all_events_data)
                     except Exception as e:
                         logger.debug(f"[{self.provider_id}] Date button '{label}' failed: {e}")
@@ -404,7 +416,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
                 if market_type == 'other':
                     mt_name = mt.get('originalName', mt.get('name', ''))
-                    logger.debug(
+                    logger.info(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
                         f"name='{mt_name}'")
                     continue

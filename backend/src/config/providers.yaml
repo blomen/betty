@@ -17,8 +17,8 @@ orchestrator:
       retriever_types: [kambi]
       max_concurrent: 1                # Reduced to 1 - Kambi rate limits aggressively (429s)
       shared_resource: api
-      health_check_delay_ms: 1000      # 1s between Kambi health checks (reduced from 3s)
-      post_extraction_delay_ms: 10000  # 10s delay between providers (reduced from 15s)
+      health_check_delay_ms: 500       # 0.5s between Kambi health checks (reduced from 1s)
+      post_extraction_delay_ms: 5000   # 5s delay between providers (reduced from 10s)
 
     - name: gecko_browser
       retriever_types: [gecko_v2]
@@ -558,25 +558,23 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
-    provider_timeout: 900              # 12 sports × up to 240s each (sequential, browser-based)
-    sport_timeout: 240                 # 40 leagues × ~3s/league + DOM overhead, needs margin
+    provider_timeout: 900              # 13 sports × up to 240s each (sequential, browser-based)
+    sport_timeout: 240                 # 60 leagues × ~3s/league + DOM overhead, needs margin
     supported_sports:
       - football
       - basketball
       - ice_hockey
       - tennis
       - handball
-      - american_football
-      - mma
-      - esports
-      - cricket
-      - rugby
       - volleyball
-      - table_tennis
       - rugby
       - cricket
-      - boxing
+      - esports
+      - mma
+      - table_tennis
       - darts
+      - boxing
+      - american_football
     bonus:
       type: bonusdeposit
       amount: 600
@@ -711,7 +709,7 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
-    provider_timeout: 900              # 5 sports × concurrent tabs + detail enrichment
+    provider_timeout: 900              # 14 sports × concurrent tabs + detail enrichment
     sport_timeout: 420                 # 69 football leagues + detail enrichment: ~220s standalone, needs margin for contention
     supported_sports:
       - football
@@ -719,7 +717,15 @@ providers:
       - basketball
       - tennis
       - handball
+      - volleyball
+      - rugby
+      - cricket
+      - boxing
+      - darts
+      - golf
+      - cycling
       - american_football
+      - baseball
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -1055,42 +1061,58 @@ boosts:
     note: "Proprietary SSR — boosts visible on frontpage as ODDS BOOST with original + boosted odds."
 
   # ═══════════════════════════════════════════════════════
-  # COMEON GROUP — RSocket WS, sport/37-odds-boosts
+  # COMEON GROUP — RSocket WS, sport/85-odds-boost
+  # sport/37 = MMA (NOT boosts). sport/85 = actual Odds Boost section.
+  # Boosts are combo/parlay type: "Team A & Team B - båda vinner" @ boosted odds.
+  # Market type 1038 = "Specialare", single "Ja" selection per event.
+  # No original odds in WS — only boosted trueOdds shown.
+  # Lyllo has no boost section in sidebar navigation.
   # ═══════════════════════════════════════════════════════
   comeon:
     type: comeon
-    url: "https://www.comeon.com/sv/sportsbook/sport/37-odds-boosts"
+    url: "https://www.comeon.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: comeon
     shared_with: []
     enabled: true
-    note: "ComeOn RSocket SPA — sport/37 = Odds Boosts section. Data via WS."
+    note: "ComeOn RSocket SPA — sport/85 = Odds Boost. Combo boosts via WS. ~3-5 boosts/day."
 
   hajper:
     type: comeon
-    url: "https://www.hajper.com/sv/sportsbook/sport/37-odds-boosts"
+    url: "https://www.hajper.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: hajper
     shared_with: []
     enabled: true
-    note: "Same as ComeOn — sport/37 boost page."
+    note: "Same as ComeOn — sport/85 boost page. Same boosts, same odds."
 
   lyllo:
     type: comeon
-    url: "https://www.lyllocasino.com/sv/sportsbook/sport/37-odds-boosts"
+    url: "https://www.lyllocasino.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: lyllo
     shared_with: []
-    enabled: true
-    note: "Same as ComeOn — sport/37 boost page."
+    enabled: false
+    note: "Lyllo has no Odds Boost section in sidebar navigation. Disabled."
 
   # ═══════════════════════════════════════════════════════
-  # SPECTATE — MrGreen boost page with section s-8337
+  # SNABBARE — same Sportradar MTS/Komigen platform as ComeOn Group
+  # ═══════════════════════════════════════════════════════
+  snabbare:
+    type: comeon
+    url: "https://www.snabbare.com/sv/sportsbook/sport/85-odds-boost"
+    primary_provider: snabbare
+    shared_with: []
+    enabled: true
+    note: "Sportradar MTS/Komigen — same sport/85 boost page as ComeOn Group. Same boosts/odds. Headed browser (headless breaks WS). Confirmed 2026-02-15."
+
+  # ═══════════════════════════════════════════════════════
+  # SPECTATE — MrGreen boost page (no data)
   # ═══════════════════════════════════════════════════════
   mrgreen:
     type: spectate
     url: "https://www.mrgreen.se/sport/odds-boost/"
     primary_provider: mrgreen
     shared_with: []
-    enabled: true
-    note: "Spectate — /sport/odds-boost/ with section s-8337. Needs browser cookies for API."
+    enabled: false
+    note: "Spectate — /sport/odds-boost/ renders static CMS content, no boost API data. No boost section in URL aliases. Confirmed 2026-02-15."
 
   # ═══════════════════════════════════════════════════════
   # NOT SCRAPEABLE / DISABLED
@@ -1101,7 +1123,7 @@ boosts:
     primary_provider: coolbet
     shared_with: []
     enabled: false
-    note: "GAN/Coolbet — Imperva blocks all access. Needs CDP."
+    note: "GAN/Coolbet — /sv/oddsboost returns 404 (page removed). No boost links in nav/offers. Confirmed 2026-02-15."
 
   tipwin:
     type: null
