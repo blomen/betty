@@ -424,7 +424,7 @@ class ExtractionScheduler:
             )
 
             try:
-                _results = await self.pipeline.run(providers=providers)
+                _results = await self.pipeline.run(providers=providers, tier_name=tier_name)
             finally:
                 stop_event.set()
                 try:

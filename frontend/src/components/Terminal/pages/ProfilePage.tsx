@@ -119,7 +119,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     return (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabProfiles" />
+          <span className="w-2 h-2 bg-tabProfiles" />
           Profiles
         </h2>
         <div className="text-muted text-sm py-4 text-center">Loading...</div>
@@ -131,13 +131,13 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabProfiles" />
+          <span className="w-2 h-2 bg-tabProfiles" />
           Profiles
         </h2>
         {!isCreating && !editingId && (
           <button
             onClick={startCreating}
-            className="px-3 py-1.5 text-xs bg-tabProfiles/20 text-tabProfiles rounded hover:bg-tabProfiles/30 transition-colors"
+            className="px-3 py-1.5 text-xs bg-tabProfiles/20 text-tabProfiles hover:bg-tabProfiles/30 transition-colors"
           >
             + New Profile
           </button>
@@ -146,12 +146,12 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
 
       {/* Error/Success Messages */}
       {(actionError || error) && (
-        <div className="text-sm p-3 rounded bg-error/10 text-error border border-error/20">
+        <div className="text-sm p-3 bg-error/10 text-error border border-error/20">
           {actionError || error}
         </div>
       )}
       {actionSuccess && (
-        <div className="text-sm p-3 rounded bg-success/10 text-success border border-success/20">
+        <div className="text-sm p-3 bg-success/10 text-success border border-success/20">
           {actionSuccess}
         </div>
       )}
@@ -168,14 +168,14 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                 onChange={(e) => setNameInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                 placeholder="My Profile"
-                className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
+                className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-tabProfiles"
                 autoFocus
               />
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleCreate}
-                className="px-4 py-2 text-sm bg-tabProfiles text-white rounded hover:bg-tabProfiles/90 transition-colors"
+                className="px-4 py-2 text-sm bg-tabProfiles text-white hover:bg-tabProfiles/90 transition-colors"
               >
                 Create
               </button>
@@ -191,7 +191,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       )}
 
       {/* Profile List */}
-      <div className="space-y-3">
+      <div className="space-y-0 border-l-2 border-tabProfiles">
         {profiles.map((profile) => {
           const isActive = profile.is_active;
           const isEditing = editingId === profile.id;
@@ -207,14 +207,14 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                       value={nameInput}
                       onChange={(e) => setNameInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleUpdate(profile.id)}
-                      className="w-full px-3 py-2 bg-panel2 border border-border rounded text-text text-sm focus:outline-none focus:border-tabProfiles"
+                      className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-tabProfiles"
                       autoFocus
                     />
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleUpdate(profile.id)}
-                      className="px-4 py-2 text-sm bg-tabProfiles text-white rounded hover:bg-tabProfiles/90 transition-colors"
+                      className="px-4 py-2 text-sm bg-tabProfiles text-white hover:bg-tabProfiles/90 transition-colors"
                     >
                       Save
                     </button>
@@ -234,16 +234,16 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
             <div
               key={profile.id}
               onClick={() => !isActive && handleActivate(profile.id)}
-              className={`p-4 rounded-lg border ${
+              className={`p-4 border border-border ${
                 isActive
                   ? 'bg-tabProfiles/5 border-tabProfiles/30'
-                  : 'bg-panel border-border hover:border-tabProfiles/50 cursor-pointer'
+                  : 'bg-panel hover:border-tabProfiles/50 cursor-pointer'
               } transition-colors`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span
-                    className={`w-3 h-3 rounded-full border-2 ${
+                    className={`w-3 h-3 border-2 ${
                       isActive
                         ? 'bg-tabProfiles border-tabProfiles'
                         : 'border-muted'
@@ -254,7 +254,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                       {profile.name}
                     </span>
                     {isActive && (
-                      <span className="text-xs px-1.5 py-0.5 bg-tabProfiles/20 text-tabProfiles rounded">
+                      <span className="text-xs px-1.5 py-0.5 bg-tabProfiles/20 text-tabProfiles">
                         Active
                       </span>
                     )}
@@ -263,14 +263,14 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => startEditing(profile)}
-                    className="px-2 py-1 text-xs text-muted hover:text-text hover:bg-panel2 rounded transition-colors"
+                    className="px-2 py-1 text-xs text-muted hover:text-text hover:bg-panel2 transition-colors"
                   >
                     Edit
                   </button>
                   {!isActive && (
                     <button
                       onClick={() => handleDelete(profile.id, profile.name)}
-                      className="px-2 py-1 text-xs text-error/70 hover:text-error hover:bg-error/10 rounded transition-colors"
+                      className="px-2 py-1 text-xs text-error/70 hover:text-error hover:bg-error/10 transition-colors"
                     >
                       Delete
                     </button>

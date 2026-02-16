@@ -1,12 +1,12 @@
 """
-OddOpp Exception Hierarchy
+DegenTraderXD Exception Hierarchy
 
 Structured exceptions for distinguishing retryable vs fatal errors.
 """
 
 
-class OddOppError(Exception):
-    """Base exception for all OddOpp errors."""
+class DegenTraderXDError(Exception):
+    """Base exception for all DegenTraderXD errors."""
 
     def __init__(self, message: str, provider_id: str | None = None):
         super().__init__(message)
@@ -14,7 +14,7 @@ class OddOppError(Exception):
         self.message = message
 
 
-class RetryableError(OddOppError):
+class RetryableError(DegenTraderXDError):
     """
     Errors that can be retried (timeouts, rate limits, transient failures).
 
@@ -58,7 +58,7 @@ class TimeoutError(RetryableError):
         super().__init__(message, provider_id)
 
 
-class FatalError(OddOppError):
+class FatalError(DegenTraderXDError):
     """
     Errors that should not be retried (bad config, auth failed).
 
@@ -84,7 +84,7 @@ class AuthenticationError(FatalError):
     pass
 
 
-class DataQualityError(OddOppError):
+class DataQualityError(DegenTraderXDError):
     """
     Data quality issues (suspicious arbs, bad odds).
 
@@ -107,7 +107,7 @@ class DataQualityError(OddOppError):
         self.metric_value = metric_value
 
 
-class ExtractionError(OddOppError):
+class ExtractionError(DegenTraderXDError):
     """Error during data extraction from provider."""
 
     def __init__(
@@ -120,7 +120,7 @@ class ExtractionError(OddOppError):
         self.sport = sport
 
 
-class MatchingError(OddOppError):
+class MatchingError(DegenTraderXDError):
     """Error during event matching or normalization."""
 
     def __init__(

@@ -1,5 +1,5 @@
 """
-OddOpp FastAPI Backend
+DegenTraderXD FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -38,7 +38,7 @@ from .routes import (
 )
 
 app = FastAPI(
-    title="OddOpp API",
+    title="DegenTraderXD API",
     description="Polymarket arbitrage & value betting backend",
     version="0.1.0",
 )
@@ -62,6 +62,22 @@ async def startup():
     global _startup_time
     _startup_time = time.time()
     init_db()
+
+    # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
+    import logging
+    import logging.handlers
+    from ..paths import get_logs_dir
+    extraction_handler = logging.handlers.RotatingFileHandler(
+        get_logs_dir() / "extraction.log",
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+    )
+    extraction_handler.setLevel(logging.DEBUG)
+    extraction_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
+    logging.getLogger().addHandler(extraction_handler)
 
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler

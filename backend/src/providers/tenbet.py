@@ -86,6 +86,9 @@ class TenBetRetriever(BrowserRetriever):
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
     MAX_COMPETITIONS_PER_SPORT = 60
 
+    # Per-sport caps — not used; global MAX_COMPETITIONS_PER_SPORT applies
+    SPORT_COMPETITION_CAPS: Dict[str, int] = {}
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         self.site_url = config.get("site_url", "https://www.10bet.se")
@@ -114,13 +117,14 @@ class TenBetRetriever(BrowserRetriever):
             logger.info(f"[{self.provider_id}] No competitions found for {sport}")
             return []
 
-        # Cap competitions to avoid timeout (football has 100+ but most are tiny)
-        if len(competitions) > self.MAX_COMPETITIONS_PER_SPORT:
+        # Cap competitions to avoid timeout (use per-sport cap if available)
+        cap = self.SPORT_COMPETITION_CAPS.get(sport, self.MAX_COMPETITIONS_PER_SPORT)
+        if len(competitions) > cap:
             logger.info(
                 f"[{self.provider_id}] Capping {sport} from {len(competitions)} to "
-                f"{self.MAX_COMPETITIONS_PER_SPORT} competitions"
+                f"{cap} competitions"
             )
-            competitions = competitions[:self.MAX_COMPETITIONS_PER_SPORT]
+            competitions = competitions[:cap]
 
         logger.info(f"[{self.provider_id}] Found {len(competitions)} competitions for {sport}")
 
@@ -263,7 +267,11 @@ class TenBetRetriever(BrowserRetriever):
             return []
 
     async def _scrape_competition(self, comp: Dict, sport: str) -> List[StandardEvent]:
-        """Scrape all events from a single competition's matches page."""
+        """Scrape all events from a single competition's matches page.
+
+        Also captures XHR/fetch API requests made by the Playtech SPA for
+        potential direct API extraction (logged at debug level for discovery).
+        """
         comp_id = comp['id']
         comp_name = comp.get('name', f'competition-{comp_id}')
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
@@ -277,6 +285,16 @@ class TenBetRetriever(BrowserRetriever):
             return []
 
         page = await self.transport.new_page()
+
+        # Capture API requests for potential direct extraction
+        api_urls_seen = set()
+        def _on_response(response):
+            req_url = response.url
+            if any(p in req_url for p in ('/api/', '/graphql', '/sportsbook', '/sb/', '/odds')):
+                if req_url not in api_urls_seen:
+                    api_urls_seen.add(req_url)
+                    logger.debug(f"[{self.provider_id}] API intercept: {response.status} {req_url[:150]}")
+        page.on("response", _on_response)
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")

@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from ..deps import get_pipeline
+from ...db.models import ExtractionRun, get_session
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -54,3 +55,35 @@ async def get_current_metrics():
         return history[0].to_dict()
 
     return {"error": "No metrics available"}
+
+
+@router.get("/reports")
+async def get_extraction_reports(limit: int = 20):
+    """Get recent extraction reports from DB."""
+    db = get_session()
+    try:
+        runs = (
+            db.query(ExtractionRun)
+            .filter(ExtractionRun.report.isnot(None))
+            .order_by(ExtractionRun.start_time.desc())
+            .limit(limit)
+            .all()
+        )
+        return {
+            "reports": [
+                {
+                    "id": run.id,
+                    "start_time": run.start_time.isoformat() if run.start_time else None,
+                    "duration_seconds": run.duration_seconds,
+                    "providers_succeeded": run.providers_succeeded,
+                    "providers_failed": run.providers_failed,
+                    "total_events": run.total_events,
+                    "total_odds": run.total_odds,
+                    "report": run.report,
+                }
+                for run in runs
+            ],
+            "count": len(runs),
+        }
+    finally:
+        db.close()

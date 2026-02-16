@@ -4,13 +4,13 @@ function formatProviderName(name: string): string {
   return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-const TIER_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
-  sharp:        { label: 'SHARP',   color: 'text-emerald-400', icon: '◆' },
-  api_soft:     { label: 'SOFT',    color: 'text-blue-400',    icon: '●' },
-  browser_soft: { label: 'BROWSER', color: 'text-amber-400',   icon: '●' },
+const TIER_CONFIG: Record<string, { label: string; color: string }> = {
+  sharp:        { label: 'SHARP',   color: '#4CAF50' },
+  api_soft:     { label: 'SOFT',    color: '#64B5F6' },
+  browser_soft: { label: 'BROWSER', color: '#FF9800' },
 };
 
-function TierBar({ name, running, progressPct, currentProvider, completedProviders, totalProviders, lastRun, totalEvents }: {
+function TierRow({ name, running, progressPct, currentProvider, completedProviders, totalProviders, lastRun, totalEvents }: {
   name: string;
   running: boolean;
   progressPct: number;
@@ -20,49 +20,55 @@ function TierBar({ name, running, progressPct, currentProvider, completedProvide
   lastRun: string | null;
   totalEvents: number;
 }) {
-  const config = TIER_CONFIG[name] || { label: name.toUpperCase(), color: 'text-muted', icon: '●' };
+  const config = TIER_CONFIG[name] || { label: name.toUpperCase(), color: '#9AA0A6' };
   const filled = Math.round((progressPct / 100) * 12);
 
   if (running) {
     return (
-      <div className="flex items-center gap-2 text-xs font-mono">
-        <span className={`${config.color} animate-blink`}>{config.icon}</span>
-        <span className={`${config.color} font-semibold w-16`}>{config.label}</span>
-        <span className={`${config.color}/60`}>
+      <tr>
+        <td className="whitespace-nowrap">
+          <span style={{ color: config.color }} className="animate-blink">&#9632;</span>
+          {' '}<span style={{ color: config.color }} className="font-semibold">{config.label}</span>
+        </td>
+        <td className="font-mono whitespace-nowrap" style={{ color: config.color, opacity: 0.6 }}>
           {'█'.repeat(filled)}{'░'.repeat(12 - filled)}
-        </span>
-        <span className="text-muted w-8 text-right">{progressPct.toFixed(0)}%</span>
-        {currentProvider && (
-          <span className="text-muted2 truncate max-w-[120px]">{formatProviderName(currentProvider)}</span>
-        )}
-        <span className="text-muted2 ml-auto">{completedProviders}/{totalProviders}</span>
-      </div>
+        </td>
+        <td className="text-right text-muted whitespace-nowrap">{progressPct.toFixed(0)}%</td>
+        <td className="text-muted2 truncate max-w-[140px]">
+          {currentProvider ? formatProviderName(currentProvider) : ''}
+        </td>
+        <td className="text-right text-muted2 whitespace-nowrap">{completedProviders}/{totalProviders}</td>
+      </tr>
     );
   }
 
-  // Idle tier — show last run summary
   if (lastRun) {
     const ago = getTimeAgo(lastRun);
     return (
-      <div className="flex items-center gap-2 text-xs font-mono">
-        <span className="text-muted2/50">{config.icon}</span>
-        <span className="text-muted2/60 w-16">{config.label}</span>
-        <span className="text-muted2/40">{'░'.repeat(12)}</span>
-        <span className="text-muted2/50 ml-auto">
+      <tr className="opacity-50">
+        <td className="whitespace-nowrap">
+          <span className="text-muted2">&#9632;</span>
+          {' '}<span className="text-muted2">{config.label}</span>
+        </td>
+        <td className="font-mono whitespace-nowrap text-muted2/40">{'░'.repeat(12)}</td>
+        <td></td>
+        <td className="text-muted2" colSpan={2}>
           {totalEvents} {name === 'sharp' ? 'events' : 'pin matched'} | {ago}
-        </span>
-      </div>
+        </td>
+      </tr>
     );
   }
 
-  // No data yet
   return (
-    <div className="flex items-center gap-2 text-xs font-mono">
-      <span className="text-muted2/30">{config.icon}</span>
-      <span className="text-muted2/40 w-16">{config.label}</span>
-      <span className="text-muted2/30">{'░'.repeat(12)}</span>
-      <span className="text-muted2/30 ml-auto">waiting</span>
-    </div>
+    <tr className="opacity-30">
+      <td className="whitespace-nowrap">
+        <span className="text-muted2">&#9632;</span>
+        {' '}<span className="text-muted2">{config.label}</span>
+      </td>
+      <td className="font-mono whitespace-nowrap text-muted2/30">{'░'.repeat(12)}</td>
+      <td></td>
+      <td className="text-muted2" colSpan={2}>waiting</td>
+    </tr>
   );
 }
 
@@ -77,18 +83,15 @@ function getTimeAgo(isoStr: string): string {
 }
 
 interface ExtractionProgressBarProps {
-  /** Which tiers to display. Defaults to all tiers. */
   tiers?: string[];
 }
 
 export function ExtractionProgressBar({ tiers: visibleTiers }: ExtractionProgressBarProps = {}) {
   const tiersProgress = useTiersProgress();
 
-  // Show nothing until first poll
   if (!tiersProgress || Object.keys(tiersProgress.tiers).length === 0) return null;
 
   const allTierOrder = ['sharp', 'api_soft', 'browser_soft'];
-  // Filter to only requested tiers (or all if not specified)
   const tierOrder = visibleTiers
     ? allTierOrder.filter(name => visibleTiers.includes(name))
     : allTierOrder;
@@ -97,24 +100,40 @@ export function ExtractionProgressBar({ tiers: visibleTiers }: ExtractionProgres
     .filter(name => name in tiersProgress.tiers)
     .map(name => ({ name, ...tiersProgress.tiers[name] }));
 
-  // If no tiers have any data, skip rendering
   if (tiers.length === 0) return null;
 
+  // Hide entirely when nothing is actively running
+  const anyRunning = tiers.some(t => t.running);
+  if (!anyRunning) return null;
+
   return (
-    <div className="bg-panel2 border border-border rounded px-4 py-2 mb-3 space-y-1">
-      {tiers.map(tier => (
-        <TierBar
-          key={tier.name}
-          name={tier.name}
-          running={tier.running}
-          progressPct={tier.progress_pct}
-          currentProvider={tier.current_provider}
-          completedProviders={tier.completed_providers}
-          totalProviders={tier.total_providers}
-          lastRun={tier.last_run}
-          totalEvents={tier.total_events}
-        />
-      ))}
+    <div className="border-l-2 border-tabExtract mb-3">
+    <table className="sq text-xs">
+      <thead>
+        <tr>
+          <th style={{ width: '100px' }}>Tier</th>
+          <th style={{ width: '150px' }}>Progress</th>
+          <th style={{ width: '50px' }} className="text-right">%</th>
+          <th>Current</th>
+          <th style={{ width: '60px' }} className="text-right">Done</th>
+        </tr>
+      </thead>
+      <tbody>
+        {tiers.map(tier => (
+          <TierRow
+            key={tier.name}
+            name={tier.name}
+            running={tier.running}
+            progressPct={tier.progress_pct}
+            currentProvider={tier.current_provider}
+            completedProviders={tier.completed_providers}
+            totalProviders={tier.total_providers}
+            lastRun={tier.last_run}
+            totalEvents={tier.total_events}
+          />
+        ))}
+      </tbody>
+    </table>
     </div>
   );
 }

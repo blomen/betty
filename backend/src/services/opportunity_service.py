@@ -95,7 +95,7 @@ class OpportunityService:
 
             # Add dutch/reverse-specific fields
             if type in ('dutch', 'reverse') and stake_calculator and profile:
-                self._add_dutch_recommendation(result, opp, stake_calculator)
+                self._add_dutch_recommendation(result, opp, profile, stake_calculator)
 
             results.append(result)
 
@@ -247,6 +247,43 @@ class OpportunityService:
             result["kelly_fraction"] = stake_rec.kelly_fraction
             result["skip_reason"] = stake_rec.skip_reason
             result["bonus_cleared"] = bonus_status.get("is_cleared", True)
+
+            # Freebet phase overrides: force stake to bonus_amount
+            bs = bonus_status.get("status")
+            bonus_amount = bonus_status.get("bonus_amount", 0)
+            result["bonus_status"] = bs if bs in ("trigger_needed", "freebet_available") else None
+            result["bonus_amount"] = bonus_amount if result["bonus_status"] else None
+            result["min_odds_applied"] = min_odds if min_odds > 0 else None
+
+            if bs in ("trigger_needed", "freebet_available") and bonus_amount > 0:
+                # Check if a pending trigger bet already exists for this provider
+                if bs == "trigger_needed":
+                    from ..db.models import Bet
+                    pending_trigger = self.db.query(Bet).filter(
+                        Bet.profile_id == profile.id,
+                        Bet.provider_id == opp.provider1_id,
+                        Bet.result == "pending",
+                        Bet.stake >= bonus_amount,
+                    ).first()
+                    if pending_trigger:
+                        result["final_stake"] = 0
+                        result["skip_reason"] = "trigger_placed"
+                        return
+
+                # Override stake to the exact freebet/trigger amount
+                # but only if odds qualify and balance is sufficient
+                balance = self.profile_repo.get_balance(profile.id, opp.provider1_id)
+                is_freebet = bs == "freebet_available"
+                has_balance = is_freebet or balance >= bonus_amount  # freebets don't need balance
+
+                if opp.odds1 >= min_odds and has_balance:
+                    result["final_stake"] = bonus_amount
+                    result["skip_reason"] = None
+                elif opp.odds1 >= min_odds and not has_balance:
+                    result["final_stake"] = 0
+                    result["skip_reason"] = "no_balance"
+                # If odds < min_odds, keep skip_reason and final_stake=0
+
         except Exception as e:
             logger.debug(f"Stake calculation failed for opp {opp.id}: {e}")
             result["suggested_stake"] = None
@@ -254,14 +291,41 @@ class OpportunityService:
             result["kelly_fraction"] = None
             result["skip_reason"] = None
             result["bonus_cleared"] = None
+            result["bonus_status"] = None
+            result["bonus_amount"] = None
+            result["min_odds_applied"] = None
 
-    def _add_dutch_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
+    def _add_dutch_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
         """Add dutch stake recommendation fields to an opportunity result dict."""
         try:
             guaranteed_profit_pct = opp.profit_pct or 0
             total_stake = 0.0
 
-            if guaranteed_profit_pct > 0:
+            # Check if any leg's provider is in trigger_needed or freebet_available mode
+            trigger_provider = None
+            trigger_amount = 0.0
+            for leg in (opp.outcomes or []):
+                pid = leg.get("provider_id") or leg.get("provider", "")
+                if pid:
+                    bs = self.profile_repo.get_bonus_status(profile.id, pid)
+                    if bs.get("status") in ("trigger_needed", "freebet_available"):
+                        trigger_provider = pid
+                        trigger_amount = bs.get("bonus_amount", 0)
+                        break
+
+            if trigger_provider and trigger_amount > 0 and opp.outcomes:
+                # Scale total dutch stake so the trigger provider's leg equals trigger_amount
+                total_inv = sum(1.0 / leg["odds"] for leg in opp.outcomes)
+                # Find the trigger leg's inverse-odds weight
+                trigger_leg_inv = 0.0
+                for leg in opp.outcomes:
+                    pid = leg.get("provider_id") or leg.get("provider", "")
+                    if pid == trigger_provider:
+                        trigger_leg_inv += 1.0 / leg["odds"]
+                if trigger_leg_inv > 0:
+                    # trigger_leg_stake = total_stake * (trigger_leg_inv / total_inv) = trigger_amount
+                    total_stake = trigger_amount * total_inv / trigger_leg_inv
+            elif guaranteed_profit_pct > 0:
                 # Guaranteed profit dutch: use max single bet cap (no Kelly needed, it's riskless)
                 total_stake = stake_calculator.bankroll * stake_calculator.single_bet_cap_pct
             else:
@@ -293,8 +357,10 @@ class OpportunityService:
             result["guaranteed_profit_pct"] = guaranteed_profit_pct
             result["total_stake"] = round(total_stake, 2)
             result["legs"] = legs_with_stakes or opp.outcomes or []
+            result["trigger_provider"] = trigger_provider
         except Exception as e:
             logger.debug(f"Dutch stake calculation failed for opp {opp.id}: {e}")
             result["guaranteed_profit_pct"] = opp.profit_pct or 0
             result["total_stake"] = 0
             result["legs"] = opp.outcomes or []
+            result["trigger_provider"] = None

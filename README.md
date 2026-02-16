@@ -1,6 +1,6 @@
-# OddOpp
+# DegenTraderXD
 
-**Odds Opportunities** - Compare betting odds against sharp bookmakers to find value.
+**Betting Analytics** - Compare betting odds against sharp bookmakers to find value.
 
 ## Quick Start
 

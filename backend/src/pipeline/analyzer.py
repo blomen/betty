@@ -279,10 +279,10 @@ class OpportunityAnalyzer:
         odds_by_outcome: dict[str, list[dict]]
     ) -> dict:
         """
-        Detect dutch and reverse dutch opportunities for a market.
+        Detect dutch opportunities for a market.
 
-        Dutch: ALL legs have positive edge (pure cross-book value).
-        Reverse: At least one soft +EV leg, others covered at negative edge.
+        Soft book legs with +EV; Pinnacle legs at fair odds (0% edge) as coverage.
+        Requires at least one soft +EV leg.
 
         Returns:
             {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
@@ -298,6 +298,10 @@ class OpportunityAnalyzer:
         if opp is None:
             return result
 
+        # Require at least one +EV leg
+        if not any(leg["edge_pct"] > 0 for leg in opp.legs):
+            return result
+
         # Extract point from market key
         point_value = None
         clean_market = market
@@ -310,20 +314,15 @@ class OpportunityAnalyzer:
                 except ValueError:
                     pass
 
-        # Classify: all legs +EV = dutch, otherwise = reverse
-        all_positive = all(leg["edge_pct"] > 0 for leg in opp.legs)
-        opp_type = "dutch" if all_positive else "reverse"
-
         providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in opp.legs)
         logger.debug(
-            f"[Analyzer] {opp_type.capitalize()} found: {event.id} {market} "
+            f"[Analyzer] Dutch found: {event.id} {market} "
             f"GP={opp.guaranteed_profit_pct:+.2f}% [{providers_str}]"
         )
 
-        result[f"{opp_type}_found"] = 1
+        result["dutch_found"] = 1
 
-        upsert_fn = self.opp_repo.upsert_dutch if opp_type == "dutch" else self.opp_repo.upsert_reverse
-        is_new = upsert_fn(
+        is_new = self.opp_repo.upsert_dutch(
             event_id=event.id,
             market=clean_market,
             legs=opp.legs,
@@ -332,6 +331,6 @@ class OpportunityAnalyzer:
             point=point_value,
         )
         if is_new:
-            result[f"{opp_type}_new"] = 1
+            result["dutch_new"] = 1
 
         return result

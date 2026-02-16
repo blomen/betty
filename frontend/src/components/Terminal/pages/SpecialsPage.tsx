@@ -5,6 +5,11 @@ import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { FilterBar, MultiSelectDropdown, SingleSelectPills } from '../FilterBar';
 
+interface GroupedSpecial {
+  key: string;
+  rep: SpecialItem;
+  providers: string[];
+}
 
 export function SpecialsPage() {
   const [specials, setSpecials] = useState<SpecialItem[]>([]);
@@ -12,143 +17,83 @@ export function SpecialsPage() {
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Active filters — providers is now multi-select
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-
-  // Expanded row + bet placement
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [stakePreview, setStakePreview] = useState<StakePreviewResult | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isPlacing, setIsPlacing] = useState(false);
   const [placementError, setPlacementError] = useState<string | null>(null);
+  const [placingProvider, setPlacingProvider] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+    setIsLoading(true); setError(null);
     try {
-      const data = await api.getSpecials({
-        category: categoryFilter || undefined,
-      });
+      const data = await api.getSpecials({ category: categoryFilter || undefined });
       setSpecials(data.specials || []);
       setScrapedAt(data.scraped_at);
       if (data.filters) setFilters(data.filters);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load boosts');
-    } finally {
-      setIsLoading(false);
-    }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load boosts'); }
+    finally { setIsLoading(false); }
   }, [categoryFilter]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
+  useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
 
-  // Filter out expired and already-started specials client-side as extra safety
+  // Filter out expired/started specials
   const nonExpired = specials.filter(s => {
-    // Filter out events that have already started
-    if (s.event_time) {
-      try { if (new Date(s.event_time).getTime() <= Date.now()) return false; }
-      catch { /* keep */ }
-    }
+    if (s.event_time) { try { if (new Date(s.event_time).getTime() <= Date.now()) return false; } catch { /* keep */ } }
     if (!s.expires_at) return true;
-    try { return new Date(s.expires_at).getTime() > Date.now(); }
-    catch { return true; }
+    try { return new Date(s.expires_at).getTime() > Date.now(); } catch { return true; }
   });
 
-  // Expand shared providers: each boost gets its own row per provider
-  const expandedSpecials = nonExpired.flatMap(s => {
-    const rows: (SpecialItem & { display_provider: string })[] = [
-      { ...s, display_provider: s.provider },
-    ];
-    if (s.shared_providers) {
-      for (const sp of s.shared_providers) {
-        rows.push({ ...s, display_provider: sp });
-      }
+  // Group: consolidate same boost across providers into one row
+  const grouped = useMemo(() => {
+    const groups: GroupedSpecial[] = [];
+    for (const s of nonExpired) {
+      const allProviders = [s.provider, ...(s.shared_providers || [])];
+      groups.push({
+        key: `${s.provider}-${s.title}-${s.boosted_odds}`,
+        rep: s,
+        providers: allProviders,
+      });
     }
-    return rows;
-  });
+    return groups;
+  }, [nonExpired]);
 
-  // Apply provider filter on frontend (after expansion) — now multi-select
-  const activeSpecials = useMemo(() => {
-    if (selectedProviders.size === 0) return expandedSpecials;
-    return expandedSpecials.filter(s =>
-      selectedProviders.has(s.display_provider.toLowerCase())
+  // Filter by selected providers
+  const activeGroups = useMemo(() => {
+    if (selectedProviders.size === 0) return grouped;
+    return grouped.filter(g =>
+      g.providers.some(p => selectedProviders.has(p.toLowerCase()))
     );
-  }, [expandedSpecials, selectedProviders]);
+  }, [grouped, selectedProviders]);
 
   const toggleProvider = (p: string) => {
-    setSelectedProviders(prev => {
-      const next = new Set(prev);
-      const key = p.toLowerCase();
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setSelectedProviders(prev => { const next = new Set(prev); const key = p.toLowerCase(); if (next.has(key)) next.delete(key); else next.add(key); return next; });
     setExpandedIdx(null);
   };
 
-  // When a row is expanded, fetch the stake preview
-  const handleRowClick = async (idx: number, special: SpecialItem) => {
-    if (expandedIdx === idx) {
-      setExpandedIdx(null);
-      setStakePreview(null);
-      setPlacementError(null);
-      return;
-    }
-
-    setExpandedIdx(idx);
-    setStakePreview(null);
-    setPlacementError(null);
-
-    if (!special.boosted_odds || !special.boost_pct) return;
-
+  const handleRowClick = async (idx: number, group: GroupedSpecial) => {
+    if (expandedIdx === idx) { setExpandedIdx(null); setStakePreview(null); setPlacementError(null); return; }
+    setExpandedIdx(idx); setStakePreview(null); setPlacementError(null);
+    const s = group.rep;
+    if (!s.boosted_odds || !s.boost_pct) return;
     setIsLoadingPreview(true);
-    try {
-      const preview = await api.getBoostStakePreview({
-        edge_pct: special.boost_pct,
-        odds: special.boosted_odds,
-        provider_id: special.provider,
-      });
-      setStakePreview(preview);
-    } catch (err) {
-      console.error('Failed to load stake preview:', err);
-    } finally {
-      setIsLoadingPreview(false);
-    }
+    try { const preview = await api.getBoostStakePreview({ edge_pct: s.boost_pct, odds: s.boosted_odds, provider_id: s.provider }); setStakePreview(preview); }
+    catch (err) { console.error('Failed to load stake preview:', err); }
+    finally { setIsLoadingPreview(false); }
   };
 
-  const handlePlaceBet = async (special: SpecialItem) => {
+  const handlePlaceBet = async (special: SpecialItem, providerId: string) => {
     if (!stakePreview || !special.boosted_odds) return;
-
     let stake = stakePreview.recommended_stake;
-    if (special.max_stake != null && stake > special.max_stake) {
-      stake = special.max_stake;
-    }
+    if (special.max_stake != null && stake > special.max_stake) stake = special.max_stake;
     if (stake <= 0) return;
-
-    setIsPlacing(true);
-    setPlacementError(null);
-    try {
-      await api.createBet({
-        provider_id: special.provider,
-        market: 'boost',
-        outcome: special.title,
-        odds: special.boosted_odds,
-        stake,
-        is_bonus: false,
-      });
-      setExpandedIdx(null);
-      setStakePreview(null);
-      fetchData();
-    } catch (err) {
-      setPlacementError(err instanceof Error ? err.message : 'Failed to place bet');
-    } finally {
-      setIsPlacing(false);
-    }
+    setIsPlacing(true); setPlacingProvider(providerId); setPlacementError(null);
+    try { await api.createBet({ provider_id: providerId, market: 'boost', outcome: special.title, odds: special.boosted_odds, stake, is_bonus: false }); setExpandedIdx(null); setStakePreview(null); fetchData(); }
+    catch (err) { setPlacementError(err instanceof Error ? err.message : 'Failed to place bet'); }
+    finally { setIsPlacing(false); setPlacingProvider(null); }
   };
 
   const timeAgo = scrapedAt ? formatTimeAgo(scrapedAt) : null;
@@ -157,10 +102,7 @@ export function SpecialsPage() {
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-tabBonus" />
-            Oddsboost
-          </h2>
+          <h2 className="text-lg font-semibold text-text flex items-center gap-2"><span className="w-2 h-2 bg-tabBonus" />Oddsboost</h2>
         </div>
         <div className="text-muted text-sm py-8 text-center">Loading...</div>
       </div>
@@ -169,351 +111,158 @@ export function SpecialsPage() {
 
   return (
     <div className="space-y-3">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabBonus" />
-          Oddsboost
-          <span className="text-muted text-sm font-normal ml-1">({activeSpecials.length})</span>
+          <span className="w-2 h-2 bg-tabBonus" />Oddsboost
+          <span className="text-muted text-sm font-normal ml-1">({activeGroups.length})</span>
         </h2>
-        {timeAgo && (
-          <span className="text-muted text-xs">{timeAgo}</span>
-        )}
+        {timeAgo && <span className="text-muted text-xs">{timeAgo}</span>}
       </div>
 
-      {error && (
-        <div className="text-red-400 text-sm bg-red-400/10 px-3 py-2 rounded">{error}</div>
-      )}
+      {error && <div className="text-error text-sm bg-error/10 px-3 py-2 border border-error/20">{error}</div>}
 
-      {/* Filter bar */}
       {filters && (
         <FilterBar>
-          <MultiSelectDropdown
-            label="Provider"
-            options={filters.providers}
-            selected={selectedProviders}
-            onToggle={toggleProvider}
-            onClear={() => { setSelectedProviders(new Set()); setExpandedIdx(null); }}
-            format={formatProviderName}
-            accentColor="tabBonus"
-          />
+          <MultiSelectDropdown label="Provider" options={filters.providers} selected={selectedProviders} onToggle={toggleProvider} onClear={() => { setSelectedProviders(new Set()); setExpandedIdx(null); }} format={formatProviderName} accentColor="tabBonus" />
           {filters.categories.length > 0 && (
-            <>
-              <div className="w-px h-5 bg-border/50" />
-              <SingleSelectPills
-                label="Type"
-                options={filters.categories}
-                active={categoryFilter}
-                onSelect={(v) => { setCategoryFilter(v); setExpandedIdx(null); }}
-                format={(v) => v === 'superboost' ? 'Superboost' : 'Boost'}
-                accentColor="tabBonus"
-              />
-            </>
+            <><div className="w-px h-5 bg-border/50" /><SingleSelectPills label="Type" options={filters.categories} active={categoryFilter} onSelect={(v) => { setCategoryFilter(v); setExpandedIdx(null); }} format={(v) => v === 'superboost' ? 'Superboost' : 'Boost'} accentColor="tabBonus" /></>
           )}
         </FilterBar>
       )}
 
-      {/* Table */}
-      {activeSpecials.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
-          No active boosts. Boosts are scraped automatically every 2 hours.
-        </div>
+      {activeGroups.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No active boosts. Boosts are scraped automatically every 2 hours.</div>
       ) : (
-        <div className="bg-panel border border-border rounded-lg overflow-hidden">
-          {/* Column header */}
-          <div className="grid grid-cols-[1fr_100px_90px_55px_55px_60px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
-            <div>Boost</div>
-            <div className="text-right">Provider</div>
-            <div className="text-right">Odds</div>
-            <div className="text-right">Prob</div>
-            <div className="text-right">Max</div>
-            <div className="text-right">Edge</div>
-          </div>
-
-          {/* Rows */}
-          <div className="divide-y divide-border/50">
-            {activeSpecials.map((s, idx) => {
+        <div className="border-l-2 border-tabBonus">
+        <table className="sq">
+          <thead>
+            <tr>
+              <th>Boost</th>
+              <th className="text-right">Providers</th>
+              <th className="text-right">Odds</th>
+              <th className="text-right">Prob</th>
+              <th className="text-right">Max</th>
+              <th className="text-right">Edge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeGroups.map((group, idx) => {
+              const s = group.rep;
               const isExpanded = expandedIdx === idx;
               const boostPct = s.boost_pct;
+              const providerCount = group.providers.length;
 
               return (
-                <div key={`${s.display_provider}-${idx}`}>
-                  {/* Main row */}
-                  <div
-                    className={`grid grid-cols-[1fr_100px_90px_55px_55px_60px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm
-                      ${isExpanded ? 'bg-tabBonus/5' : 'hover:bg-panel2'}
-                    `}
-                    onClick={() => handleRowClick(idx, s)}
-                  >
-                    {/* Boost: title on top, event · sport · kickoff below */}
-                    <div className="flex flex-col justify-center min-w-0">
+                <>
+                  <tr key={group.key} className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`} onClick={() => handleRowClick(idx, group)}>
+                    <td>
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="text-text text-sm truncate">{s.title}</span>
-                        {s.category === 'superboost' && (
-                          <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 rounded shrink-0">
-                            SUPER
-                          </span>
-                        )}
+                        {s.category === 'superboost' && <span className="px-1 py-0.5 text-[9px] font-bold bg-warning/20 text-warning">SUPER</span>}
                       </div>
-                      <span className="text-muted text-[11px] truncate">
-                        {s.event || ''}
-                        {s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}
-                        {s.league ? ` · ${s.league}` : ''}
-                        {s.event_time && isFutureDate(s.event_time)
-                          ? ` · ${formatEventTime(s.event_time)}`
-                          : s.expires_at
-                            ? ` · ${formatTimeRemaining(s.expires_at)}`
-                            : ''}
-                      </span>
-                    </div>
-
-                    {/* Provider */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-text text-sm">{formatProviderName(s.display_provider)}</span>
-                    </div>
-
-                    {/* Odds: original → boosted */}
-                    <div className="flex items-center justify-end gap-1.5">
-                      {s.original_odds != null && (
-                        <>
-                          <span className="text-muted line-through text-xs">{s.original_odds.toFixed(2)}</span>
-                          <span className="text-muted text-xs">&rarr;</span>
-                        </>
-                      )}
-                      <span className="text-emerald-400 font-bold text-sm">
-                        {s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}
-                      </span>
-                    </div>
-
-                    {/* Prob (implied from original odds) */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-muted text-sm">
-                        {s.original_odds != null && s.original_odds > 1
-                          ? `${(100 / s.original_odds).toFixed(0)}%`
-                          : '-'}
-                      </span>
-                    </div>
-
-                    {/* Max stake */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-muted text-sm">
-                        {s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}
-                      </span>
-                    </div>
-
-                    {/* Boost % / Edge */}
-                    <div className="flex items-center justify-end">
-                      {boostPct != null && boostPct > 0 ? (
-                        <span className="text-tabBonus font-semibold text-sm">
-                          +{boostPct.toFixed(0)}%
-                        </span>
+                      <div className="text-muted2 text-[11px] truncate">
+                        {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}{s.league ? ` · ${s.league}` : ''}
+                        {s.event_time && isFutureDate(s.event_time) ? ` · ${formatEventTime(s.event_time)}` : s.expires_at ? ` · ${formatTimeRemaining(s.expires_at)}` : ''}
+                      </div>
+                    </td>
+                    <td className="text-right text-sm min-w-0">
+                      {providerCount <= 3 ? (
+                        <span className="text-text truncate">{group.providers.map(formatProviderName).join(', ')}</span>
                       ) : (
-                        <span className="text-muted text-sm">-</span>
+                        <span className="text-text truncate">
+                          {formatProviderName(group.providers[0])}
+                          <span className="text-muted ml-1">+{providerCount - 1}</span>
+                        </span>
                       )}
-                    </div>
-                  </div>
-
-                  {/* Expanded: stake preview + place bet */}
+                    </td>
+                    <td className="text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {s.original_odds != null && (<><span className="text-muted line-through text-xs">{s.original_odds.toFixed(2)}</span><span className="text-muted text-xs">&rarr;</span></>)}
+                        <span className="text-success font-bold text-sm">{s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}</span>
+                      </div>
+                    </td>
+                    <td className="text-right text-muted text-sm">{s.original_odds != null && s.original_odds > 1 ? `${(100 / s.original_odds).toFixed(0)}%` : '-'}</td>
+                    <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
+                    <td className="text-right">{boostPct != null && boostPct > 0 ? <span className="text-accent font-semibold text-sm">+{boostPct.toFixed(0)}%</span> : <span className="text-muted text-sm">-</span>}</td>
+                  </tr>
                   {isExpanded && (
-                    <ExpandedRow
-                      special={s}
-                      stakePreview={stakePreview}
-                      isLoadingPreview={isLoadingPreview}
-                      isPlacing={isPlacing}
-                      placementError={placementError}
-                      onPlaceBet={() => handlePlaceBet(s)}
-                    />
+                    <tr key={`${group.key}-exp`}>
+                      <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+                        <ExpandedRow
+                          special={s}
+                          providers={group.providers}
+                          stakePreview={stakePreview}
+                          isLoadingPreview={isLoadingPreview}
+                          isPlacing={isPlacing}
+                          placingProvider={placingProvider}
+                          placementError={placementError}
+                          onPlaceBet={(providerId) => handlePlaceBet(s, providerId)}
+                        />
+                      </td>
+                    </tr>
                   )}
-                </div>
+                </>
               );
             })}
-          </div>
+          </tbody>
+        </table>
         </div>
       )}
     </div>
   );
 }
 
-
-// ============ Expanded Row ============
-
-function ExpandedRow({
-  special,
-  stakePreview,
-  isLoadingPreview,
-  isPlacing,
-  placementError,
-  onPlaceBet,
-}: {
+function ExpandedRow({ special, providers, stakePreview, isLoadingPreview, isPlacing, placingProvider, placementError, onPlaceBet }: {
   special: SpecialItem;
+  providers: string[];
   stakePreview: StakePreviewResult | null;
   isLoadingPreview: boolean;
   isPlacing: boolean;
+  placingProvider: string | null;
   placementError: string | null;
-  onPlaceBet: () => void;
+  onPlaceBet: (providerId: string) => void;
 }) {
-  const stake = stakePreview
-    ? Math.min(
-        stakePreview.recommended_stake,
-        special.max_stake ?? Infinity
-      )
-    : 0;
+  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : 0;
   const potentialReturn = stake * (special.boosted_odds ?? 0);
   const potentialProfit = potentialReturn - stake;
   const eventTimeLabel = special.event_time ? formatEventTime(special.event_time) : null;
 
   return (
-    <div
-      className="px-4 py-3 bg-panel2/50 border-t border-border/30"
-      onClick={(e) => e.stopPropagation()}
-    >
-      {isLoadingPreview ? (
-        <div className="text-muted text-sm">Calculating stake...</div>
-      ) : stakePreview ? (
-        <div className="flex items-center justify-between gap-6">
-          {/* Left: details */}
-          <div className="flex items-center gap-6 text-sm text-muted">
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-muted block">Kelly</span>
-              <span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span>
-            </div>
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-muted block">Stake</span>
-              <span className="text-text font-medium">{stake.toFixed(0)} kr</span>
-              {stakePreview.was_capped_single && (
-                <span className="text-amber-400 text-[10px] ml-1" title="Capped by single bet limit">capped</span>
-              )}
-              {special.max_stake != null && stakePreview.recommended_stake > special.max_stake && (
-                <span className="text-amber-400 text-[10px] ml-1" title="Capped by max stake">max</span>
-              )}
-            </div>
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-muted block">Return</span>
-              <span className="text-text">{potentialReturn.toFixed(0)} kr</span>
-              <span className="text-emerald-400 text-xs ml-1">(+{potentialProfit.toFixed(0)})</span>
-            </div>
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-muted block">Bankroll</span>
-              <span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span>
-            </div>
-            {eventTimeLabel && (
-              <div>
-                <span className="text-[10px] uppercase tracking-wider text-muted block">Kickoff</span>
-                <span className="text-text">{eventTimeLabel}</span>
-              </div>
-            )}
-            {!stakePreview.bonus_cleared && (
-              <div>
-                <span className="text-[10px] uppercase tracking-wider text-amber-400 block">Bonus active</span>
-                <span className="text-amber-400 text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span>
-              </div>
-            )}
+    <div className="px-3 py-2 bg-panel">
+      {isLoadingPreview ? (<div className="text-muted text-sm">Calculating stake...</div>) : stakePreview ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-6 text-xs text-muted">
+            <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span></div>
+            <div><span className="text-muted2 uppercase tracking-wider">Stake: </span><span className="text-text font-medium">{stake.toFixed(0)} kr</span>{stakePreview.was_capped_single && <span className="text-warning text-[10px] ml-1">capped</span>}{special.max_stake != null && stakePreview.recommended_stake > special.max_stake && <span className="text-warning text-[10px] ml-1">max</span>}</div>
+            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-success text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
+            <div><span className="text-muted2 uppercase tracking-wider">Bankroll: </span><span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span></div>
+            {eventTimeLabel && <div><span className="text-muted2 uppercase tracking-wider">Kickoff: </span><span className="text-text">{eventTimeLabel}</span></div>}
+            {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
           </div>
-
-          {/* Right: place bet button */}
-          <div className="flex items-center gap-3">
-            {placementError && (
-              <span className="text-red-400 text-xs max-w-[200px] truncate">{placementError}</span>
-            )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {placementError && <span className="text-error text-xs max-w-[200px] truncate">{placementError}</span>}
             {stakePreview.skip_reason ? (
-              <span className="text-muted text-xs bg-border px-2 py-1 rounded">{stakePreview.skip_reason}</span>
+              <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
             ) : (
-              <button
-                onClick={onPlaceBet}
-                disabled={stake <= 0 || isPlacing}
-                className="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-              >
-                {isPlacing ? 'Placing...' : `Place ${stake.toFixed(0)} kr`}
-              </button>
+              providers.map(providerId => (
+                <button
+                  key={providerId}
+                  onClick={() => onPlaceBet(providerId)}
+                  disabled={stake <= 0 || isPlacing}
+                  className="px-3 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
+                >
+                  {isPlacing && placingProvider === providerId ? '...' : `${formatProviderName(providerId)} ${stake.toFixed(0)} kr`}
+                </button>
+              ))
             )}
           </div>
         </div>
-      ) : (
-        <div className="text-muted text-sm">No preview available — missing boost data</div>
-      )}
+      ) : (<div className="text-muted text-sm">No preview available — missing boost data</div>)}
     </div>
   );
 }
 
-
-// ============ Utility Functions ============
-
-function formatTimeAgo(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin}m ago`;
-    if (diffHrs < 24) return `${diffHrs}h ago`;
-    return date.toLocaleDateString('sv-SE');
-  } catch {
-    return '';
-  }
-}
-
-
-function formatEventTime(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-
-    if (diffMs <= 0) return 'started';
-
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-
-    if (diffHrs < 24) {
-      if (diffMin < 60) return `in ${diffMin}m`;
-      const remMin = diffMin % 60;
-      return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`;
-    }
-
-    if (diffDays < 7) {
-      return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    }
-
-    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
-}
-
-
-function formatTimeRemaining(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-
-    if (diffMs <= 0) return 'expired';
-
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-
-    if (diffMin < 60) return `${diffMin}m left`;
-    if (diffHrs < 24) {
-      const remMin = diffMin % 60;
-      return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`;
-    }
-    if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`;
-    return `${diffDays}d left`;
-  } catch {
-    return '';
-  }
-}
-
-
-function isFutureDate(isoString: string): boolean {
-  try {
-    return new Date(isoString).getTime() > Date.now();
-  } catch {
-    return false;
-  }
-}
+function formatTimeAgo(isoString: string): string { try { const date = new Date(isoString); const now = new Date(); const diffMs = now.getTime() - date.getTime(); const diffMin = Math.floor(diffMs / 60000); const diffHrs = Math.floor(diffMin / 60); if (diffMin < 1) return 'just now'; if (diffMin < 60) return `${diffMin}m ago`; if (diffHrs < 24) return `${diffHrs}h ago`; return date.toLocaleDateString('sv-SE'); } catch { return ''; } }
+function formatEventTime(isoString: string): string { try { const date = new Date(isoString); const now = new Date(); const diffMs = date.getTime() - now.getTime(); if (diffMs <= 0) return 'started'; const diffMin = Math.floor(diffMs / 60000); const diffHrs = Math.floor(diffMin / 60); const diffDays = Math.floor(diffHrs / 24); if (diffHrs < 24) { if (diffMin < 60) return `in ${diffMin}m`; const remMin = diffMin % 60; return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`; } if (diffDays < 7) return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' }); return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } }
+function formatTimeRemaining(isoString: string): string { try { const date = new Date(isoString); const now = new Date(); const diffMs = date.getTime() - now.getTime(); if (diffMs <= 0) return 'expired'; const diffMin = Math.floor(diffMs / 60000); const diffHrs = Math.floor(diffMin / 60); const diffDays = Math.floor(diffHrs / 24); if (diffMin < 60) return `${diffMin}m left`; if (diffHrs < 24) { const remMin = diffMin % 60; return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`; } if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`; return `${diffDays}d left`; } catch { return ''; } }
+function isFutureDate(isoString: string): boolean { try { return new Date(isoString).getTime() > Date.now(); } catch { return false; } }

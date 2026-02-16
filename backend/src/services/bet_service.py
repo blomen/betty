@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, Bet, ProviderRiskProfile, Odds
+from ..db.models import Provider, Bet, ProviderRiskProfile, Odds, ProfileProviderBonus
 from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,19 @@ class BetService:
         # Add payout to balance
         if bet.profile_id and payout > 0:
             self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout)
+
+        # Auto-advance freebet: if trigger bet settled, unlock the freebet
+        if bet.profile_id:
+            bonus = self.db.query(ProfileProviderBonus).filter(
+                ProfileProviderBonus.profile_id == bet.profile_id,
+                ProfileProviderBonus.provider_id == bet.provider_id,
+                ProfileProviderBonus.bonus_status == "trigger_needed",
+            ).first()
+            if (bonus and bet.odds >= (bonus.min_odds or 1.80)
+                    and bet.stake >= (bonus.bonus_amount or 0)):
+                bonus.bonus_status = "freebet_available"
+                bonus.wagered_amount = bet.stake
+                bonus.updated_at = datetime.utcnow()
 
         return {
             "success": True,

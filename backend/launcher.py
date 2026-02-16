@@ -1,5 +1,5 @@
 """
-OddOpp Desktop Application Launcher
+DegenTraderXD Desktop Application Launcher
 
 Starts FastAPI server in a background thread and opens a native
 Windows window via pywebview. The React frontend is served as
@@ -7,7 +7,7 @@ static files from the same FastAPI instance.
 
 Usage:
   python launcher.py          (dev mode)
-  OddOpp.exe                  (bundled mode — PyInstaller)
+  DegenTraderXD.exe                  (bundled mode — PyInstaller)
 """
 
 import logging
@@ -81,7 +81,7 @@ def start_server(port: int):
         logger.info("Uvicorn server stopped")
     except OSError as e:
         if "address already in use" in str(e).lower() or "10048" in str(e):
-            logger.error("Port %d is already in use — is another OddOpp instance running?", port)
+            logger.error("Port %d is already in use — is another DegenTraderXD instance running?", port)
         else:
             logger.exception("Server thread crashed (OSError)")
     except Exception:
@@ -153,7 +153,7 @@ def main():
             import ctypes
             msg = traceback.format_exc()
             ctypes.windll.user32.MessageBoxW(
-                0, f"OddOpp failed to start:\n\n{msg}", "OddOpp Error", 0x10
+                0, f"DegenTraderXD failed to start:\n\n{msg}", "DegenTraderXD Error", 0x10
             )
         except Exception:
             pass
@@ -189,7 +189,7 @@ def _run(logger: logging.Logger, bundled: bool):
 
         logger.info("Opening pywebview window...")
         webview.create_window(
-            title="OddOpp",
+            title="DegenTraderXD",
             url=f"http://127.0.0.1:{port}",
             width=1400,
             height=900,
@@ -201,7 +201,7 @@ def _run(logger: logging.Logger, bundled: bool):
         # storage_path keeps WebView2 user data persistent.
         webview.start(
             private_mode=False,
-            debug=not bundled,
+            debug=False,
         )
     except ImportError:
         # pywebview not installed — fall back to browser

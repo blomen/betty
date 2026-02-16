@@ -2,7 +2,7 @@ from .transport import Transport, HttpTransport, BrowserTransport
 from .retriever import Retriever, StandardEvent
 from .browser_retriever import BrowserRetriever
 from .exceptions import (
-    OddOppError,
+    DegenTraderXDError,
     RetryableError,
     RateLimitError,
     TimeoutError,

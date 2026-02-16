@@ -52,6 +52,17 @@ class BankrollService:
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])
 
+        # Bonus deposits = pure profit, but only after wagering is completed
+        bonus_records = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile.id,
+            ProfileProviderBonus.bonus_amount > 0,
+            ProfileProviderBonus.bonus_status.in_(["completed", "claimed"]),
+        ).all()
+        bonus_profit = sum(b.bonus_amount for b in bonus_records)
+
+        # Combine betting profit + bonus profit into one total
+        combined_profit = total_profit + bonus_profit
+
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
@@ -60,8 +71,9 @@ class BankrollService:
             "losses": loss_count,
             "voids": void_count,
             "total_staked": round(total_staked, 2),
-            "total_profit": round(total_profit, 2),
-            "roi_pct": round(total_profit / total_staked * 100, 2) if total_staked > 0 else 0,
+            "total_profit": round(combined_profit, 2),
+            "bonus_profit": round(bonus_profit, 2),
+            "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
             "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
         }
 
@@ -157,24 +169,46 @@ class BankrollService:
         ).all()
 
         from datetime import datetime
+        from ..api.routes.providers import load_provider_bonuses
+        all_bonus_configs = load_provider_bonuses()
+
+        active_statuses = ("in_progress", "trigger_needed")
 
         bonus_progress = {}
         for bonus in bonuses:
             provider_min_odds = bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS
 
-            # Auto-expire in-progress bonuses past deadline
-            if (bonus.bonus_status == "in_progress" and bonus.expires_at
+            # Auto-expire active bonuses past deadline
+            if (bonus.bonus_status in active_statuses and bonus.expires_at
                     and datetime.utcnow() > bonus.expires_at):
                 bonus.bonus_status = "completed"
                 bonus.updated_at = datetime.utcnow()
 
             days_remaining = None
-            if bonus.expires_at and bonus.bonus_status == "in_progress":
+            if bonus.expires_at and bonus.bonus_status in active_statuses:
                 delta = bonus.expires_at - datetime.utcnow()
                 days_remaining = max(0, delta.days)
 
+            # Resolve bonus_type from DB or fallback to config
+            bonus_type = bonus.bonus_type
+            if not bonus_type:
+                cfg = all_bonus_configs.get(bonus.provider_id, {})
+                bonus_type = cfg.get("type")
+
+            # Compute action_needed
+            action_needed = self._compute_action_needed(
+                bonus.bonus_status, bonus_type,
+                bonus.bonus_amount or 0.0, provider_min_odds,
+            )
+
+            # Compute prognosis for active wagering
+            prognosis = None
+            if bonus.bonus_status in active_statuses:
+                prognosis = self.profile_repo.get_wagering_prognosis(profile.id, bonus.provider_id)
+
             bonus_progress[bonus.provider_id] = {
                 "status": bonus.bonus_status,
+                "bonus_type": bonus_type,
                 "bonus_amount": bonus.bonus_amount or 0.0,
                 "wagering_requirement": bonus.wagering_requirement or 0.0,
                 "wagered_amount": bonus.wagered_amount or 0.0,
@@ -191,6 +225,8 @@ class BankrollService:
                 "claimed_at": bonus.claimed_at.isoformat() if bonus.claimed_at else None,
                 "expires_at": bonus.expires_at.isoformat() if bonus.expires_at else None,
                 "days_remaining": days_remaining,
+                "action_needed": action_needed,
+                "prognosis": prognosis,
             }
 
         status = calc.get_status()
@@ -220,14 +256,15 @@ class BankrollService:
             ProfileProviderBonus.provider_id == provider_id
         ).first()
 
-        is_bonus_deposit = bonus_config.get('type') == 'bonusdeposit'
+        bonus_type = bonus_config.get('type')
         is_available = not bonus_record or bonus_record.bonus_status == 'available'
 
         deposit_amount = amount
         bonus_amount = 0.0
         bonus_limit = bonus_config.get('amount', 0)
 
-        if is_bonus_deposit and is_available and bonus_limit > 0:
+        # Bonusdeposit: match deposit with bonus money
+        if bonus_type == 'bonusdeposit' and is_available and bonus_limit > 0:
             bonus_amount = min(deposit_amount, bonus_limit)
 
         old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
@@ -235,12 +272,20 @@ class BankrollService:
         new_balance = self.profile_repo.adjust_balance(active_profile.id, provider_id, total_added)
 
         bonus_info = None
-        if bonus_amount > 0:
+        if bonus_type == 'bonusdeposit' and bonus_amount > 0:
             wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
             bonus_min_odds = bonus_config.get('min_odds', 1.80)
             bonus_info = self.profile_repo.start_bonus_wagering(
                 active_profile.id, provider_id, bonus_amount,
                 wagering_multiplier, min_odds=bonus_min_odds,
+            )
+        elif bonus_type == 'freebet' and is_available and bonus_limit > 0:
+            # Freebet: start trigger tracking (no bonus money added to balance)
+            bonus_min_odds = bonus_config.get('min_odds', 1.80)
+            bonus_info = self.profile_repo.start_freebet_tracking(
+                active_profile.id, provider_id,
+                bonus_amount=bonus_limit,
+                min_odds=bonus_min_odds,
             )
 
         return {
@@ -253,10 +298,31 @@ class BankrollService:
             "old_balance": old_balance,
             "new_balance": new_balance,
             "bonus_status": bonus_info.get("status") if bonus_info else None,
-            "bonus_limit": bonus_limit if is_bonus_deposit else None,
+            "bonus_type": bonus_type,
+            "bonus_limit": bonus_limit if bonus_type else None,
             "wagering_requirement": bonus_info.get("wagering_requirement") if bonus_info else None,
             "min_odds": bonus_info.get("min_odds") if bonus_info else None,
         }
+
+    @staticmethod
+    def _compute_action_needed(
+        status: str, bonus_type: str | None,
+        bonus_amount: float, min_odds: float,
+    ) -> str:
+        """Compute human-readable action string for a bonus."""
+        amt = int(bonus_amount)
+        if status == "trigger_needed":
+            return f"Place {amt}kr trigger bet at {min_odds}+ odds"
+        elif status == "freebet_available":
+            return f"Use {amt}kr freebet"
+        elif status == "in_progress":
+            return f"Wager at {min_odds}+ odds to clear bonus"
+        elif status == "available":
+            if bonus_type == "freebet":
+                return f"Deposit to activate {amt}kr freebet"
+            elif bonus_type == "bonusdeposit":
+                return f"Deposit up to {amt}kr for matched bonus"
+        return ""
 
     @staticmethod
     def reset_calculators(profile_id: int | None = None):

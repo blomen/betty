@@ -5,7 +5,7 @@ import { api, type ExtractionProgress, type TiersProgressResponse } from '@/serv
  * Custom event name dispatched on `window` when extraction completes.
  * Pages can listen for this to refresh their data.
  */
-export const EXTRACTION_COMPLETE_EVENT = 'oddopp:extraction-complete';
+export const EXTRACTION_COMPLETE_EVENT = 'degentraderxd:extraction-complete';
 
 interface ExtractionStatus {
   /** Whether extraction is currently running */

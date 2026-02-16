@@ -426,6 +426,15 @@ class PolymarketRetriever(Retriever):
 
         return None
 
+    def _parse_clob_token_ids(self, data: dict) -> list:
+        """Extract clobTokenIds from a Gamma API market object."""
+        raw = data.get("clobTokenIds", "[]")
+        try:
+            ids = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            return [str(t) for t in ids] if ids else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
     def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
         """Parse a single market (moneyline only - skips totals/spreads)."""
         try:
@@ -496,13 +505,16 @@ class PolymarketRetriever(Retriever):
                         # Map Yes → matched_team, No → other_team
                         yes_idx = outcome_names_lower.index("yes")
                         no_idx = outcome_names_lower.index("no")
+                        clob_ids = self._parse_clob_token_ids(data)
 
                         if prices[yes_idx] > 0.02 and prices[no_idx] > 0.02:
                             return {
                                 "type": "moneyline",
                                 "outcomes": [
-                                    {"name": matched_team, "odds": round(1 / prices[yes_idx], 3)},
-                                    {"name": other_team, "odds": round(1 / prices[no_idx], 3)},
+                                    {"name": matched_team, "odds": round(1 / prices[yes_idx], 3),
+                                     "clob_token_id": clob_ids[yes_idx] if yes_idx < len(clob_ids) else None},
+                                    {"name": other_team, "odds": round(1 / prices[no_idx], 3),
+                                     "clob_token_id": clob_ids[no_idx] if no_idx < len(clob_ids) else None},
                                 ]
                             }
 
@@ -510,8 +522,9 @@ class PolymarketRetriever(Retriever):
                 return None
 
             # Convert to odds (skip over/under outcomes - these are totals markets)
+            clob_ids = self._parse_clob_token_ids(data)
             formatted_outcomes = []
-            for name, p in zip(outcomes, prices):
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p > 0.02:
                     name_lower = name.lower()
                     # Skip over/under outcomes (totals markets that slipped through)
@@ -519,7 +532,8 @@ class PolymarketRetriever(Retriever):
                         continue
                     formatted_outcomes.append({
                         "name": name,
-                        "odds": round(1 / p, 3)
+                        "odds": round(1 / p, 3),
+                        "clob_token_id": clob_ids[i] if i < len(clob_ids) else None,
                     })
 
             if not formatted_outcomes:
@@ -591,8 +605,9 @@ class PolymarketRetriever(Retriever):
             from ..matching import normalize_outcome
             favored_norm = normalize_outcome(favored_team, home, away)
 
+            clob_ids = self._parse_clob_token_ids(data)
             result_outcomes = []
-            for name, p in zip(outcomes, prices):
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
                 norm = normalize_outcome(name, home, away)
@@ -607,6 +622,7 @@ class PolymarketRetriever(Retriever):
                     "name": norm,
                     "odds": round(1 / p, 3),
                     "point": point,
+                    "clob_token_id": clob_ids[i] if i < len(clob_ids) else None,
                 })
 
             if len(result_outcomes) != 2:
@@ -672,22 +688,26 @@ class PolymarketRetriever(Retriever):
             if not any(0.02 < p < 0.98 for p in prices):
                 return None
 
+            clob_ids = self._parse_clob_token_ids(data)
             result_outcomes = []
-            for name, p in zip(outcomes, prices):
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
                 name_lower = name.lower().strip()
+                token_id = clob_ids[i] if i < len(clob_ids) else None
                 if name_lower == "over":
                     result_outcomes.append({
                         "name": "over",
                         "odds": round(1 / p, 3),
                         "point": point,
+                        "clob_token_id": token_id,
                     })
                 elif name_lower == "under":
                     result_outcomes.append({
                         "name": "under",
                         "odds": round(1 / p, 3),
                         "point": point,
+                        "clob_token_id": token_id,
                     })
 
             if len(result_outcomes) != 2:
@@ -713,6 +733,9 @@ class PolymarketRetriever(Retriever):
         home_odds = None
         draw_odds = None
         away_odds = None
+        home_token_id = None
+        draw_token_id = None
+        away_token_id = None
 
         home_lower = home.lower()
         away_lower = away.lower()
@@ -757,25 +780,32 @@ class PolymarketRetriever(Retriever):
 
             odds = round(1 / yes_price, 3)
 
+            # Extract Yes token ID for this sub-market
+            clob_ids = self._parse_clob_token_ids(m)
+            token_id = clob_ids[yes_idx] if yes_idx < len(clob_ids) else None
+
             # Identify market type from question
             # Only match specific patterns to avoid BTTS, spreads, totals
             if "end in a draw" in question:
                 draw_odds = odds
+                draw_token_id = token_id
             elif question.startswith("will ") and " win" in question:
                 # This is a "Will X win?" market - match team name
                 if home_lower in question:
                     home_odds = odds
+                    home_token_id = token_id
                 elif away_lower in question:
                     away_odds = odds
+                    away_token_id = token_id
 
         # Build combined 1x2 market
         if home_odds and away_odds:
             outcomes = [
-                {"name": home, "odds": home_odds},
+                {"name": home, "odds": home_odds, "clob_token_id": home_token_id},
             ]
             if draw_odds:
-                outcomes.append({"name": "Draw", "odds": draw_odds})
-            outcomes.append({"name": away, "odds": away_odds})
+                outcomes.append({"name": "Draw", "odds": draw_odds, "clob_token_id": draw_token_id})
+            outcomes.append({"name": away, "odds": away_odds, "clob_token_id": away_token_id})
 
             return [{
                 "type": "1x2",

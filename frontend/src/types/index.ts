@@ -49,6 +49,10 @@ export interface Opportunity {
   kelly_fraction?: number | null;
   skip_reason?: string | null;
   bonus_cleared?: boolean | null;
+  // Freebet phase info
+  bonus_status?: 'trigger_needed' | 'freebet_available' | null;
+  bonus_amount?: number | null;
+  min_odds_applied?: number | null;
 }
 
 // Events
@@ -77,6 +81,8 @@ export interface OddsEntry {
 export interface ProviderBonus {
   type: 'freebet' | 'bonusdeposit';
   amount: number;
+  min_odds?: number;
+  wagering_multiplier?: number;
 }
 
 export interface Provider {
@@ -86,12 +92,44 @@ export interface Provider {
   is_enabled: boolean;
   balance: number;
   bonus?: ProviderBonus | null;
-  bonus_status?: 'available' | 'in_progress' | 'completed' | 'claimed' | null;
+  bonus_status?: 'available' | 'trigger_needed' | 'freebet_available' | 'in_progress' | 'completed' | 'claimed' | null;
 }
 
 export interface ProvidersResponse {
   providers: Provider[];
   total_balance: number;
+}
+
+// Bonus tracking
+export interface BonusPrognosis {
+  remaining: number;
+  bets_per_week: number;
+  avg_stake: number;
+  est_weeks: number | null;
+  weekly_wagering: number;
+  // Total context (all providers)
+  total_bets_per_week: number;
+  total_avg_stake: number;
+  total_weekly_wagering: number;
+  bankroll: number;
+  // Required pace from deadline
+  required_weekly_wagering: number;
+}
+
+export interface BonusProgressEntry {
+  status: 'available' | 'trigger_needed' | 'freebet_available' | 'in_progress' | 'completed' | 'claimed';
+  bonus_type: 'freebet' | 'bonusdeposit' | null;
+  bonus_amount: number;
+  wagering_requirement: number;
+  wagered_amount: number;
+  min_odds: number;
+  progress_pct: number;
+  is_cleared: boolean;
+  claimed_at: string | null;
+  expires_at: string | null;
+  days_remaining: number | null;
+  action_needed: string;
+  prognosis: BonusPrognosis | null;
 }
 
 // Bankroll
@@ -111,6 +149,7 @@ export interface BankrollStats {
   voids: number;
   total_staked: number;
   total_profit: number;
+  bonus_profit: number;
   roi_pct: number;
   win_rate: number;
 }

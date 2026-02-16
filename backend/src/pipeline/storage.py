@@ -508,10 +508,11 @@ def store_polymarket_event(
                 if market_type == "spread" and point_value is not None:
                     point_value = -point_value
 
+            clob_token_id = outcome.get("clob_token_id")
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
 
     return is_new_event, odds_processed, odds_new
 
@@ -890,6 +891,7 @@ def upsert_odds(
     outcome: str,
     odds: float,
     point: float = None,
+    clob_token_id: str = None,
 ) -> int:
     """
     Insert or update odds record.
@@ -902,6 +904,7 @@ def upsert_odds(
         outcome: Outcome name
         odds: Decimal odds
         point: Point/line value (optional)
+        clob_token_id: Polymarket CLOB token ID (optional)
 
     Returns:
         1 if new odds inserted, 0 if updated
@@ -924,6 +927,8 @@ def upsert_odds(
     if existing:
         existing.odds = odds
         existing.updated_at = datetime.now(timezone.utc)
+        if clob_token_id:
+            existing.clob_token_id = clob_token_id
         return 0
     else:
         session.add(Odds(
@@ -932,7 +937,8 @@ def upsert_odds(
             market=market,
             outcome=outcome,
             odds=odds,
-            point=point
+            point=point,
+            clob_token_id=clob_token_id,
         ))
         return 1
 
@@ -952,6 +958,7 @@ class OddsBatchProcessor:
         self._pending: dict[tuple, dict] = {}
         self._insert_count = 0
         self._update_count = 0
+        self._market_counts: dict[str, int] = {}  # market_type -> count
 
     def add(
         self,
@@ -961,6 +968,7 @@ class OddsBatchProcessor:
         outcome: str,
         odds: float,
         point: float = None,
+        clob_token_id: str = None,
     ):
         """Add odds record to batch (will be processed on flush)."""
         # Use tuple key to deduplicate (point included for schema compatibility)
@@ -972,7 +980,9 @@ class OddsBatchProcessor:
             "outcome": outcome,
             "odds": odds,
             "point": point,
+            "clob_token_id": clob_token_id,
         }
+        self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
         if len(self._pending) >= self.batch_size:
             self.flush()
@@ -1053,6 +1063,8 @@ class OddsBatchProcessor:
                 existing = existing_records[key]
                 existing.odds = record["odds"]
                 existing.updated_at = now
+                if record.get("clob_token_id"):
+                    existing.clob_token_id = record["clob_token_id"]
                 self._update_count += 1
             else:
                 # New record
@@ -1068,6 +1080,10 @@ class OddsBatchProcessor:
     def get_stats(self) -> tuple[int, int]:
         """Return (new_count, update_count)."""
         return self._insert_count, self._update_count
+
+    def get_market_counts(self) -> dict[str, int]:
+        """Return market type -> odds count mapping."""
+        return dict(self._market_counts)
 
     def __enter__(self):
         return self

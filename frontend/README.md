@@ -1,6 +1,6 @@
-# OddOpp Frontend
+# DegenTraderXD Frontend
 
-Terminal-style React frontend for the OddOpp betting analytics platform.
+Terminal-style React frontend for the DegenTraderXD betting analytics platform.
 
 ## Architecture
 

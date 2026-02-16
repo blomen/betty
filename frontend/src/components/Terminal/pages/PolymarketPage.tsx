@@ -21,7 +21,6 @@ export function PolymarketPage() {
   const [isLoading, setIsLoading] = useState(true);
   const tiersProgress = useTiersProgress();
 
-  // Betting workflow state
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
 
@@ -43,50 +42,27 @@ export function PolymarketPage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
+  useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
 
   const formatTime = (dateStr: string | null) => {
     if (!dateStr) return '-';
     const date = new Date(dateStr);
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const handleSelectOpp = (idx: number) => {
-    setSelectedOpp(selectedOpp === idx ? null : idx);
-  };
+  const handleSelectOpp = (idx: number) => { setSelectedOpp(selectedOpp === idx ? null : idx); };
 
   const handlePlaceBet = async (vb: PolymarketValueBet) => {
     const stake = vb.final_stake;
     if (!stake || stake <= 0) return;
-
     setIsPlacing(true);
     try {
-      await api.createBet({
-        event_id: vb.event_id,
-        provider_id: 'polymarket',
-        market: vb.market,
-        outcome: vb.outcome,
-        odds: vb.polymarket_odds,
-        stake,
-        is_bonus: false,
-      });
-
+      await api.createBet({ event_id: vb.event_id, provider_id: 'polymarket', market: vb.market, outcome: vb.outcome, odds: vb.polymarket_odds, stake, is_bonus: false });
       setSelectedOpp(null);
       fetchData();
-    } catch (err) {
-      console.error('Failed to place bet:', err);
-    } finally {
-      setIsPlacing(false);
-    }
+    } catch (err) { console.error('Failed to place bet:', err); }
+    finally { setIsPlacing(false); }
   };
 
   const resolveOutcome = (vb: PolymarketValueBet): string => {
@@ -101,46 +77,36 @@ export function PolymarketPage() {
 
   return (
     <div className="space-y-3">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-tabPolymarket" />
+          <span className="w-2 h-2 bg-tabPolymarket" />
           Polymarket
           <span className="text-muted text-sm font-normal ml-1">({valueBets.length})</span>
         </h2>
         <span className="text-muted text-xs">
-          {polyStats
-            ? `${totalBankroll.toLocaleString()} kr · ${polyStats.matched_events} pin matched${tiersProgress?.tiers?.sharp?.last_run ? ` · ${getTimeAgo(tiersProgress.tiers.sharp.last_run)}` : ''}`
-            : ''}
+          {polyStats ? `${totalBankroll.toLocaleString()} kr · ${polyStats.matched_events} pin matched${tiersProgress?.tiers?.sharp?.last_run ? ` · ${getTimeAgo(tiersProgress.tiers.sharp.last_run)}` : ''}` : ''}
         </span>
       </div>
 
-      {/* Table */}
       {isLoading && valueBets.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
-          Loading...
-        </div>
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
       ) : valueBets.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center bg-panel border border-border rounded-lg">
-          {valueBets.length === 0
-            ? 'No Polymarket value bets found. Run extraction first.'
-            : 'No value bets found.'}
-        </div>
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No Polymarket value bets found. Run extraction first.</div>
       ) : (
-        <div className="bg-panel border border-border rounded-lg overflow-hidden">
-          {/* Column headers */}
-          <div className="grid grid-cols-[1fr_110px_65px_65px_55px_70px_65px] gap-3 px-4 py-2 border-b border-border text-[11px] text-muted uppercase tracking-wider font-semibold">
-            <div>Event</div>
-            <div className="text-right">Outcome</div>
-            <div className="text-right">Odds</div>
-            <div className="text-right">Fair</div>
-            <div className="text-right">Prob</div>
-            <div className="text-right">Stake</div>
-            <div className="text-right">Edge</div>
-          </div>
-
-          {/* Rows */}
-          <div className="divide-y divide-border/50">
+        <div className="border-l-2 border-tabPolymarket">
+        <table className="sq">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th className="text-right">Outcome</th>
+              <th className="text-right">Odds</th>
+              <th className="text-right">Fair</th>
+              <th className="text-right">Prob</th>
+              <th className="text-right">Stake</th>
+              <th className="text-right">Edge</th>
+            </tr>
+          </thead>
+          <tbody>
             {valueBets.map((vb, idx) => {
               const isSelected = selectedOpp === idx;
               const hasStake = vb.final_stake != null && vb.final_stake > 0;
@@ -149,131 +115,54 @@ export function PolymarketPage() {
               const potentialProfit = potentialReturn - (vb.final_stake || 0);
 
               return (
-                <div key={`${vb.event_id}-${vb.outcome}`}>
-                  {/* Main row */}
-                  <div
-                    className={`grid grid-cols-[1fr_110px_65px_65px_55px_70px_65px] gap-3 px-4 py-2.5 cursor-pointer transition-colors text-sm ${
-                      isSkipped
-                        ? 'opacity-50'
-                        : isSelected
-                          ? 'bg-tabPolymarket/5'
-                          : 'hover:bg-panel2'
-                    }`}
+                <>
+                  <tr
+                    key={`${vb.event_id}-${vb.outcome}`}
+                    className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
                     onClick={() => !isSkipped && handleSelectOpp(idx)}
                   >
-                    {/* Event */}
-                    <div className="flex flex-col justify-center min-w-0">
+                    <td>
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-text text-sm truncate">
-                          {vb.home_team} vs {vb.away_team}
-                        </span>
-                        {isSkipped && (
-                          <span className="text-[9px] px-1.5 py-0.5 bg-muted/15 text-muted rounded shrink-0">
-                            {vb.skip_reason}
-                          </span>
-                        )}
+                        <span className="text-text text-sm truncate">{vb.home_team} vs {vb.away_team}</span>
+                        {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
                       </div>
-                      <span className="text-muted text-[11px] truncate">
-                        {vb.sport}
-                        {vb.market && vb.market !== '1x2' && vb.market !== 'moneyline'
-                          ? ` · ${vb.market}` : ''}
-                        {vb.league ? ` · ${vb.league}` : ''}
-                        {' · '}{formatTime(vb.start_time)}
-                      </span>
-                    </div>
-
-                    {/* Outcome */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-text text-sm truncate">{resolveOutcome(vb)}</span>
-                    </div>
-
-                    {/* Odds */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-text text-sm font-medium">{vb.polymarket_odds.toFixed(2)}</span>
-                    </div>
-
-                    {/* Fair odds */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-muted text-sm">{vb.fair_odds.toFixed(2)}</span>
-                    </div>
-
-                    {/* Prob (Pinnacle fair probability) */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-muted text-sm">
-                        {(vb.fair_probability * 100).toFixed(0)}%
-                      </span>
-                    </div>
-
-                    {/* Stake */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-sm font-medium text-text">
-                        {hasStake ? `${vb.final_stake!.toFixed(0)} kr` : '-'}
-                      </span>
-                    </div>
-
-                    {/* Edge */}
-                    <div className="flex items-center justify-end">
-                      <span className="text-tabPolymarket font-semibold text-sm">
-                        +{vb.edge_pct.toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Expanded view */}
+                      <div className="text-muted2 text-[11px]">
+                        {vb.sport}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' ? ` · ${vb.market}` : ''}{vb.league ? ` · ${vb.league}` : ''}{' · '}{formatTime(vb.start_time)}
+                      </div>
+                    </td>
+                    <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
+                    <td className="text-right text-text text-sm font-medium">{vb.polymarket_odds.toFixed(2)}</td>
+                    <td className="text-right text-muted text-sm">{vb.fair_odds.toFixed(2)}</td>
+                    <td className="text-right text-muted text-sm">{(vb.fair_probability * 100).toFixed(0)}%</td>
+                    <td className="text-right text-sm font-medium text-text">{hasStake ? `${vb.final_stake!.toFixed(0)} kr` : '-'}</td>
+                    <td className="text-right text-tabPolymarket font-semibold text-sm">+{vb.edge_pct.toFixed(1)}%</td>
+                  </tr>
                   {isSelected && !isSkipped && (
-                    <div
-                      className="px-4 py-3 bg-panel2/50 border-t border-border/30"
-                      onClick={e => e.stopPropagation()}
-                    >
-                      <div className="flex items-center justify-between gap-6">
-                        <div className="flex items-center gap-6 text-sm text-muted">
-                          <div>
-                            <span className="text-[10px] uppercase tracking-wider text-muted block">Fair Prob</span>
-                            <span className="text-text">{(vb.fair_probability * 100).toFixed(1)}%</span>
+                    <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
+                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
+                        <div className="px-3 py-2 bg-panel flex items-center justify-between gap-6">
+                          <div className="flex items-center gap-6 text-xs text-muted">
+                            <div><span className="text-muted2 uppercase tracking-wider">Fair Prob: </span><span className="text-text">{(vb.fair_probability * 100).toFixed(1)}%</span></div>
+                            {hasStake && <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabPolymarket text-xs ml-1">(+{potentialProfit.toFixed(0)} kr)</span></div>}
+                            {vb.kelly_fraction != null && <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(vb.kelly_fraction * 100).toFixed(1)}%</span></div>}
+                            {vb.point != null && <div><span className="text-muted2 uppercase tracking-wider">Line: </span><span className="text-text">{vb.point}</span></div>}
                           </div>
-                          {hasStake && (
-                            <div>
-                              <span className="text-[10px] uppercase tracking-wider text-muted block">Return</span>
-                              <span className="text-text">{potentialReturn.toFixed(0)} kr</span>
-                              <span className="text-tabPolymarket text-xs ml-1">(+{potentialProfit.toFixed(0)} kr)</span>
-                            </div>
-                          )}
-                          {vb.kelly_fraction != null && (
-                            <div>
-                              <span className="text-[10px] uppercase tracking-wider text-muted block">Kelly</span>
-                              <span className="text-text">{(vb.kelly_fraction * 100).toFixed(1)}%</span>
-                            </div>
-                          )}
-                          {vb.point != null && (
-                            <div>
-                              <span className="text-[10px] uppercase tracking-wider text-muted block">Line</span>
-                              <span className="text-text">{vb.point}</span>
-                            </div>
-                          )}
+                          <button onClick={() => handlePlaceBet(vb)} disabled={!hasStake || isPlacing} className="px-4 py-2 bg-tabPolymarket text-bg text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">
+                            {isPlacing ? 'Placing...' : `Place ${hasStake ? vb.final_stake!.toFixed(0) : 0} kr`}
+                          </button>
                         </div>
-
-                        <button
-                          onClick={() => handlePlaceBet(vb)}
-                          disabled={!hasStake || isPlacing}
-                          className="px-4 py-2 bg-tabPolymarket text-bg rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                        >
-                          {isPlacing ? 'Placing...' : `Place ${hasStake ? vb.final_stake!.toFixed(0) : 0} kr`}
-                        </button>
-                      </div>
-                    </div>
+                      </td>
+                    </tr>
                   )}
-                </div>
+                </>
               );
             })}
-          </div>
+          </tbody>
+        </table>
         </div>
       )}
 
-      {totalScanned > 0 && (
-        <div className="text-muted text-xs text-center pt-1">
-          {totalScanned} total value bets scanned across all providers
-        </div>
-      )}
+      {totalScanned > 0 && <div className="text-muted text-xs text-center pt-1">{totalScanned} total value bets scanned across all providers</div>}
     </div>
   );
 }

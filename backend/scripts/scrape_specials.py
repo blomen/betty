@@ -61,6 +61,13 @@ SPORT_KEYWORDS: dict[str, list[str]] = {
         "playoff fotbolls-vm", "vm-kval",
         "liga mx", "primera division", "primera a", "pro league",
         "superligaen", "liga professionell",
+        "bologna", "valencia", "lyon", "marseille", "roma", "lazio",
+        "fiorentina", "atalanta", "sporting", "benfica", "porto",
+        "ajax", "feyenoord", "psv", "celtic", "rangers",
+        "sevilla", "villarreal", "betis", "sociedad",
+        "svenska cupen", "fa cup", "coppa italia", "dfb pokal",
+        "coupe de france", "copa del rey",
+        "vinner", "båda vinner",
     ],
     "ice_hockey": [
         "hockey", "ishockey", "shl", "nhl", "hockeyallsvenskan",
@@ -1315,20 +1322,23 @@ async def _scrape_comeon_boosts(
     context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
 ) -> list[Special]:
     """
-    Scrape ComeOn Group odds boosts from sport/37 boost page.
+    Scrape ComeOn Group odds boosts from sport/85-odds-boost page.
 
-    ComeOn Group (ComeOn, Hajper, Lyllo) has a dedicated boost section
-    at /sv/sportsbook/sport/37-odds-boosts. The page is an RSocket SPA
+    ComeOn Group (ComeOn, Hajper) has a dedicated boost section at
+    /sv/sportsbook/sport/85-odds-boost. The page is an RSocket SPA
     that delivers event/market/selection data via WebSocket.
 
-    Strategy:
-    1. Navigate to the boost page URL
-    2. Intercept WebSocket frames for RSocket INITIAL_STATE messages
-    3. Parse events/markets/selections from WS data
-    4. Extract boost information (boosted odds are the displayed odds)
+    Boost structure:
+    - Events are combo/parlay bets: "Sunderland & Fulham - båda vinner"
+    - Market type 1038 = "Specialare" (special market)
+    - Single "Ja" (Yes) selection per market at the boosted odds
+    - No original/pre-boost odds available in WS data
+    - League names include "Odds Boost" or "Odds Boost Plus" prefix
+
+    NOTE: sport/37 = MMA, NOT boosts (previous config was wrong).
+    Date buttons exist but boosts are typically today-only.
     """
     import asyncio
-    import struct
 
     page = await context.new_page()
     boosts: list[Special] = []
@@ -1338,10 +1348,7 @@ async def _scrape_comeon_boosts(
         """Minimal RSocket frame decoder — extract JSON payloads."""
         results = []
         try:
-            # RSocket frames: 3 bytes length + frame data
-            # Look for JSON arrays/objects in the payload
             text = data.decode('utf-8', errors='ignore')
-            # Find JSON boundaries
             depth = 0
             start = None
             for i, c in enumerate(text):
@@ -1410,7 +1417,7 @@ async def _scrape_comeon_boosts(
 
         # Check if we got redirected, navigate back if needed
         current_url = page.url
-        if '37' not in current_url:
+        if '85' not in current_url and 'odds-boost' not in current_url:
             if verbose:
                 print(f"    [{provider_id}] Redirected to {current_url}, navigating back")
             await page.goto(boost_url, wait_until='load', timeout=30000)
@@ -1418,12 +1425,58 @@ async def _scrape_comeon_boosts(
         # Wait for WS data
         await asyncio.sleep(5)
 
-        # Scroll to trigger lazy loading
-        for i in range(4):
-            await page.evaluate(f"window.scrollTo(0, {(i + 1) * 600})")
-            await asyncio.sleep(1)
+        # Click through date buttons to find future boosts
+        # Scroll date container to reveal all dates first
+        await page.evaluate(r'''() => {
+            const allBtns = document.querySelectorAll('button');
+            let dateBtn = null;
+            for (const btn of allBtns) {
+                const text = btn.textContent.trim().toLowerCase();
+                if (/\d+\s+\w{3}\.?$/.test(text)) { dateBtn = btn; break; }
+            }
+            if (!dateBtn) return;
+            let container = dateBtn.parentElement;
+            for (let i = 0; i < 5 && container; i++) {
+                const style = window.getComputedStyle(container);
+                if (style.overflowX === 'auto' || style.overflowX === 'scroll' ||
+                    container.scrollWidth > container.clientWidth) {
+                    container.scrollLeft = container.scrollWidth;
+                    return;
+                }
+                container = container.parentElement;
+            }
+        }''')
+        await asyncio.sleep(0.3)
 
-        await asyncio.sleep(2)
+        # Discover date buttons and click through them
+        date_labels = await page.evaluate(r'''() => {
+            const labels = [];
+            document.querySelectorAll('button').forEach(btn => {
+                const text = btn.textContent.trim();
+                const lower = text.toLowerCase();
+                if (/\d+\s+\w{3}\.?$/.test(lower) && !lower.startsWith('idag')) {
+                    labels.push(text);
+                }
+            });
+            return labels;
+        }''')
+
+        if date_labels and verbose:
+            print(f"    [{provider_id}] Scanning {len(date_labels)} future dates for boosts")
+
+        for label in date_labels[:7]:  # Check ~1 week ahead
+            try:
+                clicked = await page.evaluate('''(targetLabel) => {
+                    const btns = document.querySelectorAll('button');
+                    for (const btn of btns) {
+                        if (btn.textContent.trim() === targetLabel) { btn.click(); return true; }
+                    }
+                    return false;
+                }''', label)
+                if clicked:
+                    await asyncio.sleep(1.5)
+            except Exception:
+                pass
 
         if verbose:
             print(f"    [{provider_id}] Captured {len(ws_messages)} WS messages")
@@ -1459,38 +1512,34 @@ async def _scrape_comeon_boosts(
 
         # Parse events into boosts
         for eid, event_data in all_events.items():
-            # Get teams
-            home_team = None
-            away_team = None
-            primary = event_data.get('primaryParticipants', {})
-            if isinstance(primary, dict):
-                for pid, p in primary.items():
-                    role = p.get('venueRole', '')
-                    if role == 'Home':
-                        home_team = p.get('name')
-                    elif role == 'Away':
-                        away_team = p.get('name')
-
             event_name_raw = event_data.get('eventName', '')
-            if not home_team or not away_team:
-                if ' - ' in event_name_raw:
-                    parts = event_name_raw.split(' - ', 1)
-                    home_team = home_team or parts[0].strip()
-                    away_team = away_team or parts[1].strip()
-
-            event_name = f"{home_team} vs {away_team}" if home_team and away_team else event_name_raw
-            league = event_data.get('leagueName', '')
+            league_raw = event_data.get('leagueName', '')
             start_time = event_data.get('startingOn') or event_data.get('startTime')
+
+            # Detect "Odds Boost Plus" as superboost category
+            is_super = 'plus' in league_raw.lower() or 'super' in league_raw.lower()
+
+            # Use event name directly — boost events are combos like
+            # "Sunderland & Fulham - båda vinner (Ord.speltid)"
+            # These don't have standard home/away participants
+            event_name = event_name_raw
+
+            # Clean league: "Odds Boost - FA Cup" → "FA Cup"
+            league = league_raw
+            for prefix in ('Odds Boost Plus - ', 'Odds Boost - ', 'Odds Boost Plus', 'Odds Boost'):
+                if league.startswith(prefix):
+                    league = league[len(prefix):].strip()
+                    break
+
+            # Sport detection from event name + league
             sport = detect_sport(f"{event_name} {league}")
 
             # Get markets for this event
             mkt_ids = event_markets.get(eid, [])
             for mid in mkt_ids:
                 mkt = all_markets.get(mid, {})
-                mkt_name = ""
                 mt = mkt.get('marketType', {})
-                if isinstance(mt, dict):
-                    mkt_name = mt.get('name', '')
+                mkt_name = mt.get('name', '') if isinstance(mt, dict) else ''
 
                 sels = market_sels.get(mid, [])
                 for sel in sels:
@@ -1498,8 +1547,12 @@ async def _scrape_comeon_boosts(
                     if not odds or float(odds) <= 1.0:
                         continue
 
-                    sel_name = sel.get('name', '')
-                    title = f"{mkt_name}: {sel_name}" if mkt_name and sel_name else sel_name or mkt_name
+                    # Use event name as title for combo boosts
+                    # (market name is just "Specialare", selection is just "Ja")
+                    title = event_name_raw
+                    if not title:
+                        sel_name = sel.get('name', '')
+                        title = f"{mkt_name}: {sel_name}" if mkt_name and sel_name else sel_name or mkt_name
                     if not title:
                         continue
 
@@ -1513,7 +1566,7 @@ async def _scrape_comeon_boosts(
                         max_stake=None,
                         sport=sport,
                         league=league,
-                        category="boost",
+                        category="superboost" if is_super else "boost",
                         expires_at=None,
                         event_time=start_time,
                         source=provider_id,

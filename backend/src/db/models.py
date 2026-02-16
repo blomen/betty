@@ -1,5 +1,5 @@
 """
-OddOpp Database Models
+DegenTraderXD Database Models
 
 SQLite schema for:
 - Canonical events (provider-agnostic)
@@ -101,7 +101,8 @@ class Odds(Base):
     outcome = Column(String, nullable=False)    # "home", "away", "draw"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
     point = Column(Float, nullable=True)        # Reserved for future use
-    
+    clob_token_id = Column(String, nullable=True)  # Polymarket CLOB token ID for order book
+
     updated_at = Column(DateTime, default=datetime.utcnow)
     
     # Unique constraint: one odds per event/provider/market/outcome/point combo
@@ -216,7 +217,7 @@ class Profile(Base):
     currency = Column(String, default="USD")
 
     # Kelly criterion
-    kelly_fraction = Column(Float, default=0.25)    # Quarter Kelly
+    kelly_fraction = Column(Float, default=0.75)    # Dynamic Kelly scales 0.25-0.75 based on edge
 
     # Opportunity thresholds
     min_edge_pct = Column(Float, default=2.0)       # Min edge for value bets
@@ -265,10 +266,13 @@ class ProfileProviderBonus(Base):
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
 
     # 'available' = bonus ready to use
-    # 'in_progress' = deposited with double deposit, needs wagering
-    # 'completed' = bonus fully wagered, no more min odds restriction
+    # 'trigger_needed' = freebet: qualifying trigger bet needed
+    # 'freebet_available' = freebet: trigger settled, freebet ready to use
+    # 'in_progress' = bonusdeposit: deposited with match, needs wagering
+    # 'completed' = bonus fully wagered/used, no more min odds restriction
     # 'claimed' = bonus already used (e.g., from previous account), skip in workflows
     bonus_status = Column(String, default="available")
+    bonus_type = Column(String, nullable=True)          # "freebet" or "bonusdeposit"
 
     # Bonus wagering tracking
     bonus_amount = Column(Float, default=0.0)           # Bonus received
@@ -404,6 +408,7 @@ class ExtractionRun(Base):
     trigger = Column(String)  # 'manual', 'scheduled', 'api'
     config = Column(JSON)  # Snapshot of orchestrator config
     notes = Column(Text)
+    report = Column(Text)  # Human-readable extraction summary
 
     # Relationships
     provider_metrics = relationship("ProviderRunMetrics", back_populates="extraction_run")
@@ -653,6 +658,26 @@ def _run_migrations(engine):
             raw.commit()
         except sqlite3.OperationalError:
             pass
+
+        # Add bonus_type to profile_provider_bonuses if missing
+        try:
+            cursor.execute("SELECT bonus_type FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN bonus_type TEXT")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add clob_token_id to odds if missing (Polymarket CLOB order book)
+        try:
+            cursor.execute("SELECT clob_token_id FROM odds LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE odds ADD COLUMN clob_token_id TEXT")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
 
 
 def init_db() -> None:

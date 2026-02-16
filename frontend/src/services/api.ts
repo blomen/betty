@@ -366,20 +366,20 @@ export const api = {
     profile_id: number;
     profile_name: string;
     bankroll: number;
-    bonus_progress: Record<string, {
-      status: string;
-      bonus_amount: number;
-      wagering_requirement: number;
-      wagered_amount: number;
-      min_odds: number;
-      progress_pct: number;
-      is_cleared: boolean;
-      claimed_at: string | null;
-      expires_at: string | null;
-      days_remaining: number | null;
-    }>;
+    bonus_progress: Record<string, import('@/types').BonusProgressEntry>;
   }> {
     return fetchJson('/bankroll/status');
+  },
+
+  async bonusTransition(
+    providerId: string,
+    action: 'start_freebet' | 'trigger_settled' | 'freebet_used'
+  ): Promise<{ success: boolean; provider_id: string; status: string }> {
+    return fetchJson(`/bankroll/bonus-transition/${providerId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
   },
 
   async setAllBalances(
@@ -418,6 +418,34 @@ export const api = {
     });
   },
 
+  async transferFunds(
+    fromProviderId: string,
+    toProviderId: string,
+    amount: number,
+    withBonus = false
+  ): Promise<{
+    success: boolean;
+    from_provider_id: string;
+    to_provider_id: string;
+    amount: number;
+    from_new_balance: number;
+    to_new_balance: number;
+    bonus_claimed: number;
+    bonus_status: string | null;
+    bonus_type: string | null;
+  }> {
+    return fetchJson('/bankroll/transfer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_provider_id: fromProviderId,
+        to_provider_id: toProviderId,
+        amount,
+        with_bonus: withBonus,
+      }),
+    });
+  },
+
   async resetAllBalances(): Promise<{
     success: boolean;
     reset_count: number;
@@ -442,6 +470,7 @@ export const api = {
     old_balance: number;
     new_balance: number;
     bonus_status: string | null;
+    bonus_type: string | null;
     bonus_limit: number | null;
   }> {
     return fetchJson(`/bankroll/deposit/${providerId}`, {

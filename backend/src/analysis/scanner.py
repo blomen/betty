@@ -39,6 +39,11 @@ MIN_VALID_PROB_SUM = 0.90
 # Real odds rarely differ more than 35% across providers for same event
 MAX_ODDS_RATIO = 1.35
 
+# Maximum edge percentage for a value bet to be considered valid
+# Edges above this are almost certainly data quality issues (wrong odds, event mismatch)
+# Real value bets rarely exceed 30% edge; 50% gives comfortable headroom
+MAX_EDGE_PCT = 50.0
+
 # Maximum odds age in hours for value scanning
 # Odds older than this are considered stale and skipped
 MAX_ODDS_AGE_HOURS = 2
@@ -109,7 +114,8 @@ class OpportunityScanner:
         bonus = scanner.scan_bonus("unibet", ["pinnacle", "polymarket"])
 
     Quality classification:
-        Opportunities with edge >100% are filtered out as data errors.
+        Opportunities with edge >50% are filtered out as data errors.
+        Individual provider odds >35% above Pinnacle raw are skipped.
     """
 
     def __init__(self, session: Session):
@@ -336,8 +342,8 @@ class OpportunityScanner:
                     odds_by_outcome=odds_by_outcome,
                 )
                 if dutch and dutch.combined_edge_pct >= min_edge_pct:
-                    # Pure dutch: ALL legs must have positive edge
-                    if all(leg["edge_pct"] > 0 for leg in dutch.legs):
+                    # Dutch: at least one soft +EV leg, others at fair odds (0% edge)
+                    if any(leg["edge_pct"] > 0 and not leg["is_sharp"] for leg in dutch.legs):
                         opportunities.append(dutch)
 
         opportunities.sort(key=lambda x: x.guaranteed_profit_pct, reverse=True)
@@ -441,6 +447,9 @@ class OpportunityScanner:
             if fair_odds <= 1:
                 continue
 
+            # Get Pinnacle raw odds for this outcome
+            pinnacle_raw = pinnacle_market.get(outcome, 0.0)
+
             # Find best soft provider for this outcome
             best_soft_odds = 0.0
             best_soft_provider = None
@@ -451,31 +460,30 @@ class OpportunityScanner:
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and soft_count != sharp_outcome_count:
                     continue
+                # Per-provider odds ratio vs Pinnacle raw
+                if pinnacle_raw > 1:
+                    ratio = po["odds"] / pinnacle_raw
+                    if ratio > MAX_ODDS_RATIO:
+                        continue
                 if po["odds"] > best_soft_odds:
                     best_soft_odds = po["odds"]
                     best_soft_provider = po["provider"]
 
-            # Get Pinnacle raw odds for this outcome
-            pinnacle_raw = pinnacle_market.get(outcome, 0.0)
-
-            # Pick the best overall: soft or Pinnacle raw
-            if best_soft_provider and best_soft_odds >= pinnacle_raw:
-                # Soft book has better or equal odds
+            # Use soft book if it beats fair odds; otherwise fall back to fair odds (0% edge)
+            if best_soft_provider and best_soft_odds > fair_odds:
                 best_odds = best_soft_odds
                 best_provider = best_soft_provider
                 is_sharp = False
-            elif pinnacle_raw > 1:
-                # Pinnacle raw has better odds
-                best_odds = pinnacle_raw
+            else:
+                # No soft book beats fair odds — use fair odds (0% edge coverage)
+                best_odds = fair_odds
                 best_provider = "pinnacle"
                 is_sharp = True
-            else:
-                continue  # No valid odds
 
             edge_pct = (best_odds / fair_odds - 1) * 100
 
             # Skip suspicious edges (data quality)
-            if abs(edge_pct) > 100:
+            if abs(edge_pct) > MAX_EDGE_PCT:
                 return None  # Entire market suspect
 
             best_per_outcome[outcome] = {
@@ -491,12 +499,11 @@ class OpportunityScanner:
         if len(all_outcomes) < 2:
             return None
 
-        # Require at least one soft +EV leg (otherwise no exploitable edge)
-        soft_ev_legs = [
-            out for out, data in best_per_outcome.items()
-            if data["edge_pct"] > 0 and not data["is_sharp"]
-        ]
-        if not soft_ev_legs:
+        # Require at least one soft +EV leg
+        if not any(
+            data["edge_pct"] > 0 and not data["is_sharp"]
+            for data in best_per_outcome.values()
+        ):
             return None
 
         # Require at least 2 different providers across all legs
@@ -691,6 +698,9 @@ class OpportunityScanner:
 
             fair_odds, fair_source = fair_result
 
+            # Direct provider-vs-Pinnacle odds ratio check (works with any provider count)
+            pinnacle_raw = pinnacle_market.get(outcome)
+
             # Check each soft provider
             for po in provider_odds_list:
                 if po["provider"] in SHARP_PROVIDERS:
@@ -706,6 +716,17 @@ class OpportunityScanner:
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
                     continue  # Incomplete market at soft provider
 
+                # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
+                if pinnacle_raw and pinnacle_raw > 1:
+                    ratio = po["odds"] / pinnacle_raw
+                    if ratio > MAX_ODDS_RATIO:
+                        logger.debug(
+                            f"Skipping {po['provider']} {event_id} {market} {outcome}: "
+                            f"odds {po['odds']:.2f} vs Pinnacle {pinnacle_raw:.2f} "
+                            f"(ratio {ratio:.2f} > {MAX_ODDS_RATIO})"
+                        )
+                        continue
+
                 vb = find_value(
                     event_id=event_id,
                     market=market,
@@ -716,11 +737,11 @@ class OpportunityScanner:
                     min_edge_pct=min_edge_pct,
                 )
                 if vb:
-                    # Sanity check: edges > 100% are likely data quality issues
-                    if vb.edge_pct > 100:
+                    # Hard cap: edges above MAX_EDGE_PCT are data quality issues
+                    if vb.edge_pct > MAX_EDGE_PCT:
                         logger.debug(
                             f"Skipping suspicious value {vb.edge_pct:+.1f}% for "
-                            f"{event_id} {market} {outcome}"
+                            f"{event_id} {market} {outcome} ({po['provider']})"
                         )
                         continue
                     values.append(vb)
@@ -759,6 +780,14 @@ class OpportunityScanner:
                 if odds_ratio > MAX_ODDS_RATIO:
                     return []  # Skip market if likely event mismatch
 
+        # Pre-compute Pinnacle market dict for ratio checks
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Find anchor provider odds for this outcome
             anchor_odds_entry = next(
@@ -769,6 +798,18 @@ class OpportunityScanner:
                 continue
 
             anchor_odds = anchor_odds_entry["odds"]
+
+            # Per-provider odds ratio vs Pinnacle raw
+            pinnacle_raw = pinnacle_market.get(outcome)
+            if pinnacle_raw and pinnacle_raw > 1:
+                ratio = anchor_odds / pinnacle_raw
+                if ratio > MAX_ODDS_RATIO:
+                    logger.debug(
+                        f"Skipping {anchor_provider} {event.id} {market} {outcome}: "
+                        f"odds {anchor_odds:.2f} vs Pinnacle {pinnacle_raw:.2f} "
+                        f"(ratio {ratio:.2f} > {MAX_ODDS_RATIO})"
+                    )
+                    continue
 
             # Get fair odds from Pinnacle (de-vigged)
             fair_result = self._get_fair_odds(
@@ -789,9 +830,8 @@ class OpportunityScanner:
             edge = (anchor_odds / fair_odds) - 1
             edge_pct = round(edge * 100, 2)
 
-            # Sanity check: edges > 100% are almost certainly data quality issues
-            # (mismatched markets, wrong point values, stale data)
-            if abs(edge_pct) > 100:
+            # Sanity check: edges above MAX_EDGE_PCT are data quality issues
+            if abs(edge_pct) > MAX_EDGE_PCT:
                 logger.debug(
                     f"Skipping suspicious edge {edge_pct:+.1f}% for {event.id} "
                     f"{market} {outcome}: anchor={anchor_odds}, fair={fair_odds}"

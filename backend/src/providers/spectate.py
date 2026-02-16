@@ -20,6 +20,8 @@ class SpectateRetriever(BrowserRetriever):
         "baseball": "baseball", "mma": "mma", "esports": "esports",
         "rugby": "rugby-union", "cricket": "cricket", "boxing": "boxing",
         "motorsports": "motor-racing",
+        "handball": "handball", "volleyball": "volleyball",
+        "darts": "darts", "table_tennis": "table-tennis",
     }
 
     SITE_SLUGS: Dict[str, str] = {
@@ -28,6 +30,8 @@ class SpectateRetriever(BrowserRetriever):
         "baseball": "baseboll", "mma": "mma", "esports": "esports",
         "rugby": "rugby-union", "cricket": "cricket", "boxing": "boxning",
         "motorsports": "motorsport",
+        "handball": "handboll", "volleyball": "volleyboll",
+        "darts": "dart", "table_tennis": "bordtennis",
     }
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -344,12 +348,18 @@ class SpectateRetriever(BrowserRetriever):
             "pucklinje": "spread",
             "poänghandikapp": "spread",
             "handicap": "spread",
+            "setshandicap": "spread",
+            "gamehandicap": "spread",
             # Total (over/under)
             "totalt antal mål i match, över/under": "total",
             "totalt antal poäng, över/under": "total",
             "totalt antal poäng": "total",
             "over/under": "total",
             "över/under": "total",
+            "totalt antal mål": "total",
+            "total": "total",
+            "totalt antal set, över/under": "total",
+            "totalt antal games, över/under": "total",
         }
 
         for m in items:

@@ -8,12 +8,12 @@ interface CardProps {
 
 export function Card({ title, children, headerRight }: CardProps) {
   return (
-    <div className="bg-panel border border-border rounded-lg">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <h3 className="text-text font-semibold text-sm">{title}</h3>
+    <div className="border border-border">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-panel">
+        <h3 className="text-muted font-semibold text-xs uppercase tracking-wider">{title}</h3>
         {headerRight}
       </div>
-      <div className="p-4">
+      <div className="p-3 bg-bg">
         {children}
       </div>
     </div>

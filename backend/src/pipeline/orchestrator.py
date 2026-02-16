@@ -358,6 +358,7 @@ class ExtractionPipeline:
         providers: list[str] | None = None,
         max_events_per_sport: int = 9999,
         on_progress: Callable[[str], None] | None = None,
+        tier_name: str | None = None,
     ) -> dict:
         """
         Run extraction from all sources.
@@ -741,12 +742,29 @@ class ExtractionPipeline:
                         sports_ok = provider_result.get("sports_succeeded", 0)
                         sports_total = provider_result.get("sports_attempted", 0)
 
+                        ev = provider_result['events_processed']
+                        odds = provider_result.get('odds_processed', 0)
+                        ratio = f"{odds / ev:.1f}" if ev > 0 else "-"
+
+                        # Match rate
+                        matched = provider_result.get('events_matched', 0)
+                        unmatched = provider_result.get('events_unmatched', 0)
+                        match_total = matched + unmatched
+                        match_str = f" | match={matched}/{match_total}" if match_total > 0 else ""
+
+                        # Market breakdown
+                        mc = provider_result.get('market_counts', {})
+                        ml = mc.get('1x2', 0) + mc.get('moneyline', 0)
+                        spr = mc.get('spread', 0)
+                        tot = mc.get('total', 0)
+                        mkt_str = f" | 1x2={ml} spr={spr} tot={tot}" if odds > 0 else ""
+
                         status = f"{sports_ok}/{sports_total} sports"
                         if sport_errors:
-                            status += f" ({len(sport_errors)} failed)"
+                            status += f" ({len(sport_errors)} err)"
 
                         log_progress(
-                            f"[{provider_id}] {provider_result['events_processed']} events, {status}"
+                            f"[{provider_id}] {ev} ev, {odds} odds (r={ratio}), {status}{match_str}{mkt_str}"
                         )
 
             self.session.commit()
@@ -767,6 +785,7 @@ class ExtractionPipeline:
             results["matched_events"] = self._count_matched_events()
 
             # End metrics collection and add to results
+            current_run = None
             if self.metrics:
                 # Get current run BEFORE ending it
                 current_run = self.metrics.get_current_run()
@@ -803,6 +822,27 @@ class ExtractionPipeline:
             if self.pool_manager:
                 results["pool_stats"] = self.pool_manager.get_stats()
 
+            # Generate extraction report
+            total_elapsed = time.time() - pipeline_start_time
+            from .extraction_report import ExtractionReport
+            report = ExtractionReport().generate(
+                results=results,
+                metrics=current_run,
+                duration=total_elapsed,
+                db_session=self.session,
+            )
+            results["report"] = report
+            logger.info(f"\n{report}")
+            if on_progress:
+                on_progress(report)
+
+            # Persist metrics and report to database
+            if self.metrics and current_run:
+                try:
+                    self.metrics.persist_to_db(current_run, self.session, report=report, tier_name=tier_name)
+                except Exception as e:
+                    logger.error(f"[Metrics] Failed to persist run: {e}")
+
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
             results["cancelled"] = True
@@ -811,12 +851,6 @@ class ExtractionPipeline:
         except Exception as e:
             log_progress(f"Pipeline error: {e}")
             raise
-
-        finally:
-            total_elapsed = time.time() - pipeline_start_time
-            log_progress(f"Pipeline complete in {total_elapsed:.1f}s")
-            log_progress(f"Total events in DB: {results['total_events']}")
-            log_progress(f"Matched events: {results['matched_events']}")
 
         return results
 
@@ -1070,6 +1104,7 @@ class ExtractionPipeline:
                     # Get actual insert/update counts from batch processor
                     # Must be AFTER `with` block so __exit__ flushes the final batch
                     odds_new, odds_updated = odds_batch.get_stats()
+                    market_counts = odds_batch.get_market_counts()
 
                     # Commit after each sport to release SQLite locks sooner
                     # and prevent accumulating dirty session state across concurrent providers
@@ -1080,17 +1115,24 @@ class ExtractionPipeline:
                         self.session.rollback()
 
                     sport_elapsed = time.time() - sport_start_time
+                    # Build detailed per-sport log line
+                    ml_count = market_counts.get("1x2", 0) + market_counts.get("moneyline", 0)
+                    spr_count = market_counts.get("spread", 0)
+                    tot_count = market_counts.get("total", 0)
+                    market_info = f" | 1x2={ml_count} spr={spr_count} tot={tot_count}" if odds_processed > 0 else ""
                     match_info = ""
                     if is_soft and sport_has_sharp:
-                        match_info = f" (matched: {events_matched}, unmatched: {events_unmatched})"
+                        match_info = f" | match={events_matched}/{events_matched + events_unmatched}"
                     logger.info(
-                        f"[{provider_id}] {sport}: {len(events)} events in {sport_elapsed:.1f}s{match_info}"
+                        f"[{provider_id}] {sport}: {len(events)} ev, {odds_processed} odds in {sport_elapsed:.1f}s{market_info}{match_info}"
                     )
 
                     if self.metrics:
                         self.metrics.end_sport(
                             provider_id, sport,
                             events_processed=events_processed,
+                            events_matched=events_matched,
+                            events_unmatched=events_unmatched,
                             odds_processed=odds_processed,
                             success=True,
                         )
@@ -1099,8 +1141,11 @@ class ExtractionPipeline:
                         "sport": sport,
                         "events_processed": events_processed,
                         "events_new": events_new,
+                        "events_matched": events_matched,
+                        "events_unmatched": events_unmatched,
                         "odds_processed": odds_processed,
                         "odds_new": odds_new,
+                        "market_counts": market_counts,
                         "error": None
                     }
 
@@ -1117,8 +1162,11 @@ class ExtractionPipeline:
                         "sport": sport,
                         "events_processed": 0,
                         "events_new": 0,
+                        "events_matched": 0,
+                        "events_unmatched": 0,
                         "odds_processed": 0,
                         "odds_new": 0,
+                        "market_counts": {},
                         "error": {"error": error_msg, "error_type": "TimeoutError"}
                     }
 
@@ -1134,8 +1182,11 @@ class ExtractionPipeline:
                         "sport": sport,
                         "events_processed": 0,
                         "events_new": 0,
+                        "events_matched": 0,
+                        "events_unmatched": 0,
                         "odds_processed": 0,
                         "odds_new": 0,
+                        "market_counts": {},
                         "error": {"error": str(e), "error_type": type(e).__name__}
                     }
 
@@ -1147,15 +1198,23 @@ class ExtractionPipeline:
             # Aggregate results
             total_events_processed = 0
             total_events_new = 0
+            total_events_matched = 0
+            total_events_unmatched = 0
             total_odds_processed = 0
             total_odds_new = 0
             sport_errors = []
+            total_market_counts: dict[str, int] = {}
 
             for result in sport_results:
                 total_events_processed += result["events_processed"]
                 total_events_new += result["events_new"]
+                total_events_matched += result.get("events_matched", 0)
+                total_events_unmatched += result.get("events_unmatched", 0)
                 total_odds_processed += result["odds_processed"]
                 total_odds_new += result["odds_new"]
+
+                for mkt, cnt in result.get("market_counts", {}).items():
+                    total_market_counts[mkt] = total_market_counts.get(mkt, 0) + cnt
 
                 if result["error"]:
                     sport_errors.append({
@@ -1169,8 +1228,11 @@ class ExtractionPipeline:
             return {
                 "events_processed": total_events_processed,
                 "events_new": total_events_new,
+                "events_matched": total_events_matched,
+                "events_unmatched": total_events_unmatched,
                 "odds_processed": total_odds_processed,
                 "odds_new": total_odds_new,
+                "market_counts": total_market_counts,
                 "sport_errors": sport_errors,
                 "sports_attempted": len(sports),
                 "sports_succeeded": len(sports) - len(sport_errors)

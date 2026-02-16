@@ -1,5 +1,5 @@
 """
-OddOpp Interactive Terminal Application
+DegenTraderXD Interactive Terminal Application
 
 A Rich + Typer based terminal UI for betting analytics.
 """
@@ -27,14 +27,14 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(force_terminal=True)
-app = typer.Typer(help="OddOpp - Betting Analytics Platform")
+app = typer.Typer(help="DegenTraderXD - Betting Analytics Platform")
 
 
 def show_banner():
     """Display the app banner."""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║                      OddOpp                               ║
+    ║                   DegenTraderXD                             ║
     ║           Betting Analytics Platform                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """
@@ -222,7 +222,7 @@ def interactive_loop():
 
     while True:
         console.print("\n[dim]Commands: extract, stats, value, providers, settings, help, quit[/dim]")
-        cmd = Prompt.ask("[bold cyan]oddopp[/bold cyan]").lower().strip()
+        cmd = Prompt.ask("[bold cyan]degen[/bold cyan]").lower().strip()
 
         if cmd == "quit" or cmd == "exit" or cmd == "q":
             console.print("[yellow]Goodbye![/yellow]")

@@ -1,5 +1,5 @@
 """
-Centralized path resolution for OddOpp.
+Centralized path resolution for DegenTraderXD.
 
 Handles both development mode (running from source) and bundled mode
 (running from PyInstaller .exe). All path-dependent modules import from here.
@@ -10,7 +10,7 @@ In dev mode:
 
 In bundled mode:
   - Bundled resources → sys._MEIPASS (PyInstaller temp dir)
-  - User data → %LOCALAPPDATA%/OddOpp/
+  - User data → %LOCALAPPDATA%/DegenTraderXD/
 """
 
 import os
@@ -35,12 +35,12 @@ def get_app_data_dir() -> Path:
     """
     Persistent user data directory.
 
-    Bundled: %LOCALAPPDATA%/OddOpp/
+    Bundled: %LOCALAPPDATA%/DegenTraderXD/
     Dev:     backend/ (preserves current behavior)
     """
     if is_bundled():
         local = os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData' / 'Local'))
-        app_dir = Path(local) / 'OddOpp'
+        app_dir = Path(local) / 'DegenTraderXD'
         app_dir.mkdir(parents=True, exist_ok=True)
         return app_dir
     return Path(__file__).parent.parent
@@ -50,7 +50,7 @@ def get_db_path() -> Path:
     """SQLite database path. Always in user data directory."""
     db_dir = get_app_data_dir() / 'data'
     db_dir.mkdir(parents=True, exist_ok=True)
-    return db_dir / 'oddopp.db'
+    return db_dir / 'degentraderxd.db'
 
 
 def get_logs_dir() -> Path:
@@ -64,7 +64,7 @@ def get_config_path(filename: str) -> Path:
     """
     Config file path with user override support.
 
-    Checks %LOCALAPPDATA%/OddOpp/config/ first (user customization),
+    Checks %LOCALAPPDATA%/DegenTraderXD/config/ first (user customization),
     then falls back to bundled default.
     """
     if is_bundled():
@@ -106,7 +106,7 @@ def get_env_path() -> Path:
     """
     .env file path.
 
-    Bundled: %LOCALAPPDATA%/OddOpp/.env
+    Bundled: %LOCALAPPDATA%/DegenTraderXD/.env
     Dev:     backend/.env
     """
     return get_app_data_dir() / '.env'

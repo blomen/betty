@@ -20,7 +20,7 @@ sys.path.insert(0, str(backend_path))
 def analyze_provider_logs(provider_id: str, days: int = 7):
     """Analyze provider logs from database."""
 
-    db_path = backend_path / "data" / "oddopp.db"
+    db_path = backend_path / "data" / "degentraderxd.db"
 
     if not db_path.exists():
         print(f"Database not found: {db_path}")

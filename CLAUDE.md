@@ -1,8 +1,8 @@
-# OddOpp - Betting Analytics Platform
+# DegenTraderXD - Betting Analytics Platform
 
 ## WHAT This Project Is
 
-OddOpp compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
+DegenTraderXD compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
 **Architecture:**
 ```
@@ -120,7 +120,7 @@ This keeps the system focused on the highest-value, most comparable market types
 
 - `src/config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
 - `src/config/sports.yaml` - Sport/league mappings with provider-specific IDs
-- `backend/data/oddopp.db` - SQLite database
+- `backend/data/degentraderxd.db` - SQLite database
 
 ### Extraction Volume Audit (IMPORTANT)
 
@@ -244,14 +244,14 @@ Track these per provider during extraction:
 
 ```bash
 cd backend
-rm -f data/oddopp.db  # Clear database
+rm -f data/degentraderxd.db  # Clear database
 python -m src.app extract polymarket pinnacle <provider>
 ```
 
 **Then run this SQL validation script:**
 ```python
 import sqlite3
-conn = sqlite3.connect('data/oddopp.db')
+conn = sqlite3.connect('data/degentraderxd.db')
 cursor = conn.cursor()
 
 # 1. ODDS/EVENT RATIO (expected: 2.4-3.0 for 1x2 markets)
@@ -328,7 +328,7 @@ LIMIT 30;
 1. **Clear database and run extraction:**
    ```bash
    cd backend
-   rm -f data/oddopp.db
+   rm -f data/degentraderxd.db
    python -m src.app extract
    ```
 
@@ -341,7 +341,7 @@ LIMIT 30;
    ```bash
    python -c "
    import sqlite3
-   conn = sqlite3.connect('data/oddopp.db')
+   conn = sqlite3.connect('data/degentraderxd.db')
    c = conn.cursor()
 
    print('=== Provider Odds Count ===')

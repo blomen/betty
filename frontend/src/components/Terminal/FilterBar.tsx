@@ -108,7 +108,7 @@ export function MultiSelectDropdown({
       {/* Trigger button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+        className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-all duration-150 ${
           hasFilter ? '' : 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80'
         }`}
         style={hasFilter ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -135,7 +135,7 @@ export function MultiSelectDropdown({
 
       {/* Dropdown popover */}
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 z-50 w-56 bg-panel border border-border rounded-lg shadow-xl shadow-black/30 overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 z-50 w-56 bg-panel border border-border shadow-xl shadow-black/30 overflow-hidden">
           {/* Search */}
           {options.length > 6 && (
             <div className="p-2 border-b border-border">
@@ -145,7 +145,7 @@ export function MultiSelectDropdown({
                 placeholder="Search..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full px-2.5 py-1.5 text-[11px] bg-panel2 border border-border rounded text-text
+                className="w-full px-2.5 py-1.5 text-[11px] bg-panel2 border border-border text-text
                   placeholder:text-muted2 focus:outline-none focus:border-muted"
               />
             </div>
@@ -185,7 +185,7 @@ export function MultiSelectDropdown({
                   >
                     {/* Checkbox */}
                     <span
-                      className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150 ${
+                      className={`w-3.5 h-3.5 border flex items-center justify-center shrink-0 transition-all duration-150 ${
                         isActive ? 'border-transparent' : 'border-muted/40'
                       }`}
                       style={isActive ? { background: hex, borderColor: hex } : undefined}
@@ -244,7 +244,7 @@ export function MultiSelectPills({
       </span>
       <button
         onClick={onClear}
-        className={`px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+        className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
           !allSelected ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
         style={allSelected ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -257,7 +257,7 @@ export function MultiSelectPills({
           <button
             key={opt}
             onClick={() => onToggle(opt)}
-            className={`px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+            className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
               !isActive ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
             }`}
             style={isActive ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -306,7 +306,7 @@ export function RangeFilter({
           value={minValue}
           onChange={e => onMinChange(e.target.value)}
           style={{ '--focus-border': `${hex}80` } as React.CSSProperties}
-          className="w-14 px-2 py-1 text-[11px] bg-panel2 border border-border rounded text-text
+          className="w-14 px-2 py-1 text-[11px] bg-panel2 border border-border text-text
             placeholder:text-muted2 focus:outline-none focus:border-[var(--focus-border)]
             [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
         />
@@ -317,7 +317,7 @@ export function RangeFilter({
           value={maxValue}
           onChange={e => onMaxChange(e.target.value)}
           style={{ '--focus-border': `${hex}80` } as React.CSSProperties}
-          className="w-14 px-2 py-1 text-[11px] bg-panel2 border border-border rounded text-text
+          className="w-14 px-2 py-1 text-[11px] bg-panel2 border border-border text-text
             placeholder:text-muted2 focus:outline-none focus:border-[var(--focus-border)]
             [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
         />
@@ -358,7 +358,7 @@ export function SingleSelectPills({
       </span>
       <button
         onClick={() => onSelect(null)}
-        className={`px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+        className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
           active !== null ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
         style={active === null ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -369,7 +369,7 @@ export function SingleSelectPills({
         <button
           key={opt}
           onClick={() => onSelect(active === opt ? null : opt)}
-          className={`px-2.5 py-1 text-[11px] rounded-full transition-all duration-150 ${
+          className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
             active !== opt ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
           }`}
           style={active === opt ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -391,7 +391,7 @@ interface FilterBarProps {
 
 export function FilterBar({ children, className = '' }: FilterBarProps) {
   return (
-    <div className={`flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5 bg-panel border border-border rounded-lg ${className}`}>
+    <div className={`flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5 bg-panel border border-border ${className}`}>
       {children}
     </div>
   );

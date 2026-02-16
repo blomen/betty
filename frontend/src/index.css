@@ -3,28 +3,30 @@
 @tailwind utilities;
 
 :root {
-  --bg: #1a1a1a;
-  --panel: #202020;
-  --panel2: #242424;
-  --border: #2f2f2f;
-  --text: #e7e7e7;
-  --muted: #a7a7a7;
-  --muted2: #7f7f7f;
-  --accent: #a78bfa;
-  --accentBg: #2a2540;
-  --accentBorder: #3a2f66;
-  --success: #22c55e;
+  --bg: #111111;
+  --panel: #1a1a1a;
+  --panel2: #202020;
+  --border: #2c2c2c;
+  --text: #E6E8EB;
+  --muted: #9AA0A6;
+  --muted2: #7A7F87;
+  --accent: #4FC3F7;
+  --accentBg: #1a1f2a;
+  --accentBorder: #2c2c2c;
+  --success: #4CAF50;
   --error: #EF5350;
-  --tableBorder: rgba(255,255,255,.28);
-  --calloutBorder: #48968c;
-  /* Tab colors */
+  --warning: #FF9800;
+  --tableBorder: #2c2c2c;
+  --calloutBorder: #4CAF50;
+  /* Tab colors — must match Sidebar.tsx dot colors */
   --tab-arb: #22c55e;
-  --tab-value: #f59e0b;
-  --tab-bonus: #a78bfa;
-  --tab-bets: #22d3d8;
-  --tab-bankroll: #ec4899;
-  --tab-profiles: #8b5cf6;
-  --tab-stats: #94a3b8;
+  --tab-value: #FF9800;
+  --tab-bonus: #A78BFA;
+  --tab-bets: #4FC3F7;
+  --tab-bankroll: #EC4899;
+  --tab-profiles: #7C3AED;
+  --tab-polymarket: #A855F7;
+  --tab-stats: #9AA0A6;
 }
 
 * {
@@ -66,12 +68,11 @@ input[type="number"] {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--panel);
+  background: var(--bg);
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -80,7 +81,7 @@ input[type="number"] {
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(167, 139, 250, 0.3);
+  background-color: rgba(79, 195, 247, 0.3);
   color: #ffffff;
 }
 
@@ -88,7 +89,6 @@ input[type="number"] {
 pre {
   background-color: var(--panel) !important;
   border: 1px solid var(--border);
-  border-radius: 4px;
   padding: 12px;
   overflow-x: auto;
 }
@@ -100,17 +100,54 @@ code {
 }
 
 :not(pre) > code {
-  background-color: rgba(167, 139, 250, 0.1);
+  background-color: rgba(79, 195, 247, 0.1);
   padding: 2px 6px;
-  border-radius: 4px;
 }
 
-/* Reset app tables — Tailwind controls all styling */
-table {
+/* Square bordered table style — the core visual */
+table.sq {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+table.sq th,
+table.sq td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+table.sq th {
+  background-color: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+table.sq td {
+  background-color: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+table.sq tr:hover td {
+  background-color: var(--panel);
+}
+
+table.sq tr.expanded td {
+  background-color: var(--panel);
+}
+
+/* Reset default table styles */
+table:not(.sq) {
   border-collapse: collapse;
 }
 
-th, td {
+table:not(.sq) th,
+table:not(.sq) td {
   border: none;
   padding: 0;
   vertical-align: top;

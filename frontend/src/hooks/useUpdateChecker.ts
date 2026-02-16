@@ -13,7 +13,7 @@ interface UpdateState {
   downloadUrl: string | null;
 }
 
-const GITHUB_REPO = 'rasmus/oddopp'; // Update to your actual repo
+const GITHUB_REPO = 'blomen/degentraderxd'; // Update to your actual repo
 
 export function useUpdateChecker(): UpdateState {
   const [state, setState] = useState<UpdateState>({

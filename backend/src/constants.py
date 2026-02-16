@@ -1,4 +1,4 @@
-"""Shared constants for OddOpp."""
+"""Shared constants for DegenTraderXD."""
 
 # Market types to extract (all others skipped)
 ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})

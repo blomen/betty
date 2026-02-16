@@ -1,7 +1,7 @@
 """
 Provider Template - Copy this file when adding a new provider.
 
-This template demonstrates the standard patterns for OddOpp provider implementations.
+This template demonstrates the standard patterns for DegenTraderXD provider implementations.
 Replace all instances of 'NewProvider' with your provider name.
 
 IMPORTANT: We ONLY extract 1x2/moneyline markets. All other markets are skipped.

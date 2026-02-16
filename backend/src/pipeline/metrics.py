@@ -24,6 +24,8 @@ class SportMetrics:
     duration_seconds: float = 0.0
     events_processed: int = 0
     events_new: int = 0
+    events_matched: int = 0
+    events_unmatched: int = 0
     odds_processed: int = 0
     odds_new: int = 0
     success: bool = False
@@ -112,6 +114,22 @@ class ProviderMetrics:
     def total_odds_new(self) -> int:
         """Total new odds across all sports."""
         return sum(s.odds_new for s in self.sports.values())
+
+    @property
+    def total_events_matched(self) -> int:
+        """Total matched events across all sports."""
+        return sum(s.events_matched for s in self.sports.values())
+
+    @property
+    def total_events_unmatched(self) -> int:
+        """Total unmatched events across all sports."""
+        return sum(s.events_unmatched for s in self.sports.values())
+
+    @property
+    def match_rate(self) -> float:
+        """Pinnacle match rate (0-1). Only meaningful for soft providers."""
+        total = self.total_events_matched + self.total_events_unmatched
+        return self.total_events_matched / total if total > 0 else 0.0
 
     @property
     def sports_attempted(self) -> int:
@@ -255,11 +273,16 @@ class PipelineMetrics:
                     "rate_limit_hits": p.rate_limit_hits,
                     "success": p.success,
                     "error": p.error,
+                    "events_matched": p.total_events_matched,
+                    "events_unmatched": p.total_events_unmatched,
+                    "match_rate": p.match_rate,
                     "sports": {
                         sport: {
                             "duration_seconds": s.duration_seconds,
                             "events_processed": s.events_processed,
                             "events_new": s.events_new,
+                            "events_matched": s.events_matched,
+                            "events_unmatched": s.events_unmatched,
                             "odds_processed": s.odds_processed,
                             "odds_new": s.odds_new,
                             "success": s.success,
@@ -381,6 +404,8 @@ class MetricsCollector:
         sport: str,
         events_processed: int = 0,
         events_new: int = 0,
+        events_matched: int = 0,
+        events_unmatched: int = 0,
         odds_processed: int = 0,
         odds_new: int = 0,
         success: bool = True,
@@ -394,6 +419,8 @@ class MetricsCollector:
             sport: Sport name
             events_processed: Number of events processed
             events_new: Number of new events
+            events_matched: Events matched to Pinnacle
+            events_unmatched: Events not matched to Pinnacle
             odds_processed: Number of odds processed
             odds_new: Number of new odds
             success: Whether extraction succeeded
@@ -410,6 +437,11 @@ class MetricsCollector:
                     success=success,
                     error=error
                 )
+                # Set match stats directly on sport metrics
+                sport_metrics = self._current_run.providers[provider_id].sports.get(sport)
+                if sport_metrics:
+                    sport_metrics.events_matched = events_matched
+                    sport_metrics.events_unmatched = events_unmatched
 
     def record_retry(self, provider_id: str):
         """
@@ -513,18 +545,32 @@ class MetricsCollector:
                 "total_cache_hits": sum(p.cache_hits for p in provider_runs)
             }
 
-    def persist_to_db(self, run_metrics: PipelineMetrics, session):
+    def persist_to_db(self, run_metrics: PipelineMetrics, session, report: str = None, tier_name: str | None = None):
         """
         Persist pipeline metrics to database.
+        Only keeps the latest run per tier — deletes previous runs of the same tier.
 
         Args:
             run_metrics: PipelineMetrics instance to persist
             session: SQLAlchemy session
+            report: Optional extraction report text
+            tier_name: Tier name (sharp/api_soft/browser_soft) stored in trigger field
         """
         from datetime import datetime as dt
         from src.db.models import ExtractionRun, ProviderRunMetrics, SportRunMetrics
 
+        trigger = tier_name or 'manual'
+
         try:
+            # Delete previous runs of the same tier (keep only the latest)
+            old_runs = session.query(ExtractionRun).filter(
+                ExtractionRun.trigger == trigger
+            ).all()
+            for old_run in old_runs:
+                session.query(SportRunMetrics).filter(SportRunMetrics.run_id == old_run.id).delete()
+                session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == old_run.id).delete()
+                session.delete(old_run)
+
             # Create extraction run record
             run = ExtractionRun(
                 id=run_metrics.run_id,
@@ -537,8 +583,9 @@ class MetricsCollector:
                 total_events=run_metrics.total_events,
                 total_odds=run_metrics.total_odds,
                 polymarket_events=run_metrics.polymarket_events,
-                trigger='manual',
-                config=run_metrics.to_dict()
+                trigger=trigger,
+                config=run_metrics.to_dict(),
+                report=report,
             )
             session.add(run)
 

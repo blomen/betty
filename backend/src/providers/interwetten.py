@@ -49,6 +49,8 @@ class InterwettenRetriever(BrowserRetriever):
     # League IDs per sport — discovered from /en/sportsbook navigation
     # League IDs discovered 2026-02-09 from /en/sportsbook navigation
     # Script: scripts/discover_interwetten_leagues.py
+    # League IDs discovered 2026-02-09, updated 2026-02-15 from /en/sportsbook navigation
+    # Script: scripts/discover_interwetten_leagues.py
     SPORT_LEAGUES = {
         "football": [
             # European cups
@@ -59,7 +61,10 @@ class InterwettenRetriever(BrowserRetriever):
             (405836, "concacaf-champions-league"),
             (105120, "copa-libertadores"),
             (105217, "copa-sudamericana"),
+            (405354, "recopa-sudamericana"),
             (105353, "afc-champions-league-elite"),
+            (411367, "wc-qualifying-2026-europe"),
+            (412305, "wc-2026"),
             # Top leagues
             (1021, "england-premier-league"),
             (1022, "england-championship"),
@@ -67,6 +72,7 @@ class InterwettenRetriever(BrowserRetriever):
             (10468, "england-league-two"),
             (1091, "england-fa-cup"),
             (10427, "england-efl-cup"),
+            (10691, "england-national-league"),
             (1019, "germany-bundesliga"),
             (1020, "germany-second-league"),
             (10268, "germany-dfb-cup"),
@@ -76,8 +82,12 @@ class InterwettenRetriever(BrowserRetriever):
             (1029, "italy-serie-a"),
             (405298, "italy-serie-b"),
             (407049, "italy-cup"),
+            (407902, "italy-serie-c-girone-a"),
+            (405355, "italy-serie-c-girone-b"),
+            (407636, "italy-serie-c-girone-c"),
             (1024, "france-ligue-1"),
             (10617, "france-ligue-2"),
+            (405434, "france-championnat-national"),
             (1081, "france-cup"),
             # Nordic
             (10235, "sweden-allsvenskan"),
@@ -90,29 +100,45 @@ class InterwettenRetriever(BrowserRetriever):
             # Rest of Europe
             (1023, "austria-bundesliga"),
             (10900, "austria-second-league"),
+            (1082, "austria-cup"),
             (1025, "switzerland-super-league"),
             (105002, "switzerland-challenge-league"),
             (1026, "scotland-premiership"),
             (10605, "scotland-championship"),
+            (405266, "scotland-league-one"),
+            (10607, "scotland-league-two"),
+            (10140, "scotland-fa-cup"),
             (1027, "netherlands-eredivisie"),
             (10448, "netherlands-eerste-divisie"),
+            (10172, "netherlands-cup"),
             (10598, "portugal-primeira-liga"),
             (10269, "portugal-segunda-liga"),
             (1028, "belgium-pro-league"),
             (10265, "belgium-challenger-pro-league"),
+            (1079, "belgium-cup"),
             (1036, "turkiye-super-lig"),
             (405290, "turkiye-first-league"),
             (1060, "greece-super-league-1"),
+            (105284, "greece-cup"),
             (1059, "poland-ekstraklasa"),
+            (406254, "poland-i-liga"),
             (10420, "czech-republic-1st-league"),
             (10306, "hungary-nb-i"),
             (405364, "romania-league-1"),
             (406174, "serbia-superleague"),
             (405435, "cyprus-division-1"),
             (10435, "ireland-premier"),
+            (405917, "ireland-division-1"),
+            (405541, "slovenia-prvaliga"),
+            (405622, "bulgaria-first-league"),
+            (405859, "ukraine-premier-liha"),
+            (10618, "israel-first-league"),
+            (10909, "northern-ireland-premier-league"),
+            (405357, "wales-premier-league"),
             # Americas
             (10750, "usa-major-league-soccer"),
             (105121, "argentina-liga-profesional"),
+            (405902, "argentina-primera-nacional"),
             (405525, "brazil-serie-a"),
             (405526, "brazil-serie-b"),
             (405250, "mexico-liga-mx"),
@@ -121,11 +147,15 @@ class InterwettenRetriever(BrowserRetriever):
             (405440, "uruguay-primera-division"),
             (405417, "peru-1st-league"),
             (406296, "costa-rica-primera-division"),
+            (406291, "paraguay-primera-division"),
+            (405416, "ecuador-serie-a"),
             # Rest of world
             (405485, "australia-a-league"),
             (406183, "saudi-arabia-pro-league"),
             (405644, "egypt-premier-league"),
             (406147, "south-africa-premier-league"),
+            (406131, "india-super-league"),
+            (406317, "indonesia-liga-1"),
         ],
         "ice_hockey": [
             (4080, "nhl"),
@@ -136,11 +166,17 @@ class InterwettenRetriever(BrowserRetriever):
             (40627, "germany-del"),
             (405088, "switzerland-national-league"),
             (4083, "austria-ihl"),
+            (405811, "alps-hockey-league"),
             (405257, "czech-republic-extraliga"),
+            (405822, "czech-republic-league-1"),
             (405258, "slovakia-extraliga"),
+            (406649, "slovakia-1-liga"),
             (405093, "norway-eliteserien"),
             (405307, "denmark-superisligaen"),
+            (405684, "france-ligue-magnus"),
+            (406348, "ahl"),
             (406024, "champions-hockey-league"),
+            (405147, "a-world-championship-2026"),
         ],
         "basketball": [
             (15103, "nba"),
@@ -152,27 +188,47 @@ class InterwettenRetriever(BrowserRetriever):
             (412221, "bnxt-league"),
             (405446, "spain-primera-feb"),
             (405293, "italy-lega-a"),
+            (406788, "italy-serie-a2"),
             (405602, "greece-elite-league"),
             (408802, "turkiye-tbl"),
+            (405844, "switzerland-nla"),
+            (407798, "sweden-basketligan"),
             (406521, "finland-korisliigan"),
+            (406606, "denmark-basketligaen"),
+            (406249, "great-britain-bbl"),
+            (405542, "poland-plk"),
+            (406526, "lithuania-lkl-men"),
+            (406476, "slovenia-1-skl"),
+            (406508, "israel-superleague"),
+            (407401, "brazil-nbb"),
             (405733, "korea-kbl"),
             (409333, "argentina-liga"),
         ],
         "tennis": [
             # ATP tour
+            (407229, "atp-doha"),
+            (407319, "atp-rio-de-janeiro"),
+            (407322, "atp-delray-beach"),
             (11512, "atp-rotterdam"),
             (407303, "atp-buenos-aires"),
             (412162, "atp-dallas"),
             # ATP Challengers
+            (408972, "atp-challenger-lille"),
+            (415467, "atp-challenger-metepec"),
+            (407314, "atp-challenger-new-delhi"),
+            (412971, "atp-challenger-tigre"),
             (407270, "atp-challenger-pau"),
             (414524, "atp-challenger-brisbane-2"),
             (411967, "atp-challenger-tenerife"),
             (415450, "atp-challenger-baton-rouge"),
             (407290, "atp-challenger-chennai"),
             # WTA tour
+            (407325, "wta-dubai"),
             (115072, "wta-doha"),
             (413769, "wta-oeiras-125"),
-            # Grand Slams (for future reference)
+            (415465, "wta-les-sables-dolonne-125"),
+            (411962, "wta-midland-125"),
+            # Grand Slams
             (407198, "australian-open-men"),
             (407199, "australian-open-ladies"),
             (115023, "wimbledon-men"),
@@ -186,11 +242,14 @@ class InterwettenRetriever(BrowserRetriever):
             (405361, "ehf-champions-league-men"),
             (405441, "ehf-el-men"),
             (405362, "sweden-elitserien"),
+            (406866, "sweden-elitserien-women"),
             (405225, "germany-bundesliga"),
             (405376, "spain-asobal"),
             (405454, "france-lnh-starligue"),
             (405616, "poland-superliga"),
             (405390, "denmark-haandboldligaen-men"),
+            (405624, "slovenia-1-liga"),
+            (405455, "greece-a1"),
         ],
         "volleyball": [
             (405581, "germany-bundesliga-men"),
@@ -200,27 +259,37 @@ class InterwettenRetriever(BrowserRetriever):
             (406062, "brazil-superleague-men"),
             (406117, "finland-sm-liiga-men"),
             (405764, "korea-v-league-men"),
+            (405786, "korea-v-league-women"),
+            (413643, "usa-pro-volleyball-federation"),
             (405443, "champions-league-men"),
             (405515, "champions-league-women"),
+            (405747, "challenge-cup-men"),
         ],
         "rugby": [
             (405395, "australia-nrl"),
             (405396, "super-league"),
+            (408209, "rfl-challenge-cup"),
             (405302, "rugby-six-nations"),
             (405397, "super-rugby"),
             (405398, "european-champions-cup"),
             (405988, "united-rugby-championship"),
             (405453, "english-premiership"),
             (405414, "france-top-14"),
+            (405646, "rugby-world-cup"),
         ],
         "cricket": [
             (405870, "india-premier-league"),
             (407373, "twenty-20-world-cup"),
             (405607, "icc-world-cup"),
+            (405681, "twenty20-international"),
+            (408225, "caribbean-premier-league"),
             (410274, "the-hundred"),
             (409140, "england-t20-blast"),
             (409141, "england-county-championship"),
             (406632, "australia-big-bash-league"),
+            (408931, "australia-sheffield-shield"),
+            (408927, "new-zealand-ford-trophy"),
+            (408829, "south-africa-t20-challenge"),
         ],
         "darts": [
             (407283, "premier-league-darts"),
@@ -231,14 +300,33 @@ class InterwettenRetriever(BrowserRetriever):
             (90, "boxing"),
         ],
         "american_football": [
-            # NFL not in current navigation — may use different path
-            # Keep old ID as fallback
             (13473, "ncaaf-college"),
             (13450, "canada-cfl"),
         ],
         "baseball": [
             (14233, "mlb"),
+            (405391, "japan-npb"),
             (406200, "korea-kbo"),
+            (405465, "world-baseball-classic"),
+        ],
+        "golf": [
+            (405261, "grand-prix"),
+            (405289, "world-championship"),
+            (405276, "the-masters-tournament"),
+            (408429, "pga-championship"),
+            (408252, "u-s-open"),
+            (408251, "open-championship"),
+            (405262, "ryder-cup"),
+            (407062, "presidents-cup"),
+            (410020, "solheim-cup"),
+        ],
+        "cycling": [
+            (408945, "milan-san-remo"),
+            (408947, "tour-of-flanders"),
+            (408946, "paris-roubaix"),
+            (411136, "uci-world-tour"),
+            (409884, "tour-de-france"),
+            (413649, "clasica-jaen"),
         ],
     }
 
@@ -383,7 +471,7 @@ class InterwettenRetriever(BrowserRetriever):
         # Collect events ready for detail enrichment
         detail_queue = asyncio.Queue()
 
-        # Process leagues in batches
+        # Process leagues in batches (larger batch = fewer asyncio.gather calls)
         batch_size = 20
         for batch_start in range(0, len(leagues), batch_size):
             if limit and len(all_events) >= limit:

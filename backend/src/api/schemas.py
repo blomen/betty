@@ -37,6 +37,17 @@ class DepositRequest(BaseModel):
     amount: float  # Deposit amount (positive)
 
 
+class TransferRequest(BaseModel):
+    from_provider_id: str
+    to_provider_id: str
+    amount: float  # Transfer amount (positive)
+    with_bonus: bool = False  # Claim bonus on destination provider
+
+
+class BonusTransitionRequest(BaseModel):
+    action: Literal["start_freebet", "trigger_settled", "freebet_used"]
+
+
 class StakePreviewRequest(BaseModel):
     """Request to preview stake for an opportunity."""
     edge_pct: float  # Edge percentage (e.g., 5.0 for 5%)
@@ -274,6 +285,7 @@ class BankrollStatsResponse(BaseModel):
     voids: int
     total_staked: float
     total_profit: float
+    bonus_profit: float
     roi_pct: float
     win_rate: float
 

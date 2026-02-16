@@ -1,7 +1,7 @@
 """
-Alembic Environment Configuration for OddOpp
+Alembic Environment Configuration for DegenTraderXD
 
-This file configures Alembic to work with the OddOpp database models.
+This file configures Alembic to work with the DegenTraderXD database models.
 """
 from logging.config import fileConfig
 

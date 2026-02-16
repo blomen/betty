@@ -7,7 +7,7 @@ from ...services import BankrollService
 from ...repositories import ProfileRepo
 from ...db.models import Provider
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest, StakePreviewRequest, RecordBetRequest
+from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest, TransferRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
 from .providers import load_provider_bonuses
 
 router = APIRouter(prefix="/api/bankroll", tags=["bankroll"])
@@ -91,6 +91,68 @@ async def adjust_balance(
         "old_balance": old_balance,
         "adjustment": data.amount,
         "new_balance": new_balance,
+    }
+
+
+@router.post("/transfer")
+async def transfer_funds(data: TransferRequest, db: Session = Depends(get_db)):
+    """Transfer funds between two providers for active profile."""
+    if data.amount <= 0:
+        raise HTTPException(400, "Transfer amount must be positive")
+    if data.from_provider_id == data.to_provider_id:
+        raise HTTPException(400, "Cannot transfer to the same provider")
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    # Verify both providers exist
+    from_provider = db.query(Provider).filter(Provider.id == data.from_provider_id).first()
+    if not from_provider:
+        raise HTTPException(404, f"Source provider {data.from_provider_id} not found")
+    to_provider = db.query(Provider).filter(Provider.id == data.to_provider_id).first()
+    if not to_provider:
+        raise HTTPException(404, f"Destination provider {data.to_provider_id} not found")
+
+    # Check sufficient balance
+    from_balance = profile_repo.get_balance(profile.id, data.from_provider_id)
+    if from_balance < data.amount:
+        raise HTTPException(
+            400,
+            f"Insufficient balance: {from_balance:.2f} available, {data.amount:.2f} required",
+        )
+
+    # Deduct from source
+    from_new = profile_repo.adjust_balance(profile.id, data.from_provider_id, -data.amount)
+
+    # Add to destination — with or without bonus
+    bonus_claimed = 0.0
+    bonus_status = None
+    bonus_type = None
+    if data.with_bonus:
+        service = BankrollService(db)
+        deposit_result = service.deposit_with_bonus(data.to_provider_id, data.amount)
+        if deposit_result:
+            to_new = deposit_result["new_balance"]
+            bonus_claimed = deposit_result.get("bonus_claimed", 0.0)
+            bonus_status = deposit_result.get("bonus_status")
+            bonus_type = deposit_result.get("bonus_type")
+        else:
+            to_new = profile_repo.adjust_balance(profile.id, data.to_provider_id, data.amount)
+    else:
+        to_new = profile_repo.adjust_balance(profile.id, data.to_provider_id, data.amount)
+
+    db.commit()
+
+    return {
+        "success": True,
+        "from_provider_id": data.from_provider_id,
+        "to_provider_id": data.to_provider_id,
+        "amount": data.amount,
+        "from_new_balance": from_new,
+        "to_new_balance": to_new,
+        "bonus_claimed": bonus_claimed,
+        "bonus_status": bonus_status,
+        "bonus_type": bonus_type,
     }
 
 
@@ -197,6 +259,38 @@ async def record_bet_exposure(data: RecordBetRequest, service: BankrollService =
         "event_exposure": calc.event_tracker.get_exposure(data.event_id),
         "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
     }
+
+
+@router.post("/bonus-transition/{provider_id}")
+async def bonus_transition(
+    provider_id: str,
+    data: BonusTransitionRequest,
+    db: Session = Depends(get_db),
+):
+    """Advance bonus status for a provider (freebet phases)."""
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    if data.action == "start_freebet":
+        bonus_config = load_provider_bonuses().get(provider_id, {})
+        result = profile_repo.start_freebet_tracking(
+            profile.id, provider_id,
+            bonus_amount=bonus_config.get("amount", 0),
+            min_odds=bonus_config.get("min_odds", 1.80),
+        )
+    elif data.action == "trigger_settled":
+        result = profile_repo.advance_freebet_status(profile.id, provider_id, "freebet_available")
+    elif data.action == "freebet_used":
+        result = profile_repo.advance_freebet_status(profile.id, provider_id, "completed")
+    else:
+        raise HTTPException(400, f"Unknown action: {data.action}")
+
+    db.commit()
+    return {"success": True, "provider_id": provider_id, **result}
 
 
 @router.post("/claim-bonus/{provider_id}")

@@ -11,7 +11,7 @@ export function BonusPopup({ title, children, onClose }: BonusPopupProps) {
       onClick={onClose}
     >
       <div
-        className="bg-panel2 border border-border rounded-lg shadow-xl max-w-sm w-full mx-4"
+        className="bg-panel2 border border-border shadow-xl max-w-sm w-full mx-4"
         onClick={e => e.stopPropagation()}
       >
         <div className="px-5 py-3 border-b border-border">
