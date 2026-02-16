@@ -25,8 +25,9 @@ from .devig import (
     calculate_margin,
     devig_multiplicative,
     get_fair_odds_for_outcome,
+    compute_consensus_fair_odds,
 )
-from ..constants import SHARP_PROVIDERS, EXCLUDED_FROM_SCANS
+from ..constants import SHARP_PROVIDERS, EXCLUDED_FROM_SCANS, PLATFORM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,15 @@ MAX_EDGE_PCT = 50.0
 # Maximum odds age in hours for value scanning
 # Odds older than this are considered stale and skipped
 MAX_ODDS_AGE_HOURS = 2
+
+# Reverse value: minimum independent platforms for consensus
+MIN_CONSENSUS_PLATFORMS = 5
+
+# Reverse value: only bet longshots where Pinnacle is less efficient
+MIN_REVERSE_ODDS = 3.50
+
+# Reverse value: maximum odds to avoid extreme longshot noise
+MAX_REVERSE_ODDS = 15.0
 
 
 @dataclass
@@ -393,6 +403,121 @@ class OpportunityScanner:
             f"({sum(1 for o in opportunities if o.guaranteed_profit_pct > 0)} guaranteed profit)"
         )
         return opportunities
+
+    def scan_reverse_value(self, min_edge_pct: float = 3.0) -> list[ValueBet]:
+        """
+        Find reverse value bets: Pinnacle odds beating soft book consensus.
+
+        Uses platform-weighted harmonic mean of devigged soft books as
+        the fair odds source. Only considers 1x2/moneyline markets where
+        Pinnacle offers odds >= MIN_REVERSE_ODDS (longshots where Pinnacle
+        is less efficient).
+
+        Requires MIN_CONSENSUS_PLATFORMS independent pricing sources.
+
+        Args:
+            min_edge_pct: Minimum edge percentage (default 3%)
+
+        Returns:
+            List of ValueBet (provider="pinnacle") sorted by edge
+        """
+        opportunities = []
+
+        events = self._get_multi_provider_events(min_providers=2)
+
+        for event in events:
+            odds_grouped = self.group_odds(event)
+
+            for market, odds_by_outcome in odds_grouped.items():
+                # Only 1x2 and moneyline — no spread/total (point matching issues)
+                base_market = market.split("_")[0] if "_" in market else market
+                if base_market not in ("1x2", "moneyline"):
+                    continue
+
+                values = self.find_reverse_value_in_market(
+                    event_id=event.id,
+                    market=market,
+                    odds_by_outcome=odds_by_outcome,
+                    min_edge_pct=min_edge_pct,
+                )
+                opportunities.extend(values)
+
+        opportunities.sort(key=lambda x: x.edge_pct, reverse=True)
+
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} reverse value bets "
+            f"(>={min_edge_pct}% edge, Pinnacle vs consensus)"
+        )
+        return opportunities
+
+    def find_reverse_value_in_market(
+        self,
+        event_id: str,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]],
+        min_edge_pct: float,
+    ) -> list[ValueBet]:
+        """Find reverse value bets in a single market: Pinnacle raw vs soft consensus."""
+        values = []
+
+        # Need Pinnacle odds
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
+        if len(pinnacle_market) < 2:
+            return []
+
+        # Odds discrepancy check (same as regular value scan)
+        for outcome, provider_odds_list in odds_by_outcome.items():
+            if len(provider_odds_list) >= 3:
+                odds_values = [po["odds"] for po in provider_odds_list]
+                odds_ratio = max(odds_values) / min(odds_values)
+                if odds_ratio > MAX_ODDS_RATIO:
+                    return []
+
+        for outcome in pinnacle_market:
+            pin_raw = pinnacle_market[outcome]
+
+            # Only longshots where Pinnacle is less efficient
+            if pin_raw < MIN_REVERSE_ODDS or pin_raw > MAX_REVERSE_ODDS:
+                continue
+
+            # Compute consensus fair odds from soft book platforms
+            consensus_result = compute_consensus_fair_odds(
+                outcome=outcome,
+                odds_by_outcome=odds_by_outcome,
+                platform_map=PLATFORM_MAP,
+                sharp_providers=SHARP_PROVIDERS,
+                min_platforms=MIN_CONSENSUS_PLATFORMS,
+            )
+
+            if consensus_result is None:
+                continue
+
+            consensus_fair, n_platforms = consensus_result
+
+            if consensus_fair <= 1:
+                continue
+
+            # Edge: Pinnacle raw odds vs consensus fair
+            vb = find_value(
+                event_id=event_id,
+                market=market,
+                outcome=outcome,
+                provider="pinnacle",
+                provider_odds=pin_raw,
+                fair_odds=consensus_fair,
+                min_edge_pct=min_edge_pct,
+            )
+
+            if vb and vb.edge_pct <= MAX_EDGE_PCT:
+                values.append(vb)
+
+        return values
 
     def _find_dutch_in_market(
         self,

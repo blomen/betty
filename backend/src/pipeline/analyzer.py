@@ -89,6 +89,7 @@ class OpportunityAnalyzer:
             "value": {"found": 0, "new": 0},
             "dutch": {"found": 0, "new": 0},
             "reverse": {"found": 0, "new": 0},
+            "reverse_value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
             "cleanup": cleanup_stats
         }
@@ -110,13 +111,19 @@ class OpportunityAnalyzer:
                 results["reverse"]["found"] += dutch_count["reverse_found"]
                 results["reverse"]["new"] += dutch_count["reverse_new"]
 
+                # Detect reverse value (Pinnacle vs soft consensus)
+                rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome)
+                results["reverse_value"]["found"] += rv_count["found"]
+                results["reverse_value"]["new"] += rv_count["new"]
+
         self.session.commit()
 
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
             f"{results['value']['found']} value bets, "
             f"{results['dutch']['found']} dutch, "
-            f"{results['reverse']['found']} reverse"
+            f"{results['reverse']['found']} reverse, "
+            f"{results['reverse_value']['found']} reverse_value"
         )
 
         return results
@@ -263,6 +270,81 @@ class OpportunityAnalyzer:
                 provider_id=vb.provider,
                 provider_odds=vb.provider_odds,
                 fair_odds=vb.fair_odds,
+                edge_pct=vb.edge_pct,
+                outcomes_json=outcomes_json,
+                point=point_value,
+            )
+            if is_new:
+                result["new"] += 1
+
+        return result
+
+    def _detect_reverse_value(
+        self,
+        event_id: str,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]],
+    ) -> dict:
+        """
+        Detect reverse value opportunities: Pinnacle raw odds vs soft consensus.
+
+        Delegates to scanner.find_reverse_value_in_market() which applies:
+        - MIN_REVERSE_ODDS / MAX_REVERSE_ODDS filters (longshots only)
+        - MIN_CONSENSUS_PLATFORMS (5+ independent platforms)
+        - MAX_ODDS_RATIO discrepancy check
+        - MAX_EDGE_PCT cap
+
+        Returns:
+            {"found": int, "new": int}
+        """
+        result = {"found": 0, "new": 0}
+
+        reverse_bets = self.scanner.find_reverse_value_in_market(
+            event_id=event_id,
+            market=market,
+            odds_by_outcome=odds_by_outcome,
+            min_edge_pct=self.min_edge_pct,
+        )
+
+        if not reverse_bets:
+            return result
+
+        for vb in reverse_bets:
+            result["found"] += 1
+
+            # Extract point value from market key if present
+            point_value = None
+            clean_market = market
+            if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
+                parts = market.rsplit("_", 1)
+                if len(parts) == 2:
+                    try:
+                        point_value = float(parts[-1])
+                        clean_market = parts[0]
+                    except ValueError:
+                        pass
+
+            outcomes_json = [
+                {
+                    "provider": "pinnacle",
+                    "outcome": vb.outcome,
+                    "odds": vb.provider_odds,
+                    "edge_pct": vb.edge_pct,
+                },
+                {
+                    "provider": "consensus",
+                    "outcome": vb.outcome,
+                    "odds": vb.fair_odds,
+                    "is_fair_odds": True,
+                }
+            ]
+
+            is_new = self.opp_repo.upsert_reverse_value(
+                event_id=event_id,
+                market=clean_market,
+                outcome=vb.outcome,
+                pinnacle_odds=vb.provider_odds,
+                consensus_fair_odds=vb.fair_odds,
                 edge_pct=vb.edge_pct,
                 outcomes_json=outcomes_json,
                 point=point_value,

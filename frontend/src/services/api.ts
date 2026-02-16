@@ -502,7 +502,7 @@ export const api = {
 
   // ============ Opportunities ============
   async getOpportunities(
-    type?: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse',
+    type?: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value',
     activeOnly = true,
     provider1?: string,
     provider2?: string,

@@ -31,6 +31,7 @@ export default {
         tabBankroll: '#EC4899',
         tabProfiles: '#7C3AED',
         tabPolymarket: '#A855F7',
+        tabReverse: '#EF5350',
         tabStats: '#9AA0A6',
       },
       fontFamily: {

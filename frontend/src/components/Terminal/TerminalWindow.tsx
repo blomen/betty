@@ -6,6 +6,7 @@ import { ExtractionProgressBar } from './ExtractionProgressBar';
 import {
   ValuePage,
   DutchPage,
+  ReversePage,
   PolymarketPage,
   BetsPage,
   BankrollPage,
@@ -45,6 +46,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <ValuePage providers={context.providers} />;
       case 'dutch':
         return <DutchPage />;
+      case 'reverse':
+        return <ReversePage />;
       case 'polymarket':
         return <PolymarketPage />;
       case 'stats':

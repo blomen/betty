@@ -63,6 +63,12 @@ class BankrollService:
         # Combine betting profit + bonus profit into one total
         combined_profit = total_profit + bonus_profit
 
+        # CLV metrics
+        clv_values = [b.clv_pct for b in bets if b.clv_pct is not None]
+        clv_count = len(clv_values)
+        avg_clv = round(sum(clv_values) / clv_count, 2) if clv_count > 0 else 0
+        clv_positive_pct = round(len([v for v in clv_values if v > 0]) / clv_count * 100, 1) if clv_count > 0 else 0
+
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
@@ -75,6 +81,9 @@ class BankrollService:
             "bonus_profit": round(bonus_profit, 2),
             "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
             "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
+            "avg_clv": avg_clv,
+            "clv_positive_pct": clv_positive_pct,
+            "clv_count": clv_count,
         }
 
     def get_exposure(self) -> dict:

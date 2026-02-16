@@ -23,7 +23,7 @@ export interface BettingContext {
 // Opportunities (Arbitrage + Value + Bonus)
 export interface Opportunity {
   id: number;
-  type: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse';
+  type: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value';
   event_id: string;
   market: string;
   provider1: string;
@@ -152,6 +152,9 @@ export interface BankrollStats {
   bonus_profit: number;
   roi_pct: number;
   win_rate: number;
+  avg_clv: number;
+  clv_positive_pct: number;
+  clv_count: number;
 }
 
 // Bets
@@ -172,6 +175,8 @@ export interface Bet {
   placed_at: string;
   home_team?: string | null;
   away_team?: string | null;
+  clv_pct?: number | null;
+  closing_odds?: number | null;
 }
 
 // Profile

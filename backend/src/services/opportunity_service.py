@@ -47,10 +47,10 @@ class OpportunityService:
             exclude_provider1=None if provider1 else "polymarket",
         )
 
-        # Initialize stake calculator for value/dutch/reverse bets using profile risk settings
+        # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
         stake_calculator = None
         profile = None
-        if type in ('value', 'dutch', 'reverse') and rows:
+        if type in ('value', 'dutch', 'reverse', 'reverse_value') and rows:
             try:
                 profile = self.profile_repo.get_active()
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
@@ -96,6 +96,10 @@ class OpportunityService:
             # Add dutch/reverse-specific fields
             if type in ('dutch', 'reverse') and stake_calculator and profile:
                 self._add_dutch_recommendation(result, opp, profile, stake_calculator)
+
+            # Add stake recommendations for reverse value bets (Pinnacle vs consensus)
+            if type == 'reverse_value' and stake_calculator and profile and opp.odds1 and opp.odds2:
+                self._add_reverse_value_recommendation(result, opp, stake_calculator)
 
             results.append(result)
 
@@ -364,3 +368,26 @@ class OpportunityService:
             result["total_stake"] = 0
             result["legs"] = opp.outcomes or []
             result["trigger_provider"] = None
+
+    def _add_reverse_value_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
+        """Add stake recommendation for reverse value bets (Pinnacle vs consensus)."""
+        try:
+            edge_raw = (opp.odds1 / opp.odds2 - 1) if opp.odds2 > 1 else 0
+
+            stake_rec = stake_calculator.calculate(
+                edge_raw=edge_raw,
+                odds=opp.odds1,
+                event_id=opp.event_id,
+                provider_id="pinnacle",
+            )
+            result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+            result["final_stake"] = round(stake_rec.stake, 2)
+            result["kelly_fraction"] = stake_rec.kelly_fraction
+            result["skip_reason"] = stake_rec.skip_reason
+
+        except Exception as e:
+            logger.debug(f"Reverse value stake calculation failed for opp {opp.id}: {e}")
+            result["suggested_stake"] = None
+            result["final_stake"] = None
+            result["kelly_fraction"] = None
+            result["skip_reason"] = None

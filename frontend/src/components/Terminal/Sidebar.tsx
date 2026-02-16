@@ -1,4 +1,4 @@
-export type TabName = 'value' | 'dutch' | 'polymarket' | 'stats' | 'bankroll' | 'specials' | 'profiles';
+export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'specials' | 'profiles';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {

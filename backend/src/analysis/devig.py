@@ -186,6 +186,81 @@ def get_fair_odds_for_outcome(
     return fair_list[outcome_idx]
 
 
+def compute_consensus_fair_odds(
+    outcome: str,
+    odds_by_outcome: dict[str, list[dict]],
+    platform_map: dict[str, str],
+    sharp_providers: set[str] = frozenset({'pinnacle'}),
+    min_platforms: int = 5,
+) -> tuple[float, int] | None:
+    """
+    Compute fair odds from platform-weighted harmonic mean of soft books.
+
+    Each platform contributes ONE devigged odds value (average if multiple
+    providers on same platform). Then harmonic mean across platforms.
+
+    Args:
+        outcome: The outcome to get consensus for ("home", "away", etc.)
+        odds_by_outcome: {outcome: [{provider, odds}, ...]}
+        platform_map: {provider_id: platform_name}
+        sharp_providers: Providers to exclude (Pinnacle, etc.)
+        min_platforms: Minimum independent platforms required
+
+    Returns:
+        (consensus_fair_odds, n_platforms) or None if insufficient data
+    """
+    all_outcomes = list(odds_by_outcome.keys())
+    if len(all_outcomes) < 2:
+        return None
+
+    # Build per-provider full markets (need all outcomes to devig)
+    provider_markets: dict[str, dict[str, float]] = {}
+    for out, providers in odds_by_outcome.items():
+        for p in providers:
+            pid = p["provider"]
+            if pid in sharp_providers or pid == "polymarket":
+                continue
+            if pid not in provider_markets:
+                provider_markets[pid] = {}
+            provider_markets[pid][out] = p["odds"]
+
+    # Devig each provider that has full market coverage, group by platform
+    platform_devigged: dict[str, list[float]] = {}
+    for pid, p_market in provider_markets.items():
+        if len(p_market) != len(all_outcomes):
+            continue  # Incomplete market, can't devig
+
+        p_odds_list = [p_market[o] for o in all_outcomes]
+        if any(o <= 1 for o in p_odds_list):
+            continue
+
+        margin = sum(1.0 / o for o in p_odds_list) - 1
+        scale = 1 + margin
+        fair = p_market[outcome] * scale
+
+        if fair <= 1:
+            continue
+
+        platform = platform_map.get(pid, pid)
+        if platform not in platform_devigged:
+            platform_devigged[platform] = []
+        platform_devigged[platform].append(fair)
+
+    if len(platform_devigged) < min_platforms:
+        return None
+
+    # One value per platform (average within platform)
+    platform_values = []
+    for values in platform_devigged.values():
+        platform_values.append(sum(values) / len(values))
+
+    # Harmonic mean
+    n = len(platform_values)
+    hm = n / sum(1.0 / v for v in platform_values)
+
+    return (hm, n)
+
+
 # Quick test
 if __name__ == "__main__":
     print("=== De-vig Examples ===\n")

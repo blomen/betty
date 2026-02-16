@@ -266,6 +266,57 @@ class OpportunityRepo:
             self.db.add(opp)
             return True
 
+    def upsert_reverse_value(
+        self,
+        event_id: str,
+        market: str,
+        outcome: str,
+        pinnacle_odds: float,
+        consensus_fair_odds: float,
+        edge_pct: float,
+        outcomes_json: list[dict],
+        point: float | None = None,
+    ) -> bool:
+        """Upsert a reverse value opportunity (Pinnacle vs consensus). Returns True if new."""
+        existing = self.db.query(Opportunity).filter(
+            Opportunity.event_id == event_id,
+            Opportunity.market == market,
+            Opportunity.type == "reverse_value",
+            Opportunity.outcome1 == outcome,
+        ).first()
+
+        now = datetime.now(timezone.utc)
+
+        if existing:
+            existing.is_active = True
+            existing.edge_pct = edge_pct
+            existing.provider1_id = "pinnacle"
+            existing.odds1 = pinnacle_odds
+            existing.provider2_id = "consensus"
+            existing.odds2 = consensus_fair_odds
+            existing.outcomes = outcomes_json
+            existing.point = point
+            existing.detected_at = now
+            return False
+        else:
+            opp = Opportunity(
+                type="reverse_value",
+                event_id=event_id,
+                market=market,
+                outcome1=outcome,
+                edge_pct=edge_pct,
+                provider1_id="pinnacle",
+                odds1=pinnacle_odds,
+                provider2_id="consensus",
+                odds2=consensus_fair_odds,
+                outcomes=outcomes_json,
+                point=point,
+                is_active=True,
+                detected_at=now,
+            )
+            self.db.add(opp)
+            return True
+
     def cleanup_stale(self) -> dict:
         """
         Clean up stale data from database.

@@ -90,6 +90,100 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   );
 }
 
+function CLVChart({ bets }: { bets: Bet[] }) {
+  const data = useMemo(() => {
+    return bets
+      .filter(b => b.result !== 'pending' && b.clv_pct != null)
+      .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime())
+      .map(b => ({ date: new Date(b.placed_at), clv: b.clv_pct! }));
+  }, [bets]);
+
+  if (data.length < 5) return null;
+
+  const W = 600;
+  const H = 140;
+  const PX = 40;
+  const PR = 12;
+  const PY = 16;
+
+  const clvValues = data.map(d => d.clv);
+  const absMax = Math.max(Math.abs(Math.min(...clvValues)), Math.abs(Math.max(...clvValues)), 5);
+  const minVal = -absMax;
+  const maxVal = absMax;
+  const range = maxVal - minVal || 1;
+  const minDate = data[0].date.getTime();
+  const maxDate = data[data.length - 1].date.getTime();
+  const dateRange = maxDate - minDate || 1;
+
+  const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
+  const y = (v: number) => PY + (1 - (v - minVal) / range) * (H - PY * 2);
+
+  const zeroY = y(0);
+
+  // Running average (last 20 bets)
+  const windowSize = Math.min(20, Math.ceil(data.length / 3));
+  const avgPoints: { date: Date; avg: number }[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const start = Math.max(0, i - windowSize + 1);
+    const window = data.slice(start, i + 1);
+    const avg = window.reduce((s, d) => s + d.clv, 0) / window.length;
+    avgPoints.push({ date: data[i].date, avg });
+  }
+  const avgPathD = avgPoints
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.date).toFixed(1)},${y(p.avg).toFixed(1)}`)
+    .join(' ');
+
+  const lastAvg = avgPoints[avgPoints.length - 1].avg;
+  const isPositive = lastAvg >= 0;
+
+  // Y-axis labels
+  const yLabels = [minVal, 0, maxVal].map(v => ({
+    label: `${v > 0 ? '+' : ''}${v.toFixed(0)}%`,
+    yPos: y(v),
+  }));
+
+  return (
+    <div className="border border-border bg-panel">
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+        <span className="text-[10px] text-muted uppercase tracking-wider">CLV Trend</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-muted">{data.length} bets</span>
+          <span className={`text-sm font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
+            {lastAvg >= 0 ? '+' : ''}{lastAvg.toFixed(1)}% avg
+          </span>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
+        {/* Grid lines */}
+        {yLabels.map((l, i) => (
+          <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="currentColor" className="text-border" strokeWidth="0.5" />
+        ))}
+        {/* Y labels */}
+        {yLabels.map((l, i) => (
+          <text key={`t${i}`} x={PX - 4} y={l.yPos + 3} textAnchor="end" fill="currentColor" className="text-muted2" fontSize="9">{l.label}</text>
+        ))}
+        {/* Zero line (thicker) */}
+        <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="currentColor" className="text-muted2" strokeWidth="0.8" strokeDasharray="4,3" />
+        {/* Scatter dots */}
+        {data.map((d, i) => (
+          <circle
+            key={i}
+            cx={x(d.date)}
+            cy={y(d.clv)}
+            r="2"
+            fill={d.clv >= 0 ? '#10b981' : '#ef4444'}
+            fillOpacity="0.5"
+          />
+        ))}
+        {/* Running average line */}
+        <path d={avgPathD} fill="none" stroke="#4FC3F7" strokeWidth="1.5" strokeLinejoin="round" />
+        {/* Endpoint dot */}
+        <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="2.5" fill="#4FC3F7" />
+      </svg>
+    </div>
+  );
+}
+
 export function BetsPage() {
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
@@ -222,7 +316,7 @@ export function BetsPage() {
       {/* Stats Summary */}
       {bankrollStats && (
         <div className="border-l-2 border-tabBets">
-          <div className="grid grid-cols-4 gap-px bg-border border border-border">
+          <div className="grid grid-cols-5 gap-px bg-border border border-border">
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Bets</div>
               <div className="text-text text-lg font-semibold">{bankrollStats.total_bets}</div>
@@ -249,6 +343,22 @@ export function BetsPage() {
                 {bankrollStats.total_profit >= 0 ? '+' : ''}{bankrollStats.total_profit.toFixed(0)} kr
               </div>
             </div>
+            <div className="bg-panel2 px-3 py-2.5">
+              <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Avg CLV</div>
+              {bankrollStats.clv_count > 0 ? (
+                <>
+                  <div className={`text-lg font-semibold ${bankrollStats.avg_clv >= 0 ? 'text-success' : 'text-error'}`}>
+                    {bankrollStats.avg_clv >= 0 ? '+' : ''}{bankrollStats.avg_clv.toFixed(1)}%
+                  </div>
+                  <div className="text-[10px] text-muted">{bankrollStats.clv_positive_pct.toFixed(0)}% beat close</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-lg font-semibold text-muted">-</div>
+                  <div className="text-[10px] text-muted">No CLV data</div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -257,6 +367,9 @@ export function BetsPage() {
       {bets.length > 0 && currentBankroll > 0 && (
         <BankrollChart bets={bets} currentBankroll={currentBankroll} />
       )}
+
+      {/* CLV Trend Chart */}
+      <CLVChart bets={bets} />
 
       {/* Active Bonuses */}
       {activeBonuses.length > 0 && (
@@ -419,6 +532,7 @@ export function BetsPage() {
               <th className="text-right">Odds</th>
               <th className="text-right">Stake</th>
               <th className="text-right">Profit</th>
+              <th className="text-right">CLV</th>
               <th className="text-right">Status</th>
             </tr>
           </thead>
@@ -443,29 +557,49 @@ export function BetsPage() {
                       </span>
                     </td>
                     <td className="text-right">
+                      {bet.clv_pct != null ? (
+                        <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                          {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-sm text-muted">-</span>
+                      )}
+                    </td>
+                    <td className="text-right">
                       <span className={`text-sm capitalize ${getStatusColor(bet.result)}`}>{bet.result}</span>
                     </td>
                   </tr>
-                  {isExpanded && bet.result === 'pending' && (
+                  {isExpanded && (
                     <tr key={`${bet.id}-expanded`}>
-                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
                         <div className="px-3 py-2 bg-panel flex items-center justify-between gap-6">
                           <div className="flex items-center gap-6 text-xs text-muted">
                             <div>
                               <span className="text-muted2 uppercase tracking-wider">Market: </span>
                               <span className="text-text">{bet.market || '-'}</span>
                             </div>
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Potential: </span>
-                              <span className="text-text">{(bet.stake * bet.odds).toFixed(0)} kr</span>
-                              <span className="text-accent text-xs ml-1">(+{(bet.stake * bet.odds - bet.stake).toFixed(0)})</span>
+                            {bet.result === 'pending' && (
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Potential: </span>
+                                <span className="text-text">{(bet.stake * bet.odds).toFixed(0)} kr</span>
+                                <span className="text-accent text-xs ml-1">(+{(bet.stake * bet.odds - bet.stake).toFixed(0)})</span>
+                              </div>
+                            )}
+                            {bet.closing_odds != null && (
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Close: </span>
+                                <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
+                                <span className="text-muted2 ml-1">({bet.odds.toFixed(2)} placed)</span>
+                              </div>
+                            )}
+                          </div>
+                          {bet.result === 'pending' && (
+                            <div className="flex gap-2">
+                              <button onClick={() => settleBet(bet.id, 'won')} className="px-3 py-1.5 text-xs font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">Won</button>
+                              <button onClick={() => settleBet(bet.id, 'lost')} className="px-3 py-1.5 text-xs font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">Lost</button>
+                              <button onClick={() => settleBet(bet.id, 'void')} className="px-3 py-1.5 text-xs font-medium bg-panel2 text-muted hover:bg-border transition-colors">Void</button>
                             </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button onClick={() => settleBet(bet.id, 'won')} className="px-3 py-1.5 text-xs font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">Won</button>
-                            <button onClick={() => settleBet(bet.id, 'lost')} className="px-3 py-1.5 text-xs font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">Lost</button>
-                            <button onClick={() => settleBet(bet.id, 'void')} className="px-3 py-1.5 text-xs font-medium bg-panel2 text-muted hover:bg-border transition-colors">Void</button>
-                          </div>
+                          )}
                         </div>
                       </td>
                     </tr>

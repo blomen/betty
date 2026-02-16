@@ -17,6 +17,9 @@ export function useBankroll(refreshInterval = 30000) {
     bonus_profit: 0,
     roi_pct: 0,
     win_rate: 0,
+    avg_clv: 0,
+    clv_positive_pct: 0,
+    clv_count: 0,
   });
   const [exposure, setExposure] = useState<BankrollExposure>({
     total_balance: 0,
