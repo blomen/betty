@@ -625,7 +625,7 @@ class InterwettenRetriever(BrowserRetriever):
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 5  # Conservative for headed mode stability
+    CONCURRENT_DETAIL_PAGES = 8  # Increase parallelism for detail page enrichment
 
     async def _enrich_with_detail_markets(
         self,
@@ -672,12 +672,12 @@ class InterwettenRetriever(BrowserRetriever):
             try:
                 async with sem:
                     url = f"{self.base_url}{href}"
-                    resp = await worker_page.goto(url, wait_until="load", timeout=20000)
+                    resp = await worker_page.goto(url, wait_until="domcontentloaded", timeout=12000)
                     if not resp or resp.status != 200:
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(150)
+                    await worker_page.wait_for_timeout(100)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []

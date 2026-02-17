@@ -416,9 +416,9 @@ class TenBetRetriever(BrowserRetriever):
         if not home or not away:
             return None
 
-        # Parse markets (dedup: only first market per type)
+        # Parse markets (dedup winner markets only; allow multiple spread/total lines)
         all_markets = []
-        seen_types = set()
+        seen_winner_types = set()
 
         for market_data in item.get('markets', []):
             market_type = market_data.get('type', '')
@@ -428,9 +428,15 @@ class TenBetRetriever(BrowserRetriever):
             parsed_market = self._parse_market(
                 market_type, prices, info_texts, home_raw, away_raw
             )
-            if parsed_market and parsed_market['type'] not in seen_types:
-                all_markets.append(parsed_market)
-                seen_types.add(parsed_market['type'])
+            if not parsed_market:
+                continue
+            ptype = parsed_market['type']
+            # Dedup only winner markets (1x2/moneyline); allow multiple spread/total lines
+            if ptype in ("1x2", "moneyline"):
+                if ptype in seen_winner_types:
+                    continue
+                seen_winner_types.add(ptype)
+            all_markets.append(parsed_market)
 
         if not all_markets:
             return None
@@ -481,7 +487,8 @@ class TenBetRetriever(BrowserRetriever):
 
         canonical = MARKET_TYPE_MAP.get(market_type)
         if not canonical:
-            # Unknown/unsupported market type (e.g. "undefined")
+            if market_type and market_type != "undefined":
+                logger.debug(f"[{self.provider_id}] Unknown DOM market type: '{market_type}' prices={prices[:2]} info={info_texts[:2]}")
             return None
 
         try:
@@ -538,6 +545,7 @@ class TenBetRetriever(BrowserRetriever):
         # Extract point value from info texts
         point = self._extract_point_value(info_texts)
         if point is None:
+            logger.debug(f"[{self.provider_id}] Total market missing point: prices={prices} info_texts={info_texts}")
             return None
 
         return {
@@ -559,6 +567,7 @@ class TenBetRetriever(BrowserRetriever):
         # Extract point value from info texts
         point = self._extract_point_value(info_texts)
         if point is None:
+            logger.debug(f"[{self.provider_id}] Spread market missing point: prices={prices} info_texts={info_texts}")
             return None
 
         # 3-way handicap (HCMR) has home/draw/away -- take first and last

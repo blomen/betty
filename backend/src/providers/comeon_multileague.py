@@ -279,10 +279,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
             if date_labels:
                 logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
+                # Batch click: click each date quickly with minimal gap,
+                # then do a single wait for all WS responses to arrive.
+                ws_before = len(ws_messages)
+                clicked_count = 0
                 for label in date_labels:
                     try:
-                        ws_before = len(ws_messages)
-                        # Find and click button by its exact text content (DOM-safe)
                         clicked = await page.evaluate('''(targetLabel) => {
                             const btns = document.querySelectorAll('button');
                             for (const btn of btns) {
@@ -293,18 +295,27 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                             }
                             return false;
                         }''', label)
-
                         if clicked:
-                            # Adaptive wait: min 0.5s, poll for WS data, max 2.0s
-                            await asyncio.sleep(0.5)
-                            elapsed = 0.5
-                            while len(ws_messages) == ws_before and elapsed < 2.0:
-                                await asyncio.sleep(0.1)
-                                elapsed += 0.1
-                            # Collect new events from WS
-                            self._collect_ws_events(ws_messages, all_events_data)
+                            clicked_count += 1
+                            await asyncio.sleep(0.05)  # Tiny gap between clicks
                     except Exception as e:
                         logger.debug(f"[{self.provider_id}] Date button '{label}' failed: {e}")
+
+                if clicked_count > 0:
+                    # Single adaptive wait for all WS data to arrive
+                    await asyncio.sleep(1.0)
+                    elapsed = 1.0
+                    last_count = len(ws_messages)
+                    while elapsed < 4.0:
+                        await asyncio.sleep(0.3)
+                        elapsed += 0.3
+                        new_count = len(ws_messages)
+                        if new_count > last_count:
+                            last_count = new_count
+                        elif elapsed > 2.0:
+                            break  # No new data for 0.3s after 2s — done
+                    self._collect_ws_events(ws_messages, all_events_data)
+                    logger.debug(f"[{self.provider_id}] Batch clicked {clicked_count} dates, got {len(ws_messages) - ws_before} new WS messages")
 
             logger.debug(f"[{self.provider_id}] Total events after date scan: {len(all_events_data)}")
 

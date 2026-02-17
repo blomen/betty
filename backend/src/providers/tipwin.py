@@ -434,8 +434,12 @@ class TipwinRetriever(BrowserRetriever):
             abrv = btype.get('abrv', '')
 
             market_type = self.MARKET_ABRV_MAP.get(abrv)
-            if not market_type or market_type in seen_types:
+            if not market_type:
+                if abrv:
+                    logger.debug(f"[{self.provider_id}] Unknown market abrv: '{abrv}' (btype_id={btype_id})")
                 continue
+            if market_type in seen_types and market_type in ("1x2", "moneyline"):
+                continue  # Dedup winner markets only; allow multiple spread/total lines
 
             outcomes = []
             inner_offers = market_offer.get('offers', [])

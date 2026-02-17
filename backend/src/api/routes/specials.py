@@ -73,27 +73,83 @@ def _enrich_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
         pinnacle_markets[sport][event_key][odds_row.outcome] = odds_row.odds
 
-    # Keywords indicating combo/prop markets that can't be compared to 1x2
+    # Keywords indicating combo/prop/non-1x2 markets that can't be compared to match winner.
+    # Only boosts on the simple match winner (1x2/moneyline) can be EV-analyzed vs Pinnacle.
     PROP_KEYWORDS = {
+        # Player/team scoring props
         "målgörare", "goalscorer", "first goal", "första mål",
-        "antal mål", "over", "under", "över", "btts",
-        "båda lagen", "both teams", "resultat +", "result +",
-        "tidpunkt", "time of", "kort", "card", "hörna", "corner",
-        "poäng", "points", "assist", "rebound",
+        "gör mål", "scores", "to score",
+        "assist", "rebound", "poäng", "points",
+        "skott", "shot",
+        # Combo/multi-leg markers
+        "båda lagen", "both teams", "btts",
+        "resultat +", "result +",
+        " & ",  # Combo indicator: "1x2 & BTTS"
+        # Game props — different market type
+        "kort", "card", "hörna", "corner",
+        "tidpunkt", "time of",
+        # Over/under, totals, handicaps — different market from 1x2
+        "antal mål", "antal", "over", "under", "över",
+        "halvtid", "fulltid", "halftime", "fulltime",
+        "1:a halvlek", "first half", "halvlek",
+        "handikapp", "handicap",
+        "rätt resultat", "correct score",
+        "båda halvlekarna", "both halves",
+        "period med", "period with",
+        # Clean sheet / specific player/team stats
+        "nollan", "clean sheet", "håller nollan",
+        "spelarens", "player",
     }
+
+    # Keywords that indicate the boost IS on a match-winner selection (keep these)
+    MATCH_WINNER_LABELS = {"match result", "1x2", "to qualify", "att kvalificera",
+                           "vinner matchen", "to win", "att vinna"}
+
+    def _fix_encoding(text: str) -> str:
+        """Fix double-encoded UTF-8 (e.g., 'mÃ¥lgÃ¶rare' → 'målgörare').
+
+        Tries latin-1 → utf-8 roundtrip. Only uses fixed version if it
+        actually reduces the number of high-codepoint characters.
+        Also handles Windows cp1252 double-encoding.
+        """
+        for encoding in ("latin-1", "cp1252"):
+            try:
+                fixed = text.encode(encoding).decode("utf-8")
+                high_orig = sum(1 for c in text if ord(c) > 127)
+                high_fixed = sum(1 for c in fixed if ord(c) > 127)
+                if high_fixed < high_orig:
+                    return fixed
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                continue
+        return text
+
+    enriched_count = 0
 
     # Enrich each special
     for special in specials:
         boosted_odds = special.get("boosted_odds")
-        event_name = special.get("event", "")
+        event_name = _fix_encoding(special.get("event", ""))
         sport = special.get("sport", "unknown")
 
         if not boosted_odds or not event_name or sport == "unknown":
             continue
 
         # Skip combo/prop boosts — these can't be compared to 1x2/moneyline
-        title_lower = (special.get("title", "") + " " + special.get("market_label", "")).lower()
-        if any(kw in title_lower for kw in PROP_KEYWORDS):
+        title_lower = _fix_encoding(
+            special.get("title", "") + " " + special.get("market_label", "")
+        ).lower()
+
+        # Allow through ONLY if market label is PURELY about match winner
+        # (not a combo like "1x2 & BTTS")
+        market_label_lower = _fix_encoding(special.get("market_label", "")).lower()
+        is_match_winner = (
+            any(mw in market_label_lower for mw in MATCH_WINNER_LABELS)
+            and " & " not in market_label_lower
+            and ", " not in market_label_lower  # Comma-separated combos like "1x2, BTTS"
+            and not any(kw in market_label_lower for kw in PROP_KEYWORDS)
+        )
+
+        if not is_match_winner and any(kw in title_lower for kw in PROP_KEYWORDS):
             continue
 
         # Parse event name to get teams
@@ -124,25 +180,41 @@ def _enrich_with_ev(specials: list[dict], db: Session) -> list[dict]:
         if not pin_market or len(pin_market) < 2:
             continue
 
-        # The boost is on a specific selection — we need to figure out which outcome
-        # For single-selection boosts, the title/selection maps to home/away/draw
-        # We compute fair odds for ALL outcomes and use the one closest to original_odds
+        # The boost is on a specific selection — figure out which outcome.
+        # Use original_odds if available; otherwise use Pinnacle odds + title hints.
         original_odds = special.get("original_odds")
-        if not original_odds:
-            continue
 
-        # Find the outcome whose Pinnacle odds are closest to original_odds
         best_outcome = None
         best_diff = float("inf")
-        for outcome, pin_odds in pin_market.items():
-            diff = abs(pin_odds - original_odds)
-            if diff < best_diff:
-                best_diff = diff
-                best_outcome = outcome
 
-        if not best_outcome or best_diff > 1.5:
-            # Too far off — likely wrong event or prop market
-            continue
+        if original_odds:
+            # Find the outcome whose Pinnacle odds are closest to original_odds
+            for outcome, pin_odds in pin_market.items():
+                diff = abs(pin_odds - original_odds)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_outcome = outcome
+
+            if not best_outcome or best_diff > 1.5:
+                continue
+        else:
+            # No original_odds (Kambi, VBet, ComeOn) — infer outcome from title.
+            # Check if title contains home or away team name.
+            home_in_title = home_norm and home_norm in title_lower
+            away_in_title = away_norm and away_norm in title_lower
+
+            if home_in_title and not away_in_title:
+                best_outcome = "home"
+            elif away_in_title and not home_in_title:
+                best_outcome = "away"
+            elif "draw" in title_lower or "oavgjort" in title_lower:
+                best_outcome = "draw"
+            else:
+                # Can't determine which outcome — skip
+                continue
+
+            if best_outcome not in pin_market:
+                continue
 
         # De-vig to get fair odds
         fair_odds = get_fair_odds_for_outcome(best_outcome, pin_market, method="multiplicative")
@@ -151,6 +223,11 @@ def _enrich_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
         # Calculate edge vs fair line
         edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
+
+        # Sanity check: edge > 100% almost certainly means wrong match
+        if edge_pct > 100:
+            continue
+
         ev_per_unit = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
 
         special["edge_pct"] = edge_pct
@@ -161,7 +238,9 @@ def _enrich_with_ev(specials: list[dict], db: Session) -> list[dict]:
         info = event_info.get(event_key, {})
         special["matched_event_id"] = info.get("event_id")
         special["matched_market"] = info.get("market")
+        enriched_count += 1
 
+    logger.info(f"EV enrichment: {enriched_count}/{len(specials)} specials matched to Pinnacle")
     return specials
 
 
