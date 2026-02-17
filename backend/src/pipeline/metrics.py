@@ -54,6 +54,7 @@ class ProviderMetrics:
     end_time: Optional[float] = None
     duration_seconds: float = 0.0
     sports: Dict[str, SportMetrics] = field(default_factory=dict)
+    total_sports_configured: int = 0  # Total sports this provider will extract
     retries: int = 0
     cache_hits: int = 0
     rate_limit_hits: int = 0  # 429 errors encountered
@@ -366,6 +367,12 @@ class MetricsCollector:
             if self._current_run:
                 return self._current_run.start_provider(provider_id)
             return None
+
+    def set_provider_total_sports(self, provider_id: str, total: int):
+        """Set the total number of configured sports for a provider."""
+        with self._lock:
+            if self._current_run and provider_id in self._current_run.providers:
+                self._current_run.providers[provider_id].total_sports_configured = total
 
     def end_provider(
         self,

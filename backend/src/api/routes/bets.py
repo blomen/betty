@@ -12,7 +12,7 @@ from ...analysis.devig import get_fair_odds_for_outcome
 from ...risk.calculator import RiskCalculator
 from ...risk.stake_noise import StakeNoiseInjector
 from ..deps import get_db
-from ..schemas import BetCreate, BetUpdate, AutoPlaceBetRequest
+from ..schemas import BetCreate, BetUpdate, AutoPlaceBetRequest, BatchBetCreate
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,41 @@ async def list_bets(
         events = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events}
 
+    # Pre-fetch Pinnacle odds for de-vigging (compute edge/prob on the fly)
+    pinnacle_map: dict[tuple[str, str], dict[str, float]] = {}  # (event_id, market) -> {outcome: odds}
+    if event_ids:
+        pin_rows = (
+            db.query(Odds)
+            .filter(
+                Odds.event_id.in_(event_ids),
+                Odds.provider_id == "pinnacle",
+            )
+            .all()
+        )
+        for row in pin_rows:
+            key = (row.event_id, row.market)
+            if key not in pinnacle_map:
+                pinnacle_map[key] = {}
+            pinnacle_map[key][row.outcome] = row.odds
+
     bet_list = []
     for b in bets:
         ev = events_map.get(b.event_id) if b.event_id else None
+
+        # Compute edge_pct and selection_probability on-the-fly if not stored
+        edge_pct = round(b.utility_score * 100, 2) if b.utility_score else None
+        sel_prob = b.selection_probability
+
+        if (edge_pct is None or sel_prob is None) and b.event_id and b.market and b.outcome:
+            pin_market = pinnacle_map.get((b.event_id, b.market), {})
+            if len(pin_market) >= 2 and b.outcome in pin_market:
+                fair = get_fair_odds_for_outcome(b.outcome, pin_market, method="multiplicative")
+                if fair and fair > 1.0:
+                    if edge_pct is None:
+                        edge_pct = round((b.odds / fair - 1) * 100, 2)
+                    if sel_prob is None:
+                        sel_prob = round(1.0 / fair, 4)
+
         bet_list.append({
             "id": b.id,
             "event_id": b.event_id,
@@ -65,8 +97,11 @@ async def list_bets(
             "risk_score": b.risk_score_at_bet,
             "clv_pct": b.clv_pct,
             "closing_odds": b.closing_odds,
+            "edge_pct": edge_pct,
+            "selection_probability": sel_prob,
             "home_team": ev.home_team if ev else None,
             "away_team": ev.away_team if ev else None,
+            "start_time": ev.start_time.isoformat() if ev and ev.start_time else None,
         })
 
     return {
@@ -98,6 +133,73 @@ async def create_bet(bet: BetCreate, service: BetService = Depends(_get_service)
         raise HTTPException(status_code, result["error"])
 
     return result
+
+
+@router.post("/close-started")
+async def close_started_bets(service: BetService = Depends(_get_service)):
+    """
+    Snapshot closing Pinnacle odds for pending bets on events that have started.
+    Call this to capture CLV before settling. Safe to call repeatedly —
+    only processes bets where closing_odds is not yet set.
+    """
+    result = service.snapshot_closing_odds()
+    return {"success": True, **result}
+
+
+@router.post("/batch")
+async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(_get_service)):
+    """
+    Place multiple legs at once (dutch bet).
+    Each leg is placed independently — if one fails, already-placed legs remain.
+    Returns results per leg so the frontend knows which succeeded.
+    """
+    if not data.legs:
+        raise HTTPException(400, "No legs provided")
+
+    results = []
+    placed_count = 0
+    total_staked = 0.0
+
+    for i, leg in enumerate(data.legs):
+        result = service.create_bet(
+            event_id=leg.event_id,
+            provider_id=leg.provider_id,
+            market=leg.market,
+            outcome=leg.outcome,
+            odds=leg.odds,
+            stake=leg.stake,
+            is_bonus=leg.is_bonus,
+            bonus_type=leg.bonus_type,
+        )
+
+        if "error" in result:
+            results.append({
+                "leg_index": i,
+                "provider_id": leg.provider_id,
+                "outcome": leg.outcome,
+                "success": False,
+                "error": result["error"],
+            })
+        else:
+            placed_count += 1
+            total_staked += leg.stake
+            results.append({
+                "leg_index": i,
+                "provider_id": leg.provider_id,
+                "outcome": leg.outcome,
+                "success": True,
+                "bet_id": result["bet_id"],
+                "stake": leg.stake,
+                "odds": leg.odds,
+            })
+
+    return {
+        "success": placed_count > 0,
+        "placed_count": placed_count,
+        "total_legs": len(data.legs),
+        "total_staked": round(total_staked, 2),
+        "results": results,
+    }
 
 
 @router.put("/{bet_id}")

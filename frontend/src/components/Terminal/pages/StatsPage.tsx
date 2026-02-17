@@ -121,7 +121,7 @@ export function StatsPage() {
       )}
 
       {/* CLV Trend Chart */}
-      <CLVChart bets={bets} />
+      <CLVChart bets={bets} showTTKLegend={false} />
     </div>
   );
 }

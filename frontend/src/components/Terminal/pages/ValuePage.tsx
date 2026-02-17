@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import { useTableSort } from '@/hooks/useTableSort';
-import { SortableHeader } from '../SortableHeader';
+import { useMultiSort } from '@/hooks/useMultiSort';
+import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import type { Opportunity, Provider } from '@/types';
@@ -68,9 +68,15 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const grouped = useMemo(() => {
     let result = opportunities;
+    // Remove started/imminent events (less than 1 min to kickoff)
+    result = result.filter(o => {
+      const ttk = getTTKFromNow(o.starts_at);
+      return ttk === null || ttk > 1 / 60;
+    });
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
     }
+
     const map = new Map<string, Opportunity[]>();
     for (const opp of result) {
       const key = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
@@ -100,16 +106,17 @@ export function ValuePage({ providers }: ValuePageProps) {
     return groups;
   }, [opportunities, selectedProviders]);
 
-  type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge';
+  type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
     odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
     fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
     prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
     stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
     edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
+    ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
   }), []);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
-    useTableSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
+    useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
 
   const filteredCount = useMemo(() =>
     sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
@@ -220,8 +227,8 @@ export function ValuePage({ providers }: ValuePageProps) {
         </div>
       )}
 
-      {availableProviders.length > 0 && (
-        <FilterBar>
+      <FilterBar>
+        {availableProviders.length > 0 && (
           <MultiSelectDropdown
             label="Provider"
             options={availableProviders}
@@ -231,8 +238,8 @@ export function ValuePage({ providers }: ValuePageProps) {
             format={formatProviderName}
             accentColor="tabValue"
           />
-        </FilterBar>
-      )}
+        )}
+      </FilterBar>
 
       {/* Value bets table */}
       {isLoading && opportunities.length === 0 ? (
@@ -253,11 +260,12 @@ export function ValuePage({ providers }: ValuePageProps) {
               <th>Event</th>
               <th className="text-right">Providers</th>
               <th className="text-right">Outcome</th>
-              <SortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />
-              <SortableHeader column="fair" label="Fair" sort={valueSort} onToggle={toggleValueSort} />
-              <SortableHeader column="prob" label="Prob" sort={valueSort} onToggle={toggleValueSort} />
-              <SortableHeader column="stake" label="Stake" sort={valueSort} onToggle={toggleValueSort} />
-              <SortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="fair" label="Fair" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="prob" label="Prob" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="ttk" label="TTK" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="stake" label="Stake" sort={valueSort} onToggle={toggleValueSort} />
+              <MultiSortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
             </tr>
           </thead>
           <tbody>
@@ -302,6 +310,9 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right text-muted text-sm">
                       {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
                     </td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
                     <td className="text-right text-sm font-medium">
                       {hasStake ? (
                         <>
@@ -324,7 +335,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                     const oddsChanged = groupOddsKey in oddsOverride;
                     return (
                     <tr key={`${group.key}-expanded`}>
-                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           <div>
                             <span className="text-muted2 uppercase tracking-wider">Kelly: </span>

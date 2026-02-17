@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import Profile
 from ..repositories import EventRepo, OpportunityRepo
+from ..services.bet_service import BetService
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,15 @@ class OpportunityAnalyzer:
         """
         logger.info("[Analyzer] Starting opportunity detection...")
 
+        # Snapshot closing odds for pending bets on started events
+        # (must run BEFORE cleanup deletes past event odds)
+        try:
+            bet_service = BetService(self.session)
+            clv_snapshot = bet_service.snapshot_closing_odds()
+        except Exception as e:
+            logger.warning(f"[Analyzer] CLV snapshot failed: {e}")
+            clv_snapshot = {"processed": 0, "updated": 0}
+
         # Clean up stale opportunities before detection
         cleanup_stats = self.opp_repo.cleanup_stale()
 
@@ -91,7 +101,8 @@ class OpportunityAnalyzer:
             "reverse": {"found": 0, "new": 0},
             "reverse_value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
-            "cleanup": cleanup_stats
+            "cleanup": cleanup_stats,
+            "clv_snapshot": clv_snapshot,
         }
 
         for event in events:

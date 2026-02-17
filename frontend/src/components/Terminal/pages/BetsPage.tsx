@@ -1,19 +1,77 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import { FilterBar, SingleSelectPills, MultiSelectDropdown } from '../FilterBar';
+// FilterBar components no longer used — bets page shows pending on top + history below
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
+
+// ── Helpers (outside component to avoid re-creation) ─────────────────
+
+/** Time-to-kickoff in hours (null if no start_time) */
+function getTTK(bet: Bet): number | null {
+  if (!bet.start_time || !bet.placed_at) return null;
+  const start = new Date(bet.start_time).getTime();
+  const placed = new Date(bet.placed_at).getTime();
+  return Math.max(0, (start - placed) / (1000 * 60 * 60));
+}
+
+function formatTTK(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
+
+type TTKConfidence = 'high' | 'medium' | 'low' | 'very_low' | 'unknown';
+
+function getTTKTier(ttkHours: number | null): { label: string; color: string; confidence: TTKConfidence } {
+  if (ttkHours === null) return { label: '-', color: 'text-muted', confidence: 'unknown' };
+  if (ttkHours <= 1) return { label: formatTTK(ttkHours), color: 'text-success', confidence: 'high' };
+  if (ttkHours <= 6) return { label: formatTTK(ttkHours), color: 'text-accent', confidence: 'medium' };
+  if (ttkHours <= 24) return { label: formatTTK(ttkHours), color: 'text-warning', confidence: 'low' };
+  return { label: formatTTK(ttkHours), color: 'text-muted2', confidence: 'very_low' };
+}
+
+const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
+  high: { text: 'CLV HIGH', cls: 'bg-success/15 text-success' },
+  medium: { text: 'CLV MED', cls: 'bg-accent/15 text-accent' },
+  low: { text: 'CLV LOW', cls: 'bg-warning/15 text-warning' },
+  very_low: { text: 'CLV ~', cls: 'bg-muted2/15 text-muted2' },
+  unknown: { text: '-', cls: 'text-muted2' },
+};
+
+// ── Sort types ───────────────────────────────────────────────────────
+
+type SortKey = 'date' | 'provider' | 'odds' | 'stake' | 'profit' | 'clv' | 'edge' | 'prob' | 'ttk' | 'status';
+type SortDir = 'asc' | 'desc';
+
+function getSortValue(bet: Bet, key: SortKey): number | string {
+  switch (key) {
+    case 'date': return new Date(bet.placed_at).getTime();
+    case 'provider': return bet.provider;
+    case 'odds': return bet.odds;
+    case 'stake': return bet.stake;
+    case 'profit': return bet.profit;
+    case 'clv': return bet.clv_pct ?? -9999;
+    case 'edge': return bet.edge_pct ?? -9999;
+    case 'prob': return bet.selection_probability ?? -9999;
+    case 'ttk': return getTTK(bet) ?? 99999;
+    case 'status': {
+      const order: Record<string, number> = { pending: 0, won: 1, lost: 2, void: 3 };
+      return order[bet.result] ?? 4;
+    }
+    default: return 0;
+  }
+}
+
+// ── Charts ───────────────────────────────────────────────────────────
 
 function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll: number }) {
   const data = useMemo(() => {
-    // Only settled bets, sorted by date
     const settled = bets
       .filter(b => b.result !== 'pending')
       .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime());
 
     if (settled.length === 0) return [];
 
-    // Starting bankroll = current - total profit from settled bets
     const totalProfit = settled.reduce((sum, b) => sum + b.profit, 0);
     const startBankroll = currentBankroll - totalProfit;
 
@@ -29,10 +87,11 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   if (data.length < 2) return null;
 
   const W = 600;
-  const H = 140;
-  const PX = 40; // left padding for labels
-  const PR = 12; // right padding
-  const PY = 16;
+  const H = 120;
+  const PX = 32;
+  const PR = 8;
+  const PT = 8;
+  const PB = 16;
 
   const minVal = Math.min(...data.map(d => d.value));
   const maxVal = Math.max(...data.map(d => d.value));
@@ -42,7 +101,7 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   const dateRange = maxDate - minDate || 1;
 
   const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
-  const y = (v: number) => PY + (1 - (v - minVal) / range) * (H - PY * 2);
+  const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
 
   const pathD = data.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.date).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
 
@@ -50,61 +109,96 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   const firstVal = data[0].value;
   const isUp = lastVal >= firstVal;
   const stroke = isUp ? '#10b981' : '#ef4444';
+  const gradId = 'bankroll-grad';
 
-  // Y-axis labels
-  const yLabels = [minVal, (minVal + maxVal) / 2, maxVal].map(v => ({
-    value: v,
-    label: `${(v / 1000).toFixed(1)}k`,
-    yPos: y(v),
+  const ySteps = 4;
+  const yLabels = Array.from({ length: ySteps }, (_, i) => {
+    const v = minVal + (range * i) / (ySteps - 1);
+    return { value: v, label: `${(v / 1000).toFixed(1)}k`, yPos: y(v) };
+  });
+
+  const xLabels = [data[0], data[data.length - 1]].map(p => ({
+    label: p.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    xPos: x(p.date),
   }));
 
+  const profit = lastVal - firstVal;
+  const profitPct = ((profit / firstVal) * 100).toFixed(1);
+
+  // Convert SVG coords to percentages for HTML overlays
+  const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
+  const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
+
   return (
-    <div className="border border-border bg-panel">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+    <div className="border border-border bg-panel overflow-hidden">
+      <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
         <span className="text-[10px] text-muted uppercase tracking-wider">Bankroll</span>
-        <span className={`text-sm font-semibold ${isUp ? 'text-success' : 'text-error'}`}>
-          {lastVal.toFixed(0)} kr
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] ${isUp ? 'text-success/70' : 'text-error/70'}`}>
+            {profit >= 0 ? '+' : ''}{profit.toFixed(0)} kr ({profit >= 0 ? '+' : ''}{profitPct}%)
+          </span>
+          <span className={`text-xs font-semibold ${isUp ? 'text-success' : 'text-error'}`}>
+            {lastVal.toFixed(0)} kr
+          </span>
+        </div>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
-        {/* Grid lines */}
+      <div className="relative">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={stroke} stopOpacity="0.2" />
+              <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {yLabels.map((l, i) => (
+            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray={i === 0 ? 'none' : '3,3'} />
+          ))}
+          <path
+            d={`${pathD} L${x(data[data.length - 1].date).toFixed(1)},${y(minVal).toFixed(1)} L${x(data[0].date).toFixed(1)},${y(minVal).toFixed(1)} Z`}
+            fill={`url(#${gradId})`}
+          />
+          <path d={pathD} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          {data.map((p, i) => (
+            <circle key={i} cx={x(p.date)} cy={y(p.value)} r={i === data.length - 1 ? 2.5 : 1.2} fill={stroke} fillOpacity={i === data.length - 1 ? 1 : 0.4} />
+          ))}
+          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="5" fill={stroke} fillOpacity="0.15" />
+          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="2.5" fill={stroke} />
+        </svg>
+        {/* HTML axis labels — inherit page font */}
         {yLabels.map((l, i) => (
-          <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="currentColor" className="text-border" strokeWidth="0.5" />
+          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
         ))}
-        {/* Y labels */}
-        {yLabels.map((l, i) => (
-          <text key={`t${i}`} x={PX - 4} y={l.yPos + 3} textAnchor="end" fill="currentColor" className="text-muted2" fontSize="9">{l.label}</text>
+        {xLabels.map((l, i) => (
+          <span key={`x${i}`} className={`absolute text-[10px] text-muted2 ${i === 0 ? '' : 'translate-x-[-100%]'}`} style={{ bottom: 0, left: xPct(l.xPos) }}>{l.label}</span>
         ))}
-        {/* Area fill */}
-        <path
-          d={`${pathD} L${x(data[data.length - 1].date).toFixed(1)},${(H - PY).toFixed(1)} L${x(data[0].date).toFixed(1)},${(H - PY).toFixed(1)} Z`}
-          fill={stroke}
-          fillOpacity="0.08"
-        />
-        {/* Line */}
-        <path d={pathD} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
-        {/* Endpoint dot */}
-        <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="2.5" fill={stroke} />
-      </svg>
+      </div>
     </div>
   );
 }
 
-export function CLVChart({ bets }: { bets: Bet[] }) {
+export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const data = useMemo(() => {
     return bets
       .filter(b => b.result !== 'pending' && b.clv_pct != null)
       .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime())
-      .map(b => ({ date: new Date(b.placed_at), clv: b.clv_pct! }));
+      .map(b => {
+        const ttkHours = getTTK(b);
+        const confidence = ttkHours === null ? 0.5 :
+          ttkHours <= 1 ? 1.0 :
+          ttkHours <= 6 ? 0.75 :
+          ttkHours <= 24 ? 0.5 : 0.25;
+        return { date: new Date(b.placed_at), clv: b.clv_pct!, ttkHours, confidence };
+      });
   }, [bets]);
 
-  if (data.length < 5) return null;
+  if (data.length < 2) return null;
 
   const W = 600;
-  const H = 140;
-  const PX = 40;
-  const PR = 12;
-  const PY = 16;
+  const H = 120;
+  const PX = 32;
+  const PR = 8;
+  const PT = 8;
+  const PB = 16;
 
   const clvValues = data.map(d => d.clv);
   const absMax = Math.max(Math.abs(Math.min(...clvValues)), Math.abs(Math.max(...clvValues)), 5);
@@ -116,11 +210,10 @@ export function CLVChart({ bets }: { bets: Bet[] }) {
   const dateRange = maxDate - minDate || 1;
 
   const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
-  const y = (v: number) => PY + (1 - (v - minVal) / range) * (H - PY * 2);
+  const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
 
   const zeroY = y(0);
 
-  // Running average (last 20 bets)
   const windowSize = Math.min(20, Math.ceil(data.length / 3));
   const avgPoints: { date: Date; avg: number }[] = [];
   for (let i = 0; i < data.length; i++) {
@@ -135,54 +228,129 @@ export function CLVChart({ bets }: { bets: Bet[] }) {
 
   const lastAvg = avgPoints[avgPoints.length - 1].avg;
   const isPositive = lastAvg >= 0;
+  const avgColor = isPositive ? '#10b981' : '#ef4444';
+  const positiveCount = data.filter(d => d.clv >= 0).length;
+  const beatPct = ((positiveCount / data.length) * 100).toFixed(0);
 
-  // Y-axis labels
-  const yLabels = [minVal, 0, maxVal].map(v => ({
-    label: `${v > 0 ? '+' : ''}${v.toFixed(0)}%`,
-    yPos: y(v),
+  const ySteps = 5;
+  const yLabels = Array.from({ length: ySteps }, (_, i) => {
+    const v = minVal + (range * i) / (ySteps - 1);
+    return { label: `${v > 0 ? '+' : ''}${v.toFixed(0)}%`, yPos: y(v) };
+  });
+
+  const xLabels = [data[0], data[data.length - 1]].map(p => ({
+    label: p.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    xPos: x(p.date),
   }));
 
+  // Convert SVG coords to percentages for HTML overlays
+  const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
+  const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
+
   return (
-    <div className="border border-border bg-panel">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-[10px] text-muted uppercase tracking-wider">CLV Trend</span>
-        <div className="flex items-center gap-3">
+    <div className="border border-border bg-panel overflow-hidden">
+      <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted uppercase tracking-wider">CLV Distribution</span>
+          {showTTKLegend && (
+            <div className="flex items-center gap-1.5 text-[9px] text-muted2">
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-80" /> &lt;1h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-55" /> 1-6h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-40" /> 6-24h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-25" /> 24h+</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted">{data.length} bets</span>
-          <span className={`text-sm font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
+          <span className="text-[10px] text-muted">{beatPct}% beat close</span>
+          <span className={`text-xs font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
             {lastAvg >= 0 ? '+' : ''}{lastAvg.toFixed(1)}% avg
           </span>
         </div>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
-        {/* Grid lines */}
-        {yLabels.map((l, i) => (
-          <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="currentColor" className="text-border" strokeWidth="0.5" />
-        ))}
-        {/* Y labels */}
-        {yLabels.map((l, i) => (
-          <text key={`t${i}`} x={PX - 4} y={l.yPos + 3} textAnchor="end" fill="currentColor" className="text-muted2" fontSize="9">{l.label}</text>
-        ))}
-        {/* Zero line (thicker) */}
-        <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="currentColor" className="text-muted2" strokeWidth="0.8" strokeDasharray="4,3" />
-        {/* Scatter dots */}
-        {data.map((d, i) => (
-          <circle
-            key={i}
-            cx={x(d.date)}
-            cy={y(d.clv)}
-            r="2"
-            fill={d.clv >= 0 ? '#10b981' : '#ef4444'}
-            fillOpacity="0.5"
+      <div className="relative">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="clv-avg-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={avgColor} stopOpacity="0.12" />
+              <stop offset="100%" stopColor={avgColor} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <rect x={PX} y={PT} width={W - PX - PR} height={zeroY - PT} fill="#10b981" fillOpacity="0.02" />
+          <rect x={PX} y={zeroY} width={W - PX - PR} height={H - PB - zeroY} fill="#ef4444" fillOpacity="0.02" />
+          {yLabels.map((l, i) => (
+            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="3,3" />
+          ))}
+          <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#7A7F87" strokeWidth="0.6" strokeDasharray="4,3" />
+          {data.map((d, i) => {
+            const cx = x(d.date);
+            const cy = y(d.clv);
+            const color = d.clv >= 0 ? '#10b981' : '#ef4444';
+            const r = 1.2 + d.confidence * 1.2;
+            const opacity = 0.25 + d.confidence * 0.55;
+            return (
+              <g key={i}>
+                <line x1={cx} y1={zeroY} x2={cx} y2={cy} stroke={color} strokeWidth="0.8" strokeOpacity={opacity * 0.4} />
+                <circle cx={cx} cy={cy} r={r} fill={color} fillOpacity={opacity} />
+              </g>
+            );
+          })}
+          <path
+            d={`${avgPathD} L${x(avgPoints[avgPoints.length - 1].date).toFixed(1)},${zeroY.toFixed(1)} L${x(avgPoints[0].date).toFixed(1)},${zeroY.toFixed(1)} Z`}
+            fill="url(#clv-avg-grad)"
           />
+          <path d={avgPathD} fill="none" stroke={avgColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="5" fill={avgColor} fillOpacity="0.15" />
+          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="2.5" fill={avgColor} />
+        </svg>
+        {/* HTML axis labels — inherit page font */}
+        {yLabels.map((l, i) => (
+          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
         ))}
-        {/* Running average line */}
-        <path d={avgPathD} fill="none" stroke="#4FC3F7" strokeWidth="1.5" strokeLinejoin="round" />
-        {/* Endpoint dot */}
-        <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="2.5" fill="#4FC3F7" />
-      </svg>
+        {xLabels.map((l, i) => (
+          <span key={`x${i}`} className={`absolute text-[10px] text-muted2 ${i === 0 ? '' : 'translate-x-[-100%]'}`} style={{ bottom: 0, left: xPct(l.xPos) }}>{l.label}</span>
+        ))}
+      </div>
     </div>
   );
 }
+
+// ── Sortable header ──────────────────────────────────────────────────
+
+function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
+  label: string;
+  sortKey: SortKey;
+  currentSort: { key: SortKey; dir: SortDir } | null;
+  onSort: (key: SortKey) => void;
+  align?: 'left' | 'right';
+}) {
+  const active = currentSort?.key === sortKey;
+  const dir = active ? currentSort.dir : null;
+
+  return (
+    <th
+      className={`cursor-pointer select-none hover:text-text transition-colors ${align === 'right' ? 'text-right' : ''}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {align === 'right' && (
+          <span className={`text-[8px] ${active ? 'text-accent' : 'text-muted2/50'}`}>
+            {dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '⇅'}
+          </span>
+        )}
+        {label}
+        {align === 'left' && (
+          <span className={`text-[8px] ${active ? 'text-accent' : 'text-muted2/50'}`}>
+            {dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '⇅'}
+          </span>
+        )}
+      </span>
+    </th>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────
 
 export function BetsPage() {
   const [bets, setBets] = useState<Bet[]>([]);
@@ -191,13 +359,17 @@ export function BetsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
 
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  // Sort (for history table only)
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
+
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
+      // Snapshot closing odds for any pending bets on started events
+      await api.closeStartedBets().catch(() => {});
+
       const [response, bankroll] = await Promise.all([
         api.getBets(undefined, 500),
         api.getBankroll(),
@@ -247,26 +419,49 @@ export function BetsPage() {
     }
   };
 
-  const availableProviders = useMemo(() => {
-    const set = new Set<string>();
-    for (const bet of bets) { if (bet.provider) set.add(bet.provider); }
-    return Array.from(set).sort();
+  // ── Split into pending + history ─────────────────────────────────
+
+  const pendingBets = useMemo(() => {
+    const pending = bets.filter(b => b.result === 'pending');
+    // Started bets (CLV captured) on top, then upcoming by date
+    return pending.sort((a, b) => {
+      const aStarted = a.closing_odds != null ? 1 : 0;
+      const bStarted = b.closing_odds != null ? 1 : 0;
+      if (aStarted !== bStarted) return bStarted - aStarted; // started first
+      return new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime();
+    });
   }, [bets]);
 
-  const statusOptions = ['pending', 'won', 'lost', 'void'];
+  const historyBets = useMemo(() => {
+    let result = bets.filter(b => b.result !== 'pending');
 
-  const filtered = useMemo(() => {
-    let result = bets;
-    if (statusFilter) result = result.filter(b => b.result === statusFilter);
-    if (selectedProviders.size > 0) result = result.filter(b => selectedProviders.has(b.provider));
+    if (sort) {
+      result = [...result].sort((a, b) => {
+        const va = getSortValue(a, sort.key);
+        const vb = getSortValue(b, sort.key);
+        let cmp = 0;
+        if (typeof va === 'string' && typeof vb === 'string') cmp = va.localeCompare(vb);
+        else cmp = (va as number) - (vb as number);
+        return sort.dir === 'desc' ? -cmp : cmp;
+      });
+    } else {
+      // Default: newest first
+      result = [...result].sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
+    }
+
     return result;
-  }, [bets, statusFilter, selectedProviders]);
+  }, [bets, sort]);
 
-  const toggleProvider = (p: string) => {
-    setSelectedProviders(prev => {
-      const next = new Set(prev);
-      if (next.has(p)) next.delete(p); else next.add(p);
-      return next;
+  const handleSort = (key: SortKey) => {
+    setSort(prev => {
+      if (prev?.key === key) {
+        if (prev.dir === 'asc') return { key, dir: 'desc' };
+        if (prev.dir === 'desc') return null; // third click clears
+        return { key, dir: 'asc' };
+      }
+      // Default: desc for numeric columns, asc for text
+      const textCols: SortKey[] = ['provider', 'status', 'date'];
+      return { key, dir: textCols.includes(key) ? 'asc' : 'desc' };
     });
     setExpandedIdx(null);
   };
@@ -387,7 +582,6 @@ export function BetsPage() {
 
                 return (
                   <div key={providerId} className="px-3 py-2.5 space-y-1.5">
-                    {/* Header: provider + status + action */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className="text-text text-sm font-medium">{formatProviderName(providerId)}</span>
@@ -426,10 +620,8 @@ export function BetsPage() {
                       </div>
                     </div>
 
-                    {/* Action text */}
                     <div className="text-xs text-muted">{bonus.action_needed}</div>
 
-                    {/* Progress bar for in_progress wagering */}
                     {bonus.status === 'in_progress' && bonus.wagering_requirement > 0 && (
                       <div className="space-y-1">
                         <div className="h-1.5 bg-panel overflow-hidden">
@@ -447,7 +639,6 @@ export function BetsPage() {
                       </div>
                     )}
 
-                    {/* Pace info */}
                     {bonus.prognosis && bonus.status === 'in_progress' && (() => {
                       const p = bonus.prognosis;
                       const betsPlaced = p.bets_per_week;
@@ -494,101 +685,226 @@ export function BetsPage() {
         </div>
       )}
 
-      {/* Filters */}
-      <FilterBar>
-        <SingleSelectPills
-          label="Status"
-          options={statusOptions}
-          active={statusFilter}
-          onSelect={(v) => { setStatusFilter(v); setExpandedIdx(null); }}
-          format={(v) => v.charAt(0).toUpperCase() + v.slice(1)}
-          accentColor="tabBets"
-        />
-        {availableProviders.length > 1 && (
-          <>
-            <div className="w-px h-5 bg-border/50" />
-            <MultiSelectDropdown
-              label="Provider"
-              options={availableProviders}
-              selected={selectedProviders}
-              onToggle={toggleProvider}
-              onClear={() => { setSelectedProviders(new Set()); setExpandedIdx(null); }}
-              format={formatProviderName}
-              accentColor="tabBets"
-            />
-          </>
-        )}
-      </FilterBar>
+      {/* Pending Bets */}
+      {pendingBets.length > 0 && (
+        <>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
+            Pending <span className="text-accent">{pendingBets.length}</span>
+            {pendingBets.some(b => b.closing_odds != null) && (
+              <span className="text-warning ml-2">
+                {pendingBets.filter(b => b.closing_odds != null).length} started
+              </span>
+            )}
+          </h3>
+          <div className="border-l-2 border-accent">
+          <table className="sq">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Provider</th>
+                <th>Outcome</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">Edge</th>
+                <th className="text-right">CLV</th>
+                <th className="text-right">TTK</th>
+                <th className="text-right"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendingBets.map((bet) => {
+                const isExpanded = expandedIdx === bet.id;
+                const ttk = getTTK(bet);
+                const tier = getTTKTier(ttk);
+                const hasStarted = bet.closing_odds != null;
+                return (
+                  <>
+                    <tr
+                      key={bet.id}
+                      className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
+                      onClick={() => setExpandedIdx(isExpanded ? null : bet.id)}
+                    >
+                      <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
+                      <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
+                      <td className="text-text text-sm">{resolveOutcome(bet)}</td>
+                      <td className="text-right text-text text-sm font-medium">
+                        {bet.odds.toFixed(2)}
+                        {hasStarted && bet.closing_odds != null && (
+                          <span className="text-muted2 text-[10px] ml-1">→{bet.closing_odds.toFixed(2)}</span>
+                        )}
+                      </td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {bet.edge_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        {bet.clv_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        {hasStarted ? (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">LIVE</span>
+                        ) : (
+                          <span className={`text-sm ${tier.color}`}>{tier.label}</span>
+                        )}
+                      </td>
+                      <td className="text-right" onClick={e => e.stopPropagation()}>
+                        {hasStarted ? (
+                          <div className="flex gap-1 justify-end">
+                            <button onClick={() => settleBet(bet.id, 'won')} className="px-2 py-1 text-[10px] font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">W</button>
+                            <button onClick={() => settleBet(bet.id, 'lost')} className="px-2 py-1 text-[10px] font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">L</button>
+                            <button onClick={() => settleBet(bet.id, 'void')} className="px-2 py-1 text-[10px] font-medium bg-panel2 text-muted hover:bg-border transition-colors">V</button>
+                          </div>
+                        ) : (
+                          <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${bet.id}-expanded`}>
+                        <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
+                          <div className="px-3 py-2 bg-panel flex items-center justify-between gap-6">
+                            <div className="flex items-center gap-6 text-xs text-muted">
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Market: </span>
+                                <span className="text-text">{bet.market || '-'}</span>
+                              </div>
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Return: </span>
+                                <span className="text-text">{(bet.stake * bet.odds).toFixed(0)} kr</span>
+                                <span className="text-accent text-xs ml-1">(+{(bet.stake * bet.odds - bet.stake).toFixed(0)})</span>
+                              </div>
+                              {hasStarted && bet.closing_odds != null && (
+                                <div>
+                                  <span className="text-muted2 uppercase tracking-wider">Close: </span>
+                                  <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={() => settleBet(bet.id, 'won')} className="px-3 py-1.5 text-xs font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">Won</button>
+                              <button onClick={() => settleBet(bet.id, 'lost')} className="px-3 py-1.5 text-xs font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">Lost</button>
+                              <button onClick={() => settleBet(bet.id, 'void')} className="px-3 py-1.5 text-xs font-medium bg-panel2 text-muted hover:bg-border transition-colors">Void</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </>
+      )}
 
-      {/* Bet Table */}
+      {/* Bet History */}
       {isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {bets.length === 0 ? 'No bets found.' : 'No matches for current filters.'}
-        </div>
-      ) : (
-        <div className="border-l-2 border-tabBets">
-        <table className="sq">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Provider</th>
-              <th>Outcome</th>
-              <th className="text-right">Odds</th>
-              <th className="text-right">Stake</th>
-              <th className="text-right">Profit</th>
-              <th className="text-right">CLV</th>
-              <th className="text-right">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((bet, idx) => {
-              const isExpanded = expandedIdx === idx;
-              return (
-                <>
-                  <tr
-                    key={bet.id}
-                    className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
-                    onClick={() => setExpandedIdx(isExpanded ? null : idx)}
-                  >
-                    <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
-                    <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
-                    <td className="text-text text-sm">{resolveOutcome(bet)}</td>
-                    <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                    <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                    <td className="text-right">
-                      <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
-                        {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
-                      </span>
-                    </td>
-                    <td className="text-right">
-                      {bet.clv_pct != null ? (
-                        <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                          {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+      ) : historyBets.length === 0 && pendingBets.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets found.</div>
+      ) : historyBets.length > 0 && (
+        <>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
+            History <span className="text-muted2">{historyBets.length}</span>
+          </h3>
+          <div className="border-l-2 border-tabBets">
+          <table className="sq">
+            <thead>
+              <tr>
+                <SortHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
+                <SortHeader label="Provider" sortKey="provider" currentSort={sort} onSort={handleSort} />
+                <th>Outcome</th>
+                <SortHeader label="Odds" sortKey="odds" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Stake" sortKey="stake" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Profit" sortKey="profit" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="CLV" sortKey="clv" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Edge" sortKey="edge" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Prob" sortKey="prob" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="TTK" sortKey="ttk" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Status" sortKey="status" currentSort={sort} onSort={handleSort} align="right" />
+              </tr>
+            </thead>
+            <tbody>
+              {historyBets.map((bet) => {
+                const isExpanded = expandedIdx === bet.id;
+                const ttk = getTTK(bet);
+                const tier = getTTKTier(ttk);
+                return (
+                  <>
+                    <tr
+                      key={bet.id}
+                      className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
+                      onClick={() => setExpandedIdx(isExpanded ? null : bet.id)}
+                    >
+                      <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
+                      <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
+                      <td className="text-text text-sm">{resolveOutcome(bet)}</td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
+                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
                         </span>
-                      ) : (
-                        <span className="text-sm text-muted">-</span>
-                      )}
-                    </td>
-                    <td className="text-right">
-                      <span className={`text-sm capitalize ${getStatusColor(bet.result)}`}>{bet.result}</span>
-                    </td>
-                  </tr>
-                  {isExpanded && (
-                    <tr key={`${bet.id}-expanded`}>
-                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <div className="px-3 py-2 bg-panel flex items-center justify-between gap-6">
-                          <div className="flex items-center gap-6 text-xs text-muted">
+                      </td>
+                      <td className="text-right">
+                        {bet.clv_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        {bet.edge_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        {bet.selection_probability != null ? (
+                          <span className="text-sm text-text">{(bet.selection_probability * 100).toFixed(0)}%</span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        <span className={`text-sm ${tier.color}`}>{tier.label}</span>
+                      </td>
+                      <td className="text-right">
+                        <span className={`text-sm capitalize ${getStatusColor(bet.result)}`}>{bet.result}</span>
+                      </td>
+                    </tr>
+                    {isExpanded && (() => {
+                      const badge = CLV_BADGE[tier.confidence];
+                      return (
+                      <tr key={`${bet.id}-expanded`}>
+                        <td colSpan={11} className="!p-0" onClick={e => e.stopPropagation()}>
+                          <div className="px-3 py-2 bg-panel flex items-center gap-6 text-xs text-muted">
                             <div>
                               <span className="text-muted2 uppercase tracking-wider">Market: </span>
                               <span className="text-text">{bet.market || '-'}</span>
                             </div>
-                            {bet.result === 'pending' && (
+                            {ttk !== null && (
                               <div>
-                                <span className="text-muted2 uppercase tracking-wider">Potential: </span>
-                                <span className="text-text">{(bet.stake * bet.odds).toFixed(0)} kr</span>
-                                <span className="text-accent text-xs ml-1">(+{(bet.stake * bet.odds - bet.stake).toFixed(0)})</span>
+                                <span className="text-muted2 uppercase tracking-wider">CLV Conf: </span>
+                                <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
                               </div>
                             )}
                             {bet.closing_odds != null && (
@@ -599,23 +915,17 @@ export function BetsPage() {
                               </div>
                             )}
                           </div>
-                          {bet.result === 'pending' && (
-                            <div className="flex gap-2">
-                              <button onClick={() => settleBet(bet.id, 'won')} className="px-3 py-1.5 text-xs font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">Won</button>
-                              <button onClick={() => settleBet(bet.id, 'lost')} className="px-3 py-1.5 text-xs font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">Lost</button>
-                              <button onClick={() => settleBet(bet.id, 'void')} className="px-3 py-1.5 text-xs font-medium bg-panel2 text-muted hover:bg-border transition-colors">Void</button>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </>
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
+                        </td>
+                      </tr>
+                      );
+                    })()}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </>
       )}
     </div>
   );

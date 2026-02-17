@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -54,9 +54,11 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   // Place bet state
   const [isPlacing, setIsPlacing] = useState(false);
-  const [placingLeg, setPlacingLeg] = useState<string | null>(null);
+  const [placingLeg, setPlacingLeg] = useState<string | null>(null); // "oppId|legIdx" or "oppId|all"
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
+  // Track placed legs per opp: oppId -> Set of legIdx
+  const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -97,11 +99,12 @@ export function DutchPage({ providers }: DutchPageProps) {
     return result.slice(0, MAX_ROWS);
   }, [opportunities, selectedProviders]);
 
-  type DutchSortCol = 'edge' | 'stake' | 'profit';
+  type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
     edge:   (d: DutchOpp) => d.edge_pct ?? 0,
     stake:  (d: DutchOpp) => d.total_stake ?? 0,
     profit: (d: DutchOpp) => d.guaranteed_profit_pct ?? d.profit_pct ?? 0,
+    ttk:    (d: DutchOpp) => getTTKFromNow(d.starts_at) ?? 99999,
   }), []);
   const { sorted: sortedDutch, sort: dutchSort, toggle: toggleDutchSort } =
     useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' });
@@ -141,12 +144,86 @@ export function DutchPage({ providers }: DutchPageProps) {
         stake: legStake,
         is_bonus: false,
       });
+      // Track this leg as placed
+      setPlacedLegs(prev => {
+        const existing = prev[opp.id] || new Set<number>();
+        const next = new Set(existing);
+        next.add(legIdx);
+        return { ...prev, [opp.id]: next };
+      });
+
       const outcomeLabel = resolveOutcome(leg.outcome, opp.home_team, opp.away_team, opp.point);
       setBetSuccess(`Bet placed: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       fetchData();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bet';
+      setBetError(msg);
+      setTimeout(() => setBetError(null), 5000);
+    } finally {
+      setIsPlacing(false);
+      setPlacingLeg(null);
+    }
+  };
+
+  const handlePlaceAll = async (opp: DutchOpp) => {
+    const legs = opp.legs || [];
+    const totalStake = opp.total_stake || 0;
+    if (legs.length === 0 || totalStake <= 0) return;
+
+    // Build legs array for batch API
+    const batchLegs = legs.map((leg, legIdx) => {
+      const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+      const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
+      return {
+        event_id: opp.event_id,
+        provider_id: leg.provider,
+        market: opp.market,
+        outcome: leg.outcome,
+        odds,
+        stake: legStake,
+        is_bonus: false,
+      };
+    }).filter(l => l.stake > 0);
+
+    if (batchLegs.length === 0) return;
+
+    setIsPlacing(true);
+    setPlacingLeg(`${opp.id}|all`);
+    setBetError(null);
+    setBetSuccess(null);
+
+    try {
+      const res = await api.createBatchBets(batchLegs);
+
+      // Track which legs were placed successfully
+      const successIdxs = new Set<number>();
+      const errors: string[] = [];
+      for (const r of res.results) {
+        if (r.success) {
+          successIdxs.add(r.leg_index);
+        } else {
+          errors.push(`${formatProviderName(r.provider_id)}: ${r.error}`);
+        }
+      }
+
+      setPlacedLegs(prev => ({ ...prev, [opp.id]: successIdxs }));
+
+      if (res.placed_count === res.total_legs) {
+        setBetSuccess(`All ${res.placed_count} legs placed — ${res.total_staked.toFixed(0)} kr total`);
+      } else if (res.placed_count > 0) {
+        setBetSuccess(`${res.placed_count}/${res.total_legs} legs placed — ${res.total_staked.toFixed(0)} kr`);
+        if (errors.length > 0) {
+          setBetError(errors.join(' · '));
+        }
+      } else {
+        setBetError(errors.join(' · ') || 'Failed to place any legs');
+      }
+
+      setTimeout(() => { setBetSuccess(null); setBetError(null); }, 8000);
+      fetchData();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to place bets';
       setBetError(msg);
       setTimeout(() => setBetError(null), 5000);
     } finally {
@@ -228,6 +305,7 @@ export function DutchPage({ providers }: DutchPageProps) {
               <tr>
                 <th>Event</th>
                 <th className="text-right">Providers</th>
+                <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
                 <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
                 <SortableHeader column="stake" label="Stake" sort={dutchSort} onToggle={toggleDutchSort} />
                 <SortableHeader column="profit" label="Profit" sort={dutchSort} onToggle={toggleDutchSort} />
@@ -263,6 +341,9 @@ export function DutchPage({ providers }: DutchPageProps) {
                           : <>{formatProviderName(uniqueProviders[0])} <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
                         }
                       </td>
+                      <td className="text-right">
+                        {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                      </td>
                       <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
                         {opp.edge_pct != null ? `${opp.edge_pct >= 0 ? '+' : ''}${opp.edge_pct.toFixed(1)}%` : '-'}
                       </td>
@@ -276,7 +357,7 @@ export function DutchPage({ providers }: DutchPageProps) {
 
                     {isSelected && (
                       <tr key={`${opp.id}-expanded`}>
-                        <td colSpan={5} className="!p-0" onClick={e => e.stopPropagation()}>
+                        <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
                           <table className="sq">
                             <thead>
                               <tr>
@@ -359,15 +440,17 @@ export function DutchPage({ providers }: DutchPageProps) {
                                     </td>
                                     <td className="text-right">{legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}</td>
                                     <td className="text-right">
-                                      {!leg.is_sharp && legStake > 0 && (
+                                      {placedLegs[opp.id]?.has(legIdx) ? (
+                                        <span className="text-success text-[10px] font-medium">✓ placed</span>
+                                      ) : legStake > 0 ? (
                                         <button
                                           onClick={() => handlePlaceLeg(opp, leg, legIdx)}
                                           disabled={isPlacing}
-                                          className="px-2 py-1 bg-success text-bg text-[10px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                                          className="px-2 py-1 bg-panel2 text-muted text-[10px] font-medium hover:text-text hover:bg-panel2/80 disabled:opacity-50 transition-all whitespace-nowrap"
                                         >
                                           {isPlacingThis ? '...' : `Bet ${legStake.toFixed(0)} kr`}
                                         </button>
-                                      )}
+                                      ) : null}
                                     </td>
                                   </tr>
                                 );
@@ -375,19 +458,37 @@ export function DutchPage({ providers }: DutchPageProps) {
                             </tbody>
                           </table>
                           {totalStake > 0 && (
-                            <div className="px-3 py-2 border-t border-border bg-panel flex items-center gap-6 text-xs text-muted">
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
-                                <span className="text-text font-medium">{totalStake.toFixed(0)} kr</span>
-                              </div>
-                              {gp !== 0 && (
+                            <div className="px-3 py-2 border-t border-border bg-panel flex items-center justify-between text-xs text-muted">
+                              <div className="flex items-center gap-6">
                                 <div>
-                                  <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
-                                  <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
-                                    {gp > 0 ? '+' : ''}{(totalStake * gp / 100).toFixed(0)} kr
-                                  </span>
+                                  <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
+                                  <span className="text-text font-medium">{totalStake.toFixed(0)} kr</span>
                                 </div>
-                              )}
+                                {gp !== 0 && (
+                                  <div>
+                                    <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
+                                    <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
+                                      {gp > 0 ? '+' : ''}{(totalStake * gp / 100).toFixed(0)} kr
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {/* Place All button */}
+                              {(() => {
+                                const allPlaced = placedLegs[opp.id]?.size === legs.length;
+                                const isPlacingAll = isPlacing && placingLeg === `${opp.id}|all`;
+                                return allPlaced ? (
+                                  <span className="text-success text-[10px] font-medium">✓ all legs placed</span>
+                                ) : (
+                                  <button
+                                    onClick={() => handlePlaceAll(opp)}
+                                    disabled={isPlacing}
+                                    className="px-3 py-1.5 bg-success text-bg text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                                  >
+                                    {isPlacingAll ? 'Placing...' : `Place All ${totalStake.toFixed(0)} kr`}
+                                  </button>
+                                );
+                              })()}
                             </div>
                           )}
                         </td>

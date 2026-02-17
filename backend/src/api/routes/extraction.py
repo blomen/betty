@@ -264,9 +264,18 @@ async def get_extraction_progress():
     else:
         elapsed_seconds = state.get("elapsed_seconds", 0)
 
-    # Calculate progress percentage
+    # Calculate progress percentage from sport-level granularity
     progress_pct = 0
-    if state["total_providers"] > 0:
+    providers_dict = state["providers"]
+    if providers_dict:
+        total_sports_all = 0
+        completed_sports_all = 0
+        for prov in providers_dict.values():
+            total_sports_all += prov.get("sports_total", 0)
+            completed_sports_all += prov.get("sports_completed", 0)
+        if total_sports_all > 0:
+            progress_pct = (completed_sports_all / total_sports_all) * 100
+    elif state["total_providers"] > 0:
         progress_pct = (state["completed_providers"] / state["total_providers"]) * 100
 
     return {
@@ -303,11 +312,23 @@ async def get_tier_progress():
         else:
             elapsed = state.get("elapsed_seconds", 0)
 
-        # Calculate progress percentage
-        progress_pct = 0
+        # Calculate progress percentage from sport-level granularity
+        # Each provider contributes its completed sports / total sports
+        # This gives smooth progress across the entire tier
         total_p = state.get("total_providers", 0)
         completed_p = state.get("completed_providers", 0)
-        if total_p > 0:
+        progress_pct = 0
+        providers_dict = state.get("providers", {})
+        if providers_dict:
+            total_sports_all = 0
+            completed_sports_all = 0
+            for prov in providers_dict.values():
+                total_sports_all += prov.get("sports_total", 0)
+                completed_sports_all += prov.get("sports_completed", 0)
+            if total_sports_all > 0:
+                progress_pct = (completed_sports_all / total_sports_all) * 100
+        elif total_p > 0:
+            # Fallback to provider-level if no provider detail available
             progress_pct = (completed_p / total_p) * 100
 
         tiers[tier_name] = {
@@ -320,6 +341,7 @@ async def get_tier_progress():
             "current_provider": state.get("current_provider"),
             "completed_providers": completed_p,
             "total_providers": total_p,
+            "providers": state.get("providers", {}),
         }
 
     # Check if ANY tier is running

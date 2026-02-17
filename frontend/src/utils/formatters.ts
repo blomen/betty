@@ -179,6 +179,38 @@ export function formatRetention(retention: number): { text: string; color: strin
   return { text: `${retention.toFixed(1)}%`, color: 'text-red-400' };
 }
 
+// ============ TTK (Time-to-Kickoff) Utilities ============
+
+/** Hours from now until event start. Returns null if no start time. */
+export function getTTKFromNow(startTime: string | null | undefined): number | null {
+  if (!startTime) return null;
+  try {
+    const start = new Date(startTime).getTime();
+    const now = Date.now();
+    return Math.max(0, (start - now) / (1000 * 60 * 60));
+  } catch { return null; }
+}
+
+/** Format TTK hours to compact label: 45m, 5h, 4d 2h */
+export function formatTTKLabel(hours: number | null): string {
+  if (hours === null) return '-';
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  const days = Math.floor(hours / 24);
+  const remainHours = Math.round(hours % 24);
+  if (remainHours === 0) return `${days}d`;
+  return `${days}d ${remainHours}h`;
+}
+
+/** Get color class for TTK tier: closer = more accurate = greener */
+export function getTTKColor(hours: number | null): string {
+  if (hours === null) return 'text-muted';
+  if (hours <= 1) return 'text-success';
+  if (hours <= 6) return 'text-accent';
+  if (hours <= 24) return 'text-warning';
+  return 'text-muted2';
+}
+
 // ============ Markdown Table Formatters for Terminal Output ============
 
 import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArbOpportunity } from '@/types';

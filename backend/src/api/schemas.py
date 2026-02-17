@@ -81,6 +81,23 @@ class BetCreate(BaseModel):
     stake_noise_applied: Optional[float] = None
 
 
+class BatchBetLeg(BaseModel):
+    """Single leg in a batch (dutch) bet placement."""
+    event_id: Optional[str] = None
+    provider_id: str
+    market: Optional[str] = None
+    outcome: Optional[str] = None
+    odds: float
+    stake: float
+    is_bonus: bool = False
+    bonus_type: Optional[str] = None
+
+
+class BatchBetCreate(BaseModel):
+    """Place multiple legs at once (dutch bet)."""
+    legs: list[BatchBetLeg]
+
+
 class BetUpdate(BaseModel):
     result: str  # "won", "lost", "void"
     payout: float = 0.0

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import type { SpecialItem, SpecialsFilters, StakePreviewResult, BoostExtractionLog } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
+import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -25,8 +25,6 @@ export function SpecialsPage() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isPlacing, setIsPlacing] = useState(false);
   const [placementError, setPlacementError] = useState<string | null>(null);
-  const [extractionLog, setExtractionLog] = useState<BoostExtractionLog | null>(null);
-  const [showLog, setShowLog] = useState(false);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
@@ -34,14 +32,10 @@ export function SpecialsPage() {
   const fetchData = useCallback(async () => {
     setIsLoading(true); setError(null);
     try {
-      const [data, logData] = await Promise.all([
-        api.getSpecials({}),
-        api.getBoostExtractionLog(),
-      ]);
+      const data = await api.getSpecials({});
       setSpecials(data.specials || []);
       setScrapedAt(data.scraped_at);
       if (data.filters) setFilters(data.filters);
-      setExtractionLog(logData.log);
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load boosts'); }
     finally { setIsLoading(false); }
   }, []);
@@ -84,12 +78,13 @@ export function SpecialsPage() {
     return result;
   }, [grouped, selectedProviders]);
 
-  type SpecialsSortCol = 'odds' | 'prob' | 'max' | 'edge';
+  type SpecialsSortCol = 'odds' | 'prob' | 'max' | 'edge' | 'ttk';
   const specialsSortExtractors = useMemo(() => ({
     odds:  (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
     prob:  (g: GroupedSpecial) => g.rep.original_odds && g.rep.original_odds > 1 ? 100 / g.rep.original_odds : 0,
     max:   (g: GroupedSpecial) => g.rep.max_stake ?? 0,
-    edge:  (g: GroupedSpecial) => g.rep.edge_pct ?? 0,
+    edge:  (g: GroupedSpecial) => g.rep.boost_pct ?? 0,
+    ttk:   (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
   }), []);
   const { sorted: sortedSpecials, sort: specialsSort, toggle: toggleSpecialsSort } =
     useTableSort<GroupedSpecial, SpecialsSortCol>(activeGroups, specialsSortExtractors, { column: 'edge', direction: 'desc' });
@@ -147,56 +142,6 @@ export function SpecialsPage() {
 
       {error && <div className="text-error text-sm bg-error/10 px-3 py-2 border border-error/20">{error}</div>}
 
-      {extractionLog && (
-        <div className="border border-border bg-panel">
-          <button
-            onClick={() => setShowLog(!showLog)}
-            className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] text-muted hover:text-text transition-colors"
-          >
-            <span className="uppercase tracking-wider">
-              Extraction Log
-              <span className="text-muted2 ml-2">
-                {extractionLog.providers.filter(p => p.status === 'success').length}/{extractionLog.providers.length} ok
-                {' · '}{extractionLog.total_boosts} boosts
-                {' · '}{extractionLog.duration_seconds.toFixed(0)}s
-              </span>
-            </span>
-            <span className="text-muted2">{showLog ? '▲' : '▼'}</span>
-          </button>
-          {showLog && (
-            <div className="border-t border-border">
-              <table className="sq text-[11px]">
-                <thead>
-                  <tr>
-                    <th>Provider</th>
-                    <th className="text-right">Type</th>
-                    <th className="text-right">Boosts</th>
-                    <th className="text-right">Time</th>
-                    <th className="text-right">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {extractionLog.providers.map(p => (
-                    <tr key={p.provider_id}>
-                      <td className="text-text">{formatProviderName(p.provider_id)}</td>
-                      <td className="text-right text-muted">{p.scraper_type}</td>
-                      <td className="text-right text-text">{p.boosts_found}</td>
-                      <td className="text-right text-muted">{p.duration_seconds.toFixed(1)}s</td>
-                      <td className="text-right">
-                        {p.status === 'success'
-                          ? <span className="text-success">ok</span>
-                          : <span className="text-error" title={p.error_message || ''}>{p.error_message ? p.error_message.slice(0, 40) : 'failed'}</span>
-                        }
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
       {filters && (
         <FilterBar>
           <MultiSelectDropdown label="Provider" options={filters.providers} selected={selectedProviders} onToggle={toggleProvider} onClear={() => { setSelectedProviders(new Set()); setExpandedIdx(null); }} format={formatProviderName} accentColor="tabBonus" />
@@ -214,6 +159,7 @@ export function SpecialsPage() {
               <th className="text-right">Providers</th>
               <SortableHeader column="odds" label="Odds" sort={specialsSort} onToggle={toggleSpecialsSort} />
               <SortableHeader column="prob" label="Prob" sort={specialsSort} onToggle={toggleSpecialsSort} />
+              <SortableHeader column="ttk" label="TTK" sort={specialsSort} onToggle={toggleSpecialsSort} />
               <SortableHeader column="max" label="Max" sort={specialsSort} onToggle={toggleSpecialsSort} />
               <SortableHeader column="edge" label="Edge" sort={specialsSort} onToggle={toggleSpecialsSort} />
             </tr>
@@ -253,11 +199,14 @@ export function SpecialsPage() {
                       </div>
                     </td>
                     <td className="text-right text-muted text-sm">{s.original_odds != null && s.original_odds > 1 ? `${(100 / s.original_odds).toFixed(0)}%` : '-'}</td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
                     <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
                     <td className="text-right">
-                      {s.edge_pct != null ? (
-                        <span className={`font-semibold text-sm ${s.edge_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
-                          {s.edge_pct > 0 ? '+' : ''}{s.edge_pct.toFixed(1)}%
+                      {s.boost_pct != null ? (
+                        <span className={`font-semibold text-sm ${s.boost_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
+                          {s.boost_pct > 0 ? '+' : ''}{s.boost_pct.toFixed(1)}%
                         </span>
                       ) : (
                         <span className="text-muted2 text-sm">-</span>
@@ -266,7 +215,7 @@ export function SpecialsPage() {
                   </tr>
                   {isExpanded && (
                     <tr key={`${group.key}-exp`}>
-                      <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
                         <ExpandedRow
                           special={s}
                           groupKey={group.key}

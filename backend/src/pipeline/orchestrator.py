@@ -456,6 +456,10 @@ class ExtractionPipeline:
                     # Only extract sports in ALLOWED_SPORTS
                     all_sports = set(s.kambi_sport for s in self.engine.sports)
                     target_sports = sorted(s for s in all_sports if s in ALLOWED_SPORTS)
+
+                    if self.metrics:
+                        self.metrics.set_provider_total_sports("pinnacle", len(target_sports))
+
                     pinnacle_result = await asyncio.wait_for(
                         self._extract_provider(
                             "pinnacle",
@@ -664,6 +668,10 @@ class ExtractionPipeline:
                                 provider_sports.sort(key=lambda s: pin_event_counts.get(s, 0), reverse=True)
                         else:
                             provider_sports = kambi_sports
+
+                        # Set total sports count for progress tracking
+                        if self.metrics:
+                            self.metrics.set_provider_total_sports(provider_id, len(provider_sports))
 
                         # Use retry wrapper with timeout enforcement
                         provider_results = await asyncio.wait_for(
@@ -882,6 +890,7 @@ class ExtractionPipeline:
 
         if self.metrics:
             self.metrics.start_provider("polymarket")
+            self.metrics.set_provider_total_sports("polymarket", 1)
 
         # Track per-sport metrics: {sport: {"events": N, "odds": N}}
         sport_counts = {}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
+import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import type { Opportunity } from '@/types';
 
@@ -121,6 +122,7 @@ export function ReversePage() {
               <th className="text-right">Pin Odds</th>
               <th className="text-right">Consensus</th>
               <th className="text-right">Prob</th>
+              <th className="text-right">TTK</th>
               <th className="text-right">Stake</th>
               <th className="text-right">Edge</th>
             </tr>
@@ -152,6 +154,9 @@ export function ReversePage() {
                     <td className="text-right text-muted text-sm">
                       {opp.fair_odds && opp.fair_odds > 1 ? `${(100 / opp.fair_odds).toFixed(0)}%` : '-'}
                     </td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
                     <td className="text-right text-sm font-medium">
                       {hasStake ? (
                         <span className="text-text">{opp.final_stake!.toFixed(0)} kr</span>
@@ -162,7 +167,7 @@ export function ReversePage() {
 
                   {isSelected && !isSkipped && (
                     <tr key={`${opp.id}-expanded`}>
-                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           <div>
                             <span className="text-muted2 uppercase tracking-wider">Kelly: </span>

@@ -11,6 +11,7 @@ All tiers run on startup, then repeat at their configured interval.
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
@@ -260,6 +261,8 @@ class ExtractionScheduler:
 
     async def _boosts_loop(self, interval_seconds: int):
         """Recurring loop for oddsboost scraping."""
+        from src.api.state import update_tier_state
+
         while True:
             try:
                 logger.info("[Scheduler:boosts] Starting boost scrape")
@@ -267,9 +270,12 @@ class ExtractionScheduler:
                 logger.info("[Scheduler:boosts] Boost scrape complete")
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Loop cancelled")
+                update_tier_state("boosts", running=False)
                 break
             except Exception as e:
                 logger.error(f"[Scheduler:boosts] Error: {e}", exc_info=True)
+            finally:
+                update_tier_state("boosts", running=False, completed_providers=1, last_run=datetime.now(timezone.utc).isoformat())
 
             try:
                 await asyncio.sleep(interval_seconds)
@@ -280,6 +286,7 @@ class ExtractionScheduler:
         """Execute the boost scraper in a thread executor."""
         import sys
         from dataclasses import asdict
+        from src.api.state import update_tier_state
         from src.paths import get_bundle_dir
         # Ensure scripts/ package is importable (lives in bundle root / backend/)
         _root = str(get_bundle_dir())
@@ -288,6 +295,8 @@ class ExtractionScheduler:
         from scripts.scrape_specials import scrape_all, save_specials
         from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, store_specials_to_db
         from src.db.models import get_session
+
+        update_tier_state("boosts", running=True, start_time=datetime.now(timezone.utc), total_providers=1, completed_providers=0)
 
         loop = asyncio.get_running_loop()
         specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
@@ -609,11 +618,25 @@ class ExtractionScheduler:
                         "status": status,
                         "events": pm.total_events,
                         "odds": pm.total_odds,
-                        "duration_seconds": pm.duration_seconds,
+                        "duration_seconds": round(time.time() - pm.start_time, 1) if not pm.is_complete else pm.duration_seconds,
                         "error": pm.error,
                         "sports_completed": pm.sports_succeeded,
-                        "sports_total": pm.sports_attempted,
+                        "sports_total": pm.total_sports_configured or pm.sports_attempted,
+                        "current_sport": None,
+                        "sports": {},
                     }
+
+                    # Build per-sport breakdown from SportMetrics
+                    for sport_name, sm in pm.sports.items():
+                        if not sm.is_complete:
+                            providers_state[pid]["current_sport"] = sport_name
+                        providers_state[pid]["sports"][sport_name] = {
+                            "status": "completed" if sm.is_complete else "running",
+                            "success": sm.success if sm.is_complete else None,
+                            "events": sm.events_processed,
+                            "odds": sm.odds_processed,
+                            "duration": round(sm.duration_seconds, 1) if sm.is_complete else round(time.time() - sm.start_time, 1),
+                        }
 
                 db.expire_all()
 

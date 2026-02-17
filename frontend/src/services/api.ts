@@ -287,6 +287,26 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
 
 // ============ Extraction Progress Types ============
 
+export interface ProviderSportProgress {
+  status: string;
+  success: boolean | null;
+  events: number;
+  odds: number;
+  duration: number;
+}
+
+export interface ProviderProgress {
+  status: string;
+  events: number;
+  odds: number;
+  duration_seconds: number;
+  error: string | null;
+  sports_completed: number;
+  sports_total: number;
+  current_sport: string | null;
+  sports: Record<string, ProviderSportProgress>;
+}
+
 export interface ExtractionProgress {
   running: boolean;
   last_run: string | null;
@@ -298,15 +318,7 @@ export interface ExtractionProgress {
   current_provider: string | null;
   completed_providers: number;
   total_providers: number;
-  providers: Record<string, {
-    status: string;
-    events: number;
-    odds: number;
-    duration_seconds: number;
-    error: string | null;
-    sports_completed: number;
-    sports_total: number;
-  }>;
+  providers: Record<string, ProviderProgress>;
 }
 
 // Per-tier progress
@@ -320,6 +332,7 @@ export interface TierProgress {
   current_provider: string | null;
   completed_providers: number;
   total_providers: number;
+  providers: Record<string, ProviderProgress>;
 }
 
 export interface TiersProgressResponse {
@@ -594,6 +607,45 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+  },
+
+  async createBatchBets(legs: {
+    event_id?: string;
+    provider_id: string;
+    market?: string;
+    outcome?: string;
+    odds: number;
+    stake: number;
+    is_bonus?: boolean;
+  }[]): Promise<{
+    success: boolean;
+    placed_count: number;
+    total_legs: number;
+    total_staked: number;
+    results: {
+      leg_index: number;
+      provider_id: string;
+      outcome: string;
+      success: boolean;
+      error?: string;
+      bet_id?: number;
+      stake?: number;
+      odds?: number;
+    }[];
+  }> {
+    return fetchJson('/bets/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ legs }),
+    });
+  },
+
+  async closeStartedBets(): Promise<{
+    success: boolean;
+    processed: number;
+    updated: number;
+  }> {
+    return fetchJson('/bets/close-started', { method: 'POST' });
   },
 
   async settleBet(

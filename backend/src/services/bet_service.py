@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, Bet, ProviderRiskProfile, Odds, ProfileProviderBonus
+from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
 from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
@@ -185,3 +185,57 @@ class BetService:
         # CLV% = (bet_odds / closing_odds - 1) * 100
         clv = (bet.odds / pinnacle_odds.odds - 1) * 100
         return round(clv, 2)
+
+    def snapshot_closing_odds(self) -> dict:
+        """
+        For all pending bets on events that have already started (start_time <= now),
+        snapshot the current Pinnacle odds as closing_odds and compute CLV.
+
+        This should be called periodically (e.g., during extraction cleanup) to
+        capture CLV before the odds/events are cleaned up from the database.
+
+        Returns: {"processed": int, "updated": int}
+        """
+        now = datetime.utcnow()
+
+        # Find pending bets where closing_odds is not yet set,
+        # joined with events that have already started
+        pending_bets = (
+            self.db.query(Bet)
+            .join(Event, Event.id == Bet.event_id)
+            .filter(
+                Bet.result == "pending",
+                Bet.closing_odds.is_(None),
+                Bet.event_id.isnot(None),
+                Event.start_time.isnot(None),
+                Event.start_time <= now,
+            )
+            .all()
+        )
+
+        processed = 0
+        updated = 0
+
+        for bet in pending_bets:
+            processed += 1
+            if not bet.outcome or not bet.market:
+                continue
+
+            pinnacle_odds = self.db.query(Odds).filter(
+                Odds.event_id == bet.event_id,
+                Odds.provider_id.in_(SHARP_PROVIDERS),
+                Odds.market == bet.market,
+                Odds.outcome == bet.outcome,
+            ).first()
+
+            if not pinnacle_odds or pinnacle_odds.odds <= 1.0:
+                continue
+
+            bet.closing_odds = pinnacle_odds.odds
+            bet.clv_pct = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
+            updated += 1
+
+        if updated > 0:
+            logger.info(f"[BetService] Snapshot closing odds: {updated}/{processed} bets updated")
+
+        return {"processed": processed, "updated": updated}

@@ -177,6 +177,9 @@ export interface Bet {
   away_team?: string | null;
   clv_pct?: number | null;
   closing_odds?: number | null;
+  start_time?: string | null;
+  edge_pct?: number | null;
+  selection_probability?: number | null;
 }
 
 // Profile

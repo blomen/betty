@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
+import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -100,12 +101,13 @@ export function PolymarketPage() {
     return vb.outcome;
   };
 
-  type PolySortCol = 'odds' | 'fair' | 'stake' | 'edge';
+  type PolySortCol = 'odds' | 'fair' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
     odds:  (vb: PolymarketValueBet) => vb.polymarket_odds,
     fair:  (vb: PolymarketValueBet) => vb.fair_odds,
     stake: (vb: PolymarketValueBet) => vb.final_stake ?? 0,
     edge:  (vb: PolymarketValueBet) => vb.edge_pct,
+    ttk:   (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
   }), []);
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
     useTableSort<PolymarketValueBet, PolySortCol>(valueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
@@ -150,6 +152,7 @@ export function PolymarketPage() {
               <th className="text-right">Outcome</th>
               <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />
+              <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
             </tr>
@@ -179,6 +182,9 @@ export function PolymarketPage() {
                     <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
                     <td className="text-right text-text text-sm font-medium">{vb.polymarket_odds.toFixed(2)}</td>
                     <td className="text-right text-muted text-sm">{vb.fair_odds.toFixed(2)}</td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
                     <td className="text-right text-sm font-medium text-text">{hasStake ? `${vb.final_stake!.toFixed(0)} kr` : '-'}</td>
                     <td className="text-right text-tabPolymarket font-semibold text-sm">+{vb.edge_pct.toFixed(1)}%</td>
                   </tr>
@@ -191,7 +197,7 @@ export function PolymarketPage() {
 
                     return (
                     <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
-                      <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
                         {/* Top row: Kelly, Odds (editable), Return, Line — uniform with ValuePage */}
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           {vb.kelly_fraction != null && (
