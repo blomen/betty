@@ -24,8 +24,12 @@ export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isPr
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            <path d="M2 12h20" />
+            <polygon points="12,7 14.5,8.8 13.5,11.5 10.5,11.5 9.5,8.8" />
+            <line x1="12" y1="2" x2="12" y2="7" />
+            <line x1="14.5" y1="8.8" x2="21" y2="6.5" />
+            <line x1="13.5" y1="11.5" x2="19.5" y2="16" />
+            <line x1="10.5" y1="11.5" x2="4.5" y2="16" />
+            <line x1="9.5" y1="8.8" x2="3" y2="6.5" />
           </svg>
         </button>
         <button

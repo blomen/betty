@@ -274,9 +274,10 @@ async def scrape_specials():
     from dataclasses import asdict
 
     loop = asyncio.get_running_loop()
-    specials = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
+    specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
 
     save_specials(specials)
+    _persist_boost_log(run_log)
     active = _filter_expired([asdict(s) for s in specials])
 
     # Sort by boost_pct desc by default
@@ -286,6 +287,76 @@ async def scrape_specials():
         "specials": active,
         "count": len(active),
         "scraped_at": specials[0].scraped_at if specials else None,
+    }
+
+
+def _persist_boost_log(run_log):
+    """Persist boost extraction log to DB (used by manual /scrape endpoint)."""
+    from ...db.models import BoostExtractionLog, get_session
+
+    try:
+        session = get_session()
+        scraped_at = datetime.fromisoformat(run_log.scraped_at) if run_log.scraped_at else datetime.utcnow()
+
+        session.query(BoostExtractionLog).delete()
+
+        for pl in run_log.providers:
+            session.add(BoostExtractionLog(
+                run_id=run_log.run_id,
+                scraped_at=scraped_at,
+                provider_id=pl.provider_id,
+                scraper_type=pl.scraper_type,
+                status=pl.status,
+                duration_seconds=pl.duration_seconds,
+                boosts_found=pl.boosts_found,
+                error_message=pl.error_message,
+                run_total_boosts=run_log.total_boosts,
+                run_duration_seconds=run_log.duration_seconds,
+            ))
+
+        session.commit()
+    except Exception as e:
+        logger.error(f"Failed to persist boost log: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+@router.get("/extraction-log")
+async def get_boost_extraction_log(db: Session = Depends(get_db)):
+    """Get the latest boost extraction log."""
+    from ...db.models import BoostExtractionLog
+
+    rows = db.query(BoostExtractionLog).order_by(BoostExtractionLog.id.asc()).all()
+    if not rows:
+        return {"log": None}
+
+    providers = []
+    for r in rows:
+        providers.append({
+            "provider_id": r.provider_id,
+            "scraper_type": r.scraper_type,
+            "status": r.status,
+            "duration_seconds": r.duration_seconds,
+            "boosts_found": r.boosts_found,
+            "error_message": r.error_message,
+        })
+
+    first = rows[0]
+    return {
+        "log": {
+            "run_id": first.run_id,
+            "scraped_at": first.scraped_at.isoformat() if first.scraped_at else None,
+            "total_boosts": first.run_total_boosts,
+            "duration_seconds": first.run_duration_seconds,
+            "providers": providers,
+        }
     }
 
 

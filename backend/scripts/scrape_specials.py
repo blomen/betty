@@ -16,7 +16,8 @@ Usage:
 import argparse
 import json
 import re
-from dataclasses import dataclass, asdict, replace
+import time
+from dataclasses import dataclass, asdict, replace, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -120,6 +121,27 @@ class Special:
     shared_providers: Optional[list] = None  # providers sharing this boost
 
 
+@dataclass
+class BoostProviderLog:
+    """Metrics for a single provider's boost scrape."""
+    provider_id: str
+    scraper_type: str
+    status: str = "success"  # success, failed, skipped
+    duration_seconds: float = 0.0
+    boosts_found: int = 0
+    error_message: Optional[str] = None
+
+
+@dataclass
+class BoostRunLog:
+    """Aggregate log for an entire boost scrape run."""
+    run_id: str = ""
+    scraped_at: str = ""
+    total_boosts: int = 0
+    duration_seconds: float = 0.0
+    providers: list = field(default_factory=list)  # list[BoostProviderLog]
+
+
 def detect_sport(text: str) -> str:
     """Detect sport from text using keywords."""
     text_lower = text.lower()
@@ -168,8 +190,11 @@ def _load_boost_config() -> list[dict]:
         return []
 
 
-async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
-    """Scrape odds boosts from all configured providers in providers.yaml."""
+async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], list[BoostProviderLog]]:
+    """Scrape odds boosts from all configured providers in providers.yaml.
+
+    Returns (specials, provider_logs) tuple.
+    """
     try:
         from patchright.async_api import async_playwright
     except ImportError:
@@ -178,15 +203,16 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
         except ImportError:
             if verbose:
                 print("  [provider_boosts] playwright not installed, skipping")
-            return []
+            return [], []
 
     boost_configs = _load_boost_config()
     if not boost_configs:
         if verbose:
             print("  No enabled boost configs found in providers.yaml")
-        return []
+        return [], []
 
     all_boosts: list[Special] = []
+    provider_logs: list[BoostProviderLog] = []
     now_iso = datetime.now().isoformat()
 
     # Separate API-based scrapers (no browser needed) from browser-based ones
@@ -199,6 +225,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
         provider_id = cfg["primary_provider"]
         boost_url = cfg["url"]
         shared = cfg["shared_with"]
+        t0 = time.monotonic()
 
         if verbose:
             print(f"  [{cfg['name']}] {provider_id}: {boost_url or cfg.get('integration','')} (type={cfg['type']})")
@@ -222,9 +249,19 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
             for b in boosts:
                 b.shared_providers = shared if shared else None
             all_boosts.extend(boosts)
+            provider_logs.append(BoostProviderLog(
+                provider_id=provider_id, scraper_type=cfg["type"],
+                status="success", duration_seconds=round(time.monotonic() - t0, 2),
+                boosts_found=len(boosts),
+            ))
             if verbose:
                 print(f"  {provider_id}: {len(boosts)} boosts found")
         except Exception as e:
+            provider_logs.append(BoostProviderLog(
+                provider_id=provider_id, scraper_type=cfg["type"],
+                status="failed", duration_seconds=round(time.monotonic() - t0, 2),
+                error_message=str(e)[:500],
+            ))
             if verbose:
                 print(f"  {provider_id} failed: {e}")
 
@@ -247,6 +284,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
                     boost_url = cfg["url"]
                     boost_type = cfg["type"]
                     shared = cfg["shared_with"]
+                    t0 = time.monotonic()
 
                     if verbose:
                         print(f"  [{cfg['name']}] {provider_id}: {boost_url} (type={boost_type})")
@@ -278,11 +316,21 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
                             b.shared_providers = shared if shared else None
 
                         all_boosts.extend(boosts)
+                        provider_logs.append(BoostProviderLog(
+                            provider_id=provider_id, scraper_type=boost_type,
+                            status="success", duration_seconds=round(time.monotonic() - t0, 2),
+                            boosts_found=len(boosts),
+                        ))
                         if verbose:
                             print(f"  {provider_id}: {len(boosts)} boosts found")
                             if shared:
                                 print(f"    (also available on: {', '.join(shared)})")
                     except Exception as e:
+                        provider_logs.append(BoostProviderLog(
+                            provider_id=provider_id, scraper_type=boost_type,
+                            status="failed", duration_seconds=round(time.monotonic() - t0, 2),
+                            error_message=str(e)[:500],
+                        ))
                         if verbose:
                             print(f"  {provider_id} failed: {e}")
                             import traceback
@@ -293,7 +341,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> list[Special]:
             if verbose:
                 print(f"  Browser launch failed: {e}")
 
-    return all_boosts
+    return all_boosts, provider_logs
 
 
 async def _scrape_kambi_boosts(
@@ -1924,11 +1972,14 @@ def deduplicate_specials(specials: list[Special]) -> list[Special]:
     return unique
 
 
-def scrape_all(verbose: bool = False) -> list[Special]:
-    """Run all scrapers and return aggregated results."""
+def scrape_all(verbose: bool = False) -> tuple[list[Special], BoostRunLog]:
+    """Run all scrapers and return (specials, run_log) tuple."""
     import asyncio
+    import uuid
 
+    run_start = time.monotonic()
     all_specials: list[Special] = []
+    provider_logs: list[BoostProviderLog] = []
 
     if verbose:
         print("Scraping provider boost pages...")
@@ -1942,13 +1993,15 @@ def scrape_all(verbose: bool = False) -> list[Special]:
         if loop and loop.is_running():
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                provider_boosts = pool.submit(
+                result = pool.submit(
                     lambda: asyncio.run(scrape_provider_boosts(verbose=verbose))
                 ).result(timeout=180)
         else:
-            provider_boosts = asyncio.run(scrape_provider_boosts(verbose=verbose))
+            result = asyncio.run(scrape_provider_boosts(verbose=verbose))
+
+        provider_boosts, provider_logs = result
     except RuntimeError:
-        provider_boosts = asyncio.run(scrape_provider_boosts(verbose=verbose))
+        provider_boosts, provider_logs = asyncio.run(scrape_provider_boosts(verbose=verbose))
     except Exception as e:
         if verbose:
             print(f"  Provider scraping failed: {e}")
@@ -1961,7 +2014,15 @@ def scrape_all(verbose: bool = False) -> list[Special]:
     if verbose:
         print(f"\nTotal: {len(all_specials)} raw, {len(unique)} unique boosts")
 
-    return unique
+    run_log = BoostRunLog(
+        run_id=str(uuid.uuid4())[:8],
+        scraped_at=datetime.now().isoformat(),
+        total_boosts=len(unique),
+        duration_seconds=round(time.monotonic() - run_start, 2),
+        providers=provider_logs,
+    )
+
+    return unique, run_log
 
 
 def save_specials(specials: list[Special], path: Optional[Path] = None) -> Path:
@@ -2015,7 +2076,13 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
-    specials = scrape_all(verbose=args.verbose)
+    specials, run_log = scrape_all(verbose=args.verbose)
+
+    if args.verbose and run_log.providers:
+        print(f"\n  Run: {run_log.duration_seconds:.1f}s total, {run_log.total_boosts} boosts")
+        for pl in run_log.providers:
+            status_str = f"{pl.boosts_found} boosts" if pl.status == "success" else f"FAILED: {pl.error_message}"
+            print(f"    {pl.provider_id}: {status_str} ({pl.duration_seconds:.1f}s)")
 
     if not specials:
         print("No boosts found.")

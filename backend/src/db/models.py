@@ -477,6 +477,27 @@ class SportRunMetrics(Base):
     provider_metrics = relationship("ProviderRunMetrics", back_populates="sport_errors")
 
 
+# ============ Boost Extraction Logging ============
+
+class BoostExtractionLog(Base):
+    """Per-provider metrics for each oddsboost scrape run."""
+    __tablename__ = "boost_extraction_logs"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)        # Groups providers from same run
+    scraped_at = Column(DateTime, nullable=False)
+    provider_id = Column(String, nullable=False)
+    scraper_type = Column(String)                   # kambi, altenar, gecko_v2, etc.
+    status = Column(String, nullable=False)         # success, failed, skipped
+    duration_seconds = Column(Float, default=0.0)
+    boosts_found = Column(Integer, default=0)
+    error_message = Column(Text)
+
+    # Run-level totals (denormalized for easy querying — same for all rows in a run)
+    run_total_boosts = Column(Integer, default=0)
+    run_duration_seconds = Column(Float, default=0.0)
+
+
 # ============ Risk Management ============
 
 class ProviderRiskProfile(Base):

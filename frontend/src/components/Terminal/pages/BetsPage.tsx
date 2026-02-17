@@ -90,7 +90,7 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   );
 }
 
-function CLVChart({ bets }: { bets: Bet[] }) {
+export function CLVChart({ bets }: { bets: Bet[] }) {
   const data = useMemo(() => {
     return bets
       .filter(b => b.result !== 'pending' && b.clv_pct != null)
@@ -471,9 +471,15 @@ export function BetsPage() {
                           {p.avg_stake > 0 && (
                             <span className="text-muted2">{p.avg_stake} kr avg</span>
                           )}
-                          {estDays !== null && (
+                          {estDays !== null && days !== null ? (
+                            estDays <= days ? (
+                              <span className="text-success">~{estDays}d to clear</span>
+                            ) : (
+                              <span className="text-error">~{estDays}d to clear ({days}d left)</span>
+                            )
+                          ) : estDays !== null ? (
                             <span className="text-muted2">~{estDays}d to clear</span>
-                          )}
+                          ) : null}
                           {p.required_weekly_wagering > 0 && !onTrack && (
                             <span className="text-amber-400">need {p.required_weekly_wagering} kr/wk</span>
                           )}

@@ -287,12 +287,55 @@ class ExtractionScheduler:
         from scripts.scrape_specials import scrape_all, save_specials
 
         loop = asyncio.get_running_loop()
-        specials = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
+        specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
         if specials:
             save_specials(specials)
             logger.info(f"[Scheduler:boosts] Saved {len(specials)} boosts")
         else:
             logger.info("[Scheduler:boosts] No boosts found")
+
+        # Persist extraction log to DB
+        self._persist_boost_log(run_log)
+
+    def _persist_boost_log(self, run_log):
+        """Persist boost extraction log to DB."""
+        from src.db.models import BoostExtractionLog, get_session
+        from datetime import datetime as dt
+
+        try:
+            session = get_session()
+            scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.utcnow()
+
+            # Delete previous boost logs (keep only latest run)
+            session.query(BoostExtractionLog).delete()
+
+            for pl in run_log.providers:
+                session.add(BoostExtractionLog(
+                    run_id=run_log.run_id,
+                    scraped_at=scraped_at,
+                    provider_id=pl.provider_id,
+                    scraper_type=pl.scraper_type,
+                    status=pl.status,
+                    duration_seconds=pl.duration_seconds,
+                    boosts_found=pl.boosts_found,
+                    error_message=pl.error_message,
+                    run_total_boosts=run_log.total_boosts,
+                    run_duration_seconds=run_log.duration_seconds,
+                ))
+
+            session.commit()
+            logger.info(f"[Scheduler:boosts] Persisted log: {len(run_log.providers)} providers, {run_log.total_boosts} boosts in {run_log.duration_seconds:.1f}s")
+        except Exception as e:
+            logger.error(f"[Scheduler:boosts] Failed to persist log: {e}")
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     # ── Legacy interface (backwards-compatible) ────────────────────────
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
+import type { SpecialItem, SpecialsFilters, StakePreviewResult, BoostExtractionLog } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { FilterBar, MultiSelectDropdown, SingleSelectPills } from '../FilterBar';
@@ -25,14 +25,20 @@ export function SpecialsPage() {
   const [isPlacing, setIsPlacing] = useState(false);
   const [placementError, setPlacementError] = useState<string | null>(null);
   const [placingProvider, setPlacingProvider] = useState<string | null>(null);
+  const [extractionLog, setExtractionLog] = useState<BoostExtractionLog | null>(null);
+  const [showLog, setShowLog] = useState(false);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true); setError(null);
     try {
-      const data = await api.getSpecials({ category: categoryFilter || undefined });
+      const [data, logData] = await Promise.all([
+        api.getSpecials({ category: categoryFilter || undefined }),
+        api.getBoostExtractionLog(),
+      ]);
       setSpecials(data.specials || []);
       setScrapedAt(data.scraped_at);
       if (data.filters) setFilters(data.filters);
+      setExtractionLog(logData.log);
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load boosts'); }
     finally { setIsLoading(false); }
   }, [categoryFilter]);
@@ -102,7 +108,7 @@ export function SpecialsPage() {
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text flex items-center gap-2"><span className="w-2 h-2 bg-tabBonus" />Oddsboost</h2>
+          <h2 className="text-lg font-semibold text-text flex items-center gap-2"><span className="w-2 h-2 bg-tabBonus" />Specials</h2>
         </div>
         <div className="text-muted text-sm py-8 text-center">Loading...</div>
       </div>
@@ -113,13 +119,63 @@ export function SpecialsPage() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabBonus" />Oddsboost
+          <span className="w-2 h-2 bg-tabBonus" />Specials
           <span className="text-muted text-sm font-normal ml-1">({activeGroups.length})</span>
         </h2>
         {timeAgo && <span className="text-muted text-xs">{timeAgo}</span>}
       </div>
 
       {error && <div className="text-error text-sm bg-error/10 px-3 py-2 border border-error/20">{error}</div>}
+
+      {extractionLog && (
+        <div className="border border-border bg-panel">
+          <button
+            onClick={() => setShowLog(!showLog)}
+            className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] text-muted hover:text-text transition-colors"
+          >
+            <span className="uppercase tracking-wider">
+              Extraction Log
+              <span className="text-muted2 ml-2">
+                {extractionLog.providers.filter(p => p.status === 'success').length}/{extractionLog.providers.length} ok
+                {' · '}{extractionLog.total_boosts} boosts
+                {' · '}{extractionLog.duration_seconds.toFixed(0)}s
+              </span>
+            </span>
+            <span className="text-muted2">{showLog ? '▲' : '▼'}</span>
+          </button>
+          {showLog && (
+            <div className="border-t border-border">
+              <table className="sq text-[11px]">
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th className="text-right">Type</th>
+                    <th className="text-right">Boosts</th>
+                    <th className="text-right">Time</th>
+                    <th className="text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {extractionLog.providers.map(p => (
+                    <tr key={p.provider_id}>
+                      <td className="text-text">{formatProviderName(p.provider_id)}</td>
+                      <td className="text-right text-muted">{p.scraper_type}</td>
+                      <td className="text-right text-text">{p.boosts_found}</td>
+                      <td className="text-right text-muted">{p.duration_seconds.toFixed(1)}s</td>
+                      <td className="text-right">
+                        {p.status === 'success'
+                          ? <span className="text-success">ok</span>
+                          : <span className="text-error" title={p.error_message || ''}>{p.error_message ? p.error_message.slice(0, 40) : 'failed'}</span>
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {filters && (
         <FilterBar>

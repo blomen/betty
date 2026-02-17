@@ -1,17 +1,23 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/services/api';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
-import type { BankrollStats } from '@/types';
+import { CLVChart } from './BetsPage';
+import type { BankrollStats, Bet } from '@/types';
 
 export function StatsPage() {
   const [stats, setStats] = useState<BankrollStats | null>(null);
+  const [bets, setBets] = useState<Bet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const statsData = await api.getBankrollStats();
+      const [statsData, betsData] = await Promise.all([
+        api.getBankrollStats(),
+        api.getBets(undefined, 500),
+      ]);
       setStats(statsData);
+      setBets(betsData.bets);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
     } finally {
@@ -85,6 +91,37 @@ export function StatsPage() {
         </table>
         </div>
       )}
+
+      {/* CLV Stats */}
+      {stats && stats.clv_count > 0 && (
+        <div className="border-l-2 border-tabStats">
+          <table className="sq">
+            <thead>
+              <tr>
+                <th>Avg CLV</th>
+                <th className="text-right">+CLV Rate</th>
+                <th className="text-right">CLV Bets</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className={`text-2xl font-semibold ${stats.avg_clv >= 0 ? 'text-success' : 'text-error'}`}>
+                  {stats.avg_clv >= 0 ? '+' : ''}{stats.avg_clv.toFixed(1)}%
+                </td>
+                <td className="text-right text-text text-2xl font-semibold">
+                  {stats.clv_positive_pct.toFixed(0)}%
+                </td>
+                <td className="text-right text-muted text-2xl font-semibold">
+                  {stats.clv_count}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* CLV Trend Chart */}
+      <CLVChart bets={bets} />
     </div>
   );
 }

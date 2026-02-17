@@ -13,7 +13,7 @@ const SPORTS_TABS: Tab[] = [
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
-  { name: 'specials',   label: 'Oddsboost', color: '#A78BFA' },
+  { name: 'specials',   label: 'Specials',   color: '#A78BFA' },
 ];
 
 const STOCKS_TABS: Tab[] = [];

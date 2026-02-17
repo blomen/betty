@@ -71,6 +71,23 @@ export interface SpecialsResponse {
   filters?: SpecialsFilters;
 }
 
+export interface BoostProviderLogEntry {
+  provider_id: string;
+  scraper_type: string;
+  status: 'success' | 'failed' | 'skipped';
+  duration_seconds: number;
+  boosts_found: number;
+  error_message: string | null;
+}
+
+export interface BoostExtractionLog {
+  run_id: string;
+  scraped_at: string | null;
+  total_boosts: number;
+  duration_seconds: number;
+  providers: BoostProviderLogEntry[];
+}
+
 export interface StakePreviewResult {
   recommended_stake: number;
   kelly_fraction: number;
@@ -859,6 +876,10 @@ export const api = {
 
   async scrapeSpecials(): Promise<SpecialsResponse> {
     return fetchJson('/specials/scrape', { method: 'POST' });
+  },
+
+  async getBoostExtractionLog(): Promise<{ log: BoostExtractionLog | null }> {
+    return fetchJson('/specials/extraction-log');
   },
 
   async getBoostStakePreview(data: {
