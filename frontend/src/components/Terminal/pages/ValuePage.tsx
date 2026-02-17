@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useTableSort } from '@/hooks/useTableSort';
+import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import type { Opportunity, Provider } from '@/types';
@@ -17,7 +19,7 @@ interface ValuePageProps {
   providers: Provider[];
 }
 
-export function ValuePage(_props: ValuePageProps) {
+export function ValuePage({ providers }: ValuePageProps) {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -53,11 +55,16 @@ export function ValuePage(_props: ValuePageProps) {
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
+    // Include all known providers (from profiles/balances)
+    for (const p of providers) {
+      if (p.is_enabled) set.add(p.id);
+    }
+    // Also include any provider appearing in current opportunities
     for (const opp of opportunities) {
       if (opp.provider1) set.add(opp.provider1);
     }
     return Array.from(set).sort();
-  }, [opportunities]);
+  }, [providers, opportunities]);
 
   const grouped = useMemo(() => {
     let result = opportunities;
@@ -75,10 +82,10 @@ export function ValuePage(_props: ValuePageProps) {
     for (const [key, opps] of map) {
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
-    // Sort: only boost trigger/freebet when user actively filters to those providers
+    // Bonus-first when user actively filters to those providers
     const boostBonus = selectedProviders.size > 0;
-    groups.sort((a, b) => {
-      if (boostBonus) {
+    if (boostBonus) {
+      groups.sort((a, b) => {
         const aBonus = a.opps.some(o =>
           selectedProviders.has(o.provider1) &&
           (o.bonus_status === 'trigger_needed' || o.bonus_status === 'freebet_available')
@@ -87,16 +94,26 @@ export function ValuePage(_props: ValuePageProps) {
           selectedProviders.has(o.provider1) &&
           (o.bonus_status === 'trigger_needed' || o.bonus_status === 'freebet_available')
         ) ? 1 : 0;
-        if (aBonus !== bBonus) return bBonus - aBonus;
-      }
-      return (b.rep.edge_pct ?? 0) - (a.rep.edge_pct ?? 0);
-    });
+        return bBonus - aBonus;
+      });
+    }
     return groups;
   }, [opportunities, selectedProviders]);
 
+  type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge';
+  const valueSortExtractors = useMemo(() => ({
+    odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
+    fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
+    prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
+    stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
+    edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
+  }), []);
+  const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
+    useTableSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
+
   const filteredCount = useMemo(() =>
-    grouped.reduce((acc, g) => acc + g.opps.length, 0),
-  [grouped]);
+    sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
+  [sortedGroups]);
 
   const toggleProvider = (p: string) => {
     setSelectedProviders(prev => {
@@ -222,7 +239,7 @@ export function ValuePage(_props: ValuePageProps) {
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
-      ) : grouped.length === 0 ? (
+      ) : sortedGroups.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           {opportunities.length === 0
             ? 'No value bets found. Run extraction first.'
@@ -236,15 +253,15 @@ export function ValuePage(_props: ValuePageProps) {
               <th>Event</th>
               <th className="text-right">Providers</th>
               <th className="text-right">Outcome</th>
-              <th className="text-right">Odds</th>
-              <th className="text-right">Fair</th>
-              <th className="text-right">Prob</th>
-              <th className="text-right">Stake</th>
-              <th className="text-right">Edge</th>
+              <SortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />
+              <SortableHeader column="fair" label="Fair" sort={valueSort} onToggle={toggleValueSort} />
+              <SortableHeader column="prob" label="Prob" sort={valueSort} onToggle={toggleValueSort} />
+              <SortableHeader column="stake" label="Stake" sort={valueSort} onToggle={toggleValueSort} />
+              <SortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
             </tr>
           </thead>
           <tbody>
-            {grouped.map((group, idx) => {
+            {sortedGroups.map((group, idx) => {
               const { rep, opps, providers: groupProviders } = group;
               const isSelected = selectedGroup === idx;
               const hasStake = rep.final_stake != null && rep.final_stake > 0;

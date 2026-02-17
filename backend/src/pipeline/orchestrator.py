@@ -1131,9 +1131,12 @@ class ExtractionPipeline:
                         self.metrics.end_sport(
                             provider_id, sport,
                             events_processed=events_processed,
+                            events_new=events_new,
                             events_matched=events_matched,
                             events_unmatched=events_unmatched,
                             odds_processed=odds_processed,
+                            odds_new=odds_new,
+                            market_counts=market_counts,
                             success=True,
                         )
 

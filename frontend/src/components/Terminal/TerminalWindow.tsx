@@ -45,7 +45,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
       case 'value':
         return <ValuePage providers={context.providers} />;
       case 'dutch':
-        return <DutchPage />;
+        return <DutchPage providers={context.providers} />;
       case 'reverse':
         return <ReversePage />;
       case 'polymarket':

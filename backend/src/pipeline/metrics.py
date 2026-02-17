@@ -30,6 +30,8 @@ class SportMetrics:
     odds_new: int = 0
     success: bool = False
     error: Optional[str] = None
+    # Market breakdown (set by MetricsCollector.end_sport)
+    market_counts: Dict[str, int] = field(default_factory=dict)
 
     def end(self, success: bool = True, error: Optional[str] = None):
         """Mark sport extraction complete."""
@@ -285,6 +287,7 @@ class PipelineMetrics:
                             "events_unmatched": s.events_unmatched,
                             "odds_processed": s.odds_processed,
                             "odds_new": s.odds_new,
+                            "market_counts": s.market_counts,
                             "success": s.success,
                             "error": s.error
                         }
@@ -409,7 +412,8 @@ class MetricsCollector:
         odds_processed: int = 0,
         odds_new: int = 0,
         success: bool = True,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        market_counts: Optional[Dict[str, int]] = None,
     ):
         """
         Mark sport extraction complete.
@@ -425,6 +429,7 @@ class MetricsCollector:
             odds_new: Number of new odds
             success: Whether extraction succeeded
             error: Optional error message
+            market_counts: Dict of market type → count (1x2, spread, total, etc.)
         """
         with self._lock:
             if self._current_run and provider_id in self._current_run.providers:
@@ -437,11 +442,13 @@ class MetricsCollector:
                     success=success,
                     error=error
                 )
-                # Set match stats directly on sport metrics
+                # Set match stats and market counts directly on sport metrics
                 sport_metrics = self._current_run.providers[provider_id].sports.get(sport)
                 if sport_metrics:
                     sport_metrics.events_matched = events_matched
                     sport_metrics.events_unmatched = events_unmatched
+                    if market_counts:
+                        sport_metrics.market_counts = market_counts
 
     def record_retry(self, provider_id: str):
         """
@@ -591,6 +598,16 @@ class MetricsCollector:
 
             # Create provider metrics records
             for provider_id, pmetrics in run_metrics.providers.items():
+                # Aggregate market counts across sports for provider-level totals
+                prov_ml = 0
+                prov_spr = 0
+                prov_tot = 0
+                for smetrics in pmetrics.sports.values():
+                    mc = getattr(smetrics, 'market_counts', {}) or {}
+                    prov_ml += mc.get("1x2", 0) + mc.get("moneyline", 0)
+                    prov_spr += mc.get("spread", 0)
+                    prov_tot += mc.get("total", 0)
+
                 pm = ProviderRunMetrics(
                     run_id=run_metrics.run_id,
                     provider_id=provider_id,
@@ -603,6 +620,11 @@ class MetricsCollector:
                     odds_new=pmetrics.total_odds_new,
                     sports_attempted=pmetrics.sports_attempted,
                     sports_succeeded=pmetrics.sports_succeeded,
+                    events_matched=pmetrics.total_events_matched,
+                    events_unmatched=pmetrics.total_events_unmatched,
+                    ml_count=prov_ml,
+                    spread_count=prov_spr,
+                    total_count=prov_tot,
                     retries=pmetrics.retries,
                     cache_hits=pmetrics.cache_hits,
                     status='success' if pmetrics.success else 'failed',
@@ -613,14 +635,22 @@ class MetricsCollector:
 
                 # Create sport metrics
                 for sport, smetrics in pmetrics.sports.items():
+                    mc = getattr(smetrics, 'market_counts', {}) or {}
                     sm = SportRunMetrics(
                         run_id=run_metrics.run_id,
                         provider_run_id=pm.id,
                         provider_id=provider_id,
                         sport=sport,
                         events_extracted=smetrics.events_processed,
+                        events_new=smetrics.events_new,
                         odds_extracted=smetrics.odds_processed,
+                        odds_new=smetrics.odds_new,
                         duration_seconds=smetrics.duration_seconds,
+                        events_matched=smetrics.events_matched,
+                        events_unmatched=smetrics.events_unmatched,
+                        ml_count=mc.get("1x2", 0) + mc.get("moneyline", 0),
+                        spread_count=mc.get("spread", 0),
+                        total_count=mc.get("total", 0),
                         success=smetrics.success,
                         error_type='extraction_error' if smetrics.error else None,
                         error_message=smetrics.error

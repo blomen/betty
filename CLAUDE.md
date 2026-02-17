@@ -159,6 +159,22 @@ This keeps the system focused on the highest-value, most comparable market types
 - Event matching uses `thefuzz` for team name normalization
 - Shared constants in `constants.py` (ALLOWED_MARKETS, SHARP_PROVIDERS)
 
+### UI Uniformity Rule (IMPORTANT)
+**All tab pages must follow the same UI patterns. When adding a feature to one page, apply it to all similar pages.**
+
+Standard patterns:
+- **FilterBar** with `MultiSelectDropdown` for provider/sport filtering (shared component in `FilterBar.tsx`)
+- **Expanded rows** use `<select>` dropdown to pick provider + single bet button (not multiple per-provider buttons)
+- **Accent colors** per tab: `tabValue` (orange) for Soft, `tabBonus` (purple) for Specials, `success` (green) for Dutch
+- **Table structure**: compact `sq` class, consistent column naming (Event/Boost, Providers, Odds, Edge, etc.)
+- **EV data**: show `edge_pct` (vs Pinnacle fair odds) wherever available, not just `boost_pct` (vs original odds)
+
+Shared filter components in `frontend/src/components/Terminal/FilterBar.tsx`:
+- `MultiSelectDropdown` — compact popover with checkboxes + search (for >6 options)
+- `SingleSelectPills` — inline pill buttons for single-select categories
+- `MultiSelectPills` — inline pills for multi-select (available, not yet used)
+- `RangeFilter` — min/max number inputs (available, not yet used)
+
 ### Code Cleanup Rule (IMPORTANT)
 **If you find any redundant code handling markets other than 1x2/moneyline/spread/total, remove it immediately.**
 
@@ -425,113 +441,138 @@ db.close()
 - `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
 - `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
 
-## Extraction Log Analysis (STANDARD PROCEDURE)
+## Extraction Log Review (MANDATORY AFTER EVERY RUN)
 
-**When to run:** After any extraction to assess coverage, identify gaps, and find optimization opportunities.
+**Purpose:** After each extraction, review logs to find regressions, coverage gaps, and optimization opportunities. The extraction report is generated automatically and stored in the DB. Always check it for issues.
 
 **Database location:** `backend/data/degentraderxd.db`
 
-### Querying Extraction Logs
-
-**1. Extraction run overview:**
+### Step 1: Read the Extraction Report (always do this first)
 ```python
 cd backend && python -c "
 import sqlite3
 conn = sqlite3.connect('data/degentraderxd.db')
-conn.row_factory = sqlite3.Row
-c = conn.cursor()
-for r in c.execute('SELECT id, start_time, duration_seconds, providers_attempted, providers_succeeded, providers_failed, total_events, total_odds, trigger FROM extraction_runs ORDER BY start_time DESC LIMIT 5').fetchall():
-    d = dict(r)
-    print(f'{d[\"id\"][:12]}... | {d[\"start_time\"]} | {d[\"duration_seconds\"]:.0f}s | {d[\"providers_succeeded\"]}/{d[\"providers_attempted\"]} ok | {d[\"total_events\"]} events, {d[\"total_odds\"]} odds | {d[\"trigger\"]}')
+# Check all 3 tiers: 'sharp', 'api_soft', 'browser_soft'
+for tier in ('sharp', 'api_soft', 'browser_soft'):
+    r = conn.execute('SELECT report FROM extraction_runs WHERE trigger = ? ORDER BY start_time DESC LIMIT 1', (tier,)).fetchone()
+    if r: print(f'=== {tier.upper()} ==='); print(r[0])
 conn.close()
 "
 ```
 
-**2. Provider metrics per run (by trigger type):**
+The report shows: provider table (events, odds, 1x2/spread/total breakdown, match rate, speed), Pinnacle coverage delta, and ISSUES section. **Focus on the ISSUES section** — it flags:
+- `!` = Critical: failed providers, 0 events, low match rate
+- `~` = Warning: missing markets, slow extraction, rate limits, sport errors
+
+### Step 2: Diagnose Specific Issues
+
+**Provider with low match rate (< 50%):**
+```sql
+-- Check which sports are failing to match
+SELECT sport, events_extracted, events_matched, events_unmatched,
+       ml_count, spread_count, total_count
+FROM sport_run_metrics WHERE provider_id = '<pid>'
+ORDER BY events_unmatched DESC;
+```
+Root causes: sport name mismatch (check `sports.yaml` aliases), team name normalization gap, timezone date offset
+
+**Provider with missing spread/total:**
+```sql
+-- Check market breakdown per sport
+SELECT sport, ml_count, spread_count, total_count, odds_extracted
+FROM sport_run_metrics WHERE provider_id = '<pid>' AND odds_extracted > 0
+ORDER BY ml_count DESC;
+```
+Root causes: extractor not parsing spread/total DOM elements, dedup blocking multiple lines, point value not on outcomes
+
+**Provider with 0 events:**
+Check logs for DNS errors (patchright add_init_script), Cloudflare/Imperva blocks, site redesign, rate limiting. For browser providers: check if WS connection still works, DOM selectors still valid.
+
+**Slow provider (> 300s):**
+```sql
+-- Check per-sport timing to find the bottleneck
+SELECT sport, duration_seconds, events_extracted, odds_extracted
+FROM sport_run_metrics WHERE provider_id = '<pid>'
+ORDER BY duration_seconds DESC;
+```
+Root causes: too many leagues/pages to navigate, unnecessary waits, sequential instead of parallel, WS data not arriving
+
+### Step 3: Full Provider Metrics (with new fields)
 ```python
 cd backend && python -c "
 import sqlite3
 conn = sqlite3.connect('data/degentraderxd.db')
 conn.row_factory = sqlite3.Row
-c = conn.cursor()
-# Change trigger to: 'sharp', 'api_soft', 'browser_soft'
-for r in c.execute('''
-    SELECT prm.provider_id, prm.status, prm.duration_seconds, prm.events_processed, prm.events_new, prm.odds_processed, prm.odds_new, prm.error_message
+# Change trigger: 'sharp', 'api_soft', 'browser_soft'
+for r in conn.execute('''
+    SELECT prm.provider_id, prm.status, prm.duration_seconds,
+           prm.events_processed, prm.events_matched, prm.events_unmatched,
+           prm.odds_processed, prm.ml_count, prm.spread_count, prm.total_count,
+           prm.error_message
     FROM provider_run_metrics prm JOIN extraction_runs er ON prm.run_id = er.id
     WHERE er.trigger = 'api_soft' ORDER BY prm.odds_processed DESC
 ''').fetchall():
     d = dict(r)
-    err = f' ERR: {d[\"error_message\"][:60]}' if d['error_message'] else ''
-    print(f'{d[\"provider_id\"]:20s} | {d[\"status\"]:10s} | {d[\"duration_seconds\"]:6.1f}s | {d[\"events_processed\"]:4d} ev | {d[\"odds_processed\"]:5d} odds{err}')
+    matched = d['events_matched'] or 0
+    unmatched = d['events_unmatched'] or 0
+    total = matched + unmatched
+    rate = f'{100*matched/total:.0f}%' if total > 0 else '-'
+    err = f' ERR: {d[\"error_message\"][:50]}' if d['error_message'] else ''
+    print(f'{d[\"provider_id\"]:16s} | {d[\"duration_seconds\"]:5.0f}s | {d[\"events_processed\"]:4d} ev ({rate:>4} match) | {d[\"odds_processed\"]:5d} odds (ml={d[\"ml_count\"] or 0} spr={d[\"spread_count\"] or 0} tot={d[\"total_count\"] or 0}){err}')
 conn.close()
 "
 ```
 
-**3. Per-provider per-sport breakdown:**
+### Step 4: Per-Sport Breakdown (with matching + markets)
 ```python
 cd backend && python -c "
 import sqlite3
 from collections import defaultdict
 conn = sqlite3.connect('data/degentraderxd.db')
 conn.row_factory = sqlite3.Row
-c = conn.cursor()
-# Change trigger to: 'sharp', 'api_soft', 'browser_soft'
-rows = c.execute('''
-    SELECT srm.provider_id, srm.sport, srm.events_extracted, srm.odds_extracted, srm.duration_seconds, srm.error_message
+# Change trigger: 'sharp', 'api_soft', 'browser_soft'
+rows = conn.execute('''
+    SELECT srm.provider_id, srm.sport, srm.events_extracted, srm.odds_extracted,
+           srm.events_matched, srm.events_unmatched, srm.ml_count, srm.spread_count,
+           srm.total_count, srm.duration_seconds, srm.error_message
     FROM sport_run_metrics srm JOIN extraction_runs er ON srm.run_id = er.id
     WHERE er.trigger = 'browser_soft' ORDER BY srm.provider_id, srm.odds_extracted DESC
 ''').fetchall()
 by_p = defaultdict(list)
 for r in rows: by_p[r['provider_id']].append(dict(r))
 for p, sports in sorted(by_p.items()):
-    tot_odds = sum(s['odds_extracted'] for s in sports)
-    print(f'\n{p} ({tot_odds} odds):')
+    tot = sum(s['odds_extracted'] for s in sports)
+    print(f'\n{p} ({tot} odds):')
     for s in sports:
         if s['odds_extracted'] > 0 or s['events_extracted'] > 0:
-            print(f'  {s[\"sport\"]:15s}: {s[\"events_extracted\"]:4d} ev, {s[\"odds_extracted\"]:4d} odds, {s[\"duration_seconds\"]:5.1f}s')
+            m = s['events_matched'] or 0; u = s['events_unmatched'] or 0
+            rate = f'{100*m/(m+u):.0f}%' if (m+u) > 0 else '-'
+            print(f'  {s[\"sport\"]:15s}: {s[\"events_extracted\"]:3d} ev ({rate:>4} match), {s[\"odds_extracted\"]:4d} odds (ml={s[\"ml_count\"] or 0} spr={s[\"spread_count\"] or 0} tot={s[\"total_count\"] or 0}) {s[\"duration_seconds\"]:5.1f}s')
 conn.close()
 "
 ```
 
-**4. Full extraction report (human-readable):**
-```python
-cd backend && python -c "
-import sqlite3
-conn = sqlite3.connect('data/degentraderxd.db')
-# Change trigger to: 'sharp', 'api_soft', 'browser_soft'
-r = conn.execute('SELECT report FROM extraction_runs WHERE trigger = \"api_soft\" ORDER BY start_time DESC LIMIT 1').fetchone()
-if r: print(r[0])
-conn.close()
-"
-```
+### What to Look For (Optimization Checklist)
 
-**5. Specials/boost data analysis:**
-```python
-cd backend && python -c "
-import json
-from collections import Counter
-with open('data/specials.json') as f:
-    data = json.load(f)
-specials = data.get('specials', [])
-print(f'Total: {len(specials)} boosts, scraped: {data.get(\"scraped_at\")}')
-print('\nBy provider:')
-for p, c in Counter(s.get('provider') for s in specials).most_common():
-    has_orig = sum(1 for s in specials if s.get('provider') == p and s.get('original_odds'))
-    print(f'  {p:20s}: {c:3d} boosts ({has_orig} with original odds)')
-print('\nBy sport:')
-for p, c in Counter(s.get('sport') for s in specials).most_common():
-    print(f'  {p:20s}: {c}')
-"
-```
+| Signal | What it means | Action |
+|--------|---------------|--------|
+| Match rate < 70% | Fuzzy matching failing | Check `sports.yaml` aliases, team name normalization |
+| 0 spread OR 0 total | Extractor not parsing market type | Check extractor parser, run with debug logging |
+| ratio < 2.5 | Few odds per event | Missing market types or dedup too aggressive |
+| ratio > 5.0 | Good multi-market coverage | Reference provider for others |
+| events < 50 | Possibly broken or Pinnacle coverage gap | Check extractor logs, try manual extraction |
+| duration > 300s | Slow extraction | Profile per-sport timing, reduce waits |
+| sport errors | Individual sport failures | Usually timeouts — increase sport_timeout or reduce scope |
 
 ### Extraction Tables Schema
 
-| Table | Purpose | Key Fields |
-|-------|---------|-----------|
-| `extraction_runs` | Per-run aggregates | `id`, `start_time`, `duration_seconds`, `total_events`, `total_odds`, `trigger`, `report` |
-| `provider_run_metrics` | Per-provider per-run | `run_id`, `provider_id`, `events_processed`, `odds_processed`, `duration_seconds`, `status`, `error_message` |
-| `sport_run_metrics` | Per-sport per-provider per-run | `run_id`, `provider_id`, `sport`, `events_extracted`, `odds_extracted`, `duration_seconds`, `error_message` |
-| `boost_extraction_logs` | Oddsboost scrape metrics | `run_id`, `provider_id`, `scraper_type`, `status`, `boosts_found`, `error_message` |
+| Table | Key Fields |
+|-------|-----------|
+| `extraction_runs` | `id`, `start_time`, `duration_seconds`, `total_events`, `total_odds`, `trigger`, `report` |
+| `provider_run_metrics` | `provider_id`, `events_processed`, `events_matched`, `events_unmatched`, `odds_processed`, `ml_count`, `spread_count`, `total_count`, `duration_seconds`, `status`, `error_message` |
+| `sport_run_metrics` | `provider_id`, `sport`, `events_extracted`, `events_matched`, `events_unmatched`, `odds_extracted`, `ml_count`, `spread_count`, `total_count`, `duration_seconds`, `error_message` |
+| `boost_extraction_logs` | `provider_id`, `scraper_type`, `status`, `boosts_found`, `error_message` |
+| `specials` | `provider`, `title`, `boosted_odds`, `original_odds`, `boost_pct`, `sport`, `event`, `edge_pct`, `fair_odds`, `is_positive_ev`, `matched_outcome`, `scraped_at` |
 
 ### Trigger Types
 
@@ -541,6 +582,65 @@ for p, c in Counter(s.get('sport') for s in specials).most_common():
 | `api_soft` | 19 API providers (Kambi, Altenar, Gecko, Spectate, VBet) | ~150s |
 | `browser_soft` | 10 browser providers (Tipwin, Spectate, ComeOn, etc.) | ~480s |
 | `manual` | User-specified providers | Varies |
+
+## Specials / Odds Boosts Pipeline
+
+**Separate from regular extraction** — different data models, schedules, no shared lock. Boosts run on their own 120-minute scheduler tier.
+
+### Architecture
+```
+scrape_specials.scrape_all()  →  Special dataclass list
+    ↓
+save_specials()               →  JSON backup (data/specials.json)
+    ↓
+filter_expired()              →  Remove started/expired events
+    ↓
+enrich_specials_with_ev()     →  Match vs Pinnacle fair odds → edge_pct, fair_odds, is_positive_ev
+    ↓
+store_specials_to_db()        →  Full replace into `specials` table (DELETE all + INSERT)
+```
+
+**Key: EV enrichment runs at scrape time, not at query time.** The GET /api/specials endpoint reads pre-computed data from DB.
+
+### EV Enrichment Logic (`src/analysis/ev_enrichment.py`)
+- Only 1x2/moneyline boosts can be EV-analyzed (combos/props filtered via PROP_KEYWORDS)
+- Matches boost event name against Pinnacle events using normalized team names
+- De-vigs Pinnacle odds (multiplicative method) to get fair odds
+- `edge_pct = (boosted_odds / fair_odds - 1) * 100`
+- Sanity check: edge > 100% = wrong match, skip
+
+### Boost Health in Extraction Report
+The extraction report includes a "BOOST SCRAPER HEALTH" section showing:
+- Per-provider table: scraper_type, status, boosts_found, duration, errors
+- Flags: failed scrapers, 0-boost providers, slow scrapers (>60s)
+- DB specials count and +EV count
+
+### Boost Extraction Review
+```python
+cd backend && python -c "
+import sqlite3
+conn = sqlite3.connect('data/degentraderxd.db')
+
+# Check boost scrape health
+print('=== BOOST SCRAPE LOG ===')
+for r in conn.execute('SELECT provider_id, scraper_type, status, boosts_found, duration_seconds, error_message FROM boost_extraction_logs ORDER BY boosts_found DESC'):
+    err = f' ERR: {r[5][:40]}' if r[5] else ''
+    print(f'  {r[0]:20s} | {r[1]:10s} | {r[2]:7s} | {r[3]:3d} boosts | {r[4]:5.0f}s{err}')
+
+# Check stored specials with EV
+print('\n=== SPECIALS IN DB ===')
+total = conn.execute('SELECT COUNT(*) FROM specials').fetchone()[0]
+ev_pos = conn.execute('SELECT COUNT(*) FROM specials WHERE is_positive_ev = 1').fetchone()[0]
+matched = conn.execute('SELECT COUNT(*) FROM specials WHERE edge_pct IS NOT NULL').fetchone()[0]
+print(f'  Total: {total} | Matched to Pinnacle: {matched} | +EV: {ev_pos}')
+
+# Top +EV boosts
+print('\n=== TOP +EV BOOSTS ===')
+for r in conn.execute('SELECT provider, event, boosted_odds, fair_odds, edge_pct FROM specials WHERE is_positive_ev = 1 ORDER BY edge_pct DESC LIMIT 10'):
+    print(f'  {r[0]:15s} | {r[1][:35]:35s} | boosted={r[2]:.2f} fair={r[3]:.2f} edge={r[4]:+.1f}%')
+conn.close()
+"
+```
 
 ## Performance Architecture
 

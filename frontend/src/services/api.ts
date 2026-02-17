@@ -56,6 +56,14 @@ export interface SpecialItem {
   source: string;
   market_label: string;
   shared_providers: string[] | null;
+  // EV fields (pre-computed at scrape time vs Pinnacle fair odds)
+  edge_pct: number | null;
+  fair_odds: number | null;
+  ev_per_unit: number | null;
+  is_positive_ev: boolean | null;
+  matched_outcome: string | null;
+  matched_event_id: string | null;
+  matched_market: string | null;
 }
 
 export interface SpecialsFilters {
@@ -67,6 +75,8 @@ export interface SpecialsFilters {
 export interface SpecialsResponse {
   specials: SpecialItem[];
   count: number;
+  ev_positive_count: number;
+  matched_count: number;
   scraped_at: string | null;
   filters?: SpecialsFilters;
 }

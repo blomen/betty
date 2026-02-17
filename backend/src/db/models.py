@@ -436,6 +436,15 @@ class ProviderRunMetrics(Base):
     sports_attempted = Column(Integer, default=0)
     sports_succeeded = Column(Integer, default=0)
 
+    # Matching (soft providers: how many events matched Pinnacle)
+    events_matched = Column(Integer, default=0)
+    events_unmatched = Column(Integer, default=0)
+
+    # Market breakdown (actionable: shows spread/total gaps)
+    ml_count = Column(Integer, default=0)      # 1x2 + moneyline odds
+    spread_count = Column(Integer, default=0)   # spread/handicap odds
+    total_count = Column(Integer, default=0)    # over/under odds
+
     # Performance
     retries = Column(Integer, default=0)
     cache_hits = Column(Integer, default=0)
@@ -464,8 +473,19 @@ class SportRunMetrics(Base):
 
     # Results
     events_extracted = Column(Integer, default=0)
+    events_new = Column(Integer, default=0)
     odds_extracted = Column(Integer, default=0)
+    odds_new = Column(Integer, default=0)
     duration_seconds = Column(Float, nullable=True)
+
+    # Matching (how many events matched Pinnacle vs created new)
+    events_matched = Column(Integer, default=0)
+    events_unmatched = Column(Integer, default=0)
+
+    # Market breakdown per sport (diagnose spread/total gaps)
+    ml_count = Column(Integer, default=0)
+    spread_count = Column(Integer, default=0)
+    total_count = Column(Integer, default=0)
 
     # Status
     success = Column(Boolean, default=False)
@@ -496,6 +516,55 @@ class BoostExtractionLog(Base):
     # Run-level totals (denormalized for easy querying — same for all rows in a run)
     run_total_boosts = Column(Integer, default=0)
     run_duration_seconds = Column(Float, default=0.0)
+
+
+class SpecialOdds(Base):
+    """Odds boosts / specials stored from provider scrapes with pre-computed EV."""
+    __tablename__ = "specials"
+
+    id = Column(Integer, primary_key=True)
+
+    # Core boost data (from Special dataclass in scrape_specials.py)
+    provider = Column(String, nullable=False)
+    title = Column(String, nullable=False)        # "market_label: selection_label"
+    description = Column(Text, default="")
+    original_odds = Column(Float, nullable=True)   # Pre-boost odds (if available)
+    boosted_odds = Column(Float, nullable=True)
+    boost_pct = Column(Float, nullable=True)       # ((boosted / original) - 1) * 100
+    max_stake = Column(Float, nullable=True)
+    category = Column(String, default="boost")     # "boost" or "superboost"
+
+    # Event context
+    sport = Column(String, default="unknown")
+    league = Column(String, default="")
+    event = Column(String, default="")              # "Arsenal vs Sunderland"
+    event_time = Column(String, nullable=True)      # ISO datetime string
+    expires_at = Column(String, nullable=True)      # ISO datetime string
+
+    # Source metadata
+    url = Column(String, default="")
+    source = Column(String, default="")
+    market_label = Column(String, default="")
+    shared_providers = Column(JSON, nullable=True)  # list of provider IDs
+
+    # Scrape tracking
+    scraped_at = Column(String, nullable=False)     # ISO datetime string
+
+    # EV enrichment (computed at scrape time vs Pinnacle fair odds)
+    edge_pct = Column(Float, nullable=True)
+    fair_odds = Column(Float, nullable=True)
+    ev_per_unit = Column(Float, nullable=True)
+    is_positive_ev = Column(Boolean, nullable=True)
+    matched_event_id = Column(String, nullable=True)
+    matched_outcome = Column(String, nullable=True)  # "home", "away", "draw"
+    matched_market = Column(String, nullable=True)   # "1x2", "moneyline"
+
+    __table_args__ = (
+        Index("ix_specials_provider", "provider"),
+        Index("ix_specials_sport", "sport"),
+        Index("ix_specials_positive_ev", "is_positive_ev"),
+        Index("ix_specials_scraped_at", "scraped_at"),
+    )
 
 
 # ============ Risk Management ============

@@ -1,4 +1,9 @@
-"""Oddsboost API routes — scrape and serve odds boost data with EV analysis."""
+"""Oddsboost API routes — scrape and serve odds boost data with EV analysis.
+
+Specials are stored in the DB (specials table) with pre-computed EV fields.
+EV enrichment runs at scrape time (scheduler or manual POST), not at query time.
+Falls back to JSON file if DB table is empty (first run before scheduler populates).
+"""
 
 import sys
 import logging
@@ -10,9 +15,8 @@ from sqlalchemy.orm import Session
 
 from ...paths import get_bundle_dir
 from ..deps import get_db
-from ...db.models import Event, Odds
-from ...analysis.devig import get_fair_odds_for_outcome
-from ...matching.normalizer import normalize_team_name
+from ...db.models import SpecialOdds
+from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, store_specials_to_db
 
 # Ensure scripts/ package is importable (lives in bundle root / backend/)
 _backend_root = str(get_bundle_dir())
@@ -24,223 +28,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/specials", tags=["specials"])
 
 
-def _enrich_with_ev(specials: list[dict], db: Session) -> list[dict]:
-    """
-    Enrich specials with edge_pct vs Pinnacle fair odds.
-
-    For each boost, try to find the matching Pinnacle event and calculate:
-      edge_pct = (boosted_odds / fair_odds - 1) * 100
-
-    This tells the user whether a boost is actually +EV vs the sharp line,
-    not just "boosted" relative to the provider's own original odds.
-    """
-    if not specials:
-        return specials
-
-    # Collect unique sports from specials for batch DB query
-    sports = {s.get("sport") for s in specials if s.get("sport") and s.get("sport") != "unknown"}
-    if not sports:
-        return specials
-
-    # Load all Pinnacle odds for relevant sports in one query
-    pinnacle_odds_query = (
-        db.query(Odds, Event)
-        .join(Event, Odds.event_id == Event.id)
-        .filter(
-            Odds.provider_id == "pinnacle",
-            Odds.market.in_(["1x2", "moneyline"]),
-            Event.sport.in_(list(sports)),
-        )
-    )
-    pinnacle_rows = pinnacle_odds_query.all()
-
-    # Build lookup: {sport: {normalized_event_key: {outcome: odds}}}
-    # event_key = normalized "home_vs_away"
-    pinnacle_markets: dict[str, dict[str, dict[str, float]]] = {}
-    event_info: dict[str, dict] = {}  # event_key -> {event_id, market}
-
-    for odds_row, event_row in pinnacle_rows:
-        sport = event_row.sport
-        home_norm = normalize_team_name(event_row.home_team).lower() if event_row.home_team else ""
-        away_norm = normalize_team_name(event_row.away_team).lower() if event_row.away_team else ""
-        event_key = f"{home_norm}_vs_{away_norm}"
-
-        if sport not in pinnacle_markets:
-            pinnacle_markets[sport] = {}
-        if event_key not in pinnacle_markets[sport]:
-            pinnacle_markets[sport][event_key] = {}
-            event_info[event_key] = {"event_id": event_row.id, "market": odds_row.market}
-
-        pinnacle_markets[sport][event_key][odds_row.outcome] = odds_row.odds
-
-    # Keywords indicating combo/prop/non-1x2 markets that can't be compared to match winner.
-    # Only boosts on the simple match winner (1x2/moneyline) can be EV-analyzed vs Pinnacle.
-    PROP_KEYWORDS = {
-        # Player/team scoring props
-        "målgörare", "goalscorer", "first goal", "första mål",
-        "gör mål", "scores", "to score",
-        "assist", "rebound", "poäng", "points",
-        "skott", "shot",
-        # Combo/multi-leg markers
-        "båda lagen", "both teams", "btts",
-        "resultat +", "result +",
-        " & ",  # Combo indicator: "1x2 & BTTS"
-        # Game props — different market type
-        "kort", "card", "hörna", "corner",
-        "tidpunkt", "time of",
-        # Over/under, totals, handicaps — different market from 1x2
-        "antal mål", "antal", "over", "under", "över",
-        "halvtid", "fulltid", "halftime", "fulltime",
-        "1:a halvlek", "first half", "halvlek",
-        "handikapp", "handicap",
-        "rätt resultat", "correct score",
-        "båda halvlekarna", "both halves",
-        "period med", "period with",
-        # Clean sheet / specific player/team stats
-        "nollan", "clean sheet", "håller nollan",
-        "spelarens", "player",
+def _row_to_dict(row: SpecialOdds) -> dict:
+    """Convert a SpecialOdds DB row to the dict shape the frontend expects."""
+    return {
+        "provider": row.provider,
+        "title": row.title,
+        "description": row.description or "",
+        "original_odds": row.original_odds,
+        "boosted_odds": row.boosted_odds,
+        "boost_pct": row.boost_pct,
+        "max_stake": row.max_stake,
+        "category": row.category or "boost",
+        "sport": row.sport or "unknown",
+        "league": row.league or "",
+        "event": row.event or "",
+        "event_time": row.event_time,
+        "expires_at": row.expires_at,
+        "url": row.url or "",
+        "scraped_at": row.scraped_at or "",
+        "source": row.source or "",
+        "market_label": row.market_label or "",
+        "shared_providers": row.shared_providers,
+        # EV fields (pre-computed at scrape time)
+        "edge_pct": row.edge_pct,
+        "fair_odds": row.fair_odds,
+        "ev_per_unit": row.ev_per_unit,
+        "is_positive_ev": row.is_positive_ev,
+        "matched_outcome": row.matched_outcome,
+        "matched_event_id": row.matched_event_id,
+        "matched_market": row.matched_market,
     }
 
-    # Keywords that indicate the boost IS on a match-winner selection (keep these)
-    MATCH_WINNER_LABELS = {"match result", "1x2", "to qualify", "att kvalificera",
-                           "vinner matchen", "to win", "att vinna"}
 
-    def _fix_encoding(text: str) -> str:
-        """Fix double-encoded UTF-8 (e.g., 'mÃ¥lgÃ¶rare' → 'målgörare').
+def _load_from_db(db: Session) -> list[dict]:
+    """Load specials from DB, filtering expired. Returns list of dicts."""
+    rows = db.query(SpecialOdds).all()
+    if not rows:
+        return []
+    specials = [_row_to_dict(r) for r in rows]
+    return filter_expired(specials)
 
-        Tries latin-1 → utf-8 roundtrip. Only uses fixed version if it
-        actually reduces the number of high-codepoint characters.
-        Also handles Windows cp1252 double-encoding.
-        """
-        for encoding in ("latin-1", "cp1252"):
-            try:
-                fixed = text.encode(encoding).decode("utf-8")
-                high_orig = sum(1 for c in text if ord(c) > 127)
-                high_fixed = sum(1 for c in fixed if ord(c) > 127)
-                if high_fixed < high_orig:
-                    return fixed
-            except (UnicodeDecodeError, UnicodeEncodeError):
-                continue
-        return text
 
-    enriched_count = 0
-
-    # Enrich each special
-    for special in specials:
-        boosted_odds = special.get("boosted_odds")
-        event_name = _fix_encoding(special.get("event", ""))
-        sport = special.get("sport", "unknown")
-
-        if not boosted_odds or not event_name or sport == "unknown":
-            continue
-
-        # Skip combo/prop boosts — these can't be compared to 1x2/moneyline
-        title_lower = _fix_encoding(
-            special.get("title", "") + " " + special.get("market_label", "")
-        ).lower()
-
-        # Allow through ONLY if market label is PURELY about match winner
-        # (not a combo like "1x2 & BTTS")
-        market_label_lower = _fix_encoding(special.get("market_label", "")).lower()
-        is_match_winner = (
-            any(mw in market_label_lower for mw in MATCH_WINNER_LABELS)
-            and " & " not in market_label_lower
-            and ", " not in market_label_lower  # Comma-separated combos like "1x2, BTTS"
-            and not any(kw in market_label_lower for kw in PROP_KEYWORDS)
-        )
-
-        if not is_match_winner and any(kw in title_lower for kw in PROP_KEYWORDS):
-            continue
-
-        # Parse event name to get teams
-        parts = None
-        for sep in [" vs ", " - ", " v "]:
-            if sep in event_name:
-                parts = event_name.split(sep, 1)
-                break
-
-        if not parts or len(parts) != 2:
-            continue
-
-        home_norm = normalize_team_name(parts[0].strip()).lower()
-        away_norm = normalize_team_name(parts[1].strip()).lower()
-        event_key = f"{home_norm}_vs_{away_norm}"
-
-        # Look up Pinnacle market for this event
-        sport_markets = pinnacle_markets.get(sport, {})
-        pin_market = sport_markets.get(event_key)
-
-        # Try swapped order if not found
-        if not pin_market:
-            swapped_key = f"{away_norm}_vs_{home_norm}"
-            pin_market = sport_markets.get(swapped_key)
-            if pin_market:
-                event_key = swapped_key
-
-        if not pin_market or len(pin_market) < 2:
-            continue
-
-        # The boost is on a specific selection — figure out which outcome.
-        # Use original_odds if available; otherwise use Pinnacle odds + title hints.
-        original_odds = special.get("original_odds")
-
-        best_outcome = None
-        best_diff = float("inf")
-
-        if original_odds:
-            # Find the outcome whose Pinnacle odds are closest to original_odds
-            for outcome, pin_odds in pin_market.items():
-                diff = abs(pin_odds - original_odds)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_outcome = outcome
-
-            if not best_outcome or best_diff > 1.5:
-                continue
-        else:
-            # No original_odds (Kambi, VBet, ComeOn) — infer outcome from title.
-            # Check if title contains home or away team name.
-            home_in_title = home_norm and home_norm in title_lower
-            away_in_title = away_norm and away_norm in title_lower
-
-            if home_in_title and not away_in_title:
-                best_outcome = "home"
-            elif away_in_title and not home_in_title:
-                best_outcome = "away"
-            elif "draw" in title_lower or "oavgjort" in title_lower:
-                best_outcome = "draw"
-            else:
-                # Can't determine which outcome — skip
-                continue
-
-            if best_outcome not in pin_market:
-                continue
-
-        # De-vig to get fair odds
-        fair_odds = get_fair_odds_for_outcome(best_outcome, pin_market, method="multiplicative")
-        if not fair_odds or fair_odds <= 1.0:
-            continue
-
-        # Calculate edge vs fair line
-        edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
-
-        # Sanity check: edge > 100% almost certainly means wrong match
-        if edge_pct > 100:
-            continue
-
-        ev_per_unit = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
-
-        special["edge_pct"] = edge_pct
-        special["fair_odds"] = round(fair_odds, 3)
-        special["ev_per_unit"] = ev_per_unit
-        special["is_positive_ev"] = edge_pct > 0
-        special["matched_outcome"] = best_outcome
-        info = event_info.get(event_key, {})
-        special["matched_event_id"] = info.get("event_id")
-        special["matched_market"] = info.get("market")
-        enriched_count += 1
-
-    logger.info(f"EV enrichment: {enriched_count}/{len(specials)} specials matched to Pinnacle")
+def _load_from_json_fallback(db: Session) -> list[dict]:
+    """Fallback: load from JSON, enrich with EV, return. Used when DB is empty."""
+    from scripts.scrape_specials import load_specials
+    specials = filter_expired(load_specials())
+    if specials:
+        specials = enrich_specials_with_ev(specials, db)
     return specials
 
 
@@ -254,14 +88,17 @@ async def get_specials(
     order: str = Query("desc", description="Sort order: desc (default), asc"),
     db: Session = Depends(get_db),
 ):
-    """Get current odds boosts with EV analysis vs Pinnacle fair odds."""
-    from scripts.scrape_specials import load_specials, DATA_DIR
-    import json
+    """Get current odds boosts with pre-computed EV analysis vs Pinnacle fair odds."""
 
-    specials = _filter_expired(load_specials())
+    # Primary: load from DB (EV already computed at scrape time)
+    specials = _load_from_db(db)
 
-    # Enrich with EV analysis from Pinnacle
-    specials = _enrich_with_ev(specials, db)
+    # Fallback: if DB empty (first run), load from JSON + compute EV on the fly
+    if not specials:
+        specials = _load_from_json_fallback(db)
+
+    # Use unfiltered set for filter dropdown values
+    all_specials = list(specials)
 
     # --- Filters ---
     if sport:
@@ -303,20 +140,13 @@ async def get_specials(
     specials.sort(key=_sort_val, reverse=reverse)
 
     # --- Metadata ---
-    specials_path = DATA_DIR / "specials.json"
     scraped_at = None
-    if specials_path.exists():
-        try:
-            with open(specials_path, encoding="utf-8") as f:
-                data = json.load(f)
-            scraped_at = data.get("scraped_at")
-        except Exception:
-            pass
+    if all_specials:
+        # Get most recent scraped_at from the specials themselves
+        scraped_at = max(s.get("scraped_at", "") for s in all_specials) or None
 
     # Collect available filter values for the frontend
-    all_specials = _filter_expired(load_specials())
     sports = sorted({s.get("sport", "unknown") for s in all_specials if s.get("sport") and s.get("sport") != "unknown"})
-    # Include both primary provider and shared_providers in filter options
     provider_set: set[str] = set()
     for s in all_specials:
         if s.get("provider"):
@@ -346,8 +176,8 @@ async def get_specials(
 
 
 @router.post("/scrape")
-async def scrape_specials():
-    """Run the specials scraper and return fresh results."""
+async def scrape_specials(db: Session = Depends(get_db)):
+    """Run the specials scraper, enrich with EV, store to DB, and return fresh results."""
     from scripts.scrape_specials import scrape_all, save_specials
     import asyncio
     from dataclasses import asdict
@@ -355,9 +185,18 @@ async def scrape_specials():
     loop = asyncio.get_running_loop()
     specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
 
+    # JSON backup
     save_specials(specials)
     _persist_boost_log(run_log)
-    active = _filter_expired([asdict(s) for s in specials])
+
+    # EV enrichment + DB storage
+    active = filter_expired([asdict(s) for s in specials])
+    active = enrich_specials_with_ev(active, db)
+    try:
+        store_specials_to_db(active, db)
+    except Exception as e:
+        logger.error(f"Failed to store specials to DB: {e}")
+        db.rollback()
 
     # Sort by boost_pct desc by default
     active.sort(key=lambda s: s.get("boost_pct") or 0.0, reverse=True)
@@ -437,35 +276,3 @@ async def get_boost_extraction_log(db: Session = Depends(get_db)):
             "providers": providers,
         }
     }
-
-
-def _filter_expired(specials: list[dict]) -> list[dict]:
-    """Remove specials whose expires_at is in the past or event has already started."""
-    now = datetime.now(timezone.utc)
-    result = []
-    for s in specials:
-        # Filter out events that have already started (live/in-play)
-        event_time = s.get("event_time")
-        if event_time:
-            try:
-                et = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
-                if et.tzinfo is None:
-                    et = et.replace(tzinfo=timezone.utc)
-                if et <= now:
-                    continue  # Event already kicked off
-            except (ValueError, TypeError):
-                pass
-
-        exp = s.get("expires_at")
-        if not exp:
-            result.append(s)
-            continue
-        try:
-            dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if dt > now:
-                result.append(s)
-        except (ValueError, TypeError):
-            result.append(s)
-    return result

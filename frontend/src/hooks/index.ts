@@ -5,3 +5,4 @@ export { useBankroll } from './useBankroll';
 export { useProfiles } from './useProfiles';
 export { useDropdownWorkflow } from './useDropdownWorkflow';
 export { useBankrollWorkflow } from './useBankrollWorkflow';
+export { useTableSort } from './useTableSort';

@@ -279,18 +279,41 @@ class ExtractionScheduler:
     async def _run_boost_scrape(self):
         """Execute the boost scraper in a thread executor."""
         import sys
+        from dataclasses import asdict
         from src.paths import get_bundle_dir
         # Ensure scripts/ package is importable (lives in bundle root / backend/)
         _root = str(get_bundle_dir())
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import scrape_all, save_specials
+        from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, store_specials_to_db
+        from src.db.models import get_session
 
         loop = asyncio.get_running_loop()
         specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
         if specials:
+            # JSON backup (kept for transition)
             save_specials(specials)
-            logger.info(f"[Scheduler:boosts] Saved {len(specials)} boosts")
+
+            # EV enrichment + DB storage
+            session = get_session()
+            try:
+                specials_dicts = filter_expired([asdict(s) for s in specials])
+                specials_dicts = enrich_specials_with_ev(specials_dicts, session)
+                count = store_specials_to_db(specials_dicts, session)
+                ev_count = sum(1 for s in specials_dicts if s.get("is_positive_ev"))
+                logger.info(f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV)")
+            except Exception as e:
+                logger.error(f"[Scheduler:boosts] DB storage failed: {e}", exc_info=True)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
         else:
             logger.info("[Scheduler:boosts] No boosts found")
 

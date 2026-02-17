@@ -1,0 +1,46 @@
+import { useState, useMemo, useCallback } from 'react';
+
+export type SortDirection = 'asc' | 'desc';
+
+export interface SortState<K extends string = string> {
+  column: K | null;
+  direction: SortDirection;
+}
+
+/**
+ * Generic table sorting hook.
+ *
+ * @param items  The array to sort (not mutated).
+ * @param extractors  Map of column key -> function that extracts a sortable numeric value.
+ * @param defaultSort  Optional initial sort state.
+ *
+ * Clicking the same column toggles asc↔desc.
+ * Clicking a different column starts with desc (highest first).
+ */
+export function useTableSort<T, K extends string>(
+  items: T[],
+  extractors: Record<K, (item: T) => number>,
+  defaultSort?: SortState<K>,
+) {
+  const [sort, setSort] = useState<SortState<K>>(
+    defaultSort ?? { column: null, direction: 'desc' },
+  );
+
+  const toggle = useCallback((col: K) => {
+    setSort(prev => {
+      if (prev.column === col) {
+        return { column: col, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      return { column: col, direction: 'desc' };
+    });
+  }, []);
+
+  const sorted = useMemo(() => {
+    if (!sort.column || !(sort.column in extractors)) return items;
+    const extract = extractors[sort.column];
+    const multiplier = sort.direction === 'desc' ? -1 : 1;
+    return [...items].sort((a, b) => multiplier * (extract(a) - extract(b)));
+  }, [items, sort, extractors]);
+
+  return { sorted, sort, toggle } as const;
+}

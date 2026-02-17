@@ -74,7 +74,7 @@ class ExtractionReport:
 
         lines.append("PROVIDER PERFORMANCE")
         lines.append(thin_sep)
-        lines.append(f"{'Provider':<16} {'Ev':>5} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5}  {'ev/s':>5} {'Time':>6}  {'Status'}")
+        lines.append(f"{'Provider':<16} {'Ev':>5} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5} {'Match':>6}  {'ev/s':>5} {'Time':>6}  {'Status'}")
         lines.append(thin_sep)
 
         total_events_sum = 0
@@ -92,6 +92,12 @@ class ExtractionReport:
             spr_str = f'{spr_count:>5}' if spr_count > 0 else '    -'
             tot_str = f'{tot_count:>5}' if tot_count > 0 else '    -'
 
+            # Match rate column
+            if row["match_rate"] is not None:
+                match_str = f'{row["match_rate"] * 100:>4.0f}%'
+            else:
+                match_str = '    -'
+
             time_str = f'{row["duration"]:.0f}s' if row["duration"] > 0 else "  -"
             evps = row["events"] / row["duration"] if row["duration"] > 0 else 0
             evps_str = f'{evps:>5.1f}' if evps > 0 else '    -'
@@ -100,7 +106,7 @@ class ExtractionReport:
             if row["is_sharp"]:
                 status += " [SHARP]"
 
-            line = f"{row['provider']:<16} {row['events']:>5,} {row['odds']:>6,} {ml_str} {spr_str} {tot_str}  {evps_str} {time_str:>6}  {status}"
+            line = f"{row['provider']:<16} {row['events']:>5,} {row['odds']:>6,} {ml_str} {spr_str} {tot_str} {match_str:>6}  {evps_str} {time_str:>6}  {status}"
             lines.append(line)
 
         lines.append(thin_sep)
@@ -112,6 +118,12 @@ class ExtractionReport:
             delta_lines = self._build_pinnacle_delta(db_session, provider_rows)
             if delta_lines:
                 lines.extend(delta_lines)
+
+        # ── Boost scraper health ──────────────────────────────────
+        if db_session:
+            boost_lines = self._build_boost_health(db_session)
+            if boost_lines:
+                lines.extend(boost_lines)
 
         # ── Issues ──────────────────────────────────────────────────
         issues = self._detect_issues(provider_rows, results, metrics)
@@ -314,6 +326,110 @@ class ExtractionReport:
                     break
         return reps
 
+    # ── Boost scraper health ─────────────────────────────────────────
+
+    def _build_boost_health(self, session) -> list[str]:
+        """Build boost scraper health section from boost_extraction_logs."""
+        try:
+            from ..db.models import BoostExtractionLog, SpecialOdds
+        except Exception:
+            return []
+
+        lines: list[str] = []
+        thin_sep = "-" * 90
+
+        # Get latest run's rows (all share same run_id)
+        latest = (
+            session.query(BoostExtractionLog)
+            .order_by(BoostExtractionLog.scraped_at.desc())
+            .first()
+        )
+        if not latest:
+            return []
+
+        run_id = latest.run_id
+        rows = (
+            session.query(BoostExtractionLog)
+            .filter(BoostExtractionLog.run_id == run_id)
+            .order_by(BoostExtractionLog.boosts_found.desc())
+            .all()
+        )
+        if not rows:
+            return []
+
+        # Get current specials stats from DB
+        specials_count = session.query(SpecialOdds).count()
+        ev_count = session.query(SpecialOdds).filter(SpecialOdds.is_positive_ev == True).count()
+
+        lines.append("BOOST SCRAPER HEALTH")
+        lines.append(thin_sep)
+
+        # Run-level summary
+        run_total = latest.run_total_boosts or 0
+        run_dur = latest.run_duration_seconds or 0
+        scraped_at = latest.scraped_at.strftime("%Y-%m-%d %H:%M:%S") if latest.scraped_at else "?"
+        lines.append(
+            f"Last run: {scraped_at} | {run_total} boosts scraped in {run_dur:.0f}s "
+            f"| DB: {specials_count} active ({ev_count} +EV)"
+        )
+        lines.append("")
+
+        # Per-provider table
+        lines.append(f"{'Provider':<20} {'Type':<10} {'Status':<8} {'Boosts':>6} {'Time':>6}  {'Error'}")
+        lines.append(thin_sep)
+
+        total_boosts = 0
+        failed_providers = []
+        zero_boost_providers = []
+
+        for r in rows:
+            pid = r.provider_id or "?"
+            stype = r.scraper_type or "-"
+            status = (r.status or "?").upper()
+            boosts = r.boosts_found or 0
+            dur = r.duration_seconds or 0
+            err = ""
+            if r.error_message:
+                err = self._truncate(r.error_message, 40)
+
+            total_boosts += boosts
+
+            if status == "FAILED":
+                status_str = "FAIL"
+                failed_providers.append(pid)
+            elif boosts == 0 and status != "SKIPPED":
+                status_str = "0 !"
+                zero_boost_providers.append(pid)
+            else:
+                status_str = "OK" if status == "SUCCESS" else status[:8]
+
+            lines.append(
+                f"{pid:<20} {stype:<10} {status_str:<8} {boosts:>6} {dur:>5.0f}s  {err}"
+            )
+
+        lines.append(thin_sep)
+        lines.append(f"Total: {total_boosts} boosts from {len(rows)} providers")
+
+        # Flag issues
+        boost_issues = []
+        if failed_providers:
+            boost_issues.append(f"! Failed scrapers: {', '.join(failed_providers)}")
+        if zero_boost_providers:
+            boost_issues.append(f"~ 0 boosts from: {', '.join(zero_boost_providers)}")
+        slow = [r for r in rows if (r.duration_seconds or 0) > 60]
+        if slow:
+            boost_issues.append(f"~ Slow scrapers (>60s): {', '.join(r.provider_id for r in slow)}")
+        if specials_count == 0 and run_total > 0:
+            boost_issues.append("! Boosts scraped but DB has 0 specials — store_specials_to_db() may have failed")
+
+        if boost_issues:
+            lines.append("")
+            for issue in boost_issues:
+                lines.append(issue)
+
+        lines.append("")
+        return lines
+
     # ── Provider rows ───────────────────────────────────────────────
 
     def _build_provider_rows(self, results: dict, metrics: PipelineMetrics | None) -> list[dict]:
@@ -372,6 +488,9 @@ class ExtractionReport:
 
     # ── Issues ──────────────────────────────────────────────────────
 
+    SLOW_PROVIDER_THRESHOLD = 300  # > 5 min is suspicious
+    LOW_EVENT_THRESHOLD = 10       # < 10 events probably broken
+
     def _detect_issues(
         self,
         provider_rows: list[dict],
@@ -388,11 +507,22 @@ class ExtractionReport:
                 issues.append(f"! {pid}: {row['status']}")
                 continue
 
+            # Zero events — provider probably broken
+            if row["events"] == 0 and not row["is_sharp"]:
+                issues.append(f"! {pid}: 0 events extracted (broken extractor or site change?)")
+                continue
+
+            # Very few events
+            if row["events"] < self.LOW_EVENT_THRESHOLD and not row["is_sharp"]:
+                issues.append(f"! {pid}: only {row['events']} events (expected hundreds)")
+
+            # Low Pinnacle match rate
             if not row["is_sharp"] and row["match_rate"] is not None:
                 if row["match_rate"] < self.LOW_MATCH_RATE:
                     pct = row["match_rate"] * 100
-                    issues.append(f"! {pid}: {pct:.1f}% match rate (coverage gap or name mismatch)")
+                    issues.append(f"! {pid}: {pct:.1f}% match rate (fuzzy matching failing or sport name mismatch)")
 
+            # Missing market types (spread/total gaps)
             if row["events"] > 0 and row["ratio"] < self.LOW_ODDS_RATIO and not row["is_sharp"]:
                 mc = row.get("market_counts", {})
                 ml = mc.get("1x2", 0) + mc.get("moneyline", 0)
@@ -404,10 +534,15 @@ class ExtractionReport:
                 if tot == 0:
                     missing.append("total")
                 if missing:
-                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — missing {', '.join(missing)} markets (1x2={ml}, spread={spr}, total={tot})")
+                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — missing {', '.join(missing)} markets (1x2={ml}, spr={spr}, tot={tot})")
                 else:
-                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — low odds count (1x2={ml}, spread={spr}, total={tot})")
+                    issues.append(f"~ {pid}: ratio {row['ratio']:.2f} — low odds count (1x2={ml}, spr={spr}, tot={tot})")
 
+            # Slow extraction (> 5 min)
+            if row["duration"] > self.SLOW_PROVIDER_THRESHOLD and not row["is_sharp"]:
+                issues.append(f"~ {pid}: {row['duration']:.0f}s extraction (>{self.SLOW_PROVIDER_THRESHOLD}s threshold)")
+
+            # Rate limit hits
             if row["rate_limit_hits"] > 0:
                 issues.append(f"~ {pid}: {row['rate_limit_hits']} rate limit hits (429)")
 
