@@ -1,6 +1,6 @@
 # DegenTraderXD
 
-**Betting Analytics** - Compare betting odds against sharp bookmakers to find value.
+**Betting Analytics Platform** - Compare odds across 40+ sportsbooks against sharp sources to find value bets.
 
 ## Quick Start
 
