@@ -57,14 +57,28 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         self.site_url: str = raw_site_url.rstrip("/")
 
     # Market type mapping: marketType.id -> standard type
+    # Aligned with Snabbare's complete map (same SBTech/GAN platform)
     MARKET_TYPE_MAP = {
-        1: '1x2',          # 1x2 (3-way match result)
-        175: 'moneyline',   # Vinnare (Winner, 2-way)
-        206: 'moneyline',   # Vinnare inkl. övertid (Winner incl. overtime)
-        212: 'total',        # Totalt inkl. övertid (Total incl. overtime)
-        213: 'spread',       # Handikapp inkl. övertid (Handicap incl. overtime)
-        202: 'total',        # Totalt antal mål (Total goals)
-        203: 'spread',       # Handikapp (Handicap)
+        # 1x2 (3-way)
+        1: '1x2',
+        # Moneyline (2-way)
+        175: 'moneyline',   # Winner
+        206: 'moneyline',   # Winner (incl. overtime)
+        376: 'moneyline',   # Winner (incl. overtime and penalties) — MMA, handball
+        # Total (over/under)
+        18: 'total',         # Over/Under (generic — football, handball)
+        202: 'total',        # Total goals
+        212: 'total',        # Total (incl. overtime) — basketball
+        225: 'total',        # Total Points O/U — basketball
+        1621: 'total',       # Total Goals O/U (Regular Time) — ice hockey
+        1622: 'total',       # Total Goals O/U — ice hockey
+        # Spread (handicap)
+        16: 'spread',        # Asian Handicap (generic — football)
+        187: 'spread',       # Handicap — basketball
+        203: 'spread',       # Handicap
+        213: 'spread',       # Handicap (incl. overtime)
+        1619: 'spread',      # Puck Line (Regular Time) — ice hockey
+        1625: 'spread',      # Puck Line — ice hockey
     }
 
     def _normalize_market_type(self, market_type_id: int) -> str:

@@ -118,7 +118,7 @@ class MetricsConfig(BaseModel):
     track_timing: bool = True
     track_success_rate: bool = True
     track_cache_hit_rate: bool = True
-    persist_to_db: bool = False
+    persist_to_db: bool = True
     retention_count: int = 100
 
 

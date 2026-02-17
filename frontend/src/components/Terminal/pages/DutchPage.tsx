@@ -91,6 +91,8 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const filtered = useMemo(() => {
     let result = opportunities;
+    // Remove started/imminent events
+    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
     if (selectedProviders.size > 0) {
       result = result.filter(d =>
         (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))

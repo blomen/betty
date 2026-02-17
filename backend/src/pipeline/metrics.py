@@ -559,16 +559,17 @@ class MetricsCollector:
                 "total_cache_hits": sum(p.cache_hits for p in provider_runs)
             }
 
-    def persist_to_db(self, run_metrics: PipelineMetrics, session, report: str = None, tier_name: str | None = None):
+    def persist_to_db(self, run_metrics: PipelineMetrics, session, report: str = None, tier_name: str | None = None, max_runs_per_tier: int = 10):
         """
         Persist pipeline metrics to database.
-        Only keeps the latest run per tier — deletes previous runs of the same tier.
+        Keeps the last `max_runs_per_tier` runs per tier — prunes oldest beyond that.
 
         Args:
             run_metrics: PipelineMetrics instance to persist
             session: SQLAlchemy session
             report: Optional extraction report text
             tier_name: Tier name (sharp/api_soft/browser_soft) stored in trigger field
+            max_runs_per_tier: Number of historical runs to keep per tier (default 10)
         """
         from datetime import datetime as dt
         from src.db.models import ExtractionRun, ProviderRunMetrics, SportRunMetrics
@@ -576,11 +577,15 @@ class MetricsCollector:
         trigger = tier_name or 'manual'
 
         try:
-            # Delete previous runs of the same tier (keep only the latest)
-            old_runs = session.query(ExtractionRun).filter(
-                ExtractionRun.trigger == trigger
-            ).all()
-            for old_run in old_runs:
+            # Prune old runs beyond max_runs_per_tier (keep N-1 since we're about to add 1)
+            existing_runs = (
+                session.query(ExtractionRun)
+                .filter(ExtractionRun.trigger == trigger)
+                .order_by(ExtractionRun.start_time.desc())
+                .all()
+            )
+            runs_to_delete = existing_runs[max_runs_per_tier - 1:]  # Keep N-1, adding 1 new = N total
+            for old_run in runs_to_delete:
                 session.query(SportRunMetrics).filter(SportRunMetrics.run_id == old_run.id).delete()
                 session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == old_run.id).delete()
                 session.delete(old_run)

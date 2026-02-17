@@ -28,7 +28,9 @@ export function ReversePage() {
   useRefreshOnExtraction(fetchData);
 
   const sorted = useMemo(() => {
-    return [...opportunities].sort((a, b) => (b.edge_pct ?? 0) - (a.edge_pct ?? 0));
+    return opportunities
+      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
+      .sort((a, b) => (b.edge_pct ?? 0) - (a.edge_pct ?? 0));
   }, [opportunities]);
 
   const formatTime = (dateStr: string | undefined) => {

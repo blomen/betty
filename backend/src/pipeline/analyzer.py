@@ -27,6 +27,7 @@ from ..db.models import Profile
 from ..repositories import EventRepo, OpportunityRepo
 from ..services.bet_service import BetService
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
+from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +172,19 @@ class OpportunityAnalyzer:
             >>> for opp in result["opportunities"][:5]:
             ...     print(f"{opp.edge_pct:+.1f}% {opp.event_id} {opp.outcome}")
         """
-        logger.info(f"[Analyzer] Running bonus scan: anchor={anchor_provider}")
+        # Resolve to canonical for DB query (odds stored under canonical after consolidation)
+        # e.g., run_bonus("expekt") → queries DB for "unibet" odds (same platform)
+        query_provider = PROVIDER_CANONICAL.get(anchor_provider, anchor_provider)
+        if query_provider != anchor_provider:
+            logger.info(
+                f"[Analyzer] Running bonus scan: anchor={anchor_provider} "
+                f"(querying as {query_provider}, same platform)"
+            )
+        else:
+            logger.info(f"[Analyzer] Running bonus scan: anchor={anchor_provider}")
 
         opportunities = self.scanner.scan_bonus(
-            anchor_provider=anchor_provider,
+            anchor_provider=query_provider,
             devig=devig,
         )
 
@@ -257,36 +267,39 @@ class OpportunityAnalyzer:
                     except ValueError:
                         pass
 
-            # Build outcomes JSON
-            outcomes_json = [
-                {
-                    "provider": vb.provider,
-                    "outcome": outcome,
-                    "odds": vb.provider_odds,
-                    "edge_pct": vb.edge_pct
-                },
-                {
-                    "provider": "pinnacle",
-                    "outcome": outcome,
-                    "odds": vb.fair_odds,
-                    "is_fair_odds": True
-                }
-            ]
+            # Fan out to all platform members (e.g., unibet → all 8 Kambi brands)
+            fan_providers = CANONICAL_MEMBERS.get(vb.provider, [vb.provider])
+            for fan_provider in fan_providers:
+                # Build outcomes JSON per fan provider
+                outcomes_json = [
+                    {
+                        "provider": fan_provider,
+                        "outcome": outcome,
+                        "odds": vb.provider_odds,
+                        "edge_pct": vb.edge_pct
+                    },
+                    {
+                        "provider": "pinnacle",
+                        "outcome": outcome,
+                        "odds": vb.fair_odds,
+                        "is_fair_odds": True
+                    }
+                ]
 
-            # Upsert to Opportunity table via repo
-            is_new = self.opp_repo.upsert_value(
-                event_id=event_id,
-                market=clean_market,
-                outcome=outcome,
-                provider_id=vb.provider,
-                provider_odds=vb.provider_odds,
-                fair_odds=vb.fair_odds,
-                edge_pct=vb.edge_pct,
-                outcomes_json=outcomes_json,
-                point=point_value,
-            )
-            if is_new:
-                result["new"] += 1
+                # Upsert to Opportunity table via repo
+                is_new = self.opp_repo.upsert_value(
+                    event_id=event_id,
+                    market=clean_market,
+                    outcome=outcome,
+                    provider_id=fan_provider,
+                    provider_odds=vb.provider_odds,
+                    fair_odds=vb.fair_odds,
+                    edge_pct=vb.edge_pct,
+                    outcomes_json=outcomes_json,
+                    point=point_value,
+                )
+                if is_new:
+                    result["new"] += 1
 
         return result
 
@@ -415,15 +428,49 @@ class OpportunityAnalyzer:
 
         result["dutch_found"] = 1
 
-        is_new = self.opp_repo.upsert_dutch(
-            event_id=event.id,
-            market=clean_market,
-            legs=opp.legs,
-            combined_edge_pct=opp.combined_edge_pct,
-            guaranteed_profit_pct=opp.guaranteed_profit_pct,
-            point=point_value,
-        )
-        if is_new:
-            result["dutch_new"] = 1
+        # Fan out dutch opportunities: for each soft leg, expand to all platform members
+        # Build list of fan-out provider combinations for the soft legs
+        soft_leg_indices = [i for i, leg in enumerate(opp.legs) if leg.get("edge_pct", 0) > 0]
+
+        # Collect all platform member sets for soft legs
+        fan_out_sets = {}
+        for i in soft_leg_indices:
+            leg_provider = opp.legs[i]["provider"]
+            fan_out_sets[i] = CANONICAL_MEMBERS.get(leg_provider, [leg_provider])
+
+        if not soft_leg_indices or all(len(fan_out_sets[i]) <= 1 for i in soft_leg_indices):
+            # No fan-out needed — single provider per leg
+            is_new = self.opp_repo.upsert_dutch(
+                event_id=event.id,
+                market=clean_market,
+                legs=opp.legs,
+                combined_edge_pct=opp.combined_edge_pct,
+                guaranteed_profit_pct=opp.guaranteed_profit_pct,
+                point=point_value,
+            )
+            if is_new:
+                result["dutch_new"] = 1
+        else:
+            # Fan out: create one dutch opportunity per member provider combination
+            # For simplicity, fan out the first soft leg (most common case: one soft + pinnacle)
+            for idx in soft_leg_indices:
+                for member in fan_out_sets[idx]:
+                    fanned_legs = []
+                    for i, leg in enumerate(opp.legs):
+                        if i == idx:
+                            fanned_legs.append({**leg, "provider": member})
+                        else:
+                            fanned_legs.append(leg)
+
+                    is_new = self.opp_repo.upsert_dutch(
+                        event_id=event.id,
+                        market=clean_market,
+                        legs=fanned_legs,
+                        combined_edge_pct=opp.combined_edge_pct,
+                        guaranteed_profit_pct=opp.guaranteed_profit_pct,
+                        point=point_value,
+                    )
+                    if is_new:
+                        result["dutch_new"] += 1
 
         return result

@@ -14,6 +14,9 @@ class SpectateRetriever(BrowserRetriever):
     Retriever for 888sport / Spectate based sites.
     Uses BrowserTransport to bypass protections.
     """
+    # Track unknown market names for discovery (class-level to avoid noise)
+    _logged_unknown_markets: set = set()
+
     SPORT_SLUGS: Dict[str, str] = {
         "football": "football", "basketball": "basketball", "tennis": "tennis",
         "ice_hockey": "ice-hockey", "american_football": "american-football",
@@ -360,6 +363,13 @@ class SpectateRetriever(BrowserRetriever):
             "total": "total",
             "totalt antal set, över/under": "total",
             "totalt antal games, över/under": "total",
+            # Darts / snooker / misc
+            "matchresultat tvåvägs": "moneyline",
+            "legs handicap": "spread",
+            "totalt antal legs, över/under": "total",
+            "frames handicap": "spread",
+            "totalt antal frames, över/under": "total",
+            "sets handicap": "spread",
         }
 
         for m in items:
@@ -368,6 +378,9 @@ class SpectateRetriever(BrowserRetriever):
 
             m_type = MARKET_MAP.get(raw_name)
             if not m_type:
+                if raw_name and raw_name not in self._logged_unknown_markets:
+                    self._logged_unknown_markets.add(raw_name)
+                    logger.info(f"[{self.provider_id}] Unknown market name: '{raw_name}'")
                 continue
 
             s_data = m.get("selections", {})

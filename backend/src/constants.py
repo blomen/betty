@@ -30,6 +30,49 @@ PLATFORM_MAP: dict[str, str] = {
     'tipwin': 'tipwin', 'coolbet': 'coolbet', 'snabbare': 'snabbare',
 }
 
+# Platform groups for consolidation: extract once per platform, store under canonical
+# Providers on the same platform produce identical (or near-identical) odds.
+# We extract only the canonical provider and fan out opportunities to all members.
+PLATFORM_GROUPS: dict[str, dict] = {
+    "kambi": {
+        "canonical": "unibet",
+        "members": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+    },
+    "spectate": {
+        "canonical": "888sport",
+        "members": ["888sport", "mrgreen"],
+    },
+    "altenar_main": {
+        "canonical": "betinia",
+        "members": ["betinia", "campobet", "lodur", "quickcasino", "swiper"],
+    },
+    "gecko_betsson": {
+        "canonical": "betsson",
+        "members": ["betsson", "nordicbet"],
+    },
+    "gecko_bethard": {
+        "canonical": "bethard",
+        "members": ["bethard", "spelklubben"],
+    },
+}
+
+# Reverse lookup: non-canonical provider → canonical provider
+# e.g. {"expekt": "unibet", "mrgreen": "888sport", ...}
+# Only contains non-canonical providers (canonical maps to itself implicitly)
+PROVIDER_CANONICAL: dict[str, str] = {}
+for _group in PLATFORM_GROUPS.values():
+    _canonical = _group["canonical"]
+    for _member in _group["members"]:
+        if _member != _canonical:
+            PROVIDER_CANONICAL[_member] = _canonical
+
+# Reverse lookup: canonical provider → all member providers
+# e.g. {"unibet": ["unibet", "leovegas", ...], "888sport": ["888sport", "mrgreen"]}
+CANONICAL_MEMBERS: dict[str, list[str]] = {
+    _group["canonical"]: _group["members"]
+    for _group in PLATFORM_GROUPS.values()
+}
+
 # Sports to extract - these have pinnacle_id in sports.yaml
 # Only extract sports where Pinnacle provides sharp lines
 ALLOWED_SPORTS = frozenset({

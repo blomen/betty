@@ -14,7 +14,7 @@ from sqlalchemy import func
 from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
-from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS
+from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -587,6 +587,29 @@ class ExtractionPipeline:
             if self.sharp_leagues:
                 total_leagues = sum(len(v) for v in self.sharp_leagues.values())
                 logger.debug(f"[Orchestrator] Sharp league filter: {total_leagues} leagues across {len(self.sharp_leagues)} sports")
+
+            # Platform consolidation: skip non-canonical providers when their
+            # canonical is also in the list (e.g., skip expekt when unibet is present).
+            # If extracting a non-canonical alone (e.g., "extract expekt"), it still works.
+            if target_providers:
+                target_set = set(target_providers)
+                consolidated = []
+                skipped_consolidated = []
+                consolidated_map = {}  # pid -> canonical (for report)
+                for pid in target_providers:
+                    canonical = PROVIDER_CANONICAL.get(pid)
+                    if canonical and canonical in target_set:
+                        skipped_consolidated.append(f"{pid}->{canonical}")
+                        consolidated_map[pid] = canonical
+                    else:
+                        consolidated.append(pid)
+                if skipped_consolidated:
+                    log_progress(
+                        f"Platform consolidation: skipped {len(skipped_consolidated)} redundant providers "
+                        f"({', '.join(skipped_consolidated)})"
+                    )
+                    results["consolidated_providers"] = consolidated_map
+                target_providers = consolidated
 
             if target_providers:
                 # Filter providers by circuit breaker status and health checks

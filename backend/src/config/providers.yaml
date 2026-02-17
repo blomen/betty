@@ -100,7 +100,7 @@ orchestrator:
     track_timing: true
     track_success_rate: true
     track_cache_hit_rate: true
-    persist_to_db: false
+    persist_to_db: true
     retention_count: 100
 
   progress:
@@ -566,15 +566,12 @@ providers:
       - ice_hockey
       - tennis
       - handball
-      - volleyball
-      - rugby
       - cricket
       - esports
       - mma
-      - table_tennis
-      - darts
       - boxing
-      - american_football
+      # Removed: volleyball (0 events, 41.7s wasted), rugby (0 events, 9.3s),
+      #          darts (0 events, 9.0s), table_tennis, american_football (no leagues found)
     bonus:
       type: bonusdeposit
       amount: 600
@@ -722,10 +719,9 @@ providers:
       - cricket
       - boxing
       - darts
-      - golf
-      - cycling
       - american_football
       - baseball
+      # Removed: golf (0 events, 3.1s), cycling (0 events, 5.1s) — no soft book covers these
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -803,28 +799,17 @@ extraction_tiers:
 
   api_soft:
     # Fast REST/WS/API-interception providers — every 60 minutes
+    # Platform consolidation: only canonical providers extracted (others get fanned-out opportunities)
     # Runs on startup, then every 60 minutes
     providers:
-      # Kambi API (8)
+      # Kambi — canonical only (represents 8 brands: unibet, leovegas, expekt, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
-      - leovegas
-      - expekt
-      - betmgm
-      - speedybet
-      - x3000
-      - goldenbull
-      - 1x2
-      # Altenar API (6)
+      # Altenar — main group canonical (represents 5: betinia, campobet, lodur, quickcasino, swiper)
       - betinia
-      - campobet
-      - swiper
-      - lodur
+      # Altenar — dbet extracted separately (~4% different odds)
       - dbet
-      - quickcasino
-      # Gecko V2 (4) — API interception, fast
+      # Gecko V2 — 2 sub-group canonicals (betsson+nordicbet, bethard+spelklubben)
       - betsson
-      - nordicbet
-      - spelklubben
       - bethard
       # BetConstruct (1) — WebSocket API
       - vbet
@@ -834,10 +819,9 @@ extraction_tiers:
     # Heavy browser-based extractors — every 120 minutes
     # Runs on startup, then every 120 minutes
     providers:
-      # Spectate (2)
-      - mrgreen
+      # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group (3)
+      # ComeOn Group — keep all 3 (too different: 1.7-83% identity)
       - comeon
       - hajper
       - lyllo

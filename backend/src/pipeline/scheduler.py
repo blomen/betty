@@ -329,17 +329,29 @@ class ExtractionScheduler:
         # Persist extraction log to DB
         self._persist_boost_log(run_log)
 
-    def _persist_boost_log(self, run_log):
-        """Persist boost extraction log to DB."""
+    def _persist_boost_log(self, run_log, max_runs: int = 10):
+        """Persist boost extraction log to DB. Keeps last `max_runs` runs."""
         from src.db.models import BoostExtractionLog, get_session
         from datetime import datetime as dt
+        from sqlalchemy import func
 
         try:
             session = get_session()
             scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.utcnow()
 
-            # Delete previous boost logs (keep only latest run)
-            session.query(BoostExtractionLog).delete()
+            # Prune old boost runs beyond max_runs (keep N-1, adding 1 new = N total)
+            # Each run shares the same run_id, so count distinct run_ids
+            distinct_run_ids = (
+                session.query(BoostExtractionLog.run_id, func.max(BoostExtractionLog.scraped_at).label('latest'))
+                .group_by(BoostExtractionLog.run_id)
+                .order_by(func.max(BoostExtractionLog.scraped_at).desc())
+                .all()
+            )
+            if len(distinct_run_ids) >= max_runs:
+                stale_run_ids = [r.run_id for r in distinct_run_ids[max_runs - 1:]]
+                session.query(BoostExtractionLog).filter(
+                    BoostExtractionLog.run_id.in_(stale_run_ids)
+                ).delete(synchronize_session='fetch')
 
             for pl in run_log.providers:
                 session.add(BoostExtractionLog(

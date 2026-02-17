@@ -15,7 +15,7 @@ from ..matching import (
     normalize_outcome,
 )
 from ..matching.normalizer import generate_canonical_id
-from ..constants import ALLOWED_MARKETS, SHARP_PROVIDERS
+from ..constants import ALLOWED_MARKETS, SHARP_PROVIDERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -872,11 +872,15 @@ def store_provider_event(
 
             odds_processed += 1
 
+            # Resolve to canonical provider for storage (platform consolidation)
+            # e.g., expekt → unibet, mrgreen → 888sport
+            storage_provider = PROVIDER_CANONICAL.get(provider, provider)
+
             # Use batch processor if available, otherwise individual upsert
             if odds_batch:
-                odds_batch.add(final_id, provider, market_type, outcome_name, odds_value, point_value)
+                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value)
             else:
-                odds_new += upsert_odds(session, final_id, provider, market_type, outcome_name, odds_value, point_value)
+                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value)
 
     # When using batch processor, we don't know the new count until flush
     # Return 0 for now - caller should get stats from batch processor

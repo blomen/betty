@@ -101,6 +101,11 @@ export function PolymarketPage() {
     return vb.outcome;
   };
 
+  // Remove started/imminent events
+  const activeValueBets = useMemo(() =>
+    valueBets.filter(vb => { const ttk = getTTKFromNow(vb.start_time); return ttk === null || ttk > 1 / 60; }),
+  [valueBets]);
+
   type PolySortCol = 'odds' | 'fair' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
     odds:  (vb: PolymarketValueBet) => vb.polymarket_odds,
@@ -110,7 +115,7 @@ export function PolymarketPage() {
     ttk:   (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
   }), []);
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
-    useTableSort<PolymarketValueBet, PolySortCol>(valueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
+    useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
 
   return (
     <div className="space-y-3">

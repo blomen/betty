@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..constants import SHARP_PROVIDERS
+from ..constants import SHARP_PROVIDERS, PROVIDER_CANONICAL, PLATFORM_GROUPS
 
 if TYPE_CHECKING:
     from .metrics import PipelineMetrics
@@ -301,13 +301,23 @@ class ExtractionReport:
         return lines
 
     def _get_platform_reps(self, soft_providers: list[str]) -> list[tuple[str, str]]:
-        """Pick one representative provider per platform for the sport table."""
-        # Map platform → preferred provider (pick highest-coverage one if present)
-        platform_map = {
-            "kambi": ["unibet", "1x2", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull"],
-            "altenar": ["lodur", "betinia", "campobet", "swiper", "dbet", "quickcasino"],
-            "gecko": ["betsson", "nordicbet", "bethard", "spelklubben"],
-            "spectate": ["mrgreen", "888sport"],
+        """Pick one representative provider per platform for the sport table.
+
+        Uses PLATFORM_GROUPS canonicals first, then standalone providers.
+        After consolidation, soft_providers only contains canonical providers.
+        """
+        # Build platform → canonical from PLATFORM_GROUPS
+        platform_map = {}
+        for group_name, group_data in PLATFORM_GROUPS.items():
+            canonical = group_data["canonical"]
+            # Use short group name for display
+            label = group_name.split("_")[0]  # kambi, spectate, altenar, gecko
+            if label not in platform_map:
+                platform_map[label] = []
+            platform_map[label].append(canonical)
+
+        # Add standalone platforms
+        standalone = {
             "comeon": ["comeon", "hajper", "lyllo"],
             "vbet": ["vbet"],
             "tipwin": ["tipwin"],
@@ -316,6 +326,8 @@ class ExtractionReport:
             "coolbet": ["coolbet"],
             "snabbare": ["snabbare"],
         }
+        platform_map.update(standalone)
+
         reps = []
         used = set()
         for label, candidates in platform_map.items():
@@ -437,6 +449,9 @@ class ExtractionReport:
         rows = []
         providers_data = results.get("providers", {})
 
+        # Track which providers were consolidated (skipped because canonical was extracted)
+        consolidated_providers = results.get("consolidated_providers", {})
+
         for pid, pdata in providers_data.items():
             is_sharp = pid in SHARP_PROVIDERS
             events = pdata.get("events_processed", 0)
@@ -482,6 +497,24 @@ class ExtractionReport:
                 "rate_limit_hits": rate_limit_hits,
                 "retries": retries,
                 "market_counts": market_counts,
+            })
+
+        # Add rows for consolidated (skipped) providers
+        for pid, canonical in consolidated_providers.items():
+            rows.append({
+                "provider": pid,
+                "is_sharp": False,
+                "events": 0,
+                "odds": 0,
+                "ratio": 0,
+                "match_rate": None,
+                "duration": 0,
+                "status": f"= {canonical}",
+                "error": None,
+                "sport_errors": [],
+                "rate_limit_hits": 0,
+                "retries": 0,
+                "market_counts": {},
             })
 
         return rows

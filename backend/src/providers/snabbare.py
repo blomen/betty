@@ -229,10 +229,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Wait for league links to appear in the sidebar (React renders async)
             try:
                 await page.wait_for_selector(
-                    'a[href*="/leagues/"]', timeout=8000
+                    'a[href*="/leagues/"]', timeout=3000
                 )
             except Exception:
-                logger.debug(f"[{self.provider_id}] {canonical}: no league links after 8s wait")
+                logger.debug(f"[{self.provider_id}] {canonical}: no league links after 3s wait")
             await asyncio.sleep(0.5)
 
             # Discover league links from DOM sidebar
