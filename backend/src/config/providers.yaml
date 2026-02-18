@@ -793,9 +793,9 @@ providers:
 extraction_tiers:
   sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
-    # Runs on startup, then every 5 minutes
+    # Runs on startup, then every 3 minutes
     providers: [pinnacle, polymarket]
-    interval_minutes: 5
+    interval_minutes: 3
 
   api_soft:
     # Fast REST/WS/API-interception providers — every 60 minutes

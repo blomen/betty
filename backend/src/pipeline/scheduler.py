@@ -2,7 +2,7 @@
 Extraction Scheduler
 
 Manages tiered extraction:
-- Sharp (continuous): Pinnacle + Polymarket every 5 minutes
+- Sharp (continuous): Pinnacle + Polymarket every 3 minutes
 - API soft: Kambi, Altenar, Gecko V2, Vbet every 60 minutes
 - Browser soft: Spectate, ComeOn, Snabbare, 10Bet, Interwetten, Coolbet, Tipwin every 120 minutes
 
@@ -46,7 +46,7 @@ class ExtractionScheduler:
         await scheduler.start_all()
 
         # Or start individual tiers
-        await scheduler.start_tier("sharp", ["pinnacle", "polymarket"], 300)
+        await scheduler.start_tier("sharp", ["pinnacle", "polymarket"], 180)
         await scheduler.start_tier("api_soft", [...], 3600)
 
         # Stop everything
@@ -175,7 +175,7 @@ class ExtractionScheduler:
         """Start all extraction tiers with default config.
 
         Tier config:
-        - sharp: Pinnacle + Polymarket every 5 min (immediate)
+        - sharp: Pinnacle + Polymarket every 3 min (immediate)
         - api_soft: Kambi (8) + Altenar (6) + Gecko V2 (4) + Vbet every 60 min (immediate)
         - browser_soft: Spectate + ComeOn + Snabbare + 10Bet + Interwetten + Coolbet + Tipwin every 120 min (immediate)
         - boosts: Oddsboost scraping every 120 min (immediate)
@@ -184,7 +184,7 @@ class ExtractionScheduler:
         await self.start_tier(
             name="sharp",
             providers=["polymarket", "pinnacle"],
-            interval_seconds=300,  # 5 min
+            interval_seconds=180,  # 3 min
             run_immediately=True,
         )
 
