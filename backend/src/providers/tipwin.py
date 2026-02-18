@@ -212,7 +212,7 @@ class TipwinRetriever(BrowserRetriever):
                     prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    await asyncio.sleep(0.4)
+                    await asyncio.sleep(0.2)
 
                     # Drain all pending response tasks (clear after gather to avoid
                     # re-gathering already-completed tasks on subsequent iterations)
@@ -222,7 +222,7 @@ class TipwinRetriever(BrowserRetriever):
 
                     if len(api_responses) == prev_count:
                         # No response yet — yield to event loop then retry
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
                         if pending_tasks:
                             await asyncio.gather(*pending_tasks, return_exceptions=True)
                             pending_tasks.clear()

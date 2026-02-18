@@ -97,8 +97,8 @@ class OpportunityAnalyzer:
         events = self.event_repo.get_multi_provider_events(min_providers=2)
 
         results = {
-            "value": {"found": 0, "new": 0},
-            "dutch": {"found": 0, "new": 0},
+            "value": {"found": 0, "new": 0, "fanned": 0},
+            "dutch": {"found": 0, "new": 0, "fanned": 0},
             "reverse": {"found": 0, "new": 0},
             "reverse_value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
@@ -112,19 +112,21 @@ class OpportunityAnalyzer:
 
             for market, odds_by_outcome in odds_grouped.items():
                 # Detect value via scanner, then persist best per outcome
-                value_count = self._detect_value(event.id, market, odds_by_outcome)
+                value_count = self._detect_value(event.id, market, odds_by_outcome, odds_grouped)
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
+                results["value"]["fanned"] += value_count.get("fanned", 0)
 
                 # Detect dutch/reverse (cross-book opportunities)
-                dutch_count = self._detect_dutch(event, market, odds_by_outcome)
+                dutch_count = self._detect_dutch(event, market, odds_by_outcome, odds_grouped)
                 results["dutch"]["found"] += dutch_count["dutch_found"]
                 results["dutch"]["new"] += dutch_count["dutch_new"]
+                results["dutch"]["fanned"] += dutch_count.get("dutch_fanned", 0)
                 results["reverse"]["found"] += dutch_count["reverse_found"]
                 results["reverse"]["new"] += dutch_count["reverse_new"]
 
                 # Detect reverse value (Pinnacle vs soft consensus)
-                rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome)
+                rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome, odds_grouped)
                 results["reverse_value"]["found"] += rv_count["found"]
                 results["reverse_value"]["new"] += rv_count["new"]
 
@@ -209,7 +211,8 @@ class OpportunityAnalyzer:
         self,
         event_id: str,
         market: str,
-        odds_by_outcome: dict[str, list[dict]]
+        odds_by_outcome: dict[str, list[dict]],
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> dict:
         """
         Detect value betting opportunities for a market.
@@ -226,7 +229,7 @@ class OpportunityAnalyzer:
         Returns:
             {"found": int, "new": int}
         """
-        result = {"found": 0, "new": 0}
+        result = {"found": 0, "new": 0, "fanned": 0}
 
         # Delegate to scanner (all quality gates applied here)
         value_bets = self.scanner.find_value_in_market(
@@ -234,6 +237,7 @@ class OpportunityAnalyzer:
             market=market,
             odds_by_outcome=odds_by_outcome,
             min_edge_pct=self.min_edge_pct,
+            all_markets=all_markets,
         )
 
         if not value_bets:
@@ -269,6 +273,7 @@ class OpportunityAnalyzer:
 
             # Fan out to all platform members (e.g., unibet → all 8 Kambi brands)
             fan_providers = CANONICAL_MEMBERS.get(vb.provider, [vb.provider])
+            result["fanned"] += len(fan_providers) - 1  # track fan-out inflation
             for fan_provider in fan_providers:
                 # Build outcomes JSON per fan provider
                 outcomes_json = [
@@ -308,6 +313,7 @@ class OpportunityAnalyzer:
         event_id: str,
         market: str,
         odds_by_outcome: dict[str, list[dict]],
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> dict:
         """
         Detect reverse value opportunities: Pinnacle raw odds vs soft consensus.
@@ -328,6 +334,7 @@ class OpportunityAnalyzer:
             market=market,
             odds_by_outcome=odds_by_outcome,
             min_edge_pct=self.min_edge_pct,
+            all_markets=all_markets,
         )
 
         if not reverse_bets:
@@ -382,7 +389,8 @@ class OpportunityAnalyzer:
         self,
         event,
         market: str,
-        odds_by_outcome: dict[str, list[dict]]
+        odds_by_outcome: dict[str, list[dict]],
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> dict:
         """
         Detect dutch opportunities for a market.
@@ -393,12 +401,13 @@ class OpportunityAnalyzer:
         Returns:
             {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
         """
-        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0}
+        result = {"dutch_found": 0, "dutch_new": 0, "dutch_fanned": 0, "reverse_found": 0, "reverse_new": 0}
 
         opp = self.scanner._find_dutch_in_market(
             event=event,
             market=market,
             odds_by_outcome=odds_by_outcome,
+            all_markets=all_markets,
         )
 
         if opp is None:
@@ -454,6 +463,7 @@ class OpportunityAnalyzer:
             # Fan out: create one dutch opportunity per member provider combination
             # For simplicity, fan out the first soft leg (most common case: one soft + pinnacle)
             for idx in soft_leg_indices:
+                result["dutch_fanned"] += len(fan_out_sets[idx]) - 1
                 for member in fan_out_sets[idx]:
                     fanned_legs = []
                     for i, leg in enumerate(opp.legs):

@@ -531,7 +531,7 @@ providers:
     retriever_type: tenbet
     site_url: https://www.10bet.se
     provider_timeout: 600              # DOM scraping needs time for many competitions
-    sport_timeout: 180                 # Many competitions per sport, 5 concurrent tabs
+    sport_timeout: 240                 # Football has 60 competitions — needs margin above 180s
     supported_sports:
       - football
       - basketball
@@ -739,7 +739,7 @@ providers:
     retriever_type: coolbet
     site_url: https://www.coolbet.com
     provider_timeout: 300              # Camoufox headless startup ~30s + 9 sports ~120s
-    sport_timeout: 180                 # Football has heavy pagination (50+ categories)
+    sport_timeout: 240                 # Football has heavy pagination (50+ categories)
     supported_sports:
       - football
       - basketball
@@ -1020,8 +1020,8 @@ boosts:
     url: "https://www.spelklubben.se/sv/betting/oddsboost"
     primary_provider: spelklubben
     shared_with: []
-    enabled: true
-    note: "OBG — /sv/betting/oddsboost loads playground iframe with globalbonuses + event-market APIs."
+    enabled: false
+    note: "Disabled — spelklubben.se has no unique boosts. Covered by betsson_group shared_with."
 
   # ═══════════════════════════════════════════════════════
   # VBET — BetConstruct Swarm WS get_boosted_selections

@@ -156,8 +156,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    LEAGUE_SETTLE_TIME = 0.15  # min seconds to wait for WS data after SPA link click
-    MAX_LEAGUE_SETTLE_TIME = 0.6  # max seconds to wait (if WS data still arriving)
+    LEAGUE_SETTLE_TIME = 0.08  # min seconds to wait for WS data after SPA link click
+    MAX_LEAGUE_SETTLE_TIME = 0.4  # max seconds to wait (if WS data still arriving)
 
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """

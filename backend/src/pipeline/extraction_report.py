@@ -47,9 +47,14 @@ class ExtractionReport:
         match_pct = (matched_events / total_events * 100) if total_events > 0 else 0
 
         analysis = results.get("analysis", {})
-        value_bets = analysis.get("value", {}).get("found", 0)
-        dutch_bets = analysis.get("dutch", {}).get("found", 0)
+        value_data = analysis.get("value", {})
+        dutch_data = analysis.get("dutch", {})
+        value_bets = value_data.get("found", 0)
+        dutch_bets = dutch_data.get("found", 0)
         reverse_bets = analysis.get("reverse", {}).get("found", 0)
+        # "found" = unique canonical opportunities; "fanned" = extra alias copies
+        value_total = value_bets + value_data.get("fanned", 0)
+        dutch_total = dutch_bets + dutch_data.get("fanned", 0)
 
         providers_data = results.get("providers", {})
         succeeded = sum(1 for p in providers_data.values() if not p.get("error"))
@@ -60,9 +65,15 @@ class ExtractionReport:
         if value_bets > 0 or dutch_bets > 0 or reverse_bets > 0:
             parts = []
             if value_bets > 0:
-                parts.append(f"{value_bets} value")
+                s = f"{value_bets} value"
+                if value_total > value_bets:
+                    s += f" ({value_total} incl. aliases)"
+                parts.append(s)
             if dutch_bets > 0:
-                parts.append(f"{dutch_bets} dutch")
+                s = f"{dutch_bets} dutch"
+                if dutch_total > dutch_bets:
+                    s += f" ({dutch_total} incl. aliases)"
+                parts.append(s)
             if reverse_bets > 0:
                 parts.append(f"{reverse_bets} reverse")
             lines.append(f"Opportunities: {', '.join(parts)}")

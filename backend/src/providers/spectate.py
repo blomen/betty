@@ -347,10 +347,13 @@ class SpectateRetriever(BrowserRetriever):
             "matchvinnare tvåvägs": "moneyline",
             "matchvinnare (3-vägs)": "1x2",
             "fightodds": "moneyline",
+            "matchodds": "1x2",
             # Spread / handicap
             "pucklinje": "spread",
             "poänghandikapp": "spread",
             "handicap": "spread",
+            "asiatisk handicap": "spread",
+            "run line": "spread",
             "setshandicap": "spread",
             "gamehandicap": "spread",
             # Total (over/under)

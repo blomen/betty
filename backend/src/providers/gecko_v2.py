@@ -186,7 +186,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
             # Handle cookie consent
             await self._handle_cookie_consent(page)
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
             await page.unroute('**/api/sb/**')
 
@@ -299,66 +299,81 @@ class GeckoV2Retriever(BrowserRetriever):
 
             all_events = []
             seen_ids: Set[str] = set()
-            page_num = 1
-            total_pages = None
 
-            while True:
-                url = f"{base_url}?{base_params}&pageNumber={page_num}"
+            # Fetch page 1 to discover total pages
+            url_p1 = f"{base_url}?{base_params}&pageNumber=1"
+            try:
+                resp = await context.request.get(url_p1, headers=self._api_headers)
+            except Exception as e:
+                logger.error(f"[{self.provider_id}] API request failed: {e}")
+                return []
 
-                try:
-                    resp = await context.request.get(url, headers=self._api_headers)
-                except Exception as e:
-                    logger.error(f"[{self.provider_id}] API request failed: {e}")
-                    break
-
-                if not resp.ok:
-                    if resp.status == 400:
-                        # Session might have expired — try re-init once
-                        logger.warning(f"[{self.provider_id}] 400 error, re-initializing session")
-                        self._api_headers = None
-                        self._api_base = None
-                        self._session_ready = False
-                        if await self._ensure_session():
-                            try:
-                                resp = await context.request.get(url, headers=self._api_headers)
-                            except Exception as e:
-                                logger.error(f"[{self.provider_id}] Retry failed: {e}")
-                                break
-                            if not resp.ok:
-                                logger.error(f"[{self.provider_id}] API still returning {resp.status}")
-                                break
-                        else:
-                            break
+            if not resp.ok:
+                if resp.status == 400:
+                    logger.warning(f"[{self.provider_id}] 400 error, re-initializing session")
+                    self._api_headers = None
+                    self._api_base = None
+                    self._session_ready = False
+                    if await self._ensure_session():
+                        try:
+                            resp = await context.request.get(url_p1, headers=self._api_headers)
+                        except Exception as e:
+                            logger.error(f"[{self.provider_id}] Retry failed: {e}")
+                            return []
+                        if not resp.ok:
+                            logger.error(f"[{self.provider_id}] API still returning {resp.status}")
+                            return []
                     else:
-                        logger.error(f"[{self.provider_id}] API returned {resp.status}")
-                        break
+                        return []
+                else:
+                    logger.error(f"[{self.provider_id}] API returned {resp.status}")
+                    return []
 
-                data = (await resp.json()).get('data', {})
+            data = (await resp.json()).get('data', {})
+            total_pages = data.get('totalPages', 1)
+            total_items = data.get('totalItemCount', 0)
+            logger.debug(
+                f"[{self.provider_id}] {sport}: {total_items} events, "
+                f"{total_pages} pages"
+            )
 
-                if total_pages is None:
-                    total_pages = data.get('totalPages', 1)
-                    total_items = data.get('totalItemCount', 0)
-                    logger.debug(
-                        f"[{self.provider_id}] {sport}: {total_items} events, "
-                        f"{total_pages} pages"
-                    )
-
-                # Parse events from this page
-                events_raw = data.get('events', [])
-                markets_raw = data.get('markets', [])
-                selections_raw = data.get('selections', [])
-
-                if not events_raw:
-                    break
-
-                page_events = self._parse_page(
-                    events_raw, markets_raw, selections_raw, sport, seen_ids
+            # Parse page 1
+            events_raw = data.get('events', [])
+            markets_raw = data.get('markets', [])
+            selections_raw = data.get('selections', [])
+            if events_raw:
+                all_events.extend(
+                    self._parse_page(events_raw, markets_raw, selections_raw, sport, seen_ids)
                 )
-                all_events.extend(page_events)
 
-                if page_num >= total_pages or len(all_events) >= limit:
-                    break
-                page_num += 1
+            # Fetch remaining pages in parallel (cap at limit)
+            if total_pages > 1 and len(all_events) < limit:
+                max_page = min(total_pages, 1 + (limit // max(len(events_raw), 1)))
+
+                async def _fetch_page(pg: int) -> Optional[Dict]:
+                    url = f"{base_url}?{base_params}&pageNumber={pg}"
+                    try:
+                        r = await context.request.get(url, headers=self._api_headers)
+                        if r.ok:
+                            return (await r.json()).get('data', {})
+                    except Exception as exc:
+                        logger.debug(f"[{self.provider_id}] Page {pg} failed: {exc}")
+                    return None
+
+                page_results = await asyncio.gather(
+                    *[_fetch_page(pg) for pg in range(2, max_page + 1)]
+                )
+
+                for page_data in page_results:
+                    if page_data is None:
+                        continue
+                    ev = page_data.get('events', [])
+                    mk = page_data.get('markets', [])
+                    sl = page_data.get('selections', [])
+                    if ev:
+                        all_events.extend(
+                            self._parse_page(ev, mk, sl, sport, seen_ids)
+                        )
 
             logger.debug(f"[{self.provider_id}] {sport}: {len(all_events)} events parsed")
             return all_events[:limit]

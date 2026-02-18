@@ -160,6 +160,7 @@ class OpportunityScanner:
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     min_edge_pct=min_edge_pct,
+                    all_markets=odds_grouped,
                 )
                 opportunities.extend(values)
 
@@ -314,6 +315,7 @@ class OpportunityScanner:
                     odds_by_outcome=odds_by_outcome,
                     anchor_provider=anchor_provider,
                     devig=devig,
+                    all_markets=odds_grouped,
                 )
                 opportunities.extend(bonus_opps)
 
@@ -350,6 +352,7 @@ class OpportunityScanner:
                     event=event,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
+                    all_markets=odds_grouped,
                 )
                 if dutch and dutch.combined_edge_pct >= min_edge_pct:
                     # Dutch: at least one soft +EV leg, others at fair odds (0% edge)
@@ -390,6 +393,7 @@ class OpportunityScanner:
                     event=event,
                     market=market,
                     odds_by_outcome=odds_by_outcome,
+                    all_markets=odds_grouped,
                 )
                 if dutch and dutch.combined_edge_pct >= min_edge_pct:
                     # Reverse: has at least one negative-edge leg
@@ -456,6 +460,7 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         min_edge_pct: float,
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> list[ValueBet]:
         """Find reverse value bets in a single market: Pinnacle raw vs soft consensus."""
         values = []
@@ -467,6 +472,25 @@ class OpportunityScanner:
                 if p["provider"] == "pinnacle":
                     pinnacle_market[out] = p["odds"]
                     break
+
+        # Spread complement lookup
+        if (
+            all_markets
+            and market.startswith("spread_")
+            and len(pinnacle_market) == 1
+        ):
+            try:
+                point = float(market.split("_", 1)[1])
+                complement_key = f"spread_{-point:g}"
+                complement_data = all_markets.get(complement_key, {})
+                for out, providers in complement_data.items():
+                    if out not in pinnacle_market:
+                        for p in providers:
+                            if p["provider"] == "pinnacle":
+                                pinnacle_market[out] = p["odds"]
+                                break
+            except (ValueError, IndexError):
+                pass
 
         if len(pinnacle_market) < 2:
             return []
@@ -524,6 +548,7 @@ class OpportunityScanner:
         event: Event,
         market: str,
         odds_by_outcome: dict[str, list[dict]],
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> Optional[DutchOpportunity]:
         """
         Find a dutch opportunity in a single market.
@@ -536,9 +561,6 @@ class OpportunityScanner:
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
-        if sharp_outcome_count < 2:
-            return None  # Need Pinnacle on 2+ outcomes for fair odds
-
         # Pre-compute Pinnacle market dict (raw odds)
         pinnacle_market = {}
         for out, providers in odds_by_outcome.items():
@@ -546,6 +568,30 @@ class OpportunityScanner:
                 if p["provider"] == "pinnacle":
                     pinnacle_market[out] = p["odds"]
                     break
+
+        # Spread complement lookup
+        if (
+            all_markets
+            and market.startswith("spread_")
+            and len(pinnacle_market) == 1
+        ):
+            try:
+                point = float(market.split("_", 1)[1])
+                complement_key = f"spread_{-point:g}"
+                complement_data = all_markets.get(complement_key, {})
+                for out, providers in complement_data.items():
+                    if out not in pinnacle_market:
+                        for p in providers:
+                            if p["provider"] == "pinnacle":
+                                pinnacle_market[out] = p["odds"]
+                                break
+                if len(pinnacle_market) > sharp_outcome_count:
+                    sharp_outcome_count = len(pinnacle_market)
+            except (ValueError, IndexError):
+                pass
+
+        if sharp_outcome_count < 2:
+            return None  # Need Pinnacle on 2+ outcomes for fair odds
 
         # Odds discrepancy check (likely event mismatch)
         for outcome, provider_odds_list in odds_by_outcome.items():
@@ -773,6 +819,7 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         min_edge_pct: float,
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> list[ValueBet]:
         """Find value bets in a single market using Pinnacle as sharp source."""
         values = []
@@ -790,6 +837,31 @@ class OpportunityScanner:
                 if p["provider"] == "pinnacle":
                     pinnacle_market[out] = p["odds"]
                     break
+
+        # Spread complement lookup: Pinnacle stores home at +X and away at -X
+        # (Asian handicap style) under different market keys. Soft providers store
+        # both outcomes under the same point. Reconstruct the full 2-way Pinnacle
+        # market so we can properly de-vig instead of using raw odds.
+        if (
+            all_markets
+            and market.startswith("spread_")
+            and len(pinnacle_market) == 1
+        ):
+            try:
+                point = float(market.split("_", 1)[1])
+                complement_key = f"spread_{-point:g}"
+                complement_data = all_markets.get(complement_key, {})
+                for out, providers in complement_data.items():
+                    if out not in pinnacle_market:
+                        for p in providers:
+                            if p["provider"] == "pinnacle":
+                                pinnacle_market[out] = p["odds"]
+                                break
+                # Update sharp count to reflect enriched market
+                if len(pinnacle_market) > sharp_outcome_count:
+                    sharp_outcome_count = len(pinnacle_market)
+            except (ValueError, IndexError):
+                pass  # Malformed market key — skip complement lookup
 
         # Pre-compute probability sums per soft provider (used in completeness check)
         soft_prob_sums = defaultdict(float)
@@ -832,9 +904,17 @@ class OpportunityScanner:
                     continue  # Don't compare sharp vs sharp
 
                 # Skip if market types don't match (different outcome counts)
+                # Exception: spread markets — Pinnacle stores 1 outcome per
+                # point (Asian handicap), soft providers store 2 (home+away).
+                # 3-way spreads (European handicap with draw) are NOT comparable.
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and sharp_outcome_count > 0:
-                    if soft_count != sharp_outcome_count:
+                    is_spread_asymmetry = (
+                        market.startswith("spread")
+                        and sharp_outcome_count in (1, 2)
+                        and soft_count == 2
+                    )
+                    if soft_count != sharp_outcome_count and not is_spread_asymmetry:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
@@ -880,6 +960,7 @@ class OpportunityScanner:
         odds_by_outcome: dict[str, list[dict]],
         anchor_provider: str,
         devig: bool,
+        all_markets: dict[str, dict[str, list[dict]]] = None,
     ) -> list[BonusOpportunity]:
         """Find bonus opportunities in a single market using Pinnacle as sharp source."""
         opportunities = []
@@ -892,9 +973,44 @@ class OpportunityScanner:
         # Find Pinnacle's outcome count (sole sharp source)
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
+        # Pre-compute Pinnacle market dict for ratio checks
+        pinnacle_market = {}
+        for out, providers in odds_by_outcome.items():
+            for p in providers:
+                if p["provider"] == "pinnacle":
+                    pinnacle_market[out] = p["odds"]
+                    break
+
+        # Spread complement lookup (same as find_value_in_market)
+        if (
+            all_markets
+            and market.startswith("spread_")
+            and len(pinnacle_market) == 1
+        ):
+            try:
+                point = float(market.split("_", 1)[1])
+                complement_key = f"spread_{-point:g}"
+                complement_data = all_markets.get(complement_key, {})
+                for out, providers in complement_data.items():
+                    if out not in pinnacle_market:
+                        for p in providers:
+                            if p["provider"] == "pinnacle":
+                                pinnacle_market[out] = p["odds"]
+                                break
+                if len(pinnacle_market) > sharp_outcome_count:
+                    sharp_outcome_count = len(pinnacle_market)
+            except (ValueError, IndexError):
+                pass
+
         # Skip if market types don't match (different outcome counts)
+        # Exception: spread markets where Pinnacle stores 1 outcome per point
         if anchor_outcome_count > 0 and sharp_outcome_count > 0:
-            if anchor_outcome_count != sharp_outcome_count:
+            is_spread_asymmetry = (
+                market.startswith("spread")
+                and sharp_outcome_count == 1
+                and anchor_outcome_count in (2, 3)
+            )
+            if anchor_outcome_count != sharp_outcome_count and not is_spread_asymmetry:
                 return []  # Don't compare 3-way vs 2-way markets
 
         # Check for odds discrepancy (likely event mismatch)
@@ -904,14 +1020,6 @@ class OpportunityScanner:
                 odds_ratio = max(odds_values) / min(odds_values)
                 if odds_ratio > MAX_ODDS_RATIO:
                     return []  # Skip market if likely event mismatch
-
-        # Pre-compute Pinnacle market dict for ratio checks
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Find anchor provider odds for this outcome
@@ -1033,8 +1141,12 @@ class OpportunityScanner:
                 )
                 return (fair_odds, "pinnacle")
             else:
-                # Single outcome, can't de-vig properly - skip
-                return None
+                # Single outcome — can't de-vig with multiplicative method.
+                # For spread markets (Pinnacle stores only home OR away per point),
+                # use raw Pinnacle odds as fair baseline. Pinnacle's Asian handicap
+                # lines carry ~2% margin on each side, so raw is a conservative
+                # estimate (slightly underestimates true fair odds → fewer false positives).
+                return (pinnacle_odds, "pinnacle(raw)")
         else:
             return (pinnacle_odds, "pinnacle(raw)")
 

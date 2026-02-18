@@ -74,7 +74,9 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
 }
 
 # Sports to extract - these have pinnacle_id in sports.yaml
-# Only extract sports where Pinnacle provides sharp lines
+# Only extract sports where Pinnacle provides sharp lines AND soft providers
+# have head-to-head match coverage for value comparison.
+# Excluded: golf, cycling, motorsports (outright/winner markets only — no soft match coverage)
 ALLOWED_SPORTS = frozenset({
     'football',
     'basketball',
@@ -87,13 +89,10 @@ ALLOWED_SPORTS = frozenset({
     'boxing',
     'cricket',
     'rugby',
-    'golf',
     'volleyball',
     'handball',
     'darts',
     'table_tennis',
     'snooker',
-    'motorsports',
-    'cycling',
     'curling',
 })
