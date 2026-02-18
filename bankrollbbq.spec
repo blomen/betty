@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-DegenTraderXD PyInstaller spec file.
+BankrollBBQ PyInstaller spec file.
 
-Build with:  pyinstaller degentraderxd.spec --clean --noconfirm
-Output:      dist/DegenTraderXD.exe
+Build with:  pyinstaller bankrollbbq.spec --clean --noconfirm
+Output:      dist/BankrollBBQ.exe
 """
 
 from pathlib import Path
@@ -116,7 +116,7 @@ a = Analysis(
         'tkinter', '_tkinter',
         'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
 
-        # Heavy scientific libs (not used by DegenTraderXD)
+        # Heavy scientific libs (not used by BankrollBBQ)
         'scipy', 'matplotlib', 'pandas', 'numpy.testing',
         'IPython', 'notebook', 'jupyter',
 
@@ -142,7 +142,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='DegenTraderXD',
+    name='BankrollBBQ',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

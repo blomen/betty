@@ -1,5 +1,5 @@
 """
-DegenTraderXD Desktop Application Launcher
+BankrollBBQ Desktop Application Launcher
 
 Starts FastAPI server in a background thread and opens a native
 Windows window via pywebview. The React frontend is served as
@@ -7,7 +7,7 @@ static files from the same FastAPI instance.
 
 Usage:
   python launcher.py          (dev mode)
-  DegenTraderXD.exe                  (bundled mode — PyInstaller)
+  BankrollBBQ.exe                  (bundled mode — PyInstaller)
 """
 
 import logging
@@ -81,7 +81,7 @@ def start_server(port: int):
         logger.info("Uvicorn server stopped")
     except OSError as e:
         if "address already in use" in str(e).lower() or "10048" in str(e):
-            logger.error("Port %d is already in use — is another DegenTraderXD instance running?", port)
+            logger.error("Port %d is already in use — is another BankrollBBQ instance running?", port)
         else:
             logger.exception("Server thread crashed (OSError)")
     except Exception:
@@ -153,7 +153,7 @@ def main():
             import ctypes
             msg = traceback.format_exc()
             ctypes.windll.user32.MessageBoxW(
-                0, f"DegenTraderXD failed to start:\n\n{msg}", "DegenTraderXD Error", 0x10
+                0, f"BankrollBBQ failed to start:\n\n{msg}", "BankrollBBQ Error", 0x10
             )
         except Exception:
             pass
@@ -189,7 +189,7 @@ def _run(logger: logging.Logger, bundled: bool):
 
         logger.info("Opening pywebview window...")
         webview.create_window(
-            title="DegenTraderXD",
+            title="BankrollBBQ",
             url=f"http://127.0.0.1:{port}",
             width=1400,
             height=900,

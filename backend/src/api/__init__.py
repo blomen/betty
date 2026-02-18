@@ -1,5 +1,5 @@
 """
-DegenTraderXD FastAPI Backend
+BankrollBBQ FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -38,7 +38,7 @@ from .routes import (
 )
 
 app = FastAPI(
-    title="DegenTraderXD API",
+    title="BankrollBBQ API",
     description="Polymarket arbitrage & value betting backend",
     version="0.1.0",
 )

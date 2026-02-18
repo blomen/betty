@@ -1,9 +1,9 @@
-# DegenTraderXD Windows Build Script
-# Builds the React frontend and packages everything into DegenTraderXD.exe
+# BankrollBBQ Windows Build Script
+# Builds the React frontend and packages everything into BankrollBBQ.exe
 #
 # Usage:  .\build.ps1           Build full .exe
 #         .\build.ps1 -Dev      Frontend-only rebuild (for launcher.py dev mode)
-# Output: dist\DegenTraderXD.exe
+# Output: dist\BankrollBBQ.exe
 
 param(
     [switch]$Dev
@@ -31,7 +31,7 @@ function Write-Step($msg) {
     Write-Host "`n[$script:Step/$script:TotalSteps] $msg" -ForegroundColor Yellow
 }
 
-Write-Host "`n=== DegenTraderXD Build ===" -ForegroundColor Cyan
+Write-Host "`n=== BankrollBBQ Build ===" -ForegroundColor Cyan
 
 # ── Pre-flight checks ──────────────────────────────────────────────
 Write-Step "Pre-flight checks..."
@@ -109,7 +109,7 @@ if ($MissingDeps.Count -gt 0) {
 Write-Host "  Dependencies OK." -ForegroundColor Green
 
 # ── Build exe ──────────────────────────────────────────────────────
-Write-Step "Building DegenTraderXD.exe..."
+Write-Step "Building BankrollBBQ.exe..."
 
 # Icon
 $icoPath = "frontend\public\terminal.ico"
@@ -119,23 +119,23 @@ if (-not (Test-Path $icoPath)) {
 
 # Clean previous build artifacts
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-if (Test-Path "dist\DegenTraderXD.exe") { Remove-Item -Force "dist\DegenTraderXD.exe" }
+if (Test-Path "dist\BankrollBBQ.exe") { Remove-Item -Force "dist\BankrollBBQ.exe" }
 
 # Run PyInstaller from venv so it picks up all installed packages
-& $VenvPython -m PyInstaller degentraderxd.spec --clean --noconfirm
+& $VenvPython -m PyInstaller bankrollbbq.spec --clean --noconfirm
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  PyInstaller build failed!" -ForegroundColor Red
     exit 1
 }
 
 # ── Report ─────────────────────────────────────────────────────────
-$exe = "dist\DegenTraderXD.exe"
+$exe = "dist\BankrollBBQ.exe"
 if (Test-Path $exe) {
     $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host "`n=== Build complete ===" -ForegroundColor Green
     Write-Host "  Output: $exe ($size MB)" -ForegroundColor Green
-    Write-Host "`n  Run with:  .\dist\DegenTraderXD.exe" -ForegroundColor Cyan
-    Write-Host "  Data dir:  %LOCALAPPDATA%\DegenTraderXD`n" -ForegroundColor Cyan
+    Write-Host "`n  Run with:  .\dist\BankrollBBQ.exe" -ForegroundColor Cyan
+    Write-Host "  Data dir:  %LOCALAPPDATA%\BankrollBBQ`n" -ForegroundColor Cyan
 } else {
     Write-Host "  Build failed - no .exe produced." -ForegroundColor Red
     exit 1

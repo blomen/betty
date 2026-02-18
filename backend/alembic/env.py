@@ -1,7 +1,7 @@
 """
-Alembic Environment Configuration for DegenTraderXD
+Alembic Environment Configuration for BankrollBBQ
 
-This file configures Alembic to work with the DegenTraderXD database models.
+This file configures Alembic to work with the BankrollBBQ database models.
 """
 from logging.config import fileConfig
 

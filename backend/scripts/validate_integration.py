@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 # Database path
-DB_PATH = Path(__file__).parent.parent / "data" / "degentraderxd.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "bankrollbbq.db"
 
 
 def get_connection():

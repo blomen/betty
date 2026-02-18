@@ -1056,17 +1056,17 @@ boosts:
     type: comeon
     url: "https://www.comeon.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: comeon
-    shared_with: []
+    shared_with: [hajper, snabbare]
     enabled: true
-    note: "ComeOn RSocket SPA — sport/85 = Odds Boost. Combo boosts via WS. ~3-5 boosts/day."
+    note: "ComeOn RSocket SPA — sport/85 = Odds Boost. Combo boosts via WS. ~3-5 boosts/day. Identical boosts on hajper+snabbare (100% match confirmed 2026-02-17)."
 
   hajper:
     type: comeon
     url: "https://www.hajper.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: hajper
     shared_with: []
-    enabled: true
-    note: "Same as ComeOn — sport/85 boost page. Same boosts, same odds."
+    enabled: false
+    note: "CONSOLIDATED: Same boosts as ComeOn (100% identical odds). Scraped via comeon shared_with."
 
   lyllo:
     type: comeon
@@ -1084,8 +1084,8 @@ boosts:
     url: "https://www.snabbare.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: snabbare
     shared_with: []
-    enabled: true
-    note: "Sportradar MTS/Komigen — same sport/85 boost page as ComeOn Group. Same boosts/odds. Headed browser (headless breaks WS). Confirmed 2026-02-15."
+    enabled: false
+    note: "CONSOLIDATED: Same boosts as ComeOn (100% identical odds). Scraped via comeon shared_with."
 
   # ═══════════════════════════════════════════════════════
   # SPECTATE — MrGreen boost page (no data)

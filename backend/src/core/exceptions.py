@@ -1,12 +1,12 @@
 """
-DegenTraderXD Exception Hierarchy
+BankrollBBQ Exception Hierarchy
 
 Structured exceptions for distinguishing retryable vs fatal errors.
 """
 
 
-class DegenTraderXDError(Exception):
-    """Base exception for all DegenTraderXD errors."""
+class BankrollBBQError(Exception):
+    """Base exception for all BankrollBBQ errors."""
 
     def __init__(self, message: str, provider_id: str | None = None):
         super().__init__(message)
@@ -14,7 +14,7 @@ class DegenTraderXDError(Exception):
         self.message = message
 
 
-class RetryableError(DegenTraderXDError):
+class RetryableError(BankrollBBQError):
     """
     Errors that can be retried (timeouts, rate limits, transient failures).
 
@@ -58,7 +58,7 @@ class TimeoutError(RetryableError):
         super().__init__(message, provider_id)
 
 
-class FatalError(DegenTraderXDError):
+class FatalError(BankrollBBQError):
     """
     Errors that should not be retried (bad config, auth failed).
 
@@ -84,7 +84,7 @@ class AuthenticationError(FatalError):
     pass
 
 
-class DataQualityError(DegenTraderXDError):
+class DataQualityError(BankrollBBQError):
     """
     Data quality issues (suspicious arbs, bad odds).
 
@@ -107,7 +107,7 @@ class DataQualityError(DegenTraderXDError):
         self.metric_value = metric_value
 
 
-class ExtractionError(DegenTraderXDError):
+class ExtractionError(BankrollBBQError):
     """Error during data extraction from provider."""
 
     def __init__(
@@ -120,7 +120,7 @@ class ExtractionError(DegenTraderXDError):
         self.sport = sport
 
 
-class MatchingError(DegenTraderXDError):
+class MatchingError(BankrollBBQError):
     """Error during event matching or normalization."""
 
     def __init__(

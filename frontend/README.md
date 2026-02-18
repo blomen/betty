@@ -1,6 +1,6 @@
-# DegenTraderXD Frontend
+# BankrollBBQ Frontend
 
-Terminal-style React frontend for the DegenTraderXD betting analytics platform.
+Terminal-style React frontend for the BankrollBBQ betting analytics platform.
 
 ## Architecture
 

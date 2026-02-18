@@ -1,5 +1,5 @@
 """
-DegenTraderXD Interactive Terminal Application
+BankrollBBQ Interactive Terminal Application
 
 A Rich + Typer based terminal UI for betting analytics.
 """
@@ -27,14 +27,14 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(force_terminal=True)
-app = typer.Typer(help="DegenTraderXD - Betting Analytics Platform")
+app = typer.Typer(help="BankrollBBQ - Betting Analytics Platform")
 
 
 def show_banner():
     """Display the app banner."""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║                   DegenTraderXD                             ║
+    ║                   BankrollBBQ                             ║
     ║           Betting Analytics Platform                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """

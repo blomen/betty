@@ -1,7 +1,7 @@
 """Quick validation script for extraction results."""
 import sqlite3
 
-conn = sqlite3.connect('data/degentraderxd.db')
+conn = sqlite3.connect('data/bankrollbbq.db')
 c = conn.cursor()
 
 print("=== Provider Odds Count ===")

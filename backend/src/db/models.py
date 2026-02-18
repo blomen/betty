@@ -1,5 +1,5 @@
 """
-DegenTraderXD Database Models
+BankrollBBQ Database Models
 
 SQLite schema for:
 - Canonical events (provider-agnostic)
