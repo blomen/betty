@@ -48,11 +48,14 @@ export interface Opportunity {
   final_stake?: number | null;
   kelly_fraction?: number | null;
   skip_reason?: string | null;
+  bankroll_needed?: number | null;
   bonus_cleared?: boolean | null;
   // Freebet phase info
   bonus_status?: 'trigger_needed' | 'freebet_available' | null;
   bonus_amount?: number | null;
   min_odds_applied?: number | null;
+  // Provider-specific IDs for browser navigation
+  provider_meta?: Record<string, string | number> | null;
 }
 
 // Events
@@ -68,6 +71,21 @@ export interface EventSummary {
 
 export interface EventDetail extends EventSummary {
   odds: Record<string, OddsEntry[]>;
+}
+
+export interface LiveEvent {
+  id: string;
+  sport: string;
+  league: string;
+  home_team: string;
+  away_team: string;
+  start_time: string | null;
+  home_score: number | null;
+  away_score: number | null;
+  match_status: 'live' | 'finished';
+  match_minute: number | null;
+  match_period: string | null;
+  stats: Record<string, unknown> | null;
 }
 
 export interface OddsEntry {
@@ -165,6 +183,7 @@ export interface Bet {
   market: string | null;
   outcome: string | null;
   odds: number;
+  point?: number | null;
   stake: number;
   is_bonus: boolean;
   bonus_type: string | null;
@@ -180,6 +199,11 @@ export interface Bet {
   start_time?: string | null;
   edge_pct?: number | null;
   selection_probability?: number | null;
+  settlement_source?: string | null;
+  home_score?: number | null;
+  away_score?: number | null;
+  match_status?: string | null;
+  match_minute?: number | null;
 }
 
 // Profile
@@ -196,6 +220,7 @@ export interface Profile {
   preferred_counterparts: string[];
   bonus_enabled: boolean;
   is_active: boolean;
+  chrome_port: number;
   created_at: string | null;
 }
 
@@ -207,6 +232,7 @@ export interface ProfileCreate {
   min_edge_pct?: number;
   min_arb_pct?: number;
   max_stake_pct?: number;
+  chrome_port?: number;
 }
 
 export interface ProfileUpdate {
@@ -220,6 +246,7 @@ export interface ProfileUpdate {
   min_retention_pct?: number;
   preferred_counterparts?: string[];
   bonus_enabled?: boolean;
+  chrome_port?: number;
 }
 
 // Stake Calculator
@@ -474,6 +501,7 @@ export interface PolymarketValueBet {
   final_stake?: number | null;
   kelly_fraction?: number | null;
   skip_reason?: string | null;
+  bankroll_needed?: number | null;
   bonus_cleared?: boolean | null;
 }
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity } from '@/types';
 
 export function ReversePage() {
@@ -50,13 +51,28 @@ export function ReversePage() {
     return outcome;
   };
 
-  const handlePlaceBet = async (opp: Opportunity) => {
+  const handleOpenAndRecord = async (opp: Opportunity) => {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
     setBetSuccess(null);
+
     try {
+      // 1. Navigate browser to match page
+      const nav = await api.navigateToEvent({
+        provider_id: 'pinnacle',
+        provider_meta: opp.provider_meta,
+        home_team: opp.home_team,
+        away_team: opp.away_team,
+      });
+
+      // If CDP didn't navigate, open URL in new tab
+      if (!nav.navigated && nav.url) {
+        window.open(nav.url, '_blank');
+      }
+
+      // 2. Record bet in DB
       await api.createBet({
         event_id: opp.event_id,
         provider_id: 'pinnacle',
@@ -65,13 +81,16 @@ export function ReversePage() {
         odds: opp.odds1,
         stake,
       });
+
       const outcomeLabel = resolveOutcome(opp);
-      setBetSuccess(`Bet placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${opp.odds1.toFixed(2)} (Pinnacle)`);
+      const method = nav.navigated ? 'opened' : nav.url ? 'tab' : 'recorded';
+      setBetSuccess(`${method === 'opened' ? 'Opened' : method === 'tab' ? 'Opened (new tab)' : 'Recorded'}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${opp.odds1.toFixed(2)} (Pinnacle)`);
+
       setTimeout(() => setBetSuccess(null), 5000);
       setSelectedRow(null);
       fetchData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to place bet';
+      const msg = err instanceof Error ? err.message : 'Failed to open/record bet';
       setBetError(msg);
       setTimeout(() => setBetError(null), 5000);
     } finally {
@@ -84,7 +103,7 @@ export function ReversePage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabReverse" />
+          <TabIcon name="reverse" color={TAB_COLORS.reverse} size={16} />
           Reverse
           <span className="text-muted text-sm font-normal ml-1">({sorted.length})</span>
         </h2>
@@ -145,6 +164,7 @@ export function ReversePage() {
                     <td>
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="text-text text-sm truncate">{opp.home_team} vs {opp.away_team}</span>
+                        {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
                       </div>
                       <div className="text-muted2 text-[11px]">
                         {opp.sport}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatTime(opp.starts_at)}
@@ -193,11 +213,11 @@ export function ReversePage() {
                         </div>
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
                           <button
-                            onClick={() => handlePlaceBet(opp)}
+                            onClick={() => handleOpenAndRecord(opp)}
                             disabled={!hasStake || isPlacing}
-                            className="px-4 py-1.5 bg-tabReverse text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                            className="px-4 py-1.5 text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap bg-tabReverse"
                           >
-                            {isPlacing ? '...' : `Bet ${hasStake ? opp.final_stake!.toFixed(0) : 0} kr`}
+                            {isPlacing ? '...' : 'Place Bet'}
                           </button>
                         </div>
                       </td>

@@ -94,6 +94,7 @@ async def get_polymarket_value(
                 result["final_stake"] = round(stake_rec.stake, 2)
                 result["kelly_fraction"] = stake_rec.kelly_fraction
                 result["skip_reason"] = stake_rec.skip_reason
+                result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
                 result["bonus_cleared"] = bonus_status.get("is_cleared", True)
             except Exception as e:
                 logger.debug(f"Stake calculation failed for {vb.event_id}: {e}")
@@ -101,6 +102,7 @@ async def get_polymarket_value(
                 result["final_stake"] = None
                 result["kelly_fraction"] = None
                 result["skip_reason"] = None
+                result["bankroll_needed"] = None
                 result["bonus_cleared"] = None
 
         results.append(result)

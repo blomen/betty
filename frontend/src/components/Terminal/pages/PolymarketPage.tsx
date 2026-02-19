@@ -4,6 +4,7 @@ import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet, PolymarketStats } from '@/types';
 
 function getTimeAgo(isoStr: string): string {
@@ -78,7 +79,7 @@ export function PolymarketPage() {
     try {
       await api.createBet({ event_id: vb.event_id, provider_id: 'polymarket', market: vb.market, outcome: vb.outcome, odds, stake, is_bonus: false });
       const outcomeLabel = resolveOutcome(vb);
-      setBetSuccess(`Bet placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (Polymarket)`);
+      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);
       setSelectedOpp(null);
       fetchData();
@@ -121,7 +122,7 @@ export function PolymarketPage() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabPolymarket" />
+          <TabIcon name="polymarket" color={TAB_COLORS.polymarket} size={16} />
           Polymarket
           <span className="text-muted text-sm font-normal ml-1">({sortedBets.length})</span>
         </h2>
@@ -283,7 +284,7 @@ export function PolymarketPage() {
                             disabled={!hasStake || isPlacing}
                             className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
                           >
-                            {isPlacing ? '...' : `Bet ${hasStake ? vb.final_stake!.toFixed(0) : 0} kr`}
+                            {isPlacing ? '...' : 'Place Bet'}
                           </button>
                         </div>
                       </td>

@@ -11,7 +11,7 @@ Key safety features:
 1. Dynamic Kelly scaling by edge (quarter Kelly default)
 2. Single bet cap (3% of bankroll)
 3. Event/cluster exposure cap (5%)
-4. Minimum stake guard (25 kr)
+4. Minimum stake guard (scales with bankroll: 5-25 kr)
 
 Bonus clearing:
 - Track wagered amount per provider
@@ -25,6 +25,33 @@ from typing import Optional
 
 # Default minimum stake (skip bets below this)
 DEFAULT_MIN_STAKE = 25.0
+
+# Absolute floor — smallest practical bet on any sportsbook
+ABSOLUTE_MIN_STAKE = 5.0
+
+# Minimum expected profit to bother placing a bet (stake * edge >= this)
+DEFAULT_MIN_EXPECTED_PROFIT = 2.0
+
+
+def dynamic_min_stake(bankroll: float) -> float:
+    """
+    Scale minimum stake with bankroll so small bankrolls aren't locked out.
+
+    At 10,000+ bankroll: 25 kr (standard)
+    At 5,000 bankroll:   25 kr
+    At 1,500 bankroll:   10 kr (rounds to nearest 5)
+    At 500 bankroll:      5 kr (floor)
+
+    Formula: max(ABSOLUTE_MIN_STAKE, bankroll * 0.005) capped at DEFAULT_MIN_STAKE,
+    rounded down to nearest 5.
+    """
+    if bankroll <= 0:
+        return DEFAULT_MIN_STAKE
+    raw = max(ABSOLUTE_MIN_STAKE, bankroll * 0.005)
+    capped = min(raw, DEFAULT_MIN_STAKE)
+    # Round down to nearest 5 for clean numbers
+    return max(ABSOLUTE_MIN_STAKE, (capped // 5) * 5)
+
 
 # Bonus wagering min odds requirement
 BONUS_MIN_ODDS = 1.80
@@ -47,6 +74,9 @@ class StakeResult:
 
     # Reasoning
     skip_reason: Optional[str] = None
+
+    # How much additional bankroll needed to qualify (0 if already qualifies)
+    bankroll_needed: float = 0.0
 
 
 def round_stake_natural(stake: float) -> float:
@@ -126,6 +156,7 @@ def calculate_stake(
     min_stake: float = DEFAULT_MIN_STAKE,
     high_confidence: bool = True,
     max_kelly: float = 0.75,
+    min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
 ) -> StakeResult:
     """
     Calculate optimal stake using dynamic Kelly with safety rails.
@@ -142,6 +173,7 @@ def calculate_stake(
         min_stake: Minimum stake (skip tiny bets)
         high_confidence: Whether this is a high-confidence bet
         max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
+        min_expected_profit: Minimum expected profit (stake * edge) to bother placing
 
     Returns:
         StakeResult with stake amount and full breakdown
@@ -229,8 +261,26 @@ def calculate_stake(
     # Round to human-looking amount before min-stake check
     stake = round_stake_natural(stake)
 
-    # Minimum stake guard - skip tiny bets
-    if stake < min_stake:
+    # Compute bankroll needed to pass both min_stake and min_expected_profit guards
+    additional_for_stake = 0.0
+    additional_for_ev = 0.0
+    if kelly > 0 and edge_used > 0:
+        if stake < min_stake:
+            needed = min_stake * (odds - 1) / (kelly * edge_used)
+            additional_for_stake = max(0.0, needed - bankroll_total)
+        expected_profit = stake * edge_used
+        if min_expected_profit > 0 and expected_profit < min_expected_profit:
+            needed = min_expected_profit * (odds - 1) / (kelly * edge_used ** 2)
+            additional_for_ev = max(0.0, needed - bankroll_total)
+
+    additional = max(additional_for_stake, additional_for_ev)
+
+    if stake < min_stake or (min_expected_profit > 0 and stake * edge_used < min_expected_profit):
+        additional = round(additional, 0)
+        if additional >= 1000:
+            add_str = f"+{additional / 1000:.0f}k kr"
+        else:
+            add_str = f"+{additional:.0f} kr"
         return StakeResult(
             stake=0.0,
             kelly_fraction=kelly,
@@ -241,7 +291,8 @@ def calculate_stake(
             single_bet_cap=round(single_bet_cap, 2),
             was_capped_single=was_capped_single,
             was_capped_event=was_capped_event,
-            skip_reason=f"Stake {stake:.0f} kr below minimum {min_stake:.0f} kr"
+            skip_reason=f"add {add_str} to play",
+            bankroll_needed=additional,
         )
 
     return StakeResult(
@@ -401,14 +452,16 @@ class StakeCalculator:
         single_bet_cap_pct: float = 0.03,
         event_cap_pct: float = 0.05,
         min_edge: float = 0.01,
-        min_stake: float = DEFAULT_MIN_STAKE,
         max_kelly: float = 0.75,
+        min_stake: float | None = None,
+        min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
     ):
         self.bankroll = bankroll
         self.single_bet_cap_pct = single_bet_cap_pct
         self.min_edge = min_edge
-        self.min_stake = min_stake
+        self.min_stake = min_stake if min_stake is not None else dynamic_min_stake(bankroll)
         self.max_kelly = max_kelly
+        self.min_expected_profit = min_expected_profit
 
         self.event_tracker = EventExposureTracker(event_cap_pct)
         self.bonus_tracker = BonusTracker()
@@ -416,6 +469,7 @@ class StakeCalculator:
     def update_bankroll(self, new_bankroll: float):
         """Update bankroll after wins/losses."""
         self.bankroll = new_bankroll
+        self.min_stake = dynamic_min_stake(new_bankroll)
 
     def get_min_odds_for_provider(self, provider_id: str) -> float:
         """
@@ -478,6 +532,7 @@ class StakeCalculator:
             min_stake=self.min_stake,
             high_confidence=high_confidence,
             max_kelly=self.max_kelly,
+            min_expected_profit=self.min_expected_profit,
         )
 
     def record_bet(
@@ -544,6 +599,7 @@ def quick_stake(
         edge_raw=edge,
         odds=odds,
         min_odds=0.0,  # No restriction for quick calc
+        min_stake=dynamic_min_stake(bankroll),
     )
     return result.stake
 

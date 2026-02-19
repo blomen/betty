@@ -6,6 +6,7 @@ import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity, Provider } from '@/types';
 
 interface GroupedOpp {
@@ -37,6 +38,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
+
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -166,7 +168,25 @@ export function ValuePage({ providers }: ValuePageProps) {
     setFreebetPopup(null);
     setBetError(null);
     setBetSuccess(null);
+
     try {
+      // 1. Navigate browser to match page
+      try {
+        const nav = await api.navigateToEvent({
+          provider_id: opp.provider1,
+          provider_meta: opp.provider_meta,
+          home_team: opp.home_team,
+          away_team: opp.away_team,
+        });
+        // If CDP didn't navigate, open URL in new tab
+        if (!nav.navigated && nav.url) {
+          window.open(nav.url, '_blank');
+        }
+      } catch {
+        // Navigation is best-effort — don't block bet recording
+      }
+
+      // 2. Record bet in DB
       await api.createBet({
         event_id: opp.event_id,
         provider_id: opp.provider1,
@@ -179,12 +199,12 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp.home_team, opp.away_team, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
-      setBetSuccess(`${type} placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
-      setTimeout(() => setBetSuccess(null), 5000);
+      setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(opp.provider1)}) — match page opened`);
+      setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
       setSelectedGroup(null);
       fetchData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to place bet';
+      const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
       setTimeout(() => setBetError(null), 5000);
     } finally {
@@ -207,7 +227,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabValue" />
+          <TabIcon name="value" color={TAB_COLORS.value} size={16} />
           Soft
           <span className="text-muted text-sm font-normal ml-1">({filteredCount})</span>
         </h2>
@@ -415,12 +435,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                           const skipReason = selOpp.skip_reason;
                           const isDisabled = !oppHasStake || isPlacing || !!skipReason;
                           const btnColor = isTrigger ? 'bg-warning' : isFreebet ? 'bg-accent' : 'bg-tabValue';
+                          const stakeStr = oppHasStake ? selOpp.final_stake!.toFixed(0) : '0';
                           const btnLabel = isPlacing ? '...'
                             : skipReason === 'trigger_placed' ? 'Trigger placed'
                             : skipReason === 'no_balance' ? 'No balance'
-                            : isTrigger ? `Trigger ${oppHasStake ? selOpp.final_stake!.toFixed(0) : 0} kr`
-                            : isFreebet ? `Freebet ${oppHasStake ? selOpp.final_stake!.toFixed(0) : 0} kr`
-                            : `Bet ${oppHasStake ? selOpp.final_stake!.toFixed(0) : 0} kr`;
+                            : 'Place Bet';
 
                           return (
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">

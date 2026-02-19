@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
-from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS
-from ..db.models import Provider
+from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
+from ..constants import PROVIDER_CANONICAL
+from ..db.models import Provider, Odds
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,11 @@ class OpportunityService:
                 "away_team": event.away_team if event else None,
                 "starts_at": event.start_time.isoformat() if event and event.start_time else None,
             }
+
+            # Attach provider_meta from Odds table (for browser navigation URLs)
+            result["provider_meta"] = self._lookup_provider_meta(
+                opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point
+            )
 
             # Add stake recommendations for value bets
             if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
@@ -199,6 +205,7 @@ class OpportunityService:
                     min_odds=0.0,
                     max_kelly=max_kelly,
                     single_bet_cap_pct=single_bet_cap_pct,
+                    min_stake=dynamic_min_stake(total_bankroll),
                 )
                 suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
                 kelly_amount = rec.raw_kelly_stake
@@ -250,6 +257,7 @@ class OpportunityService:
             result["final_stake"] = round(stake_rec.stake, 2)
             result["kelly_fraction"] = stake_rec.kelly_fraction
             result["skip_reason"] = stake_rec.skip_reason
+            result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
             result["bonus_cleared"] = bonus_status.get("is_cleared", True)
 
             # Freebet phase overrides: force stake to bonus_amount
@@ -294,6 +302,7 @@ class OpportunityService:
             result["final_stake"] = None
             result["kelly_fraction"] = None
             result["skip_reason"] = None
+            result["bankroll_needed"] = None
             result["bonus_cleared"] = None
             result["bonus_status"] = None
             result["bonus_amount"] = None
@@ -384,6 +393,7 @@ class OpportunityService:
             result["final_stake"] = round(stake_rec.stake, 2)
             result["kelly_fraction"] = stake_rec.kelly_fraction
             result["skip_reason"] = stake_rec.skip_reason
+            result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
 
         except Exception as e:
             logger.debug(f"Reverse value stake calculation failed for opp {opp.id}: {e}")
@@ -391,3 +401,35 @@ class OpportunityService:
             result["final_stake"] = None
             result["kelly_fraction"] = None
             result["skip_reason"] = None
+            result["bankroll_needed"] = None
+
+    def _lookup_provider_meta(
+        self,
+        event_id: str,
+        provider_id: str,
+        market: str,
+        outcome: str,
+        point: float | None,
+    ) -> dict | None:
+        """Look up provider_meta from the Odds table for browser navigation.
+
+        Handles platform consolidation: if provider_id is non-canonical (e.g. 'expekt'),
+        the Odds row is stored under the canonical provider ('unibet').
+        """
+        try:
+            canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
+            q = self.db.query(Odds.provider_meta).filter(
+                Odds.event_id == event_id,
+                Odds.provider_id == canonical,
+                Odds.market == market,
+                Odds.outcome == outcome,
+            )
+            if point is not None:
+                q = q.filter(Odds.point == point)
+            else:
+                q = q.filter(Odds.point.is_(None))
+
+            row = q.first()
+            return row[0] if row and row[0] else None
+        except Exception:
+            return None

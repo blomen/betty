@@ -10,4 +10,5 @@ from .stake_calculator import (
     quick_stake,
     BONUS_MIN_ODDS,
     DEFAULT_MIN_STAKE,
+    DEFAULT_MIN_EXPECTED_PROFIT,
 )
