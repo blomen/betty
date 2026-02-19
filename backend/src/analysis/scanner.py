@@ -739,6 +739,11 @@ class OpportunityScanner:
         """
         Group event odds by market -> outcome -> provider list.
 
+        For spread markets, detects providers that store 2 outcomes at the same
+        point (Asian-style: home@-0.2 and away@-0.2 are separate markets) vs
+        Pinnacle's convention (1 outcome per point side). When detected, relocates
+        the "wrong-side" outcome to its correct market key so comparisons are valid.
+
         Args:
             event: The event to group odds for
             exclude_providers: Set of provider IDs to exclude (default: EXCLUDED_FROM_SCANS)
@@ -792,7 +797,99 @@ class OpportunityScanner:
                 "point": odds.point,
             })
 
+        # Fix Asian-style spread providers that store 2 outcomes at the same point.
+        # Pinnacle convention: home at spread_-X, away at spread_+X (1 outcome per key).
+        # Some providers (e.g. Kambi) store both home@-X and away@-X as separate Asian
+        # lines. Detect via implied probability sum < 100% and relocate the "away"
+        # outcome to the complement point where it belongs.
+        self._fix_asian_spread_grouping(grouped)
+
         return dict(grouped)
+
+    def _fix_asian_spread_grouping(
+        self, grouped: dict[str, dict[str, list[dict]]]
+    ) -> None:
+        """
+        Detect and fix providers that store 2 Asian handicap outcomes at the same
+        spread point. Moves misplaced outcomes to their correct complement point.
+
+        Detection: for a given spread point, if a non-sharp provider has both 'home'
+        and 'away' outcomes and their implied probability sum is outside the normal
+        bookmaker margin range (1.02-1.12), these are two separate Asian handicap
+        markets stored at the same point, not a single 2-way market.
+
+        - prob_sum < 0.98: clearly separate (underdog side, both > 2.0)
+        - prob_sum > 1.15: clearly separate (favorite side, both < 2.0, inflated margin)
+        - 0.98-1.15: plausible 2-way market, leave as-is
+
+        This mutates the grouped dict in-place.
+        """
+        spread_keys = [k for k in grouped if k.startswith("spread_")]
+
+        for market_key in spread_keys:
+            try:
+                point = float(market_key.split("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+
+            odds_by_outcome = grouped[market_key]
+
+            # Only relevant when both home and away exist at this point
+            if "home" not in odds_by_outcome or "away" not in odds_by_outcome:
+                continue
+
+            # Check each non-sharp provider: if they have both home and away at this
+            # point with anomalous prob sum, they're storing Asian-style (separate lines)
+            home_entries = odds_by_outcome["home"]
+            away_entries = odds_by_outcome["away"]
+
+            # Build lookup: provider -> entry
+            provider_home = {e["provider"]: e for e in home_entries if e["provider"] not in SHARP_PROVIDERS}
+            provider_away = {e["provider"]: e for e in away_entries if e["provider"] not in SHARP_PROVIDERS}
+
+            providers_to_fix = []
+            for provider_id in set(provider_home) & set(provider_away):
+                h_odds = provider_home[provider_id]["odds"]
+                a_odds = provider_away[provider_id]["odds"]
+                prob_sum = (1.0 / h_odds) + (1.0 / a_odds)
+
+                # Normal 2-way bookmaker margin: prob_sum in [1.02, 1.12].
+                # Outside [0.98, 1.15] = two separate Asian handicap lines.
+                if prob_sum < 0.98 or prob_sum > 1.15:
+                    providers_to_fix.append(provider_id)
+
+            if not providers_to_fix:
+                continue
+
+            for provider_id in providers_to_fix:
+                # These are two separate Asian handicap lines from different betoffers
+                # stored at the same point. Remove the "wrong-side" outcome so the
+                # scanner doesn't incorrectly compare it against Pinnacle at this point.
+                #
+                # Convention: at negative point, home is the natural side (home gets
+                # negative handicap), so remove away. At positive point, away is
+                # the natural side, so remove home.
+                if point < 0:
+                    odds_by_outcome["away"] = [
+                        e for e in odds_by_outcome["away"]
+                        if e["provider"] != provider_id
+                    ]
+                elif point > 0:
+                    odds_by_outcome["home"] = [
+                        e for e in odds_by_outcome["home"]
+                        if e["provider"] != provider_id
+                    ]
+                # point == 0: both sides are for the same market, keep both
+
+            # Clean up empty outcome keys
+            for out in list(odds_by_outcome.keys()):
+                if not odds_by_outcome[out]:
+                    del odds_by_outcome[out]
+
+            logger.debug(
+                f"Fixed Asian spread grouping at {market_key}: "
+                f"removed cross-betoffer outcomes for {len(providers_to_fix)} providers"
+            )
 
     def _count_outcomes_per_provider(
         self, odds_by_outcome: dict[str, list[dict]]

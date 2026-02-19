@@ -531,7 +531,7 @@ providers:
     retriever_type: tenbet
     site_url: https://www.10bet.se
     provider_timeout: 600              # DOM scraping needs time for many competitions
-    sport_timeout: 240                 # Football has 60 competitions — needs margin above 180s
+    sport_timeout: 300                 # Football capped at 40 competitions — needs ~200s + margin
     supported_sports:
       - football
       - basketball
@@ -1030,8 +1030,8 @@ boosts:
     type: betconstruct
     primary_provider: vbet
     shared_with: []
-    enabled: true
-    note: "BetConstruct Swarm WS — get_boosted_selections command. useGetBoostedOdds JS confirms boost API."
+    enabled: false
+    note: "Disabled — vbet.se consistently returns 0 boosts (Swedish site has no boost feature). Re-enable if boosts appear."
 
   # ═══════════════════════════════════════════════════════
   # INTERWETTEN — visible boosts on frontpage (DOM scrape)

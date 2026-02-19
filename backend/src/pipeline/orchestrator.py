@@ -95,6 +95,44 @@ class ExtractionPipeline:
         if total > 0:
             logger.debug(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
 
+    def _detect_finished_events(self) -> int:
+        """Mark events as 'finished' when they were live but Pinnacle no longer reports them.
+
+        After Pinnacle extraction, any event with match_status='live' whose updated_at
+        is older than 3 minutes (one extraction cycle) has been dropped by Pinnacle = match ended.
+        We use updated_at staleness because Pinnacle updates live_state every extraction,
+        so a stale updated_at means the event wasn't in this run's results.
+
+        Returns number of events marked as finished.
+        """
+        from datetime import datetime, timedelta
+
+        # Use naive UTC to match Event.updated_at (which uses datetime.utcnow default)
+        # Mixing timezone-aware and naive datetimes causes SQLite string comparison bugs
+        now = datetime.utcnow()
+        # Events that were live but not updated in the last 3 minutes = Pinnacle dropped them
+        stale_threshold = now - timedelta(minutes=3)
+
+        live_events = (
+            self.session.query(Event)
+            .filter(
+                Event.match_status == "live",
+                Event.updated_at < stale_threshold,
+            )
+            .all()
+        )
+
+        count = 0
+        for ev in live_events:
+            ev.match_status = "finished"
+            count += 1
+            logger.info(
+                f"[FT] {ev.home_team} vs {ev.away_team} → finished "
+                f"({ev.home_score}-{ev.away_score})"
+            )
+
+        return count
+
     def _pre_warm_pinnacle_caches(self):
         """Pre-load ALL Pinnacle odds into shared caches to eliminate per-event DB queries.
 
@@ -393,6 +431,7 @@ class ExtractionPipeline:
 
         # Start metrics collection
         run_id = f"run_{int(time.time())}"
+        self._current_run_id = run_id
         if self.metrics:
             self.metrics.start_run(run_id)
 
@@ -402,6 +441,8 @@ class ExtractionPipeline:
             "total_events": 0,
             "total_odds": 0,
             "matched_events": 0,
+            "trigger": tier_name or "manual",
+            "run_id": run_id,
         }
 
         def log_progress(msg: str):
@@ -494,6 +535,12 @@ class ExtractionPipeline:
 
                 # Commit Pinnacle data so Polymarket can query it for inversion detection
                 self.session.commit()
+
+                # Detect finished events: previously "live" but Pinnacle no longer returned them
+                finished_count = self._detect_finished_events()
+                if finished_count > 0:
+                    log_progress(f"Detected {finished_count} finished events (no longer live on Pinnacle)")
+                    self.session.commit()
 
                 # Pre-warm shared Pinnacle caches (eliminates thousands of per-event DB queries)
                 self._pre_warm_pinnacle_caches()
@@ -1090,7 +1137,10 @@ class ExtractionPipeline:
                     # Get target leagues for this sport (if available)
                     target_leagues = sharp_leagues.get(sport) if sharp_leagues else None
                     events = await asyncio.wait_for(
-                        extractor.extract(sport, limit=limit, target_leagues=target_leagues),
+                        extractor.extract(
+                            sport, limit=limit, target_leagues=target_leagues,
+                            run_id=getattr(self, '_current_run_id', None),
+                        ),
                         timeout=sport_timeout,
                     )
 

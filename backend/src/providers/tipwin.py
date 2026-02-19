@@ -82,18 +82,27 @@ class TipwinRetriever(BrowserRetriever):
         self.site_url = config.get("site_url", "https://www.tipwin.se")
         # Cache all events on first extraction, then filter by sport
         self._all_events: Optional[Dict[str, List[StandardEvent]]] = None
+        self._last_run_id: Optional[str] = None
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
         Extract events for a given sport.
 
-        On first call, loads all events from /sv/sports/full/ with pagination.
-        Subsequent calls return cached results filtered by sport.
+        On first call per extraction run, loads all events from /sv/sports/full/
+        with pagination. Subsequent calls within the same run return cached results
+        filtered by sport. Cache is invalidated when the orchestrator starts a new
+        extraction run (detected via the `run_id` kwarg changing).
         Health check (limit=1) returns quickly without full extraction.
         """
         # Health check — return quickly without full pagination
         if limit <= 1 and self._all_events is None:
             return await self._quick_health_check()
+
+        # Invalidate cache when a new extraction run starts (run_id changes)
+        run_id = kwargs.get("run_id")
+        if run_id and run_id != self._last_run_id:
+            self._all_events = None
+            self._last_run_id = run_id
 
         # Extract all sports on first call
         if self._all_events is None:
@@ -102,12 +111,10 @@ class TipwinRetriever(BrowserRetriever):
             total = sum(len(v) for v in self._all_events.values())
             sports_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(self._all_events.items()))
             logger.info(f"[{self.provider_id}] Loaded {total} events across {len(self._all_events)} sports ({sports_summary})")
-        elif not self._all_events:
-            # _extract_all() returned empty dict — don't keep retrying
-            logger.warning(f"[{self.provider_id}] No events cached (extraction may have failed)")
-            return []
+            if not self._all_events:
+                logger.warning(f"[{self.provider_id}] Extraction returned 0 events")
 
-        events = self._all_events.get(sport, [])
+        events = (self._all_events or {}).get(sport, [])
         logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events")
         return events[:limit]
 
