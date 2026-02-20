@@ -99,9 +99,15 @@ async def list_bets(
             "closing_odds": b.closing_odds,
             "edge_pct": edge_pct,
             "selection_probability": sel_prob,
+            "point": b.point,
+            "settlement_source": b.settlement_source,
             "home_team": ev.home_team if ev else None,
             "away_team": ev.away_team if ev else None,
             "start_time": ev.start_time.isoformat() if ev and ev.start_time else None,
+            "home_score": ev.home_score if ev else None,
+            "away_score": ev.away_score if ev else None,
+            "match_status": ev.match_status if ev else None,
+            "match_minute": ev.match_minute if ev else None,
         })
 
     return {
@@ -121,6 +127,7 @@ async def create_bet(bet: BetCreate, service: BetService = Depends(_get_service)
         outcome=bet.outcome,
         odds=bet.odds,
         stake=bet.stake,
+        point=bet.point,
         is_bonus=bet.is_bonus,
         bonus_type=bet.bonus_type,
         utility_score=bet.utility_score,
@@ -146,6 +153,32 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
     return {"success": True, **result}
 
 
+@router.post("/auto-settle")
+def auto_settle_bets(db: Session = Depends(get_db)):
+    """
+    Auto-settle pending bets using Pinnacle live scores.
+
+    Settles all pending bets on events with match_status='finished'
+    using stored home_score/away_score from Pinnacle extraction.
+    """
+    from ...services.results_service import ResultsService
+
+    # Snapshot closing odds first
+    bet_service = BetService(db)
+    bet_service.snapshot_closing_odds()
+    db.commit()
+
+    # Auto-settle from Pinnacle scores
+    service = ResultsService(db)
+    try:
+        result = service.auto_settle()
+        return {"success": True, **result}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Auto-settlement failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Auto-settlement failed: {str(e)}")
+
+
 @router.post("/batch")
 async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(_get_service)):
     """
@@ -168,8 +201,11 @@ async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(
             outcome=leg.outcome,
             odds=leg.odds,
             stake=leg.stake,
+            point=leg.point,
             is_bonus=leg.is_bonus,
             bonus_type=leg.bonus_type,
+            utility_score=leg.utility_score,
+            selection_probability=leg.selection_probability,
         )
 
         if "error" in result:
@@ -310,6 +346,7 @@ async def auto_place_bet(
         outcome=request.outcome,
         odds=request.odds,
         stake=final_stake,
+        point=request.point,
         is_bonus=request.is_bonus,
         bonus_type=request.bonus_type,
         utility_score=edge_raw,  # Use edge as utility proxy

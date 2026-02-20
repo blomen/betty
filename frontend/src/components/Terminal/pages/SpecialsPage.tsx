@@ -6,6 +6,7 @@ import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 
 interface GroupedSpecial {
   key: string;
@@ -112,7 +113,7 @@ export function SpecialsPage() {
     if (stake <= 0) return;
     const odds = oddsOverride[groupKey] ?? special.boosted_odds;
     setIsPlacing(true); setPlacementError(null);
-    try { await api.createBet({ provider_id: providerId, market: 'boost', outcome: special.title, odds, stake, is_bonus: false }); setExpandedIdx(null); setStakePreview(null); fetchData(); }
+    try { await api.createBet({ provider_id: providerId, market: 'boost', outcome: special.title, odds, stake, is_bonus: false, utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined, selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined }); setExpandedIdx(null); setStakePreview(null); fetchData(); }
     catch (err) { setPlacementError(err instanceof Error ? err.message : 'Failed to place bet'); }
     finally { setIsPlacing(false); }
   };
@@ -123,7 +124,7 @@ export function SpecialsPage() {
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text flex items-center gap-2"><span className="w-2 h-2 bg-tabBonus" />Specials</h2>
+          <h2 className="text-lg font-semibold text-text flex items-center gap-2"><TabIcon name="specials" color={TAB_COLORS.specials} size={16} />Specials</h2>
         </div>
         <div className="text-muted text-sm py-8 text-center">Loading...</div>
       </div>
@@ -134,7 +135,7 @@ export function SpecialsPage() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabBonus" />Specials
+          <TabIcon name="specials" color={TAB_COLORS.specials} size={16} />Specials
           <span className="text-muted text-sm font-normal ml-1">({sortedSpecials.length})</span>
         </h2>
         {timeAgo && <span className="text-muted text-xs">{timeAgo}</span>}
@@ -345,7 +346,7 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
                   disabled={stake <= 0 || isPlacing}
                   className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
                 >
-                  {isPlacing ? '...' : `Bet ${stake.toFixed(0)} kr`}
+                  {isPlacing ? '...' : 'Place Bet'}
                 </button>
               </>
             )}

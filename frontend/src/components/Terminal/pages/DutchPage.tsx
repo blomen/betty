@@ -5,6 +5,7 @@ import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider } from '@/types';
 
 interface DutchLeg {
@@ -145,6 +146,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         odds,
         stake: legStake,
         is_bonus: false,
+        utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
+        selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
       });
       // Track this leg as placed
       setPlacedLegs(prev => {
@@ -155,7 +158,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       });
 
       const outcomeLabel = resolveOutcome(leg.outcome, opp.home_team, opp.away_team, opp.point);
-      setBetSuccess(`Bet placed: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
+      setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       fetchData();
     } catch (err) {
@@ -185,6 +188,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         odds,
         stake: legStake,
         is_bonus: false,
+        utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
+        selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
       };
     }).filter(l => l.stake > 0);
 
@@ -212,9 +217,9 @@ export function DutchPage({ providers }: DutchPageProps) {
       setPlacedLegs(prev => ({ ...prev, [opp.id]: successIdxs }));
 
       if (res.placed_count === res.total_legs) {
-        setBetSuccess(`All ${res.placed_count} legs placed — ${res.total_staked.toFixed(0)} kr total`);
+        setBetSuccess(`All ${res.placed_count} legs recorded — ${res.total_staked.toFixed(0)} kr total`);
       } else if (res.placed_count > 0) {
-        setBetSuccess(`${res.placed_count}/${res.total_legs} legs placed — ${res.total_staked.toFixed(0)} kr`);
+        setBetSuccess(`${res.placed_count}/${res.total_legs} legs recorded — ${res.total_staked.toFixed(0)} kr`);
         if (errors.length > 0) {
           setBetError(errors.join(' · '));
         }
@@ -254,7 +259,7 @@ export function DutchPage({ providers }: DutchPageProps) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-success" />
+          <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
           Dutch
           <span className="text-muted text-sm font-normal ml-1">
             ({sortedDutch.length}{selectedProviders.size > 0 ? ` of ${opportunities.length}` : ''})
@@ -450,7 +455,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                           disabled={isPlacing}
                                           className="px-2 py-1 bg-panel2 text-muted text-[10px] font-medium hover:text-text hover:bg-panel2/80 disabled:opacity-50 transition-all whitespace-nowrap"
                                         >
-                                          {isPlacingThis ? '...' : `Bet ${legStake.toFixed(0)} kr`}
+                                          {isPlacingThis ? '...' : 'Place Bet'}
                                         </button>
                                       ) : null}
                                     </td>
@@ -487,7 +492,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                     disabled={isPlacing}
                                     className="px-3 py-1.5 bg-success text-bg text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
                                   >
-                                    {isPlacingAll ? 'Placing...' : `Place All ${totalStake.toFixed(0)} kr`}
+                                    {isPlacingAll ? '...' : 'Place All'}
                                   </button>
                                 );
                               })()}

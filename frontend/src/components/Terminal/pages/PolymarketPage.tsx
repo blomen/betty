@@ -77,7 +77,7 @@ export function PolymarketPage() {
     setBetError(null);
     setBetSuccess(null);
     try {
-      await api.createBet({ event_id: vb.event_id, provider_id: 'polymarket', market: vb.market, outcome: vb.outcome, odds, stake, is_bonus: false });
+      await api.createBet({ event_id: vb.event_id, provider_id: 'polymarket', market: vb.market, outcome: vb.outcome, odds, stake, is_bonus: false, utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined, selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined });
       const outcomeLabel = resolveOutcome(vb);
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);

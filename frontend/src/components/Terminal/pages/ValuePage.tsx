@@ -177,6 +177,7 @@ export function ValuePage({ providers }: ValuePageProps) {
           provider_meta: opp.provider_meta,
           home_team: opp.home_team,
           away_team: opp.away_team,
+          event_id: opp.event_id,
         });
         // If CDP didn't navigate, open URL in new tab
         if (!nav.navigated && nav.url) {
@@ -196,6 +197,8 @@ export function ValuePage({ providers }: ValuePageProps) {
         stake,
         is_bonus: useFreebet,
         bonus_type: useFreebet ? 'freebet' : undefined,
+        utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
+        selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp.home_team, opp.away_team, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
@@ -435,10 +438,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                           const skipReason = selOpp.skip_reason;
                           const isDisabled = !oppHasStake || isPlacing || !!skipReason;
                           const btnColor = isTrigger ? 'bg-warning' : isFreebet ? 'bg-accent' : 'bg-tabValue';
-                          const stakeStr = oppHasStake ? selOpp.final_stake!.toFixed(0) : '0';
                           const btnLabel = isPlacing ? '...'
                             : skipReason === 'trigger_placed' ? 'Trigger placed'
                             : skipReason === 'no_balance' ? 'No balance'
+                            : isTrigger ? 'Trigger'
+                            : isFreebet ? 'Freebet'
                             : 'Place Bet';
 
                           return (

@@ -65,6 +65,7 @@ export function ReversePage() {
         provider_meta: opp.provider_meta,
         home_team: opp.home_team,
         away_team: opp.away_team,
+        event_id: opp.event_id,
       });
 
       // If CDP didn't navigate, open URL in new tab
@@ -80,6 +81,8 @@ export function ReversePage() {
         outcome: opp.outcome1,
         odds: opp.odds1,
         stake,
+        utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
+        selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
 
       const outcomeLabel = resolveOutcome(opp);

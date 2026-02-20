@@ -72,6 +72,7 @@ class BetCreate(BaseModel):
     market: Optional[str] = None
     outcome: Optional[str] = None
     odds: float
+    point: Optional[float] = None  # Spread/total line value
     stake: float
     is_bonus: bool = False
     bonus_type: Optional[str] = None
@@ -88,9 +89,12 @@ class BatchBetLeg(BaseModel):
     market: Optional[str] = None
     outcome: Optional[str] = None
     odds: float
+    point: Optional[float] = None
     stake: float
     is_bonus: bool = False
     bonus_type: Optional[str] = None
+    utility_score: Optional[float] = None
+    selection_probability: Optional[float] = None
 
 
 class BatchBetCreate(BaseModel):
@@ -110,6 +114,7 @@ class AutoPlaceBetRequest(BaseModel):
     market: str
     outcome: str
     odds: float
+    point: Optional[float] = None
     is_bonus: bool = False
     bonus_type: Optional[str] = None
 
@@ -128,6 +133,7 @@ class ProfileCreate(BaseModel):
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = True
     bonus_deposit: Optional[float] = 0.0
+    chrome_port: Optional[int] = None  # CDP port (auto-assigned if None)
 
 
 class ProfileUpdate(BaseModel):
@@ -142,6 +148,7 @@ class ProfileUpdate(BaseModel):
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = None
     bonus_deposit: Optional[float] = None
+    chrome_port: Optional[int] = None
 
 
 # ============ Opportunity Schemas ============
