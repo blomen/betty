@@ -61,26 +61,25 @@ export function TabIcon({ name, color, size = 16 }: { name: string; color: strin
   const v = '0 0 24 24';
 
   switch (name) {
-    // Sports sidebar — soccer ball
+    // Sports sidebar — trophy
     case 'sports':
       return (
-        <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <polygon points="12,6 14.5,9 13,12 11,12 9.5,9" strokeWidth="1.2"/>
-          <line x1="12" y1="3" x2="12" y2="6"/>
-          <line x1="9.5" y1="9" x2="5" y2="7.5"/>
-          <line x1="14.5" y1="9" x2="19" y2="7.5"/>
-          <line x1="13" y1="12" x2="16.5" y2="15"/>
-          <line x1="11" y1="12" x2="7.5" y2="15"/>
+        <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 3h12v6a6 6 0 01-12 0V3z"/>
+          <path d="M6 5H4a1 1 0 00-1 1v1a3 3 0 003 3"/>
+          <path d="M18 5h2a1 1 0 011 1v1a3 3 0 01-3 3"/>
+          <line x1="12" y1="15" x2="12" y2="18"/>
+          <path d="M8 21h8l-1-3H9z"/>
         </svg>
       );
-    // Stocks sidebar — line chart with uptrend
+    // Stocks sidebar — candlesticks
     case 'stocks':
       return (
-        <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="3,18 8,13 12,15 21,6"/>
-          <polyline points="16,6 21,6 21,11"/>
-          <line x1="3" y1="21" x2="21" y2="21"/>
+        <svg width={w} height={h} viewBox={v} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="7" y1="4" x2="7" y2="20"/>
+          <rect x="5" y="8" width="4" height="7" rx="0.5" fill="currentColor" fillOpacity="0.15"/>
+          <line x1="17" y1="3" x2="17" y2="17"/>
+          <rect x="15" y="6" width="4" height="6" rx="0.5" fill="currentColor" fillOpacity="0.15"/>
         </svg>
       );
     // App logo — BBQ chicken
