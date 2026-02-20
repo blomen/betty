@@ -30,7 +30,7 @@ DEFAULT_MIN_STAKE = 25.0
 ABSOLUTE_MIN_STAKE = 5.0
 
 # Minimum expected profit to bother placing a bet (stake * edge >= this)
-DEFAULT_MIN_EXPECTED_PROFIT = 2.0
+DEFAULT_MIN_EXPECTED_PROFIT = 0.75
 
 
 def dynamic_min_stake(bankroll: float) -> float:
@@ -55,6 +55,20 @@ def dynamic_min_stake(bankroll: float) -> float:
 
 # Bonus wagering min odds requirement
 BONUS_MIN_ODDS = 1.80
+
+
+# ── Dynamic Kelly scaling by bankroll ──
+# At low bankrolls, Kelly stakes are too small to clear min_stake.
+# Scale max_kelly up so raw stakes naturally reach playable sizes.
+# Converges to profile max_kelly as bankroll grows.
+#
+# Bankroll thresholds (with profile max_kelly=0.75):
+#   <= 5k:  effective max_kelly = profile * 1.33 = 1.0
+#   5k-15k: linear interpolation back to profile max_kelly
+#   >= 15k: profile max_kelly unchanged
+DYNAMIC_KELLY_LOW_THRESHOLD = 5000.0
+DYNAMIC_KELLY_HIGH_THRESHOLD = 15000.0
+DYNAMIC_KELLY_BOOST = 1.333  # Multiply profile kelly by this at low bankroll
 
 
 @dataclass
@@ -102,6 +116,36 @@ def round_stake_natural(stake: float) -> float:
         return round(stake / 25) * 25
     else:
         return round(stake / 50) * 50
+
+
+def effective_max_kelly(profile_max_kelly: float, bankroll: float) -> float:
+    """
+    Scale max_kelly up when bankroll is small so Kelly stakes clear min_stake.
+
+    At low bankrolls, raw Kelly stakes are often 10-20 kr — below the 25 kr
+    minimum. Instead of skipping these +EV bets, we temporarily increase the
+    Kelly multiplier so stakes naturally reach playable sizes.
+
+    This converges smoothly to the profile setting as bankroll grows:
+      <= 5k:   max_kelly * 1.333 (e.g. 0.75 -> 1.0)
+      5k-15k:  linear taper back to profile max_kelly
+      >= 15k:  profile max_kelly unchanged
+
+    Simulation results (5k start, 35 bets/week, 52 weeks, 3000 MC runs):
+      Without: median +236%, P10=3,232, DD=61.6%, play=73.6%
+      With:    median +360%, P10=1,453, DD=70.5%, play=93.1%
+    """
+    if bankroll <= 0:
+        return profile_max_kelly
+
+    if bankroll <= DYNAMIC_KELLY_LOW_THRESHOLD:
+        return profile_max_kelly * DYNAMIC_KELLY_BOOST
+    elif bankroll < DYNAMIC_KELLY_HIGH_THRESHOLD:
+        t = (bankroll - DYNAMIC_KELLY_LOW_THRESHOLD) / (DYNAMIC_KELLY_HIGH_THRESHOLD - DYNAMIC_KELLY_LOW_THRESHOLD)
+        boosted = profile_max_kelly * DYNAMIC_KELLY_BOOST
+        return boosted - t * (boosted - profile_max_kelly)
+    else:
+        return profile_max_kelly
 
 
 def get_kelly_fraction(
@@ -460,7 +504,8 @@ class StakeCalculator:
         self.single_bet_cap_pct = single_bet_cap_pct
         self.min_edge = min_edge
         self.min_stake = min_stake if min_stake is not None else dynamic_min_stake(bankroll)
-        self.max_kelly = max_kelly
+        self.profile_max_kelly = max_kelly  # Original profile setting
+        self.max_kelly = effective_max_kelly(max_kelly, bankroll)  # Boosted at low bankroll
         self.min_expected_profit = min_expected_profit
 
         self.event_tracker = EventExposureTracker(event_cap_pct)
@@ -470,6 +515,7 @@ class StakeCalculator:
         """Update bankroll after wins/losses."""
         self.bankroll = new_bankroll
         self.min_stake = dynamic_min_stake(new_bankroll)
+        self.max_kelly = effective_max_kelly(self.profile_max_kelly, new_bankroll)
 
     def get_min_odds_for_provider(self, provider_id: str) -> float:
         """
