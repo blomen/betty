@@ -206,6 +206,70 @@ conn.close()
 - `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
 - `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
 
+## Post-Extraction Analysis Workflow (IMPORTANT)
+
+**After every full extraction run, follow this workflow to catch regressions and track improvements.**
+
+### Step 1: Extract
+Run a full extraction (or wait for the scheduler to complete all tiers):
+```bash
+cd backend && python -m src.app extract
+```
+
+### Step 2: Read Extraction Reports & Logs
+Pull the latest reports from the DB for each tier:
+```bash
+cd backend && python -c "
+import sqlite3
+conn = sqlite3.connect('data/bankrollbbq.db')
+for tier in ('sharp', 'api_soft', 'browser_soft'):
+    r = conn.execute('SELECT report FROM extraction_runs WHERE trigger = ? ORDER BY start_time DESC LIMIT 1', (tier,)).fetchone()
+    if r: print(f'=== {tier.upper()} ==='); print(r[0])
+conn.close()
+"
+```
+
+Pull per-provider metrics for the latest run:
+```bash
+cd backend && python -c "
+import sqlite3
+conn = sqlite3.connect('data/bankrollbbq.db')
+run_id = conn.execute('SELECT id FROM extraction_runs ORDER BY start_time DESC LIMIT 1').fetchone()[0]
+rows = conn.execute('''
+    SELECT provider_id, events_processed, events_matched, events_unmatched,
+           odds_processed, ml_count, spread_count, total_count,
+           ROUND(duration_seconds,1), status, error_message
+    FROM provider_run_metrics WHERE run_id = ? ORDER BY events_processed DESC
+''', (run_id,)).fetchall()
+for r in rows: print(r)
+conn.close()
+"
+```
+
+Also check the terminal/server logs for errors, timeouts, and warnings.
+
+### Step 3: Analyze
+Look for these issues in order of severity:
+1. **Failed providers** — `status != 'success'`, error messages, 0 events
+2. **Match rate drops** — `events_unmatched / events_processed` ratio increasing
+3. **Missing market types** — `spread_count=0` or `total_count=0` for providers that should have them
+4. **Timing regressions** — duration significantly higher than baseline
+5. **Sport-level gaps** — use `sport_run_metrics` to find sports with 0 events or 0 matches
+6. **Opportunity yield** — check if value bet count dropped (query `opportunities` table)
+
+Flag thresholds:
+- `!` Critical: provider failed, 0 events, match rate < 30%
+- `~` Warning: missing markets, slow extraction (>2x baseline), rate limits hit
+
+### Step 4: Update Performance File
+Record findings in `backend/docs/provider_performance.md`:
+- Update the tier performance tables with new numbers
+- Move resolved issues to changelog
+- Add new issues to Active Issues & Watchlist
+- Update timing baselines if they've shifted
+
+**This file is the single source of truth for extraction health over time.** Keep it concise and data-driven — numbers, not prose.
+
 ## Specials / Odds Boosts Pipeline
 
 **Separate from regular extraction** — different data models, schedules, no shared lock. Boosts run on their own 120-minute scheduler tier.

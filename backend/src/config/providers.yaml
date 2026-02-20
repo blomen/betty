@@ -538,10 +538,9 @@ providers:
       - ice_hockey
       - tennis
       - handball
-      - american_football
-      - baseball
       - mma
       - esports
+      # Removed: american_football (0 events ever), baseball (0 events ever)
     bonus:
       type: bonusdeposit
       amount: 1000

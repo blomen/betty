@@ -146,7 +146,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             page = self.transport.page
 
             if not self._session_ready:
-                await page.goto(self.site_url, wait_until="load", timeout=30000)
+                await page.goto(self.site_url, wait_until="domcontentloaded", timeout=30000)
                 await self._handle_cookie_consent(page)
                 await asyncio.sleep(2)
                 self._session_ready = True
@@ -202,7 +202,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             if not self._session_ready:
                 await page.goto(
                     f"{self.site_url}/sv/sportsbook",
-                    wait_until="load", timeout=30000
+                    wait_until="domcontentloaded", timeout=30000
                 )
                 await self._handle_cookie_consent(page)
                 await self._remove_overlays(page)
@@ -210,16 +210,18 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 self._session_ready = True
 
             # Navigate to sport page (retry once on connection error)
+            # Use domcontentloaded — "load" waits for all images/fonts which can hang
+            # on heavy pages like football with 60+ leagues
             sport_url = f"{self.site_url}/sv/sportsbook/sport/{sport_id}-{slug}"
             try:
-                await page.goto(sport_url, wait_until="load", timeout=30000)
+                await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as nav_err:
                 if "Connection closed" in str(nav_err) or "closed" in str(nav_err).lower():
                     logger.warning(
                         f"[{self.provider_id}] Browser connection lost for {sport}, reconnecting..."
                     )
                     page = await self._reconnect_browser()
-                    await page.goto(sport_url, wait_until="load", timeout=30000)
+                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                 else:
                     raise
             # Re-register WS after goto (goto destroys page context)
@@ -227,12 +229,14 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             await self._remove_overlays(page)
 
             # Wait for league links to appear in the sidebar (React renders async)
+            # Football has 60+ leagues — React needs extra time to hydrate the sidebar
+            link_timeout = 8000 if sport == "football" else 5000
             try:
                 await page.wait_for_selector(
-                    'a[href*="/leagues/"]', timeout=3000
+                    'a[href*="/leagues/"]', timeout=link_timeout
                 )
             except Exception:
-                logger.debug(f"[{self.provider_id}] {canonical}: no league links after 3s wait")
+                logger.debug(f"[{self.provider_id}] {canonical}: no league links after {link_timeout}ms wait")
             await asyncio.sleep(0.5)
 
             # Discover league links from DOM sidebar
@@ -250,6 +254,29 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     }));
             }""")
             league_links = league_links or []
+
+            # Fallback: if DOM sidebar is empty, try REST API for league discovery
+            # This handles cases where the React sidebar doesn't render (page too heavy)
+            if not league_links:
+                logger.info(f"[{self.provider_id}] {canonical}: DOM sidebar empty, trying REST API league discovery")
+                try:
+                    api_leagues = await page.evaluate(f"""async () => {{
+                        const r = await fetch(
+                            'https://www.snabbare.com/sportsbook-api/api/leagues' +
+                            '?franchiseCode=SWEDEN_SNABBARE&locale=sv&sportIds={sport_id}'
+                        );
+                        if (!r.ok) return [];
+                        const data = await r.json();
+                        return (data || []).map(l => ({{
+                            href: '/sv/sportsbook/sport/{sport_id}-{slug}/leagues/' + l.id + '-' + (l.slug || l.name || '').toLowerCase().replace(/\\s+/g, '-'),
+                            text: l.name || ''
+                        }}));
+                    }}""")
+                    if api_leagues:
+                        league_links = api_leagues
+                        logger.info(f"[{self.provider_id}] {canonical}: REST API returned {len(league_links)} leagues")
+                except Exception as api_err:
+                    logger.debug(f"[{self.provider_id}] {canonical}: REST API league fallback failed: {api_err}")
 
             # Dedup by league ID (sidebar has duplicate links: e.g.
             # "898-fa-cup" AND "898-england-fa-cup" are the same league)
@@ -306,8 +333,16 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         }}"""
                     )
                     if not clicked:
-                        errors += 1
-                        continue
+                        # Fallback: direct navigation (for REST API-discovered leagues
+                        # where DOM links don't exist yet). Full page load also triggers
+                        # WS connection + data delivery.
+                        full_url = f"{self.site_url}{href}" if href.startswith("/") else href
+                        try:
+                            await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                            self._setup_snabbare_ws(page, ws_messages)
+                        except Exception:
+                            errors += 1
+                            continue
 
                     # Adaptive wait: wait minimum time, then check for WS data
                     await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
@@ -323,8 +358,14 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         leagues_with_data += 1
 
                     # Navigate back to sport page for next league
-                    await page.evaluate("window.history.back()")
-                    await asyncio.sleep(0.1)
+                    if not clicked:
+                        # Full navigation was used — go back to sport page
+                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                        self._setup_snabbare_ws(page, ws_messages)
+                        await asyncio.sleep(0.3)
+                    else:
+                        await page.evaluate("window.history.back()")
+                        await asyncio.sleep(0.1)
 
                 except Exception as e:
                     err_str = str(e)
@@ -338,7 +379,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         try:
                             page = await self._reconnect_browser()
                             self._setup_snabbare_ws(page, ws_messages)
-                            await page.goto(sport_url, wait_until="load", timeout=30000)
+                            await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
                             self._setup_snabbare_ws(page, ws_messages)
                             await self._remove_overlays(page)
                             await asyncio.sleep(1)
@@ -348,7 +389,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                             break
                     # Non-connection error — try to recover to sport page
                     try:
-                        await page.goto(sport_url, wait_until="load", timeout=15000)
+                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
                         self._setup_snabbare_ws(page, ws_messages)
                         await asyncio.sleep(1)
                     except Exception:
@@ -764,7 +805,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         await self.transport._ensure_browser()
         page = self.transport.page
         self._session_ready = False
-        await page.goto(f"{self.site_url}/sv/sportsbook", wait_until="load", timeout=30000)
+        await page.goto(f"{self.site_url}/sv/sportsbook", wait_until="domcontentloaded", timeout=30000)
         await self._handle_cookie_consent(page)
         await self._remove_overlays(page)
         self._session_ready = True

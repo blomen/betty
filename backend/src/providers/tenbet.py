@@ -135,7 +135,7 @@ class TenBetRetriever(BrowserRetriever):
         # Scrape competitions in batches to allow early exit
         all_events = []
         unique_ids = set()
-        sem = asyncio.Semaphore(6)  # 6 parallel tabs
+        sem = asyncio.Semaphore(4)  # 4 parallel tabs (6 caused browser pressure, slow DOM renders)
         batch_size = 15
 
         async def process_competition(comp):
@@ -217,10 +217,10 @@ class TenBetRetriever(BrowserRetriever):
             # Try to wait for competition links to appear
             try:
                 await page.wait_for_selector(
-                    'a[href*="competitions/"]', timeout=8000
+                    'a[href*="competitions/"]', timeout=10000
                 )
             except Exception:
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
 
             competitions = await page.evaluate("""() => {
                 const links = document.querySelectorAll('a[href*="competitions/"]');
@@ -304,9 +304,9 @@ class TenBetRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
 
-            # Wait for event items to render
+            # Wait for event items to render (10s — non-football sports need extra time)
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=6000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
             except Exception:
                 # Check for empty state
                 empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
@@ -318,7 +318,7 @@ class TenBetRetriever(BrowserRetriever):
 
             # Wait for odds to render (selector-based, faster than fixed timeout)
             try:
-                await page.wait_for_selector('[class*="ta-price_text"]', timeout=500)
+                await page.wait_for_selector('[class*="ta-price_text"]', timeout=2000)
             except Exception:
                 pass  # Some pages may not have odds yet — proceed with what's available
 
