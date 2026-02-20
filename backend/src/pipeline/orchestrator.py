@@ -1205,7 +1205,7 @@ class ExtractionPipeline:
                     match_info = ""
                     if is_soft and sport_has_sharp:
                         match_info = f" | match={events_matched}/{events_matched + events_unmatched}"
-                    logger.info(
+                    logger.debug(
                         f"[{provider_id}] {sport}: {len(events)} ev, {odds_processed} odds in {sport_elapsed:.1f}s{market_info}{match_info}"
                     )
 

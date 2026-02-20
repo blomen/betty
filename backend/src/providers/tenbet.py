@@ -135,8 +135,8 @@ class TenBetRetriever(BrowserRetriever):
         # Scrape competitions in batches to allow early exit
         all_events = []
         unique_ids = set()
-        sem = asyncio.Semaphore(5)  # 5 parallel tabs (tested: SPA handles concurrency well)
-        batch_size = 10
+        sem = asyncio.Semaphore(6)  # 6 parallel tabs
+        batch_size = 15
 
         async def process_competition(comp):
             async with sem:
@@ -302,11 +302,11 @@ class TenBetRetriever(BrowserRetriever):
 
         try:
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=12000)
 
             # Wait for event items to render
             try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=6000)
             except Exception:
                 # Check for empty state
                 empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')

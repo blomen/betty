@@ -79,13 +79,22 @@ class ExtractionReport:
             lines.append(f"Opportunities: {', '.join(parts)}")
         lines.append("")
 
+        # ── Run history trend ──────────────────────────────────────
+        if db_session:
+            trend_lines = self._build_run_trend(db_session, results)
+            if trend_lines:
+                lines.extend(trend_lines)
+
         # ── Provider performance table ──────────────────────────────
         provider_rows = self._build_provider_rows(results, metrics)
         provider_rows.sort(key=lambda r: (not r["is_sharp"], -r["events"]))
 
+        # Get previous run's provider data for delta indicators
+        prev_provider = self._get_previous_provider_data(db_session, results) if db_session else {}
+
         lines.append("PROVIDER PERFORMANCE")
         lines.append(thin_sep)
-        lines.append(f"{'Provider':<16} {'Ev':>5} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5} {'Match':>6}  {'ev/s':>5} {'Time':>6}  {'Status'}")
+        lines.append(f"{'Provider':<16} {'Ev':>5} {'dEv':>4} {'Odds':>6} {'1x2':>5} {'Spr':>5} {'Tot':>5} {'Match':>6} {'Time':>6} {'dT':>4}  {'Status'}")
         lines.append(thin_sep)
 
         total_events_sum = 0
@@ -110,19 +119,59 @@ class ExtractionReport:
                 match_str = '    -'
 
             time_str = f'{row["duration"]:.0f}s' if row["duration"] > 0 else "  -"
-            evps = row["events"] / row["duration"] if row["duration"] > 0 else 0
-            evps_str = f'{evps:>5.1f}' if evps > 0 else '    -'
+
+            # Delta indicators vs previous run
+            pid = row["provider"]
+            ev_delta_str = "   "
+            time_delta_str = "   "
+            if pid in prev_provider:
+                prev = prev_provider[pid]
+                prev_ev = prev.get("events", 0)
+                prev_dur = prev.get("duration", 0)
+                if prev_ev > 0 and row["events"] > 0:
+                    ev_diff = row["events"] - prev_ev
+                    if ev_diff > 0:
+                        ev_delta_str = f"+{min(ev_diff, 999):>3}"
+                    elif ev_diff < 0:
+                        ev_delta_str = f"{max(ev_diff, -999):>4}"
+                    else:
+                        ev_delta_str = "  ="
+                if prev_dur > 0 and row["duration"] > 0:
+                    dur_diff = row["duration"] - prev_dur
+                    if abs(dur_diff) < 5:
+                        time_delta_str = "  ="
+                    elif dur_diff > 0:
+                        time_delta_str = f"+{min(int(dur_diff), 999):>3}"
+                    else:
+                        time_delta_str = f"{max(int(dur_diff), -999):>4}"
 
             status = row["status"]
             if row["is_sharp"]:
                 status += " [SHARP]"
 
-            line = f"{row['provider']:<16} {row['events']:>5,} {row['odds']:>6,} {ml_str} {spr_str} {tot_str} {match_str:>6}  {evps_str} {time_str:>6}  {status}"
+            line = f"{row['provider']:<16} {row['events']:>5,} {ev_delta_str} {row['odds']:>6,} {ml_str} {spr_str} {tot_str} {match_str:>6} {time_str:>6} {time_delta_str}  {status}"
             lines.append(line)
 
         lines.append(thin_sep)
-        lines.append(f"{'Totals (' + str(succeeded) + '/' + str(total_providers) + ')':<16} {total_events_sum:>5,} {total_odds_sum:>6,}")
+        lines.append(f"{'Totals (' + str(succeeded) + '/' + str(total_providers) + ')':<16} {total_events_sum:>5,}      {total_odds_sum:>6,}")
         lines.append("")
+
+        # ── Timing budget ─────────────────────────────────────────
+        timed_rows = [r for r in provider_rows if r["duration"] > 0 and not r["status"].startswith("= ")]
+        if timed_rows and duration > 0:
+            timed_rows.sort(key=lambda r: -r["duration"])
+            lines.append("TIMING BUDGET (wall-clock share of bottleneck)")
+            lines.append(thin_sep)
+            for row in timed_rows[:8]:
+                pct = row["duration"] / duration * 100
+                bar_len = int(pct / 2.5)  # max ~40 chars for 100%
+                bar = "#" * bar_len
+                ev_rate = row["events"] / row["duration"] if row["duration"] > 0 else 0
+                lines.append(
+                    f"  {row['provider']:<14} {row['duration']:>5.0f}s ({pct:>4.0f}%) "
+                    f"{bar:<30} {ev_rate:>5.1f} ev/s"
+                )
+            lines.append("")
 
         # ── Pinnacle delta analysis ─────────────────────────────────
         if db_session:
@@ -137,7 +186,7 @@ class ExtractionReport:
                 lines.extend(boost_lines)
 
         # ── Issues ──────────────────────────────────────────────────
-        issues = self._detect_issues(provider_rows, results, metrics)
+        issues = self._detect_issues(provider_rows, results, metrics, db_session)
         if issues:
             lines.append("ISSUES")
             lines.append(thin_sep)
@@ -535,17 +584,27 @@ class ExtractionReport:
     SLOW_PROVIDER_THRESHOLD = 300  # > 5 min is suspicious
     LOW_EVENT_THRESHOLD = 10       # < 10 events probably broken
 
+    EVENT_DROP_THRESHOLD = 0.30  # Flag if events drop to <30% of recent average
+
     def _detect_issues(
         self,
         provider_rows: list[dict],
         results: dict,
         metrics: PipelineMetrics | None,
+        db_session=None,
     ) -> list[str]:
         """Detect actionable issues from extraction results."""
         issues = []
 
+        # Build historical baseline for event drop detection
+        prev_avg = self._get_previous_event_averages(db_session, results) if db_session else {}
+
         for row in provider_rows:
             pid = row["provider"]
+
+            # Skip consolidated alias members — they intentionally have 0 events
+            if row["status"].startswith("= "):
+                continue
 
             if row["error"]:
                 issues.append(f"! {pid}: {row['status']}")
@@ -555,6 +614,15 @@ class ExtractionReport:
             if row["events"] == 0 and not row["is_sharp"]:
                 issues.append(f"! {pid}: 0 events extracted (broken extractor or site change?)")
                 continue
+
+            # Event count drop vs recent average
+            if pid in prev_avg and prev_avg[pid] > 0 and not row["is_sharp"]:
+                ratio = row["events"] / prev_avg[pid]
+                if ratio < self.EVENT_DROP_THRESHOLD:
+                    issues.append(
+                        f"! {pid}: {row['events']} events vs avg {prev_avg[pid]:.0f} "
+                        f"({ratio:.0%} of normal — possible silent failure)"
+                    )
 
             # Very few events
             if row["events"] < self.LOW_EVENT_THRESHOLD and not row["is_sharp"]:
@@ -596,6 +664,174 @@ class ExtractionReport:
                 issues.append(f"~ {pid}/{sport}: {self._truncate(error_msg, 50)}")
 
         return issues
+
+    def _get_previous_event_averages(self, session, results: dict) -> dict[str, float]:
+        """Get average event counts per provider from recent runs of the same trigger."""
+        try:
+            from ..db.models import ExtractionRun, ProviderRunMetrics
+            from sqlalchemy import func
+        except Exception:
+            return {}
+
+        trigger = results.get("trigger")
+        if not trigger:
+            return {}
+
+        # Get the 5 most recent completed runs of this trigger type (excluding current)
+        recent_runs = (
+            session.query(ExtractionRun.id)
+            .filter(ExtractionRun.trigger == trigger, ExtractionRun.duration_seconds.isnot(None))
+            .order_by(ExtractionRun.start_time.desc())
+            .limit(6)
+            .all()
+        )
+        # Skip the first one (current run) if it's already persisted
+        run_ids = [r[0] for r in recent_runs]
+        current_id = results.get("run_id")
+        if current_id in run_ids:
+            run_ids.remove(current_id)
+        run_ids = run_ids[:5]
+
+        if not run_ids:
+            return {}
+
+        rows = (
+            session.query(
+                ProviderRunMetrics.provider_id,
+                func.avg(ProviderRunMetrics.events_processed),
+            )
+            .filter(
+                ProviderRunMetrics.run_id.in_(run_ids),
+                ProviderRunMetrics.events_processed > 0,
+            )
+            .group_by(ProviderRunMetrics.provider_id)
+            .all()
+        )
+        return {pid: avg for pid, avg in rows}
+
+    # ── Run trend ──────────────────────────────────────────────────
+
+    def _build_run_trend(self, session, results: dict) -> list[str]:
+        """Build a compact table showing the last 5 runs of this trigger type for trend analysis."""
+        try:
+            from ..db.models import ExtractionRun, ProviderRunMetrics
+            from sqlalchemy import func
+        except Exception:
+            return []
+
+        trigger = results.get("trigger")
+        if not trigger:
+            return []
+
+        runs = (
+            session.query(ExtractionRun)
+            .filter(ExtractionRun.trigger == trigger, ExtractionRun.duration_seconds.isnot(None))
+            .order_by(ExtractionRun.start_time.desc())
+            .limit(6)
+            .all()
+        )
+
+        # Filter out current run if present
+        current_id = results.get("run_id")
+        runs = [r for r in runs if r.id != current_id][:5]
+
+        if len(runs) < 2:
+            return []
+
+        lines: list[str] = []
+        thin_sep = "-" * 90
+
+        lines.append("RUN HISTORY (last 5)")
+        lines.append(thin_sep)
+        lines.append(f"{'Time':>16} {'Dur':>6} {'Events':>7} {'Odds':>8} {'Match':>6} {'OK/F':>5} {'Value':>6} {'Dutch':>6}")
+        lines.append(thin_sep)
+
+        for r in runs:
+            time_str = r.start_time.strftime("%m-%d %H:%M") if r.start_time else "?"
+            dur = r.duration_seconds or 0
+            evts = r.total_events or 0
+            odds = r.total_odds or 0
+
+            # Extract match info from report text (quick parse)
+            match_str = "    -"
+            opp_value = "     -"
+            opp_dutch = "     -"
+            if r.report:
+                import re
+                m = re.search(r'Matched:\s*[\d,]+\s*\((\d+\.\d+)%\)', r.report)
+                if m:
+                    match_str = f"{float(m.group(1)):>4.0f}%"
+                m = re.search(r'(\d+)\s*value', r.report)
+                if m:
+                    opp_value = f"{int(m.group(1)):>6}"
+                m = re.search(r'(\d+)\s*dutch', r.report)
+                if m:
+                    opp_dutch = f"{int(m.group(1)):>6}"
+
+            ok = r.providers_succeeded or 0
+            fail = r.providers_failed or 0
+
+            lines.append(f"{time_str:>16} {dur:>5.0f}s {evts:>7,} {odds:>8,} {match_str} {ok:>2}/{fail:<2} {opp_value} {opp_dutch}")
+
+        # Trend summary
+        first, last = runs[-1], runs[0]
+        ev_first = first.total_events or 0
+        ev_last = last.total_events or 0
+        dur_first = first.duration_seconds or 0
+        dur_last = last.duration_seconds or 0
+
+        if ev_first > 0 and ev_last > 0:
+            ev_change = ((ev_last - ev_first) / ev_first) * 100
+            dur_change = dur_last - dur_first
+            ev_arrow = "+" if ev_change > 0 else ""
+            dur_arrow = "+" if dur_change > 0 else ""
+            lines.append(thin_sep)
+            lines.append(
+                f"Trend (oldest->newest): events {ev_arrow}{ev_change:.0f}%, "
+                f"duration {dur_arrow}{dur_change:.0f}s"
+            )
+
+        lines.append("")
+        return lines
+
+    def _get_previous_provider_data(self, session, results: dict) -> dict[str, dict]:
+        """Get provider event counts and durations from the previous run of the same trigger."""
+        try:
+            from ..db.models import ExtractionRun, ProviderRunMetrics
+        except Exception:
+            return {}
+
+        trigger = results.get("trigger")
+        if not trigger:
+            return {}
+
+        runs = (
+            session.query(ExtractionRun.id)
+            .filter(ExtractionRun.trigger == trigger, ExtractionRun.duration_seconds.isnot(None))
+            .order_by(ExtractionRun.start_time.desc())
+            .limit(3)
+            .all()
+        )
+
+        current_id = results.get("run_id")
+        run_ids = [r[0] for r in runs if r[0] != current_id]
+        if not run_ids:
+            return {}
+
+        prev_run_id = run_ids[0]
+        rows = (
+            session.query(ProviderRunMetrics)
+            .filter(ProviderRunMetrics.run_id == prev_run_id)
+            .all()
+        )
+        return {
+            r.provider_id: {
+                "events": r.events_processed or 0,
+                "odds": r.odds_processed or 0,
+                "duration": r.duration_seconds or 0,
+            }
+            for r in rows
+        }
 
     @staticmethod
     def _truncate(s: str, max_len: int) -> str:

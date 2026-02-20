@@ -144,7 +144,7 @@ def scan_for_value(
         )
         if vb:
             value_bets.append(vb)
-            logger.info(f"Value bet: {vb.provider} {vb.outcome} @ {vb.provider_odds} (+{vb.edge_pct}%)")
+            logger.debug(f"Value bet: {vb.provider} {vb.outcome} @ {vb.provider_odds} (+{vb.edge_pct}%)")
     
     return value_bets
 

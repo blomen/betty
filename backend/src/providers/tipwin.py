@@ -173,9 +173,12 @@ class TipwinRetriever(BrowserRetriever):
             def intercept_response(response):
                 url = response.url
                 if ('api-web.tipwin' in url or 'api-web-rest.tipwin' in url) \
-                        and response.status == 200 and 'offer' in url:
-                    task = asyncio.create_task(process_response(response))
-                    pending_tasks.append(task)
+                        and response.status == 200:
+                    if 'offer' in url:
+                        task = asyncio.create_task(process_response(response))
+                        pending_tasks.append(task)
+                    else:
+                        logger.debug(f"[{self.provider_id}] API response (non-offer): {url[:120]}")
 
             page.on('response', intercept_response)
 
@@ -188,7 +191,7 @@ class TipwinRetriever(BrowserRetriever):
 
             # Navigate to full sports listing (page 1)
             full_url = f"{self.site_url}/sv/sports/full/"
-            logger.info(f"[{self.provider_id}] Navigating to {full_url}")
+            logger.debug(f"[{self.provider_id}] Navigating to {full_url}")
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
             await asyncio.sleep(2)
 
@@ -197,7 +200,7 @@ class TipwinRetriever(BrowserRetriever):
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
             # Get total pages from the items-format response
-            total_pages = 1
+            total_pages = 0
             for resp in api_responses:
                 if 'items' in resp and isinstance(resp.get('items'), list):
                     total = resp.get('totalNumberOfItems', 0)
@@ -206,8 +209,26 @@ class TipwinRetriever(BrowserRetriever):
                         total_pages = (total + ps - 1) // ps
                         break
 
+            # If no items response captured (e.g. only offer/highlights), assume
+            # many pages and rely on empty-streak detection to stop
+            if total_pages == 0:
+                total_pages = 120
+                # Log response types for debugging
+                resp_types = []
+                for r in api_responses:
+                    if 'items' in r:
+                        resp_types.append(f"items({r.get('totalNumberOfItems', '?')})")
+                    elif 'offer' in r:
+                        resp_types.append(f"offer({len(r.get('offer', []))})")
+                    else:
+                        resp_types.append(f"unknown({list(r.keys())[:3]})")
+                logger.debug(
+                    f"[{self.provider_id}] No totalNumberOfItems in initial response, "
+                    f"paginating until empty (captured: {len(api_responses)} responses: {resp_types})"
+                )
+
             max_pages = min(total_pages, 120)  # Safety cap
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Full listing: {max_pages} pages "
                 f"(initial captured: {len(api_responses)} responses)"
             )
@@ -245,7 +266,7 @@ class TipwinRetriever(BrowserRetriever):
                         empty_streak = 0
 
                     if pg % 20 == 0:
-                        logger.info(
+                        logger.debug(
                             f"[{self.provider_id}] Page {pg}/{max_pages}, "
                             f"{len(api_responses)} responses captured"
                         )
@@ -258,7 +279,7 @@ class TipwinRetriever(BrowserRetriever):
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Collected {len(api_responses)} API responses "
                 f"across {max_pages} pages"
             )

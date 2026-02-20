@@ -185,7 +185,7 @@ class CoolbetRetriever(BrowserRetriever):
             # Navigate to sport page to establish session (needed for API auth)
             if not self._session_ready:
                 sport_url = f"{self.site_url}/sv/odds/{sport_conf['slug']}"
-                logger.info(f"[{self.provider_id}] Loading {sport_url}")
+                logger.debug(f"[{self.provider_id}] Loading {sport_url}")
 
                 await page.goto(sport_url, wait_until='load', timeout=60000)
 
@@ -232,14 +232,14 @@ class CoolbetRetriever(BrowserRetriever):
             if market_ids:
                 odds_data = await self._fetch_odds_api(page, market_ids)
 
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] {sport}: {len(category_data)} categories, "
                 f"{len(market_ids)} markets, {len(odds_data)} odds entries"
             )
 
             # Parse events
             events = self._parse_categories(category_data, odds_data, sport)
-            logger.info(f"[{self.provider_id}] {sport}: {len(events)} events extracted")
+            logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events extracted")
             return events[:limit]
 
         except Exception as e:
@@ -310,7 +310,7 @@ class CoolbetRetriever(BrowserRetriever):
 
             offset += len(batch_offsets) * CATEGORY_PAGE_SIZE
 
-        logger.info(
+        logger.debug(
             f"[{self.provider_id}] Category API: {len(all_categories)} categories "
             f"(paginated to offset={offset})"
         )
@@ -400,7 +400,7 @@ class CoolbetRetriever(BrowserRetriever):
                 """)
                 if isinstance(resp, dict):
                     all_odds.update(resp)
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] Odds API: {len(all_odds)} entries "
                 f"for {len(unique_ids)} markets"
             )

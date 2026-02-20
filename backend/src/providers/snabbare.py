@@ -278,13 +278,13 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # 40 leagues × ~1.5s/league = ~60s, well within timeout
             MAX_LEAGUES_PER_SPORT = 60
             if len(league_links) > MAX_LEAGUES_PER_SPORT:
-                logger.info(
+                logger.debug(
                     f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
                     f"to top {MAX_LEAGUES_PER_SPORT}"
                 )
                 league_links = league_links[:MAX_LEAGUES_PER_SPORT]
 
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process"
             )
 
@@ -359,7 +359,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             events = events_by_sport.get(canonical, [])
 
             events_with_markets = sum(1 for e in events if e.markets)
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] {canonical}: {leagues_processed}/{len(league_links)} leagues, "
                 f"{leagues_with_data} with WS data, "
                 f"{len(ws_messages)} msgs -> {len(events)} events "
@@ -444,7 +444,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             if mid:
                 all_selections.setdefault(mid, []).append(sel)
 
-        logger.info(
+        logger.debug(
             f"[{self.provider_id}] WS data: "
             f"{len(all_events)} events, "
             f"{sum(len(v) for v in all_markets.values())} markets, "
@@ -559,7 +559,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 market_type = self._classify_market_by_name(mt_name)
                 if not market_type and mt_id not in self._logged_unknown_market_ids:
                     self._logged_unknown_market_ids.add(mt_id)
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
                         f"name='{mt_info.get('originalName', mt_info.get('name', ''))}'"
                     )
@@ -712,7 +712,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         def on_websocket(ws):
             ws_count[0] += 1
             ws_url = ws.url if hasattr(ws, 'url') else 'unknown'
-            logger.info(
+            logger.debug(
                 f"[{self.provider_id}] WS #{ws_count[0]} connected: "
                 f"{ws_url[:80]}"
             )

@@ -209,8 +209,7 @@ class SpectateRetriever(BrowserRetriever):
                 response = await self.transport.context.request.get(url, headers=base_headers)
 
             if response.status == 400:
-                logger.warning(f"[{self.provider_id}] 400 Bad Request for {url}")
-                logger.debug(f"[{self.provider_id}] Request endpoint: {endpoint}")
+                logger.debug(f"[{self.provider_id}] 400 Bad Request for {url} (endpoint: {endpoint})")
                 return {}
             elif response.status == 403:
                 logger.warning(f"[{self.provider_id}] 403 Forbidden for {url}. Origin/Headers might be rejected.")
@@ -381,10 +380,14 @@ class SpectateRetriever(BrowserRetriever):
 
             m_type = MARKET_MAP.get(raw_name)
             if not m_type:
-                if raw_name and raw_name not in self._logged_unknown_markets:
-                    self._logged_unknown_markets.add(raw_name)
-                    logger.info(f"[{self.provider_id}] Unknown market name: '{raw_name}'")
-                continue
+                # Try fuzzy matching for spread/total keywords
+                if raw_name:
+                    m_type = self._fuzzy_market_match(raw_name)
+                if not m_type:
+                    if raw_name and raw_name not in self._logged_unknown_markets:
+                        self._logged_unknown_markets.add(raw_name)
+                        logger.debug(f"[{self.provider_id}] Unknown market: '{raw_name}'")
+                    continue
 
             s_data = m.get("selections", {})
             s_items = s_data.values() if isinstance(s_data, dict) else s_data if isinstance(s_data, list) else []
@@ -438,3 +441,14 @@ class SpectateRetriever(BrowserRetriever):
                 markets.append({"type": m_type, "outcomes": outcomes})
 
         return markets
+
+    @staticmethod
+    def _fuzzy_market_match(name: str) -> str | None:
+        """Catch spread/total markets not in the static MARKET_MAP via keyword matching."""
+        # Spread keywords (Swedish + English)
+        if any(kw in name for kw in ("handicap", "handikapp", "pucklinje", "run line")):
+            return "spread"
+        # Total keywords
+        if any(kw in name for kw in ("över/under", "over/under", "totalt antal")):
+            return "total"
+        return None

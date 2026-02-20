@@ -404,7 +404,7 @@ class InterwettenRetriever(BrowserRetriever):
         super().__init__(config, transport=transport)
         self.base_url = config.get("site_url", "https://www.interwetten.se")
 
-    CONCURRENT_LEAGUE_PAGES = 5  # Parallel league navigation tabs (Pass 1)
+    CONCURRENT_LEAGUE_PAGES = 12  # Parallel league navigation tabs (Pass 1)
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
@@ -468,29 +468,17 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await league_page_pool.put(worker_page)
 
-        # Collect events ready for detail enrichment
-        detail_queue = asyncio.Queue()
+        # Launch all leagues concurrently — semaphore throttles to CONCURRENT_LEAGUE_PAGES
+        tasks = [extract_league_concurrent(lid, lslug) for lid, lslug in leagues]
+        results = await asyncio.gather(*tasks)
 
-        # Process leagues in batches (larger batch = fewer asyncio.gather calls)
-        batch_size = 20
-        for batch_start in range(0, len(leagues), batch_size):
-            if limit and len(all_events) >= limit:
-                break
-            if errors > 30:
-                logger.warning(f"[{self.provider_id}] Too many league errors ({errors}), stopping")
-                break
-
-            batch = leagues[batch_start:batch_start + batch_size]
-            tasks = [extract_league_concurrent(lid, lslug) for lid, lslug in batch]
-            results = await asyncio.gather(*tasks)
-
-            for league_events, league_hrefs in results:
-                if league_events:
-                    for event in league_events:
-                        if event.id not in seen_event_ids:
-                            seen_event_ids.add(event.id)
-                            all_events.append(event)
-                    event_hrefs.update(league_hrefs)
+        for league_events, league_hrefs in results:
+            if league_events:
+                for event in league_events:
+                    if event.id not in seen_event_ids:
+                        seen_event_ids.add(event.id)
+                        all_events.append(event)
+                event_hrefs.update(league_hrefs)
 
         # Close extra pages from Pass 1
         for p in league_pages:
@@ -529,14 +517,14 @@ class InterwettenRetriever(BrowserRetriever):
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
 
         try:
-            resp = await page.goto(url, wait_until="load", timeout=20000)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             if not resp or resp.status != 200:
                 status = resp.status if resp else '?'
                 if status != 404:  # 404 = league doesn't exist, not worth logging
-                    logger.info(f"[{self.provider_id}] League {league_slug}: HTTP {status}")
+                    logger.debug(f"[{self.provider_id}] League {league_slug}: HTTP {status}")
                 return [], {}
         except Exception as e:
-            logger.info(f"[{self.provider_id}] League {league_slug} navigation: {e}")
+            logger.debug(f"[{self.provider_id}] League {league_slug} navigation: {e}")
             return [], {}
 
         # Wait for content to render — try to detect events quickly
@@ -620,12 +608,13 @@ class InterwettenRetriever(BrowserRetriever):
                 if href:
                     hrefs[event.id] = href
 
-        logger.info(
+        logger.debug(
             f"[{self.provider_id}] {league_slug}: {len(events)} events"
         )
         return events, hrefs
 
-    CONCURRENT_DETAIL_PAGES = 8  # Increase parallelism for detail page enrichment
+    CONCURRENT_DETAIL_PAGES = 16  # Parallel detail page tabs (Pass 2)
+    MAX_DETAIL_EVENTS = 150       # Cap detail enrichment to avoid sport_timeout
 
     async def _enrich_with_detail_markets(
         self,
@@ -643,6 +632,14 @@ class InterwettenRetriever(BrowserRetriever):
         todo = [(ev, event_hrefs[ev.id]) for ev in events if ev.id in event_hrefs]
         if not todo:
             return 0
+
+        # Cap to avoid timeout — prioritize first N events (top leagues listed first)
+        if len(todo) > self.MAX_DETAIL_EVENTS:
+            logger.info(
+                f"[{self.provider_id}] {sport}: capping detail enrichment from "
+                f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
+            )
+            todo = todo[:self.MAX_DETAIL_EVENTS]
 
         enriched = 0
         errors = 0
@@ -672,12 +669,12 @@ class InterwettenRetriever(BrowserRetriever):
             try:
                 async with sem:
                     url = f"{self.base_url}{href}"
-                    resp = await worker_page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                    resp = await worker_page.goto(url, wait_until="domcontentloaded", timeout=8000)
                     if not resp or resp.status != 200:
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(100)
+                    await worker_page.wait_for_timeout(50)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     added_markets = []
@@ -700,14 +697,8 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await page_pool.put(worker_page)
 
-        # Process in batches to allow early exit on too many errors
-        batch_size = 20
-        for i in range(0, len(todo), batch_size):
-            if errors > 20:
-                logger.warning(f"[{self.provider_id}] Too many detail page errors ({errors}), stopping enrichment")
-                break
-            batch = todo[i:i + batch_size]
-            await asyncio.gather(*(enrich_one(ev, href) for ev, href in batch))
+        # Launch all detail enrichments concurrently — semaphore throttles to CONCURRENT_DETAIL_PAGES
+        await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo))
 
         # Close extra pages
         for p in extra_pages:
