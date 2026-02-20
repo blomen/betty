@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useMultiSort } from '@/hooks/useMultiSort';
+import { MultiSortableHeader } from '../MultiSortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity } from '@/types';
 
@@ -12,6 +14,13 @@ export function ReversePage() {
   const [isPlacing, setIsPlacing] = useState(false);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
+
+  // Two-step placement: tracks which row is awaiting confirm
+  const [pendingBet, setPendingBet] = useState<{
+    oppId: number;
+    opp: Opportunity;
+    actualOdds: number;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -28,11 +37,22 @@ export function ReversePage() {
   useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
 
-  const sorted = useMemo(() => {
+  const filtered = useMemo(() => {
     return opportunities
-      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
-      .sort((a, b) => (b.edge_pct ?? 0) - (a.edge_pct ?? 0));
+      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; });
   }, [opportunities]);
+
+  type ReverseSortCol = 'odds' | 'consensus' | 'prob' | 'ttk' | 'stake' | 'edge';
+  const reverseSortExtractors = useMemo(() => ({
+    odds:      (o: Opportunity) => o.odds1 ?? 0,
+    consensus: (o: Opportunity) => o.fair_odds ?? 0,
+    prob:      (o: Opportunity) => o.fair_odds && o.fair_odds > 1 ? 100 / o.fair_odds : 0,
+    ttk:       (o: Opportunity) => getTTKFromNow(o.starts_at) ?? 99999,
+    stake:     (o: Opportunity) => o.final_stake ?? 0,
+    edge:      (o: Opportunity) => o.edge_pct ?? 0,
+  }), []);
+  const { sorted, sort: reverseSort, toggle: toggleReverseSort } =
+    useMultiSort<Opportunity, ReverseSortCol>(filtered, reverseSortExtractors, { column: 'edge', direction: 'desc' });
 
   const formatTime = (dateStr: string | undefined) => {
     if (!dateStr) return '-';
@@ -51,7 +71,8 @@ export function ReversePage() {
     return outcome;
   };
 
-  const handleOpenAndRecord = async (opp: Opportunity) => {
+  // Step 1: Navigate browser to Pinnacle, enter "awaiting confirm" state
+  const startPlaceBet = async (opp: Opportunity) => {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
@@ -59,41 +80,57 @@ export function ReversePage() {
     setBetSuccess(null);
 
     try {
-      // 1. Navigate browser to match page
-      const nav = await api.navigateToEvent({
-        provider_id: 'pinnacle',
-        provider_meta: opp.provider_meta,
-        home_team: opp.home_team,
-        away_team: opp.away_team,
-        event_id: opp.event_id,
-      });
-
-      // If CDP didn't navigate, open URL in new tab
-      if (!nav.navigated && nav.url) {
-        window.open(nav.url, '_blank');
+      try {
+        await api.navigateToEvent({
+          provider_id: 'pinnacle',
+          provider_meta: opp.provider_meta,
+          home_team: opp.home_team,
+          away_team: opp.away_team,
+          event_id: opp.event_id,
+        });
+      } catch {
+        // Navigation is best-effort — CDP Chrome handles it
       }
 
-      // 2. Record bet in DB
+      setPendingBet({ oppId: opp.id, opp, actualOdds: opp.odds1 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to navigate';
+      setBetError(msg);
+      setTimeout(() => setBetError(null), 5000);
+    } finally {
+      setIsPlacing(false);
+    }
+  };
+
+  // Step 2: Confirm bet with actual odds
+  const confirmPlaceBet = async () => {
+    if (!pendingBet) return;
+    const { opp, actualOdds } = pendingBet;
+    const stake = opp.final_stake;
+    if (!stake || stake <= 0) return;
+    setIsPlacing(true);
+    setBetError(null);
+
+    try {
       await api.createBet({
         event_id: opp.event_id,
         provider_id: 'pinnacle',
         market: opp.market,
         outcome: opp.outcome1,
-        odds: opp.odds1,
+        odds: actualOdds,
         stake,
         utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
 
       const outcomeLabel = resolveOutcome(opp);
-      const method = nav.navigated ? 'opened' : nav.url ? 'tab' : 'recorded';
-      setBetSuccess(`${method === 'opened' ? 'Opened' : method === 'tab' ? 'Opened (new tab)' : 'Recorded'}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${opp.odds1.toFixed(2)} (Pinnacle)`);
-
+      setBetSuccess(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`);
       setTimeout(() => setBetSuccess(null), 5000);
+      setPendingBet(null);
       setSelectedRow(null);
       fetchData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to open/record bet';
+      const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
       setTimeout(() => setBetError(null), 5000);
     } finally {
@@ -143,12 +180,12 @@ export function ReversePage() {
             <tr>
               <th>Event</th>
               <th className="text-right">Outcome</th>
-              <th className="text-right">Pin Odds</th>
-              <th className="text-right">Consensus</th>
-              <th className="text-right">Prob</th>
-              <th className="text-right">TTK</th>
-              <th className="text-right">Stake</th>
-              <th className="text-right">Edge</th>
+              <MultiSortableHeader column="odds" label="Pin Odds" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <MultiSortableHeader column="consensus" label="Consensus" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <MultiSortableHeader column="prob" label="Prob" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <MultiSortableHeader column="ttk" label="TTK" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <MultiSortableHeader column="stake" label="Stake" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <MultiSortableHeader column="edge" label="Edge" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
             </tr>
           </thead>
           <tbody>
@@ -162,7 +199,7 @@ export function ReversePage() {
                   <tr
                     key={opp.id}
                     className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
-                    onClick={() => !isSkipped && setSelectedRow(isSelected ? null : idx)}
+                    onClick={() => { if (!isSkipped) { setSelectedRow(isSelected ? null : idx); setPendingBet(null); } }}
                   >
                     <td>
                       <div className="flex items-center gap-2 min-w-0">
@@ -215,13 +252,46 @@ export function ReversePage() {
                           </div>
                         </div>
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                          <button
-                            onClick={() => handleOpenAndRecord(opp)}
-                            disabled={!hasStake || isPlacing}
-                            className="px-4 py-1.5 text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap bg-tabReverse"
-                          >
-                            {isPlacing ? '...' : 'Place Bet'}
-                          </button>
+                          {pendingBet?.oppId === opp.id ? (
+                            <>
+                              <span className="text-muted text-xs">Odds:</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                autoFocus
+                                value={pendingBet.actualOdds}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  if (!isNaN(val)) {
+                                    setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
+                                  }
+                                }}
+                                className="w-20 bg-bg border border-tabReverse/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabReverse"
+                                onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
+                              />
+                              <button
+                                onClick={confirmPlaceBet}
+                                disabled={isPlacing || pendingBet.actualOdds < 1.01}
+                                className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                              >
+                                {isPlacing ? '...' : 'Confirm'}
+                              </button>
+                              <button
+                                onClick={() => setPendingBet(null)}
+                                className="px-2 py-1.5 text-xs text-muted hover:text-text"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => startPlaceBet(opp)}
+                              disabled={!hasStake || isPlacing}
+                              className="px-4 py-1.5 text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap bg-tabReverse"
+                            >
+                              {isPlacing ? '...' : 'Place Bet'}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
