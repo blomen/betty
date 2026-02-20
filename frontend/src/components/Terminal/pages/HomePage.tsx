@@ -19,6 +19,21 @@ function resolveOutcome(bet: Bet): string {
   return outcome;
 }
 
+/** Live TTK: hours from NOW to kickoff (0 if already started) */
+function getLiveTTK(bet: Bet): number | null {
+  if (!bet.start_time) return null;
+  const start = new Date(bet.start_time).getTime();
+  const now = Date.now();
+  return Math.max(0, (start - now) / (1000 * 60 * 60));
+}
+
+function formatTTK(hours: number): string {
+  if (hours < 1 / 60) return '<1m';
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
+
 // ── Section header ──────────────────────────────────────────────────
 
 function SectionHeader({ icon, color, title, count, action }: {
@@ -110,34 +125,39 @@ export function HomePage({ onTabChange }: HomePageProps) {
     return map;
   }, [liveEvents]);
 
-  // All pending bets: live first (sorted by minute desc), then upcoming (by start_time asc)
-  const allPendingBets = useMemo(() => {
-    const live: Bet[] = [];
-    const upcoming: Bet[] = [];
-    for (const b of bets) {
-      if (b.event_id && liveEventMap.has(b.event_id)) {
-        live.push(b);
-      } else {
-        upcoming.push(b);
-      }
-    }
-    live.sort((a, b) => {
-      const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
-      const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
-      return (evB?.match_minute ?? 0) - (evA?.match_minute ?? 0);
-    });
-    upcoming.sort((a, b) => {
-      const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
-      const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
-      return ta - tb;
-    });
-    return [...live, ...upcoming];
+  // Split pending bets into active (live/started) and upcoming (pre-match)
+  const activeBets = useMemo(() => {
+    const now = Date.now();
+    return bets
+      .filter(b => {
+        // Active = live event OR start_time has passed
+        if (b.event_id && liveEventMap.has(b.event_id)) return true;
+        if (b.start_time && new Date(b.start_time).getTime() <= now) return true;
+        return false;
+      })
+      .sort((a, b) => {
+        // Sort by match minute desc (furthest into match first)
+        const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
+        const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
+        return (evB?.match_minute ?? 0) - (evA?.match_minute ?? 0);
+      });
   }, [bets, liveEventMap]);
 
-  const liveCount = useMemo(() =>
-    allPendingBets.filter(b => b.event_id && liveEventMap.has(b.event_id)).length,
-    [allPendingBets, liveEventMap]
-  );
+  const upcomingBets = useMemo(() => {
+    const now = Date.now();
+    return bets
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        if (b.start_time && new Date(b.start_time).getTime() <= now) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        // Sort by TTK ascending: closest to kickoff first
+        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
+        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
+        return ta - tb;
+      });
+  }, [bets, liveEventMap]);
 
   // Top value (sorted by edge, take 3)
   const topValue = useMemo(() =>
@@ -240,21 +260,85 @@ export function HomePage({ onTabChange }: HomePageProps) {
         </div>
       </div>
 
-      {/* ── My Bets (live + upcoming in one table) ─────────────── */}
-      {allPendingBets.length > 0 && (
+      {/* ── Active Bets (live/started events with scores) ──────── */}
+      {activeBets.length > 0 && (
         <div>
           <SectionHeader
             icon="bets"
             color={TAB_COLORS.bets}
-            title="My Bets"
-            count={allPendingBets.length}
+            title="Active"
+            count={activeBets.length}
             action={{ label: 'History', onClick: () => onTabChange('stats') }}
           />
           <div className="mt-2 border border-border bg-panel overflow-hidden">
             <table className="sq">
               <thead>
                 <tr>
-                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Event</th>
+                  <th>Pick</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">CLV</th>
+                  <th className="text-right">Return</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeBets.map(bet => {
+                  const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
+                  const hasScore = ev && ev.home_score != null && ev.away_score != null;
+                  return (
+                    <tr key={bet.id} className="bg-warning/[0.03]">
+                      <td className="whitespace-nowrap">
+                        <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">
+                          {hasScore ? (
+                            <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
+                          ) : 'LIVE'}
+                        </span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                        <span className="text-muted mx-1">v</span>
+                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text">{resolveOutcome(bet)}</span>
+                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                      </td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {bet.clv_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                          </span>
+                        ) : <span className="text-muted">-</span>}
+                      </td>
+                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Upcoming Bets (sorted by TTK, closest first) ─────── */}
+      {upcomingBets.length > 0 && (
+        <div>
+          <SectionHeader
+            icon="bets"
+            color={TAB_COLORS.bets}
+            title="Upcoming"
+            count={upcomingBets.length}
+            action={activeBets.length === 0 ? { label: 'History', onClick: () => onTabChange('stats') } : undefined}
+          />
+          <div className="mt-2 border border-border bg-panel overflow-hidden">
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>TTK</th>
                   <th>Event</th>
                   <th>Pick</th>
                   <th className="text-right">Odds</th>
@@ -264,26 +348,14 @@ export function HomePage({ onTabChange }: HomePageProps) {
                 </tr>
               </thead>
               <tbody>
-                {allPendingBets.map(bet => {
-                  const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
-                  const isLive = !!ev;
-                  const hasScore = ev && ev.home_score != null && ev.away_score != null;
+                {upcomingBets.map(bet => {
+                  const ttk = getLiveTTK(bet);
                   return (
-                    <tr key={bet.id} className={isLive ? 'bg-warning/[0.03]' : ''}>
+                    <tr key={bet.id}>
                       <td className="whitespace-nowrap">
-                        {isLive ? (
-                          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">
-                            {hasScore ? (
-                              <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
-                            ) : 'LIVE'}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-muted">
-                            {bet.start_time
-                              ? new Date(bet.start_time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                              : '-'}
-                          </span>
-                        )}
+                        <span className={`text-[10px] ${ttk !== null && ttk <= 1 ? 'text-warning' : ttk !== null && ttk <= 6 ? 'text-success' : 'text-muted'}`}>
+                          {ttk !== null ? formatTTK(ttk) : '-'}
+                        </span>
                       </td>
                       <td className="text-sm">
                         <span className="text-text font-medium">{bet.home_team || '?'}</span>
@@ -310,11 +382,6 @@ export function HomePage({ onTabChange }: HomePageProps) {
               </tbody>
             </table>
           </div>
-          {liveCount > 0 && (
-            <div className="mt-1 text-[10px] text-muted2">
-              {liveCount} in play · {allPendingBets.length - liveCount} upcoming
-            </div>
-          )}
         </div>
       )}
 

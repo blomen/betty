@@ -51,6 +51,7 @@ class BetService:
         outcome: str | None,
         odds: float,
         stake: float,
+        point: float | None = None,
         is_bonus: bool = False,
         bonus_type: str | None = None,
         utility_score: float | None = None,
@@ -89,6 +90,7 @@ class BetService:
             market=market,
             outcome=outcome,
             odds=odds,
+            point=point,
             stake=stake,
             is_bonus=is_bonus,
             bonus_type=bonus_type,
@@ -168,13 +170,23 @@ class BetService:
         if not bet.event_id or not bet.outcome or not bet.market:
             return None
 
+        # Don't overwrite if snapshot_closing_odds already captured better data
+        if bet.closing_odds is not None:
+            clv = (bet.odds / bet.closing_odds - 1) * 100
+            return round(clv, 2)
+
         # Look up current Pinnacle odds for same event/market/outcome
-        pinnacle_odds = self.db.query(Odds).filter(
+        query = self.db.query(Odds).filter(
             Odds.event_id == bet.event_id,
             Odds.provider_id.in_(SHARP_PROVIDERS),
             Odds.market == bet.market,
             Odds.outcome == bet.outcome,
-        ).first()
+        )
+        # For spread/total, match the point to avoid comparing wrong lines
+        if bet.market in ("spread", "total") and bet.point is not None:
+            query = query.filter(Odds.point == bet.point)
+
+        pinnacle_odds = query.first()
 
         if not pinnacle_odds or pinnacle_odds.odds <= 1.0:
             return None
@@ -221,12 +233,17 @@ class BetService:
             if not bet.outcome or not bet.market:
                 continue
 
-            pinnacle_odds = self.db.query(Odds).filter(
+            query = self.db.query(Odds).filter(
                 Odds.event_id == bet.event_id,
                 Odds.provider_id.in_(SHARP_PROVIDERS),
                 Odds.market == bet.market,
                 Odds.outcome == bet.outcome,
-            ).first()
+            )
+            # For spread/total, match the point to avoid comparing wrong lines
+            if bet.market in ("spread", "total") and bet.point is not None:
+                query = query.filter(Odds.point == bet.point)
+
+            pinnacle_odds = query.first()
 
             if not pinnacle_odds or pinnacle_odds.odds <= 1.0:
                 continue

@@ -1,17 +1,25 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-// FilterBar components no longer used — bets page shows pending on top + history below
-import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
+import { TabIcon, TAB_COLORS } from '../TabBar';
+import type { Bet, BankrollStats, BonusProgressEntry, LiveEvent } from '@/types';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
-/** Time-to-kickoff in hours (null if no start_time) */
+/** Time-to-kickoff in hours from PLACED time (for history CLV confidence) */
 function getTTK(bet: Bet): number | null {
   if (!bet.start_time || !bet.placed_at) return null;
   const start = new Date(bet.start_time).getTime();
   const placed = new Date(bet.placed_at).getTime();
   return Math.max(0, (start - placed) / (1000 * 60 * 60));
+}
+
+/** Live TTK: hours from NOW to kickoff (0 if already started) */
+function getLiveTTK(bet: Bet): number | null {
+  if (!bet.start_time) return null;
+  const start = new Date(bet.start_time).getTime();
+  const now = Date.now();
+  return Math.max(0, (start - now) / (1000 * 60 * 60));
 }
 
 function formatTTK(hours: number): string {
@@ -20,20 +28,22 @@ function formatTTK(hours: number): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
-type TTKConfidence = 'high' | 'medium' | 'low' | 'very_low' | 'unknown';
+type TTKConfidence = 'high' | 'good' | 'medium' | 'low' | 'very_low' | 'unknown';
 
 function getTTKTier(ttkHours: number | null): { label: string; color: string; confidence: TTKConfidence } {
   if (ttkHours === null) return { label: '-', color: 'text-muted', confidence: 'unknown' };
-  if (ttkHours <= 1) return { label: formatTTK(ttkHours), color: 'text-success', confidence: 'high' };
-  if (ttkHours <= 6) return { label: formatTTK(ttkHours), color: 'text-accent', confidence: 'medium' };
-  if (ttkHours <= 24) return { label: formatTTK(ttkHours), color: 'text-warning', confidence: 'low' };
+  if (ttkHours <= 6) return { label: formatTTK(ttkHours), color: 'text-success', confidence: 'high' };
+  if (ttkHours <= 12) return { label: formatTTK(ttkHours), color: 'text-yellow', confidence: 'good' };
+  if (ttkHours <= 24) return { label: formatTTK(ttkHours), color: 'text-warning', confidence: 'medium' };
+  if (ttkHours <= 48) return { label: formatTTK(ttkHours), color: 'text-error', confidence: 'low' };
   return { label: formatTTK(ttkHours), color: 'text-muted2', confidence: 'very_low' };
 }
 
 const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
   high: { text: 'CLV HIGH', cls: 'bg-success/15 text-success' },
-  medium: { text: 'CLV MED', cls: 'bg-accent/15 text-accent' },
-  low: { text: 'CLV LOW', cls: 'bg-warning/15 text-warning' },
+  good: { text: 'CLV GOOD', cls: 'bg-yellow/15 text-yellow' },
+  medium: { text: 'CLV MED', cls: 'bg-warning/15 text-warning' },
+  low: { text: 'CLV LOW', cls: 'bg-error/15 text-error' },
   very_low: { text: 'CLV ~', cls: 'bg-muted2/15 text-muted2' },
   unknown: { text: '-', cls: 'text-muted2' },
 };
@@ -184,9 +194,10 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
       .map(b => {
         const ttkHours = getTTK(b);
         const confidence = ttkHours === null ? 0.5 :
-          ttkHours <= 1 ? 1.0 :
-          ttkHours <= 6 ? 0.75 :
-          ttkHours <= 24 ? 0.5 : 0.25;
+          ttkHours <= 6 ? 1.0 :
+          ttkHours <= 12 ? 0.85 :
+          ttkHours <= 24 ? 0.6 :
+          ttkHours <= 48 ? 0.35 : 0.2;
         return { date: new Date(b.placed_at), clv: b.clv_pct!, ttkHours, confidence };
       });
   }, [bets]);
@@ -254,10 +265,11 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
           <span className="text-[10px] text-muted uppercase tracking-wider">CLV Distribution</span>
           {showTTKLegend && (
             <div className="flex items-center gap-1.5 text-[9px] text-muted2">
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-80" /> &lt;1h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-55" /> 1-6h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-40" /> 6-24h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-25" /> 24h+</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-80" /> &lt;6h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-65" /> 6-12h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-45" /> 12-24h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-30" /> 24-48h</span>
+              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-15" /> 48h+</span>
             </div>
           )}
         </div>
@@ -358,6 +370,7 @@ export function BetsPage() {
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
+  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
 
   // Sort (for history table only)
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
@@ -370,12 +383,14 @@ export function BetsPage() {
       // Snapshot closing odds for any pending bets on started events
       await api.closeStartedBets().catch(() => {});
 
-      const [response, bankroll] = await Promise.all([
+      const [response, bankroll, liveRes] = await Promise.all([
         api.getBets(undefined, 500),
         api.getBankroll(),
+        api.getLiveEvents(),
       ]);
       setBets(response.bets);
       setCurrentBankroll(bankroll.total);
+      setLiveEvents(liveRes.events);
     } catch (err) {
       console.error('Failed to fetch bets:', err);
     } finally {
@@ -406,31 +421,47 @@ export function BetsPage() {
 
   useEffect(() => { fetchBets(); fetchStats(); fetchBonuses(); }, [fetchBets, fetchStats, fetchBonuses]);
 
-  const settleBet = async (betId: number, result: 'won' | 'lost' | 'void') => {
-    const bet = bets.find(b => b.id === betId);
-    if (!bet) return;
-    const payout = result === 'won' ? bet.stake * bet.odds : 0;
-    try {
-      await api.settleBet(betId, { result, payout });
-      fetchBets();
-      fetchStats();
-    } catch (err) {
-      console.error('Failed to settle bet:', err);
-    }
-  };
+  // ── Live event map ────────────────────────────────────────────
+  const liveEventMap = useMemo(() => {
+    const map = new Map<string, LiveEvent>();
+    for (const ev of liveEvents) map.set(ev.id, ev);
+    return map;
+  }, [liveEvents]);
 
-  // ── Split into pending + history ─────────────────────────────────
+  // ── Pending bets split: Active (started/live) + Upcoming ──────
+  const pendingBets = useMemo(() => bets.filter(b => b.result === 'pending'), [bets]);
 
-  const pendingBets = useMemo(() => {
-    const pending = bets.filter(b => b.result === 'pending');
-    // Started bets (CLV captured) on top, then upcoming by date
-    return pending.sort((a, b) => {
-      const aStarted = a.closing_odds != null ? 1 : 0;
-      const bStarted = b.closing_odds != null ? 1 : 0;
-      if (aStarted !== bStarted) return bStarted - aStarted; // started first
-      return new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime();
-    });
-  }, [bets]);
+  const activePendingBets = useMemo(() => {
+    const now = Date.now();
+    return pendingBets
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return true;
+        if (b.start_time && new Date(b.start_time).getTime() <= now) return true;
+        return false;
+      })
+      .sort((a, b) => {
+        const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
+        const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
+        return (evB?.match_minute ?? 0) - (evA?.match_minute ?? 0);
+      });
+  }, [pendingBets, liveEventMap]);
+
+  const upcomingBets = useMemo(() => {
+    const now = Date.now();
+    return pendingBets
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        if (b.start_time && new Date(b.start_time).getTime() <= now) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
+        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
+        return ta - tb;
+      });
+  }, [pendingBets, liveEventMap]);
+
+  // ── History (settled bets only) ─────────────────────────────────
 
   const historyBets = useMemo(() => {
     let result = bets.filter(b => b.result !== 'pending');
@@ -504,7 +535,7 @@ export function BetsPage() {
     <div className="space-y-3">
       {/* Header */}
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-        <span className="w-2 h-2 bg-tabBets" />
+        <TabIcon name="bets" color={TAB_COLORS.bets} size={16} />
         Bets
       </h2>
 
@@ -566,6 +597,135 @@ export function BetsPage() {
       {/* CLV Trend Chart */}
       <CLVChart bets={bets} />
 
+      {/* ── Active Bets (started / live events) ─────────────────── */}
+      {activePendingBets.length > 0 && (
+        <>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold flex items-center gap-2">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
+            Active <span className="text-warning">{activePendingBets.length}</span>
+          </h3>
+          <div className="border-l-2 border-warning">
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>Score</th>
+                  <th>Event</th>
+                  <th>Pick</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">CLV</th>
+                  <th className="text-right">Return</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activePendingBets.map(bet => {
+                  const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
+                  const hasScore = ev && ev.home_score != null && ev.away_score != null;
+                  return (
+                    <tr key={bet.id} className="bg-warning/[0.03]">
+                      <td className="whitespace-nowrap">
+                        <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">
+                          {hasScore ? (
+                            <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
+                          ) : (
+                            bet.match_status === 'finished'
+                              ? <>{bet.home_score ?? '?'}-{bet.away_score ?? '?'} <span className="text-muted2">FT</span></>
+                              : 'LIVE'
+                          )}
+                        </span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                        <span className="text-muted mx-1">v</span>
+                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text">{resolveOutcome(bet)}</span>
+                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                      </td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {bet.clv_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
+                      </td>
+                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* ── Upcoming Bets (sorted by TTK closest first) ─────── */}
+      {upcomingBets.length > 0 && (
+        <>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
+            Upcoming <span className="text-tabBets">{upcomingBets.length}</span>
+          </h3>
+          <div className="border-l-2 border-tabBets">
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>TTK</th>
+                  <th>Event</th>
+                  <th>Pick</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">Edge</th>
+                  <th className="text-right">Return</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcomingBets.map(bet => {
+                  const ttk = getLiveTTK(bet);
+                  return (
+                    <tr key={bet.id}>
+                      <td className="whitespace-nowrap">
+                        <span className={`text-[10px] font-medium ${
+                          ttk !== null && ttk <= 1 ? 'text-warning' :
+                          ttk !== null && ttk <= 6 ? 'text-success' :
+                          ttk !== null && ttk <= 24 ? 'text-text' :
+                          'text-muted'
+                        }`}>
+                          {ttk !== null ? formatTTK(ttk) : '-'}
+                        </span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                        <span className="text-muted mx-1">v</span>
+                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text">{resolveOutcome(bet)}</span>
+                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                      </td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {bet.edge_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
+                          </span>
+                        ) : <span className="text-muted">-</span>}
+                      </td>
+                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
       {/* Active Bonuses */}
       {activeBonuses.length > 0 && (
         <div className="border-l-2 border-tabBonus">
@@ -601,14 +761,6 @@ export function BetsPage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        {bonus.status === 'trigger_needed' && (
-                          <button
-                            onClick={() => handleBonusAction(providerId, 'trigger_settled')}
-                            className="px-2 py-1 text-[10px] font-medium bg-amber-400/20 text-amber-400 hover:bg-amber-400/30 transition-colors"
-                          >
-                            Mark Settled
-                          </button>
-                        )}
                         {bonus.status === 'freebet_available' && (
                           <button
                             onClick={() => handleBonusAction(providerId, 'freebet_used')}
@@ -685,137 +837,12 @@ export function BetsPage() {
         </div>
       )}
 
-      {/* Pending Bets */}
-      {pendingBets.length > 0 && (
-        <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Pending <span className="text-accent">{pendingBets.length}</span>
-            {pendingBets.some(b => b.closing_odds != null) && (
-              <span className="text-warning ml-2">
-                {pendingBets.filter(b => b.closing_odds != null).length} started
-              </span>
-            )}
-          </h3>
-          <div className="border-l-2 border-accent">
-          <table className="sq">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Provider</th>
-                <th>Outcome</th>
-                <th className="text-right">Odds</th>
-                <th className="text-right">Stake</th>
-                <th className="text-right">Edge</th>
-                <th className="text-right">CLV</th>
-                <th className="text-right">TTK</th>
-                <th className="text-right"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {pendingBets.map((bet) => {
-                const isExpanded = expandedIdx === bet.id;
-                const ttk = getTTK(bet);
-                const tier = getTTKTier(ttk);
-                const hasStarted = bet.closing_odds != null;
-                return (
-                  <>
-                    <tr
-                      key={bet.id}
-                      className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
-                      onClick={() => setExpandedIdx(isExpanded ? null : bet.id)}
-                    >
-                      <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
-                      <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
-                      <td className="text-text text-sm">{resolveOutcome(bet)}</td>
-                      <td className="text-right text-text text-sm font-medium">
-                        {bet.odds.toFixed(2)}
-                        {hasStarted && bet.closing_odds != null && (
-                          <span className="text-muted2 text-[10px] ml-1">→{bet.closing_odds.toFixed(2)}</span>
-                        )}
-                      </td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                      <td className="text-right">
-                        {bet.edge_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
-                          </span>
-                        ) : (
-                          <span className="text-sm text-muted">-</span>
-                        )}
-                      </td>
-                      <td className="text-right">
-                        {bet.clv_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
-                          </span>
-                        ) : (
-                          <span className="text-sm text-muted">-</span>
-                        )}
-                      </td>
-                      <td className="text-right">
-                        {hasStarted ? (
-                          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">LIVE</span>
-                        ) : (
-                          <span className={`text-sm ${tier.color}`}>{tier.label}</span>
-                        )}
-                      </td>
-                      <td className="text-right" onClick={e => e.stopPropagation()}>
-                        {hasStarted ? (
-                          <div className="flex gap-1 justify-end">
-                            <button onClick={() => settleBet(bet.id, 'won')} className="px-2 py-1 text-[10px] font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">W</button>
-                            <button onClick={() => settleBet(bet.id, 'lost')} className="px-2 py-1 text-[10px] font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">L</button>
-                            <button onClick={() => settleBet(bet.id, 'void')} className="px-2 py-1 text-[10px] font-medium bg-panel2 text-muted hover:bg-border transition-colors">V</button>
-                          </div>
-                        ) : (
-                          <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
-                        )}
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr key={`${bet.id}-expanded`}>
-                        <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <div className="px-3 py-2 bg-panel flex items-center justify-between gap-6">
-                            <div className="flex items-center gap-6 text-xs text-muted">
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                                <span className="text-text">{bet.market || '-'}</span>
-                              </div>
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                                <span className="text-text">{(bet.stake * bet.odds).toFixed(0)} kr</span>
-                                <span className="text-accent text-xs ml-1">(+{(bet.stake * bet.odds - bet.stake).toFixed(0)})</span>
-                              </div>
-                              {hasStarted && bet.closing_odds != null && (
-                                <div>
-                                  <span className="text-muted2 uppercase tracking-wider">Close: </span>
-                                  <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex gap-2">
-                              <button onClick={() => settleBet(bet.id, 'won')} className="px-3 py-1.5 text-xs font-medium bg-success/20 text-success hover:bg-success/30 transition-colors">Won</button>
-                              <button onClick={() => settleBet(bet.id, 'lost')} className="px-3 py-1.5 text-xs font-medium bg-error/20 text-error hover:bg-error/30 transition-colors">Lost</button>
-                              <button onClick={() => settleBet(bet.id, 'void')} className="px-3 py-1.5 text-xs font-medium bg-panel2 text-muted hover:bg-border transition-colors">Void</button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        </>
-      )}
-
       {/* Bet History */}
       {isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
-      ) : historyBets.length === 0 && pendingBets.length === 0 ? (
+      ) : historyBets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets found.</div>
-      ) : historyBets.length > 0 && (
+      ) : (
         <>
           <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
             History <span className="text-muted2">{historyBets.length}</span>
@@ -889,6 +916,9 @@ export function BetsPage() {
                       </td>
                       <td className="text-right">
                         <span className={`text-sm capitalize ${getStatusColor(bet.result)}`}>{bet.result}</span>
+                        {(bet.settlement_source === 'auto_tsdb' || bet.settlement_source === 'auto_pinnacle') && (
+                          <span className="text-[9px] px-1 py-0.5 bg-accent/15 text-accent ml-1">AUTO</span>
+                        )}
                       </td>
                     </tr>
                     {isExpanded && (() => {
