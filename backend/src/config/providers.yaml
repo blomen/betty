@@ -395,7 +395,7 @@ providers:
     <<: *altenar_defaults
     id: dbet
     name: Dbet
-    domain: dbet.se
+    domain: dbet.com
     integration: dbet
     bonus:
       type: freebet
@@ -557,8 +557,8 @@ providers:
     domain: snabbare.com
     retriever_type: snabbare
     site_url: https://www.snabbare.com
-    provider_timeout: 900              # 13 sports × up to 240s each (sequential, browser-based)
-    sport_timeout: 240                 # 60 leagues × ~3s/league + DOM overhead, needs margin
+    provider_timeout: 1200             # 10 sports × up to 360s each (sequential, browser-based)
+    sport_timeout: 360                 # Football has 60+ leagues × ~3s/league — 240s was too tight
     supported_sports:
       - football
       - basketball

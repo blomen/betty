@@ -224,9 +224,21 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         # Calculate edge vs fair line
         edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
 
-        # Sanity check: edge > 100% almost certainly means wrong match
+        # Sanity check 1: edge > 100% almost certainly means wrong match
         if edge_pct > 100:
             continue
+
+        # Sanity check 2: if original_odds diverges wildly from fair_odds,
+        # the boost is likely a combo/prop that slipped past keyword filters.
+        # A genuine match-winner boost should have original_odds near fair_odds.
+        if original_odds and fair_odds:
+            odds_ratio = original_odds / fair_odds
+            if odds_ratio > 1.6 or odds_ratio < 0.5:
+                logger.debug(
+                    f"Skipping '{special.get('title')}': original_odds={original_odds:.2f} "
+                    f"vs fair_odds={fair_odds:.3f} (ratio={odds_ratio:.2f}) — likely wrong match"
+                )
+                continue
 
         ev_per_unit = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
 

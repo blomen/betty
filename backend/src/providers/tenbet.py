@@ -304,16 +304,26 @@ class TenBetRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
 
-            # Wait for event items to render (10s — non-football sports need extra time)
-            try:
-                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=10000)
-            except Exception:
-                # Check for empty state
-                empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
-                if empty:
-                    logger.debug(f"[{self.provider_id}] No matches for {comp_name}")
-                else:
-                    logger.debug(f"[{self.provider_id}] No EventListItem found for {comp_name}")
+            # Wait for event items to render with retry
+            events_loaded = False
+            for attempt in range(3):
+                try:
+                    await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=8000)
+                    events_loaded = True
+                    break
+                except Exception:
+                    # Check for empty state
+                    empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
+                    if empty:
+                        logger.debug(f"[{self.provider_id}] No matches for {comp_name}")
+                        return []
+                    if attempt < 2:
+                        logger.debug(f"[{self.provider_id}] EventListItem not found for {comp_name}, retry {attempt + 1}")
+                        await page.wait_for_timeout(2000)
+                    else:
+                        logger.debug(f"[{self.provider_id}] No EventListItem found for {comp_name} after 3 attempts")
+
+            if not events_loaded:
                 return []
 
             # Wait for odds to render (selector-based, faster than fixed timeout)
@@ -368,12 +378,18 @@ class TenBetRetriever(BrowserRetriever):
                             m.querySelectorAll('[class*="ta-price_text"]')
                         ).map(p => p.textContent.trim());
 
-                        // Point values (spread/total)
+                        // Point values (spread/total) from ta-infoText
                         const infoTexts = Array.from(
                             m.querySelectorAll('[class*="ta-infoText"]')
                         ).map(t => t.textContent.trim());
 
-                        markets.push({ type: marketType, prices, infoTexts });
+                        // Fallback: capture selection label text (e.g., "1 (0:1)" for HCMR)
+                        // and market header text for embedded point values
+                        const selLabels = Array.from(
+                            m.querySelectorAll('[class*="ta-selection"], [class*="ta-label"], [class*="Label"]')
+                        ).map(t => t.textContent.trim());
+
+                        markets.push({ type: marketType, prices, infoTexts, selLabels });
                     });
 
                     // Event link (for unique ID)
@@ -428,9 +444,11 @@ class TenBetRetriever(BrowserRetriever):
             market_type = market_data.get('type', '')
             prices = market_data.get('prices', [])
             info_texts = market_data.get('infoTexts', [])
+            sel_labels = market_data.get('selLabels', [])
 
             parsed_market = self._parse_market(
-                market_type, prices, info_texts, home_raw, away_raw
+                market_type, prices, info_texts, home_raw, away_raw,
+                sel_labels=sel_labels,
             )
             if not parsed_market:
                 continue
@@ -475,6 +493,7 @@ class TenBetRetriever(BrowserRetriever):
         info_texts: List[str],
         home_raw: str,
         away_raw: str,
+        sel_labels: Optional[List[str]] = None,
     ) -> Optional[Dict]:
         """
         Parse a market from DOM data using the MARKET_TYPE_MAP lookup.
@@ -495,15 +514,20 @@ class TenBetRetriever(BrowserRetriever):
                 logger.debug(f"[{self.provider_id}] Unknown DOM market type: '{market_type}' prices={prices[:2]} info={info_texts[:2]}")
             return None
 
+        # Merge info_texts + sel_labels for point extraction fallback
+        all_info = list(info_texts)
+        if sel_labels:
+            all_info.extend(sel_labels)
+
         try:
             if canonical == "1x2":
                 return self._parse_1x2(prices)
             elif canonical == "moneyline":
                 return self._parse_moneyline(prices)
             elif canonical == "total":
-                return self._parse_total(prices, info_texts)
+                return self._parse_total(prices, all_info)
             elif canonical == "spread":
-                return self._parse_spread(prices, info_texts)
+                return self._parse_spread(prices, all_info)
         except (ValueError, IndexError) as e:
             logger.debug(f"[{self.provider_id}] Failed to parse {market_type} ({canonical}): {e}")
 
@@ -570,6 +594,12 @@ class TenBetRetriever(BrowserRetriever):
 
         # Extract point value from info texts
         point = self._extract_point_value(info_texts)
+
+        # Fallback: try extracting point from price label text itself
+        # Football HCMR embeds point in labels like "(0:1)" or "(-1)" instead of ta-infoText
+        if point is None:
+            point = self._extract_point_from_prices(prices)
+
         if point is None:
             logger.debug(f"[{self.provider_id}] Spread market missing point: prices={prices} info_texts={info_texts}")
             return None
@@ -607,6 +637,26 @@ class TenBetRetriever(BrowserRetriever):
             if match:
                 try:
                     return float(match.group(1))
+                except ValueError:
+                    pass
+        return None
+
+    def _extract_point_from_prices(self, prices: List[str]) -> Optional[float]:
+        """Fallback: extract point value from price label text.
+
+        Football HCMR embeds handicap in labels like "1 (0:1)" or "(+1.5)".
+        """
+        for p in prices:
+            # Match "(0:1)" format → goal handicap (European notation)
+            m = re.search(r'\((\d+):(\d+)\)', p)
+            if m:
+                home_goals, away_goals = int(m.group(1)), int(m.group(2))
+                return float(home_goals - away_goals)
+            # Match "(+1.5)" or "(-0.5)" embedded in label
+            m = re.search(r'\(([+-]?\d+\.?\d*)\)', p)
+            if m:
+                try:
+                    return float(m.group(1))
                 except ValueError:
                     pass
         return None
