@@ -13,6 +13,7 @@ from ...risk.calculator import RiskCalculator
 from ...risk.stake_noise import StakeNoiseInjector
 from ..deps import get_db
 from ..schemas import BetCreate, BetUpdate, AutoPlaceBetRequest, BatchBetCreate
+from .providers import load_provider_site_urls
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ async def list_bets(
     profile = profile_repo.get_active()
 
     bets = bet_repo.list_for_profile(profile.id, status=status, limit=limit)
+    site_urls = load_provider_site_urls()
 
     # Pre-fetch events for team name resolution
     event_ids = [b.event_id for b in bets if b.event_id]
@@ -108,6 +110,7 @@ async def list_bets(
             "away_score": ev.away_score if ev else None,
             "match_status": ev.match_status if ev else None,
             "match_minute": ev.match_minute if ev else None,
+            "provider_site_url": site_urls.get(b.provider_id),
         })
 
     return {

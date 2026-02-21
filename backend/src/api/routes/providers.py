@@ -29,6 +29,28 @@ def load_provider_bonuses() -> dict[str, dict]:
         return {}
 
 
+@lru_cache(maxsize=1)
+def load_provider_site_urls() -> dict[str, str]:
+    """Load site_url from providers.yaml config (cached).
+
+    Falls back to https://www.{domain} for providers with a domain but no site_url.
+    """
+    from ...paths import get_config_path
+    config_path = get_config_path("providers.yaml")
+    urls: dict[str, str] = {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        for pid, p in config.get('providers', {}).items():
+            if 'site_url' in p:
+                urls[pid] = p['site_url']
+            elif 'domain' in p:
+                urls[pid] = f"https://www.{p['domain']}"
+    except Exception:
+        pass
+    return urls
+
+
 def get_profile_bonus_status(db: Session, provider_id: str) -> str | None:
     """Get bonus status for provider from active profile."""
     active_profile = db.query(Profile).filter(Profile.is_active == True).first()
@@ -54,6 +76,7 @@ async def list_providers(db: Session = Depends(get_db)):
     profile = profile_repo.get_active()
     providers = db.query(Provider).all()
     bonus_info = load_provider_bonuses()
+    site_urls = load_provider_site_urls()
 
     provider_list = []
     for p in providers:
@@ -62,6 +85,7 @@ async def list_providers(db: Session = Depends(get_db)):
             "id": p.id,
             "name": p.name,
             "url": p.url,
+            "site_url": site_urls.get(p.id),
             "is_enabled": p.is_enabled,
             "balance": balance,
             "bonus": bonus_info.get(p.id),

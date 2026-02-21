@@ -287,13 +287,23 @@ export function HomePage({ onTabChange }: HomePageProps) {
                 {activeBets.map(bet => {
                   const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
                   const hasScore = ev && ev.home_score != null && ev.away_score != null;
+                  const isFinished = ev?.match_status === 'finished' || bet.match_status === 'finished';
                   return (
-                    <tr key={bet.id} className="bg-warning/[0.03]">
+                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : 'bg-warning/[0.03]'}>
                       <td className="whitespace-nowrap">
-                        <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">
+                        <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                          isFinished ? 'bg-muted/15 text-muted' : 'bg-warning/15 text-warning'
+                        }`}>
                           {hasScore ? (
-                            <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
-                          ) : 'LIVE'}
+                            isFinished
+                              ? <>{ev!.home_score}-{ev!.away_score} <span className="text-muted2">FT</span></>
+                              : <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
+                          ) : isFinished
+                            ? 'FT'
+                            : ev?.match_minute != null
+                              ? <>LIVE <span className="text-muted2">{ev.match_minute}'</span></>
+                              : 'LIVE'
+                          }
                         </span>
                       </td>
                       <td className="text-sm">
@@ -303,7 +313,17 @@ export function HomePage({ onTabChange }: HomePageProps) {
                       </td>
                       <td className="text-sm">
                         <span className="text-text">{resolveOutcome(bet)}</span>
-                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        {isFinished && !hasScore && bet.provider_site_url ? (
+                          <a
+                            href={bet.provider_site_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent text-[10px] ml-1 hover:underline"
+                            title="Check result"
+                          >{formatProviderName(bet.provider)} ↗</a>
+                        ) : (
+                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        )}
                       </td>
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
                       <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
@@ -314,7 +334,35 @@ export function HomePage({ onTabChange }: HomePageProps) {
                           </span>
                         ) : <span className="text-muted">-</span>}
                       </td>
-                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {isFinished && !hasScore ? (
+                          <span className="inline-flex gap-1">
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                              onClick={async () => {
+                                await api.settleBet(bet.id, { result: 'won', payout: bet.stake * bet.odds });
+                                fetchAll();
+                              }}
+                            >W</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
+                              onClick={async () => {
+                                await api.settleBet(bet.id, { result: 'lost', payout: 0 });
+                                fetchAll();
+                              }}
+                            >L</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                              onClick={async () => {
+                                await api.settleBet(bet.id, { result: 'void', payout: bet.stake });
+                                fetchAll();
+                              }}
+                            >V</button>
+                          </span>
+                        ) : (
+                          <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

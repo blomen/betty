@@ -531,6 +531,17 @@ export function BetsPage() {
     }
   };
 
+  const handleManualSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
+    const payout = result === 'won' ? bet.stake * bet.odds : result === 'void' ? bet.stake : 0;
+    try {
+      await api.settleBet(bet.id, { result, payout });
+      fetchBets();
+      fetchStats();
+    } catch (err) {
+      console.error('Manual settle failed:', err);
+    }
+  };
+
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -621,16 +632,36 @@ export function BetsPage() {
                 {activePendingBets.map(bet => {
                   const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
                   const hasScore = ev && ev.home_score != null && ev.away_score != null;
+                  const isFinished = ev?.match_status === 'finished' || bet.match_status === 'finished';
+                  // Derive current map from stats period data (esports)
+                  const currentMap = ev?.stats && !hasScore && !isFinished
+                    ? Math.max(
+                        ...(['home_periods', 'away_periods'] as const).map(k => {
+                          const periods = (ev.stats as Record<string, unknown[]>)?.[k];
+                          return Array.isArray(periods) ? periods.filter((p: any) => p?.period !== 0).length : 0;
+                        })
+                      )
+                    : 0;
                   return (
-                    <tr key={bet.id} className="bg-warning/[0.03]">
+                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : 'bg-warning/[0.03]'}>
                       <td className="whitespace-nowrap">
-                        <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning font-medium">
+                        <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                          isFinished ? 'bg-muted/15 text-muted' : 'bg-warning/15 text-warning'
+                        }`}>
                           {hasScore ? (
-                            <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
+                            isFinished
+                              ? <>{ev!.home_score}-{ev!.away_score} <span className="text-muted2">FT</span></>
+                              : <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
+                          ) : isFinished ? (
+                            bet.home_score != null && bet.away_score != null
+                              ? <>{bet.home_score}-{bet.away_score} <span className="text-muted2">FT</span></>
+                              : 'FT'
                           ) : (
-                            bet.match_status === 'finished'
-                              ? <>{bet.home_score ?? '?'}-{bet.away_score ?? '?'} <span className="text-muted2">FT</span></>
-                              : 'LIVE'
+                            currentMap > 0
+                              ? <>LIVE <span className="text-muted2">Map {currentMap}</span></>
+                              : ev?.match_minute != null
+                                ? <>LIVE <span className="text-muted2">{ev.match_minute}'</span></>
+                                : 'LIVE'
                           )}
                         </span>
                       </td>
@@ -641,7 +672,17 @@ export function BetsPage() {
                       </td>
                       <td className="text-sm">
                         <span className="text-text">{resolveOutcome(bet)}</span>
-                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        {isFinished && !hasScore && bet.provider_site_url ? (
+                          <a
+                            href={bet.provider_site_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent text-[10px] ml-1 hover:underline"
+                            title="Check result"
+                          >{formatProviderName(bet.provider)} ↗</a>
+                        ) : (
+                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        )}
                       </td>
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
                       <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
@@ -654,7 +695,26 @@ export function BetsPage() {
                           <span className="text-sm text-muted">-</span>
                         )}
                       </td>
-                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {isFinished && !hasScore ? (
+                          <span className="inline-flex gap-1">
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'won')}
+                            >W</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'lost')}
+                            >L</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'void')}
+                            >V</button>
+                          </span>
+                        ) : (
+                          <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

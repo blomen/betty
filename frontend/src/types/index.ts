@@ -107,6 +107,7 @@ export interface Provider {
   id: string;
   name: string;
   url: string | null;
+  site_url?: string | null;
   is_enabled: boolean;
   balance: number;
   bonus?: ProviderBonus | null;
@@ -204,6 +205,7 @@ export interface Bet {
   away_score?: number | null;
   match_status?: string | null;
   match_minute?: number | null;
+  provider_site_url?: string | null;
 }
 
 // Profile
@@ -221,6 +223,7 @@ export interface Profile {
   bonus_enabled: boolean;
   is_active: boolean;
   chrome_port: number;
+  color: string;
   created_at: string | null;
 }
 
@@ -233,6 +236,7 @@ export interface ProfileCreate {
   min_arb_pct?: number;
   max_stake_pct?: number;
   chrome_port?: number;
+  color?: string;
 }
 
 export interface ProfileUpdate {
@@ -247,6 +251,7 @@ export interface ProfileUpdate {
   preferred_counterparts?: string[];
   bonus_enabled?: boolean;
   chrome_port?: number;
+  color?: string;
 }
 
 // Stake Calculator

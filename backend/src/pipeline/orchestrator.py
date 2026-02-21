@@ -98,22 +98,23 @@ class ExtractionPipeline:
     def _detect_finished_events(self) -> int:
         """Mark events as 'finished' when they were live but Pinnacle no longer reports them.
 
-        After Pinnacle extraction, any event with match_status='live' whose updated_at
-        is older than 3 minutes (one extraction cycle) has been dropped by Pinnacle = match ended.
-        We use updated_at staleness because Pinnacle updates live_state every extraction,
-        so a stale updated_at means the event wasn't in this run's results.
+        Two detection strategies:
+        1. Staleness: match_status='live' and updated_at > 3 min ago = Pinnacle dropped them
+        2. Time-based: start_time + 6 hours ago = event must be over regardless of Pinnacle
+
+        Strategy 2 catches events that went live while the app was closed — on restart,
+        Pinnacle no longer returns them, but updated_at might have been refreshed.
+        Also catches sports where Pinnacle doesn't provide scores (esports, tennis, etc.)
 
         Returns number of events marked as finished.
         """
         from datetime import datetime, timedelta
 
-        # Use naive UTC to match Event.updated_at (which uses datetime.utcnow default)
-        # Mixing timezone-aware and naive datetimes causes SQLite string comparison bugs
         now = datetime.utcnow()
-        # Events that were live but not updated in the last 3 minutes = Pinnacle dropped them
-        stale_threshold = now - timedelta(minutes=3)
 
-        live_events = (
+        # Strategy 1: stale updated_at (not seen in last 3 min = Pinnacle dropped it)
+        stale_threshold = now - timedelta(minutes=3)
+        stale_events = (
             self.session.query(Event)
             .filter(
                 Event.match_status == "live",
@@ -122,12 +123,33 @@ class ExtractionPipeline:
             .all()
         )
 
+        # Strategy 2: time-based — start_time + 6 hours = definitely over
+        # Covers: app was closed during match, esports with no scores, etc.
+        time_cutoff = now - timedelta(hours=6)
+        overtime_events = (
+            self.session.query(Event)
+            .filter(
+                Event.match_status == "live",
+                Event.start_time.isnot(None),
+                Event.start_time < time_cutoff,
+            )
+            .all()
+        )
+
+        # Merge (deduplicate by id)
+        seen = set()
+        all_finished = []
+        for ev in stale_events + overtime_events:
+            if ev.id not in seen:
+                seen.add(ev.id)
+                all_finished.append(ev)
+
         count = 0
-        for ev in live_events:
+        for ev in all_finished:
             ev.match_status = "finished"
             count += 1
             logger.info(
-                f"[FT] {ev.home_team} vs {ev.away_team} → finished "
+                f"[FT] {ev.home_team} vs {ev.away_team} -> finished "
                 f"({ev.home_score}-{ev.away_score})"
             )
 
