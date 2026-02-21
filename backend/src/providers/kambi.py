@@ -498,13 +498,23 @@ class KambiRetriever(Retriever):
                 outcomes.append({
                     "name": normalized_name,
                     "odds": round(odds, 3),
-                    "point": point
+                    "point": point,
+                    "provider_meta": {
+                        "outcome_id": str(outcome.get("id", "")),
+                    },
                 })
             if not outcomes: return None
 
             # Determine market type from betOfferType ID and outcome structure
             if bet_offer_type_id == 6:
-                market_type = "total"
+                # Kambi sometimes uses betOfferType 6 for esports match winner.
+                # Real totals have over/under outcomes; if none found, it's moneyline.
+                has_over_under = any(o["name"] in ("over", "under") for o in outcomes)
+                if has_over_under:
+                    market_type = "total"
+                else:
+                    has_draw = any(o["name"] == "draw" for o in outcomes)
+                    market_type = "1x2" if has_draw else "moneyline"
             elif bet_offer_type_id in (1, 7):
                 # 1 = Handicap (Puck Line, Point Spread), 7 = Asian Handicap
                 market_type = "spread"
@@ -513,7 +523,14 @@ class KambiRetriever(Retriever):
                 has_draw = any(o["name"] == "draw" for o in outcomes)
                 market_type = "1x2" if has_draw else "moneyline"
 
-            return {"type": market_type, "outcomes": outcomes}
+            return {
+                "type": market_type,
+                "outcomes": outcomes,
+                "provider_meta": {
+                    "betoffer_id": str(betoffer.get("id", "")),
+                    "event_id": str(betoffer.get("eventId", "")),
+                },
+            }
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Failed to parse market: {e}")
             return None
