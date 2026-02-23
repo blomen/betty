@@ -386,8 +386,11 @@ export function BetsPage() {
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Snapshot closing odds for any pending bets on started events
-      await api.closeStartedBets().catch(() => {});
+      // Snapshot closing odds + auto-settle finished events before fetching
+      await Promise.all([
+        api.closeStartedBets().catch(() => {}),
+        api.autoSettleBets().catch(() => {}),
+      ]);
 
       const [response, bankroll, liveRes] = await Promise.all([
         api.getBets(undefined, 500),
@@ -434,17 +437,13 @@ export function BetsPage() {
     return map;
   }, [liveEvents]);
 
-  // ── Pending bets split: Active (started/live) + Upcoming ──────
+  // ── Pending bets split: Active (confirmed live/finished by Pinnacle) + Upcoming ──
   const pendingBets = useMemo(() => bets.filter(b => b.result === 'pending'), [bets]);
 
   const activePendingBets = useMemo(() => {
-    const now = Date.now();
+    // ONLY events confirmed live or finished by Pinnacle — NOT start_time fallback
     return pendingBets
-      .filter(b => {
-        if (b.event_id && liveEventMap.has(b.event_id)) return true;
-        if (b.start_time && new Date(b.start_time).getTime() <= now) return true;
-        return false;
-      })
+      .filter(b => b.event_id && liveEventMap.has(b.event_id))
       .sort((a, b) => {
         const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
         const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
@@ -453,13 +452,9 @@ export function BetsPage() {
   }, [pendingBets, liveEventMap]);
 
   const upcomingBets = useMemo(() => {
-    const now = Date.now();
+    // Everything NOT confirmed live/finished — including past-start events
     return pendingBets
-      .filter(b => {
-        if (b.event_id && liveEventMap.has(b.event_id)) return false;
-        if (b.start_time && new Date(b.start_time).getTime() <= now) return false;
-        return true;
-      })
+      .filter(b => !(b.event_id && liveEventMap.has(b.event_id)))
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -679,9 +674,6 @@ export function BetsPage() {
                   const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
                   const hasScore = ev && ev.home_score != null && ev.away_score != null;
                   const isFinished = ev?.match_status === 'finished' || bet.match_status === 'finished';
-                  const isConfirmedLive = ev?.match_status === 'live';
-                  // "Started" = past start_time but NOT confirmed live by Pinnacle
-                  const isStartedOnly = !ev && bet.start_time && new Date(bet.start_time).getTime() <= Date.now();
                   // Derive current map from stats period data (esports)
                   const currentMap = ev?.stats && !hasScore && !isFinished
                     ? Math.max(
@@ -691,15 +683,11 @@ export function BetsPage() {
                         })
                       )
                     : 0;
-                  // Time since start (for started-only events)
-                  const startedAgo = isStartedOnly && bet.start_time
-                    ? Math.round((Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60))
-                    : 0;
                   return (
-                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : isStartedOnly ? 'bg-muted/[0.02]' : 'bg-warning/[0.03]'}>
+                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : 'bg-warning/[0.03]'}>
                       <td className="whitespace-nowrap">
                         <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
-                          isFinished ? 'bg-muted/15 text-muted' : isStartedOnly ? 'bg-muted2/15 text-muted2' : 'bg-warning/15 text-warning'
+                          isFinished ? 'bg-muted/15 text-muted' : 'bg-warning/15 text-warning'
                         }`}>
                           {hasScore ? (
                             isFinished
@@ -709,16 +697,12 @@ export function BetsPage() {
                             bet.home_score != null && bet.away_score != null
                               ? <>{bet.home_score}-{bet.away_score} <span className="text-muted2">FT</span></>
                               : 'FT'
-                          ) : isStartedOnly ? (
-                            startedAgo > 0
-                              ? <>STARTED <span className="text-muted2">{startedAgo}m ago</span></>
-                              : 'STARTED'
                           ) : (
                             currentMap > 0
                               ? <>LIVE <span className="text-muted2">Map {currentMap}</span></>
                               : ev?.match_minute != null
                                 ? <>LIVE <span className="text-muted2">{ev.match_minute}'</span></>
-                                : isConfirmedLive ? 'LIVE' : 'STARTED'
+                                : 'LIVE'
                           )}
                         </span>
                       </td>
@@ -803,9 +787,13 @@ export function BetsPage() {
               <tbody>
                 {upcomingBets.map(bet => {
                   const ttk = getLiveTTK(bet);
+                  const isPastStart = bet.start_time && new Date(bet.start_time).getTime() <= Date.now();
                   return (
-                    <tr key={bet.id}>
+                    <tr key={bet.id} className={isPastStart ? 'bg-error/[0.03]' : ''}>
                       <td className="whitespace-nowrap">
+                        {isPastStart ? (
+                          <span className="text-[10px] font-medium text-error">0m</span>
+                        ) : (
                         <span className={`text-[10px] font-medium ${
                           ttk !== null && ttk <= 1 ? 'text-warning' :
                           ttk !== null && ttk <= 6 ? 'text-success' :
@@ -814,6 +802,7 @@ export function BetsPage() {
                         }`}>
                           {ttk !== null ? formatTTK(ttk) : '-'}
                         </span>
+                        )}
                       </td>
                       <td className="text-sm">
                         <span className="text-text font-medium">{bet.home_team || '?'}</span>
