@@ -5,8 +5,10 @@ REST API for the React frontend.
 Connects to SQLite database and analysis modules.
 """
 
+import logging
 import time
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -14,9 +16,10 @@ from dotenv import load_dotenv
 from ..paths import get_env_path
 load_dotenv(get_env_path())
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from starlette.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..db.models import init_db
@@ -35,42 +38,113 @@ from .routes import (
     polymarket_router,
     risk_router,
     specials_router,
+    placement_router,
+    trading_router,
 )
 
-app = FastAPI(
-    title="BankrollBBQ API",
-    description="Polymarket arbitrage & value betting backend",
-    version="0.1.0",
-)
-
-# Allow CORS for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "tauri://localhost"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+logger = logging.getLogger(__name__)
 
 # Track startup time for uptime calculation
 _startup_time: float = 0.0
 
 
-# Initialize database on startup and auto-start extraction
-@app.on_event("startup")
-async def startup():
+def _startup_purge():
+    """Clear all extracted data on startup. Preserves user data (bets, profiles, balances).
+
+    Events linked to bets are kept (needed for history). All other events, odds,
+    opportunities, specials, and live status flags are wiped so re-extraction
+    starts fresh.
+    """
+    from ..db.models import Event, Odds, Opportunity, Bet, get_session
+
+    session = get_session()
+    try:
+        # Find events that have bets — these must be preserved
+        event_ids_with_bets = set(
+            row[0] for row in session.query(Bet.event_id).filter(
+                Bet.event_id.isnot(None)
+            ).distinct().all()
+            if row[0]
+        )
+
+        # Get ALL event IDs
+        all_event_ids = [
+            row[0] for row in session.query(Event.id).all()
+        ]
+        deletable_ids = [eid for eid in all_event_ids if eid not in event_ids_with_bets]
+
+        # 1. Delete all opportunities
+        opps_deleted = session.query(Opportunity).delete()
+
+        # 2. Delete all specials
+        from ..db.models import SpecialOdds
+        specials_deleted = session.query(SpecialOdds).delete()
+
+        # 3. Delete odds + events that have no bets (batched)
+        odds_deleted = 0
+        events_deleted = 0
+        for i in range(0, len(deletable_ids), 500):
+            batch = deletable_ids[i:i + 500]
+            odds_deleted += session.query(Odds).filter(
+                Odds.event_id.in_(batch)
+            ).delete(synchronize_session=False)
+            events_deleted += session.query(Event).filter(
+                Event.id.in_(batch)
+            ).delete(synchronize_session=False)
+
+        # 4. For bet-linked events: clear live status (stale from last session)
+        #    but keep the event row + odds for history/CLV
+        if event_ids_with_bets:
+            session.query(Event).filter(
+                Event.id.in_(list(event_ids_with_bets))
+            ).update({
+                Event.match_status: None,
+                Event.match_minute: None,
+                Event.match_period: None,
+                Event.stats_json: None,
+            }, synchronize_session=False)
+
+        # 5. Delete odds for bet-linked events from non-sharp providers
+        #    (keep Pinnacle odds for CLV reference)
+        if event_ids_with_bets:
+            from ..constants import SHARP_PROVIDERS
+            session.query(Odds).filter(
+                Odds.event_id.in_(list(event_ids_with_bets)),
+                ~Odds.provider_id.in_(SHARP_PROVIDERS),
+            ).delete(synchronize_session=False)
+
+        session.commit()
+        logger.info(
+            f"[Startup] Purged extracted data: "
+            f"{events_deleted} events, {odds_deleted} odds, "
+            f"{opps_deleted} opportunities, {specials_deleted} specials "
+            f"({len(event_ids_with_bets)} bet-linked events preserved)"
+        )
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[Startup] Purge failed: {e}", exc_info=True)
+    finally:
+        session.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown logic."""
     global _startup_time
     _startup_time = time.time()
     init_db()
 
+    # Purge stale extracted data — fresh re-extraction on every startup
+    _startup_purge()
+
     # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
-    import logging
     import logging.handlers
     from ..paths import get_logs_dir
     extraction_handler = logging.handlers.RotatingFileHandler(
         get_logs_dir() / "extraction.log",
         maxBytes=10*1024*1024,  # 10MB
         backupCount=5,
+        encoding="utf-8",
     )
     extraction_handler.setLevel(logging.DEBUG)
     extraction_handler.setFormatter(logging.Formatter(
@@ -84,12 +158,49 @@ async def startup():
     scheduler = get_scheduler()
     await scheduler.start_continuous(interval_seconds=300)
 
+    yield  # App is running
+
+    # Graceful shutdown: stop all scheduler tiers
+    logger.info("Shutting down: stopping scheduler tiers...")
+    scheduler.stop_all()
+    logger.info("Scheduler stopped.")
+
+
+app = FastAPI(
+    title="BankrollBBQ API",
+    description="Polymarket arbitrage & value betting backend",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# GZip compression for responses > 1KB
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Allow CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "tauri://localhost"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch unhandled exceptions and return a safe JSON response."""
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error"},
+    )
+
 
 # Health check endpoints
 @app.get("/health")
 async def health():
     """Basic health check endpoint."""
-    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/health/live")
@@ -172,6 +283,8 @@ app.include_router(chat_router)
 app.include_router(polymarket_router)
 app.include_router(risk_router)
 app.include_router(specials_router)
+app.include_router(placement_router)
+app.include_router(trading_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)
