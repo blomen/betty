@@ -755,6 +755,17 @@ export const api = {
     });
   },
 
+  async editBet(
+    betId: number,
+    data: { stake?: number; odds?: number; result?: string }
+  ): Promise<{ success: boolean; stake: number; odds: number; result: string; payout: number; profit: number; balance_adjustment: number }> {
+    return fetchJson(`/bets/${betId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
   // ============ Stake Calculator ============
   async calculateStake(odds: number, fairOdds: number): Promise<StakeCalculation> {
     return fetchJson('/calculate/stake', {
@@ -1170,5 +1181,171 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
+  },
+
+  async navigateToProvider(providerId: string): Promise<{ navigated: boolean; url: string | null; method: string; provider_id?: string; error?: string }> {
+    return fetchJson('/placement/navigate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+  },
+
+  // ============ Trading ============
+
+  async getTradingConfig(): Promise<import('@/types/trading').TradingConfig> {
+    return fetchJson('/trading/config');
+  },
+
+  async getRoutineConfig(): Promise<{ macro_items: string[]; session_items: string[]; psych_threshold: number }> {
+    return fetchJson('/trading/routine/config');
+  },
+
+  async getTradingAccounts(): Promise<{ accounts: import('@/types/trading').TradingAccount[] }> {
+    return fetchJson('/trading/accounts');
+  },
+
+  async updateTradingAccount(id: number, data: Record<string, unknown>): Promise<{ success: boolean; account: import('@/types/trading').TradingAccount }> {
+    return fetchJson(`/trading/accounts/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async adjustTradingBalance(id: number, amount: number): Promise<{ success: boolean; balance: number }> {
+    return fetchJson(`/trading/accounts/${id}/adjust`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount }),
+    });
+  },
+
+  async resetTradingDaily(id: number): Promise<{ success: boolean }> {
+    return fetchJson(`/trading/accounts/${id}/reset-daily`, { method: 'POST' });
+  },
+
+  async resetTradingWeekly(id: number): Promise<{ success: boolean }> {
+    return fetchJson(`/trading/accounts/${id}/reset-weekly`, { method: 'POST' });
+  },
+
+  async getTodayRoutine(): Promise<import('@/types/trading').DailyRoutine> {
+    return fetchJson('/trading/routine/today');
+  },
+
+  async getRoutine(date: string): Promise<import('@/types/trading').DailyRoutine> {
+    return fetchJson(`/trading/routine/${date}`);
+  },
+
+  async updateRoutine(date: string, data: Record<string, unknown>): Promise<{ success: boolean; routine: import('@/types/trading').DailyRoutine }> {
+    return fetchJson(`/trading/routine/${date}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async createTrade(data: Record<string, unknown>): Promise<import('@/types/trading').TradeValidation & { success?: boolean; trade_id?: number; error?: string; dry_run?: boolean }> {
+    return fetchJson('/trading/trades', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async getTrades(filters?: {
+    account_id?: number;
+    instrument?: string;
+    setup_type?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<{ trades: import('@/types/trading').Trade[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filters?.account_id) params.set('account_id', filters.account_id.toString());
+    if (filters?.instrument) params.set('instrument', filters.instrument);
+    if (filters?.setup_type) params.set('setup_type', filters.setup_type);
+    if (filters?.state) params.set('state', filters.state);
+    if (filters?.limit) params.set('limit', filters.limit.toString());
+    return fetchJson(`/trading/trades?${params}`);
+  },
+
+  async getTrade(id: number): Promise<import('@/types/trading').Trade> {
+    return fetchJson(`/trading/trades/${id}`);
+  },
+
+  async transitionTrade(id: number, toState: string, notes?: string): Promise<{ success: boolean; state: string }> {
+    return fetchJson(`/trading/trades/${id}/transition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_state: toState, notes }),
+    });
+  },
+
+  async partialExitTrade(id: number, contracts: number, exitPrice: number, notes?: string): Promise<{ success: boolean; remaining_contracts: number; partial_pnl: number }> {
+    return fetchJson(`/trading/trades/${id}/partial-exit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contracts, exit_price: exitPrice, notes }),
+    });
+  },
+
+  async moveToBE(id: number): Promise<{ success: boolean; stop_price: number }> {
+    return fetchJson(`/trading/trades/${id}/move-to-be`, { method: 'POST' });
+  },
+
+  async trailStop(id: number, newStop: number, notes?: string): Promise<{ success: boolean; stop_price: number }> {
+    return fetchJson(`/trading/trades/${id}/trail-stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_stop: newStop, notes }),
+    });
+  },
+
+  async addPosition(id: number, contracts: number, entryPrice: number, notes?: string): Promise<{ success: boolean; contracts: number; avg_entry: number }> {
+    return fetchJson(`/trading/trades/${id}/add-position`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contracts, entry_price: entryPrice, notes }),
+    });
+  },
+
+  async closeTrade(id: number, exitPrice: number, commission = 0, notes?: string): Promise<{ success: boolean; realized_pnl: number; r_multiple: number | null }> {
+    return fetchJson(`/trading/trades/${id}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exit_price: exitPrice, commission, notes }),
+    });
+  },
+
+  async submitTradeReview(id: number, data: Record<string, unknown>): Promise<{ success: boolean }> {
+    return fetchJson(`/trading/trades/${id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async getUnreviewedTrades(): Promise<{ trades: import('@/types/trading').Trade[]; count: number }> {
+    return fetchJson('/trading/trades/unreviewed');
+  },
+
+  async getTradingAnalytics(filters?: {
+    account_id?: number;
+    instrument?: string;
+    setup_type?: string;
+  }): Promise<import('@/types/trading').TradingAnalytics> {
+    const params = new URLSearchParams();
+    if (filters?.account_id) params.set('account_id', filters.account_id.toString());
+    if (filters?.instrument) params.set('instrument', filters.instrument);
+    if (filters?.setup_type) params.set('setup_type', filters.setup_type);
+    return fetchJson(`/trading/analytics?${params}`);
+  },
+
+  getTradingExportUrl(filters?: { state?: string; account_id?: number; instrument?: string }): string {
+    const params = new URLSearchParams();
+    if (filters?.state) params.set('state', filters.state);
+    if (filters?.account_id) params.set('account_id', filters.account_id.toString());
+    if (filters?.instrument) params.set('instrument', filters.instrument);
+    return `${API_BASE}/trading/export/csv?${params}`;
   },
 };

@@ -256,3 +256,72 @@ class BetService:
             logger.info(f"[BetService] Snapshot closing odds: {updated}/{processed} bets updated")
 
         return {"processed": processed, "updated": updated}
+
+    def edit_bet(
+        self,
+        bet_id: int,
+        stake: float | None = None,
+        odds: float | None = None,
+        result: str | None = None,
+    ) -> dict:
+        """Edit a settled bet to correct stake/odds/result.
+
+        Recalculates payout and adjusts provider balance accordingly.
+        Used when auto-stake was wrong and user needs to correct it post-settlement.
+        """
+        bet = self.bet_repo.get_by_id(bet_id)
+        if not bet:
+            return {"error": f"Bet {bet_id} not found"}
+
+        old_stake = bet.stake
+        old_payout = bet.payout
+        old_result = bet.result
+
+        # Apply changes
+        if stake is not None:
+            bet.stake = stake
+        if odds is not None:
+            bet.odds = odds
+        if result is not None:
+            bet.result = result
+
+        # Recalculate payout based on (possibly new) result and stake/odds
+        if bet.result == "won":
+            bet.payout = bet.stake * bet.odds
+        elif bet.result == "void":
+            bet.payout = bet.stake
+        elif bet.result == "lost":
+            bet.payout = 0.0
+
+        # Adjust balance: reverse old payout+stake, apply new payout+stake
+        if bet.profile_id:
+            # Balance delta = (new_payout - old_payout) + (old_stake - new_stake)
+            # old flow: -old_stake at placement, +old_payout at settlement
+            # new flow: -new_stake at placement, +new_payout at settlement
+            # net correction = (new_payout - old_payout) - (new_stake - old_stake)
+            balance_delta = (bet.payout - old_payout) - (bet.stake - old_stake)
+            if balance_delta != 0:
+                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta)
+
+        # Recalculate CLV if closing odds exist
+        if bet.closing_odds and bet.closing_odds > 1.0:
+            bet.clv_pct = round((bet.odds / bet.closing_odds - 1) * 100, 2)
+
+        self.db.commit()
+
+        logger.info(
+            f"[BetService] Edited bet #{bet_id}: "
+            f"stake {old_stake}->{bet.stake}, result {old_result}->{bet.result}, "
+            f"payout {old_payout}->{bet.payout}"
+        )
+
+        return {
+            "success": True,
+            "bet_id": bet_id,
+            "stake": bet.stake,
+            "odds": bet.odds,
+            "result": bet.result,
+            "payout": bet.payout,
+            "profit": bet.profit,
+            "balance_adjustment": (bet.payout - old_payout) - (bet.stake - old_stake),
+        }

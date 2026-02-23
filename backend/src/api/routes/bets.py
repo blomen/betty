@@ -12,7 +12,7 @@ from ...analysis.devig import get_fair_odds_for_outcome
 from ...risk.calculator import RiskCalculator
 from ...risk.stake_noise import StakeNoiseInjector
 from ..deps import get_db
-from ..schemas import BetCreate, BetUpdate, AutoPlaceBetRequest, BatchBetCreate
+from ..schemas import BetCreate, BetUpdate, BetEdit, AutoPlaceBetRequest, BatchBetCreate
 from .providers import load_provider_site_urls
 
 logger = logging.getLogger(__name__)
@@ -245,6 +245,22 @@ async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(
 async def settle_bet(bet_id: int, data: BetUpdate, service: BetService = Depends(_get_service)):
     """Settle a bet with result."""
     result = service.settle_bet(bet_id, data.result, data.payout)
+
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+
+    return result
+
+
+@router.patch("/{bet_id}")
+async def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_get_service)):
+    """Edit a bet's stake, odds, or result. Recalculates payout and adjusts balance."""
+    result = service.edit_bet(
+        bet_id,
+        stake=data.stake,
+        odds=data.odds,
+        result=data.result,
+    )
 
     if "error" in result:
         raise HTTPException(404, result["error"])

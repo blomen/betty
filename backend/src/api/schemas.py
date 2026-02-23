@@ -107,6 +107,13 @@ class BetUpdate(BaseModel):
     payout: float = 0.0
 
 
+class BetEdit(BaseModel):
+    """Edit a bet's stake, odds, or result (for correcting auto-stake errors)."""
+    stake: Optional[float] = None
+    odds: Optional[float] = None
+    result: Optional[str] = None  # "won", "lost", "void", "pending"
+
+
 class AutoPlaceBetRequest(BaseModel):
     """Auto-place a bet with full pipeline: edge → Kelly stake → risk → noise → record."""
     event_id: str
@@ -134,6 +141,7 @@ class ProfileCreate(BaseModel):
     bonus_enabled: Optional[bool] = True
     bonus_deposit: Optional[float] = 0.0
     chrome_port: Optional[int] = None  # CDP port (auto-assigned if None)
+    color: Optional[str] = None  # Hex color for Chrome border (auto-assigned if None)
 
 
 class ProfileUpdate(BaseModel):
@@ -149,6 +157,7 @@ class ProfileUpdate(BaseModel):
     bonus_enabled: Optional[bool] = None
     bonus_deposit: Optional[float] = None
     chrome_port: Optional[int] = None
+    color: Optional[str] = None
 
 
 # ============ Opportunity Schemas ============
@@ -403,3 +412,84 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
     code: Optional[str] = None
+
+
+# ============ Trading Schemas ============
+
+class TradingAccountUpdate(BaseModel):
+    name: Optional[str] = None
+    risk_per_trade_pct: Optional[float] = None
+    max_daily_loss_pct: Optional[float] = None
+    max_weekly_loss_pct: Optional[float] = None
+    max_trades_per_day: Optional[int] = None
+    stop_after_consecutive_losses: Optional[int] = None
+
+
+class TradingBalanceAdjust(BaseModel):
+    amount: float  # Positive = deposit, negative = withdraw
+
+
+class RoutineUpdate(BaseModel):
+    macro_notes: Optional[dict] = None
+    overnight_high: Optional[float] = None
+    overnight_low: Optional[float] = None
+    key_levels: Optional[list] = None
+    prev_value_area: Optional[dict] = None
+    bias_text: Optional[str] = None
+    bias_direction: Optional[str] = None
+    bias_confidence: Optional[int] = None
+    sleep_score: Optional[int] = None
+    focus_score: Optional[int] = None
+    emotional_score: Optional[int] = None
+    psych_override: Optional[str] = None
+    checklist_completion: Optional[dict] = None
+    is_complete: Optional[bool] = None
+
+
+class TradeCreate(BaseModel):
+    account_id: int
+    instrument: str
+    direction: str  # "long" or "short"
+    setup_type: str
+    entry_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    targets: Optional[list] = None
+    contracts: int = 1
+    confirmations: Optional[dict] = None
+    notes: Optional[str] = None
+    dry_run: bool = False  # Validate only, don't persist
+
+
+class TradeTransition(BaseModel):
+    to_state: str
+    notes: Optional[str] = None
+
+
+class PartialExitRequest(BaseModel):
+    contracts: int
+    exit_price: float
+    notes: Optional[str] = None
+
+
+class CloseTradeRequest(BaseModel):
+    exit_price: float
+    commission: float = 0.0
+    notes: Optional[str] = None
+
+
+class TrailStopRequest(BaseModel):
+    new_stop: float
+    notes: Optional[str] = None
+
+
+class AddPositionRequest(BaseModel):
+    contracts: int
+    entry_price: float
+    notes: Optional[str] = None
+
+
+class TradeReviewCreate(BaseModel):
+    thesis_recap: Optional[str] = None
+    followed_rules: Optional[bool] = None
+    what_to_improve: Optional[str] = None
+    grade: Optional[int] = None

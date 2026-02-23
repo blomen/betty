@@ -377,6 +377,12 @@ export function BetsPage() {
 
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
+  // Inline editing state for history bets
+  const [editingBetId, setEditingBetId] = useState<number | null>(null);
+  const [editStake, setEditStake] = useState<string>('');
+  const [editOdds, setEditOdds] = useState<string>('');
+  const [editResult, setEditResult] = useState<string>('');
+
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -542,6 +548,46 @@ export function BetsPage() {
     }
   };
 
+  const startEditing = (bet: Bet) => {
+    setEditingBetId(bet.id);
+    setEditStake(bet.stake.toFixed(0));
+    setEditOdds(bet.odds.toFixed(2));
+    setEditResult(bet.result);
+  };
+
+  const cancelEditing = () => {
+    setEditingBetId(null);
+    setEditStake('');
+    setEditOdds('');
+    setEditResult('');
+  };
+
+  const saveEdit = async (betId: number) => {
+    const original = bets.find(b => b.id === betId);
+    if (!original) return;
+
+    const changes: { stake?: number; odds?: number; result?: string } = {};
+    const newStake = parseFloat(editStake);
+    const newOdds = parseFloat(editOdds);
+    if (!isNaN(newStake) && newStake !== original.stake) changes.stake = newStake;
+    if (!isNaN(newOdds) && newOdds !== original.odds) changes.odds = newOdds;
+    if (editResult && editResult !== original.result) changes.result = editResult;
+
+    if (Object.keys(changes).length === 0) {
+      cancelEditing();
+      return;
+    }
+
+    try {
+      await api.editBet(betId, changes);
+      cancelEditing();
+      fetchBets();
+      fetchStats();
+    } catch (err) {
+      console.error('Edit bet failed:', err);
+    }
+  };
+
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -633,6 +679,9 @@ export function BetsPage() {
                   const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
                   const hasScore = ev && ev.home_score != null && ev.away_score != null;
                   const isFinished = ev?.match_status === 'finished' || bet.match_status === 'finished';
+                  const isConfirmedLive = ev?.match_status === 'live';
+                  // "Started" = past start_time but NOT confirmed live by Pinnacle
+                  const isStartedOnly = !ev && bet.start_time && new Date(bet.start_time).getTime() <= Date.now();
                   // Derive current map from stats period data (esports)
                   const currentMap = ev?.stats && !hasScore && !isFinished
                     ? Math.max(
@@ -642,11 +691,15 @@ export function BetsPage() {
                         })
                       )
                     : 0;
+                  // Time since start (for started-only events)
+                  const startedAgo = isStartedOnly && bet.start_time
+                    ? Math.round((Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60))
+                    : 0;
                   return (
-                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : 'bg-warning/[0.03]'}>
+                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : isStartedOnly ? 'bg-muted/[0.02]' : 'bg-warning/[0.03]'}>
                       <td className="whitespace-nowrap">
                         <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
-                          isFinished ? 'bg-muted/15 text-muted' : 'bg-warning/15 text-warning'
+                          isFinished ? 'bg-muted/15 text-muted' : isStartedOnly ? 'bg-muted2/15 text-muted2' : 'bg-warning/15 text-warning'
                         }`}>
                           {hasScore ? (
                             isFinished
@@ -656,12 +709,16 @@ export function BetsPage() {
                             bet.home_score != null && bet.away_score != null
                               ? <>{bet.home_score}-{bet.away_score} <span className="text-muted2">FT</span></>
                               : 'FT'
+                          ) : isStartedOnly ? (
+                            startedAgo > 0
+                              ? <>STARTED <span className="text-muted2">{startedAgo}m ago</span></>
+                              : 'STARTED'
                           ) : (
                             currentMap > 0
                               ? <>LIVE <span className="text-muted2">Map {currentMap}</span></>
                               : ev?.match_minute != null
                                 ? <>LIVE <span className="text-muted2">{ev.match_minute}'</span></>
-                                : 'LIVE'
+                                : isConfirmedLive ? 'LIVE' : 'STARTED'
                           )}
                         </span>
                       </td>
@@ -927,6 +984,7 @@ export function BetsPage() {
             <tbody>
               {historyBets.map((bet) => {
                 const isExpanded = expandedIdx === bet.id;
+                const isEditing = editingBetId === bet.id;
                 const ttk = getTTK(bet);
                 const tier = getTTKTier(ttk);
                 return (
@@ -934,7 +992,7 @@ export function BetsPage() {
                     <tr
                       key={bet.id}
                       className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
-                      onClick={() => setExpandedIdx(isExpanded ? null : bet.id)}
+                      onClick={() => { if (!isEditing) setExpandedIdx(isExpanded ? null : bet.id); }}
                     >
                       <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
                       <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
@@ -986,22 +1044,76 @@ export function BetsPage() {
                       return (
                       <tr key={`${bet.id}-expanded`}>
                         <td colSpan={11} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <div className="px-3 py-2 bg-panel flex items-center gap-6 text-xs text-muted">
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                              <span className="text-text">{bet.market || '-'}</span>
-                            </div>
-                            {ttk !== null && (
+                          <div className="px-3 py-2 bg-panel space-y-2">
+                            <div className="flex items-center gap-6 text-xs text-muted">
                               <div>
-                                <span className="text-muted2 uppercase tracking-wider">CLV Conf: </span>
-                                <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
+                                <span className="text-muted2 uppercase tracking-wider">Market: </span>
+                                <span className="text-text">{bet.market || '-'}</span>
                               </div>
-                            )}
-                            {bet.closing_odds != null && (
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Close: </span>
-                                <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
-                                <span className="text-muted2 ml-1">({bet.odds.toFixed(2)} placed)</span>
+                              {ttk !== null && (
+                                <div>
+                                  <span className="text-muted2 uppercase tracking-wider">CLV Conf: </span>
+                                  <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
+                                </div>
+                              )}
+                              {bet.closing_odds != null && (
+                                <div>
+                                  <span className="text-muted2 uppercase tracking-wider">Close: </span>
+                                  <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
+                                  <span className="text-muted2 ml-1">({bet.odds.toFixed(2)} placed)</span>
+                                </div>
+                              )}
+                              {!isEditing && (
+                                <button
+                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
+                                  onClick={() => startEditing(bet)}
+                                >Edit</button>
+                              )}
+                            </div>
+                            {isEditing && (
+                              <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Stake:</span>
+                                  <input
+                                    type="number"
+                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editStake}
+                                    onChange={e => setEditStake(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(bet.id); if (e.key === 'Escape') cancelEditing(); }}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Odds:</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editOdds}
+                                    onChange={e => setEditOdds(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(bet.id); if (e.key === 'Escape') cancelEditing(); }}
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Result:</span>
+                                  <select
+                                    className="px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editResult}
+                                    onChange={e => setEditResult(e.target.value)}
+                                  >
+                                    <option value="won">won</option>
+                                    <option value="lost">lost</option>
+                                    <option value="void">void</option>
+                                  </select>
+                                </div>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                                  onClick={() => saveEdit(bet.id)}
+                                >Save</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                                  onClick={cancelEditing}
+                                >Cancel</button>
                               </div>
                             )}
                           </div>
