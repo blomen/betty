@@ -437,11 +437,13 @@ export function BetsPage() {
     return map;
   }, [liveEvents]);
 
-  // ── Pending bets split: Active (confirmed live/finished by Pinnacle) + Upcoming ──
+  // ── Pending bets: 3-way split ──────────────────────────────────────
+  // Active  = Pinnacle confirmed live/finished (has score data)
+  // Settle  = past start_time, NOT confirmed live → needs manual W/L/V
+  // Upcoming = future start_time, genuine pre-match bets
   const pendingBets = useMemo(() => bets.filter(b => b.result === 'pending'), [bets]);
 
   const activePendingBets = useMemo(() => {
-    // ONLY events confirmed live or finished by Pinnacle — NOT start_time fallback
     return pendingBets
       .filter(b => b.event_id && liveEventMap.has(b.event_id))
       .sort((a, b) => {
@@ -451,10 +453,27 @@ export function BetsPage() {
       });
   }, [pendingBets, liveEventMap]);
 
-  const upcomingBets = useMemo(() => {
-    // Everything NOT confirmed live/finished — including past-start events
+  const needsSettleBets = useMemo(() => {
+    const now = Date.now();
     return pendingBets
-      .filter(b => !(b.event_id && liveEventMap.has(b.event_id)))
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        return b.start_time && new Date(b.start_time).getTime() <= now;
+      })
+      .sort((a, b) => {
+        const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
+        const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
+        return ta - tb; // oldest first
+      });
+  }, [pendingBets, liveEventMap]);
+
+  const upcomingBets = useMemo(() => {
+    const now = Date.now();
+    return pendingBets
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        return !b.start_time || new Date(b.start_time).getTime() > now;
+      })
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -765,7 +784,87 @@ export function BetsPage() {
         </>
       )}
 
-      {/* ── Upcoming Bets (sorted by TTK closest first) ─────── */}
+      {/* ── Needs Settlement (past start, no live data) ─────── */}
+      {needsSettleBets.length > 0 && (
+        <>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold flex items-center gap-2">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-error" />
+            Settle <span className="text-error">{needsSettleBets.length}</span>
+          </h3>
+          <div className="border-l-2 border-error">
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>Ago</th>
+                  <th>Event</th>
+                  <th>Pick</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needsSettleBets.map(bet => {
+                  const hoursAgo = bet.start_time
+                    ? Math.max(0, (Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60 * 60))
+                    : null;
+                  const agoStr = hoursAgo !== null
+                    ? hoursAgo < 1 ? `${Math.round(hoursAgo * 60)}m`
+                    : hoursAgo < 24 ? `${hoursAgo.toFixed(0)}h`
+                    : `${(hoursAgo / 24).toFixed(0)}d`
+                    : '?';
+                  return (
+                    <tr key={bet.id} className="bg-error/[0.03]">
+                      <td className="whitespace-nowrap">
+                        <span className="text-[10px] font-medium text-error">{agoStr}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                        <span className="text-muted mx-1">v</span>
+                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text">{resolveOutcome(bet)}</span>
+                        {bet.provider_site_url ? (
+                          <a
+                            href={bet.provider_site_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent text-[10px] ml-1 hover:underline"
+                            title="Check result on provider"
+                          >{formatProviderName(bet.provider)} ↗</a>
+                        ) : (
+                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        )}
+                      </td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        <span className="inline-flex gap-1">
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                            onClick={() => handleManualSettle(bet, 'won')}
+                          >W</button>
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
+                            onClick={() => handleManualSettle(bet, 'lost')}
+                          >L</button>
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                            onClick={() => handleManualSettle(bet, 'void')}
+                          >V</button>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* ── Upcoming Bets (future events, sorted by TTK) ─────── */}
       {upcomingBets.length > 0 && (
         <>
           <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
@@ -787,13 +886,9 @@ export function BetsPage() {
               <tbody>
                 {upcomingBets.map(bet => {
                   const ttk = getLiveTTK(bet);
-                  const isPastStart = bet.start_time && new Date(bet.start_time).getTime() <= Date.now();
                   return (
-                    <tr key={bet.id} className={isPastStart ? 'bg-error/[0.03]' : ''}>
+                    <tr key={bet.id}>
                       <td className="whitespace-nowrap">
-                        {isPastStart ? (
-                          <span className="text-[10px] font-medium text-error">0m</span>
-                        ) : (
                         <span className={`text-[10px] font-medium ${
                           ttk !== null && ttk <= 1 ? 'text-warning' :
                           ttk !== null && ttk <= 6 ? 'text-success' :
@@ -802,7 +897,6 @@ export function BetsPage() {
                         }`}>
                           {ttk !== null ? formatTTK(ttk) : '-'}
                         </span>
-                        )}
                       </td>
                       <td className="text-sm">
                         <span className="text-text font-medium">{bet.home_team || '?'}</span>

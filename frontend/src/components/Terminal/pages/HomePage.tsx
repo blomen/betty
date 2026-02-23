@@ -125,7 +125,7 @@ export function HomePage({ onTabChange }: HomePageProps) {
     return map;
   }, [liveEvents]);
 
-  // Split pending bets: Active = ONLY Pinnacle-confirmed live/finished
+  // 3-way split: Active (Pinnacle live) | Settle (past start) | Upcoming (future)
   const activeBets = useMemo(() => {
     return bets
       .filter(b => b.event_id && liveEventMap.has(b.event_id))
@@ -136,9 +136,27 @@ export function HomePage({ onTabChange }: HomePageProps) {
       });
   }, [bets, liveEventMap]);
 
-  const upcomingBets = useMemo(() => {
+  const needsSettleBets = useMemo(() => {
+    const now = Date.now();
     return bets
-      .filter(b => !(b.event_id && liveEventMap.has(b.event_id)))
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        return b.start_time && new Date(b.start_time).getTime() <= now;
+      })
+      .sort((a, b) => {
+        const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
+        const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
+        return ta - tb;
+      });
+  }, [bets, liveEventMap]);
+
+  const upcomingBets = useMemo(() => {
+    const now = Date.now();
+    return bets
+      .filter(b => {
+        if (b.event_id && liveEventMap.has(b.event_id)) return false;
+        return !b.start_time || new Date(b.start_time).getTime() > now;
+      })
       .sort((a, b) => {
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -349,6 +367,98 @@ export function HomePage({ onTabChange }: HomePageProps) {
                         ) : (
                           <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
                         )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Needs Settlement (past start, no live data) ─────── */}
+      {needsSettleBets.length > 0 && (
+        <div>
+          <SectionHeader
+            icon="bets"
+            color="#ef4444"
+            title="Settle"
+            count={needsSettleBets.length}
+            action={{ label: 'History', onClick: () => onTabChange('stats') }}
+          />
+          <div className="mt-2 border-l-2 border-error">
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>Ago</th>
+                  <th>Event</th>
+                  <th>Pick</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needsSettleBets.map(bet => {
+                  const hoursAgo = bet.start_time
+                    ? Math.max(0, (Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60 * 60))
+                    : null;
+                  const agoStr = hoursAgo !== null
+                    ? hoursAgo < 1 ? `${Math.round(hoursAgo * 60)}m`
+                    : hoursAgo < 24 ? `${hoursAgo.toFixed(0)}h`
+                    : `${(hoursAgo / 24).toFixed(0)}d`
+                    : '?';
+                  return (
+                    <tr key={bet.id} className="bg-error/[0.03]">
+                      <td className="whitespace-nowrap">
+                        <span className="text-[10px] font-medium text-error">{agoStr}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                        <span className="text-muted mx-1">v</span>
+                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                      </td>
+                      <td className="text-sm">
+                        <span className="text-text">{resolveOutcome(bet)}</span>
+                        {bet.provider_site_url ? (
+                          <a
+                            href={bet.provider_site_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent text-[10px] ml-1 hover:underline"
+                            title="Check result on provider"
+                          >{formatProviderName(bet.provider)} ↗</a>
+                        ) : (
+                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        )}
+                      </td>
+                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        <span className="inline-flex gap-1">
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                            onClick={async () => {
+                              await api.settleBet(bet.id, { result: 'won', payout: bet.stake * bet.odds });
+                              fetchAll();
+                            }}
+                          >W</button>
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
+                            onClick={async () => {
+                              await api.settleBet(bet.id, { result: 'lost', payout: 0 });
+                              fetchAll();
+                            }}
+                          >L</button>
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                            onClick={async () => {
+                              await api.settleBet(bet.id, { result: 'void', payout: bet.stake });
+                              fetchAll();
+                            }}
+                          >V</button>
+                        </span>
                       </td>
                     </tr>
                   );
