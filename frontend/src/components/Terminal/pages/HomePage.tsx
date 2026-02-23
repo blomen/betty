@@ -125,18 +125,11 @@ export function HomePage({ onTabChange }: HomePageProps) {
     return map;
   }, [liveEvents]);
 
-  // Split pending bets into active (live/started) and upcoming (pre-match)
+  // Split pending bets: Active = ONLY Pinnacle-confirmed live/finished
   const activeBets = useMemo(() => {
-    const now = Date.now();
     return bets
-      .filter(b => {
-        // Active = live event OR start_time has passed
-        if (b.event_id && liveEventMap.has(b.event_id)) return true;
-        if (b.start_time && new Date(b.start_time).getTime() <= now) return true;
-        return false;
-      })
+      .filter(b => b.event_id && liveEventMap.has(b.event_id))
       .sort((a, b) => {
-        // Sort by match minute desc (furthest into match first)
         const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
         const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
         return (evB?.match_minute ?? 0) - (evA?.match_minute ?? 0);
@@ -144,15 +137,9 @@ export function HomePage({ onTabChange }: HomePageProps) {
   }, [bets, liveEventMap]);
 
   const upcomingBets = useMemo(() => {
-    const now = Date.now();
     return bets
-      .filter(b => {
-        if (b.event_id && liveEventMap.has(b.event_id)) return false;
-        if (b.start_time && new Date(b.start_time).getTime() <= now) return false;
-        return true;
-      })
+      .filter(b => !(b.event_id && liveEventMap.has(b.event_id)))
       .sort((a, b) => {
-        // Sort by TTK ascending: closest to kickoff first
         const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
         const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
         return ta - tb;
