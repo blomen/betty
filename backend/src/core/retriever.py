@@ -18,6 +18,7 @@ class StandardEvent:
     home_team: str = ""
     away_team: str = ""
     league: str = ""
+    live_state: dict = field(default_factory=dict)  # Pinnacle live data: scores, minute, period, stats
 
 class Retriever(ABC):
     """

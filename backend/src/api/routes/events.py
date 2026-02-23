@@ -1,5 +1,6 @@
 """Events API routes."""
 
+import json
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -33,6 +34,38 @@ async def list_events(
                 "away_team": e.away_team,
                 "start_time": e.start_time.isoformat() if e.start_time else None,
                 "odds_count": len(e.odds),
+            }
+            for e in events
+        ],
+        "count": len(events),
+    }
+
+
+@router.get("/live")
+def get_live_events(db: Session = Depends(get_db)):
+    """Get events currently live with scores from Pinnacle."""
+    events = (
+        db.query(Event)
+        .filter(Event.match_status.in_(["live", "finished"]))
+        .order_by(Event.start_time)
+        .all()
+    )
+
+    return {
+        "events": [
+            {
+                "id": e.id,
+                "sport": e.sport,
+                "league": e.league,
+                "home_team": e.home_team,
+                "away_team": e.away_team,
+                "start_time": e.start_time.isoformat() if e.start_time else None,
+                "home_score": e.home_score,
+                "away_score": e.away_score,
+                "match_status": e.match_status,
+                "match_minute": e.match_minute,
+                "match_period": e.match_period,
+                "stats": json.loads(e.stats_json) if e.stats_json else None,
             }
             for e in events
         ],

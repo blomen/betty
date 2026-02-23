@@ -111,6 +111,18 @@ class BetService:
         # Record wagering progress
         wagering_status = self.profile_repo.record_wagering(profile.id, provider_id, stake, odds)
 
+        # Auto-advance freebet: mark as completed when freebet is used
+        if is_bonus:
+            bonus = self.db.query(ProfileProviderBonus).filter(
+                ProfileProviderBonus.profile_id == profile.id,
+                ProfileProviderBonus.provider_id == provider_id,
+                ProfileProviderBonus.bonus_status == "freebet_available",
+            ).first()
+            if bonus:
+                bonus.bonus_status = "completed"
+                bonus.updated_at = datetime.utcnow()
+                logger.info(f"[BetService] Auto-completed freebet for {provider_id}")
+
         return {
             "success": True,
             "bet_id": bet.id,

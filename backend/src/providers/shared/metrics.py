@@ -41,7 +41,7 @@ class ExtractionMetrics:
         non_live_skipped = self.total_skipped - self.events_skipped_live
 
         if non_live_skipped > 0:
-            logger.warning(
+            logger.debug(
                 f"[{provider_id}] {sport}: parsed {self.events_parsed}/{total_events or self.events_parsed} events, "
                 f"skipped {non_live_skipped} (no_participants={self.events_skipped_no_participants}, "
                 f"no_teams={self.events_skipped_no_teams}, no_markets={self.events_skipped_no_markets}, "
@@ -55,4 +55,4 @@ class ExtractionMetrics:
             logger.warning(f"[{provider_id}] {sport}: {self.leagues_failed}/{self.leagues_fetched} leagues failed")
 
         for warning in self.pagination_warnings:
-            logger.warning(f"[{provider_id}] PAGINATION: {warning}")
+            logger.debug(f"[{provider_id}] PAGINATION: {warning}")

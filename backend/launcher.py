@@ -160,8 +160,86 @@ def main():
         sys.exit(1)
 
 
+def _find_icon() -> str | None:
+    """Locate the app icon (.ico) for pywebview window."""
+    from src.paths import is_bundled, get_bundle_dir
+    import os
+
+    candidates = []
+    if is_bundled():
+        candidates.append(os.path.join(str(get_bundle_dir()), 'frontend', 'dist', 'bankrollbbq.ico'))
+    # Dev mode
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'public', 'bankrollbbq.ico'))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'public', 'bankrollbbq.ico'))
+
+    for path in candidates:
+        resolved = os.path.normpath(path)
+        if os.path.isfile(resolved):
+            return resolved
+    return None
+
+
+def _set_window_icon(icon_path: str, logger: logging.Logger):
+    """Set the window icon using Win32 API after pywebview creates the window."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # Give the app its own taskbar identity so Windows uses our icon
+        # instead of grouping under the Python interpreter icon.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "BankrollBBQ.BankrollBBQ.1"
+        )
+
+        user32 = ctypes.windll.user32
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+
+        # Load both small (16x16 for title bar) and large (32x32 for taskbar/alt-tab)
+        hicon_big = user32.LoadImageW(
+            0, icon_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE
+        )
+        hicon_small = user32.LoadImageW(
+            0, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE
+        )
+
+        if not hicon_big and not hicon_small:
+            logger.warning("Failed to load icon from %s", icon_path)
+            return
+
+        # Find the pywebview window by title
+        hwnd = user32.FindWindowW(None, "BankrollBBQ")
+        if not hwnd:
+            logger.warning("Could not find BankrollBBQ window to set icon")
+            return
+
+        WM_SETICON = 0x0080
+        ICON_BIG = 1
+        ICON_SMALL = 0
+
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+
+        logger.info("Window icon set successfully")
+    except Exception:
+        logger.exception("Failed to set window icon")
+
+
 def _run(logger: logging.Logger, bundled: bool):
     """Core launcher logic, separated for clean error handling."""
+    # Set AppUserModelID early so Windows taskbar uses our icon from the start
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "BankrollBBQ.BankrollBBQ.1"
+            )
+        except Exception:
+            pass
+
     # First-run setup (directories, config, DB, Playwright check)
     from src.first_run import run_first_time_setup
 
@@ -187,6 +265,10 @@ def _run(logger: logging.Logger, bundled: bool):
     try:
         import webview
 
+        icon_path = _find_icon()
+        if icon_path:
+            logger.info("Using app icon: %s", icon_path)
+
         logger.info("Opening pywebview window...")
         webview.create_window(
             title="BankrollBBQ",
@@ -196,10 +278,18 @@ def _run(logger: logging.Logger, bundled: bool):
             min_size=(1000, 600),
             resizable=True,
         )
+
+        def _on_shown():
+            """Set icon once the window is visible."""
+            if icon_path:
+                import time
+                time.sleep(0.5)  # Brief delay for window to fully initialize
+                _set_window_icon(icon_path, logger)
+
         # Blocks until window is closed.
         # private_mode=False enables caching/cookies between sessions.
-        # storage_path keeps WebView2 user data persistent.
         webview.start(
+            func=_on_shown,
             private_mode=False,
             debug=False,
         )

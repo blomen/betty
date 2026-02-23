@@ -361,11 +361,12 @@ class GeckoV2Retriever(BrowserRetriever):
                     return None
 
                 page_results = await asyncio.gather(
-                    *[_fetch_page(pg) for pg in range(2, max_page + 1)]
+                    *[_fetch_page(pg) for pg in range(2, max_page + 1)],
+                    return_exceptions=True,
                 )
 
                 for page_data in page_results:
-                    if page_data is None:
+                    if page_data is None or isinstance(page_data, Exception):
                         continue
                     ev = page_data.get('events', [])
                     mk = page_data.get('markets', [])

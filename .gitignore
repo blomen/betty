@@ -24,6 +24,9 @@ venv/
 backend/data/
 *.db
 
+# Chrome profile (persistent CDP sessions)
+chrome-profile/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -10,8 +10,13 @@ SQLite schema for:
 - Risk management profiles
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+
+
+def _utcnow():
+    """Timezone-aware UTC now for column defaults."""
+    return datetime.now(timezone.utc)
 
 from sqlalchemy import (
     create_engine, event, Column, Integer, String, Float,
@@ -53,10 +58,18 @@ class Event(Base):
     home_team = Column(String, nullable=False)  # Normalized name
     away_team = Column(String, nullable=False)  # Normalized name
     start_time = Column(DateTime)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
+    # Live score tracking (populated from Pinnacle live data)
+    home_score = Column(Integer, nullable=True)   # Current/final home score
+    away_score = Column(Integer, nullable=True)   # Current/final away score
+    match_status = Column(String, nullable=True)  # "prematch", "live", "finished"
+    match_minute = Column(Integer, nullable=True)  # Current match minute
+    match_period = Column(Integer, nullable=True)  # Period ID (1=1st half, 2=2nd half, etc.)
+    stats_json = Column(Text, nullable=True)       # JSON blob: corners, cards, scoreByQuarter, etc.
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+
     # Relationships
     odds = relationship("Odds", back_populates="event", cascade="all, delete-orphan")
     bets = relationship("Bet", back_populates="event")
@@ -76,8 +89,8 @@ class Provider(Base):
 
     is_enabled = Column(Boolean, default=True)  # Can toggle off
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
     # Relationships
     odds = relationship("Odds", back_populates="provider")
@@ -102,8 +115,9 @@ class Odds(Base):
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
     point = Column(Float, nullable=True)        # Reserved for future use
     clob_token_id = Column(String, nullable=True)  # Polymarket CLOB token ID for order book
+    provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs for placement: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
 
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
     
     # Unique constraint: one odds per event/provider/market/outcome/point combo
     # Includes point to allow multiple lines per market (e.g., over 2.5 vs over 3.0)
@@ -146,6 +160,7 @@ class Bet(Base):
     market = Column(String)                     # "1x2"
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
+    point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
 
     # Stake
     stake = Column(Float, nullable=False)       # 100.00
@@ -159,8 +174,9 @@ class Bet(Base):
     payout = Column(Float, default=0.0)         # What you got back
 
     # Timestamps
-    placed_at = Column(DateTime, default=datetime.utcnow)
+    placed_at = Column(DateTime, default=_utcnow)
     settled_at = Column(DateTime)
+    settlement_source = Column(String, nullable=True)  # "manual", "auto_tsdb"
 
     # === BEHAVIORAL TRACKING (for risk management) ===
     # Timing patterns
@@ -175,6 +191,12 @@ class Bet(Base):
     risk_score_at_bet = Column(Float, nullable=True)  # Provider risk score (0-1)
     utility_score = Column(Float, nullable=True)      # EV - λ*RiskPenalty
     selection_probability = Column(Float, nullable=True)  # Softmax selection prob
+
+    # Placement tracking (auto-filled by PlacementService)
+    confirmation_id = Column(String, nullable=True)          # Provider's bet reference
+    placement_status = Column(String, default="manual")      # "manual" | "submitted" | "confirmed" | "failed"
+    actual_odds_at_placement = Column(Float, nullable=True)  # Odds when actually placed
+    placement_latency_ms = Column(Float, nullable=True)      # Time from request to confirmation
 
     # CLV tracking (filled post-event)
     closing_odds = Column(Float, nullable=True)       # Odds at event start
@@ -234,9 +256,11 @@ class Profile(Base):
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile
+    chrome_port = Column(Integer, nullable=True)     # CDP port (default: 9221 + id)
+    color = Column(String, nullable=True)            # Hex color for Chrome border (auto-assigned)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
     # Relationships
     bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
@@ -285,7 +309,7 @@ class ProfileProviderBonus(Base):
     claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
     expires_at = Column(DateTime, nullable=True)        # Deadline to complete wagering (claimed_at + 60 days)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
@@ -315,7 +339,7 @@ class ProfileProviderBalance(Base):
     # Used for dormant account handling - accounts opened before +EV betting
     account_opened_at = Column(DateTime, nullable=True)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
@@ -376,7 +400,7 @@ class Opportunity(Base):
 
     # Status
     is_active = Column(Boolean, default=True)
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=_utcnow)
     expires_at = Column(DateTime, nullable=True)
 
     # Relationships
@@ -607,7 +631,7 @@ class ProviderRiskProfile(Base):
     cooldown_reason = Column(String, nullable=True)
 
     # Metadata
-    last_calculated_at = Column(DateTime, default=datetime.utcnow)
+    last_calculated_at = Column(DateTime, default=_utcnow)
     bets_analyzed = Column(Integer, default=0)  # Number of bets in calculation window
 
     # Relationships
@@ -651,10 +675,181 @@ class RiskConfig(Base):
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
 
     # Updated timestamp
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
     # Relationships
     profile = relationship("Profile")
+
+
+# ============ Trading Models ============
+
+class TradingAccount(Base):
+    """Sub-account for trading (intraday, swing, hodl)."""
+    __tablename__ = "trading_accounts"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    account_type = Column(String, nullable=False)  # "intraday", "swing", "hodl"
+
+    # Balances
+    balance = Column(Float, default=0.0)
+    equity = Column(Float, default=0.0)
+    realized_pnl = Column(Float, default=0.0)
+    daily_pnl = Column(Float, default=0.0)
+    weekly_pnl = Column(Float, default=0.0)
+
+    # Risk policy
+    risk_per_trade_pct = Column(Float, default=1.0)
+    max_daily_loss_pct = Column(Float, default=3.0)
+    max_weekly_loss_pct = Column(Float, default=7.0)
+    max_trades_per_day = Column(Integer, default=5)
+    stop_after_consecutive_losses = Column(Integer, default=3)
+
+    # Daily counters (reset daily)
+    trades_today = Column(Integer, default=0)
+    consecutive_losses = Column(Integer, default=0)
+    is_daily_locked = Column(Boolean, default=False)
+    is_weekly_locked = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Relationships
+    trades = relationship("Trade", back_populates="account")
+
+
+class DailyRoutine(Base):
+    """One per trading day — checklist, bias, psych gate."""
+    __tablename__ = "daily_routines"
+
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False, unique=True)  # "2026-02-20"
+
+    # Macro notes
+    macro_notes = Column(JSON, nullable=True)  # {"calendar": "...", "dxy": "...", ...}
+
+    # Session context
+    overnight_high = Column(Float, nullable=True)
+    overnight_low = Column(Float, nullable=True)
+    key_levels = Column(JSON, nullable=True)  # [{"label": "POC", "price": 21500}, ...]
+    prev_value_area = Column(JSON, nullable=True)  # {"vah": ..., "val": ..., "poc": ...}
+
+    # Bias
+    bias_text = Column(Text, nullable=True)
+    bias_direction = Column(String, nullable=True)  # "bullish", "bearish", "neutral"
+    bias_confidence = Column(Integer, nullable=True)  # 1-5
+
+    # Psych gate
+    sleep_score = Column(Integer, nullable=True)  # 1-10
+    focus_score = Column(Integer, nullable=True)  # 1-10
+    emotional_score = Column(Integer, nullable=True)  # 1-10
+    psych_average = Column(Float, nullable=True)
+    psych_override = Column(Text, nullable=True)  # Override reason text
+
+    # Checklist completion tracking
+    checklist_completion = Column(JSON, nullable=True)  # {"macro_0": true, "session_2": false, ...}
+    is_complete = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Relationships
+    trades = relationship("Trade", back_populates="daily_routine")
+
+
+class Trade(Base):
+    """A single trade with full lifecycle tracking."""
+    __tablename__ = "trades"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("trading_accounts.id"), nullable=False)
+    daily_routine_id = Column(Integer, ForeignKey("daily_routines.id"), nullable=True)
+
+    # Instrument & direction
+    instrument = Column(String, nullable=False)  # "NQ", "ES", "MNQ"
+    direction = Column(String, nullable=False)  # "long", "short"
+    setup_type = Column(String, nullable=False)  # "trend_continuation", etc.
+
+    # Levels
+    entry_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    be_price = Column(Float, nullable=True)  # Breakeven price after move-to-BE
+    targets = Column(JSON, nullable=True)  # [{"price": 21600, "contracts": 1}, ...]
+
+    # Position
+    contracts = Column(Integer, default=1)
+    risk_amount = Column(Float, nullable=True)  # Dollar risk
+    rr_ratio = Column(Float, nullable=True)  # Reward/risk ratio
+    r_multiple = Column(Float, nullable=True)  # Actual R earned (filled on close)
+
+    # Confirmations checked
+    confirmations = Column(JSON, nullable=True)  # {"confirmation_text": true/false, ...}
+
+    # State machine
+    state = Column(String, default="created")  # TRADE_STATES
+
+    # Result
+    realized_pnl = Column(Float, nullable=True)
+    commission = Column(Float, default=0.0)
+    notes = Column(Text, nullable=True)
+
+    # Timestamps per state
+    armed_at = Column(DateTime, nullable=True)
+    triggered_at = Column(DateTime, nullable=True)
+    opened_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Relationships
+    account = relationship("TradingAccount", back_populates="trades")
+    daily_routine = relationship("DailyRoutine", back_populates="trades")
+    events = relationship("TradeEvent", back_populates="trade", cascade="all, delete-orphan")
+    review = relationship("TradeReview", back_populates="trade", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_trades_account_state", "account_id", "state"),
+        Index("ix_trades_setup", "setup_type"),
+        Index("ix_trades_created", "created_at"),
+    )
+
+
+class TradeEvent(Base):
+    """Timeline entry for a trade (state transitions, notes, partial exits)."""
+    __tablename__ = "trade_events"
+
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
+
+    event_type = Column(String, nullable=False)  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
+    from_state = Column(String, nullable=True)
+    to_state = Column(String, nullable=True)
+    details = Column(JSON, nullable=True)  # Flexible payload
+    notes = Column(Text, nullable=True)
+
+    timestamp = Column(DateTime, default=_utcnow)
+
+    # Relationships
+    trade = relationship("Trade", back_populates="events")
+
+
+class TradeReview(Base):
+    """Post-close journal review for a trade."""
+    __tablename__ = "trade_reviews"
+
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, unique=True)
+
+    thesis_recap = Column(Text, nullable=True)
+    followed_rules = Column(Boolean, nullable=True)
+    what_to_improve = Column(Text, nullable=True)
+    grade = Column(Integer, nullable=True)  # 1-5
+
+    created_at = Column(DateTime, default=_utcnow)
+
+    # Relationships
+    trade = relationship("Trade", back_populates="review")
 
 
 # ============ Database Functions ============
@@ -768,6 +963,72 @@ def _run_migrations(engine):
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
+
+        # Add provider_meta to odds if missing (provider-specific IDs for placement)
+        try:
+            cursor.execute("SELECT provider_meta FROM odds LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE odds ADD COLUMN provider_meta JSON")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add placement columns to bets if missing
+        for col, col_type, default in [
+            ("confirmation_id", "TEXT", None),
+            ("placement_status", "TEXT", "'manual'"),
+            ("actual_odds_at_placement", "FLOAT", None),
+            ("placement_latency_ms", "FLOAT", None),
+        ]:
+            try:
+                cursor.execute(f"SELECT {col} FROM bets LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    default_clause = f" DEFAULT {default}" if default else ""
+                    cursor.execute(f"ALTER TABLE bets ADD COLUMN {col} {col_type}{default_clause}")
+                    raw.commit()
+                except sqlite3.OperationalError:
+                    pass
+
+        # Add point + settlement_source to bets (for auto-settlement)
+        for col, col_type in [("point", "FLOAT"), ("settlement_source", "TEXT")]:
+            try:
+                cursor.execute(f"SELECT {col} FROM bets LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    cursor.execute(f"ALTER TABLE bets ADD COLUMN {col} {col_type}")
+                    raw.commit()
+                except sqlite3.OperationalError:
+                    pass
+
+        # Add chrome_port to profiles (multi-profile CDP support)
+        try:
+            cursor.execute("SELECT chrome_port FROM profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN chrome_port INTEGER")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add live score/status fields to events (Pinnacle live data)
+        for col, col_type in [
+            ("home_score", "INTEGER"),
+            ("away_score", "INTEGER"),
+            ("match_status", "TEXT"),
+            ("match_minute", "INTEGER"),
+            ("match_period", "INTEGER"),
+            ("stats_json", "TEXT"),
+        ]:
+            try:
+                cursor.execute(f"SELECT {col} FROM events LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    cursor.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
+                    raw.commit()
+                except sqlite3.OperationalError:
+                    pass
 
 
 def init_db() -> None:

@@ -592,11 +592,15 @@ class TenBetRetriever(BrowserRetriever):
         if not parsed or len(parsed) < 2:
             return None
 
-        # Extract point value from info texts
-        point = self._extract_point_value(info_texts)
+        # Extract point value from info texts (includes selLabels)
+        # First try the structured "(0:1)" or "(+1.5)" format from labels
+        point = self._extract_point_from_prices(info_texts)
+
+        # Then try plain number extraction from info texts
+        if point is None:
+            point = self._extract_point_value(info_texts)
 
         # Fallback: try extracting point from price label text itself
-        # Football HCMR embeds point in labels like "(0:1)" or "(-1)" instead of ta-infoText
         if point is None:
             point = self._extract_point_from_prices(prices)
 

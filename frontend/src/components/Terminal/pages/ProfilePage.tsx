@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Card } from './Card';
 import { useProfiles } from '@/hooks/useProfiles';
+import { TabIcon } from '../TabBar';
 import type { Profile, ProfileCreate, ProfileUpdate } from '@/types';
 
 interface ProfilePageProps {
@@ -12,6 +13,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     profiles,
     isLoading,
     error,
+    refresh: refreshProfiles,
     createProfile,
     updateProfile,
     activateProfile,
@@ -77,9 +79,12 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     try {
       await activateProfile(id);
       setActionSuccess('Profile activated');
+      await refreshProfiles();
       onRefresh();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to activate profile');
+      // Refresh to sync with server state even on error
+      await refreshProfiles();
     }
   };
 
@@ -119,7 +124,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     return (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabProfiles" />
+          <TabIcon name="profiles" color="#9AA0A6" size={16} />
           Profiles
         </h2>
         <div className="text-muted text-sm py-4 text-center">Loading...</div>
@@ -131,13 +136,13 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabProfiles" />
+          <TabIcon name="profiles" color="#9AA0A6" size={16} />
           Profiles
         </h2>
         {!isCreating && !editingId && (
           <button
             onClick={startCreating}
-            className="px-3 py-1.5 text-xs bg-tabProfiles/20 text-tabProfiles hover:bg-tabProfiles/30 transition-colors"
+            className="px-3 py-1.5 text-xs bg-muted/15 text-muted hover:bg-muted/25 hover:text-text transition-colors"
           >
             + New Profile
           </button>
@@ -168,14 +173,14 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                 onChange={(e) => setNameInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                 placeholder="My Profile"
-                className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-tabProfiles"
+                className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-muted"
                 autoFocus
               />
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleCreate}
-                className="px-4 py-2 text-sm bg-tabProfiles text-white hover:bg-tabProfiles/90 transition-colors"
+                className="px-4 py-2 text-sm bg-muted/20 text-text hover:bg-muted/30 transition-colors"
               >
                 Create
               </button>
@@ -191,10 +196,11 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       )}
 
       {/* Profile List */}
-      <div className="space-y-0 border-l-2 border-tabProfiles">
+      <div className="space-y-0">
         {profiles.map((profile) => {
           const isActive = profile.is_active;
           const isEditing = editingId === profile.id;
+          const profileColor = profile.color || '#e74c3c';
 
           if (isEditing) {
             return (
@@ -207,14 +213,14 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                       value={nameInput}
                       onChange={(e) => setNameInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleUpdate(profile.id)}
-                      className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-tabProfiles"
+                      className="w-full px-3 py-2 bg-panel2 border border-border text-text text-sm focus:outline-none focus:border-muted"
                       autoFocus
                     />
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleUpdate(profile.id)}
-                      className="px-4 py-2 text-sm bg-tabProfiles text-white hover:bg-tabProfiles/90 transition-colors"
+                      className="px-4 py-2 text-sm bg-muted/20 text-text hover:bg-muted/30 transition-colors"
                     >
                       Save
                     </button>
@@ -233,34 +239,39 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
           return (
             <div
               key={profile.id}
-              onClick={() => !isActive && handleActivate(profile.id)}
               className={`p-4 border border-border ${
-                isActive
-                  ? 'bg-tabProfiles/5 border-tabProfiles/30'
-                  : 'bg-panel hover:border-tabProfiles/50 cursor-pointer'
+                isActive ? 'bg-panel2/30' : 'bg-panel'
               } transition-colors`}
+              style={{ borderLeftWidth: 3, borderLeftColor: isActive ? profileColor : '#3a3a3a' }}
             >
+              {/* Top row: name + actions */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+                <div
+                  className={`flex items-center gap-3 ${!isActive ? 'cursor-pointer hover:opacity-80' : ''}`}
+                  onClick={() => !isActive && handleActivate(profile.id)}
+                >
                   <span
-                    className={`w-3 h-3 border-2 ${
-                      isActive
-                        ? 'bg-tabProfiles border-tabProfiles'
-                        : 'border-muted'
-                    }`}
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{
+                      backgroundColor: isActive ? profileColor : 'transparent',
+                      border: `2px solid ${isActive ? profileColor : '#4a4a4a'}`,
+                    }}
                   />
                   <div className="flex items-center gap-2">
-                    <span className={`font-medium ${isActive ? 'text-text' : 'text-muted'}`}>
+                    <span className={`font-medium ${isActive ? 'text-text' : 'text-muted2'}`}>
                       {profile.name}
                     </span>
                     {isActive && (
-                      <span className="text-xs px-1.5 py-0.5 bg-tabProfiles/20 text-tabProfiles">
+                      <span
+                        className="text-xs px-1.5 py-0.5"
+                        style={{ backgroundColor: profileColor + '33', color: profileColor }}
+                      >
                         Active
                       </span>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => startEditing(profile)}
                     className="px-2 py-1 text-xs text-muted hover:text-text hover:bg-panel2 transition-colors"
@@ -277,6 +288,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
                   )}
                 </div>
               </div>
+
             </div>
           );
         })}
@@ -287,7 +299,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
           <p className="mb-2">No profiles yet</p>
           <button
             onClick={startCreating}
-            className="text-tabProfiles hover:underline"
+            className="text-muted hover:text-text hover:underline"
           >
             Create your first profile
           </button>

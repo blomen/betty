@@ -112,7 +112,7 @@ Write-Host "  Dependencies OK." -ForegroundColor Green
 Write-Step "Building BankrollBBQ.exe..."
 
 # Icon
-$icoPath = "frontend\public\terminal.ico"
+$icoPath = "frontend\public\bankrollbbq.ico"
 if (-not (Test-Path $icoPath)) {
     Write-Host "  No .ico file found - exe will use default icon." -ForegroundColor DarkGray
 }

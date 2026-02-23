@@ -1,9 +1,24 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from './Card';
 import { BonusPopup } from '../BonusPopup';
+import { SortableHeader } from '../SortableHeader';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import type { BankrollExposure, Provider } from '@/types';
+import { useTableSort } from '@/hooks/useTableSort';
+import { TabIcon, TAB_COLORS } from '../TabBar';
+import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
+
+type BankrollSortCol = 'provider' | 'balance' | 'pending' | 'available';
+
+const bankrollSortExtractors: Record<BankrollSortCol, (p: ProviderExposure) => number> = {
+  provider: (p) => {
+    const n = formatProviderName(p.provider_name).toLowerCase();
+    return (n.charCodeAt(0) || 0) * 10000 + (n.charCodeAt(1) || 0) * 100 + (n.charCodeAt(2) || 0);
+  },
+  balance: (p) => p.total_balance,
+  pending: (p) => p.pending_exposure,
+  available: (p) => p.available,
+};
 
 interface BankrollPageProps {
   providers: Provider[];
@@ -40,6 +55,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   } | null>(null);
   const [transferAmount, setTransferAmount] = useState('');
   const [transferTo, setTransferTo] = useState('');
+
+  // Two-step deposit: tracks which provider is awaiting deposit confirmation
+  const [pendingDeposit, setPendingDeposit] = useState<{
+    providerId: string;
+    amount: number;
+    withBonus: boolean;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -83,11 +105,9 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     const bonusInfo = getProviderBonus(providerId);
 
     if (bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'bonusdeposit') {
-      // Show popup for bonus deposit decision (accept or decline)
       const bonusAmount = Math.min(amount, bonusInfo.bonus.amount);
       setBonusPopup({ providerId, amount, bonusAmount });
     } else if (bonusInfo?.hasUnclaimedBonus && bonusInfo.bonus?.type === 'freebet') {
-      // Show popup for freebet activation decision
       setFreebetPopup({
         providerId,
         amount,
@@ -95,12 +115,29 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
         minOdds: bonusInfo.bonus.min_odds ?? 1.80,
       });
     } else {
-      // Regular deposit — no bonus available
-      executeDeposit(providerId, amount, false);
+      startDeposit(providerId, amount, false);
     }
   };
 
-  const executeDeposit = async (providerId: string, amount: number, withBonus: boolean) => {
+  // Step 1: Open provider site in browser, enter pending state
+  const startDeposit = async (providerId: string, amount: number, withBonus: boolean) => {
+    setBonusPopup(null);
+    setFreebetPopup(null);
+
+    try {
+      await api.navigateToProvider(providerId);
+    } catch {
+      // Navigation is best-effort — CDP Chrome handles it
+    }
+
+    setPendingDeposit({ providerId, amount, withBonus });
+  };
+
+  // Step 2: Confirm deposit — record balance adjustment
+  const confirmDeposit = async () => {
+    if (!pendingDeposit) return;
+    const { providerId, amount, withBonus } = pendingDeposit;
+
     try {
       if (withBonus) {
         const result = await api.depositWithBonus(providerId, amount);
@@ -120,10 +157,9 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
           message: `Deposited ${amount.toFixed(0)} kr`,
         });
       }
+      setPendingDeposit(null);
       setAdjustingProvider(null);
       setAdjustAmount('');
-      setBonusPopup(null);
-      setFreebetPopup(null);
       fetchData();
       onRefresh();
     } catch (err) {
@@ -131,8 +167,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
         success: false,
         message: err instanceof Error ? err.message : 'Operation failed',
       });
-      setBonusPopup(null);
-      setFreebetPopup(null);
+      setPendingDeposit(null);
     }
   };
 
@@ -196,11 +231,32 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     }
   };
 
+  // Sort provider balances table — default by bonus priority (freebet > bonusdeposit > none)
+  const providerList = useMemo(() => exposure?.providers ?? [], [exposure]);
+  const { sorted: tableSorted, sort: provSort, toggle: toggleProvSort } =
+    useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: null, direction: 'desc' });
+
+  // When no column sort is active, sort by bonus priority: freebet first, then bonusdeposit, then rest
+  const sortedProviders = useMemo(() => {
+    if (provSort.column !== null) return tableSorted;
+    return [...tableSorted].sort((a, b) => {
+      const bonusA = getProviderBonus(a.provider_id);
+      const bonusB = getProviderBonus(b.provider_id);
+      const rankOf = (info: ReturnType<typeof getProviderBonus>) => {
+        if (!info?.hasUnclaimedBonus || !info.bonus) return 2;
+        if (info.bonus.type === 'freebet') return 0;
+        if (info.bonus.type === 'bonusdeposit') return 1;
+        return 2;
+      };
+      return rankOf(bonusA) - rankOf(bonusB);
+    });
+  }, [tableSorted, provSort.column, providers]);
+
   if (isLoading) {
     return (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabBankroll" />
+          <TabIcon name="bankroll" color={TAB_COLORS.bankroll} size={16} />
           Bankroll
         </h2>
         <div className="text-muted text-sm py-4 text-center">Loading...</div>
@@ -253,24 +309,15 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
           <table className="sq">
             <thead>
               <tr>
-                <th>Provider</th>
-                <th className="text-right">Balance</th>
-                <th className="text-right">Pending</th>
-                <th className="text-right">Available</th>
+                <SortableHeader column="provider" label="Provider" sort={provSort} onToggle={toggleProvSort} align="left" />
+                <SortableHeader column="balance" label="Balance" sort={provSort} onToggle={toggleProvSort} />
+                <SortableHeader column="pending" label="Pending" sort={provSort} onToggle={toggleProvSort} />
+                <SortableHeader column="available" label="Available" sort={provSort} onToggle={toggleProvSort} />
                 <th className="text-right"></th>
               </tr>
             </thead>
             <tbody>
-              {[...exposure.providers].sort((a, b) => {
-                const aBonus = getProviderBonus(a.provider_id);
-                const bBonus = getProviderBonus(b.provider_id);
-                const aFreebet = aBonus?.hasUnclaimedBonus && aBonus.bonus?.type === 'freebet' ? 1 : 0;
-                const bFreebet = bBonus?.hasUnclaimedBonus && bBonus.bonus?.type === 'freebet' ? 1 : 0;
-                const aBonusDep = aBonus?.hasUnclaimedBonus && aBonus.bonus?.type === 'bonusdeposit' ? 1 : 0;
-                const bBonusDep = bBonus?.hasUnclaimedBonus && bBonus.bonus?.type === 'bonusdeposit' ? 1 : 0;
-                // Freebet first, then bonusdeposit, then rest
-                return (bFreebet - aFreebet) || (bBonusDep - aBonusDep);
-              }).map(provider => {
+              {sortedProviders.map(provider => {
                 const isAdjusting = adjustingProvider === provider.provider_id;
 
                 return (
@@ -282,14 +329,23 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                         if (!bonus?.hasUnclaimedBonus || !bonus.bonus) return null;
                         const tag = bonus.bonus.type === 'freebet' ? 'f' : 'd';
                         return (
-                          <span
-                            className="ml-1.5 inline-flex items-center justify-center w-3.5 h-3.5 text-[9px] font-bold bg-tabBonus/20 text-tabBonus"
-                            title={bonus.bonus.type === 'freebet'
+                          <button
+                            className="ml-1.5 inline-flex items-center justify-center w-3.5 h-3.5 text-[9px] font-bold bg-tabBonus/20 text-tabBonus hover:bg-tabBonus/40 transition-colors cursor-pointer"
+                            title={`Click to mark as claimed · ${bonus.bonus.type === 'freebet'
                               ? `Freebet ${bonus.bonus.amount} kr`
-                              : `Bonus deposit up to ${bonus.bonus.amount} kr`}
+                              : `Bonus deposit up to ${bonus.bonus.amount} kr`}`}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await api.claimBonus(provider.provider_id);
+                                onRefresh();
+                              } catch (err) {
+                                setDepositResult({ success: false, message: err instanceof Error ? err.message : 'Failed to claim bonus' });
+                              }
+                            }}
                           >
                             {tag}
-                          </span>
+                          </button>
                         );
                       })()}
                     </td>
@@ -302,7 +358,25 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                     </td>
                     <td className="text-right text-success">{provider.available.toFixed(0)} kr</td>
                     <td className="text-right">
-                      {isAdjusting ? (
+                      {pendingDeposit?.providerId === provider.provider_id ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-xs text-muted">
+                            {pendingDeposit.amount.toFixed(0)} kr{pendingDeposit.withBonus ? ' + bonus' : ''}
+                          </span>
+                          <button
+                            onClick={confirmDeposit}
+                            className="px-3 py-1 text-xs bg-success text-bg font-medium hover:opacity-90"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => { setPendingDeposit(null); setAdjustingProvider(null); setAdjustAmount(''); }}
+                            className="px-2 py-1 text-xs text-muted hover:text-text"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : isAdjusting ? (
                         <div className="space-y-1">
                           <div className="flex items-center justify-end gap-2">
                             <input
@@ -411,13 +485,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
             </div>
             <div className="flex gap-2 pt-1">
               <button
-                onClick={() => executeDeposit(bonusPopup.providerId, bonusPopup.amount, true)}
+                onClick={() => startDeposit(bonusPopup.providerId, bonusPopup.amount, true)}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-tabBonus text-bg hover:opacity-90 transition-opacity"
               >
                 Accept Bonus
               </button>
               <button
-                onClick={() => executeDeposit(bonusPopup.providerId, bonusPopup.amount, false)}
+                onClick={() => startDeposit(bonusPopup.providerId, bonusPopup.amount, false)}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted hover:text-text transition-colors"
               >
                 Decline
@@ -568,13 +642,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
             </div>
             <div className="flex gap-2 pt-1">
               <button
-                onClick={() => executeDeposit(freebetPopup.providerId, freebetPopup.amount, true)}
+                onClick={() => startDeposit(freebetPopup.providerId, freebetPopup.amount, true)}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-tabBonus text-bg hover:opacity-90 transition-opacity"
               >
                 Activate Freebet
               </button>
               <button
-                onClick={() => executeDeposit(freebetPopup.providerId, freebetPopup.amount, false)}
+                onClick={() => startDeposit(freebetPopup.providerId, freebetPopup.amount, false)}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted hover:text-text transition-colors"
               >
                 Decline

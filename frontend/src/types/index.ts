@@ -222,7 +222,6 @@ export interface Profile {
   preferred_counterparts: string[];
   bonus_enabled: boolean;
   is_active: boolean;
-  chrome_port: number;
   color: string;
   created_at: string | null;
 }
@@ -235,7 +234,6 @@ export interface ProfileCreate {
   min_edge_pct?: number;
   min_arb_pct?: number;
   max_stake_pct?: number;
-  chrome_port?: number;
   color?: string;
 }
 
@@ -250,7 +248,6 @@ export interface ProfileUpdate {
   min_retention_pct?: number;
   preferred_counterparts?: string[];
   bonus_enabled?: boolean;
-  chrome_port?: number;
   color?: string;
 }
 

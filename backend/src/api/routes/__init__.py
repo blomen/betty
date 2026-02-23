@@ -13,6 +13,8 @@ from .chat import router as chat_router
 from .polymarket import router as polymarket_router
 from .risk import router as risk_router
 from .specials import router as specials_router
+from .placement import router as placement_router
+from .trading import router as trading_router
 
 __all__ = [
     'providers_router',
@@ -28,4 +30,6 @@ __all__ = [
     'polymarket_router',
     'risk_router',
     'specials_router',
+    'placement_router',
+    'trading_router',
 ]

@@ -430,7 +430,7 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
 
                 if market_type == 'other':
                     mt_name = mt.get('originalName', mt.get('name', ''))
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
                         f"name='{mt_name}'")
                     continue

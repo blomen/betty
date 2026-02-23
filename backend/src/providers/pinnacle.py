@@ -69,7 +69,7 @@ class PinnacleRetriever(Retriever):
         leagues_data = await self.transport.get(leagues_url, params={"all": "false"})
 
         if not leagues_data:
-            logger.warning(f"[{self.provider_id}] No leagues data for sport {sport_id}")
+            logger.debug(f"[{self.provider_id}] No leagues data for sport {sport_id}")
             return []
 
         # Check for pagination indicators in leagues response
@@ -117,10 +117,20 @@ class PinnacleRetriever(Retriever):
             # Convert to StandardEvent
             for matchup in matchups:
                 event = self._parse_matchup(matchup, sport, league_name, markets_by_matchup, metrics)
-                if event and event.id not in seen_ids:
+                if not event:
+                    continue
+
+                if event.id not in seen_ids:
                     seen_ids.add(event.id)
                     all_events.append(event)
                     metrics.events_parsed += 1
+                elif event.live_state:
+                    # Live version of an already-seen prematch event:
+                    # merge live_state into the existing event
+                    for existing in all_events:
+                        if existing.id == event.id:
+                            existing.live_state = event.live_state
+                            break
 
         # Apply limit if specified
         if limit and len(all_events) > limit:
@@ -245,7 +255,12 @@ class PinnacleRetriever(Retriever):
         markets_by_matchup: Dict[int, List[dict]],
         metrics: ExtractionMetrics
     ) -> Optional[StandardEvent]:
-        """Parse a Pinnacle matchup + markets into StandardEvent"""
+        """Parse a Pinnacle matchup + markets into StandardEvent.
+
+        Also captures live state (scores, minute, period) for started matchups.
+        Events with status="started" are returned even without open markets
+        so the pipeline can update live scores on the Event model.
+        """
         try:
             # Check if this is a special/derivative matchup with parent
             # Parent contains the actual home/away participants
@@ -286,13 +301,52 @@ class PinnacleRetriever(Retriever):
                 except Exception:
                     pass
 
+            # ── Capture live state (scores, minute, period) ──────────
+            matchup_status = matchup.get("status")  # "pending" or "started"
+            live_state = {}
+
+            if matchup_status == "started":
+                match_state = matchup.get("state", {})
+                home_state = home_participant.get("state", {})
+                away_state = away_participant.get("state", {})
+
+                live_state = {
+                    "match_status": "started",
+                    "home_score": home_state.get("score"),
+                    "away_score": away_state.get("score"),
+                    "match_minute": match_state.get("minutes"),
+                    "match_period": match_state.get("state"),
+                }
+
+                # Collect richer stats from parent (corners, cards, scoreByQuarter)
+                stats = {}
+                parent_parts = (parent or {}).get("participants", [])
+                for p in parent_parts:
+                    alignment = p.get("alignment")
+                    p_state = p.get("state", {})
+                    if alignment and p_state:
+                        stats[alignment] = p_state
+                # Also check main participants for sport-specific data
+                for p in participants:
+                    alignment = p.get("alignment")
+                    p_state = p.get("state", {})
+                    p_stats = p.get("stats", [])
+                    if alignment:
+                        if alignment not in stats:
+                            stats[alignment] = p_state
+                        if p_stats:
+                            stats[f"{alignment}_periods"] = p_stats
+                if stats:
+                    live_state["stats"] = stats
+
             # Get raw markets for this matchup
             raw_markets = markets_by_matchup.get(matchup_id, [])
 
             # Parse all market types
             parsed_markets = self._parse_markets(raw_markets)
 
-            if not parsed_markets:
+            # For started matchups: return event even without markets (for score tracking)
+            if not parsed_markets and matchup_status != "started":
                 metrics.events_skipped_no_markets += 1
                 return None
 
@@ -306,8 +360,9 @@ class PinnacleRetriever(Retriever):
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time.isoformat() if start_time else "",
-                markets=parsed_markets,
-                url=""
+                markets=parsed_markets or [],
+                url="",
+                live_state=live_state,
             )
 
             return event
@@ -322,6 +377,7 @@ class PinnacleRetriever(Retriever):
         Parse moneyline/1x2, spread, and total markets from Pinnacle API response.
 
         Extracts main lines only (isAlternate=false) for spread and total.
+        Captures provider_meta (matchupId, lineId, period) for bet placement.
         """
         parsed = []
 
@@ -346,16 +402,23 @@ class PinnacleRetriever(Retriever):
             if not prices:
                 continue
 
+            # Capture placement-critical IDs at market level
+            market_meta = {
+                "matchup_id": str(market.get("matchupId", "")),
+                "period": market.get("period", 0),
+                "line_id": str(market.get("lineId", "")),
+            }
+
             if market_type == "moneyline":
-                parsed.extend(self._parse_moneyline(prices))
+                parsed.extend(self._parse_moneyline(prices, market_meta))
             elif market_type == "spread":
-                parsed.extend(self._parse_spread(prices))
+                parsed.extend(self._parse_spread(prices, market_meta))
             elif market_type == "total":
-                parsed.extend(self._parse_total(prices))
+                parsed.extend(self._parse_total(prices, market_meta))
 
         return parsed
 
-    def _parse_moneyline(self, prices: List[dict]) -> List[dict]:
+    def _parse_moneyline(self, prices: List[dict], market_meta: dict) -> List[dict]:
         """Parse moneyline (winner) market."""
         outcomes = []
 
@@ -367,7 +430,8 @@ class PinnacleRetriever(Retriever):
                 decimal_odds = self._american_to_decimal(american_odds)
                 outcomes.append({
                     "name": designation,
-                    "odds": decimal_odds
+                    "odds": decimal_odds,
+                    "provider_meta": {"designation": designation},
                 })
 
         if not outcomes:
@@ -379,10 +443,11 @@ class PinnacleRetriever(Retriever):
 
         return [{
             "type": market_type,
-            "outcomes": outcomes
+            "outcomes": outcomes,
+            "provider_meta": market_meta,
         }]
 
-    def _parse_spread(self, prices: List[dict]) -> List[dict]:
+    def _parse_spread(self, prices: List[dict], market_meta: dict) -> List[dict]:
         """Parse spread (handicap) market."""
         outcomes = []
 
@@ -397,14 +462,15 @@ class PinnacleRetriever(Retriever):
                     "name": designation,
                     "odds": decimal_odds,
                     "point": float(points),
+                    "provider_meta": {"designation": designation},
                 })
 
         if not outcomes:
             return []
 
-        return [{"type": "spread", "outcomes": outcomes}]
+        return [{"type": "spread", "outcomes": outcomes, "provider_meta": market_meta}]
 
-    def _parse_total(self, prices: List[dict]) -> List[dict]:
+    def _parse_total(self, prices: List[dict], market_meta: dict) -> List[dict]:
         """Parse total (over/under) market."""
         outcomes = []
 
@@ -419,12 +485,13 @@ class PinnacleRetriever(Retriever):
                     "name": designation,
                     "odds": decimal_odds,
                     "point": float(points),
+                    "provider_meta": {"designation": designation},
                 })
 
         if not outcomes:
             return []
 
-        return [{"type": "total", "outcomes": outcomes}]
+        return [{"type": "total", "outcomes": outcomes, "provider_meta": market_meta}]
 
     def _american_to_decimal(self, american_odds: int) -> float:
         """Convert American odds to decimal format"""

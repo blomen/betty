@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/services/api';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { CLVChart } from './BetsPage';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollStats, Bet } from '@/types';
 
 export function StatsPage() {
@@ -35,7 +36,7 @@ export function StatsPage() {
     return (
       <div className="space-y-4">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <span className="w-2 h-2 bg-tabStats" />
+          <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
           Statistics
         </h2>
         <div className="text-muted text-sm py-4 text-center">Loading...</div>

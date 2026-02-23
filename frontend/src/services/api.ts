@@ -79,40 +79,6 @@ export interface PlacementBatchResult {
   };
 }
 
-export interface PlacementSessionStatus {
-  connected: boolean;
-  cdp_url: string;
-  profile_dir?: string;
-  launch_command?: string;
-  providers: Record<string, {
-    domain: string;
-    is_valid: boolean;
-    has_cookies: boolean;
-    has_auth_token: boolean;
-    cookie_count?: number;
-    last_checked?: number;
-  }>;
-  provider_count: number;
-  placers_ready?: string[];
-  supported_platforms?: string[];
-  tabs_opened?: string[];
-}
-
-export interface PlacementLaunchInfo {
-  launch_command: string;
-  profile_dir: string;
-  instructions: string[];
-}
-
-export interface PlacementHealthReport {
-  health: Record<string, {
-    valid: boolean;
-    cookies: number;
-    reason: string;
-  }>;
-  sessions: PlacementSessionStatus;
-}
-
 // ============ Oddsboost Types ============
 
 export interface SpecialItem {
@@ -1089,7 +1055,7 @@ export const api = {
     });
   },
 
-  async activateProfile(id: number): Promise<{ success: boolean; profile: Profile; cdp_status?: PlacementSessionStatus }> {
+  async activateProfile(id: number): Promise<{ success: boolean; profile: Profile }> {
     return fetchJson(`/profiles/${id}/activate`, {
       method: 'POST',
     });
@@ -1101,73 +1067,7 @@ export const api = {
     });
   },
 
-  async launchChromeForProfile(profileId: number): Promise<PlacementSessionStatus & { success: boolean; profile_id: number; chrome_port: number }> {
-    return fetchJson(`/profiles/${profileId}/launch-chrome`, {
-      method: 'POST',
-    });
-  },
-
-  async getProfileSessions(profileId: number): Promise<PlacementSessionStatus & { profile_id: number }> {
-    return fetchJson(`/profiles/${profileId}/sessions`);
-  },
-
-  // ============ Placement (CDP Bet Submission) ============
-
-  async getLaunchInfo(): Promise<PlacementLaunchInfo> {
-    return fetchJson('/placement/launch-info');
-  },
-
-  async connectBrowser(cdpUrl = 'http://localhost:9222', profileId?: number): Promise<PlacementSessionStatus> {
-    return fetchJson('/placement/connect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cdp_url: cdpUrl, profile_id: profileId }),
-    });
-  },
-
-  async getAllSessionStatuses(): Promise<Record<number, PlacementSessionStatus>> {
-    return fetchJson('/placement/sessions/all');
-  },
-
-  async getPlacementSessions(): Promise<PlacementSessionStatus> {
-    return fetchJson('/placement/sessions');
-  },
-
-  async openProviderTabs(providerIds?: string[]): Promise<PlacementSessionStatus> {
-    return fetchJson('/placement/open-tabs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_ids: providerIds ?? null }),
-    });
-  },
-
-  async checkSessionHealth(): Promise<PlacementHealthReport> {
-    return fetchJson('/placement/health', { method: 'POST' });
-  },
-
-  async placeBet(request: PlaceBetRequest): Promise<PlacementResult> {
-    return fetchJson('/placement/place', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-  },
-
-  async placeBatchBets(bets: PlaceBetRequest[]): Promise<PlacementBatchResult> {
-    return fetchJson('/placement/batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bets }),
-    });
-  },
-
-  async disconnectBrowser(): Promise<{ status: string }> {
-    return fetchJson('/placement/disconnect', { method: 'POST' });
-  },
-
-  async refreshPlacementSessions(): Promise<PlacementSessionStatus> {
-    return fetchJson('/placement/refresh', { method: 'POST' });
-  },
+  // ============ Placement (Navigation) ============
 
   async navigateToEvent(request: {
     provider_id: string;

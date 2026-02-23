@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from typing import Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds, Opportunity, Bet
@@ -338,19 +339,21 @@ class OpportunityRepo:
             ~Opportunity.event_id.in_(self.db.query(valid_event_subq))
         ).delete(synchronize_session=False)
 
-        # 3. Delete opportunities for past events
+        # 3. Delete opportunities for past events (but keep live/finished for settlement)
         past_event_subq = self.db.query(Event.id).filter(
-            Event.start_time < now
+            Event.start_time < now,
+            or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
         ).subquery()
         stats["past_events"] = self.db.query(Opportunity).filter(
             Opportunity.event_id.in_(self.db.query(past_event_subq))
         ).delete(synchronize_session=False)
 
         # 4. Delete past events + their odds (cascade)
-        #    Preserve events that have bets
+        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
         past_event_ids = [
             e.id for e in self.db.query(Event.id).filter(
-                Event.start_time < now
+                Event.start_time < now,
+                or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
             ).all()
         ]
         if past_event_ids:

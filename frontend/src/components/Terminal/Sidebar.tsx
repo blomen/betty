@@ -1,4 +1,6 @@
-export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'specials' | 'profiles';
+import { TabIcon } from './TabBar';
+
+export type TabName = 'home' | 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'specials' | 'profiles' | 'tradingBankroll' | 'tradingToday' | 'tradingBuilder' | 'tradingTrades' | 'tradingJournal';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {
@@ -10,7 +12,7 @@ interface SidebarProps {
 
 export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isProfileActive }: SidebarProps) {
   return (
-    <div className="w-14 bg-panel border-r border-border flex flex-col items-center py-3 flex-shrink-0">
+    <div className="w-14 bg-panel border-r border-border flex flex-col items-center py-3 flex-shrink-0 relative">
       {/* Categories */}
       <nav className="flex flex-col gap-1">
         <button
@@ -22,15 +24,7 @@ export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isPr
           }`}
           title="Sports"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <polygon points="12,7 14.5,8.8 13.5,11.5 10.5,11.5 9.5,8.8" />
-            <line x1="12" y1="2" x2="12" y2="7" />
-            <line x1="14.5" y1="8.8" x2="21" y2="6.5" />
-            <line x1="13.5" y1="11.5" x2="19.5" y2="16" />
-            <line x1="10.5" y1="11.5" x2="4.5" y2="16" />
-            <line x1="9.5" y1="8.8" x2="3" y2="6.5" />
-          </svg>
+          <TabIcon name="sports" color="currentColor" size={20} />
         </button>
         <button
           onClick={() => onCategoryChange('stocks')}
@@ -41,10 +35,7 @@ export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isPr
           }`}
           title="Stocks"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
-            <polyline points="16 7 22 7 22 13" />
-          </svg>
+          <TabIcon name="stocks" color="currentColor" size={20} />
         </button>
       </nav>
 

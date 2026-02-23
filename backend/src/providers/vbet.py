@@ -278,12 +278,15 @@ class VbetRetriever(Retriever):
             logger.debug(f"[{self.provider_id}] Failed to parse game {game_id}: {e}")
             return None
 
+    WS_MAX_RETRIES = 3
+    WS_BACKOFF_BASE = 2  # seconds: 2, 4, 8
+
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
         Extract events via BetConstruct Swarm WebSocket.
 
-        Connects to Swarm, requests session, then fetches prematch events
-        for the given sport with 1x2/moneyline + spread/total markets.
+        Connects to Swarm with retry+backoff, requests session, then fetches
+        prematch events for the given sport with 1x2/moneyline + spread/total markets.
         """
         # Map our sport key to BetConstruct alias
         bc_alias = self.SPORT_KEY_TO_ALIAS.get(sport)
@@ -294,129 +297,156 @@ class VbetRetriever(Retriever):
         logger.debug(f"[{self.provider_id}] Starting extraction for {sport} (alias={bc_alias})")
 
         all_events = []
+        last_err = None
 
-        try:
-            async with websockets.connect(
-                self.ws_url,
-                additional_headers={
-                    "Origin": "https://www.vbet.se",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        for attempt in range(self.WS_MAX_RETRIES):
+            try:
+                async with websockets.connect(
+                    self.ws_url,
+                    additional_headers={
+                        "Origin": "https://www.vbet.se",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    },
+                    max_size=10 * 1024 * 1024,
+                    close_timeout=10,
+                    open_timeout=15,
+                ) as ws:
+                    if attempt > 0:
+                        logger.info(f"[{self.provider_id}] WebSocket connected on attempt {attempt + 1}")
+                    return await self._fetch_sport(ws, sport, bc_alias, limit)
+            except websockets.exceptions.ConnectionClosedError as e:
+                logger.warning(f"[{self.provider_id}] WebSocket closed during {sport}: {e}")
+                return all_events  # Return whatever was collected
+            except Exception as e:
+                last_err = e
+                if attempt < self.WS_MAX_RETRIES - 1:
+                    delay = self.WS_BACKOFF_BASE * (2 ** attempt)
+                    logger.debug(
+                        f"[{self.provider_id}] WebSocket attempt {attempt + 1}/{self.WS_MAX_RETRIES} "
+                        f"for {sport} failed: {e}, retrying in {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+
+        # All retries exhausted
+        logger.error(f"[{self.provider_id}] Error extracting {sport} after {self.WS_MAX_RETRIES} attempts: {last_err}")
+        return []
+
+    async def _fetch_sport(
+        self, ws, sport: str, bc_alias: str, limit: int
+    ) -> List[StandardEvent]:
+        """Fetch events for a sport over an established WebSocket connection."""
+        all_events = []
+
+        # 1. Request session
+        session_resp = await self._ws_request(ws, {
+            "command": "request_session",
+            "params": {
+                "source": 42,
+                "language": "eng",
+                "site_id": self.site_id,
+            },
+        })
+
+        if session_resp.get("code") != 0:
+            logger.error(f"[{self.provider_id}] Session request failed: {session_resp}")
+            return []
+
+        logger.debug(f"[{self.provider_id}] Session established")
+
+        # 2. Fetch 1x2/moneyline markets
+        match_winner_resp = await self._ws_request(ws, {
+            "command": "get",
+            "params": {
+                "source": "betting",
+                "what": {
+                    "sport": ["id", "name", "alias"],
+                    "region": ["id", "name", "alias"],
+                    "competition": ["id", "name"],
+                    "game": [
+                        "id", "team1_name", "team2_name", "start_ts",
+                        "is_live", "type",
+                    ],
+                    "market": ["id", "type", "name", "base"],
+                    "event": ["id", "name", "price", "type", "base", "order"],
                 },
-                max_size=10 * 1024 * 1024,  # 10MB max message size
-                close_timeout=10,
-            ) as ws:
-                # 1. Request session
-                session_resp = await self._ws_request(ws, {
-                    "command": "request_session",
-                    "params": {
-                        "source": 42,
-                        "language": "eng",
-                        "site_id": self.site_id,
+                "where": {
+                    "sport": {"alias": bc_alias},
+                    "game": {"type": {"@in": [0, 2]}},
+                    "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
+                },
+                "subscribe": False,
+            },
+            "rid": self._next_rid(),
+        })
+
+        if match_winner_resp.get("code") == 0:
+            winner_events = self._parse_games(
+                match_winner_resp, sport, ["P1XP2", "P1P2"]
+            )
+            logger.debug(
+                f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
+            )
+            all_events.extend(winner_events)
+        else:
+            logger.warning(
+                f"[{self.provider_id}] Match winner request failed: code={match_winner_resp.get('code')}"
+            )
+
+        # 3. Fetch spread/total markets
+        spread_total_resp = await self._ws_request(ws, {
+            "command": "get",
+            "params": {
+                "source": "betting",
+                "what": {
+                    "sport": ["id", "name", "alias"],
+                    "region": ["id", "name"],
+                    "competition": ["id", "name"],
+                    "game": [
+                        "id", "team1_name", "team2_name", "start_ts",
+                        "is_live", "type",
+                    ],
+                    "market": ["id", "type", "name", "base"],
+                    "event": ["id", "name", "price", "type", "base", "order"],
+                },
+                "where": {
+                    "sport": {"alias": bc_alias},
+                    "game": {
+                        "type": {"@in": [0, 2]},
                     },
-                })
-
-                if session_resp.get("code") != 0:
-                    logger.error(f"[{self.provider_id}] Session request failed: {session_resp}")
-                    return []
-
-                logger.debug(f"[{self.provider_id}] Session established")
-
-                # 2. Fetch 1x2/moneyline markets
-                match_winner_resp = await self._ws_request(ws, {
-                    "command": "get",
-                    "params": {
-                        "source": "betting",
-                        "what": {
-                            "sport": ["id", "name", "alias"],
-                            "region": ["id", "name", "alias"],
-                            "competition": ["id", "name"],
-                            "game": [
-                                "id", "team1_name", "team2_name", "start_ts",
-                                "is_live", "type",
-                            ],
-                            "market": ["id", "type", "name", "base"],
-                            "event": ["id", "name", "price", "type", "base", "order"],
-                        },
-                        "where": {
-                            "sport": {"alias": bc_alias},
-                            "game": {"type": {"@in": [0, 2]}},
-                            "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
-                        },
-                        "subscribe": False,
+                    "market": {
+                        "type": {"@in": ["OverUnder", "Handicap", "AsianHandicap"]},
                     },
-                    "rid": self._next_rid(),
-                })
+                },
+                "subscribe": False,
+            },
+            "rid": self._next_rid(),
+        })
 
-                if match_winner_resp.get("code") == 0:
-                    winner_events = self._parse_games(
-                        match_winner_resp, sport, ["P1XP2", "P1P2"]
-                    )
-                    logger.debug(
-                        f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
-                    )
-                    all_events.extend(winner_events)
+        if spread_total_resp.get("code") == 0:
+            st_events = self._parse_games(
+                spread_total_resp, sport, ["OverUnder", "Handicap", "AsianHandicap"]
+            )
+            logger.debug(
+                f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total"
+            )
+
+            if not st_events and all_events:
+                logger.info(
+                    f"[{self.provider_id}] {sport}: 0 spread/total events but "
+                    f"{len(all_events)} ML events — platform may not offer these markets"
+                )
+
+            # Merge spread/total markets into existing events
+            event_map = {e.id: e for e in all_events}
+            for st_event in st_events:
+                if st_event.id in event_map:
+                    event_map[st_event.id].markets.extend(st_event.markets)
                 else:
-                    logger.warning(
-                        f"[{self.provider_id}] Match winner request failed: code={match_winner_resp.get('code')}"
-                    )
-
-                # 3. Fetch spread/total markets
-                spread_total_resp = await self._ws_request(ws, {
-                    "command": "get",
-                    "params": {
-                        "source": "betting",
-                        "what": {
-                            "sport": ["id", "name", "alias"],
-                            "region": ["id", "name"],
-                            "competition": ["id", "name"],
-                            "game": [
-                                "id", "team1_name", "team2_name", "start_ts",
-                                "is_live", "type",
-                            ],
-                            "market": ["id", "type", "name", "base"],
-                            "event": ["id", "name", "price", "type", "base", "order"],
-                        },
-                        "where": {
-                            "sport": {"alias": bc_alias},
-                            "game": {
-                                "type": {"@in": [0, 2]},
-                            },
-                            "market": {
-                                "type": {"@in": ["OverUnder", "Handicap", "AsianHandicap"]},
-                            },
-                        },
-                        "subscribe": False,
-                    },
-                    "rid": self._next_rid(),
-                })
-
-                if spread_total_resp.get("code") == 0:
-                    st_events = self._parse_games(
-                        spread_total_resp, sport, ["OverUnder", "Handicap", "AsianHandicap"]
-                    )
-                    logger.debug(
-                        f"[{self.provider_id}] {sport}: {len(st_events)} events with spread/total"
-                    )
-
-                    # Merge spread/total markets into existing events
-                    event_map = {e.id: e for e in all_events}
-                    for st_event in st_events:
-                        if st_event.id in event_map:
-                            # Add new markets to existing event
-                            event_map[st_event.id].markets.extend(st_event.markets)
-                        else:
-                            # New event (only has spread/total, no 1x2)
-                            all_events.append(st_event)
-                else:
-                    logger.warning(
-                        f"[{self.provider_id}] Spread/total request failed: code={spread_total_resp.get('code')}"
-                    )
-
-        except websockets.exceptions.ConnectionClosedError as e:
-            logger.warning(f"[{self.provider_id}] WebSocket closed: {e}")
-            # Return whatever we've collected so far
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
+                    all_events.append(st_event)
+        else:
+            logger.warning(
+                f"[{self.provider_id}] Spread/total request failed: code={spread_total_resp.get('code')}"
+            )
 
         # Apply limit
         if limit and len(all_events) > limit:

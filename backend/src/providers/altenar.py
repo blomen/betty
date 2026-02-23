@@ -310,7 +310,20 @@ class AltenarRetriever(Retriever):
                 market_type_id = market.get('typeId')
                 market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
                 if not market_type:
-                    continue
+                    # Fallback: match by market name keywords (catches unmapped
+                    # sport-specific typeIds like football Asian Handicap)
+                    market_name = (market.get('name') or '').lower()
+                    if any(kw in market_name for kw in (
+                        'handicap', 'handikapp', 'asian handicap',
+                        'spread', 'puck line', 'run line',
+                    )):
+                        market_type = 'spread'
+                    elif any(kw in market_name for kw in (
+                        'over/under', 'över/under', 'total',
+                    )):
+                        market_type = 'total'
+                    else:
+                        continue
 
                 # Extract point value from market's 'sv' field for spread/total
                 market_point = None

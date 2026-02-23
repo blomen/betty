@@ -14,7 +14,7 @@ export interface SortState<K extends string = string> {
  * @param extractors  Map of column key -> function that extracts a sortable numeric value.
  * @param defaultSort  Optional initial sort state.
  *
- * Clicking the same column toggles asc↔desc.
+ * Clicking the same column cycles: desc → asc → remove sort.
  * Clicking a different column starts with desc (highest first).
  */
 export function useTableSort<T, K extends string>(
@@ -29,7 +29,9 @@ export function useTableSort<T, K extends string>(
   const toggle = useCallback((col: K) => {
     setSort(prev => {
       if (prev.column === col) {
-        return { column: col, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+        if (prev.direction === 'desc') return { column: col, direction: 'asc' as SortDirection };
+        // asc → remove sort
+        return { column: null, direction: 'desc' };
       }
       return { column: col, direction: 'desc' };
     });

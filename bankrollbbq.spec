@@ -97,6 +97,18 @@ a = Analysis(
         # --- HTTP ---
         'httpx',
 
+        # --- Placement (navigation) ---
+        'src.placement',
+        'src.placement.base',
+        'src.placement.placement_service',
+        'src.placement.url_builder',
+
+        # --- API routes (dynamically imported) ---
+        'src.api.routes.placement',
+
+        # --- Services ---
+        'src.services.results_service',
+
         # --- Boost scraper ---
         'scripts.scrape_specials',
 
@@ -155,5 +167,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='frontend/public/terminal.ico' if Path('frontend/public/terminal.ico').exists() else None,
+    icon='frontend/public/bankrollbbq.ico' if Path('frontend/public/bankrollbbq.ico').exists() else None,
 )

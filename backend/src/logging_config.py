@@ -34,6 +34,13 @@ def setup_logging(name: str = None, level: str = "INFO"):
     root.handlers = []
 
     # Console handler (INFO+)
+    # Reconfigure stdout to UTF-8 on Windows to avoid UnicodeEncodeError
+    # when log messages contain non-ASCII characters (e.g. team names)
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level.upper(), logging.INFO))
     console_fmt = logging.Formatter(
@@ -47,7 +54,8 @@ def setup_logging(name: str = None, level: str = "INFO"):
     extraction_file = logging.handlers.RotatingFileHandler(
         LOGS_DIR / "extraction.log",
         maxBytes=10*1024*1024,  # 10MB
-        backupCount=5
+        backupCount=5,
+        encoding="utf-8",
     )
     extraction_file.setLevel(logging.DEBUG)
     file_fmt = logging.Formatter(
@@ -61,7 +69,8 @@ def setup_logging(name: str = None, level: str = "INFO"):
     error_file = logging.handlers.RotatingFileHandler(
         LOGS_DIR / "errors.log",
         maxBytes=5*1024*1024,  # 5MB
-        backupCount=3
+        backupCount=3,
+        encoding="utf-8",
     )
     error_file.setLevel(logging.ERROR)
     error_file.setFormatter(file_fmt)
@@ -72,7 +81,8 @@ def setup_logging(name: str = None, level: str = "INFO"):
         api_file = logging.handlers.RotatingFileHandler(
             LOGS_DIR / "api.log",
             maxBytes=10*1024*1024,
-            backupCount=5
+            backupCount=5,
+            encoding="utf-8",
         )
         api_file.setLevel(logging.DEBUG)
         api_file.setFormatter(file_fmt)

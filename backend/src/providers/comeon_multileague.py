@@ -225,7 +225,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
 
             # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
-            await page.wait_for_timeout(2000)
+            # Football has 60+ leagues → larger payload → needs more time
+            ws_wait = 3000 if sport_normalized == 'football' else 2000
+            await page.wait_for_timeout(ws_wait)
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
@@ -288,8 +290,28 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
             # Skip date scanning only if no events AND no date buttons
             if not all_events_data and not date_labels:
-                logger.debug(f"[{self.provider_id}] No events and no date buttons for {sport_normalized}, skipping")
-                return []
+                # Retry once for major sports — large payloads may need more time
+                if sport_normalized in ('football', 'ice_hockey', 'basketball', 'tennis'):
+                    logger.info(f"[{self.provider_id}] 0 events + 0 date buttons for {sport_normalized}, retrying with extended wait")
+                    await page.wait_for_timeout(3000)
+                    self._collect_ws_events(ws_messages, all_events_data)
+                    date_labels = await page.evaluate(r'''() => {
+                        const labels = [];
+                        document.querySelectorAll('button').forEach(btn => {
+                            const text = btn.textContent.trim();
+                            const lower = text.toLowerCase();
+                            if (/\d+\s+\w{3}\.?$/.test(lower) && !lower.startsWith('idag')) {
+                                labels.push(text);
+                            }
+                        });
+                        return labels;
+                    }''')
+                    if not all_events_data and not date_labels:
+                        logger.warning(f"[{self.provider_id}] Still 0 events for {sport_normalized} after retry")
+                        return []
+                else:
+                    logger.debug(f"[{self.provider_id}] No events and no date buttons for {sport_normalized}, skipping")
+                    return []
 
             if date_labels:
                 logger.debug(f"[{self.provider_id}] Found {len(date_labels)} date buttons")
@@ -466,7 +488,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
                 if market_type == 'other':
                     mt_name = mt.get('originalName', mt.get('name', ''))
-                    logger.info(
+                    logger.debug(
                         f"[{self.provider_id}] Unknown market typeId={mt_id} "
                         f"name='{mt_name}'")
                     continue

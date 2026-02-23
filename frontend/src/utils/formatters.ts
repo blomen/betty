@@ -202,13 +202,14 @@ export function formatTTKLabel(hours: number | null): string {
   return `${days}d ${remainHours}h`;
 }
 
-/** Get color class for TTK tier: closer = more accurate = greener */
+/** Get color class for TTK tier: lower TTK with edge = higher confidence it's real */
 export function getTTKColor(hours: number | null): string {
   if (hours === null) return 'text-muted';
-  if (hours <= 1) return 'text-success';
-  if (hours <= 6) return 'text-accent';
-  if (hours <= 24) return 'text-warning';
-  return 'text-muted2';
+  if (hours <= 6) return 'text-success';   // Near kickoff — highest confidence
+  if (hours <= 12) return 'text-yellow';   // Sweet spot — sharp line stable, soft books lag
+  if (hours <= 24) return 'text-warning';  // Decent — line mostly settled
+  if (hours <= 48) return 'text-error';    // Early — edge may shift
+  return 'text-muted2';                    // Too early — edge may evaporate
 }
 
 // ============ Markdown Table Formatters for Terminal Output ============

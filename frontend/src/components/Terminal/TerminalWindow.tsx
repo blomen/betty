@@ -1,9 +1,9 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { BettingContext } from '@/types';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
-import { ExtractionProgressBar } from './ExtractionProgressBar';
 import {
+  HomePage,
   ValuePage,
   DutchPage,
   ReversePage,
@@ -12,7 +12,14 @@ import {
   BankrollPage,
   SpecialsPage,
   ProfilePage,
+  WelcomePage,
+  TradingBankrollPage,
+  TradingTodayPage,
+  TradingBuilderPage,
+  TradingTradesPage,
+  TradingJournalPage,
 } from './pages';
+import { api } from '@/services/api';
 
 interface TerminalWindowProps {
   context: BettingContext;
@@ -21,8 +28,41 @@ interface TerminalWindowProps {
 
 export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
-  const [activeTab, setActiveTab] = useState<TabName>('value');
+  const [activeTab, setActiveTab] = useState<TabName>('home');
   const [isProfileActive, setIsProfileActive] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [welcomeChecked, setWelcomeChecked] = useState(false);
+
+  // On mount: check if we should skip the welcome page
+  useEffect(() => {
+    const checkSession = async () => {
+      // If sessionStorage says we already selected a profile this session, skip welcome
+      if (sessionStorage.getItem('bbq_session_active') === '1') {
+        setShowWelcome(false);
+        setWelcomeChecked(true);
+        return;
+      }
+
+      // Check if there's an active profile
+      try {
+        const { active } = await api.getProfiles();
+        if (active) {
+          sessionStorage.setItem('bbq_session_active', '1');
+          setShowWelcome(false);
+          setWelcomeChecked(true);
+          return;
+        }
+      } catch {
+        // API not ready yet — show welcome
+      }
+      setWelcomeChecked(true);
+    };
+    checkSession();
+  }, []);
+
+  const handleProfileSelected = useCallback(() => {
+    setShowWelcome(false);
+  }, []);
 
   const handleCategoryChange = useCallback((category: CategoryName) => {
     setActiveCategory(category);
@@ -42,6 +82,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
 
   const renderPage = () => {
     switch (activeTab) {
+      case 'home':
+        return <HomePage onTabChange={handleTabChange} />;
       case 'value':
         return <ValuePage providers={context.providers} />;
       case 'dutch':
@@ -58,10 +100,30 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <SpecialsPage />;
       case 'profiles':
         return <ProfilePage onRefresh={onRefresh} />;
+      case 'tradingBankroll':
+        return <TradingBankrollPage />;
+      case 'tradingToday':
+        return <TradingTodayPage />;
+      case 'tradingBuilder':
+        return <TradingBuilderPage />;
+      case 'tradingTrades':
+        return <TradingTradesPage />;
+      case 'tradingJournal':
+        return <TradingJournalPage />;
       default:
         return null;
     }
   };
+
+  // Don't render anything until we've checked whether to show welcome
+  if (!welcomeChecked) {
+    return <div className="h-full bg-bg" />;
+  }
+
+  // Welcome page — full screen, no sidebar/tabs
+  if (showWelcome) {
+    return <WelcomePage onProfileSelected={handleProfileSelected} />;
+  }
 
   const tabs = TABS_BY_CATEGORY[activeCategory] || [];
 
@@ -74,9 +136,10 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         isProfileActive={isProfileActive}
       />
       <div className="flex-1 flex flex-col min-w-0">
-        {!isProfileActive && <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />}
+        {!isProfileActive && (
+          <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
+        )}
         <div className="flex-1 overflow-y-auto p-4">
-          <ExtractionProgressBar />
           {isProfileActive ? (
             <ProfilePage onRefresh={onRefresh} />
           ) : tabs.length > 0 ? (

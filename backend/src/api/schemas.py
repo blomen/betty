@@ -140,8 +140,7 @@ class ProfileCreate(BaseModel):
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = True
     bonus_deposit: Optional[float] = 0.0
-    chrome_port: Optional[int] = None  # CDP port (auto-assigned if None)
-    color: Optional[str] = None  # Hex color for Chrome border (auto-assigned if None)
+    color: Optional[str] = None
 
 
 class ProfileUpdate(BaseModel):
@@ -156,7 +155,6 @@ class ProfileUpdate(BaseModel):
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = None
     bonus_deposit: Optional[float] = None
-    chrome_port: Optional[int] = None
     color: Optional[str] = None
 
 

@@ -4,6 +4,7 @@ Pipeline Storage
 Functions for storing events and odds in the database.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -698,6 +699,23 @@ def store_provider_event(
             event.sport, final_id, db_event.home_team, db_event.away_team, date_str,
         )
 
+    # ── Update live scores from Pinnacle ────────────────────────────
+    if event.live_state and provider == "pinnacle":
+        ls = event.live_state
+        if ls.get("home_score") is not None:
+            db_event.home_score = ls["home_score"]
+        if ls.get("away_score") is not None:
+            db_event.away_score = ls["away_score"]
+        if ls.get("match_minute") is not None:
+            db_event.match_minute = ls["match_minute"]
+        if ls.get("match_period") is not None:
+            db_event.match_period = ls["match_period"]
+        if ls.get("match_status") == "started":
+            db_event.match_status = "live"
+        stats = ls.get("stats")
+        if stats:
+            db_event.stats_json = json.dumps(stats)
+
     # Extract home/away odds from event markets for inversion detection
     # Only use 1x2/moneyline — spread odds have inverted favorite semantics
     home_odds, away_odds = None, None
@@ -778,6 +796,10 @@ def store_provider_event(
         # Previous filter (_point_matches_pinnacle) dropped ~95% of soft
         # provider spreads — now we keep them all for cross-book comparison.
 
+        # Build provider_meta from market-level + outcome-level metadata
+        # Used by placement system to resolve canonical events to provider-specific IDs
+        market_meta = market.get('provider_meta', {})
+
         for outcome in outcomes:
             outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
             odds_value = outcome.get('odds', 0)
@@ -792,11 +814,15 @@ def store_provider_event(
             # e.g., expekt → unibet, mrgreen → 888sport
             storage_provider = PROVIDER_CANONICAL.get(provider, provider)
 
+            # Merge market-level and outcome-level provider_meta
+            outcome_meta = outcome.get('provider_meta', {})
+            provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
+
             # Use batch processor if available, otherwise individual upsert
             if odds_batch:
-                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value)
+                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
             else:
-                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value)
+                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
 
     # When using batch processor, we don't know the new count until flush
     # Return 0 for now - caller should get stats from batch processor
@@ -812,6 +838,7 @@ def upsert_odds(
     odds: float,
     point: float = None,
     clob_token_id: str = None,
+    provider_meta: dict = None,
 ) -> int:
     """
     Insert or update odds record.
@@ -825,6 +852,7 @@ def upsert_odds(
         odds: Decimal odds
         point: Point/line value (optional)
         clob_token_id: Polymarket CLOB token ID (optional)
+        provider_meta: Provider-specific IDs for placement (optional)
 
     Returns:
         1 if new odds inserted, 0 if updated
@@ -849,6 +877,8 @@ def upsert_odds(
         existing.updated_at = datetime.now(timezone.utc)
         if clob_token_id:
             existing.clob_token_id = clob_token_id
+        if provider_meta:
+            existing.provider_meta = provider_meta
         return 0
     else:
         session.add(Odds(
@@ -859,6 +889,7 @@ def upsert_odds(
             odds=odds,
             point=point,
             clob_token_id=clob_token_id,
+            provider_meta=provider_meta,
         ))
         return 1
 
@@ -889,6 +920,7 @@ class OddsBatchProcessor:
         odds: float,
         point: float = None,
         clob_token_id: str = None,
+        provider_meta: dict = None,
     ):
         """Add odds record to batch (will be processed on flush)."""
         # Use tuple key to deduplicate (point included for schema compatibility)
@@ -901,6 +933,7 @@ class OddsBatchProcessor:
             "odds": odds,
             "point": point,
             "clob_token_id": clob_token_id,
+            "provider_meta": provider_meta,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
@@ -985,6 +1018,8 @@ class OddsBatchProcessor:
                 existing.updated_at = now
                 if record.get("clob_token_id"):
                     existing.clob_token_id = record["clob_token_id"]
+                if record.get("provider_meta"):
+                    existing.provider_meta = record["provider_meta"]
                 self._update_count += 1
             else:
                 # New record

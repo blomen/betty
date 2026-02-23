@@ -39,6 +39,14 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
 
+  // Two-step placement: tracks which group is awaiting confirm after browser opened
+  const [pendingBet, setPendingBet] = useState<{
+    groupKey: string;
+    opp: Opportunity;
+    actualOdds: number;
+    useFreebet: boolean;
+  } | null>(null);
+
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -140,6 +148,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const handleSelectGroup = (idx: number) => {
     setSelectedGroup(selectedGroup === idx ? null : idx);
+    setPendingBet(null);
   };
 
   const handlePlaceBetClick = (opp: Opportunity) => {
@@ -147,11 +156,11 @@ export function ValuePage({ providers }: ValuePageProps) {
     if (!stake || stake <= 0) return;
 
     if (opp.bonus_status === 'freebet_available') {
-      // Phase 2: show popup to choose freebet vs balance
+      // Show popup to choose freebet vs balance
       setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake });
     } else {
-      // Phase 1 (trigger_needed) or normal bet — both deduct balance
-      executePlaceBet(opp, false);
+      // Trigger or normal bet — start two-step flow
+      startPlaceBet(opp, false);
     }
   };
 
@@ -160,9 +169,8 @@ export function ValuePage({ providers }: ValuePageProps) {
     return oddsOverride[groupKey] ?? opp.odds1;
   };
 
-  const executePlaceBet = async (opp: Opportunity, useFreebet: boolean) => {
-    const stake = opp.final_stake;
-    if (!stake || stake <= 0) return;
+  // Step 1: Navigate browser to match page, enter "awaiting confirm" state
+  const startPlaceBet = async (opp: Opportunity, useFreebet: boolean) => {
     const odds = getEffectiveOdds(opp);
     setIsPlacing(true);
     setFreebetPopup(null);
@@ -170,30 +178,45 @@ export function ValuePage({ providers }: ValuePageProps) {
     setBetSuccess(null);
 
     try {
-      // 1. Navigate browser to match page
       try {
-        const nav = await api.navigateToEvent({
+        await api.navigateToEvent({
           provider_id: opp.provider1,
           provider_meta: opp.provider_meta,
           home_team: opp.home_team,
           away_team: opp.away_team,
           event_id: opp.event_id,
         });
-        // If CDP didn't navigate, open URL in new tab
-        if (!nav.navigated && nav.url) {
-          window.open(nav.url, '_blank');
-        }
       } catch {
-        // Navigation is best-effort — don't block bet recording
+        // Navigation is best-effort — CDP Chrome handles it
       }
 
-      // 2. Record bet in DB
+      const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
+      setPendingBet({ groupKey, opp, actualOdds: odds, useFreebet });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to navigate';
+      setBetError(msg);
+      setTimeout(() => setBetError(null), 5000);
+    } finally {
+      setIsPlacing(false);
+    }
+  };
+
+  // Step 2: Confirm bet with actual odds
+  const confirmPlaceBet = async () => {
+    if (!pendingBet) return;
+    const { opp, actualOdds, useFreebet } = pendingBet;
+    const stake = opp.final_stake;
+    if (!stake || stake <= 0) return;
+    setIsPlacing(true);
+    setBetError(null);
+
+    try {
       await api.createBet({
         event_id: opp.event_id,
         provider_id: opp.provider1,
         market: opp.market,
         outcome: opp.outcome1,
-        odds,
+        odds: actualOdds,
         stake,
         is_bonus: useFreebet,
         bonus_type: useFreebet ? 'freebet' : undefined,
@@ -202,8 +225,9 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp.home_team, opp.away_team, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
-      setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(opp.provider1)}) — match page opened`);
+      setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
+      setPendingBet(null);
       setSelectedGroup(null);
       fetchData();
     } catch (err) {
@@ -444,34 +468,70 @@ export function ValuePage({ providers }: ValuePageProps) {
                             : isTrigger ? 'Trigger'
                             : isFreebet ? 'Freebet'
                             : 'Place Bet';
+                          const isPending = pendingBet?.groupKey === group.key;
 
                           return (
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                            <select
-                              value={selIdx}
-                              onChange={(e) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: Number(e.target.value) }))}
-                              className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer"
-                            >
-                              {opps.map((opp, i) => {
-                                const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
-                                const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
-                                  : opp.bonus_status === 'freebet_available' ? ' [FREE]'
-                                  : opp.skip_reason ? ` (${opp.skip_reason})`
-                                  : '';
-                                return (
-                                  <option key={opp.id} value={i}>
-                                    {formatProviderName(opp.provider1)}{s}{tag}
-                                  </option>
-                                );
-                              })}
-                            </select>
-                            <button
-                              onClick={() => handlePlaceBetClick(selOpp)}
-                              disabled={isDisabled}
-                              className={`px-4 py-1.5 ${btnColor} text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap`}
-                            >
-                              {btnLabel}
-                            </button>
+                            {isPending ? (
+                              <>
+                                <span className="text-muted text-xs">Odds:</span>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  autoFocus
+                                  value={pendingBet!.actualOdds}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value);
+                                    if (!isNaN(val)) {
+                                      setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
+                                    }
+                                  }}
+                                  className="w-20 bg-bg border border-tabValue/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabValue"
+                                  onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
+                                />
+                                <button
+                                  onClick={confirmPlaceBet}
+                                  disabled={isPlacing || pendingBet!.actualOdds < 1.01}
+                                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                                >
+                                  {isPlacing ? '...' : 'Confirm'}
+                                </button>
+                                <button
+                                  onClick={() => setPendingBet(null)}
+                                  className="px-2 py-1.5 text-xs text-muted hover:text-text"
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <select
+                                  value={selIdx}
+                                  onChange={(e) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: Number(e.target.value) }))}
+                                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer"
+                                >
+                                  {opps.map((opp, i) => {
+                                    const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
+                                    const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                                      : opp.bonus_status === 'freebet_available' ? ' [FREE]'
+                                      : opp.skip_reason ? ` (${opp.skip_reason})`
+                                      : '';
+                                    return (
+                                      <option key={opp.id} value={i}>
+                                        {formatProviderName(opp.provider1)}{s}{tag}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                                <button
+                                  onClick={() => handlePlaceBetClick(selOpp)}
+                                  disabled={isDisabled}
+                                  className={`px-4 py-1.5 ${btnColor} text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap`}
+                                >
+                                  {btnLabel}
+                                </button>
+                              </>
+                            )}
                           </div>
                           );
                         })()}
@@ -508,7 +568,7 @@ export function ValuePage({ providers }: ValuePageProps) {
             </table>
             <div className="flex gap-2 pt-1">
               <button
-                onClick={() => executePlaceBet(freebetPopup.opp, true)}
+                onClick={() => startPlaceBet(freebetPopup.opp, true)}
                 disabled={isPlacing}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-accent text-bg hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
@@ -516,7 +576,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                 <div className="text-[10px] opacity-70">no deduction</div>
               </button>
               <button
-                onClick={() => executePlaceBet(freebetPopup.opp, false)}
+                onClick={() => startPlaceBet(freebetPopup.opp, false)}
                 disabled={isPlacing}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted hover:text-text disabled:opacity-50 transition-colors"
               >

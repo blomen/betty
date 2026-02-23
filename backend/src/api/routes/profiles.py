@@ -1,7 +1,10 @@
 """Profiles API routes."""
 
 import json
+import logging
 from datetime import datetime
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,8 +12,33 @@ from sqlalchemy.orm import Session
 from ...db.models import Profile, Provider, ProfileProviderBalance
 from ...repositories import ProfileRepo
 from ...bankroll import calculate_stake as calc_stake
+from ...bankroll.stake_calculator import dynamic_min_stake
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
+
+logger = logging.getLogger(__name__)
+
+# Color palette for profile visual identification
+PROFILE_COLORS = [
+    "#e74c3c",  # red
+    "#3498db",  # blue
+    "#2ecc71",  # green
+    "#f39c12",  # orange
+    "#9b59b6",  # purple
+    "#1abc9c",  # teal
+    "#e67e22",  # dark orange
+    "#e84393",  # pink
+]
+
+
+def _next_profile_color(db) -> str:
+    """Pick the next unused color from the palette, cycling if needed."""
+    used = {p.color for p in db.query(Profile).all() if p.color}
+    for color in PROFILE_COLORS:
+        if color not in used:
+            return color
+    count = db.query(Profile).count()
+    return PROFILE_COLORS[count % len(PROFILE_COLORS)]
 
 
 class AccountDateUpdate(BaseModel):
@@ -45,6 +73,7 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
         "bonus_enabled": profile.bonus_enabled,
         "bonus_deposit": profile.bonus_deposit or 0.0,
         "is_active": profile.is_active,
+        "color": profile.color or PROFILE_COLORS[0],
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
 
@@ -89,6 +118,8 @@ async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(400, f"Profile '{data.name}' already exists")
 
+    color = data.color or _next_profile_color(db)
+
     profile = Profile(
         name=data.name,
         bankroll=0.0,
@@ -97,6 +128,7 @@ async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         max_stake_pct=data.max_stake_pct or 5.0,
         min_edge_pct=data.min_edge_pct or 2.0,
         is_active=False,
+        color=color,
     )
     db.add(profile)
     db.commit()
@@ -151,6 +183,8 @@ async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Dep
         profile.bonus_enabled = data.bonus_enabled
     if data.bonus_deposit is not None:
         profile.bonus_deposit = data.bonus_deposit
+    if data.color is not None:
+        profile.color = data.color
 
     db.commit()
     return {"success": True, "profile": profile_to_dict(profile, profile_repo)}
@@ -163,6 +197,11 @@ async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
     if not profile:
         raise HTTPException(404, f"Profile {profile_id} not found")
 
+    if profile.is_active:
+        profile_repo = ProfileRepo(db)
+        return {"success": True, "profile": profile_to_dict(profile, profile_repo)}
+
+    # Switch active flag in DB
     db.query(Profile).update({Profile.is_active: False})
     profile.is_active = True
     db.commit()
@@ -173,7 +212,7 @@ async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{profile_id}")
 async def delete_profile(profile_id: int, db: Session = Depends(get_db)):
-    """Delete a profile."""
+    """Delete a profile and clean up all associated resources."""
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
         raise HTTPException(404, f"Profile {profile_id} not found")
@@ -181,6 +220,7 @@ async def delete_profile(profile_id: int, db: Session = Depends(get_db)):
     if profile.is_active:
         raise HTTPException(400, "Cannot delete active profile. Activate another profile first.")
 
+    # Delete DB record (cascades to bonuses + balances)
     db.delete(profile)
     db.commit()
 
@@ -204,6 +244,7 @@ async def calculate_stake_endpoint(
         edge_raw=edge_raw,
         odds=odds,
         min_odds=0.0,
+        min_stake=dynamic_min_stake(bankroll),
     )
 
     return {

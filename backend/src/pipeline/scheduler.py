@@ -57,6 +57,9 @@ class ExtractionScheduler:
         self._pipeline = pipeline
         self._tiers: dict[str, TierState] = {}
         self._boosts_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._settlement_task: Optional[asyncio.Task] = None
+        self._trading_reset_task: Optional[asyncio.Task] = None
         # Lock ensures only one tier runs at a time — the pipeline shares
         # a single DB session and event_cache, so concurrent runs corrupt state.
         self._run_lock = asyncio.Lock()
@@ -180,11 +183,11 @@ class ExtractionScheduler:
         - browser_soft: Spectate + ComeOn + Snabbare + 10Bet + Interwetten + Coolbet + Tipwin every 120 min (immediate)
         - boosts: Oddsboost scraping every 120 min (immediate)
         """
-        # Sharp tier — reference odds
+        # Sharp tier — reference odds + live score capture
         await self.start_tier(
             name="sharp",
             providers=["polymarket", "pinnacle"],
-            interval_seconds=180,  # 3 min
+            interval_seconds=60,  # 1 min — fast polling for live scores + FT detection
             run_immediately=True,
         )
 
@@ -232,6 +235,15 @@ class ExtractionScheduler:
         # Boosts tier — oddsboost scraping (standalone, no pipeline lock needed)
         await self.start_boosts_tier()
 
+        # Cleanup tier — purge stale events/odds every 6 hours
+        await self.start_cleanup_tier()
+
+        # Settlement tier — auto-settle bets from Pinnacle live scores every 2 min
+        await self.start_settlement_tier()
+
+        # Trading daily/weekly auto-reset (checks every 60s, acts at market boundaries)
+        await self.start_trading_reset_tier()
+
     def stop_all(self):
         """Stop all running tiers."""
         for name in list(self._tiers.keys()):
@@ -241,6 +253,18 @@ class ExtractionScheduler:
         if self._boosts_task and not self._boosts_task.done():
             self._boosts_task.cancel()
             self._boosts_task = None
+        # Also stop cleanup task
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            self._cleanup_task = None
+        # Also stop settlement task
+        if self._settlement_task and not self._settlement_task.done():
+            self._settlement_task.cancel()
+            self._settlement_task = None
+        # Also stop trading reset task
+        if self._trading_reset_task and not self._trading_reset_task.done():
+            self._trading_reset_task.cancel()
+            self._trading_reset_task = None
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
@@ -380,6 +404,287 @@ class ExtractionScheduler:
                 session.close()
             except Exception:
                 pass
+
+    # ── Trading daily/weekly reset ──────────────────────────────────
+
+    async def start_trading_reset_tier(self, check_interval: int = 60):
+        """Auto-reset trading accounts at market boundaries.
+
+        Checks every 60s. Resets daily counters once per day (after midnight UTC,
+        i.e. ~7pm ET / before US pre-market). Resets weekly on Monday.
+        """
+        if self._trading_reset_task and not self._trading_reset_task.done():
+            logger.warning("[Scheduler] Trading reset tier already running")
+            return
+
+        logger.info(f"[Scheduler] Starting trading reset tier: check_interval={check_interval}s")
+        self._trading_reset_task = asyncio.create_task(
+            self._trading_reset_loop(check_interval)
+        )
+
+    async def _trading_reset_loop(self, check_interval: int):
+        """Recurring check for daily/weekly trading resets."""
+        last_daily_reset: str | None = None  # Track date of last daily reset
+        last_weekly_reset: str | None = None  # Track week-string of last weekly reset
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                today_str = now.strftime("%Y-%m-%d")
+                week_str = now.strftime("%Y-W%W")
+
+                # Daily reset — once per UTC day
+                if last_daily_reset != today_str:
+                    try:
+                        from src.services.trading_service import TradingService
+                        from src.db.models import get_session
+
+                        session = get_session()
+                        try:
+                            svc = TradingService(session)
+                            result = svc.auto_reset_daily()
+                            last_daily_reset = today_str
+                            if result["reset_accounts"] > 0:
+                                logger.info(f"[Scheduler:trading_reset] Daily reset: {result['reset_accounts']} accounts")
+                        finally:
+                            session.close()
+                    except Exception as e:
+                        logger.error(f"[Scheduler:trading_reset] Daily reset failed: {e}")
+
+                # Weekly reset — once per UTC week (Monday = weekday 0)
+                if now.weekday() == 0 and last_weekly_reset != week_str:
+                    try:
+                        from src.services.trading_service import TradingService
+                        from src.db.models import get_session
+
+                        session = get_session()
+                        try:
+                            svc = TradingService(session)
+                            result = svc.auto_reset_weekly()
+                            last_weekly_reset = week_str
+                            if result["reset_accounts"] > 0:
+                                logger.info(f"[Scheduler:trading_reset] Weekly reset: {result['reset_accounts']} accounts")
+                        finally:
+                            session.close()
+                    except Exception as e:
+                        logger.error(f"[Scheduler:trading_reset] Weekly reset failed: {e}")
+
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:trading_reset] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:trading_reset] Error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+
+    # ── Cleanup tier (data retention) ────────────────────────────────
+
+    async def start_cleanup_tier(self, interval_seconds: int = 21600):
+        """Start periodic data retention cleanup (every 6 hours).
+
+        Purges stale events, odds, and opportunities to prevent unbounded
+        DB growth.  Runs independently — no pipeline lock needed.
+        """
+        if self._cleanup_task and not self._cleanup_task.done():
+            logger.warning("[Scheduler] Cleanup tier already running")
+            return
+
+        logger.info(f"[Scheduler] Starting cleanup tier: interval={interval_seconds}s")
+        self._cleanup_task = asyncio.create_task(
+            self._cleanup_loop(interval_seconds)
+        )
+
+    async def _cleanup_loop(self, interval_seconds: int):
+        """Recurring loop for data retention cleanup."""
+        # Wait before first run — let extraction populate data first
+        try:
+            await asyncio.sleep(300)  # 5 min initial delay
+        except asyncio.CancelledError:
+            return
+
+        while True:
+            try:
+                logger.info("[Scheduler:cleanup] Starting data retention cleanup")
+                stats = await self._run_cleanup()
+                logger.info(
+                    f"[Scheduler:cleanup] Done: "
+                    f"{stats.get('past_events_deleted', 0)} events, "
+                    f"{stats.get('past_odds_deleted', 0)} odds, "
+                    f"{stats.get('inactive', 0)} inactive opps, "
+                    f"{stats.get('past_events', 0)} past-event opps removed"
+                )
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:cleanup] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:cleanup] Error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    async def _run_cleanup(self) -> dict:
+        """Execute data retention cleanup in a thread executor."""
+        from src.db.models import Event, Odds, Opportunity, Bet, get_session
+
+        loop = asyncio.get_running_loop()
+
+        def _do_cleanup() -> dict:
+            stats = {
+                "inactive": 0, "orphaned": 0, "past_events": 0,
+                "past_events_deleted": 0, "past_odds_deleted": 0,
+                "deactivated": 0,
+            }
+            session = get_session()
+            try:
+                from sqlalchemy import or_
+                now = datetime.now(timezone.utc)
+
+                # 1. Delete inactive opportunities
+                stats["inactive"] = session.query(Opportunity).filter(
+                    Opportunity.is_active == False
+                ).delete()
+
+                # 2. Delete orphaned opportunities (event doesn't exist)
+                valid_event_subq = session.query(Event.id).subquery()
+                stats["orphaned"] = session.query(Opportunity).filter(
+                    ~Opportunity.event_id.in_(session.query(valid_event_subq))
+                ).delete(synchronize_session=False)
+
+                # 3. Delete opportunities for past events (keep live/finished for settlement)
+                past_event_subq = session.query(Event.id).filter(
+                    Event.start_time < now,
+                    or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
+                ).subquery()
+                stats["past_events"] = session.query(Opportunity).filter(
+                    Opportunity.event_id.in_(session.query(past_event_subq))
+                ).delete(synchronize_session=False)
+
+                # 4. Delete past events + their odds (bulk)
+                #    Preserve events that have bets OR are live/finished
+                past_event_ids = [
+                    row[0] for row in session.query(Event.id).filter(
+                        Event.start_time < now,
+                        or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
+                    ).all()
+                ]
+                if past_event_ids:
+                    event_ids_with_bets = set(
+                        row[0] for row in session.query(Bet.event_id).filter(
+                            Bet.event_id.in_(past_event_ids)
+                        ).all()
+                        if row[0]
+                    )
+                    deletable_ids = [
+                        eid for eid in past_event_ids
+                        if eid not in event_ids_with_bets
+                    ]
+                    if deletable_ids:
+                        # Bulk delete odds first, then events (batched)
+                        for i in range(0, len(deletable_ids), 500):
+                            batch = deletable_ids[i:i + 500]
+                            stats["past_odds_deleted"] += session.query(Odds).filter(
+                                Odds.event_id.in_(batch)
+                            ).delete(synchronize_session=False)
+                            stats["past_events_deleted"] += session.query(Event).filter(
+                                Event.id.in_(batch)
+                            ).delete(synchronize_session=False)
+
+                # 5. Deactivate remaining opportunities (will be refreshed during next scan)
+                stats["deactivated"] = session.query(Opportunity).filter(
+                    Opportunity.is_active == True
+                ).update({"is_active": False})
+
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+            return stats
+
+        return await loop.run_in_executor(None, _do_cleanup)
+
+    # ── Settlement tier (auto-settle bets from Pinnacle live scores) ───
+
+    async def start_settlement_tier(self, interval_seconds: int = 120):
+        """Start periodic auto-settlement (every 2 minutes).
+
+        Settles pending bets on events that Pinnacle marked as finished.
+        Also snapshots closing odds for started events.
+        Runs independently — no pipeline lock needed, just a DB session.
+        """
+        if self._settlement_task and not self._settlement_task.done():
+            logger.warning("[Scheduler] Settlement tier already running")
+            return
+
+        logger.info(f"[Scheduler] Starting settlement tier: interval={interval_seconds}s")
+        self._settlement_task = asyncio.create_task(
+            self._settlement_loop(interval_seconds)
+        )
+
+    async def _settlement_loop(self, interval_seconds: int):
+        """Recurring loop for auto-settlement."""
+        # Wait before first run — let extraction populate data first
+        try:
+            await asyncio.sleep(120)  # 2 min initial delay
+        except asyncio.CancelledError:
+            return
+
+        while True:
+            try:
+                logger.info("[Scheduler:settlement] Starting auto-settlement")
+                stats = self._run_settlement()
+                logger.info(
+                    f"[Scheduler:settlement] Done: "
+                    f"{stats.get('settled', 0)}/{stats.get('checked', 0)} bets settled "
+                    f"({stats.get('skipped', 0)} skipped)"
+                )
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:settlement] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:settlement] Error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    def _run_settlement(self) -> dict:
+        """Execute auto-settlement: snapshot closing odds, then settle from Pinnacle scores."""
+        from src.services.results_service import ResultsService
+        from src.services.bet_service import BetService
+        from src.db.models import get_session
+
+        session = get_session()
+        try:
+            # First: snapshot closing odds for started events
+            bet_service = BetService(session)
+            clv_stats = bet_service.snapshot_closing_odds()
+            session.commit()
+
+            if clv_stats.get("updated", 0) > 0:
+                logger.info(
+                    f"[Scheduler:settlement] CLV snapshot: "
+                    f"{clv_stats['updated']}/{clv_stats['processed']} bets updated"
+                )
+
+            # Then: auto-settle from Pinnacle live scores (synchronous — no HTTP calls)
+            results_service = ResultsService(session)
+            stats = results_service.auto_settle()
+
+            return stats
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     # ── Legacy interface (backwards-compatible) ────────────────────────
 

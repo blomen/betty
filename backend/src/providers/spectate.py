@@ -446,9 +446,15 @@ class SpectateRetriever(BrowserRetriever):
     def _fuzzy_market_match(name: str) -> str | None:
         """Catch spread/total markets not in the static MARKET_MAP via keyword matching."""
         # Spread keywords (Swedish + English)
-        if any(kw in name for kw in ("handicap", "handikapp", "pucklinje", "run line")):
+        if any(kw in name for kw in (
+            "handicap", "handikapp", "pucklinje", "run line",
+            "spread", "asian handicap",
+        )):
             return "spread"
-        # Total keywords
-        if any(kw in name for kw in ("över/under", "over/under", "totalt antal")):
+        # Total keywords (Swedish + English)
+        if any(kw in name for kw in (
+            "över/under", "over/under", "totalt antal",
+            "total goals", "total points", "total mål",
+        )):
             return "total"
         return None
