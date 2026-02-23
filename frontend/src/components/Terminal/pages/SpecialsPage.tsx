@@ -82,9 +82,9 @@ export function SpecialsPage() {
   type SpecialsSortCol = 'odds' | 'prob' | 'max' | 'edge' | 'ttk';
   const specialsSortExtractors = useMemo(() => ({
     odds:  (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
-    prob:  (g: GroupedSpecial) => g.rep.original_odds && g.rep.original_odds > 1 ? 100 / g.rep.original_odds : 0,
+    prob:  (g: GroupedSpecial) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
     max:   (g: GroupedSpecial) => g.rep.max_stake ?? 0,
-    edge:  (g: GroupedSpecial) => g.rep.boost_pct ?? 0,
+    edge:  (g: GroupedSpecial) => g.rep.edge_pct ?? 0,
     ttk:   (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
   }), []);
   const { sorted: sortedSpecials, sort: specialsSort, toggle: toggleSpecialsSort } =
@@ -99,9 +99,9 @@ export function SpecialsPage() {
     if (expandedIdx === idx) { setExpandedIdx(null); setStakePreview(null); setPlacementError(null); return; }
     setExpandedIdx(idx); setStakePreview(null); setPlacementError(null);
     const s = group.rep;
-    if (!s.boosted_odds || !s.boost_pct) return;
+    if (!s.boosted_odds || !s.edge_pct) return;
     setIsLoadingPreview(true);
-    try { const preview = await api.getBoostStakePreview({ edge_pct: s.boost_pct, odds: s.boosted_odds, provider_id: s.provider }); setStakePreview(preview); }
+    try { const preview = await api.getBoostStakePreview({ edge_pct: s.edge_pct, odds: s.boosted_odds, provider_id: s.provider }); setStakePreview(preview); }
     catch (err) { console.error('Failed to load stake preview:', err); }
     finally { setIsLoadingPreview(false); }
   };
@@ -199,15 +199,15 @@ export function SpecialsPage() {
                         <span className="text-success font-bold text-sm">{s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}</span>
                       </div>
                     </td>
-                    <td className="text-right text-muted text-sm">{s.original_odds != null && s.original_odds > 1 ? `${(100 / s.original_odds).toFixed(0)}%` : '-'}</td>
+                    <td className="text-right text-muted text-sm">{s.fair_odds != null && s.fair_odds > 1 ? `${(100 / s.fair_odds).toFixed(0)}%` : '-'}</td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
                     <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
                     <td className="text-right">
-                      {s.boost_pct != null ? (
-                        <span className={`font-semibold text-sm ${s.boost_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
-                          {s.boost_pct > 0 ? '+' : ''}{s.boost_pct.toFixed(1)}%
+                      {s.edge_pct != null ? (
+                        <span className={`font-semibold text-sm ${s.edge_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
+                          {s.edge_pct > 0 ? '+' : ''}{s.edge_pct.toFixed(1)}%
                         </span>
                       ) : (
                         <span className="text-muted2 text-sm">-</span>
@@ -321,6 +321,9 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
             {eventTimeLabel && <div><span className="text-muted2 uppercase tracking-wider">Kickoff: </span><span className="text-text">{eventTimeLabel}</span></div>}
             {special.fair_odds != null && (
               <div><span className="text-muted2 uppercase tracking-wider">Fair: </span><span className="text-text">{special.fair_odds.toFixed(2)}</span></div>
+            )}
+            {special.boost_pct != null && (
+              <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>
             )}
             {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
           </div>

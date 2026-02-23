@@ -2,7 +2,8 @@
 EV Enrichment for Odds Boosts
 
 Matches specials/boosts against Pinnacle fair odds and computes edge.
-Used by both the scheduler (at scrape time) and the API (fallback).
+For specials that can't match Pinnacle (combos, props, goalscorers),
+estimates fair odds by removing estimated bookmaker margin from original_odds.
 
 Also provides store_specials_to_db() for persisting enriched specials.
 """
@@ -53,6 +54,59 @@ MATCH_WINNER_LABELS = {
     "match result", "1x2", "to qualify", "att kvalificera",
     "vinner matchen", "to win", "att vinna",
 }
+
+# ── Margin estimation by boost type ──────────────────────────────────────
+# Bookmaker margin (overround fraction) baked into original_odds.
+# Higher margin → we trust original_odds less → estimate more conservative fair_odds.
+#
+# Checked in order; first match wins.
+
+_MARGIN_RULES: list[tuple[list[str], float]] = [
+    # Combos: result + totals, result + BTTS — margins compound across legs
+    (["resultat +", "result +", " + "], 0.25),
+    # Goalscorer / player props — wide margins
+    (["målgörare", "goalscorer", "gör mål", "scores", "to score",
+      "två eller fler mål", "two or more goals"], 0.20),
+    # HT/FT — large market with many outcomes
+    (["halvtid/fulltid", "halftime/fulltime", "ht/ft",
+      "halvtid/slutställning", "spelförlopp"], 0.18),
+    # Exact score / correct score
+    (["rätt resultat", "correct score"], 0.30),
+    # Player stats (shots, assists, rebounds)
+    (["spelarens", "player", "skott", "shot", "assist", "rebound", "poäng"], 0.20),
+    # Both halves, clean sheet, period props
+    (["båda halvlekarna", "both halves", "nollan", "clean sheet",
+      "period med", "period with"], 0.15),
+    # Timing of first goal
+    (["tidpunkt", "time of"], 0.20),
+    # Corners, cards
+    (["hörna", "corner", "kort", "card", "hörnor"], 0.15),
+    # Over/under, totals
+    (["antal mål", "antal", "över", "under", "over", "totalt antal"], 0.10),
+    # Handicap / spread
+    (["handikapp", "handicap"], 0.08),
+    # BTTS
+    (["båda lagen", "both teams", "btts"], 0.10),
+    # Win half / win period
+    (["vinner en av", "vinner halvlek", "win half", "win period"], 0.12),
+    # Simple 1x2 / match winner — tightest markets
+    (["1x2", "vinnare", "winner", "att vinna", "to win", "vinner matchen"], 0.06),
+]
+
+# Fallback if no rule matches
+_DEFAULT_MARGIN = 0.12
+
+
+def estimate_margin(title: str) -> float:
+    """Estimate bookmaker margin from boost title keywords.
+
+    Returns a fraction (e.g. 0.10 for 10% overround).
+    """
+    t = _fix_encoding(title).lower()
+    for keywords, margin in _MARGIN_RULES:
+        if any(kw in t for kw in keywords):
+            return margin
+    return _DEFAULT_MARGIN
 
 
 def _fix_encoding(text: str) -> str:
@@ -253,6 +307,40 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         enriched_count += 1
 
     logger.info(f"EV enrichment: {enriched_count}/{len(specials)} specials matched to Pinnacle")
+
+    # ── Second pass: margin-based estimation for remaining specials ──────
+    # For specials that didn't match Pinnacle but have original_odds,
+    # estimate fair_odds by removing the bookmaker's estimated margin.
+    # This gives us a real probability for Kelly staking.
+    margin_count = 0
+    for special in specials:
+        # Skip if already enriched via Pinnacle
+        if special.get("edge_pct") is not None:
+            continue
+
+        original_odds = special.get("original_odds")
+        boosted_odds = special.get("boosted_odds")
+        if not original_odds or not boosted_odds or original_odds <= 1.0:
+            continue
+
+        title = special.get("title", "") + " " + special.get("market_label", "")
+        margin = estimate_margin(title)
+
+        # fair_odds = original_odds corrected for margin
+        # original_odds implies prob = 1/orig, but that includes margin
+        # true_prob = (1/orig) / (1 + margin)  →  fair_odds = orig * (1 + margin)
+        fair_odds = round(original_odds * (1 + margin), 3)
+        edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
+        ev_per_unit = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
+
+        special["fair_odds"] = fair_odds
+        special["edge_pct"] = edge_pct
+        special["ev_per_unit"] = ev_per_unit
+        special["is_positive_ev"] = edge_pct > 0
+        special["margin_estimate"] = margin
+        margin_count += 1
+
+    logger.info(f"EV enrichment: {margin_count} specials estimated via margin correction")
     return specials
 
 
