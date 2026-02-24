@@ -211,7 +211,8 @@ class Bet(Base):
     def profit(self) -> float:
         """Net profit/loss from this bet."""
         if self.result == "won":
-            return self.payout - self.stake
+            # Freebets: full payout is profit (stake was free money)
+            return self.payout if self.is_bonus else self.payout - self.stake
         elif self.result == "lost":
             # Free bets don't lose stake
             return 0.0 if self.is_bonus else -self.stake

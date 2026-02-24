@@ -66,6 +66,17 @@ class BetService:
         if not provider:
             return {"error": f"Provider {provider_id} not found"}
 
+        # Block duplicate: same event + provider already has a pending bet
+        if event_id:
+            existing = self.db.query(Bet).filter(
+                Bet.profile_id == profile.id,
+                Bet.event_id == event_id,
+                Bet.provider_id == provider_id,
+                Bet.result == "pending",
+            ).first()
+            if existing:
+                return {"error": f"Already have a pending bet on this event at {provider_id}"}
+
         # Check cooldown
         cooldown_reason = self._check_cooldown(provider_id)
         if cooldown_reason:
@@ -107,6 +118,16 @@ class BetService:
         # Deduct stake from balance (unless free bet)
         if not is_bonus:
             self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
+
+        # Record event exposure in StakeCalculator (so event cap works within session)
+        if event_id and not is_bonus:
+            try:
+                from .bankroll_service import BankrollService
+                bankroll_svc = BankrollService(self.db)
+                calc = bankroll_svc.get_stake_calculator(profile.id)
+                calc.event_tracker.record_bet(event_id, stake)
+            except Exception:
+                pass  # Non-critical — DB-seeded exposure still works on next request
 
         # Record wagering progress
         wagering_status = self.profile_repo.record_wagering(profile.id, provider_id, stake, odds)

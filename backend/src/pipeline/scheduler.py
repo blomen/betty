@@ -657,14 +657,12 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Execute auto-settlement: snapshot closing odds, then settle from Pinnacle scores."""
-        from src.services.results_service import ResultsService
+        """Snapshot closing odds for CLV tracking on started events."""
         from src.services.bet_service import BetService
         from src.db.models import get_session
 
         session = get_session()
         try:
-            # First: snapshot closing odds for started events
             bet_service = BetService(session)
             clv_stats = bet_service.snapshot_closing_odds()
             session.commit()
@@ -675,11 +673,7 @@ class ExtractionScheduler:
                     f"{clv_stats['updated']}/{clv_stats['processed']} bets updated"
                 )
 
-            # Then: auto-settle from Pinnacle live scores (synchronous — no HTTP calls)
-            results_service = ResultsService(session)
-            stats = results_service.auto_settle()
-
-            return stats
+            return {"settled": 0, "checked": 0, "skipped": 0, **clv_stats}
         except Exception:
             session.rollback()
             raise

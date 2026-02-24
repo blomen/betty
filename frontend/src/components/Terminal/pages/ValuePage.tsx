@@ -47,6 +47,9 @@ export function ValuePage({ providers }: ValuePageProps) {
     useFreebet: boolean;
   } | null>(null);
 
+  // Track placed event+provider combos for immediate removal from list
+  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -83,6 +86,10 @@ export function ValuePage({ providers }: ValuePageProps) {
       const ttk = getTTKFromNow(o.starts_at);
       return ttk === null || ttk > 1 / 60;
     });
+    // Remove placed event+provider combos
+    if (placedKeys.size > 0) {
+      result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.provider1}`));
+    }
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
     }
@@ -114,7 +121,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders]);
+  }, [opportunities, selectedProviders, placedKeys]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -227,6 +234,9 @@ export function ValuePage({ providers }: ValuePageProps) {
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
       setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
+
+      // Remove from list immediately
+      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.provider1}`));
       setPendingBet(null);
       setSelectedGroup(null);
       fetchData();

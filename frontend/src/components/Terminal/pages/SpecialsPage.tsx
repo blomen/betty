@@ -26,9 +26,22 @@ export function SpecialsPage() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isPlacing, setIsPlacing] = useState(false);
   const [placementError, setPlacementError] = useState<string | null>(null);
+  const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
+
+  // Two-step placement: tracks which special is awaiting confirm after browser opened
+  const [pendingBet, setPendingBet] = useState<{
+    groupKey: string;
+    special: SpecialItem;
+    providerId: string;
+    actualOdds: number;
+    stake: number;
+  } | null>(null);
+
+  // Track placed specials for immediate removal from list
+  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
   const fetchData = useCallback(async () => {
     setIsLoading(true); setError(null);
@@ -56,14 +69,12 @@ export function SpecialsPage() {
     const groups: GroupedSpecial[] = [];
     for (const s of nonExpired) {
       const allProviders = [s.provider, ...(s.shared_providers || [])];
-      groups.push({
-        key: `${s.provider}-${s.title}-${s.boosted_odds}`,
-        rep: s,
-        providers: allProviders,
-      });
+      const key = `${s.provider}-${s.title}-${s.boosted_odds}`;
+      if (placedKeys.has(key)) continue;
+      groups.push({ key, rep: s, providers: allProviders });
     }
     return groups;
-  }, [nonExpired]);
+  }, [nonExpired, placedKeys]);
 
   // Apply filters
   const activeGroups = useMemo(() => {
@@ -96,8 +107,8 @@ export function SpecialsPage() {
   };
 
   const handleRowClick = async (idx: number, group: GroupedSpecial) => {
-    if (expandedIdx === idx) { setExpandedIdx(null); setStakePreview(null); setPlacementError(null); return; }
-    setExpandedIdx(idx); setStakePreview(null); setPlacementError(null);
+    if (expandedIdx === idx) { setExpandedIdx(null); setStakePreview(null); setPlacementError(null); setPendingBet(null); return; }
+    setExpandedIdx(idx); setStakePreview(null); setPlacementError(null); setPendingBet(null);
     const s = group.rep;
     if (!s.boosted_odds || !s.edge_pct) return;
     setIsLoadingPreview(true);
@@ -106,16 +117,64 @@ export function SpecialsPage() {
     finally { setIsLoadingPreview(false); }
   };
 
-  const handlePlaceBet = async (special: SpecialItem, providerId: string, groupKey: string) => {
+  // Step 1: Navigate to provider site, enter "awaiting confirm" state
+  const startPlaceBet = async (special: SpecialItem, providerId: string, groupKey: string) => {
     if (!stakePreview || !special.boosted_odds) return;
     let stake = stakePreview.recommended_stake;
     if (special.max_stake != null && stake > special.max_stake) stake = special.max_stake;
     if (stake <= 0) return;
     const odds = oddsOverride[groupKey] ?? special.boosted_odds;
-    setIsPlacing(true); setPlacementError(null);
-    try { await api.createBet({ provider_id: providerId, market: 'boost', outcome: special.title, odds, stake, is_bonus: false, utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined, selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined }); setExpandedIdx(null); setStakePreview(null); fetchData(); }
-    catch (err) { setPlacementError(err instanceof Error ? err.message : 'Failed to place bet'); }
-    finally { setIsPlacing(false); }
+    setIsPlacing(true);
+    setPlacementError(null);
+    setBetSuccess(null);
+
+    try {
+      try {
+        await api.navigateToProvider(providerId);
+      } catch {
+        // Navigation is best-effort
+      }
+      setPendingBet({ groupKey, special, providerId, actualOdds: odds, stake });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to navigate';
+      setPlacementError(msg);
+    } finally {
+      setIsPlacing(false);
+    }
+  };
+
+  // Step 2: Confirm bet with actual odds
+  const confirmPlaceBet = async () => {
+    if (!pendingBet) return;
+    const { special, providerId, actualOdds, stake, groupKey } = pendingBet;
+    setIsPlacing(true);
+    setPlacementError(null);
+
+    try {
+      await api.createBet({
+        provider_id: providerId,
+        market: 'boost',
+        outcome: special.title,
+        odds: actualOdds,
+        stake,
+        is_bonus: false,
+        utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined,
+        selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined,
+      });
+      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
+      setTimeout(() => setBetSuccess(null), 5000);
+
+      // Remove from list immediately
+      setPlacedKeys(prev => new Set(prev).add(groupKey));
+      setPendingBet(null);
+      setExpandedIdx(null);
+      setStakePreview(null);
+      fetchData();
+    } catch (err) {
+      setPlacementError(err instanceof Error ? err.message : 'Failed to place bet');
+    } finally {
+      setIsPlacing(false);
+    }
   };
 
   const timeAgo = scrapedAt ? formatTimeAgo(scrapedAt) : null;
@@ -142,6 +201,14 @@ export function SpecialsPage() {
       </div>
 
       {error && <div className="text-error text-sm bg-error/10 px-3 py-2 border border-error/20">{error}</div>}
+
+      {/* Feedback toasts */}
+      {betSuccess && (
+        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
+          <span>{betSuccess}</span>
+          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
+        </div>
+      )}
 
       {filters && (
         <FilterBar>
@@ -227,7 +294,11 @@ export function SpecialsPage() {
                           placementError={placementError}
                           selectedProviderIdx={selectedBetProvider[group.key] ?? 0}
                           onSelectProvider={(idx) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: idx }))}
-                          onPlaceBet={(providerId) => handlePlaceBet(s, providerId, group.key)}
+                          onStartPlaceBet={(providerId) => startPlaceBet(s, providerId, group.key)}
+                          pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
+                          onConfirmBet={confirmPlaceBet}
+                          onCancelPending={() => setPendingBet(null)}
+                          onUpdatePendingOdds={(val) => setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null)}
                           oddsOverride={oddsOverride[group.key] ?? null}
                           editingOdds={editingOdds === group.key}
                           onEditOdds={() => setEditingOdds(group.key)}
@@ -249,7 +320,7 @@ export function SpecialsPage() {
   );
 }
 
-function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onPlaceBet, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
+function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onStartPlaceBet, pendingBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
   special: SpecialItem;
   groupKey: string;
   providers: string[];
@@ -259,7 +330,11 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
   placementError: string | null;
   selectedProviderIdx: number;
   onSelectProvider: (idx: number) => void;
-  onPlaceBet: (providerId: string) => void;
+  onStartPlaceBet: (providerId: string) => void;
+  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number } | null;
+  onConfirmBet: () => void;
+  onCancelPending: () => void;
+  onUpdatePendingOdds: (val: number) => void;
   oddsOverride: number | null;
   editingOdds: boolean;
   onEditOdds: () => void;
@@ -331,6 +406,35 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
             {placementError && <span className="text-error text-xs max-w-[200px] truncate">{placementError}</span>}
             {stakePreview.skip_reason ? (
               <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
+            ) : pendingBet ? (
+              <>
+                <span className="text-muted text-xs">Odds:</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  autoFocus
+                  value={pendingBet.actualOdds}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (!isNaN(val)) onUpdatePendingOdds(val);
+                  }}
+                  className="w-20 bg-bg border border-tabBonus/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabBonus"
+                  onKeyDown={(e) => { if (e.key === 'Enter') onConfirmBet(); if (e.key === 'Escape') onCancelPending(); }}
+                />
+                <button
+                  onClick={onConfirmBet}
+                  disabled={isPlacing || pendingBet.actualOdds < 1.01}
+                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                >
+                  {isPlacing ? '...' : 'Confirm'}
+                </button>
+                <button
+                  onClick={onCancelPending}
+                  className="px-2 py-1.5 text-xs text-muted hover:text-text"
+                >
+                  Cancel
+                </button>
+              </>
             ) : (
               <>
                 <select
@@ -345,7 +449,7 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
                   ))}
                 </select>
                 <button
-                  onClick={() => onPlaceBet(providers[selectedProviderIdx] || providers[0])}
+                  onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
                   disabled={stake <= 0 || isPlacing}
                   className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
                 >

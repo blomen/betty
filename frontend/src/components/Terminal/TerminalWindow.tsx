@@ -3,7 +3,7 @@ import type { BettingContext } from '@/types';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
 import {
-  HomePage,
+  MonitorPage,
   ValuePage,
   DutchPage,
   ReversePage,
@@ -28,7 +28,7 @@ interface TerminalWindowProps {
 
 export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
-  const [activeTab, setActiveTab] = useState<TabName>('home');
+  const [activeTab, setActiveTab] = useState<TabName>('monitor');
   const [isProfileActive, setIsProfileActive] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
@@ -82,8 +82,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
 
   const renderPage = () => {
     switch (activeTab) {
-      case 'home':
-        return <HomePage onTabChange={handleTabChange} />;
+      case 'monitor':
+        return <MonitorPage onTabChange={handleTabChange} />;
       case 'value':
         return <ValuePage providers={context.providers} />;
       case 'dutch':

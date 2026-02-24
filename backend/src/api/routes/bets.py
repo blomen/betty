@@ -105,11 +105,9 @@ async def list_bets(
             "settlement_source": b.settlement_source,
             "home_team": ev.home_team if ev else None,
             "away_team": ev.away_team if ev else None,
+            "sport": ev.sport if ev else None,
+            "league": ev.league if ev else None,
             "start_time": ev.start_time.isoformat() if ev and ev.start_time else None,
-            "home_score": ev.home_score if ev else None,
-            "away_score": ev.away_score if ev else None,
-            "match_status": ev.match_status if ev else None,
-            "match_minute": ev.match_minute if ev else None,
             "provider_site_url": site_urls.get(b.provider_id),
         })
 
@@ -154,32 +152,6 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
     """
     result = service.snapshot_closing_odds()
     return {"success": True, **result}
-
-
-@router.post("/auto-settle")
-def auto_settle_bets(db: Session = Depends(get_db)):
-    """
-    Auto-settle pending bets using Pinnacle live scores.
-
-    Settles all pending bets on events with match_status='finished'
-    using stored home_score/away_score from Pinnacle extraction.
-    """
-    from ...services.results_service import ResultsService
-
-    # Snapshot closing odds first
-    bet_service = BetService(db)
-    bet_service.snapshot_closing_odds()
-    db.commit()
-
-    # Auto-settle from Pinnacle scores
-    service = ResultsService(db)
-    try:
-        result = service.auto_settle()
-        return {"success": True, **result}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Auto-settlement failed: {e}", exc_info=True)
-        raise HTTPException(500, f"Auto-settlement failed: {str(e)}")
 
 
 @router.post("/batch")

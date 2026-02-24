@@ -7,7 +7,7 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
-  { name: 'home',       label: 'Home',      color: '#64748B' },
+  { name: 'monitor',    label: 'Monitor',   color: '#64748B' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
   { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
@@ -31,13 +31,13 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 };
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
-  sports: 'home',
+  sports: 'monitor',
   stocks: 'tradingBankroll',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
 export const TAB_COLORS: Record<string, string> = {
-  home: '#64748B',
+  monitor: '#64748B',
   value: '#FF9800',
   dutch: '#10b981',
   reverse: '#EF5350',

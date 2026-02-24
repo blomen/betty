@@ -1,5 +1,5 @@
 export { Card } from './Card';
-export { HomePage } from './HomePage';
+export { MonitorPage, HomePage } from './HomePage';
 export { ValuePage } from './ValuePage';
 export { DutchPage } from './DutchPage';
 export { ReversePage } from './ReversePage';

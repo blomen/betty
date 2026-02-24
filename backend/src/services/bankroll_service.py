@@ -3,8 +3,10 @@
 import logging
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Profile, Provider, ProfileProviderBonus
+from ..db.models import Profile, Provider, ProfileProviderBonus, Bet
 from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 
 logger = logging.getLogger(__name__)
@@ -46,8 +48,10 @@ class BankrollService:
         profile = self.profile_repo.get_active()
         bets = self.bet_repo.get_settled(profile.id)
 
-        total_staked = sum(b.stake for b in bets)
-        total_profit = sum(b.profit for b in bets)
+        real_staked = sum(b.stake for b in bets if not b.is_bonus)
+        total_staked = sum(b.stake for b in bets)  # For display only
+        bet_profit = sum(b.profit for b in bets if not b.is_bonus)
+        freebet_profit = sum(b.profit for b in bets if b.is_bonus)
         win_count = len([b for b in bets if b.result == "won"])
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])
@@ -60,8 +64,8 @@ class BankrollService:
         ).all()
         bonus_profit = sum(b.bonus_amount for b in bonus_records)
 
-        # Combine betting profit + bonus profit into one total
-        combined_profit = total_profit + bonus_profit
+        # Combined: betting profit + freebet profit + deposit bonus profit
+        combined_profit = bet_profit + freebet_profit + bonus_profit
 
         # CLV metrics
         clv_values = [b.clv_pct for b in bets if b.clv_pct is not None]
@@ -76,10 +80,12 @@ class BankrollService:
             "wins": win_count,
             "losses": loss_count,
             "voids": void_count,
-            "total_staked": round(total_staked, 2),
+            "total_staked": round(real_staked, 2),
             "total_profit": round(combined_profit, 2),
+            "bet_profit": round(bet_profit, 2),
+            "freebet_profit": round(freebet_profit, 2),
             "bonus_profit": round(bonus_profit, 2),
-            "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
+            "roi_pct": round(combined_profit / real_staked * 100, 2) if real_staked > 0 else 0,
             "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
             "avg_clv": avg_clv,
             "clv_positive_pct": clv_positive_pct,
@@ -149,6 +155,22 @@ class BankrollService:
         calc.max_kelly = max_kelly
         calc.single_bet_cap_pct = single_bet_cap_pct
         calc.min_edge = min_edge
+
+        # Seed event exposures from pending bets in DB (survives server restart)
+        calc.event_tracker.exposures.clear()
+        pending_exposures = (
+            self.db.query(Bet.event_id, func.sum(Bet.stake))
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.result == "pending",
+                Bet.event_id.isnot(None),
+                Bet.is_bonus == False,
+            )
+            .group_by(Bet.event_id)
+            .all()
+        )
+        for event_id, total_stake in pending_exposures:
+            calc.event_tracker.exposures[event_id] = total_stake
 
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()

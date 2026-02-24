@@ -1,29 +1,15 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { useRefreshOnExtraction, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { PolymarketValueBet, PolymarketStats } from '@/types';
-
-function getTimeAgo(isoStr: string): string {
-  const diff = Date.now() - new Date(isoStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
+import type { PolymarketValueBet } from '@/types';
 
 export function PolymarketPage() {
   const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
-  const [totalScanned, setTotalScanned] = useState(0);
-  const [totalBankroll, setTotalBankroll] = useState(0);
-  const [polyStats, setPolyStats] = useState<PolymarketStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const tiersProgress = useTiersProgress();
 
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -34,17 +20,21 @@ export function PolymarketPage() {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
 
+  // Two-step placement: tracks which bet is awaiting confirm after browser opened
+  const [pendingBet, setPendingBet] = useState<{
+    idx: number;
+    vb: PolymarketValueBet;
+    actualOdds: number;
+  } | null>(null);
+
+  // Track placed event+outcome combos for immediate removal from list
+  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [valueRes, stats] = await Promise.all([
-        api.getPolymarketValue(3, undefined, 50),
-        api.getPolymarketStats(),
-      ]);
+      const valueRes = await api.getPolymarketValue(3, undefined, 50);
       setValueBets(valueRes.value_bets);
-      setTotalScanned(valueRes.total_scanned);
-      setTotalBankroll(valueRes.total_bankroll ?? 0);
-      setPolyStats(stats);
     } catch (err) {
       console.error('Failed to fetch Polymarket data:', err);
     } finally {
@@ -61,7 +51,10 @@ export function PolymarketPage() {
     return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const handleSelectOpp = (idx: number) => { setSelectedOpp(selectedOpp === idx ? null : idx); };
+  const handleSelectOpp = (idx: number) => {
+    setSelectedOpp(selectedOpp === idx ? null : idx);
+    setPendingBet(null);
+  };
 
   const getOddsKey = (vb: PolymarketValueBet) =>
     `${vb.event_id}|${vb.outcome}|${vb.market}|${vb.point ?? ''}`;
@@ -69,22 +62,71 @@ export function PolymarketPage() {
   const getEffectiveOdds = (vb: PolymarketValueBet) =>
     oddsOverride[getOddsKey(vb)] ?? vb.polymarket_odds;
 
-  const handlePlaceBet = async (vb: PolymarketValueBet) => {
+  const getPlacedKey = (vb: PolymarketValueBet) =>
+    `${vb.event_id}|polymarket`;
+
+  // Step 1: Navigate browser to Polymarket, enter "awaiting confirm" state
+  const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
     const stake = vb.final_stake;
     if (!stake || stake <= 0) return;
     const odds = getEffectiveOdds(vb);
     setIsPlacing(true);
     setBetError(null);
     setBetSuccess(null);
+
     try {
-      await api.createBet({ event_id: vb.event_id, provider_id: 'polymarket', market: vb.market, outcome: vb.outcome, odds, stake, is_bonus: false, utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined, selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined });
+      try {
+        await api.navigateToEvent({
+          provider_id: 'polymarket',
+          home_team: vb.home_team,
+          away_team: vb.away_team,
+          event_id: vb.event_id,
+        });
+      } catch {
+        // Navigation is best-effort
+      }
+      setPendingBet({ idx, vb, actualOdds: odds });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to navigate';
+      setBetError(msg);
+      setTimeout(() => setBetError(null), 5000);
+    } finally {
+      setIsPlacing(false);
+    }
+  };
+
+  // Step 2: Confirm bet with actual odds
+  const confirmPlaceBet = async () => {
+    if (!pendingBet) return;
+    const { vb, actualOdds } = pendingBet;
+    const stake = vb.final_stake;
+    if (!stake || stake <= 0) return;
+    setIsPlacing(true);
+    setBetError(null);
+
+    try {
+      await api.createBet({
+        event_id: vb.event_id,
+        provider_id: 'polymarket',
+        market: vb.market,
+        outcome: vb.outcome,
+        odds: actualOdds,
+        stake,
+        is_bonus: false,
+        utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined,
+        selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
+      });
       const outcomeLabel = resolveOutcome(vb);
-      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (Polymarket)`);
+      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);
+
+      // Remove from list immediately
+      setPlacedKeys(prev => new Set(prev).add(getPlacedKey(vb)));
+      setPendingBet(null);
       setSelectedOpp(null);
       fetchData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to place bet';
+      const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
       setTimeout(() => setBetError(null), 5000);
     } finally {
@@ -102,15 +144,21 @@ export function PolymarketPage() {
     return vb.outcome;
   };
 
-  // Remove started/imminent events
+  // Remove started/imminent events and placed bets
   const activeValueBets = useMemo(() =>
-    valueBets.filter(vb => { const ttk = getTTKFromNow(vb.start_time); return ttk === null || ttk > 1 / 60; }),
-  [valueBets]);
+    valueBets.filter(vb => {
+      const ttk = getTTKFromNow(vb.start_time);
+      if (ttk !== null && ttk <= 1 / 60) return false;
+      if (placedKeys.has(getPlacedKey(vb))) return false;
+      return true;
+    }),
+  [valueBets, placedKeys]);
 
-  type PolySortCol = 'odds' | 'fair' | 'stake' | 'edge' | 'ttk';
+  type PolySortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
     odds:  (vb: PolymarketValueBet) => vb.polymarket_odds,
     fair:  (vb: PolymarketValueBet) => vb.fair_odds,
+    prob:  (vb: PolymarketValueBet) => vb.fair_odds > 1 ? 100 / vb.fair_odds : 0,
     stake: (vb: PolymarketValueBet) => vb.final_stake ?? 0,
     edge:  (vb: PolymarketValueBet) => vb.edge_pct,
     ttk:   (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
@@ -120,18 +168,16 @@ export function PolymarketPage() {
 
   return (
     <div className="space-y-3">
+      {/* Header — uniform with ValuePage */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="polymarket" color={TAB_COLORS.polymarket} size={16} />
           Polymarket
           <span className="text-muted text-sm font-normal ml-1">({sortedBets.length})</span>
         </h2>
-        <span className="text-muted text-xs">
-          {polyStats ? `${totalBankroll.toLocaleString()} kr · ${polyStats.matched_events} pin matched${tiersProgress?.tiers?.sharp?.last_run ? ` · ${getTimeAgo(tiersProgress.tiers.sharp.last_run)}` : ''}` : ''}
-        </span>
       </div>
 
-      {/* Feedback toasts (uniform with ValuePage) */}
+      {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
           <span>{betSuccess}</span>
@@ -158,6 +204,7 @@ export function PolymarketPage() {
               <th className="text-right">Outcome</th>
               <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />
+              <SortableHeader column="prob" label="Prob" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
@@ -188,6 +235,9 @@ export function PolymarketPage() {
                     <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
                     <td className="text-right text-text text-sm font-medium">{vb.polymarket_odds.toFixed(2)}</td>
                     <td className="text-right text-muted text-sm">{vb.fair_odds.toFixed(2)}</td>
+                    <td className="text-right text-muted text-sm">
+                      {vb.fair_odds > 1 ? `${(100 / vb.fair_odds).toFixed(0)}%` : '-'}
+                    </td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
@@ -200,11 +250,12 @@ export function PolymarketPage() {
                     const oddsChanged = oddsKey in oddsOverride;
                     const potentialReturn = hasStake ? vb.final_stake! * effectiveOdds : 0;
                     const potentialProfit = potentialReturn - (vb.final_stake || 0);
+                    const isPending = pendingBet?.idx === idx;
 
                     return (
                     <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
-                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
-                        {/* Top row: Kelly, Odds (editable), Return, Line — uniform with ValuePage */}
+                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+                        {/* Top row: Kelly, Odds (editable), Return, Market, Line — uniform with ValuePage */}
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           {vb.kelly_fraction != null && (
                             <div>
@@ -277,15 +328,48 @@ export function PolymarketPage() {
                             </div>
                           )}
                         </div>
-                        {/* Bottom row: Bet button — uniform with ValuePage */}
+                        {/* Bottom row: Two-step bet flow — uniform with ValuePage */}
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                          <button
-                            onClick={() => handlePlaceBet(vb)}
-                            disabled={!hasStake || isPlacing}
-                            className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                          >
-                            {isPlacing ? '...' : 'Place Bet'}
-                          </button>
+                          {isPending ? (
+                            <>
+                              <span className="text-muted text-xs">Odds:</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                autoFocus
+                                value={pendingBet!.actualOdds}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  if (!isNaN(val)) {
+                                    setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
+                                  }
+                                }}
+                                className="w-20 bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabPolymarket"
+                                onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
+                              />
+                              <button
+                                onClick={confirmPlaceBet}
+                                disabled={isPlacing || pendingBet!.actualOdds < 1.01}
+                                className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                              >
+                                {isPlacing ? '...' : 'Confirm'}
+                              </button>
+                              <button
+                                onClick={() => setPendingBet(null)}
+                                className="px-2 py-1.5 text-xs text-muted hover:text-text"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => startPlaceBet(vb, idx)}
+                              disabled={!hasStake || isPlacing}
+                              className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                            >
+                              {isPlacing ? '...' : 'Place Bet'}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -298,8 +382,6 @@ export function PolymarketPage() {
         </table>
         </div>
       )}
-
-      {totalScanned > 0 && <div className="text-muted text-xs text-center pt-1">{totalScanned} total value bets scanned across all providers</div>}
     </div>
   );
 }

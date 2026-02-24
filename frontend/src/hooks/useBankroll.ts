@@ -14,6 +14,8 @@ export function useBankroll(refreshInterval = 30000) {
     voids: 0,
     total_staked: 0,
     total_profit: 0,
+    bet_profit: 0,
+    freebet_profit: 0,
     bonus_profit: 0,
     roi_pct: 0,
     win_rate: 0,

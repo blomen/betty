@@ -154,6 +154,47 @@ table:not(.sq) td {
   text-align: left;
 }
 
+/* ── Live section animations ──────────────────────────── */
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.6); }
+  70% { box-shadow: 0 0 0 5px rgba(255, 152, 0, 0); }
+}
+
+@keyframes live-glow {
+  0%, 100% { border-color: rgba(255, 152, 0, 0.35); }
+  50% { border-color: rgba(255, 152, 0, 0.12); }
+}
+
+@keyframes live-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.live-dot {
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+.live-card {
+  animation: live-glow 3s ease-in-out infinite;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.live-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(255, 152, 0, 0.08);
+}
+
+.live-card .live-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 152, 0, 0.03) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: live-shimmer 4s ease-in-out infinite;
+}
+
 /* Links */
 a {
   color: var(--accent);

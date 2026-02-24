@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Bet, BankrollStats, BonusProgressEntry, LiveEvent } from '@/types';
+import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
@@ -12,14 +12,6 @@ function getTTK(bet: Bet): number | null {
   const start = new Date(bet.start_time).getTime();
   const placed = new Date(bet.placed_at).getTime();
   return Math.max(0, (start - placed) / (1000 * 60 * 60));
-}
-
-/** Live TTK: hours from NOW to kickoff (0 if already started) */
-function getLiveTTK(bet: Bet): number | null {
-  if (!bet.start_time) return null;
-  const start = new Date(bet.start_time).getTime();
-  const now = Date.now();
-  return Math.max(0, (start - now) / (1000 * 60 * 60));
 }
 
 function formatTTK(hours: number): string {
@@ -135,7 +127,6 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   const profit = lastVal - firstVal;
   const profitPct = ((profit / firstVal) * 100).toFixed(1);
 
-  // Convert SVG coords to percentages for HTML overlays
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
@@ -174,7 +165,6 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
           <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="5" fill={stroke} fillOpacity="0.15" />
           <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="2.5" fill={stroke} />
         </svg>
-        {/* HTML axis labels — inherit page font */}
         {yLabels.map((l, i) => (
           <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
         ))}
@@ -254,7 +244,6 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
     xPos: x(p.date),
   }));
 
-  // Convert SVG coords to percentages for HTML overlays
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
@@ -316,7 +305,6 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
           <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="5" fill={avgColor} fillOpacity="0.15" />
           <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="2.5" fill={avgColor} />
         </svg>
-        {/* HTML axis labels — inherit page font */}
         {yLabels.map((l, i) => (
           <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
         ))}
@@ -362,7 +350,7 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
   );
 }
 
-// ── Main page ────────────────────────────────────────────────────────
+// ── Main page — History only ────────────────────────────────────────
 
 export function BetsPage() {
   const [bets, setBets] = useState<Bet[]>([]);
@@ -370,14 +358,12 @@ export function BetsPage() {
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
-  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
 
-  // Sort (for history table only)
+  // Sort (for history table)
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
-
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
-  // Inline editing state for history bets
+  // Inline editing state
   const [editingBetId, setEditingBetId] = useState<number | null>(null);
   const [editStake, setEditStake] = useState<string>('');
   const [editOdds, setEditOdds] = useState<string>('');
@@ -386,20 +372,12 @@ export function BetsPage() {
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Snapshot closing odds + auto-settle finished events before fetching
-      await Promise.all([
-        api.closeStartedBets().catch(() => {}),
-        api.autoSettleBets().catch(() => {}),
-      ]);
-
-      const [response, bankroll, liveRes] = await Promise.all([
+      const [response, bankroll] = await Promise.all([
         api.getBets(undefined, 500),
         api.getBankroll(),
-        api.getLiveEvents(),
       ]);
       setBets(response.bets);
       setCurrentBankroll(bankroll.total);
-      setLiveEvents(liveRes.events);
     } catch (err) {
       console.error('Failed to fetch bets:', err);
     } finally {
@@ -424,62 +402,11 @@ export function BetsPage() {
       );
       setActiveBonuses(active);
     } catch {
-      // Silently ignore — bonus section is supplementary
+      // Silently ignore
     }
   }, []);
 
   useEffect(() => { fetchBets(); fetchStats(); fetchBonuses(); }, [fetchBets, fetchStats, fetchBonuses]);
-
-  // ── Live event map ────────────────────────────────────────────
-  const liveEventMap = useMemo(() => {
-    const map = new Map<string, LiveEvent>();
-    for (const ev of liveEvents) map.set(ev.id, ev);
-    return map;
-  }, [liveEvents]);
-
-  // ── Pending bets: 3-way split ──────────────────────────────────────
-  // Active  = Pinnacle confirmed live/finished (has score data)
-  // Settle  = past start_time, NOT confirmed live → needs manual W/L/V
-  // Upcoming = future start_time, genuine pre-match bets
-  const pendingBets = useMemo(() => bets.filter(b => b.result === 'pending'), [bets]);
-
-  const activePendingBets = useMemo(() => {
-    return pendingBets
-      .filter(b => b.event_id && liveEventMap.has(b.event_id))
-      .sort((a, b) => {
-        const evA = a.event_id ? liveEventMap.get(a.event_id) : null;
-        const evB = b.event_id ? liveEventMap.get(b.event_id) : null;
-        return (evB?.match_minute ?? 0) - (evA?.match_minute ?? 0);
-      });
-  }, [pendingBets, liveEventMap]);
-
-  const needsSettleBets = useMemo(() => {
-    const now = Date.now();
-    return pendingBets
-      .filter(b => {
-        if (b.event_id && liveEventMap.has(b.event_id)) return false;
-        return b.start_time && new Date(b.start_time).getTime() <= now;
-      })
-      .sort((a, b) => {
-        const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
-        const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
-        return ta - tb; // oldest first
-      });
-  }, [pendingBets, liveEventMap]);
-
-  const upcomingBets = useMemo(() => {
-    const now = Date.now();
-    return pendingBets
-      .filter(b => {
-        if (b.event_id && liveEventMap.has(b.event_id)) return false;
-        return !b.start_time || new Date(b.start_time).getTime() > now;
-      })
-      .sort((a, b) => {
-        const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
-        const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
-        return ta - tb;
-      });
-  }, [pendingBets, liveEventMap]);
 
   // ── History (settled bets only) ─────────────────────────────────
 
@@ -496,7 +423,6 @@ export function BetsPage() {
         return sort.dir === 'desc' ? -cmp : cmp;
       });
     } else {
-      // Default: newest first
       result = [...result].sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
     }
 
@@ -507,10 +433,9 @@ export function BetsPage() {
     setSort(prev => {
       if (prev?.key === key) {
         if (prev.dir === 'asc') return { key, dir: 'desc' };
-        if (prev.dir === 'desc') return null; // third click clears
+        if (prev.dir === 'desc') return null;
         return { key, dir: 'asc' };
       }
-      // Default: desc for numeric columns, asc for text
       const textCols: SortKey[] = ['provider', 'status', 'date'];
       return { key, dir: textCols.includes(key) ? 'asc' : 'desc' };
     });
@@ -539,27 +464,6 @@ export function BetsPage() {
     if (outcome === 'over') return 'Over';
     if (outcome === 'under') return 'Under';
     return outcome;
-  };
-
-  const handleBonusAction = async (providerId: string, action: 'trigger_settled' | 'freebet_used') => {
-    try {
-      await api.bonusTransition(providerId, action);
-      fetchBonuses();
-      fetchStats();
-    } catch (err) {
-      console.error('Bonus transition failed:', err);
-    }
-  };
-
-  const handleManualSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
-    const payout = result === 'won' ? bet.stake * bet.odds : result === 'void' ? bet.stake : 0;
-    try {
-      await api.settleBet(bet.id, { result, payout });
-      fetchBets();
-      fetchStats();
-    } catch (err) {
-      console.error('Manual settle failed:', err);
-    }
   };
 
   const startEditing = (bet: Bet) => {
@@ -606,8 +510,8 @@ export function BetsPage() {
     <div className="space-y-3">
       {/* Header */}
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-        <TabIcon name="bets" color={TAB_COLORS.bets} size={16} />
-        Bets
+        <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
+        Stats
       </h2>
 
       {/* Stats Summary */}
@@ -639,6 +543,14 @@ export function BetsPage() {
               <div className={`text-lg font-semibold ${bankrollStats.total_profit >= 0 ? 'text-success' : 'text-error'}`}>
                 {bankrollStats.total_profit >= 0 ? '+' : ''}{bankrollStats.total_profit.toFixed(0)} kr
               </div>
+              <div className="flex items-center gap-2 text-[10px]">
+                {bankrollStats.freebet_profit > 0 && (
+                  <span className="text-accent">+{bankrollStats.freebet_profit.toFixed(0)} fb</span>
+                )}
+                {bankrollStats.bonus_profit > 0 && (
+                  <span className="text-tabBonus">+{bankrollStats.bonus_profit.toFixed(0)} dep</span>
+                )}
+              </div>
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Avg CLV</div>
@@ -667,264 +579,6 @@ export function BetsPage() {
 
       {/* CLV Trend Chart */}
       <CLVChart bets={bets} />
-
-      {/* ── Active Bets (started / live events) ─────────────────── */}
-      {activePendingBets.length > 0 && (
-        <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold flex items-center gap-2">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
-            Active <span className="text-warning">{activePendingBets.length}</span>
-          </h3>
-          <div className="border-l-2 border-warning">
-            <table className="sq">
-              <thead>
-                <tr>
-                  <th>Score</th>
-                  <th>Event</th>
-                  <th>Pick</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">CLV</th>
-                  <th className="text-right">Return</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activePendingBets.map(bet => {
-                  const ev = bet.event_id ? liveEventMap.get(bet.event_id) : null;
-                  const hasScore = ev && ev.home_score != null && ev.away_score != null;
-                  const isFinished = ev?.match_status === 'finished' || bet.match_status === 'finished';
-                  // Derive current map from stats period data (esports)
-                  const currentMap = ev?.stats && !hasScore && !isFinished
-                    ? Math.max(
-                        ...(['home_periods', 'away_periods'] as const).map(k => {
-                          const periods = (ev.stats as Record<string, unknown[]>)?.[k];
-                          return Array.isArray(periods) ? periods.filter((p: any) => p?.period !== 0).length : 0;
-                        })
-                      )
-                    : 0;
-                  return (
-                    <tr key={bet.id} className={isFinished ? 'bg-muted/[0.04]' : 'bg-warning/[0.03]'}>
-                      <td className="whitespace-nowrap">
-                        <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
-                          isFinished ? 'bg-muted/15 text-muted' : 'bg-warning/15 text-warning'
-                        }`}>
-                          {hasScore ? (
-                            isFinished
-                              ? <>{ev!.home_score}-{ev!.away_score} <span className="text-muted2">FT</span></>
-                              : <>{ev!.home_score}-{ev!.away_score}{ev!.match_minute != null && <span className="text-muted2 ml-0.5">{ev!.match_minute}'</span>}</>
-                          ) : isFinished ? (
-                            bet.home_score != null && bet.away_score != null
-                              ? <>{bet.home_score}-{bet.away_score} <span className="text-muted2">FT</span></>
-                              : 'FT'
-                          ) : (
-                            currentMap > 0
-                              ? <>LIVE <span className="text-muted2">Map {currentMap}</span></>
-                              : ev?.match_minute != null
-                                ? <>LIVE <span className="text-muted2">{ev.match_minute}'</span></>
-                                : 'LIVE'
-                          )}
-                        </span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
-                        <span className="text-muted mx-1">v</span>
-                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text">{resolveOutcome(bet)}</span>
-                        {isFinished && !hasScore && bet.provider_site_url ? (
-                          <a
-                            href={bet.provider_site_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-accent text-[10px] ml-1 hover:underline"
-                            title="Check result"
-                          >{formatProviderName(bet.provider)} ↗</a>
-                        ) : (
-                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
-                        )}
-                      </td>
-                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                      <td className="text-right">
-                        {bet.clv_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
-                          </span>
-                        ) : (
-                          <span className="text-sm text-muted">-</span>
-                        )}
-                      </td>
-                      <td className="text-right">
-                        {isFinished && !hasScore ? (
-                          <span className="inline-flex gap-1">
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
-                              onClick={() => handleManualSettle(bet, 'won')}
-                            >W</button>
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
-                              onClick={() => handleManualSettle(bet, 'lost')}
-                            >L</button>
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
-                              onClick={() => handleManualSettle(bet, 'void')}
-                            >V</button>
-                          </span>
-                        ) : (
-                          <span className="text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* ── Needs Settlement (past start, no live data) ─────── */}
-      {needsSettleBets.length > 0 && (
-        <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold flex items-center gap-2">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-error" />
-            Settle <span className="text-error">{needsSettleBets.length}</span>
-          </h3>
-          <div className="border-l-2 border-error">
-            <table className="sq">
-              <thead>
-                <tr>
-                  <th>Ago</th>
-                  <th>Event</th>
-                  <th>Pick</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">Result</th>
-                </tr>
-              </thead>
-              <tbody>
-                {needsSettleBets.map(bet => {
-                  const hoursAgo = bet.start_time
-                    ? Math.max(0, (Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60 * 60))
-                    : null;
-                  const agoStr = hoursAgo !== null
-                    ? hoursAgo < 1 ? `${Math.round(hoursAgo * 60)}m`
-                    : hoursAgo < 24 ? `${hoursAgo.toFixed(0)}h`
-                    : `${(hoursAgo / 24).toFixed(0)}d`
-                    : '?';
-                  return (
-                    <tr key={bet.id} className="bg-error/[0.03]">
-                      <td className="whitespace-nowrap">
-                        <span className="text-[10px] font-medium text-error">{agoStr}</span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
-                        <span className="text-muted mx-1">v</span>
-                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text">{resolveOutcome(bet)}</span>
-                        {bet.provider_site_url ? (
-                          <a
-                            href={bet.provider_site_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-accent text-[10px] ml-1 hover:underline"
-                            title="Check result on provider"
-                          >{formatProviderName(bet.provider)} ↗</a>
-                        ) : (
-                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
-                        )}
-                      </td>
-                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                      <td className="text-right">
-                        <span className="inline-flex gap-1">
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'won')}
-                          >W</button>
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'lost')}
-                          >L</button>
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'void')}
-                          >V</button>
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* ── Upcoming Bets (future events, sorted by TTK) ─────── */}
-      {upcomingBets.length > 0 && (
-        <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Upcoming <span className="text-tabBets">{upcomingBets.length}</span>
-          </h3>
-          <div className="border-l-2 border-tabBets">
-            <table className="sq">
-              <thead>
-                <tr>
-                  <th>TTK</th>
-                  <th>Event</th>
-                  <th>Pick</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">Edge</th>
-                  <th className="text-right">Return</th>
-                </tr>
-              </thead>
-              <tbody>
-                {upcomingBets.map(bet => {
-                  const ttk = getLiveTTK(bet);
-                  return (
-                    <tr key={bet.id}>
-                      <td className="whitespace-nowrap">
-                        <span className={`text-[10px] font-medium ${
-                          ttk !== null && ttk <= 1 ? 'text-warning' :
-                          ttk !== null && ttk <= 6 ? 'text-success' :
-                          ttk !== null && ttk <= 24 ? 'text-text' :
-                          'text-muted'
-                        }`}>
-                          {ttk !== null ? formatTTK(ttk) : '-'}
-                        </span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
-                        <span className="text-muted mx-1">v</span>
-                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text">{resolveOutcome(bet)}</span>
-                        <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
-                      </td>
-                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                      <td className="text-right">
-                        {bet.edge_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
-                          </span>
-                        ) : <span className="text-muted">-</span>}
-                      </td>
-                      <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
 
       {/* Active Bonuses */}
       {activeBonuses.length > 0 && (
@@ -960,16 +614,7 @@ export function BetsPage() {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        {bonus.status === 'freebet_available' && (
-                          <button
-                            onClick={() => handleBonusAction(providerId, 'freebet_used')}
-                            className="px-2 py-1 text-[10px] font-medium bg-success/20 text-success hover:bg-success/30 transition-colors"
-                          >
-                            Mark Used
-                          </button>
-                        )}
-                      </div>
+                      <div className="flex items-center gap-2" />
                     </div>
 
                     <div className="text-xs text-muted">{bonus.action_needed}</div>
@@ -1117,9 +762,6 @@ export function BetsPage() {
                       </td>
                       <td className="text-right">
                         <span className={`text-sm capitalize ${getStatusColor(bet.result)}`}>{bet.result}</span>
-                        {(bet.settlement_source === 'auto_tsdb' || bet.settlement_source === 'auto_pinnacle') && (
-                          <span className="text-[9px] px-1 py-0.5 bg-accent/15 text-accent ml-1">AUTO</span>
-                        )}
                       </td>
                     </tr>
                     {isExpanded && (() => {

@@ -168,6 +168,8 @@ export interface BankrollStats {
   voids: number;
   total_staked: number;
   total_profit: number;
+  bet_profit: number;
+  freebet_profit: number;
   bonus_profit: number;
   roi_pct: number;
   win_rate: number;
@@ -195,6 +197,8 @@ export interface Bet {
   placed_at: string;
   home_team?: string | null;
   away_team?: string | null;
+  sport?: string | null;
+  league?: string | null;
   clv_pct?: number | null;
   closing_odds?: number | null;
   start_time?: string | null;
