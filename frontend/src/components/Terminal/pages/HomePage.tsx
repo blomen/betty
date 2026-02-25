@@ -251,14 +251,6 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                 <div className={`text-lg font-semibold ${stats.total_profit >= 0 ? 'text-success' : 'text-error'}`}>
                   {stats.total_profit >= 0 ? '+' : ''}{stats.total_profit.toLocaleString('en', { maximumFractionDigits: 0 })} <span className="text-xs font-normal">kr</span>
                 </div>
-                <div className="flex items-center gap-2 text-[10px]">
-                  {stats.freebet_profit > 0 && (
-                    <span className="text-accent">+{stats.freebet_profit.toLocaleString('en', { maximumFractionDigits: 0 })} fb</span>
-                  )}
-                  {stats.bonus_profit > 0 && (
-                    <span className="text-tabBonus">+{stats.bonus_profit.toLocaleString('en', { maximumFractionDigits: 0 })} dep</span>
-                  )}
-                </div>
               </div>
               <div className="bg-panel2 px-3 py-3">
                 <div className="text-[10px] text-muted uppercase tracking-wider mb-1">ROI</div>

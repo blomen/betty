@@ -543,14 +543,6 @@ export function BetsPage() {
               <div className={`text-lg font-semibold ${bankrollStats.total_profit >= 0 ? 'text-success' : 'text-error'}`}>
                 {bankrollStats.total_profit >= 0 ? '+' : ''}{bankrollStats.total_profit.toFixed(0)} kr
               </div>
-              <div className="flex items-center gap-2 text-[10px]">
-                {bankrollStats.freebet_profit > 0 && (
-                  <span className="text-accent">+{bankrollStats.freebet_profit.toFixed(0)} fb</span>
-                )}
-                {bankrollStats.bonus_profit > 0 && (
-                  <span className="text-tabBonus">+{bankrollStats.bonus_profit.toFixed(0)} dep</span>
-                )}
-              </div>
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Avg CLV</div>

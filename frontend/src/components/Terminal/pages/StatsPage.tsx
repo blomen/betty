@@ -86,16 +86,6 @@ export function StatsPage() {
               <td></td>
               <td className="text-right text-sm space-y-0.5">
                 <div className="text-muted">{stats.total_staked.toFixed(0)} kr staked</div>
-                {(stats.freebet_profit > 0 || stats.bonus_profit > 0) && (
-                  <div className="flex items-center justify-end gap-2 text-[10px]">
-                    {stats.freebet_profit > 0 && (
-                      <span className="text-accent">+{stats.freebet_profit.toFixed(0)} fb</span>
-                    )}
-                    {stats.bonus_profit > 0 && (
-                      <span className="text-tabBonus">+{stats.bonus_profit.toFixed(0)} dep</span>
-                    )}
-                  </div>
-                )}
               </td>
             </tr>
           </tbody>
