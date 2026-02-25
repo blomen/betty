@@ -317,7 +317,7 @@ class ExtractionScheduler:
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import scrape_all, save_specials
-        from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, store_specials_to_db
+        from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
         from src.db.models import get_session
 
         update_tier_state("boosts", running=True, start_time=datetime.now(timezone.utc), total_providers=1, completed_providers=0)
@@ -332,6 +332,7 @@ class ExtractionScheduler:
             session = get_session()
             try:
                 specials_dicts = filter_expired([asdict(s) for s in specials])
+                specials_dicts = deduplicate_specials(specials_dicts)
                 specials_dicts = enrich_specials_with_ev(specials_dicts, session)
                 count = store_specials_to_db(specials_dicts, session)
                 ev_count = sum(1 for s in specials_dicts if s.get("is_positive_ev"))

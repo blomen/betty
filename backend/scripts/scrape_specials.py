@@ -991,13 +991,13 @@ async def _scrape_betconstruct_boosts(
             max_size=20 * 1024 * 1024,
             close_timeout=10,
         ) as ws:
-            # 1. Request session
+            # 1. Request session (language=swe required for Swedish site boosts)
             rid += 1
             await ws.send(json.dumps({
                 "command": "request_session",
                 "params": {
                     "source": 42,
-                    "language": "eng",
+                    "language": "swe",
                     "site_id": site_id,
                 },
             }))
@@ -1042,7 +1042,7 @@ async def _scrape_betconstruct_boosts(
             if verbose:
                 print(f"    [{provider_id}] {len(match_ids)} matches, {total_boosted_sels} boosted selections")
 
-            # 3. Fetch full game data for boosted matches
+            # 3. Fetch 1x2/moneyline data for boosted matches
             rid += 1
             await ws.send(json.dumps({
                 "command": "get",
@@ -1061,6 +1061,7 @@ async def _scrape_betconstruct_boosts(
                     },
                     "where": {
                         "game": {"id": {"@in": match_ids}},
+                        "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
                     },
                     "subscribe": False,
                 },
@@ -1104,6 +1105,10 @@ async def _scrape_betconstruct_boosts(
                             continue
 
                         for game_id, game in games.items():
+                            # Skip live games — pre-match only
+                            if game.get("is_live"):
+                                continue
+
                             team1 = game.get("team1_name", "")
                             team2 = game.get("team2_name", "")
                             event_name = f"{team1} vs {team2}" if team1 and team2 else ""

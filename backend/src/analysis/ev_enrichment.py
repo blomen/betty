@@ -128,6 +128,57 @@ def _fix_encoding(text: str) -> str:
     return text
 
 
+def deduplicate_specials(specials: list[dict]) -> list[dict]:
+    """Merge duplicate boosts across providers into single rows.
+
+    Dedup key: (title, boosted_odds, event) — case-insensitive, stripped.
+    All providers from duplicates are collected into provider + shared_providers.
+    """
+    if not specials:
+        return specials
+
+    from collections import defaultdict
+
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for s in specials:
+        key = (
+            s.get("title", "").lower().strip(),
+            s.get("boosted_odds"),
+            s.get("event", "").lower().strip(),
+        )
+        groups[key].append(s)
+
+    result = []
+    for group in groups.values():
+        # Pick best representative: prefer one with original_odds, then most fields
+        group.sort(key=lambda s: (
+            s.get("original_odds") is not None,
+            sum(1 for v in s.values() if v is not None and v != ""),
+        ), reverse=True)
+        best = dict(group[0])
+
+        # Collect all providers from all duplicates
+        all_providers: set[str] = set()
+        for s in group:
+            if s.get("provider"):
+                all_providers.add(s["provider"])
+            for sp in (s.get("shared_providers") or []):
+                if sp:
+                    all_providers.add(sp)
+
+        sorted_providers = sorted(all_providers)
+        best["provider"] = sorted_providers[0]
+        best["shared_providers"] = sorted_providers[1:] if len(sorted_providers) > 1 else []
+
+        result.append(best)
+
+    removed = len(specials) - len(result)
+    if removed > 0:
+        logger.info(f"Dedup: {len(specials)} → {len(result)} specials ({removed} duplicates merged)")
+
+    return result
+
+
 def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
     """
     Enrich specials with edge_pct vs Pinnacle fair odds.

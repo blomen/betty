@@ -1029,8 +1029,8 @@ boosts:
     type: betconstruct
     primary_provider: vbet
     shared_with: []
-    enabled: false
-    note: "Disabled — vbet.se consistently returns 0 boosts (Swedish site has no boost feature). Re-enable if boosts appear."
+    enabled: true
+    note: "Homepage 'Topphändelser' — boosted 1x2 on promoted games. Requires language=swe session. No original_odds (API only returns boosted price)."
 
   # ═══════════════════════════════════════════════════════
   # INTERWETTEN — visible boosts on frontpage (DOM scrape)

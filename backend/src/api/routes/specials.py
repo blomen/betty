@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from ...paths import get_bundle_dir
 from ..deps import get_db
 from ...db.models import SpecialOdds
-from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, store_specials_to_db
+from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
 
 # Ensure scripts/ package is importable (lives in bundle root / backend/)
 _backend_root = str(get_bundle_dir())
@@ -191,6 +191,7 @@ async def scrape_specials(db: Session = Depends(get_db)):
 
     # EV enrichment + DB storage
     active = filter_expired([asdict(s) for s in specials])
+    active = deduplicate_specials(active)
     active = enrich_specials_with_ev(active, db)
     try:
         store_specials_to_db(active, db)
