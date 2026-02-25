@@ -203,6 +203,7 @@ export interface Bet {
   closing_odds?: number | null;
   start_time?: string | null;
   edge_pct?: number | null;
+  fair_odds?: number | null;
   selection_probability?: number | null;
   settlement_source?: string | null;
   home_score?: number | null;

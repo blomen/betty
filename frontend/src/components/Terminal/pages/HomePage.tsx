@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { ExtractionProgressBar } from '../ExtractionProgressBar';
+import { MultiSortableHeader } from '../MultiSortableHeader';
+import { useMultiSort } from '@/hooks/useMultiSort';
 import type { TabName } from '../Sidebar';
 import type { Bet, Opportunity, BankrollStats, BankrollExposure, PolymarketValueBet } from '@/types';
 
@@ -57,9 +59,9 @@ function formatMarketShort(market?: string | null): string {
 
 // ── Section header ──────────────────────────────────────────────────
 
-function SectionHeader({ icon, color, title, count, action }: {
+function SectionHeader({ icon, color, title, count, actions }: {
   icon: string; color: string; title: string; count?: number;
-  action?: { label: string; onClick: () => void };
+  actions?: { label: string; onClick: () => void; loading?: boolean }[];
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -68,13 +70,19 @@ function SectionHeader({ icon, color, title, count, action }: {
         <span>{title}</span>
         {count !== undefined && <span style={{ color }} className="font-mono">{count}</span>}
       </h3>
-      {action && (
-        <button
-          onClick={action.onClick}
-          className="text-[10px] text-muted hover:text-text transition-colors"
-        >
-          {action.label} &rarr;
-        </button>
+      {actions && actions.length > 0 && (
+        <div className="flex items-center gap-3">
+          {actions.map((a, i) => (
+            <button
+              key={i}
+              onClick={a.onClick}
+              disabled={a.loading}
+              className={`text-[10px] text-muted hover:text-text transition-colors ${a.loading ? 'opacity-50' : ''}`}
+            >
+              {a.loading ? 'settling...' : <>{a.label} &rarr;</>}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -198,8 +206,40 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
     [specials]
   );
 
+  // ── Settle sort ────────────────────────────────────────────────
+  type SettleCol = 'ago' | 'odds' | 'closing' | 'prob' | 'stake' | 'clv';
+  const settleExtractors = useMemo<Record<SettleCol, (b: Bet) => number>>(() => ({
+    ago:     b => b.start_time ? new Date(b.start_time).getTime() : 0,
+    odds:    b => b.odds,
+    closing: b => b.closing_odds ?? b.odds,
+    prob:    b => b.selection_probability ?? (b.odds > 0 ? 1 / b.odds : 0),
+    stake:   b => b.stake,
+    clv:     b => b.clv_pct ?? -999,
+  }), []);
+  const { sorted: sortedSettle, sort: settleSort, toggle: toggleSettle } = useMultiSort<Bet, SettleCol>(
+    needsSettleBets, settleExtractors, { column: 'ago', direction: 'desc' }
+  );
+
+  // ── Upcoming sort ─────────────────────────────────────────────
+  type UpcomingCol = 'ttk' | 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ret';
+  const upcomingExtractors = useMemo<Record<UpcomingCol, (b: Bet) => number>>(() => ({
+    ttk:   b => b.start_time ? new Date(b.start_time).getTime() : Infinity,
+    odds:  b => b.odds,
+    fair:  b => b.fair_odds ?? 0,
+    prob:  b => b.selection_probability ?? (b.odds > 0 ? 1 / b.odds : 0),
+    stake: b => b.stake,
+    edge:  b => b.edge_pct ?? -999,
+    ret:   b => b.stake * b.odds,
+  }), []);
+  const { sorted: sortedUpcoming, sort: upcomingSort, toggle: toggleUpcoming } = useMultiSort<Bet, UpcomingCol>(
+    upcomingBets, upcomingExtractors, { column: 'ttk', direction: 'asc' }
+  );
+
   const netWorth = exposure?.total_balance ?? 0;
   const pendingStake = exposure?.total_pending ?? 0;
+
+  const [expandedSettleId, setExpandedSettleId] = useState<number | null>(null);
+  const [isAutoSettling, setIsAutoSettling] = useState(false);
 
   const handleManualSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
     const payout = result === 'won' ? bet.stake * bet.odds : result === 'void' ? bet.stake : 0;
@@ -208,6 +248,18 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
       fetchAll();
     } catch (err) {
       console.error('Manual settle failed:', err);
+    }
+  };
+
+  const handleAutoSettle = async () => {
+    setIsAutoSettling(true);
+    try {
+      await api.autoSettleBets();
+      fetchAll();
+    } catch (err) {
+      console.error('Auto-settle failed:', err);
+    } finally {
+      setIsAutoSettling(false);
     }
   };
 
@@ -400,25 +452,28 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
             color="#ef4444"
             title="Settle"
             count={needsSettleBets.length}
-            action={{ label: 'History', onClick: () => onTabChange('stats') }}
+            actions={[
+              { label: 'Auto-settle', onClick: handleAutoSettle, loading: isAutoSettling },
+              { label: 'History', onClick: () => onTabChange('stats') },
+            ]}
           />
           <div className="mt-2 border-l-2 border-error">
             <table className="sq">
               <thead>
                 <tr>
-                  <th>Ago</th>
+                  <MultiSortableHeader column="ago" label="Ago" sort={settleSort} onToggle={toggleSettle} align="left" />
                   <th>Sport</th>
                   <th>Event</th>
                   <th>Pick</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Prob</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">CLV</th>
+                  <MultiSortableHeader column="closing" label="Close" sort={settleSort} onToggle={toggleSettle} />
+                  <MultiSortableHeader column="prob" label="Prob" sort={settleSort} onToggle={toggleSettle} />
+                  <MultiSortableHeader column="stake" label="Stake" sort={settleSort} onToggle={toggleSettle} />
+                  <MultiSortableHeader column="clv" label="CLV" sort={settleSort} onToggle={toggleSettle} />
                   <th className="text-right">Result</th>
                 </tr>
               </thead>
               <tbody>
-                {needsSettleBets.map(bet => {
+                {sortedSettle.map(bet => {
                   const hoursAgo = bet.start_time
                     ? Math.max(0, (Date.now() - new Date(bet.start_time).getTime()) / (1000 * 60 * 60))
                     : null;
@@ -429,68 +484,109 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                     : '?';
                   const prob = bet.selection_probability ?? (bet.odds > 0 ? 1 / bet.odds : null);
                   const mkt = formatMarketShort(bet.market);
+                  const closingOdds = bet.closing_odds ?? bet.odds;
+                  const hasScore = bet.home_score != null && bet.away_score != null;
+                  const isExpanded = expandedSettleId === bet.id;
                   return (
-                    <tr key={bet.id} className="bg-error/[0.03]">
-                      <td className="whitespace-nowrap">
-                        <span className="text-[10px] font-medium text-error">{agoStr}</span>
-                      </td>
-                      <td className="whitespace-nowrap">
-                        <span className="text-[10px] text-muted">{formatSport(bet.sport)}</span>
-                        {mkt && <span className="text-[9px] text-muted2 ml-0.5">{mkt}</span>}
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text font-medium">{bet.home_team || '?'}</span>
-                        <span className="text-muted mx-1">v</span>
-                        <span className="text-text font-medium">{bet.away_team || '?'}</span>
-                      </td>
-                      <td className="text-sm">
-                        <span className="text-text">{resolveOutcome(bet)}</span>
-                        {bet.point != null && <span className="text-muted2 text-[10px] ml-0.5">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
-                        {bet.provider_site_url ? (
-                          <a
-                            href={bet.provider_site_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-accent text-[10px] ml-1 hover:underline"
-                            title="Check result on provider"
-                          >{formatProviderName(bet.provider)} ↗</a>
-                        ) : (
-                          <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
-                        )}
-                      </td>
-                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                      <td className="text-right">
-                        {prob != null ? (
-                          <span className="text-[11px] text-muted">{(prob * 100).toFixed(0)}%</span>
-                        ) : <span className="text-muted">-</span>}
-                      </td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
-                      <td className="text-right">
-                        {bet.clv_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                    <React.Fragment key={bet.id}>
+                      <tr
+                        className={`bg-error/[0.03] cursor-pointer hover:bg-error/[0.06] transition-colors ${isExpanded ? 'bg-error/[0.06]' : ''}`}
+                        onClick={() => setExpandedSettleId(isExpanded ? null : bet.id)}
+                      >
+                        <td className="whitespace-nowrap">
+                          <span className="text-[10px] font-medium text-error">{agoStr}</span>
+                        </td>
+                        <td className="whitespace-nowrap">
+                          <span className="text-[10px] text-muted">{formatSport(bet.sport)}</span>
+                          {mkt && <span className="text-[9px] text-muted2 ml-0.5">{mkt}</span>}
+                        </td>
+                        <td className="text-sm">
+                          <span className="text-text font-medium">{bet.home_team || '?'}</span>
+                          <span className="text-muted mx-1">v</span>
+                          <span className="text-text font-medium">{bet.away_team || '?'}</span>
+                          {hasScore && (
+                            <span className="text-accent text-[10px] ml-1.5 font-medium">
+                              {bet.home_score}-{bet.away_score}
+                            </span>
+                          )}
+                        </td>
+                        <td className="text-sm">
+                          <span className="text-text">{resolveOutcome(bet)}</span>
+                          {bet.point != null && <span className="text-muted2 text-[10px] ml-0.5">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
+                          {bet.provider_site_url ? (
+                            <a
+                              href={bet.provider_site_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-accent text-[10px] ml-1 hover:underline"
+                              title="Check result on provider"
+                              onClick={e => e.stopPropagation()}
+                            >{formatProviderName(bet.provider)} ↗</a>
+                          ) : (
+                            <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                          )}
+                        </td>
+                        <td className="text-right text-text text-sm font-medium">
+                          {closingOdds.toFixed(2)}
+                          {bet.closing_odds != null && bet.closing_odds !== bet.odds && (
+                            <span className="text-muted2 text-[9px] line-through ml-1">{bet.odds.toFixed(2)}</span>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          {prob != null ? (
+                            <span className="text-[11px] text-muted">{(prob * 100).toFixed(0)}%</span>
+                          ) : <span className="text-muted">-</span>}
+                        </td>
+                        <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                        <td className="text-right">
+                          {bet.clv_pct != null ? (
+                            <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                              {bet.clv_pct >= 0 ? '+' : ''}{bet.clv_pct.toFixed(1)}%
+                            </span>
+                          ) : (
+                            <span className="text-sm text-muted">-</span>
+                          )}
+                        </td>
+                        <td className="text-right" onClick={e => e.stopPropagation()}>
+                          <span className="inline-flex gap-1">
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'won')}
+                            >W</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'lost')}
+                            >L</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                              onClick={() => handleManualSettle(bet, 'void')}
+                            >V</button>
                           </span>
-                        ) : (
-                          <span className="text-sm text-muted">-</span>
-                        )}
-                      </td>
-                      <td className="text-right">
-                        <span className="inline-flex gap-1">
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'won')}
-                          >W</button>
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'lost')}
-                          >L</button>
-                          <button
-                            className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
-                            onClick={() => handleManualSettle(bet, 'void')}
-                          >V</button>
-                        </span>
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-error/[0.03]">
+                          <td colSpan={9} className="!py-2 !px-4">
+                            <div className="flex items-center gap-6 text-[11px]">
+                              <span className="text-muted">Market: <span className="text-text">{bet.market ?? '-'}{bet.point != null ? ` ${bet.point > 0 ? '+' : ''}${bet.point}` : ''}</span></span>
+                              <span className="text-muted">Placed: <span className="text-text">{bet.odds.toFixed(2)}</span></span>
+                              <span className="text-muted">Close: <span className="text-text">{(bet.closing_odds ?? bet.odds).toFixed(2)}</span></span>
+                              {bet.edge_pct != null && (
+                                <span className="text-muted">Edge: <span className={bet.edge_pct >= 0 ? 'text-success' : 'text-error'}>{bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%</span></span>
+                              )}
+                              {bet.match_status && (
+                                <span className="text-muted">Status: <span className="text-text">{bet.match_status}</span></span>
+                              )}
+                              {bet.provider_site_url && (
+                                <a href={bet.provider_site_url} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                                  Open {formatProviderName(bet.provider)} ↗
+                                </a>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -507,28 +603,30 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
             color={TAB_COLORS.bets}
             title="Upcoming"
             count={upcomingBets.length}
-            action={{ label: 'History', onClick: () => onTabChange('stats') }}
+            actions={[{ label: 'History', onClick: () => onTabChange('stats') }]}
           />
-          <div className="mt-2 border border-border bg-panel overflow-hidden">
+          <div className="mt-2 border-l-2 border-tabBets">
             <table className="sq">
               <thead>
                 <tr>
-                  <th>TTK</th>
+                  <MultiSortableHeader column="ttk" label="TTK" sort={upcomingSort} onToggle={toggleUpcoming} align="left" />
                   <th>Sport</th>
                   <th>Event</th>
                   <th>Pick</th>
-                  <th className="text-right">Odds</th>
-                  <th className="text-right">Prob</th>
-                  <th className="text-right">Stake</th>
-                  <th className="text-right">Edge</th>
-                  <th className="text-right">Return</th>
+                  <MultiSortableHeader column="odds" label="Odds" sort={upcomingSort} onToggle={toggleUpcoming} />
+                  <MultiSortableHeader column="fair" label="Fair" sort={upcomingSort} onToggle={toggleUpcoming} />
+                  <MultiSortableHeader column="prob" label="Prob" sort={upcomingSort} onToggle={toggleUpcoming} />
+                  <MultiSortableHeader column="stake" label="Stake" sort={upcomingSort} onToggle={toggleUpcoming} />
+                  <MultiSortableHeader column="edge" label="Edge" sort={upcomingSort} onToggle={toggleUpcoming} />
+                  <MultiSortableHeader column="ret" label="Return" sort={upcomingSort} onToggle={toggleUpcoming} />
                 </tr>
               </thead>
               <tbody>
-                {upcomingBets.map(bet => {
+                {sortedUpcoming.map(bet => {
                   const ttk = getLiveTTK(bet);
                   const prob = bet.selection_probability ?? (bet.odds > 0 ? 1 / bet.odds : null);
                   const mkt = formatMarketShort(bet.market);
+                  const fairOdds = bet.fair_odds ?? (bet.edge_pct != null && bet.edge_pct > -100 ? bet.odds / (1 + bet.edge_pct / 100) : null);
                   return (
                     <tr key={bet.id}>
                       <td className="whitespace-nowrap">
@@ -551,6 +649,11 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                         <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
                       </td>
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right">
+                        {fairOdds != null ? (
+                          <span className="text-[11px] text-muted">{fairOdds.toFixed(2)}</span>
+                        ) : <span className="text-muted">-</span>}
+                      </td>
                       <td className="text-right">
                         {prob != null ? (
                           <span className="text-[11px] text-muted">{(prob * 100).toFixed(0)}%</span>

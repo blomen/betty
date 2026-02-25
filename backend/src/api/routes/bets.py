@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...services import BetService, BankrollService
+from ...services import BetService, BankrollService, ResultsService
 from ...repositories import BetRepo, ProfileRepo
 from ...db.models import Odds, Event
 from ...analysis.devig import get_fair_odds_for_outcome
@@ -69,12 +69,14 @@ async def list_bets(
         # Compute edge_pct and selection_probability on-the-fly if not stored
         edge_pct = round(b.utility_score * 100, 2) if b.utility_score else None
         sel_prob = b.selection_probability
+        fair_odds = None
 
-        if (edge_pct is None or sel_prob is None) and b.event_id and b.market and b.outcome:
+        if b.event_id and b.market and b.outcome:
             pin_market = pinnacle_map.get((b.event_id, b.market), {})
             if len(pin_market) >= 2 and b.outcome in pin_market:
                 fair = get_fair_odds_for_outcome(b.outcome, pin_market, method="multiplicative")
                 if fair and fair > 1.0:
+                    fair_odds = round(fair, 3)
                     if edge_pct is None:
                         edge_pct = round((b.odds / fair - 1) * 100, 2)
                     if sel_prob is None:
@@ -100,6 +102,7 @@ async def list_bets(
             "clv_pct": b.clv_pct,
             "closing_odds": b.closing_odds,
             "edge_pct": edge_pct,
+            "fair_odds": fair_odds,
             "selection_probability": sel_prob,
             "point": b.point,
             "settlement_source": b.settlement_source,
@@ -108,6 +111,9 @@ async def list_bets(
             "sport": ev.sport if ev else None,
             "league": ev.league if ev else None,
             "start_time": ev.start_time.isoformat() if ev and ev.start_time else None,
+            "home_score": ev.home_score if ev else None,
+            "away_score": ev.away_score if ev else None,
+            "match_status": ev.match_status if ev else None,
             "provider_site_url": site_urls.get(b.provider_id),
         })
 
@@ -151,6 +157,14 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
     only processes bets where closing_odds is not yet set.
     """
     result = service.snapshot_closing_odds()
+    return {"success": True, **result}
+
+
+@router.post("/auto-settle")
+async def auto_settle_bets(db: Session = Depends(get_db)):
+    """Auto-settle pending bets on finished events using stored scores."""
+    svc = ResultsService(db)
+    result = svc.auto_settle()
     return {"success": True, **result}
 
 
