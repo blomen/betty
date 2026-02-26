@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import re
 import time
@@ -454,8 +455,12 @@ async def _scrape_altenar_boosts(
     Scrape Altenar odds boosts via the public widget API.
 
     Strategy:
-    1. GetHighlights per sport → featured events (startpage "förhöjda odds")
-    2. GetEventDetails per event → boosts[] array with original + boosted prices
+    1. GetEvents per sport → ALL events (not just 20 highlighted ones)
+    2. GetEventDetails per event (parallel, 30 concurrent) → boosts[] array
+
+    GetHighlights only returns 20 events/sport, missing ~80% of boosts.
+    GetEvents returns the full event list (~1500 across 3 sports), and
+    parallel detail fetches complete in ~4 seconds.
 
     Boost object structure:
       - price: original (pre-boost) odds
@@ -478,6 +483,7 @@ async def _scrape_altenar_boosts(
     }
 
     try:
+        connector = aiohttp.TCPConnector(limit=20)
         async with aiohttp.ClientSession(
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -485,18 +491,20 @@ async def _scrape_altenar_boosts(
                               "Chrome/131.0.0.0 Safari/537.36",
                 "Accept": "application/json",
             },
-            timeout=aiohttp.ClientTimeout(total=15),
+            timeout=aiohttp.ClientTimeout(total=30),
+            connector=connector,
         ) as session:
-            # Collect unique event IDs from highlighted events across all sports
+            # Collect ALL events across sports via GetEvents (full list)
             event_map: dict[int, dict] = {}  # event_id -> event data
             sport_for_event: dict[int, str] = {}
 
-            sport_ids = list(ALTENAR_SPORT_MAP.keys())
-            for sport_id in sport_ids:
+            # Only scan the 3 sports that actually have boosts
+            boost_sport_ids = [66, 67, 70]  # football, basketball, ice_hockey
+            for sport_id in boost_sport_ids:
                 params = {**base_params, "sportId": str(sport_id)}
                 try:
                     async with session.get(
-                        f"{ALTENAR_API_BASE}/widget/GetHighlights",
+                        f"{ALTENAR_API_BASE}/widget/GetEvents",
                         params=params,
                     ) as resp:
                         if resp.status != 200:
@@ -513,7 +521,6 @@ async def _scrape_altenar_boosts(
                     eid = ev["id"]
                     if eid in event_map:
                         continue
-                    # Enrich event with competitor names and league
                     comp_ids = ev.get("competitorIds", [])
                     comp_names = [
                         competitors.get(cid, {}).get("name", "").strip()
@@ -526,28 +533,52 @@ async def _scrape_altenar_boosts(
                     sport_for_event[eid] = ALTENAR_SPORT_MAP.get(sport_id, "unknown")
 
             if verbose:
-                print(f"    [{provider_id}] {len(event_map)} highlighted events across "
+                print(f"    [{provider_id}] {len(event_map)} events across "
                       f"{len(set(sport_for_event.values()))} sports")
 
-            # Fetch event details to get boost data
-            for eid, ev in event_map.items():
-                params = {**base_params, "eventId": str(eid)}
-                try:
-                    async with session.get(
-                        f"{ALTENAR_API_BASE}/widget/GetEventDetails",
-                        params=params,
-                    ) as resp:
-                        if resp.status != 200:
-                            continue
-                        detail = await resp.json()
-                except Exception:
+            # Fetch event details in batches to find boosts
+            # Altenar API drops connections above ~30 concurrent, so
+            # process in batches of 50 with semaphore=20.
+            BATCH_SIZE = 50
+            sem = asyncio.Semaphore(20)
+
+            async def _fetch_boosts(eid: int) -> tuple[int, list, dict] | None:
+                async with sem:
+                    params = {**base_params, "eventId": str(eid)}
+                    try:
+                        async with session.get(
+                            f"{ALTENAR_API_BASE}/widget/GetEventDetails",
+                            params=params,
+                        ) as resp:
+                            if resp.status != 200:
+                                return None
+                            detail = await resp.json()
+                    except Exception:
+                        return None
+                    ev_boosts = detail.get("boosts", [])
+                    if not ev_boosts:
+                        return None
+                    return (eid, ev_boosts, detail)
+
+            all_eids = list(event_map.keys())
+            results: list = []
+            for i in range(0, len(all_eids), BATCH_SIZE):
+                batch = all_eids[i : i + BATCH_SIZE]
+                batch_results = await asyncio.gather(
+                    *[_fetch_boosts(eid) for eid in batch],
+                    return_exceptions=True,
+                )
+                results.extend(batch_results)
+
+            events_with_boosts = 0
+            for result in results:
+                if result is None or isinstance(result, Exception):
                     continue
 
-                ev_boosts = detail.get("boosts", [])
-                if not ev_boosts:
-                    continue
+                eid, ev_boosts, detail = result
+                events_with_boosts += 1
+                ev = event_map[eid]
 
-                # Build lookups for markets and odds in this event
                 markets = {m["id"]: m for m in detail.get("markets", [])}
                 odds_idx = {o["id"]: o for o in detail.get("odds", [])}
 
@@ -568,7 +599,6 @@ async def _scrape_altenar_boosts(
                         continue
 
                     is_bet_of_day = bi.get("isBetOfTheDay", False)
-                    is_limited = bi.get("isLimitedTime", False)
                     prop = bi.get("property", 0)
                     end_date = bi.get("endDate")
 
@@ -629,6 +659,9 @@ async def _scrape_altenar_boosts(
                         url=f"https://www.{provider_id}.se",
                         market_label=", ".join(market_labels) if market_labels else "",
                     ))
+
+            if verbose:
+                print(f"    [{provider_id}] {events_with_boosts}/{len(event_map)} events had boosts")
 
     except Exception as e:
         if verbose:
