@@ -222,10 +222,17 @@ providers:
     name: Polymarket
     retriever_type: polymarket
     base_url: https://gamma-api.polymarket.com
+    clob_url: https://clob.polymarket.com
     currency: USDC
     exchange_rate_sek: 10.50
     params:
       game_bets_tag_id: 100639
+      # Spread buffer (cents) added to midpoint to estimate executable buy price.
+      # Polymarket Gamma API returns midpoints, but actual buy price is higher due
+      # to bid-ask spread. 2¢ matches observed spread on typical sports markets.
+      spread_buffer_cents: 2
+      # Use CLOB midpoint API for more accurate prices (true/false)
+      use_clob_midpoint: true
 
   # --------------------------------------------------------------------------
   # Kambi API providers (same API, different brands)

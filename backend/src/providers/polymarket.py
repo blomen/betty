@@ -121,12 +121,66 @@ class PolymarketRetriever(Retriever):
     def __init__(self, config: dict, transport=None):
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
+        self.clob_url = config.get("clob_url", "https://clob.polymarket.com")
         self.game_bets_tag_id = config.get("params", {}).get("game_bets_tag_id", 100639)
+        # Spread buffer: cents added to midpoint to estimate executable buy price
+        self.spread_buffer = config.get("params", {}).get("spread_buffer_cents", 2) / 100.0
+        self.use_clob_midpoint = config.get("params", {}).get("use_clob_midpoint", True)
         self._cached_events: list = None  # Cache all events to avoid re-fetching
         self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
+        self._clob_midpoints: dict = {}  # token_id -> midpoint price (populated during extraction)
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
+
+    def _price_to_odds(self, price: float) -> float:
+        """Convert a probability price to decimal odds with spread adjustment.
+
+        Adds spread_buffer to approximate the executable buy price (ask),
+        since Gamma API / CLOB midpoints understate the actual cost.
+        """
+        adjusted = min(price + self.spread_buffer, 0.99)
+        return round(1 / adjusted, 3) if adjusted > 0.01 else 100.0
+
+    def _get_clob_price(self, token_id: str, gamma_price: float) -> float:
+        """Get best price for a token: CLOB midpoint if available, else Gamma."""
+        return self._clob_midpoints.get(token_id, gamma_price)
+
+    async def _fetch_clob_midpoints(self, token_ids: list[str]):
+        """Batch-fetch CLOB midpoints for all tokens using concurrent requests.
+
+        Populates self._clob_midpoints dict. Falls back to Gamma price on failure.
+        """
+        import aiohttp
+        import asyncio
+
+        if not token_ids or not self.use_clob_midpoint:
+            return
+
+        semaphore = asyncio.Semaphore(20)  # Limit concurrency to avoid rate limits
+        unique_tokens = list(set(token_ids))
+
+        async def fetch_one(session: aiohttp.ClientSession, token_id: str):
+            async with semaphore:
+                try:
+                    url = f"{self.clob_url}/midpoint"
+                    async with session.get(url, params={"token_id": token_id}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            mid = float(data.get("mid", 0))
+                            if 0.01 < mid < 0.99:
+                                self._clob_midpoints[token_id] = mid
+                except Exception:
+                    pass  # Fallback to Gamma price
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                await asyncio.gather(*[fetch_one(session, tid) for tid in unique_tokens])
+            logger.debug(
+                f"[{self.provider_id}] CLOB midpoints: {len(self._clob_midpoints)}/{len(unique_tokens)} tokens"
+            )
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] CLOB midpoint fetch failed: {e}")
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         """Parse API response - delegates to _parse_all."""
@@ -146,12 +200,10 @@ class PolymarketRetriever(Retriever):
         """
         API_MAX_LIMIT = 500  # Polymarket API caps at 500 events per request
 
-        all_events = []
+        # Phase 1: Fetch all raw event data from Gamma API
+        all_raw = []
         offset = 0
         page = 1
-
-        # Cap limit at API maximum to ensure pagination works correctly
-        # If caller requests 1000 but API returns 500, we'd incorrectly think it's the last page
         page_limit = min(limit, API_MAX_LIMIT)
 
         while True:
@@ -172,16 +224,35 @@ class PolymarketRetriever(Retriever):
                 break
 
             logger.debug(f"[{self.provider_id}] Page {page}: fetched {len(data)} events (offset={offset})")
-            all_events.extend(self._parse_all(data))
+            all_raw.extend(data)
 
-            # Stop if we got fewer than page_limit (last page)
             if len(data) < page_limit:
                 break
 
             offset += page_limit
             page += 1
 
-        logger.debug(f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket ({page} pages)")
+        # Phase 2: Collect all CLOB token IDs and fetch midpoints
+        if self.use_clob_midpoint and all_raw:
+            all_token_ids = []
+            for item in all_raw:
+                for m in item.get("markets", []):
+                    raw_ids = m.get("clobTokenIds", "[]")
+                    try:
+                        ids = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
+                        all_token_ids.extend(str(t) for t in ids if t)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            await self._fetch_clob_midpoints(all_token_ids)
+
+        # Phase 3: Parse events (using CLOB midpoints + spread buffer)
+        all_events = self._parse_all(all_raw)
+
+        logger.debug(
+            f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket "
+            f"({page} pages, spread={self.spread_buffer*100:.0f}¢, "
+            f"clob_midpoints={len(self._clob_midpoints)})"
+        )
         return all_events
 
     async def extract(self, sport: str, limit: int = 50, **kwargs) -> List[StandardEvent]:
@@ -545,13 +616,17 @@ class PolymarketRetriever(Retriever):
                         clob_ids = self._parse_clob_token_ids(data)
 
                         if prices[yes_idx] > 0.02 and prices[no_idx] > 0.02:
+                            yes_token = clob_ids[yes_idx] if yes_idx < len(clob_ids) else None
+                            no_token = clob_ids[no_idx] if no_idx < len(clob_ids) else None
+                            yes_price = self._get_clob_price(yes_token, prices[yes_idx]) if yes_token else prices[yes_idx]
+                            no_price = self._get_clob_price(no_token, prices[no_idx]) if no_token else prices[no_idx]
                             return {
                                 "type": "moneyline",
                                 "outcomes": [
-                                    {"name": matched_team, "odds": round(1 / prices[yes_idx], 3),
-                                     "clob_token_id": clob_ids[yes_idx] if yes_idx < len(clob_ids) else None},
-                                    {"name": other_team, "odds": round(1 / prices[no_idx], 3),
-                                     "clob_token_id": clob_ids[no_idx] if no_idx < len(clob_ids) else None},
+                                    {"name": matched_team, "odds": self._price_to_odds(yes_price),
+                                     "clob_token_id": yes_token},
+                                    {"name": other_team, "odds": self._price_to_odds(no_price),
+                                     "clob_token_id": no_token},
                                 ]
                             }
 
@@ -567,10 +642,12 @@ class PolymarketRetriever(Retriever):
                     # Skip over/under outcomes (totals markets that slipped through)
                     if name_lower in ("over", "under"):
                         continue
+                    token_id = clob_ids[i] if i < len(clob_ids) else None
+                    price = self._get_clob_price(token_id, p) if token_id else p
                     formatted_outcomes.append({
                         "name": name,
-                        "odds": round(1 / p, 3),
-                        "clob_token_id": clob_ids[i] if i < len(clob_ids) else None,
+                        "odds": self._price_to_odds(price),
+                        "clob_token_id": token_id,
                     })
 
             if not formatted_outcomes:
@@ -655,11 +732,13 @@ class PolymarketRetriever(Retriever):
                     point = favored_point
                 else:
                     point = -favored_point
+                token_id = clob_ids[i] if i < len(clob_ids) else None
+                price = self._get_clob_price(token_id, p) if token_id else p
                 result_outcomes.append({
                     "name": norm,
-                    "odds": round(1 / p, 3),
+                    "odds": self._price_to_odds(price),
                     "point": point,
-                    "clob_token_id": clob_ids[i] if i < len(clob_ids) else None,
+                    "clob_token_id": token_id,
                 })
 
             if len(result_outcomes) != 2:
@@ -733,16 +812,18 @@ class PolymarketRetriever(Retriever):
                 name_lower = name.lower().strip()
                 token_id = clob_ids[i] if i < len(clob_ids) else None
                 if name_lower == "over":
+                    price = self._get_clob_price(token_id, p) if token_id else p
                     result_outcomes.append({
                         "name": "over",
-                        "odds": round(1 / p, 3),
+                        "odds": self._price_to_odds(price),
                         "point": point,
                         "clob_token_id": token_id,
                     })
                 elif name_lower == "under":
+                    price = self._get_clob_price(token_id, p) if token_id else p
                     result_outcomes.append({
                         "name": "under",
-                        "odds": round(1 / p, 3),
+                        "odds": self._price_to_odds(price),
                         "point": point,
                         "clob_token_id": token_id,
                     })
@@ -815,11 +896,13 @@ class PolymarketRetriever(Retriever):
             if yes_price < 0.02:  # Skip illiquid markets
                 continue
 
-            odds = round(1 / yes_price, 3)
-
             # Extract Yes token ID for this sub-market
             clob_ids = self._parse_clob_token_ids(m)
             token_id = clob_ids[yes_idx] if yes_idx < len(clob_ids) else None
+
+            # Use CLOB midpoint if available, apply spread buffer
+            price = self._get_clob_price(token_id, yes_price) if token_id else yes_price
+            odds = self._price_to_odds(price)
 
             # Identify market type from question
             # Only match specific patterns to avoid BTTS, spreads, totals

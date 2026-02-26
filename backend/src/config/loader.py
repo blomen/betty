@@ -49,6 +49,9 @@ class ProviderConfig(BaseModel):
     currency: Optional[str] = "SEK"
     exchange_rate_sek: Optional[float] = 1.0  # 1 unit of currency = X SEK
 
+    # Secondary URL (e.g., Polymarket CLOB API)
+    clob_url: Optional[str] = None
+
     # Gecko V2 session init path (default /sv/odds, bethard needs /sv/sports)
     init_path: Optional[str] = None
 

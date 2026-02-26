@@ -82,6 +82,22 @@ export function PolymarketPage() {
   // Convert decimal odds to price in cents (1/odds * 100)
   const oddsToCents = (odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0;
 
+  // Recalculate edge/stake/shares when price is overridden
+  const getEffectiveMetrics = (vb: PolymarketValueBet) => {
+    const effectiveOdds = getEffectiveOdds(vb);
+    const priceCents = oddsToCents(effectiveOdds);
+    const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
+    // edge = (odds / fair_odds - 1) * 100
+    const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
+    // Approximate stake scaling: scale proportionally to edge change
+    const edgeRatio = vb.edge_pct > 0 ? edgePct / vb.edge_pct : 1;
+    const stakeUsdc = (vb.final_stake_usdc ?? 0) * Math.max(0, edgeRatio);
+    const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
+    const payoutUsdc = shares * 1.0;
+    const profitUsdc = payoutUsdc - stakeUsdc;
+    return { priceCents, fairCents, edgePct, stakeUsdc, shares, payoutUsdc, profitUsdc };
+  };
+
   // Step 1: Navigate browser to Polymarket, enter "awaiting confirm" state
   const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
     const stake = vb.final_stake;
@@ -235,10 +251,11 @@ export function PolymarketPage() {
           <tbody>
             {sortedBets.map((vb, idx) => {
               const isSelected = selectedOpp === idx;
-              const hasStake = vb.final_stake_usdc != null && vb.final_stake_usdc > 0;
               const isSkipped = !!vb.skip_reason;
-              const priceCents = vb.price_cents ?? oddsToCents(vb.polymarket_odds);
-              const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
+              const m = getEffectiveMetrics(vb);
+              const hasStake = m.stakeUsdc > 0;
+              const oddsKey = getOddsKey(vb);
+              const isOverridden = oddsKey in oddsOverride;
 
               return (
                 <>
@@ -257,29 +274,22 @@ export function PolymarketPage() {
                       </div>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
-                    <td className="text-right text-text text-sm font-medium">{priceCents}¢</td>
-                    <td className="text-right text-muted text-sm">{fairCents}¢</td>
+                    <td className={`text-right text-sm font-medium ${isOverridden ? 'text-tabPolymarket' : 'text-text'}`}>{m.priceCents}¢</td>
+                    <td className="text-right text-muted text-sm">{m.fairCents}¢</td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
                     <td className="text-right text-sm font-medium text-text">
-                      {hasStake ? `$${vb.final_stake_usdc!.toFixed(2)}` : '-'}
+                      {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
                     </td>
                     <td className="text-right text-sm text-muted">
-                      {vb.shares != null && vb.shares > 0 ? Math.round(vb.shares) : '-'}
+                      {m.shares > 0 ? Math.round(m.shares) : '-'}
                     </td>
-                    <td className="text-right text-tabPolymarket font-semibold text-sm">+{vb.edge_pct.toFixed(1)}%</td>
+                    <td className="text-right text-tabPolymarket font-semibold text-sm">+{m.edgePct.toFixed(1)}%</td>
                   </tr>
                   {isSelected && !isSkipped && (() => {
-                    const oddsKey = getOddsKey(vb);
-                    const effectiveOdds = getEffectiveOdds(vb);
-                    const effectiveCents = oddsToCents(effectiveOdds);
-                    const oddsChanged = oddsKey in oddsOverride;
-                    const stakeUsdc = vb.final_stake_usdc ?? 0;
-                    const currentShares = effectiveCents > 0 ? stakeUsdc / (effectiveCents / 100) : 0;
-                    const payoutUsdc = currentShares * 1.0;  // $1 per share
-                    const profitUsdc = payoutUsdc - stakeUsdc;
                     const isPending = pendingBet?.idx === idx;
+                    const pendingCents = isPending ? oddsToCents(pendingBet!.actualOdds) : 0;
 
                     return (
                     <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
@@ -297,14 +307,17 @@ export function PolymarketPage() {
                             {editingOdds === oddsKey ? (
                               <input
                                 type="number"
-                                step="0.01"
+                                step="1"
+                                min="1"
+                                max="99"
                                 autoFocus
-                                defaultValue={effectiveOdds.toFixed(2)}
-                                className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+                                defaultValue={m.priceCents}
+                                className="w-12 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
                                 onBlur={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val) && val >= 1.01) {
-                                    setOddsOverride(prev => ({ ...prev, [oddsKey]: val }));
+                                  const cents = parseFloat(e.target.value);
+                                  if (!isNaN(cents) && cents >= 1 && cents <= 99) {
+                                    const newOdds = 100 / cents;
+                                    setOddsOverride(prev => ({ ...prev, [oddsKey]: newOdds }));
                                   }
                                   setEditingOdds(null);
                                 }}
@@ -319,13 +332,13 @@ export function PolymarketPage() {
                             ) : (
                               <span
                                 onClick={() => setEditingOdds(oddsKey)}
-                                className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${oddsChanged ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                                title="Click to adjust (decimal odds)"
+                                className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
+                                title="Click to adjust price in cents"
                               >
-                                {effectiveCents}¢
+                                {m.priceCents}¢
                               </span>
                             )}
-                            {oddsChanged && (
+                            {isOverridden && (
                               <button
                                 onClick={() => setOddsOverride(prev => {
                                   const next = { ...prev };
@@ -343,12 +356,12 @@ export function PolymarketPage() {
                             <>
                               <div>
                                 <span className="text-muted2 uppercase tracking-wider">Shares: </span>
-                                <span className="text-text">{Math.round(currentShares)}</span>
+                                <span className="text-text">{Math.round(m.shares)}</span>
                               </div>
                               <div>
                                 <span className="text-muted2 uppercase tracking-wider">Payout: </span>
-                                <span className="text-text">${payoutUsdc.toFixed(2)}</span>
-                                <span className="text-tabPolymarket text-xs ml-1">(+${profitUsdc.toFixed(2)})</span>
+                                <span className="text-text">${m.payoutUsdc.toFixed(2)}</span>
+                                <span className="text-tabPolymarket text-xs ml-1">(+${m.profitUsdc.toFixed(2)})</span>
                               </div>
                             </>
                           )}
@@ -363,7 +376,7 @@ export function PolymarketPage() {
                             </div>
                           )}
                         </div>
-                        {/* Bottom row: Two-step bet flow — uniform with ValuePage */}
+                        {/* Bottom row: Two-step bet flow */}
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
                           {isPending ? (
                             <>
@@ -374,21 +387,24 @@ export function PolymarketPage() {
                               >
                                 Go&thinsp;&#8599;
                               </button>
-                              <span className="text-muted text-xs">Odds:</span>
+                              <span className="text-muted text-xs">Price:</span>
                               <input
                                 type="number"
-                                step="0.01"
+                                step="1"
+                                min="1"
+                                max="99"
                                 autoFocus
-                                value={pendingBet!.actualOdds}
+                                value={pendingCents}
                                 onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val)) {
-                                    setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
+                                  const cents = parseInt(e.target.value, 10);
+                                  if (!isNaN(cents) && cents >= 1 && cents <= 99) {
+                                    setPendingBet(prev => prev ? { ...prev, actualOdds: 100 / cents } : null);
                                   }
                                 }}
-                                className="w-20 bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabPolymarket"
+                                className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabPolymarket"
                                 onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
                               />
+                              <span className="text-muted text-xs">¢</span>
                               <button
                                 onClick={confirmPlaceBet}
                                 disabled={isPlacing || pendingBet!.actualOdds < 1.01}
