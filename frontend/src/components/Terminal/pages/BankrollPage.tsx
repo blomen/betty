@@ -365,9 +365,9 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                     </td>
                     <td className="text-right text-text">
                       {provider.currency && provider.currency !== 'SEK' ? (
-                        <span title={`${provider.balance_sek?.toFixed(0) ?? '?'} kr`}>
-                          ${provider.total_balance.toFixed(2)}
-                          <span className="text-muted2 text-[10px] ml-1">({provider.balance_sek?.toFixed(0)} kr)</span>
+                        <span title={`$${provider.total_balance.toFixed(2)}`}>
+                          {provider.balance_sek?.toFixed(0) ?? '?'} kr
+                          <span className="text-muted2 text-[10px] ml-1">(${provider.total_balance.toFixed(2)})</span>
                         </span>
                       ) : (
                         <>{provider.total_balance.toFixed(0)} kr</>
@@ -381,7 +381,10 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                     </td>
                     <td className="text-right text-success">
                       {provider.currency && provider.currency !== 'SEK' ? (
-                        <>${provider.available.toFixed(2)}</>
+                        <span>
+                          {(provider.available * (provider.exchange_rate_sek ?? 1)).toFixed(0)} kr
+                          <span className="text-muted2 text-[10px] ml-1">(${provider.available.toFixed(2)})</span>
+                        </span>
                       ) : (
                         <>{provider.available.toFixed(0)} kr</>
                       )}
@@ -398,7 +401,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                           </button>
                           <span className="text-xs text-muted">
                             {provider.currency && provider.currency !== 'SEK'
-                              ? `$${pendingDeposit.amount.toFixed(2)}`
+                              ? `${(pendingDeposit.amount * (provider.exchange_rate_sek ?? 1)).toFixed(0)} kr ($${pendingDeposit.amount.toFixed(2)})`
                               : `${pendingDeposit.amount.toFixed(0)} kr`
                             }{pendingDeposit.withBonus ? ' + bonus' : ''}
                           </span>

@@ -256,15 +256,33 @@ class PolymarketRetriever(Retriever):
         # Determine sport and league from series
         sport, league = self._get_sport_league(item)
 
-        # Parse markets - for football, combine home/draw/away into single 1x2
-        if sport == "football":
+        # Sports with possible draws use separate binary sub-markets on Polymarket
+        # ("Will X win?", "Draw?", "Will Y win?") — combine into single 1x2
+        draw_sports = {"football", "rugby"}
+        if sport in draw_sports:
             markets = self._combine_football_markets(item.get("markets", []), home, away)
         else:
+            # Track moneyline candidates with volume — keep only the highest-volume one
+            # to avoid sub-markets (e.g., "Map 1 Winner") overwriting the real moneyline
+            ml_candidates = []
             markets = []
             for m_data in item.get("markets", []):
                 m = self._parse_market(m_data, home, away)
                 if m:
-                    markets.append(m)
+                    vol = float(m_data.get("volume", 0) or 0)
+                    if m["type"] in ("moneyline", "1x2"):
+                        ml_candidates.append((m, vol))
+                    else:
+                        markets.append(m)
+            # Keep only the highest-volume moneyline market
+            if ml_candidates:
+                ml_candidates.sort(key=lambda x: x[1], reverse=True)
+                markets.insert(0, ml_candidates[0][0])
+                if len(ml_candidates) > 1:
+                    logger.debug(
+                        f"[polymarket] {title}: picked moneyline with vol=${ml_candidates[0][1]:.0f}, "
+                        f"skipped {len(ml_candidates)-1} lower-volume moneyline markets"
+                    )
 
         # Collect spread/total markets (both football and non-football)
         spread_candidates = []
@@ -445,7 +463,26 @@ class PolymarketRetriever(Retriever):
             question_lower = question.lower()
             if any(kw in question_lower for kw in [
                 "over", "under", "total", "spread", "handicap",
-                "points", "goals scored", "combined"
+                "points", "goals scored", "combined",
+                # Esports sub-markets (map/game-level lines are NOT match moneyline)
+                "map 1", "map 2", "map 3", "map 4", "map 5",
+                "game 1", "game 2", "game 3", "game 4", "game 5",
+                "first map", "second map", "third map",
+                "first game", "second game", "third game",
+                "map winner", "game winner",
+                "1st map", "2nd map", "3rd map",
+                "pistol round", "first blood",
+                # Esports exotic prop markets (e.g., "Series: Most drakes?")
+                "most kills", "most towers", "most drakes", "most nashors",
+                "most inhibitors", "most barons",
+                # Cross-sport sub-markets (halves, quarters, periods, sets, rounds)
+                "1st half", "2nd half", "first half", "second half",
+                "1st quarter", "2nd quarter", "3rd quarter", "4th quarter",
+                "1st period", "2nd period", "3rd period",
+                "1st set", "2nd set", "3rd set", "set 1", "set 2", "set 3",
+                # UFC sub-markets
+                "method of victory", "by ko", "by tko", "by submission",
+                "by decision", "round betting",
             ]):
                 return None
 
