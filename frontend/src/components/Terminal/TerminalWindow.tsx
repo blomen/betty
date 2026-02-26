@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from 'react';
 import type { BettingContext } from '@/types';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
+import { RecordingBar } from './RecordingBar';
+import { RecorderProvider } from '@/contexts/RecorderContext';
 import {
   MonitorPage,
   ValuePage,
@@ -128,29 +130,32 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const tabs = TABS_BY_CATEGORY[activeCategory] || [];
 
   return (
-    <div className="flex h-full bg-bg">
-      <Sidebar
-        activeCategory={activeCategory}
-        onCategoryChange={handleCategoryChange}
-        onProfileClick={handleProfileClick}
-        isProfileActive={isProfileActive}
-      />
-      <div className="flex-1 flex flex-col min-w-0">
-        {!isProfileActive && (
-          <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
-        )}
-        <div className="flex-1 overflow-y-auto p-4">
-          {isProfileActive ? (
-            <ProfilePage onRefresh={onRefresh} />
-          ) : tabs.length > 0 ? (
-            renderPage()
-          ) : (
-            <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-              Coming soon.
-            </div>
+    <RecorderProvider>
+      <div className="flex h-full bg-bg">
+        <Sidebar
+          activeCategory={activeCategory}
+          onCategoryChange={handleCategoryChange}
+          onProfileClick={handleProfileClick}
+          isProfileActive={isProfileActive}
+        />
+        <div className="flex-1 flex flex-col min-w-0">
+          {!isProfileActive && (
+            <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
           )}
+          <RecordingBar />
+          <div className="flex-1 overflow-y-auto p-4">
+            {isProfileActive ? (
+              <ProfilePage onRefresh={onRefresh} />
+            ) : tabs.length > 0 ? (
+              renderPage()
+            ) : (
+              <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+                Coming soon.
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </RecorderProvider>
   );
 }

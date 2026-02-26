@@ -583,6 +583,7 @@ class SpecialOdds(Base):
     matched_event_id = Column(String, nullable=True)
     matched_outcome = Column(String, nullable=True)  # "home", "away", "draw"
     matched_market = Column(String, nullable=True)   # "1x2", "moneyline"
+    enrichment_method = Column(String, nullable=True)  # How fair_odds was determined
 
     __table_args__ = (
         Index("ix_specials_provider", "provider"),
@@ -851,6 +852,86 @@ class TradeReview(Base):
 
     # Relationships
     trade = relationship("Trade", back_populates="review")
+
+
+# ============ Recorder Models ============
+
+class RecordingSession(Base):
+    """A recorded browsing session on a bookmaker site."""
+    __tablename__ = "recording_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    provider_id = Column(String, nullable=True)
+    action_type = Column(String, nullable=False, default="general")
+    label = Column(String, nullable=True)
+
+    started_at = Column(DateTime, nullable=False, default=_utcnow)
+    ended_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    action_count = Column(Integer, default=0)
+
+    cdp_url = Column(String, nullable=True)
+    status = Column(String, default="recording")
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+
+    actions = relationship(
+        "RecordedAction",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="RecordedAction.sequence",
+    )
+
+    __table_args__ = (
+        Index("ix_recording_provider", "provider_id"),
+        Index("ix_recording_status", "status"),
+    )
+
+
+class RecordedAction(Base):
+    """A single recorded browser action within a session."""
+    __tablename__ = "recorded_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, ForeignKey("recording_sessions.id"), nullable=False)
+
+    action_type = Column(String, nullable=False)
+    timestamp = Column(DateTime, nullable=False, default=_utcnow)
+    sequence = Column(Integer, nullable=False)
+
+    url = Column(String, nullable=True)
+    page_title = Column(String, nullable=True)
+    provider_id = Column(String, nullable=True)
+
+    css_selector = Column(String, nullable=True)
+    xpath = Column(String, nullable=True)
+    element_tag = Column(String, nullable=True)
+    element_text = Column(String, nullable=True)
+    element_id = Column(String, nullable=True)
+    element_class = Column(String, nullable=True)
+
+    x = Column(Float, nullable=True)
+    y = Column(Float, nullable=True)
+    viewport_width = Column(Integer, nullable=True)
+    viewport_height = Column(Integer, nullable=True)
+
+    input_value = Column(String, nullable=True)
+    input_type = Column(String, nullable=True)
+
+    request_method = Column(String, nullable=True)
+    request_url = Column(String, nullable=True)
+    response_status = Column(Integer, nullable=True)
+
+    meta = Column(JSON, nullable=True)
+
+    session = relationship("RecordingSession", back_populates="actions")
+
+    __table_args__ = (
+        Index("ix_action_session_seq", "session_id", "sequence"),
+        Index("ix_action_type", "action_type"),
+    )
 
 
 # ============ Database Functions ============

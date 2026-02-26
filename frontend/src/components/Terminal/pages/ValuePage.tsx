@@ -4,6 +4,7 @@ import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
+import { useRecorder } from '@/contexts/RecorderContext';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
@@ -22,6 +23,7 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
+  const { startAutoRecord, stopAutoRecord } = useRecorder();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -260,6 +262,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.provider1}`));
       setPendingBet(null);
       setSelectedGroup(null);
+      stopAutoRecord();
       fetchData();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
@@ -514,7 +517,10 @@ export function ValuePage({ providers }: ValuePageProps) {
                             {isPending ? (
                               <>
                                 <button
-                                  onClick={() => openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName)}
+                                  onClick={() => {
+                                    startAutoRecord(pendingBet!.opp.provider1, 'place_bet');
+                                    openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName);
+                                  }}
                                   className="px-2 py-1.5 text-xs text-tabValue hover:text-text transition-colors"
                                   title={pendingBet!.navUrl ?? 'Open provider'}
                                 >
@@ -543,7 +549,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                   {isPlacing ? '...' : 'Confirm'}
                                 </button>
                                 <button
-                                  onClick={() => setPendingBet(null)}
+                                  onClick={() => { stopAutoRecord(); setPendingBet(null); }}
                                   className="px-2 py-1.5 text-xs text-muted hover:text-text"
                                 >
                                   Cancel

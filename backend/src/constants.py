@@ -3,6 +3,15 @@
 # Market types to extract (all others skipped)
 ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})
 
+# Extended markets stored for Pinnacle only — used by boost EV enrichment
+# and combo decomposition, NOT by the value scanner.
+ENRICHMENT_MARKETS = ALLOWED_MARKETS | frozenset({
+    'team_total',       # Team over/under (Pinnacle API type)
+    '1x2_1h',           # First-half 1x2 (period=1)
+    'moneyline_1h',     # First-half moneyline (period=1)
+    'total_1h',         # First-half total (period=1)
+})
+
 # Sharp/reference providers for fair odds
 SHARP_PROVIDERS = frozenset({'pinnacle'})
 

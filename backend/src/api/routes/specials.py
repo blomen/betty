@@ -57,6 +57,7 @@ def _row_to_dict(row: SpecialOdds) -> dict:
         "matched_outcome": row.matched_outcome,
         "matched_event_id": row.matched_event_id,
         "matched_market": row.matched_market,
+        "enrichment_method": row.enrichment_method,
     }
 
 

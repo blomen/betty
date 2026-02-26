@@ -92,3 +92,4 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+recorder_ws_manager = ConnectionManager()

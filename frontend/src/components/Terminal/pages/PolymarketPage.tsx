@@ -4,11 +4,13 @@ import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
+import { useRecorder } from '@/contexts/RecorderContext';
 import { SortableHeader } from '../SortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet } from '@/types';
 
 export function PolymarketPage() {
+  const { startAutoRecord, stopAutoRecord } = useRecorder();
   const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -153,6 +155,7 @@ export function PolymarketPage() {
         utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined,
         selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
       });
+      stopAutoRecord();
       const outcomeLabel = resolveOutcome(vb);
       const stakeUsdc = vb.final_stake_usdc ?? (stake / (vb.exchange_rate_sek ?? 10.5));
       setBetSuccess(`Recorded: $${stakeUsdc.toFixed(2)} on ${outcomeLabel} @ ${oddsToCents(actualOdds)}¢ (Polymarket)`);
@@ -381,7 +384,7 @@ export function PolymarketPage() {
                           {isPending ? (
                             <>
                               <button
-                                onClick={() => openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName)}
+                                onClick={() => { startAutoRecord('polymarket', 'place_bet'); openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName); }}
                                 className="px-2 py-1.5 text-xs text-tabPolymarket hover:text-text transition-colors"
                                 title={pendingBet!.navUrl ?? 'Open Polymarket'}
                               >
@@ -413,7 +416,7 @@ export function PolymarketPage() {
                                 {isPlacing ? '...' : 'Confirm'}
                               </button>
                               <button
-                                onClick={() => setPendingBet(null)}
+                                onClick={() => { stopAutoRecord(); setPendingBet(null); }}
                                 className="px-2 py-1.5 text-xs text-muted hover:text-text"
                               >
                                 Cancel

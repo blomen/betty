@@ -6,6 +6,7 @@ import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useTableSort } from '@/hooks/useTableSort';
+import { useRecorder } from '@/contexts/RecorderContext';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
 
@@ -27,6 +28,7 @@ interface BankrollPageProps {
 }
 
 export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
+  const { startAutoRecord, stopAutoRecord } = useRecorder();
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
@@ -174,6 +176,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setPendingDeposit(null);
       setAdjustingProvider(null);
       setAdjustAmount('');
+      stopAutoRecord();
       fetchData();
       onRefresh();
     } catch (err) {
@@ -393,7 +396,10 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                       {pendingDeposit?.providerId === provider.provider_id ? (
                         <div className="flex items-center justify-end gap-2">
                           <button
-                            onClick={() => openProviderWindow(pendingDeposit.navUrl, pendingDeposit.windowName)}
+                            onClick={() => {
+                              startAutoRecord(pendingDeposit.providerId, 'deposit');
+                              openProviderWindow(pendingDeposit.navUrl, pendingDeposit.windowName);
+                            }}
                             className="px-2 py-1 text-xs text-tabBankroll hover:text-text transition-colors"
                             title={pendingDeposit.navUrl ?? 'Open deposit page'}
                           >
@@ -412,7 +418,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                             Confirm
                           </button>
                           <button
-                            onClick={() => { setPendingDeposit(null); setAdjustingProvider(null); setAdjustAmount(''); }}
+                            onClick={() => { stopAutoRecord(); setPendingDeposit(null); setAdjustingProvider(null); setAdjustAmount(''); }}
                             className="px-2 py-1 text-xs text-muted hover:text-text"
                           >
                             Cancel
@@ -473,6 +479,30 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                         </div>
                       ) : (
                         <div className="flex gap-1 justify-end">
+                          <button
+                            onClick={async () => {
+                              startAutoRecord(provider.provider_id, 'check_balance');
+                              try {
+                                const nav = await api.navigateToProvider(provider.provider_id);
+                                openProviderWindow(nav.url, nav.window_name);
+                              } catch { openProviderWindow(null, `bbq_${provider.provider_id}`); }
+                            }}
+                            className="px-2 py-1 text-xs text-muted hover:text-text"
+                          >
+                            Balance&thinsp;&#8599;
+                          </button>
+                          <button
+                            onClick={async () => {
+                              startAutoRecord(provider.provider_id, 'withdraw');
+                              try {
+                                const nav = await api.navigateToProvider(provider.provider_id);
+                                openProviderWindow(nav.url, nav.window_name);
+                              } catch { openProviderWindow(null, `bbq_${provider.provider_id}`); }
+                            }}
+                            className="px-2 py-1 text-xs text-muted hover:text-text"
+                          >
+                            Withdraw&thinsp;&#8599;
+                          </button>
                           <button
                             onClick={() => setAdjustingProvider(provider.provider_id)}
                             className="px-2 py-1 text-xs text-tabBankroll hover:opacity-80"

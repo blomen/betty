@@ -4,11 +4,13 @@ import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
+import { useRecorder } from '@/contexts/RecorderContext';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity } from '@/types';
 
 export function ReversePage() {
+  const { startAutoRecord, stopAutoRecord } = useRecorder();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
@@ -145,6 +147,7 @@ export function ReversePage() {
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
 
+      stopAutoRecord();
       const outcomeLabel = resolveOutcome(opp);
       setBetSuccess(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -280,7 +283,7 @@ export function ReversePage() {
                           {pendingBet?.oppId === opp.id ? (
                             <>
                               <button
-                                onClick={() => openProviderWindow(pendingBet.navUrl, pendingBet.windowName)}
+                                onClick={() => { startAutoRecord('pinnacle', 'place_bet'); openProviderWindow(pendingBet.navUrl, pendingBet.windowName); }}
                                 className="px-2 py-1.5 text-xs text-tabReverse hover:text-text transition-colors"
                                 title={pendingBet.navUrl ?? 'Open Pinnacle'}
                               >
@@ -309,7 +312,7 @@ export function ReversePage() {
                                 {isPlacing ? '...' : 'Confirm'}
                               </button>
                               <button
-                                onClick={() => setPendingBet(null)}
+                                onClick={() => { stopAutoRecord(); setPendingBet(null); }}
                                 className="px-2 py-1.5 text-xs text-muted hover:text-text"
                               >
                                 Cancel

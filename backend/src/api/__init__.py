@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..db.models import init_db
-from .state import ws_manager
+from .state import ws_manager, recorder_ws_manager
 from .routes import (
     providers_router,
     bankroll_router,
@@ -40,6 +40,7 @@ from .routes import (
     specials_router,
     placement_router,
     trading_router,
+    recorder_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,7 @@ app.include_router(risk_router)
 app.include_router(specials_router)
 app.include_router(placement_router)
 app.include_router(trading_router)
+app.include_router(recorder_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)
@@ -301,6 +303,22 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# WebSocket endpoint for recorder live feed
+@app.websocket("/ws/recorder")
+async def websocket_recorder(websocket: WebSocket):
+    """WebSocket endpoint for real-time recording action feed."""
+    await recorder_ws_manager.connect(websocket)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        recorder_ws_manager.disconnect(websocket)
 
 
 # Version endpoint

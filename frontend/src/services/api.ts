@@ -79,6 +79,57 @@ export interface PlacementBatchResult {
   };
 }
 
+// ============ Recorder Types ============
+
+export interface RecordingSession {
+  id: number;
+  provider_id: string | null;
+  action_type: string;
+  label: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  action_count: number;
+  cdp_url: string | null;
+  status: string;
+  notes: string | null;
+}
+
+export interface RecordedAction {
+  id: number;
+  session_id: number;
+  action_type: string;
+  timestamp: string | null;
+  sequence: number;
+  url: string | null;
+  page_title: string | null;
+  provider_id: string | null;
+  css_selector: string | null;
+  xpath: string | null;
+  element_tag: string | null;
+  element_text: string | null;
+  element_id: string | null;
+  element_class: string | null;
+  x: number | null;
+  y: number | null;
+  viewport_width: number | null;
+  viewport_height: number | null;
+  input_value: string | null;
+  input_type: string | null;
+  request_method: string | null;
+  request_url: string | null;
+  response_status: number | null;
+  meta: Record<string, unknown> | null;
+}
+
+export interface RecorderStatus {
+  is_recording: boolean;
+  session_id: number | null;
+  cdp_url: string | null;
+  action_count: number;
+  buffered_actions: number;
+}
+
 // ============ Oddsboost Types ============
 
 export interface SpecialItem {
@@ -1255,5 +1306,41 @@ export const api = {
     if (filters?.account_id) params.set('account_id', filters.account_id.toString());
     if (filters?.instrument) params.set('instrument', filters.instrument);
     return `${API_BASE}/trading/export/csv?${params}`;
+  },
+
+  // ============ Recorder ============
+
+  async startRecording(data: { cdp_url?: string; action_type?: string; label?: string }): Promise<{ session_id: number; status: string }> {
+    return fetchJson('/recorder/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async stopRecording(sessionId: number): Promise<{ success: boolean; session: RecordingSession }> {
+    return fetchJson(`/recorder/sessions/${sessionId}/stop`, { method: 'POST' });
+  },
+
+  async getRecorderStatus(): Promise<RecorderStatus> {
+    return fetchJson('/recorder/status');
+  },
+
+  async getRecordingSessions(filters?: { provider_id?: string; status?: string; limit?: number }): Promise<{ sessions: RecordingSession[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filters?.provider_id) params.set('provider_id', filters.provider_id);
+    if (filters?.status) params.set('status', filters.status);
+    if (filters?.limit) params.set('limit', filters.limit.toString());
+    return fetchJson(`/recorder/sessions?${params}`);
+  },
+
+  async getRecordingActions(sessionId: number, actionType?: string): Promise<{ actions: RecordedAction[]; count: number }> {
+    const params = new URLSearchParams();
+    if (actionType) params.set('action_type', actionType);
+    return fetchJson(`/recorder/sessions/${sessionId}/actions?${params}`);
+  },
+
+  async deleteRecordingSession(sessionId: number): Promise<{ success: boolean }> {
+    return fetchJson(`/recorder/sessions/${sessionId}`, { method: 'DELETE' });
   },
 };

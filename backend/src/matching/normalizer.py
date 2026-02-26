@@ -290,8 +290,9 @@ def normalize_market(market: str) -> str:
     """
     market = market.lower().strip()
 
-    # Pass through if already normalized
-    if market in ('1x2', 'moneyline', 'spread', 'total'):
+    # Pass through if already normalized (including enrichment-only types)
+    if market in ('1x2', 'moneyline', 'spread', 'total',
+                  'team_total', '1x2_1h', 'moneyline_1h', 'total_1h'):
         return market
 
     # Spread/handicap detection
