@@ -81,11 +81,12 @@ class ProfileRepo:
             return amount
 
     def get_total_bankroll(self, profile_id: int) -> float:
-        """Get total bankroll for a profile (sum of all provider balances)."""
+        """Get total bankroll for a profile in SEK (converts non-SEK balances)."""
+        from ..config import get_exchange_rate
         records = self.db.query(ProfileProviderBalance).filter(
             ProfileProviderBalance.profile_id == profile_id
         ).all()
-        return sum(r.balance for r in records)
+        return sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
 
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a single provider. Alias for get_balance()."""

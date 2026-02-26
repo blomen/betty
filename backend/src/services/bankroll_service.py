@@ -8,6 +8,7 @@ from sqlalchemy import func
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Profile, Provider, ProfileProviderBonus, Bet
 from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ..config import get_exchange_rate, get_provider_currency
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,23 @@ class BankrollService:
         providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
 
         provider_data = []
-        total = 0.0
+        total_sek = 0.0
         for p in providers:
             balance = self.profile_repo.get_balance(profile.id, p.id)
-            total += balance
-            provider_data.append({"id": p.id, "name": p.name, "balance": balance})
+            currency = get_provider_currency(p.id)
+            rate = get_exchange_rate(p.id)
+            total_sek += balance * rate
+            provider_data.append({
+                "id": p.id,
+                "name": p.name,
+                "balance": balance,
+                "currency": currency,
+                "exchange_rate_sek": rate,
+                "balance_sek": round(balance * rate, 2),
+            })
 
         return {
-            "total": total,
+            "total": total_sek,
             "profile_id": profile.id,
             "profile_name": profile.name,
             "providers": provider_data,
@@ -98,10 +108,13 @@ class BankrollService:
         providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
 
         exposure_data = []
-        total_balance = 0.0
+        total_balance_sek = 0.0
         for provider in providers:
             balance = self.profile_repo.get_balance(profile.id, provider.id)
-            total_balance += balance
+            currency = get_provider_currency(provider.id)
+            rate = get_exchange_rate(provider.id)
+            balance_sek = balance * rate
+            total_balance_sek += balance_sek
 
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
             pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
@@ -110,6 +123,9 @@ class BankrollService:
                 "provider_id": provider.id,
                 "provider_name": provider.name,
                 "total_balance": balance,
+                "balance_sek": round(balance_sek, 2),
+                "currency": currency,
+                "exchange_rate_sek": rate,
                 "pending_exposure": pending_exposure,
                 "pending_bets_count": len(pending_bets),
                 "available": balance,
@@ -120,9 +136,9 @@ class BankrollService:
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
-            "total_balance": total_balance + total_pending,
+            "total_balance": total_balance_sek + total_pending,
             "total_pending": total_pending,
-            "total_available": total_balance,
+            "total_available": total_balance_sek,
             "providers": exposure_data,
         }
 

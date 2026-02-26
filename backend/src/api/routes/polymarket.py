@@ -10,6 +10,7 @@ from ...db.models import Event, Odds
 from ...repositories import ProfileRepo
 from ...analysis.scanner import OpportunityScanner
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ...config import get_exchange_rate
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,11 @@ async def get_polymarket_value(
         if sport and event.sport != sport:
             continue
 
+        # Polymarket price = implied probability (1/odds), shown in whole cents
+        price_cents = round(1 / vb.provider_odds * 100) if vb.provider_odds > 0 else 0
+        fair_price_cents = round(1 / vb.fair_odds * 100) if vb.fair_odds > 0 else 0
+        usdc_rate = get_exchange_rate("polymarket")  # USDC → SEK
+
         result = {
             "event_id": vb.event_id,
             "market": vb.market,
@@ -74,6 +80,10 @@ async def get_polymarket_value(
             "sport": event.sport,
             "league": event.league,
             "start_time": event.start_time.isoformat() if event.start_time else None,
+            # Polymarket-native fields
+            "price_cents": price_cents,
+            "fair_price_cents": fair_price_cents,
+            "exchange_rate_sek": usdc_rate,
         }
 
         # Add stake recommendation
@@ -90,8 +100,16 @@ async def get_polymarket_value(
                     provider_id="polymarket",
                     min_odds=min_odds,
                 )
+                stake_sek = stake_rec.stake
+                stake_usdc = round(stake_sek / usdc_rate, 2) if usdc_rate > 0 else 0
+                shares = round(stake_usdc / (price_cents / 100), 1) if price_cents > 0 else 0
+                payout_usdc = round(shares * 1.0, 2)  # Each share pays $1 if correct
+
                 result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
-                result["final_stake"] = round(stake_rec.stake, 2)
+                result["final_stake"] = round(stake_sek, 2)  # SEK for internal tracking
+                result["final_stake_usdc"] = stake_usdc
+                result["shares"] = shares
+                result["payout_usdc"] = payout_usdc
                 result["kelly_fraction"] = stake_rec.kelly_fraction
                 result["skip_reason"] = stake_rec.skip_reason
                 result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
@@ -100,6 +118,9 @@ async def get_polymarket_value(
                 logger.debug(f"Stake calculation failed for {vb.event_id}: {e}")
                 result["suggested_stake"] = None
                 result["final_stake"] = None
+                result["final_stake_usdc"] = None
+                result["shares"] = None
+                result["payout_usdc"] = None
                 result["kelly_fraction"] = None
                 result["skip_reason"] = None
                 result["bankroll_needed"] = None

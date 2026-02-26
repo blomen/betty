@@ -245,6 +245,41 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
   const [expandedSettleId, setExpandedSettleId] = useState<number | null>(null);
   const [isAutoSettling, setIsAutoSettling] = useState(false);
 
+  // ── Inline editing state ───────────────────────────────────────
+  const [editingCell, setEditingCell] = useState<{ betId: number; field: 'odds' | 'stake' } | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const startCellEdit = (betId: number, field: 'odds' | 'stake', currentValue: number) => {
+    setEditingCell({ betId, field });
+    setEditValue(field === 'odds' ? currentValue.toFixed(2) : currentValue.toFixed(0));
+  };
+
+  const cancelCellEdit = () => {
+    setEditingCell(null);
+    setEditValue('');
+  };
+
+  const saveCellEdit = async () => {
+    if (!editingCell) return;
+    const bet = bets.find(b => b.id === editingCell.betId);
+    if (!bet) { cancelCellEdit(); return; }
+
+    const parsed = parseFloat(editValue);
+    if (isNaN(parsed) || parsed <= 0) { cancelCellEdit(); return; }
+
+    const currentVal = editingCell.field === 'odds' ? bet.odds : bet.stake;
+    if (parsed === currentVal) { cancelCellEdit(); return; }
+
+    try {
+      await api.editBet(editingCell.betId, { [editingCell.field]: parsed });
+      cancelCellEdit();
+      fetchAll();
+    } catch (err) {
+      console.error('Edit bet failed:', err);
+      cancelCellEdit();
+    }
+  };
+
   const handleManualSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
     const payout = result === 'won' ? bet.stake * bet.odds : result === 'void' ? bet.stake : 0;
     try {
@@ -488,7 +523,6 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                     : '?';
                   const prob = bet.selection_probability ?? (bet.odds > 0 ? 1 / bet.odds : null);
                   const mkt = formatMarketShort(bet.market);
-                  const closingOdds = bet.closing_odds ?? bet.odds;
                   const hasScore = bet.home_score != null && bet.away_score != null;
                   const isExpanded = expandedSettleId === bet.id;
                   return (
@@ -530,10 +564,29 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
                           )}
                         </td>
-                        <td className="text-right text-text text-sm font-medium">
-                          {closingOdds.toFixed(2)}
+                        <td className="text-right text-sm font-medium" onClick={e => e.stopPropagation()}>
+                          {editingCell?.betId === bet.id && editingCell.field === 'odds' ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              className="w-16 px-1 py-0 bg-bg border border-border text-text text-sm text-right"
+                              value={editValue}
+                              onChange={e => setEditValue(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') saveCellEdit(); if (e.key === 'Escape') cancelCellEdit(); }}
+                              onBlur={saveCellEdit}
+                              autoFocus
+                            />
+                          ) : (
+                            <span
+                              className="text-text cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => startCellEdit(bet.id, 'odds', bet.odds)}
+                              title="Click to edit placed odds"
+                            >
+                              {bet.odds.toFixed(2)}
+                            </span>
+                          )}
                           {bet.closing_odds != null && bet.closing_odds !== bet.odds && (
-                            <span className="text-muted2 text-[9px] line-through ml-1">{bet.odds.toFixed(2)}</span>
+                            <span className="text-muted2 text-[9px] ml-1">{bet.closing_odds.toFixed(2)}</span>
                           )}
                         </td>
                         <td className="text-right">
@@ -541,7 +594,25 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             <span className="text-[11px] text-muted">{(prob * 100).toFixed(0)}%</span>
                           ) : <span className="text-muted">-</span>}
                         </td>
-                        <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                        <td className="text-right" onClick={e => e.stopPropagation()}>
+                          {editingCell?.betId === bet.id && editingCell.field === 'stake' ? (
+                            <input
+                              type="number"
+                              className="w-16 px-1 py-0 bg-bg border border-border text-text text-sm text-right"
+                              value={editValue}
+                              onChange={e => setEditValue(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') saveCellEdit(); if (e.key === 'Escape') cancelCellEdit(); }}
+                              onBlur={saveCellEdit}
+                              autoFocus
+                            />
+                          ) : (
+                            <span
+                              className="text-text text-sm cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => startCellEdit(bet.id, 'stake', bet.stake)}
+                              title="Click to edit stake"
+                            >{bet.stake.toFixed(0)} kr</span>
+                          )}
+                        </td>
                         <td className="text-right">
                           {bet.clv_pct != null ? (
                             <span className={`text-sm font-medium ${bet.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
@@ -662,9 +733,27 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                         )}
                       </td>
                       <td className="text-right">
-                        <span className={`text-sm font-medium ${bet.current_odds != null && bet.current_odds !== bet.odds ? 'text-accent' : 'text-text'}`}>
-                          {liveOdds.toFixed(2)}
-                        </span>
+                        {editingCell?.betId === bet.id && editingCell.field === 'odds' ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            className="w-16 px-1 py-0 bg-bg border border-border text-text text-sm text-right"
+                            value={editValue}
+                            onChange={e => setEditValue(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveCellEdit(); if (e.key === 'Escape') cancelCellEdit(); }}
+                            onBlur={saveCellEdit}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span
+                            className={`text-sm font-medium cursor-pointer hover:text-accent transition-colors ${bet.current_odds != null && bet.current_odds !== bet.odds ? 'text-accent' : 'text-text'}`}
+                            onClick={e => { e.stopPropagation(); startCellEdit(bet.id, 'odds', bet.odds); }}
+                            title="Click to edit placed odds"
+                          >
+                            {liveOdds.toFixed(2)}
+                          </span>
+                        )}
                       </td>
                       <td className="text-right">
                         {fairOdds != null ? (
@@ -676,7 +765,26 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                           <span className="text-[11px] text-muted">{(liveProb * 100).toFixed(0)}%</span>
                         ) : <span className="text-muted">-</span>}
                       </td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        {editingCell?.betId === bet.id && editingCell.field === 'stake' ? (
+                          <input
+                            type="number"
+                            className="w-16 px-1 py-0 bg-bg border border-border text-text text-sm text-right"
+                            value={editValue}
+                            onChange={e => setEditValue(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveCellEdit(); if (e.key === 'Escape') cancelCellEdit(); }}
+                            onBlur={saveCellEdit}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span
+                            className="text-text text-sm cursor-pointer hover:text-accent transition-colors"
+                            onClick={e => { e.stopPropagation(); startCellEdit(bet.id, 'stake', bet.stake); }}
+                            title="Click to edit stake"
+                          >{bet.stake.toFixed(0)} kr</span>
+                        )}
+                      </td>
                       <td className="text-right">
                         {liveEdge != null ? (
                           <span className={`text-sm font-medium ${liveEdge >= 0 ? 'text-success' : 'text-error'}`}>

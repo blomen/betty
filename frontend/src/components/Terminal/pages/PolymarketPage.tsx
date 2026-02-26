@@ -79,6 +79,9 @@ export function PolymarketPage() {
   const getPlacedKey = (vb: PolymarketValueBet) =>
     `${vb.event_id}|polymarket`;
 
+  // Convert decimal odds to price in cents (1/odds * 100)
+  const oddsToCents = (odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0;
+
   // Step 1: Navigate browser to Polymarket, enter "awaiting confirm" state
   const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
     const stake = vb.final_stake;
@@ -135,7 +138,8 @@ export function PolymarketPage() {
         selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
       });
       const outcomeLabel = resolveOutcome(vb);
-      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Polymarket)`);
+      const stakeUsdc = vb.final_stake_usdc ?? (stake / (vb.exchange_rate_sek ?? 10.5));
+      setBetSuccess(`Recorded: $${stakeUsdc.toFixed(2)} on ${outcomeLabel} @ ${oddsToCents(actualOdds)}¢ (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);
 
       // Remove from list immediately
@@ -172,14 +176,14 @@ export function PolymarketPage() {
     }),
   [valueBets, placedKeys]);
 
-  type PolySortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
+  type PolySortCol = 'price' | 'fair' | 'stake' | 'shares' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
-    odds:  (vb: PolymarketValueBet) => vb.polymarket_odds,
-    fair:  (vb: PolymarketValueBet) => vb.fair_odds,
-    prob:  (vb: PolymarketValueBet) => vb.fair_odds > 1 ? 100 / vb.fair_odds : 0,
-    stake: (vb: PolymarketValueBet) => vb.final_stake ?? 0,
-    edge:  (vb: PolymarketValueBet) => vb.edge_pct,
-    ttk:   (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
+    price:  (vb: PolymarketValueBet) => vb.price_cents ?? oddsToCents(vb.polymarket_odds),
+    fair:   (vb: PolymarketValueBet) => vb.fair_price_cents ?? oddsToCents(vb.fair_odds),
+    stake:  (vb: PolymarketValueBet) => vb.final_stake_usdc ?? 0,
+    shares: (vb: PolymarketValueBet) => vb.shares ?? 0,
+    edge:   (vb: PolymarketValueBet) => vb.edge_pct,
+    ttk:    (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
   }), []);
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
     useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
@@ -220,19 +224,21 @@ export function PolymarketPage() {
             <tr>
               <th>Event</th>
               <th className="text-right">Outcome</th>
-              <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
+              <SortableHeader column="price" label="Price" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />
-              <SortableHeader column="prob" label="Prob" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
+              <SortableHeader column="shares" label="Shares" sort={polySort} onToggle={togglePolySort} />
               <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
             </tr>
           </thead>
           <tbody>
             {sortedBets.map((vb, idx) => {
               const isSelected = selectedOpp === idx;
-              const hasStake = vb.final_stake != null && vb.final_stake > 0;
+              const hasStake = vb.final_stake_usdc != null && vb.final_stake_usdc > 0;
               const isSkipped = !!vb.skip_reason;
+              const priceCents = vb.price_cents ?? oddsToCents(vb.polymarket_odds);
+              const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
 
               return (
                 <>
@@ -251,29 +257,34 @@ export function PolymarketPage() {
                       </div>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
-                    <td className="text-right text-text text-sm font-medium">{vb.polymarket_odds.toFixed(2)}</td>
-                    <td className="text-right text-muted text-sm">{vb.fair_odds.toFixed(2)}</td>
-                    <td className="text-right text-muted text-sm">
-                      {vb.fair_odds > 1 ? `${(100 / vb.fair_odds).toFixed(0)}%` : '-'}
-                    </td>
+                    <td className="text-right text-text text-sm font-medium">{priceCents}¢</td>
+                    <td className="text-right text-muted text-sm">{fairCents}¢</td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium text-text">{hasStake ? `${vb.final_stake!.toFixed(0)} kr` : '-'}</td>
+                    <td className="text-right text-sm font-medium text-text">
+                      {hasStake ? `$${vb.final_stake_usdc!.toFixed(2)}` : '-'}
+                    </td>
+                    <td className="text-right text-sm text-muted">
+                      {vb.shares != null && vb.shares > 0 ? Math.round(vb.shares) : '-'}
+                    </td>
                     <td className="text-right text-tabPolymarket font-semibold text-sm">+{vb.edge_pct.toFixed(1)}%</td>
                   </tr>
                   {isSelected && !isSkipped && (() => {
                     const oddsKey = getOddsKey(vb);
                     const effectiveOdds = getEffectiveOdds(vb);
+                    const effectiveCents = oddsToCents(effectiveOdds);
                     const oddsChanged = oddsKey in oddsOverride;
-                    const potentialReturn = hasStake ? vb.final_stake! * effectiveOdds : 0;
-                    const potentialProfit = potentialReturn - (vb.final_stake || 0);
+                    const stakeUsdc = vb.final_stake_usdc ?? 0;
+                    const currentShares = effectiveCents > 0 ? stakeUsdc / (effectiveCents / 100) : 0;
+                    const payoutUsdc = currentShares * 1.0;  // $1 per share
+                    const profitUsdc = payoutUsdc - stakeUsdc;
                     const isPending = pendingBet?.idx === idx;
 
                     return (
                     <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
                       <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                        {/* Top row: Kelly, Odds (editable), Return, Market, Line — uniform with ValuePage */}
+                        {/* Top row: Kelly, Price (editable), Payout, Profit, Market */}
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           {vb.kelly_fraction != null && (
                             <div>
@@ -282,7 +293,7 @@ export function PolymarketPage() {
                             </div>
                           )}
                           <div className="flex items-center gap-1">
-                            <span className="text-muted2 uppercase tracking-wider">Odds: </span>
+                            <span className="text-muted2 uppercase tracking-wider">Price: </span>
                             {editingOdds === oddsKey ? (
                               <input
                                 type="number"
@@ -309,9 +320,9 @@ export function PolymarketPage() {
                               <span
                                 onClick={() => setEditingOdds(oddsKey)}
                                 className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${oddsChanged ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                                title="Click to adjust odds"
+                                title="Click to adjust (decimal odds)"
                               >
-                                {effectiveOdds.toFixed(2)}
+                                {effectiveCents}¢
                               </span>
                             )}
                             {oddsChanged && (
@@ -329,11 +340,17 @@ export function PolymarketPage() {
                             )}
                           </div>
                           {hasStake && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                              <span className="text-text">{potentialReturn.toFixed(0)} kr</span>
-                              <span className="text-tabPolymarket text-xs ml-1">(+{potentialProfit.toFixed(0)})</span>
-                            </div>
+                            <>
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Shares: </span>
+                                <span className="text-text">{Math.round(currentShares)}</span>
+                              </div>
+                              <div>
+                                <span className="text-muted2 uppercase tracking-wider">Payout: </span>
+                                <span className="text-text">${payoutUsdc.toFixed(2)}</span>
+                                <span className="text-tabPolymarket text-xs ml-1">(+${profitUsdc.toFixed(2)})</span>
+                              </div>
+                            </>
                           )}
                           <div>
                             <span className="text-muted2 uppercase tracking-wider">Market: </span>

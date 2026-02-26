@@ -382,6 +382,17 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         # true_prob = (1/orig) / (1 + margin)  →  fair_odds = orig * (1 + margin)
         fair_odds = round(original_odds * (1 + margin), 3)
         edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
+
+        # Sanity check: edge > 100% means boosted_odds is wildly above fair —
+        # almost certainly a multi-leg parlay boost where original_odds is one
+        # leg but boosted_odds is the combined parlay price.
+        if edge_pct > 100:
+            logger.debug(
+                f"Skipping margin-est '{special.get('title')}': edge={edge_pct:.0f}% "
+                f"(boosted={boosted_odds:.2f} vs fair={fair_odds:.2f}) — likely parlay boost"
+            )
+            continue
+
         ev_per_unit = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
 
         special["fair_odds"] = fair_odds

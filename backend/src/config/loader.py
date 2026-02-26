@@ -45,6 +45,10 @@ class ProviderConfig(BaseModel):
     sharp: Optional[bool] = False
     site_url: Optional[str] = None
 
+    # Currency (default SEK for Swedish sportsbooks, USDC for Polymarket)
+    currency: Optional[str] = "SEK"
+    exchange_rate_sek: Optional[float] = 1.0  # 1 unit of currency = X SEK
+
     # Gecko V2 session init path (default /sv/odds, bethard needs /sv/sports)
     init_path: Optional[str] = None
 
@@ -345,8 +349,36 @@ class ConfigLoader:
         return self._sport_aliases.get(sport_key.lower(), [])
 
 
-# ============ Convenience Function ============
+# ============ Convenience Functions ============
 
 def load_config() -> ConfigLoader:
     """Load and return configuration singleton."""
     return ConfigLoader.get_instance()
+
+
+def get_exchange_rate(provider_id: str) -> float:
+    """Get exchange rate to SEK for a provider. Returns 1.0 for SEK providers."""
+    config = load_config()
+    provider = config.get_provider(provider_id)
+    if provider and provider.exchange_rate_sek:
+        return provider.exchange_rate_sek
+    return 1.0
+
+
+def get_provider_currency(provider_id: str) -> str:
+    """Get the native currency for a provider."""
+    config = load_config()
+    provider = config.get_provider(provider_id)
+    if provider and provider.currency:
+        return provider.currency
+    return "SEK"
+
+
+def get_all_exchange_rates() -> dict[str, float]:
+    """Get exchange rates for all providers (only non-SEK providers included)."""
+    config = load_config()
+    rates = {}
+    for pid, pconfig in config.providers.items():
+        if pconfig.currency and pconfig.currency != "SEK":
+            rates[pid] = pconfig.exchange_rate_sek or 1.0
+    return rates

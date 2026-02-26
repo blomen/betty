@@ -427,6 +427,9 @@ export interface ProviderExposure {
   provider_id: string;
   provider_name: string;
   total_balance: number;
+  balance_sek?: number;
+  currency?: string;
+  exchange_rate_sek?: number;
   pending_exposure: number;
   pending_bets_count: number;
   available: number;
@@ -505,9 +508,16 @@ export interface PolymarketValueBet {
   sport: string;
   league: string | null;
   start_time: string | null;
-  // Stake recommendations (from profile/bankroll, in kr)
-  suggested_stake?: number | null;
-  final_stake?: number | null;
+  // Polymarket-native fields
+  price_cents?: number;        // Price per share in cents (e.g., 34 = 34¢)
+  fair_price_cents?: number;   // Fair price in cents from Pinnacle
+  exchange_rate_sek?: number;  // USDC → SEK rate
+  // Stake recommendations
+  suggested_stake?: number | null;  // SEK
+  final_stake?: number | null;      // SEK
+  final_stake_usdc?: number | null; // USDC
+  shares?: number | null;           // Number of shares
+  payout_usdc?: number | null;      // Payout if win ($1 per share)
   kelly_fraction?: number | null;
   skip_reason?: string | null;
   bankroll_needed?: number | null;

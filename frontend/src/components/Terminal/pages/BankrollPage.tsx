@@ -90,6 +90,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     }
   }, [depositResult]);
 
+  // Format amount with correct currency for a provider
+  const fmtAmount = (providerId: string, amount: number) => {
+    const prov = exposure?.providers.find(p => p.provider_id === providerId);
+    if (prov?.currency && prov.currency !== 'SEK') return `$${amount.toFixed(2)}`;
+    return `${amount.toFixed(0)} kr`;
+  };
+
   // Get provider bonus info from providers prop
   const getProviderBonus = (providerId: string) => {
     const provider = providers.find(p => p.id === providerId);
@@ -148,20 +155,20 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     try {
       if (withBonus) {
         const result = await api.depositWithBonus(providerId, amount);
-        let msg = `Deposited ${result.deposit.toFixed(0)} kr`;
+        let msg = `Deposited ${fmtAmount(providerId, result.deposit)}`;
         if (result.bonus_claimed > 0) {
-          msg += ` + ${result.bonus_claimed.toFixed(0)} kr bonus`;
+          msg += ` + ${fmtAmount(providerId, result.bonus_claimed)} bonus`;
         }
         if (result.bonus_type === 'freebet' && result.bonus_status === 'trigger_needed') {
           msg += `. Freebet activated — place trigger bet`;
         }
-        msg += `. New balance: ${result.new_balance.toFixed(0)} kr`;
+        msg += `. New balance: ${fmtAmount(providerId, result.new_balance)}`;
         setDepositResult({ success: true, message: msg });
       } else {
         await api.adjustBalance(providerId, amount);
         setDepositResult({
           success: true,
-          message: `Deposited ${amount.toFixed(0)} kr`,
+          message: `Deposited ${fmtAmount(providerId, amount)}`,
         });
       }
       setPendingDeposit(null);
@@ -186,7 +193,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       await api.adjustBalance(providerId, -amount);
       setDepositResult({
         success: true,
-        message: `Withdrew ${amount.toFixed(0)} kr`,
+        message: `Withdrew ${fmtAmount(providerId, amount)}`,
       });
       setAdjustingProvider(null);
       setAdjustAmount('');
@@ -356,14 +363,29 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                         );
                       })()}
                     </td>
-                    <td className="text-right text-text">{provider.total_balance.toFixed(0)} kr</td>
+                    <td className="text-right text-text">
+                      {provider.currency && provider.currency !== 'SEK' ? (
+                        <span title={`${provider.balance_sek?.toFixed(0) ?? '?'} kr`}>
+                          ${provider.total_balance.toFixed(2)}
+                          <span className="text-muted2 text-[10px] ml-1">({provider.balance_sek?.toFixed(0)} kr)</span>
+                        </span>
+                      ) : (
+                        <>{provider.total_balance.toFixed(0)} kr</>
+                      )}
+                    </td>
                     <td className="text-right text-muted">
                       {provider.pending_exposure.toFixed(0)} kr
                       {provider.pending_bets_count > 0 && (
                         <span className="text-xs ml-1">({provider.pending_bets_count})</span>
                       )}
                     </td>
-                    <td className="text-right text-success">{provider.available.toFixed(0)} kr</td>
+                    <td className="text-right text-success">
+                      {provider.currency && provider.currency !== 'SEK' ? (
+                        <>${provider.available.toFixed(2)}</>
+                      ) : (
+                        <>{provider.available.toFixed(0)} kr</>
+                      )}
+                    </td>
                     <td className="text-right">
                       {pendingDeposit?.providerId === provider.provider_id ? (
                         <div className="flex items-center justify-end gap-2">
@@ -375,7 +397,10 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                             Go&thinsp;&#8599;
                           </button>
                           <span className="text-xs text-muted">
-                            {pendingDeposit.amount.toFixed(0)} kr{pendingDeposit.withBonus ? ' + bonus' : ''}
+                            {provider.currency && provider.currency !== 'SEK'
+                              ? `$${pendingDeposit.amount.toFixed(2)}`
+                              : `${pendingDeposit.amount.toFixed(0)} kr`
+                            }{pendingDeposit.withBonus ? ' + bonus' : ''}
                           </span>
                           <button
                             onClick={confirmDeposit}
@@ -397,7 +422,8 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                               type="number"
                               value={adjustAmount}
                               onChange={(e) => setAdjustAmount(e.target.value)}
-                              placeholder="Amount"
+                              placeholder={provider.currency && provider.currency !== 'SEK' ? '$ Amount' : 'Amount'}
+                              step={provider.currency && provider.currency !== 'SEK' ? '0.01' : '1'}
                               className="w-20 px-2 py-1 bg-panel2 border border-border text-text text-xs"
                               autoFocus
                             />
