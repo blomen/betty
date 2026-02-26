@@ -353,7 +353,10 @@ class AltenarRetriever(Retriever):
 
                         outcome_dict = {
                             'name': standardized_outcome,
-                            'odds': odd.get('price', 0.0)
+                            'odds': odd.get('price', 0.0),
+                            'provider_meta': {
+                                'outcome_id': str(odd_id),
+                            },
                         }
                         if market_point is not None:
                             outcome_dict['point'] = market_point
@@ -362,7 +365,11 @@ class AltenarRetriever(Retriever):
                 if outcomes:
                     market_dict = {
                         'type': market_type,
-                        'outcomes': outcomes
+                        'outcomes': outcomes,
+                        'provider_meta': {
+                            'event_id': event_id,
+                            'market_id': str(market_id),
+                        },
                     }
                     markets.append(market_dict)
 

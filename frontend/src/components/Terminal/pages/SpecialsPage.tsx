@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -38,6 +39,8 @@ export function SpecialsPage() {
     providerId: string;
     actualOdds: number;
     stake: number;
+    navUrl: string | null;
+    windowName: string;
   } | null>(null);
 
   // Track placed specials for immediate removal from list
@@ -129,12 +132,16 @@ export function SpecialsPage() {
     setBetSuccess(null);
 
     try {
+      let navUrl: string | null = null;
+      let windowName = `bbq_${providerId}`;
       try {
-        await api.navigateToProvider(providerId);
+        const nav = await api.navigateToProvider(providerId);
+        navUrl = nav.url;
+        windowName = nav.window_name;
       } catch {
         // Navigation is best-effort
       }
-      setPendingBet({ groupKey, special, providerId, actualOdds: odds, stake });
+      setPendingBet({ groupKey, special, providerId, actualOdds: odds, stake, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setPlacementError(msg);
@@ -331,7 +338,7 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
   selectedProviderIdx: number;
   onSelectProvider: (idx: number) => void;
   onStartPlaceBet: (providerId: string) => void;
-  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number } | null;
+  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number; navUrl: string | null; windowName: string } | null;
   onConfirmBet: () => void;
   onCancelPending: () => void;
   onUpdatePendingOdds: (val: number) => void;
@@ -408,6 +415,13 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
               <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
             ) : pendingBet ? (
               <>
+                <button
+                  onClick={() => openProviderWindow(pendingBet.navUrl, pendingBet.windowName)}
+                  className="px-2 py-1.5 text-xs text-tabBonus hover:text-text transition-colors"
+                  title={pendingBet.navUrl ?? 'Open provider'}
+                >
+                  Go&thinsp;&#8599;
+                </button>
                 <span className="text-muted text-xs">Odds:</span>
                 <input
                   type="number"

@@ -321,10 +321,19 @@ def calculate_stake(
 
     if stake < min_stake or (min_expected_profit > 0 and stake * edge_used < min_expected_profit):
         additional = round(additional, 0)
-        if additional >= 1000:
-            add_str = f"+{additional / 1000:.0f}k kr"
+
+        # Determine appropriate skip reason
+        if was_capped_event:
+            skip_reason = "event cap"
+        elif additional < 1:
+            skip_reason = "low EV"
         else:
-            add_str = f"+{additional:.0f} kr"
+            if additional >= 1000:
+                add_str = f"+{additional / 1000:.0f}k kr"
+            else:
+                add_str = f"+{additional:.0f} kr"
+            skip_reason = f"add {add_str} to play"
+
         return StakeResult(
             stake=0.0,
             kelly_fraction=kelly,
@@ -335,7 +344,7 @@ def calculate_stake(
             single_bet_cap=round(single_bet_cap, 2),
             was_capped_single=was_capped_single,
             was_capped_event=was_capped_event,
-            skip_reason=f"add {add_str} to play",
+            skip_reason=skip_reason,
             bankroll_needed=additional,
         )
 

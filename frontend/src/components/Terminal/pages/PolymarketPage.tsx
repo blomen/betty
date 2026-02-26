@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -25,6 +26,8 @@ export function PolymarketPage() {
     idx: number;
     vb: PolymarketValueBet;
     actualOdds: number;
+    navUrl: string | null;
+    windowName: string;
   } | null>(null);
 
   // Track placed event+outcome combos for immediate removal from list
@@ -75,17 +78,21 @@ export function PolymarketPage() {
     setBetSuccess(null);
 
     try {
+      let navUrl: string | null = null;
+      let windowName = 'bbq_polymarket';
       try {
-        await api.navigateToEvent({
+        const nav = await api.navigateToEvent({
           provider_id: 'polymarket',
           home_team: vb.home_team,
           away_team: vb.away_team,
           event_id: vb.event_id,
         });
+        navUrl = nav.url;
+        windowName = nav.window_name;
       } catch {
         // Navigation is best-effort
       }
-      setPendingBet({ idx, vb, actualOdds: odds });
+      setPendingBet({ idx, vb, actualOdds: odds, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setBetError(msg);
@@ -332,6 +339,13 @@ export function PolymarketPage() {
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
                           {isPending ? (
                             <>
+                              <button
+                                onClick={() => openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName)}
+                                className="px-2 py-1.5 text-xs text-tabPolymarket hover:text-text transition-colors"
+                                title={pendingBet!.navUrl ?? 'Open Polymarket'}
+                              >
+                                Go&thinsp;&#8599;
+                              </button>
                               <span className="text-muted text-xs">Odds:</span>
                               <input
                                 type="number"

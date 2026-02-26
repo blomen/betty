@@ -4,6 +4,7 @@ import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
+import { openProviderWindow } from '@/utils/providerWindow';
 import { useTableSort } from '@/hooks/useTableSort';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
@@ -61,6 +62,8 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     providerId: string;
     amount: number;
     withBonus: boolean;
+    navUrl: string | null;
+    windowName: string;
   } | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -119,18 +122,22 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     }
   };
 
-  // Step 1: Open provider site in browser, enter pending state
+  // Step 1: Get deposit URL, enter pending state (user clicks Go↗ to navigate)
   const startDeposit = async (providerId: string, amount: number, withBonus: boolean) => {
     setBonusPopup(null);
     setFreebetPopup(null);
 
+    let navUrl: string | null = null;
+    let windowName = `bbq_${providerId}`;
     try {
-      await api.navigateToProvider(providerId);
+      const nav = await api.navigateToDeposit(providerId);
+      navUrl = nav.url;
+      windowName = nav.window_name;
     } catch {
-      // Navigation is best-effort — CDP Chrome handles it
+      // Navigation is best-effort
     }
 
-    setPendingDeposit({ providerId, amount, withBonus });
+    setPendingDeposit({ providerId, amount, withBonus, navUrl, windowName });
   };
 
   // Step 2: Confirm deposit — record balance adjustment
@@ -360,6 +367,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                     <td className="text-right">
                       {pendingDeposit?.providerId === provider.provider_id ? (
                         <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openProviderWindow(pendingDeposit.navUrl, pendingDeposit.windowName)}
+                            className="px-2 py-1 text-xs text-tabBankroll hover:text-text transition-colors"
+                            title={pendingDeposit.navUrl ?? 'Open deposit page'}
+                          >
+                            Go&thinsp;&#8599;
+                          </button>
                           <span className="text-xs text-muted">
                             {pendingDeposit.amount.toFixed(0)} kr{pendingDeposit.withBonus ? ' + bonus' : ''}
                           </span>

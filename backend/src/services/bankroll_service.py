@@ -120,7 +120,7 @@ class BankrollService:
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
-            "total_balance": total_balance,
+            "total_balance": total_balance + total_pending,
             "total_pending": total_pending,
             "total_available": total_balance,
             "providers": exposure_data,

@@ -62,25 +62,61 @@ async def list_bets(
                 pinnacle_map[key] = {}
             pinnacle_map[key][row.outcome] = row.odds
 
+    # Pre-fetch current provider odds for pending bets (for live ODDS column)
+    pending_lookups = [
+        (b.event_id, b.provider_id, b.market, b.outcome)
+        for b in bets
+        if b.result == "pending" and b.event_id and b.market and b.outcome
+    ]
+    # (event_id, provider_id, market, outcome) -> current odds
+    current_odds_map: dict[tuple[str, str, str, str], float] = {}
+    if pending_lookups:
+        provider_ids = list({t[1] for t in pending_lookups})
+        provider_rows = (
+            db.query(Odds)
+            .filter(
+                Odds.event_id.in_(event_ids),
+                Odds.provider_id.in_(provider_ids),
+            )
+            .all()
+        )
+        for row in provider_rows:
+            current_odds_map[(row.event_id, row.provider_id, row.market, row.outcome)] = row.odds
+
     bet_list = []
     for b in bets:
         ev = events_map.get(b.event_id) if b.event_id else None
 
-        # Compute edge_pct and selection_probability on-the-fly if not stored
-        edge_pct = round(b.utility_score * 100, 2) if b.utility_score else None
-        sel_prob = b.selection_probability
+        # Snapshot values from placement time
+        placed_edge_pct = round(b.utility_score * 100, 2) if b.utility_score else None
+
+        # Current values from latest Pinnacle odds
         fair_odds = None
+        edge_pct = None
+        sel_prob = None
+        current_odds = None
 
         if b.event_id and b.market and b.outcome:
+            # Current provider odds from Odds table
+            current_odds = current_odds_map.get(
+                (b.event_id, b.provider_id, b.market, b.outcome)
+            )
+
             pin_market = pinnacle_map.get((b.event_id, b.market), {})
             if len(pin_market) >= 2 and b.outcome in pin_market:
                 fair = get_fair_odds_for_outcome(b.outcome, pin_market, method="multiplicative")
                 if fair and fair > 1.0:
                     fair_odds = round(fair, 3)
-                    if edge_pct is None:
-                        edge_pct = round((b.odds / fair - 1) * 100, 2)
-                    if sel_prob is None:
-                        sel_prob = round(1.0 / fair, 4)
+                    sel_prob = round(1.0 / fair, 4)
+                    # Current edge: use current provider odds if available, else placed odds
+                    live_odds = current_odds if current_odds else b.odds
+                    edge_pct = round((live_odds / fair - 1) * 100, 2)
+
+        # For settled bets, fall back to stored values
+        if edge_pct is None and placed_edge_pct is not None:
+            edge_pct = placed_edge_pct
+        if sel_prob is None and b.selection_probability:
+            sel_prob = b.selection_probability
 
         bet_list.append({
             "id": b.id,
@@ -104,6 +140,8 @@ async def list_bets(
             "edge_pct": edge_pct,
             "fair_odds": fair_odds,
             "selection_probability": sel_prob,
+            "placed_edge_pct": placed_edge_pct,
+            "current_odds": current_odds,
             "point": b.point,
             "settlement_source": b.settlement_source,
             "home_team": ev.home_team if ev else None,

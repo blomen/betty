@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -45,11 +46,23 @@ export function ValuePage({ providers }: ValuePageProps) {
     opp: Opportunity;
     actualOdds: number;
     useFreebet: boolean;
+    navUrl: string | null;
+    windowName: string;
   } | null>(null);
 
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
+  // Load placed bets from DB on mount to filter out already-bet event+provider combos
+  useEffect(() => {
+    api.getBets('pending', 500).then(({ bets }) => {
+      const keys = new Set<string>();
+      for (const b of bets) {
+        if (b.event_id) keys.add(`${b.event_id}|${b.provider}`);
+      }
+      if (keys.size > 0) setPlacedKeys(keys);
+    }).catch(() => {});
+  }, []);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -185,20 +198,24 @@ export function ValuePage({ providers }: ValuePageProps) {
     setBetSuccess(null);
 
     try {
+      let navUrl: string | null = null;
+      let windowName = `bbq_${opp.provider1}`;
       try {
-        await api.navigateToEvent({
+        const nav = await api.navigateToEvent({
           provider_id: opp.provider1,
           provider_meta: opp.provider_meta,
           home_team: opp.home_team,
           away_team: opp.away_team,
           event_id: opp.event_id,
         });
+        navUrl = nav.url;
+        windowName = nav.window_name;
       } catch {
-        // Navigation is best-effort — CDP Chrome handles it
+        // Navigation is best-effort
       }
 
       const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
-      setPendingBet({ groupKey, opp, actualOdds: odds, useFreebet });
+      setPendingBet({ groupKey, opp, actualOdds: odds, useFreebet, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setBetError(msg);
@@ -484,6 +501,13 @@ export function ValuePage({ providers }: ValuePageProps) {
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
                             {isPending ? (
                               <>
+                                <button
+                                  onClick={() => openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName)}
+                                  className="px-2 py-1.5 text-xs text-tabValue hover:text-text transition-colors"
+                                  title={pendingBet!.navUrl ?? 'Open provider'}
+                                >
+                                  Go&thinsp;&#8599;
+                                </button>
                                 <span className="text-muted text-xs">Odds:</span>
                                 <input
                                   type="number"

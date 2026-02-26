@@ -1075,7 +1075,7 @@ export const api = {
     home_team?: string;
     away_team?: string;
     event_id?: string;
-  }): Promise<{ navigated: boolean; url: string | null; method: string; provider_id?: string; error?: string }> {
+  }): Promise<{ url: string | null; provider_id: string; window_name: string }> {
     return fetchJson('/placement/navigate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1083,8 +1083,16 @@ export const api = {
     });
   },
 
-  async navigateToProvider(providerId: string): Promise<{ navigated: boolean; url: string | null; method: string; provider_id?: string; error?: string }> {
+  async navigateToProvider(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
     return fetchJson('/placement/navigate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+  },
+
+  async navigateToDeposit(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
+    return fetchJson('/placement/deposit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_id: providerId }),

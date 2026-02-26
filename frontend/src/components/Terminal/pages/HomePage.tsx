@@ -224,11 +224,15 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
   type UpcomingCol = 'ttk' | 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ret';
   const upcomingExtractors = useMemo<Record<UpcomingCol, (b: Bet) => number>>(() => ({
     ttk:   b => b.start_time ? new Date(b.start_time).getTime() : Infinity,
-    odds:  b => b.odds,
+    odds:  b => b.current_odds ?? b.odds,
     fair:  b => b.fair_odds ?? 0,
-    prob:  b => b.selection_probability ?? (b.odds > 0 ? 1 / b.odds : 0),
+    prob:  b => b.fair_odds && b.fair_odds > 1 ? 1 / b.fair_odds : (b.odds > 0 ? 1 / b.odds : 0),
     stake: b => b.stake,
-    edge:  b => b.edge_pct ?? -999,
+    edge:  b => {
+      const live = b.current_odds ?? b.odds;
+      const fair = b.fair_odds;
+      return fair && fair > 1 ? (live / fair - 1) * 100 : b.edge_pct ?? -999;
+    },
     ret:   b => b.stake * b.odds,
   }), []);
   const { sorted: sortedUpcoming, sort: upcomingSort, toggle: toggleUpcoming } = useMultiSort<Bet, UpcomingCol>(
@@ -624,9 +628,12 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
               <tbody>
                 {sortedUpcoming.map(bet => {
                   const ttk = getLiveTTK(bet);
-                  const prob = bet.selection_probability ?? (bet.odds > 0 ? 1 / bet.odds : null);
                   const mkt = formatMarketShort(bet.market);
                   const fairOdds = bet.fair_odds ?? (bet.edge_pct != null && bet.edge_pct > -100 ? bet.odds / (1 + bet.edge_pct / 100) : null);
+                  const liveOdds = bet.current_odds ?? bet.odds;
+                  const liveProb = fairOdds != null && fairOdds > 1 ? 1 / fairOdds : null;
+                  const liveEdge = fairOdds != null && fairOdds > 1 ? (liveOdds / fairOdds - 1) * 100 : null;
+                  const placedEdge = bet.placed_edge_pct;
                   return (
                     <tr key={bet.id}>
                       <td className="whitespace-nowrap">
@@ -647,23 +654,33 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                         <span className="text-text">{resolveOutcome(bet)}</span>
                         {bet.point != null && <span className="text-muted2 text-[10px] ml-0.5">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
                         <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
+                        <span className="text-muted2 text-[10px] ml-1">@{bet.odds.toFixed(2)}</span>
+                        {placedEdge != null && (
+                          <span className={`text-[10px] ml-1 ${placedEdge >= 0 ? 'text-success/60' : 'text-error/60'}`}>
+                            {placedEdge >= 0 ? '+' : ''}{placedEdge.toFixed(1)}%
+                          </span>
+                        )}
                       </td>
-                      <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
+                      <td className="text-right">
+                        <span className={`text-sm font-medium ${bet.current_odds != null && bet.current_odds !== bet.odds ? 'text-accent' : 'text-text'}`}>
+                          {liveOdds.toFixed(2)}
+                        </span>
+                      </td>
                       <td className="text-right">
                         {fairOdds != null ? (
                           <span className="text-[11px] text-muted">{fairOdds.toFixed(2)}</span>
                         ) : <span className="text-muted">-</span>}
                       </td>
                       <td className="text-right">
-                        {prob != null ? (
-                          <span className="text-[11px] text-muted">{(prob * 100).toFixed(0)}%</span>
+                        {liveProb != null ? (
+                          <span className="text-[11px] text-muted">{(liveProb * 100).toFixed(0)}%</span>
                         ) : <span className="text-muted">-</span>}
                       </td>
                       <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
                       <td className="text-right">
-                        {bet.edge_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
+                        {liveEdge != null ? (
+                          <span className={`text-sm font-medium ${liveEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                            {liveEdge >= 0 ? '+' : ''}{liveEdge.toFixed(1)}%
                           </span>
                         ) : <span className="text-muted">-</span>}
                       </td>

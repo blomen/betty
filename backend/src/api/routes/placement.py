@@ -1,10 +1,13 @@
 """
 Placement API — navigate to provider sites.
 
-No Chrome/CDP session management. Users authenticate via BankID in their browser.
+Returns URLs + window names for the frontend to open.
+The frontend uses named windows (window.open with target name)
+so the same provider tab is reused instead of opening new ones.
 
 Endpoints:
-  POST /api/placement/navigate  — Get URL to open a provider's match page
+  POST /api/placement/navigate  — Get URL for a provider's event page
+  POST /api/placement/deposit   — Get URL for a provider's deposit page
 """
 
 import logging
@@ -19,12 +22,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/placement", tags=["placement"])
 
-# Singleton placement service
 _placement_service: Optional[PlacementService] = None
 
 
 def get_placement_service() -> PlacementService:
-    """Get or create the singleton PlacementService."""
     global _placement_service
     if _placement_service is None:
         _placement_service = PlacementService()
@@ -32,7 +33,6 @@ def get_placement_service() -> PlacementService:
 
 
 class NavigateRequest(BaseModel):
-    """Navigate browser to a match page."""
     provider_id: str
     provider_meta: Optional[dict] = None
     home_team: str = ""
@@ -40,19 +40,25 @@ class NavigateRequest(BaseModel):
     event_id: str = ""
 
 
+class DepositRequest(BaseModel):
+    provider_id: str
+
+
 @router.post("/navigate")
 async def navigate_to_event(req: NavigateRequest):
-    """
-    Get URL for a provider's match page.
-
-    Returns the URL for the frontend to open in the user's browser.
-    """
+    """Get URL + window name for a provider's event page."""
     service = get_placement_service()
-    result = await service.navigate_to_event(
+    return await service.navigate_to_event(
         provider_id=req.provider_id,
         provider_meta=req.provider_meta,
         home_team=req.home_team,
         away_team=req.away_team,
         event_id=req.event_id,
     )
-    return result
+
+
+@router.post("/deposit")
+async def navigate_to_deposit(req: DepositRequest):
+    """Get URL + window name for a provider's deposit/cashier page."""
+    service = get_placement_service()
+    return await service.navigate_to_deposit(req.provider_id)
