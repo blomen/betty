@@ -25,6 +25,20 @@ export function ReversePage() {
     windowName: string;
   } | null>(null);
 
+  // Track placed event+provider combos for immediate removal from list
+  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+
+  // Load placed bets from DB on mount to filter out already-bet events on Pinnacle
+  useEffect(() => {
+    api.getBets('pending', 500).then(({ bets }) => {
+      const keys = new Set<string>();
+      for (const b of bets) {
+        if (b.event_id && b.provider === 'pinnacle') keys.add(`${b.event_id}|pinnacle`);
+      }
+      if (keys.size > 0) setPlacedKeys(keys);
+    }).catch(() => {});
+  }, []);
+
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -42,8 +56,9 @@ export function ReversePage() {
 
   const filtered = useMemo(() => {
     return opportunities
-      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; });
-  }, [opportunities]);
+      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
+      .filter(o => !placedKeys.has(`${o.event_id}|pinnacle`));
+  }, [opportunities, placedKeys]);
 
   type ReverseSortCol = 'odds' | 'consensus' | 'prob' | 'ttk' | 'stake' | 'edge';
   const reverseSortExtractors = useMemo(() => ({
@@ -133,6 +148,9 @@ export function ReversePage() {
       const outcomeLabel = resolveOutcome(opp);
       setBetSuccess(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`);
       setTimeout(() => setBetSuccess(null), 5000);
+
+      // Remove from list immediately
+      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|pinnacle`));
       setPendingBet(null);
       setSelectedRow(null);
       fetchData();

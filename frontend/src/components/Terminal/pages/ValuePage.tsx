@@ -235,6 +235,10 @@ export function ValuePage({ providers }: ValuePageProps) {
     setBetError(null);
 
     try {
+      // Recalculate edge based on actual placed odds vs fair odds
+      const placedEdge = opp.fair_odds != null && opp.fair_odds > 1
+        ? (actualOdds / opp.fair_odds - 1)
+        : (opp.edge_pct != null ? opp.edge_pct / 100 : undefined);
       await api.createBet({
         event_id: opp.event_id,
         provider_id: opp.provider1,
@@ -244,7 +248,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         stake,
         is_bonus: useFreebet,
         bonus_type: useFreebet ? 'freebet' : undefined,
-        utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
+        utility_score: placedEdge,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp.home_team, opp.away_team, opp.point);
@@ -405,15 +409,23 @@ export function ValuePage({ providers }: ValuePageProps) {
 
                   {isSelected && !isSkipped && (() => {
                     const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
-                    const effectiveOdds = oddsOverride[groupOddsKey] ?? rep.odds1;
-                    const oddsChanged = groupOddsKey in oddsOverride;
+                    const isPendingConfirm = pendingBet?.groupKey === group.key;
+                    const effectiveOdds = isPendingConfirm ? pendingBet!.actualOdds : (oddsOverride[groupOddsKey] ?? rep.odds1);
+                    const oddsChanged = isPendingConfirm ? effectiveOdds !== rep.odds1 : groupOddsKey in oddsOverride;
                     return (
                     <tr key={`${group.key}-expanded`}>
                       <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
                         <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
                           <div>
                             <span className="text-muted2 uppercase tracking-wider">Kelly: </span>
-                            <span className="text-text">{rep.kelly_fraction != null ? `${(rep.kelly_fraction * 100).toFixed(1)}%` : '-'}</span>
+                            <span className="text-text">{(() => {
+                              if (rep.fair_odds != null && rep.fair_odds > 1 && effectiveOdds > 1) {
+                                const p = 1 / rep.fair_odds;
+                                const k = (p * effectiveOdds - 1) / (effectiveOdds - 1);
+                                return `${(Math.max(0, k) * 100).toFixed(1)}%`;
+                              }
+                              return rep.kelly_fraction != null ? `${(rep.kelly_fraction * 100).toFixed(1)}%` : '-';
+                            })()}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="text-muted2 uppercase tracking-wider">Odds: </span>

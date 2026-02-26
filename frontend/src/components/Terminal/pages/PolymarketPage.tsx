@@ -30,8 +30,19 @@ export function PolymarketPage() {
     windowName: string;
   } | null>(null);
 
-  // Track placed event+outcome combos for immediate removal from list
+  // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+
+  // Load placed bets from DB on mount to filter out already-bet events
+  useEffect(() => {
+    api.getBets('pending', 500).then(({ bets }) => {
+      const keys = new Set<string>();
+      for (const b of bets) {
+        if (b.event_id && b.provider === 'polymarket') keys.add(`${b.event_id}|polymarket`);
+      }
+      if (keys.size > 0) setPlacedKeys(keys);
+    }).catch(() => {});
+  }, []);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);

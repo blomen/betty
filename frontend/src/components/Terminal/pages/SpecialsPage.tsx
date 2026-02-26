@@ -46,6 +46,17 @@ export function SpecialsPage() {
   // Track placed specials for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
+  // Load placed boost bets from DB on mount (match by title since groupKey can't be reconstructed exactly)
+  useEffect(() => {
+    api.getBets('pending', 500).then(({ bets }) => {
+      const keys = new Set<string>();
+      for (const b of bets) {
+        if (b.market === 'boost' && b.outcome) keys.add(b.outcome);
+      }
+      if (keys.size > 0) setPlacedKeys(keys);
+    }).catch(() => {});
+  }, []);
+
   const fetchData = useCallback(async () => {
     setIsLoading(true); setError(null);
     try {
@@ -73,7 +84,7 @@ export function SpecialsPage() {
     for (const s of nonExpired) {
       const allProviders = [s.provider, ...(s.shared_providers || [])];
       const key = `${s.provider}-${s.title}-${s.boosted_odds}`;
-      if (placedKeys.has(key)) continue;
+      if (placedKeys.has(key) || placedKeys.has(s.title)) continue;
       groups.push({ key, rep: s, providers: allProviders });
     }
     return groups;
@@ -171,8 +182,8 @@ export function SpecialsPage() {
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
 
-      // Remove from list immediately
-      setPlacedKeys(prev => new Set(prev).add(groupKey));
+      // Remove from list immediately (add both groupKey and title for DB-loaded matching)
+      setPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
       setPendingBet(null);
       setExpandedIdx(null);
       setStakePreview(null);
