@@ -810,17 +810,17 @@ class OpportunityScanner:
         self, grouped: dict[str, dict[str, list[dict]]]
     ) -> None:
         """
-        Detect and fix providers that store 2 Asian handicap outcomes at the same
-        spread point. Moves misplaced outcomes to their correct complement point.
+        Fix providers that store 2 Asian handicap outcomes at the same spread point.
 
-        Detection: for a given spread point, if a non-sharp provider has both 'home'
-        and 'away' outcomes and their implied probability sum is outside the normal
-        bookmaker margin range (1.02-1.12), these are two separate Asian handicap
-        markets stored at the same point, not a single 2-way market.
+        Kambi (and similar) stores alternate handicap lines where each outcome has
+        its own point value. This means at spread_-1.5 we can find both:
+          - home (Solary -1.5, correct)
+          - away (Galions -1.5, from a SEPARATE betOffer — NOT Galions +1.5)
 
-        - prob_sum < 0.98: clearly separate (underdog side, both > 2.0)
-        - prob_sum > 1.15: clearly separate (favorite side, both < 2.0, inflated margin)
-        - 0.98-1.15: plausible 2-way market, leave as-is
+        Pinnacle's convention: 1 outcome per point side (home at -X, away at +X).
+        Use Pinnacle's structure as ground truth: at each spread point, only keep
+        the outcome type(s) that Pinnacle has. This is deterministic and avoids
+        the fragile prob_sum heuristic that misses borderline cases.
 
         This mutates the grouped dict in-place.
         """
@@ -838,58 +838,36 @@ class OpportunityScanner:
             if "home" not in odds_by_outcome or "away" not in odds_by_outcome:
                 continue
 
-            # Check each non-sharp provider: if they have both home and away at this
-            # point with anomalous prob sum, they're storing Asian-style (separate lines)
-            home_entries = odds_by_outcome["home"]
-            away_entries = odds_by_outcome["away"]
+            # Determine which outcome types Pinnacle has at this point
+            pinnacle_outcomes = set()
+            for outcome_type in ("home", "away"):
+                if outcome_type in odds_by_outcome:
+                    for entry in odds_by_outcome[outcome_type]:
+                        if entry["provider"] in SHARP_PROVIDERS:
+                            pinnacle_outcomes.add(outcome_type)
 
-            # Build lookup: provider -> entry
-            provider_home = {e["provider"]: e for e in home_entries if e["provider"] not in SHARP_PROVIDERS}
-            provider_away = {e["provider"]: e for e in away_entries if e["provider"] not in SHARP_PROVIDERS}
+            # If Pinnacle has exactly one outcome type, remove the other from soft providers.
+            # Pinnacle always stores home@negative, away@positive — one per side.
+            if len(pinnacle_outcomes) == 1:
+                keep_outcome = pinnacle_outcomes.pop()
+                remove_outcome = "away" if keep_outcome == "home" else "home"
 
-            providers_to_fix = []
-            for provider_id in set(provider_home) & set(provider_away):
-                h_odds = provider_home[provider_id]["odds"]
-                a_odds = provider_away[provider_id]["odds"]
-                prob_sum = (1.0 / h_odds) + (1.0 / a_odds)
+                original_count = len(odds_by_outcome.get(remove_outcome, []))
+                odds_by_outcome[remove_outcome] = [
+                    e for e in odds_by_outcome.get(remove_outcome, [])
+                    if e["provider"] in SHARP_PROVIDERS
+                ]
+                removed_count = original_count - len(odds_by_outcome[remove_outcome])
 
-                # Normal 2-way bookmaker margin: prob_sum in [1.02, 1.12].
-                # Outside [0.98, 1.15] = two separate Asian handicap lines.
-                if prob_sum < 0.98 or prob_sum > 1.15:
-                    providers_to_fix.append(provider_id)
+                # Clean up empty outcome key
+                if not odds_by_outcome[remove_outcome]:
+                    del odds_by_outcome[remove_outcome]
 
-            if not providers_to_fix:
-                continue
-
-            for provider_id in providers_to_fix:
-                # These are two separate Asian handicap lines from different betoffers
-                # stored at the same point. Remove the "wrong-side" outcome so the
-                # scanner doesn't incorrectly compare it against Pinnacle at this point.
-                #
-                # Convention: at negative point, home is the natural side (home gets
-                # negative handicap), so remove away. At positive point, away is
-                # the natural side, so remove home.
-                if point < 0:
-                    odds_by_outcome["away"] = [
-                        e for e in odds_by_outcome["away"]
-                        if e["provider"] != provider_id
-                    ]
-                elif point > 0:
-                    odds_by_outcome["home"] = [
-                        e for e in odds_by_outcome["home"]
-                        if e["provider"] != provider_id
-                    ]
-                # point == 0: both sides are for the same market, keep both
-
-            # Clean up empty outcome keys
-            for out in list(odds_by_outcome.keys()):
-                if not odds_by_outcome[out]:
-                    del odds_by_outcome[out]
-
-            logger.debug(
-                f"Fixed Asian spread grouping at {market_key}: "
-                f"removed cross-betoffer outcomes for {len(providers_to_fix)} providers"
-            )
+                if removed_count > 0:
+                    logger.debug(
+                        f"Fixed Asian spread at {market_key}: removed {removed_count} "
+                        f"soft '{remove_outcome}' entries (Pinnacle only has '{keep_outcome}')"
+                    )
 
     def _count_outcomes_per_provider(
         self, odds_by_outcome: dict[str, list[dict]]
