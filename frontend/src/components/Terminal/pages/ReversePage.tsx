@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useRecorder } from '@/contexts/RecorderContext';
@@ -10,7 +9,7 @@ import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity } from '@/types';
 
 export function ReversePage() {
-  const { startAutoRecord, stopAutoRecord } = useRecorder();
+  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
@@ -137,6 +136,7 @@ export function ReversePage() {
         outcome: opp.outcome1,
         odds: actualOdds,
         stake,
+        point: opp.point,
         utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
@@ -277,7 +277,7 @@ export function ReversePage() {
                           {pendingBet?.oppId === opp.id ? (
                             <>
                               <button
-                                onClick={() => { startAutoRecord('pinnacle', 'place_bet'); openProviderWindow(pendingBet.navUrl, pendingBet.windowName); }}
+                                onClick={() => { startAutoRecord('pinnacle', 'place_bet'); navigateCdp(pendingBet.navUrl); }}
                                 className="px-2 py-1.5 text-xs text-tabReverse hover:text-text transition-colors"
                                 title={pendingBet.navUrl ?? 'Open Pinnacle'}
                               >

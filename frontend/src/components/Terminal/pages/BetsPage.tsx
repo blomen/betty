@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useRecorder } from '@/contexts/RecorderContext';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
@@ -355,7 +354,7 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
 // ── Main page — History only ────────────────────────────────────────
 
 export function BetsPage() {
-  const { startAutoRecord } = useRecorder();
+  const { startAutoRecord, navigateCdp } = useRecorder();
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
@@ -428,11 +427,9 @@ export function BetsPage() {
     startAutoRecord(providerId, workflow);
     try {
       const nav = await api.navigateToProvider(providerId);
-      openProviderWindow(nav.url, nav.window_name);
-    } catch {
-      openProviderWindow(null, `bbq_${providerId}`);
-    }
-  }, [startAutoRecord]);
+      navigateCdp(nav.url);
+    } catch { /* ignore */ }
+  }, [startAutoRecord, navigateCdp]);
 
   // ── History (settled bets only) ─────────────────────────────────
 

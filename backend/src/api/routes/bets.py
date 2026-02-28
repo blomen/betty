@@ -68,8 +68,8 @@ async def list_bets(
         for b in bets
         if b.result == "pending" and b.event_id and b.market and b.outcome
     ]
-    # (event_id, provider_id, market, outcome) -> current odds
-    current_odds_map: dict[tuple[str, str, str, str], float] = {}
+    # (event_id, provider_id, market, outcome, point) -> current odds
+    current_odds_map: dict[tuple, float] = {}
     if pending_lookups:
         provider_ids = list({t[1] for t in pending_lookups})
         provider_rows = (
@@ -81,7 +81,7 @@ async def list_bets(
             .all()
         )
         for row in provider_rows:
-            current_odds_map[(row.event_id, row.provider_id, row.market, row.outcome)] = row.odds
+            current_odds_map[(row.event_id, row.provider_id, row.market, row.outcome, row.point)] = row.odds
 
     bet_list = []
     for b in bets:
@@ -97,9 +97,9 @@ async def list_bets(
         current_odds = None
 
         if b.event_id and b.market and b.outcome:
-            # Current provider odds from Odds table
+            # Current provider odds from Odds table (keyed by point for spread/total)
             current_odds = current_odds_map.get(
-                (b.event_id, b.provider_id, b.market, b.outcome)
+                (b.event_id, b.provider_id, b.market, b.outcome, b.point)
             )
 
             pin_market = pinnacle_map.get((b.event_id, b.market), {})

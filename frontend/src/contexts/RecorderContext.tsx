@@ -6,8 +6,11 @@ interface RecorderContextValue {
   recordingProvider: string | null;
   recordingWorkflow: string | null;
   actionCount: number;
+  cdpAvailable: boolean;
   startAutoRecord: (provider: string, workflow: string) => Promise<void>;
   stopAutoRecord: () => Promise<void>;
+  /** Open a URL in the managed CDP Chrome (the "betting browser"). */
+  navigateCdp: (url: string | null) => Promise<void>;
 }
 
 const RecorderContext = createContext<RecorderContextValue | null>(null);
@@ -24,13 +27,15 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   const [recordingProvider, setRecordingProvider] = useState<string | null>(null);
   const [recordingWorkflow, setRecordingWorkflow] = useState<string | null>(null);
   const [actionCount, setActionCount] = useState(0);
+  const [cdpAvailable, setCdpAvailable] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Check for orphaned recording on mount
+  // Check for orphaned recording + CDP status on mount
   useEffect(() => {
     api.getRecorderStatus().then((s) => {
+      setCdpAvailable(!!s.cdp_available);
       if (s.is_recording && s.session_id) {
         setIsRecording(true);
         setSessionId(s.session_id);
@@ -100,15 +105,14 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
 
     try {
       const res = await api.startRecording({
-        cdp_url: 'http://localhost:9222',
         action_type: workflow,
         label: provider,
       });
       setSessionId(res.session_id);
       setIsRecording(true);
+      setCdpAvailable(true);
     } catch {
-      // Best-effort: CDP not available, silently skip recording
-      // Provider window will still open — recording just won't happen
+      // CDP not available — silently skip recording
       setRecordingProvider(null);
       setRecordingWorkflow(null);
     }
@@ -133,14 +137,26 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     setActionCount(0);
   }, [sessionId]);
 
+  const navigateCdp = useCallback(async (url: string | null) => {
+    if (!url) return;
+    try {
+      await api.navigateCdpBrowser(url);
+    } catch {
+      // Fallback: open in regular browser if CDP is unavailable
+      window.open(url, '_blank');
+    }
+  }, []);
+
   return (
     <RecorderContext.Provider value={{
       isRecording,
       recordingProvider,
       recordingWorkflow,
       actionCount,
+      cdpAvailable,
       startAutoRecord,
       stopAutoRecord,
+      navigateCdp,
     }}>
       {children}
     </RecorderContext.Provider>

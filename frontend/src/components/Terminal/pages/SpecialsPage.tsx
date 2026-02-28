@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/services/api';
 import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { useRecorder } from '@/contexts/RecorderContext';
@@ -17,7 +16,7 @@ interface GroupedSpecial {
 }
 
 export function SpecialsPage() {
-  const { startAutoRecord, stopAutoRecord } = useRecorder();
+  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [specials, setSpecials] = useState<SpecialItem[]>([]);
   const [filters, setFilters] = useState<SpecialsFilters | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
@@ -317,6 +316,7 @@ export function SpecialsPage() {
                           onSelectProvider={(idx) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: idx }))}
                           onStartPlaceBet={(providerId) => startPlaceBet(s, providerId, group.key)}
                           startAutoRecord={startAutoRecord}
+                          navigateCdp={navigateCdp}
                           pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
                           onConfirmBet={confirmPlaceBet}
                           onCancelPending={() => { stopAutoRecord(); setPendingBet(null); }}
@@ -342,7 +342,7 @@ export function SpecialsPage() {
   );
 }
 
-function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onStartPlaceBet, startAutoRecord, pendingBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
+function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onStartPlaceBet, startAutoRecord, navigateCdp, pendingBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
   special: SpecialItem;
   groupKey: string;
   providers: string[];
@@ -354,6 +354,7 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
   onSelectProvider: (idx: number) => void;
   onStartPlaceBet: (providerId: string) => void;
   startAutoRecord: (provider: string, action: string) => void;
+  navigateCdp: (url: string | null) => Promise<void>;
   pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number; navUrl: string | null; windowName: string } | null;
   onConfirmBet: () => void;
   onCancelPending: () => void;
@@ -432,7 +433,7 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
             ) : pendingBet ? (
               <>
                 <button
-                  onClick={() => { startAutoRecord(pendingBet.providerId, 'place_bet'); openProviderWindow(pendingBet.navUrl, pendingBet.windowName); }}
+                  onClick={() => { startAutoRecord(pendingBet.providerId, 'place_bet'); navigateCdp(pendingBet.navUrl); }}
                   className="px-2 py-1.5 text-xs text-tabBonus hover:text-text transition-colors"
                   title={pendingBet.navUrl ?? 'Open provider'}
                 >

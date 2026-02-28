@@ -154,6 +154,18 @@ async def lifespan(app: FastAPI):
     ))
     logging.getLogger().addHandler(extraction_handler)
 
+    # Launch dedicated Chrome with CDP for bet placement recording
+    from ..recorder.chrome_launcher import get_chrome_launcher
+    chrome = get_chrome_launcher()
+    try:
+        cdp_ok = await chrome.start()
+        if cdp_ok:
+            logger.info("Chrome CDP ready for recording")
+        else:
+            logger.warning("Chrome CDP unavailable — recording disabled")
+    except Exception as e:
+        logger.warning(f"Chrome CDP launch failed (non-fatal): {e}")
+
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
@@ -164,6 +176,7 @@ async def lifespan(app: FastAPI):
     # Graceful shutdown: stop all scheduler tiers
     logger.info("Shutting down: stopping scheduler tiers...")
     scheduler.stop_all()
+    chrome.stop()
     logger.info("Scheduler stopped.")
 
 

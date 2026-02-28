@@ -4,7 +4,6 @@ import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useTableSort } from '@/hooks/useTableSort';
 import { useRecorder } from '@/contexts/RecorderContext';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -28,7 +27,7 @@ interface BankrollPageProps {
 }
 
 export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
-  const { startAutoRecord, stopAutoRecord } = useRecorder();
+  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
@@ -398,7 +397,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                           <button
                             onClick={() => {
                               startAutoRecord(pendingDeposit.providerId, 'deposit');
-                              openProviderWindow(pendingDeposit.navUrl, pendingDeposit.windowName);
+                              navigateCdp(pendingDeposit.navUrl);
                             }}
                             className="px-2 py-1 text-xs text-tabBankroll hover:text-text transition-colors"
                             title={pendingDeposit.navUrl ?? 'Open deposit page'}
@@ -484,8 +483,8 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                               startAutoRecord(provider.provider_id, 'check_balance');
                               try {
                                 const nav = await api.navigateToProvider(provider.provider_id);
-                                openProviderWindow(nav.url, nav.window_name);
-                              } catch { openProviderWindow(null, `bbq_${provider.provider_id}`); }
+                                navigateCdp(nav.url);
+                              } catch { /* ignore */ }
                             }}
                             className="px-2 py-1 text-xs text-muted hover:text-text"
                           >
@@ -496,8 +495,8 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                               startAutoRecord(provider.provider_id, 'withdraw');
                               try {
                                 const nav = await api.navigateToProvider(provider.provider_id);
-                                openProviderWindow(nav.url, nav.window_name);
-                              } catch { openProviderWindow(null, `bbq_${provider.provider_id}`); }
+                                navigateCdp(nav.url);
+                              } catch { /* ignore */ }
                             }}
                             className="px-2 py-1 text-xs text-muted hover:text-text"
                           >

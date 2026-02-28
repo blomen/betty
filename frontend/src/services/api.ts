@@ -111,6 +111,7 @@ export interface RecorderStatus {
   cdp_url: string | null;
   action_count: number;
   buffered_actions: number;
+  cdp_available?: boolean;
 }
 
 // ============ Oddsboost Types ============
@@ -589,6 +590,7 @@ export const api = {
     outcome?: string;
     odds: number;
     stake: number;
+    point?: number | null;
     is_bonus?: boolean;
     bonus_type?: string;
     utility_score?: number;
@@ -608,6 +610,7 @@ export const api = {
     outcome?: string;
     odds: number;
     stake: number;
+    point?: number | null;
     is_bonus?: boolean;
     utility_score?: number;
     selection_probability?: number;
@@ -1012,7 +1015,7 @@ export const api = {
 
   // ============ Recorder ============
 
-  async startRecording(data: { cdp_url?: string; action_type?: string; label?: string }): Promise<{ session_id: number; status: string }> {
+  async startRecording(data: { action_type?: string; label?: string }): Promise<{ session_id: number; status: string }> {
     return fetchJson('/recorder/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1026,6 +1029,14 @@ export const api = {
 
   async getRecorderStatus(): Promise<RecorderStatus> {
     return fetchJson('/recorder/status');
+  },
+
+  async navigateCdpBrowser(url: string): Promise<{ success: boolean; tab_id: string | null }> {
+    return fetchJson('/recorder/navigate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
   },
 
 };

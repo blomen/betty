@@ -156,9 +156,12 @@ class RecorderService:
         try:
             self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
         except Exception as e:
+            logger.error(f"CDP connect failed: {type(e).__name__}: {e!r}", exc_info=True)
             await self._playwright.stop()
             self._playwright = None
-            raise ConnectionError(f"Could not connect to Chrome at {cdp_url}: {e}") from e
+            raise ConnectionError(
+                f"Could not connect to Chrome at {cdp_url}: {type(e).__name__}: {e}"
+            ) from e
 
         self._cdp_url = cdp_url
         self._current_session_id = session_id

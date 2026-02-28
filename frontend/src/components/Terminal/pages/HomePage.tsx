@@ -224,15 +224,11 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
   type UpcomingCol = 'ttk' | 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ret';
   const upcomingExtractors = useMemo<Record<UpcomingCol, (b: Bet) => number>>(() => ({
     ttk:   b => b.start_time ? new Date(b.start_time).getTime() : Infinity,
-    odds:  b => b.current_odds ?? b.odds,
+    odds:  b => b.odds,
     fair:  b => b.fair_odds ?? 0,
     prob:  b => b.fair_odds && b.fair_odds > 1 ? 1 / b.fair_odds : (b.odds > 0 ? 1 / b.odds : 0),
     stake: b => b.stake,
-    edge:  b => {
-      const live = b.current_odds ?? b.odds;
-      const fair = b.fair_odds;
-      return fair && fair > 1 ? (live / fair - 1) * 100 : b.edge_pct ?? -999;
-    },
+    edge:  b => b.placed_edge_pct ?? b.edge_pct ?? -999,
     ret:   b => b.stake * b.odds,
   }), []);
   const { sorted: sortedUpcoming, sort: upcomingSort, toggle: toggleUpcoming } = useMultiSort<Bet, UpcomingCol>(
@@ -746,13 +742,20 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             onClick={e => e.stopPropagation()}
                           />
                         ) : (
-                          <span
-                            className={`text-sm font-medium cursor-pointer hover:text-accent transition-colors ${bet.current_odds != null && bet.current_odds !== bet.odds ? 'text-accent' : 'text-text'}`}
-                            onClick={e => { e.stopPropagation(); startCellEdit(bet.id, 'odds', bet.odds); }}
-                            title="Click to edit placed odds"
-                          >
-                            {liveOdds.toFixed(2)}
-                          </span>
+                          <div className="flex flex-col items-end">
+                            <span
+                              className="text-sm font-medium cursor-pointer hover:text-accent transition-colors text-text"
+                              onClick={e => { e.stopPropagation(); startCellEdit(bet.id, 'odds', bet.odds); }}
+                              title="Click to edit placed odds"
+                            >
+                              {bet.odds.toFixed(2)}
+                            </span>
+                            {bet.current_odds != null && Math.abs(bet.current_odds - bet.odds) > 0.005 && (
+                              <span className={`text-[9px] ${bet.current_odds > bet.odds ? 'text-success' : 'text-error'}`}>
+                                now {bet.current_odds.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="text-right">
@@ -786,7 +789,11 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                         )}
                       </td>
                       <td className="text-right">
-                        {liveEdge != null ? (
+                        {placedEdge != null ? (
+                          <span className={`text-sm font-medium ${placedEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                            {placedEdge >= 0 ? '+' : ''}{placedEdge.toFixed(1)}%
+                          </span>
+                        ) : liveEdge != null ? (
                           <span className={`text-sm font-medium ${liveEdge >= 0 ? 'text-success' : 'text-error'}`}>
                             {liveEdge >= 0 ? '+' : ''}{liveEdge.toFixed(1)}%
                           </span>

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useRecorder } from '@/contexts/RecorderContext';
@@ -23,7 +22,7 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
-  const { startAutoRecord, stopAutoRecord } = useRecorder();
+  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -242,6 +241,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         outcome: opp.outcome1,
         odds: actualOdds,
         stake,
+        point: opp.point,
         is_bonus: useFreebet,
         bonus_type: useFreebet ? 'freebet' : undefined,
         utility_score: placedEdge,
@@ -513,7 +513,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                 <button
                                   onClick={() => {
                                     startAutoRecord(pendingBet!.opp.provider1, 'place_bet');
-                                    openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName);
+                                    navigateCdp(pendingBet!.navUrl);
                                   }}
                                   className="px-2 py-1.5 text-xs text-tabValue hover:text-text transition-colors"
                                   title={pendingBet!.navUrl ?? 'Open provider'}

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { useRecorder } from '@/contexts/RecorderContext';
@@ -10,7 +9,7 @@ import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet } from '@/types';
 
 export function PolymarketPage() {
-  const { startAutoRecord, stopAutoRecord } = useRecorder();
+  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -378,7 +377,7 @@ export function PolymarketPage() {
                           {isPending ? (
                             <>
                               <button
-                                onClick={() => { startAutoRecord('polymarket', 'place_bet'); openProviderWindow(pendingBet!.navUrl, pendingBet!.windowName); }}
+                                onClick={() => { startAutoRecord('polymarket', 'place_bet'); navigateCdp(pendingBet!.navUrl); }}
                                 className="px-2 py-1.5 text-xs text-tabPolymarket hover:text-text transition-colors"
                                 title={pendingBet!.navUrl ?? 'Open Polymarket'}
                               >

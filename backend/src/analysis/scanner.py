@@ -946,10 +946,12 @@ class OpportunityScanner:
                     soft_prob_sums[p["provider"]] += 1.0 / p["odds"]
 
         # Check for odds discrepancy (likely event mismatch)
+        # Exclude Polymarket from ratio calc — prediction market pricing naturally
+        # diverges from traditional sportsbooks, especially for underdogs
         for outcome, provider_odds_list in odds_by_outcome.items():
-            if len(provider_odds_list) >= 3:
-                odds_values = [po["odds"] for po in provider_odds_list]
-                odds_ratio = max(odds_values) / min(odds_values)
+            traditional_odds = [po["odds"] for po in provider_odds_list if po["provider"] != "polymarket"]
+            if len(traditional_odds) >= 3:
+                odds_ratio = max(traditional_odds) / min(traditional_odds)
                 if odds_ratio > MAX_ODDS_RATIO:
                     logger.debug(
                         f"Skipping {event_id} {market}: {outcome} odds ratio {odds_ratio:.2f} "
@@ -992,22 +994,24 @@ class OpportunityScanner:
                         and sharp_outcome_count in (1, 2)
                         and soft_count == 2
                     )
-                    is_polymarket_binary = (
+                    is_polymarket_mismatch = (
                         po["provider"] == "polymarket"
-                        and soft_count == 2
-                        and sharp_outcome_count == 3
+                        and soft_count <= sharp_outcome_count
                     )
-                    if soft_count != sharp_outcome_count and not is_spread_asymmetry and not is_polymarket_binary:
+                    if soft_count != sharp_outcome_count and not is_spread_asymmetry and not is_polymarket_mismatch:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
-                # Skip for Polymarket binary markets (2 outcomes in 3-way market = low prob_sum by design)
+                # Skip for Polymarket entirely — prediction markets can have single-outcome
+                # listings (only underdog listed) or low prob sums due to pricing dynamics
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
-                    if not (po["provider"] == "polymarket" and soft_count < sharp_outcome_count):
+                    if po["provider"] != "polymarket":
                         continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
-                if pinnacle_raw and pinnacle_raw > 1:
+                # Skip for Polymarket — prediction market pricing naturally diverges from
+                # sportsbooks; the MAX_EDGE_PCT cap already catches truly bad data
+                if po["provider"] != "polymarket" and pinnacle_raw and pinnacle_raw > 1:
                     ratio = po["odds"] / pinnacle_raw
                     if ratio > MAX_ODDS_RATIO:
                         logger.debug(

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from ...db.models import get_session as get_db_session
 from ...recorder.recorder_repo import RecorderRepo
 from ...recorder.recorder_service import get_recorder_service
+from ...recorder.chrome_launcher import get_chrome_launcher
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,12 @@ VALID_WORKFLOW_TYPES = {
 
 
 class StartRecordingRequest(BaseModel):
-    cdp_url: str = "http://localhost:9222"
     action_type: str = "place_bet"
     label: Optional[str] = None
+
+
+class NavigateRequest(BaseModel):
+    url: str
 
 
 # ---- Helpers ----
@@ -108,6 +112,8 @@ async def start_recording(req: StartRecordingRequest, repo: RecorderRepo = Depen
         raise HTTPException(400, f"Invalid action_type '{req.action_type}'. Must be one of: {', '.join(sorted(VALID_WORKFLOW_TYPES))}")
 
     service = get_recorder_service()
+    chrome = get_chrome_launcher()
+    cdp_url = chrome.cdp_url
 
     if service.is_recording:
         raise HTTPException(400, "Already recording. Stop the current session first.")
@@ -116,7 +122,7 @@ async def start_recording(req: StartRecordingRequest, repo: RecorderRepo = Depen
     session = repo.create_session(
         action_type=req.action_type,
         label=req.label,
-        cdp_url=req.cdp_url,
+        cdp_url=cdp_url,
         status="recording",
     )
 
@@ -143,7 +149,7 @@ async def start_recording(req: StartRecordingRequest, repo: RecorderRepo = Depen
 
     # Connect to Chrome and start capturing
     try:
-        await service.start_recording(req.cdp_url, session.id)
+        await service.start_recording(cdp_url, session.id)
     except Exception as e:
         # Clean up the DB record
         session.status = "abandoned"
@@ -151,6 +157,16 @@ async def start_recording(req: StartRecordingRequest, repo: RecorderRepo = Depen
         raise HTTPException(502, f"Could not connect to Chrome: {e}")
 
     return {"session_id": session.id, "status": "recording"}
+
+
+@router.post("/navigate")
+async def navigate_cdp_browser(req: NavigateRequest):
+    """Open a URL in the managed CDP Chrome browser."""
+    chrome = get_chrome_launcher()
+    result = await chrome.navigate(req.url)
+    if result is None:
+        raise HTTPException(502, "CDP Chrome not available. Is Chrome running?")
+    return {"success": True, "tab_id": result.get("id")}
 
 
 @router.post("/sessions/{session_id}/stop")
@@ -224,6 +240,9 @@ async def delete_session(session_id: int, repo: RecorderRepo = Depends(_get_repo
 
 @router.get("/status")
 async def get_status():
-    """Get current recording status."""
+    """Get current recording status including CDP availability."""
     service = get_recorder_service()
-    return service.get_status()
+    chrome = get_chrome_launcher()
+    status = service.get_status()
+    status["cdp_available"] = await chrome._is_cdp_available()
+    return status
