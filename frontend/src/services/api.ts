@@ -1,6 +1,5 @@
 import type {
   Opportunity,
-  EventSummary,
   EventDetail,
   ProvidersResponse,
   BankrollInfo,
@@ -10,21 +9,7 @@ import type {
   Profile,
   ProfileCreate,
   ProfileUpdate,
-  StakeCalculation,
-  MetricsRun,
-  ProviderMetrics,
-  DetailedMetricsRun,
-  CircuitBreakerStatus,
-  CacheStats,
-  ProviderCacheStats,
-  HealthCheckStatus,
-  ProviderHealth,
-  BonusMatchRequest,
-  BonusMatch,
-  PolymarketMatchedResponse,
   PolymarketValueResponse,
-  PolymarketStats,
-  BonusArbResponse,
   ProviderRiskProfile,
   AllRiskResponse,
   RiskConfig,
@@ -32,8 +17,6 @@ import type {
   OpportunityInput,
   SelectOpportunityResponse,
   RiskAwareStake,
-  StakeNoiseResult,
-  LiveEvent,
 } from '@/types';
 
 // ============ Placement Types ============
@@ -174,23 +157,6 @@ export interface SpecialsResponse {
   matched_count: number;
   scraped_at: string | null;
   filters?: SpecialsFilters;
-}
-
-export interface BoostProviderLogEntry {
-  provider_id: string;
-  scraper_type: string;
-  status: 'success' | 'failed' | 'skipped';
-  duration_seconds: number;
-  boosts_found: number;
-  error_message: string | null;
-}
-
-export interface BoostExtractionLog {
-  run_id: string;
-  scraped_at: string | null;
-  total_boosts: number;
-  duration_seconds: number;
-  providers: BoostProviderLogEntry[];
 }
 
 export interface StakePreviewResult {
@@ -450,35 +416,6 @@ export const api = {
     return fetchJson<ProvidersResponse>('/providers');
   },
 
-  async createProvider(data: {
-    id: string;
-    name: string;
-    url?: string;
-    balance?: number;
-  }): Promise<{ success: boolean; provider_id: string }> {
-    return fetchJson('/providers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  },
-
-  async updateProvider(
-    providerId: string,
-    data: {
-      name?: string;
-      url?: string;
-      is_enabled?: boolean;
-      balance?: number;
-    }
-  ): Promise<{ success: boolean; provider_id: string }> {
-    return fetchJson(`/providers/${providerId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  },
-
   // ============ Bankroll ============
   async getBankroll(): Promise<BankrollInfo> {
     return fetchJson<BankrollInfo>('/bankroll');
@@ -488,15 +425,6 @@ export const api = {
     return fetchJson<BankrollStats>('/bankroll/stats');
   },
 
-  async getProviderBonuses(): Promise<Record<string, {
-    type: string;
-    amount: number;
-    wagering_multiplier: number;
-    min_odds: number;
-  }>> {
-    return fetchJson('/bankroll/bonuses');
-  },
-
   async getBankrollStatus(): Promise<{
     profile_id: number;
     profile_name: string;
@@ -504,17 +432,6 @@ export const api = {
     bonus_progress: Record<string, import('@/types').BonusProgressEntry>;
   }> {
     return fetchJson('/bankroll/status');
-  },
-
-  async bonusTransition(
-    providerId: string,
-    action: 'start_freebet' | 'trigger_settled' | 'freebet_used'
-  ): Promise<{ success: boolean; provider_id: string; status: string }> {
-    return fetchJson(`/bankroll/bonus-transition/${providerId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
   },
 
   async setAllBalances(
@@ -619,12 +536,8 @@ export const api = {
     return fetchJson(`/bankroll/claim-bonus/${providerId}`, { method: 'POST' });
   },
 
-  async unclaimBonus(providerId: string): Promise<{ success: boolean; provider_id: string; status: string }> {
-    return fetchJson(`/bankroll/unclaim-bonus/${providerId}`, { method: 'POST' });
-  },
-
   // ============ Events ============
-  async getEvents(sport?: string, limit = 50): Promise<{ events: EventSummary[]; count: number }> {
+  async getEvents(sport?: string, limit = 50): Promise<{ events: import('@/types').EventSummary[]; count: number }> {
     const params = new URLSearchParams();
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
@@ -633,10 +546,6 @@ export const api = {
 
   async getEvent(eventId: string): Promise<EventDetail> {
     return fetchJson<EventDetail>(`/events/${eventId}`);
-  },
-
-  async getLiveEvents(): Promise<{ events: LiveEvent[]; count: number }> {
-    return fetchJson('/events/live');
   },
 
   // ============ Opportunities ============
@@ -660,24 +569,6 @@ export const api = {
     if (sport) params.set('sport', sport);
     if (minValue !== undefined) params.set('min_value', minValue.toString());
     return fetchJson(`/opportunities?${params}`);
-  },
-
-  async findBestHedge(request: BonusMatchRequest): Promise<BonusMatch> {
-    return fetchJson<BonusMatch>('/opportunities/bonus/match', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-  },
-
-  async getBonusArbitrage(
-    anchorProvider: string,
-    limit = 50
-  ): Promise<BonusArbResponse> {
-    const params = new URLSearchParams();
-    params.set('anchor_provider', anchorProvider);
-    params.set('limit', limit.toString());
-    return fetchJson<BonusArbResponse>(`/opportunities/bonus/arbitrage?${params}`);
   },
 
   // ============ Bets ============
@@ -783,158 +674,7 @@ export const api = {
     });
   },
 
-  // ============ Stake Calculator ============
-  async calculateStake(odds: number, fairOdds: number): Promise<StakeCalculation> {
-    return fetchJson('/calculate/stake', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ odds, fair_odds: fairOdds }),
-    });
-  },
-
-  // ============ Metrics ============
-  async getMetricsHistory(limit = 10): Promise<{ history: MetricsRun[]; count: number }> {
-    return fetchJson(`/metrics/history?limit=${limit}`);
-  },
-
-  async getProviderMetrics(providerId: string, limit = 10): Promise<ProviderMetrics> {
-    return fetchJson(`/metrics/provider/${providerId}?limit=${limit}`);
-  },
-
-  async getCurrentMetrics(): Promise<DetailedMetricsRun | { error: string }> {
-    return fetchJson('/metrics/current');
-  },
-
-  async getDetailedHistory(limit = 10): Promise<{ history: DetailedMetricsRun[]; count: number }> {
-    return fetchJson(`/metrics/history?limit=${limit}`);
-  },
-
-  // ============ Circuit Breaker ============
-  async getCircuitBreakerStatus(): Promise<{
-    statuses: Record<string, CircuitBreakerStatus>;
-  }> {
-    return fetchJson('/circuit-breaker/status');
-  },
-
-  async getProviderCircuitBreaker(providerId: string): Promise<{
-    provider_id: string;
-  } & CircuitBreakerStatus> {
-    return fetchJson(`/circuit-breaker/status/${providerId}`);
-  },
-
-  async resetCircuitBreaker(providerId: string): Promise<{
-    success: boolean;
-    provider_id: string;
-    message: string;
-  }> {
-    return fetchJson(`/circuit-breaker/reset/${providerId}`, { method: 'POST' });
-  },
-
-  // ============ Cache ============
-  async getCacheStats(): Promise<CacheStats> {
-    return fetchJson<CacheStats>('/cache/stats');
-  },
-
-  async getProviderCacheStats(providerId: string): Promise<{
-    provider_id: string;
-  } & ProviderCacheStats> {
-    return fetchJson(`/cache/stats/${providerId}`);
-  },
-
-  async clearCache(providerId?: string): Promise<{ success: boolean; message: string }> {
-    const params = providerId ? `?provider_id=${providerId}` : '';
-    return fetchJson(`/cache/clear${params}`, { method: 'POST' });
-  },
-
-  async evictExpiredCache(): Promise<{ success: boolean; message: string }> {
-    return fetchJson('/cache/evict-expired', { method: 'POST' });
-  },
-
-  // ============ Health Checks ============
-  async getHealthCheckStatus(): Promise<{
-    statuses: Record<string, HealthCheckStatus>;
-  }> {
-    return fetchJson('/health-check/status');
-  },
-
-  async runHealthCheck(
-    providerId: string,
-    force = false
-  ): Promise<{
-    provider_id: string;
-  } & HealthCheckStatus> {
-    const params = force ? '?force=true' : '';
-    return fetchJson(`/health-check/run/${providerId}${params}`, { method: 'POST' });
-  },
-
-  async clearHealthCheckCache(providerId?: string): Promise<{
-    success: boolean;
-    message: string;
-  }> {
-    const params = providerId ? `?provider_id=${providerId}` : '';
-    return fetchJson(`/health-check/clear-cache${params}`, { method: 'POST' });
-  },
-
-  // ============ Provider Monitoring ============
-  async monitorAllProviders(limit = 20): Promise<{
-    providers: Record<string, ProviderHealth>;
-    summary: {
-      total_providers: number;
-      healthy: number;
-      unhealthy: number;
-      critical: number;
-    };
-  }> {
-    return fetchJson(`/monitor/providers?limit=${limit}`);
-  },
-
-  async monitorProvider(providerId: string, limit = 20): Promise<{
-    provider_id: string;
-  } & ProviderHealth> {
-    return fetchJson(`/monitor/providers/${providerId}?limit=${limit}`);
-  },
-
-  async getUnhealthyProviders(limit = 20): Promise<{
-    unhealthy_providers: Array<{
-      provider_id: string;
-      health_score: string;
-      score_value: number;
-      issue_count: number;
-      critical_issues: number;
-    }>;
-    count: number;
-  }> {
-    return fetchJson(`/monitor/unhealthy?limit=${limit}`);
-  },
-
-  async getCriticalProviders(limit = 20): Promise<{
-    critical_providers: Array<{
-      provider_id: string;
-      health_score: string;
-      score_value: number;
-      critical_issues: Array<{ type: string; message: string }>;
-    }>;
-    count: number;
-  }> {
-    return fetchJson(`/monitor/critical?limit=${limit}`);
-  },
-
-  // ============ Health ============
-  async getHealth(): Promise<{ status: string; time: string }> {
-    return fetchJson('/health');
-  },
-
   // ============ Polymarket ============
-  async getPolymarketMatched(
-    sport?: string,
-    limit = 50
-  ): Promise<PolymarketMatchedResponse> {
-    const params = new URLSearchParams();
-    if (sport) params.set('sport', sport);
-    params.set('limit', limit.toString());
-    return fetchJson(`/polymarket/matched?${params}`);
-  },
-
   async getPolymarketValue(
     minEdge = 3.0,
     sport?: string,
@@ -945,10 +685,6 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/value?${params}`);
-  },
-
-  async getPolymarketStats(): Promise<PolymarketStats> {
-    return fetchJson<PolymarketStats>('/polymarket/stats');
   },
 
   // ============ Risk Management ============
@@ -1028,20 +764,6 @@ export const api = {
     });
   },
 
-  async calculateStakeNoise(
-    stake: number,
-    providerId: string
-  ): Promise<StakeNoiseResult> {
-    return fetchJson<StakeNoiseResult>('/risk/stake-noise', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        stake,
-        provider_id: providerId,
-      }),
-    });
-  },
-
   // ============ Oddsboost ============
   async getSpecials(filters?: {
     sport?: string;
@@ -1060,14 +782,6 @@ export const api = {
     return fetchJson(`/specials${qs ? `?${qs}` : ''}`);
   },
 
-  async scrapeSpecials(): Promise<SpecialsResponse> {
-    return fetchJson('/specials/scrape', { method: 'POST' });
-  },
-
-  async getBoostExtractionLog(): Promise<{ log: BoostExtractionLog | null }> {
-    return fetchJson('/specials/extraction-log');
-  },
-
   async getBoostStakePreview(data: {
     edge_pct: number;
     odds: number;
@@ -1084,10 +798,6 @@ export const api = {
   // ============ Profiles ============
   async getProfiles(): Promise<{ profiles: Profile[]; active: Profile | null }> {
     return fetchJson('/profiles');
-  },
-
-  async getActiveProfile(): Promise<Profile> {
-    return fetchJson('/profiles/active');
   },
 
   async createProfile(data: ProfileCreate): Promise<{ success: boolean; profile: Profile }> {
@@ -1192,10 +902,6 @@ export const api = {
     return fetchJson('/trading/routine/today');
   },
 
-  async getRoutine(date: string): Promise<import('@/types/trading').DailyRoutine> {
-    return fetchJson(`/trading/routine/${date}`);
-  },
-
   async updateRoutine(date: string, data: Record<string, unknown>): Promise<{ success: boolean; routine: import('@/types/trading').DailyRoutine }> {
     return fetchJson(`/trading/routine/${date}`, {
       method: 'PUT',
@@ -1226,10 +932,6 @@ export const api = {
     if (filters?.state) params.set('state', filters.state);
     if (filters?.limit) params.set('limit', filters.limit.toString());
     return fetchJson(`/trading/trades?${params}`);
-  },
-
-  async getTrade(id: number): Promise<import('@/types/trading').Trade> {
-    return fetchJson(`/trading/trades/${id}`);
   },
 
   async transitionTrade(id: number, toState: string, notes?: string): Promise<{ success: boolean; state: string }> {
@@ -1326,21 +1028,4 @@ export const api = {
     return fetchJson('/recorder/status');
   },
 
-  async getRecordingSessions(filters?: { provider_id?: string; status?: string; limit?: number }): Promise<{ sessions: RecordingSession[]; count: number }> {
-    const params = new URLSearchParams();
-    if (filters?.provider_id) params.set('provider_id', filters.provider_id);
-    if (filters?.status) params.set('status', filters.status);
-    if (filters?.limit) params.set('limit', filters.limit.toString());
-    return fetchJson(`/recorder/sessions?${params}`);
-  },
-
-  async getRecordingActions(sessionId: number, actionType?: string): Promise<{ actions: RecordedAction[]; count: number }> {
-    const params = new URLSearchParams();
-    if (actionType) params.set('action_type', actionType);
-    return fetchJson(`/recorder/sessions/${sessionId}/actions?${params}`);
-  },
-
-  async deleteRecordingSession(sessionId: number): Promise<{ success: boolean }> {
-    return fetchJson(`/recorder/sessions/${sessionId}`, { method: 'DELETE' });
-  },
 };

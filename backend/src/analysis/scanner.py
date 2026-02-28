@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from ..db.models import Event, Odds
 from ..repositories import EventRepo
 from .value import find_value, ValueBet
-from ..bankroll.stake_calculator import StakeCalculator, StakeResult
+from ..bankroll.stake_calculator import StakeCalculator
 from .devig import (
     calculate_margin,
     devig_multiplicative,
@@ -50,7 +50,7 @@ MAX_EDGE_PCT = 50.0
 MAX_ODDS_AGE_HOURS = 2
 
 # Reverse value: minimum independent platforms for consensus
-MIN_CONSENSUS_PLATFORMS = 5
+MIN_CONSENSUS_PLATFORMS = 3
 
 # Reverse value: only bet longshots where Pinnacle is less efficient
 MIN_REVERSE_ODDS = 3.50

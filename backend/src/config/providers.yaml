@@ -133,6 +133,7 @@ orchestrator:
 kambi_defaults: &kambi_defaults
   retriever_type: kambi
   base_url: https://eu1.offering-api.kambicdn.com/offering/v2018
+  sport_timeout: 120                     # Football needs >60s on large Kambi brands (unibet)
   params:
     market: SE
     lang: sv_SE

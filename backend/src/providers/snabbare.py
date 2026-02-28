@@ -156,8 +156,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             logger.error(f"[{self.provider_id}] Health check failed: {e}")
             raise
 
-    LEAGUE_SETTLE_TIME = 0.08  # min seconds to wait for WS data after SPA link click
-    MAX_LEAGUE_SETTLE_TIME = 0.4  # max seconds to wait (if WS data still arriving)
+    LEAGUE_SETTLE_TIME = 0.04  # min seconds to wait for WS data after SPA link click
+    MAX_LEAGUE_SETTLE_TIME = 0.15  # max seconds to wait (if WS data still arriving)
 
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
@@ -349,8 +349,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     elapsed = self.LEAGUE_SETTLE_TIME
                     # If no data yet, wait a bit more (up to MAX)
                     while len(ws_messages) == ws_before and elapsed < self.MAX_LEAGUE_SETTLE_TIME:
-                        await asyncio.sleep(0.1)
-                        elapsed += 0.1
+                        await asyncio.sleep(0.05)
+                        elapsed += 0.05
 
                     leagues_processed += 1
                     ws_delta = len(ws_messages) - ws_before
@@ -362,10 +362,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         # Full navigation was used — go back to sport page
                         await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
                         self._setup_snabbare_ws(page, ws_messages)
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.1)
                     else:
                         await page.evaluate("window.history.back()")
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.05)
 
                 except Exception as e:
                     err_str = str(e)

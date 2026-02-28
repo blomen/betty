@@ -212,7 +212,7 @@ class TipwinRetriever(BrowserRetriever):
             # If no items response captured (e.g. only offer/highlights), assume
             # many pages and rely on empty-streak detection to stop
             if total_pages == 0:
-                total_pages = 120
+                total_pages = 30
                 # Log response types for debugging
                 resp_types = []
                 for r in api_responses:

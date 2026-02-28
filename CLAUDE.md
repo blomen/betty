@@ -48,44 +48,10 @@ frontend/src/
 - **Services coordinate business logic** - Routes are thin HTTP handlers, services own the logic
 - **`db/models.py` is ORM-only** - No helper functions, no business logic — just model definitions and DB init
 
-## Skills Usage (IMPORTANT)
-
-**Always use relevant skills (slash commands) for every task.** Skills provide specialized domain knowledge and enforce best practices.
-
-**Before writing code, invoke the matching skill:**
-- Refactoring / architecture → `architecture-patterns`
-- Debugging / errors → `debugging-strategies` or `debugging-wizard`
-- FastAPI routes / async → `fastapi-expert` or `fastapi-async-patterns`
-- Python patterns / design → `python-design-patterns`, `python-anti-patterns`
-- SQLAlchemy / DB → `sqlalchemy-orm`, `sql-optimization-patterns`
-- Testing → `pytest`, `python-testing-patterns`, `e2e-testing-patterns`
-- React / frontend → `react-dev`, `frontend-design`, `frontend-ui-dark-ts`
-- Playwright / scraping → `playwright-expert`, `web-scraping`, `scrapy-web-scraping`
-- Performance → `python-performance-optimization`
-- Error handling → `python-error-handling`, `python-resilience`
-- Logging → `logging-best-practices`, `python-observability`
-- Type safety → `python-type-safety`, `pydantic`
-- Code review → `typescript-react-reviewer`, `python-code-style`
-- Git → `git-workflow`
-- CI/CD → `github-actions-templates`
-
-**If no existing skill fits, search for one:** use `find-skills` to discover installable skills, or search GitHub for open-source reference implementations to learn from.
-
-**Multiple skills can be used per task** — e.g., `architecture-patterns` + `python-design-patterns` for a refactor, or `fastapi-expert` + `sql-optimization-patterns` for an API endpoint.
-
 ## HOW To Work In This Codebase
 
 ### Commands
 ```bash
-# Run services (ALWAYS use these ports - terminals already running)
-cd backend && uvicorn src.api:app --reload       # API on :8000
-cd frontend && npm run dev                        # UI on :5173
-
-# NOTE: Backend runs on port 8000, frontend on port 5173
-# User has terminals already running these servers
-# If you need to test, just refresh browser - don't start new servers
-# If server crashed, kill process on port first then restart
-
 # Extract odds (via CLI)
 cd backend
 python -m src.app extract polymarket pinnacle     # Sharp sources
@@ -97,6 +63,8 @@ curl -X POST "http://localhost:8000/api/extraction/run?providers=pinnacle"
 # Tests
 pytest tests/
 ```
+
+**Dev servers** are configured in `.claude/launch.json` (backend :8000, frontend :5173). Use Claude Preview to start/verify.
 
 ### Key Domain Concepts
 - **Fair odds**: True probability from Pinnacle (after devigging)
@@ -117,7 +85,7 @@ pytest tests/
 
 - `src/config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
 - `src/config/sports.yaml` - Sport/league mappings with provider-specific IDs
-- `backend/data/bankrollbbq.db` - SQLite database
+- `backend/data/bankrollbbq.db` - SQLite database (queryable via sqlite MCP)
 
 ## When Working Here
 
@@ -178,97 +146,27 @@ The primary extraction quality metric is **how many soft provider events match a
 - `!` = Critical: failed providers, 0 events, match rate < 30%
 - `~` = Warning: missing markets, slow extraction, rate limits
 
-**Read the extraction report after every run:**
-```python
-cd backend && python -c "
-import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
-for tier in ('sharp', 'api_soft', 'browser_soft'):
-    r = conn.execute('SELECT report FROM extraction_runs WHERE trigger = ? ORDER BY start_time DESC LIMIT 1', (tier,)).fetchone()
-    if r: print(f'=== {tier.upper()} ==='); print(r[0])
-conn.close()
-"
-```
+**Use the sqlite MCP to query `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` for extraction health.**
 
 **If match rate drops:** check `sports.yaml` aliases, team name normalization, timezone date offset.
-
-### Extraction Tables Schema
-
-| Table | Key Fields |
-|-------|-----------|
-| `extraction_runs` | `id`, `start_time`, `duration_seconds`, `total_events`, `total_odds`, `trigger`, `report` |
-| `provider_run_metrics` | `provider_id`, `events_processed`, `events_matched`, `events_unmatched`, `odds_processed`, `ml_count`, `spread_count`, `total_count`, `duration_seconds`, `status`, `error_message` |
-| `sport_run_metrics` | `provider_id`, `sport`, `events_extracted`, `events_matched`, `events_unmatched`, `odds_extracted`, `ml_count`, `spread_count`, `total_count`, `duration_seconds`, `error_message` |
-| `boost_extraction_logs` | `provider_id`, `scraper_type`, `status`, `boosts_found`, `error_message` |
-| `specials` | `provider`, `title`, `boosted_odds`, `original_odds`, `boost_pct`, `sport`, `event`, `edge_pct`, `fair_odds`, `is_positive_ev`, `matched_outcome`, `scraped_at` |
 
 ### Scanner Quality Filters
 - `MIN_VALID_PROB_SUM = 0.90` - Filter incomplete markets
 - `MAX_ODDS_RATIO = 1.35` - Filter event mismatches (fuzzy matching false positives)
 
-## Post-Extraction Analysis Workflow (IMPORTANT)
+## Extraction Health Checklist
 
-**After every full extraction run, follow this workflow to catch regressions and track improvements.**
+**After extraction runs, query these via sqlite MCP (tables: `extraction_runs`, `provider_run_metrics`, `sport_run_metrics`).**
 
-### Step 1: Extract
-Run a full extraction (or wait for the scheduler to complete all tiers):
-```bash
-cd backend && python -m src.app extract
-```
+Check in order of severity:
+- Failed providers (`status != 'success'`, error messages, 0 events)
+- Match rate drops (`events_unmatched / events_processed` ratio increasing)
+- Missing market types (`spread_count=0` or `total_count=0`)
+- Timing regressions (duration significantly higher than baseline)
+- Sport-level gaps (sports with 0 events or 0 matches)
+- Opportunity yield (query `opportunities` table)
 
-### Step 2: Read Extraction Reports & Logs
-Pull the latest reports from the DB for each tier:
-```bash
-cd backend && python -c "
-import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
-for tier in ('sharp', 'api_soft', 'browser_soft'):
-    r = conn.execute('SELECT report FROM extraction_runs WHERE trigger = ? ORDER BY start_time DESC LIMIT 1', (tier,)).fetchone()
-    if r: print(f'=== {tier.upper()} ==='); print(r[0])
-conn.close()
-"
-```
-
-Pull per-provider metrics for the latest run:
-```bash
-cd backend && python -c "
-import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
-run_id = conn.execute('SELECT id FROM extraction_runs ORDER BY start_time DESC LIMIT 1').fetchone()[0]
-rows = conn.execute('''
-    SELECT provider_id, events_processed, events_matched, events_unmatched,
-           odds_processed, ml_count, spread_count, total_count,
-           ROUND(duration_seconds,1), status, error_message
-    FROM provider_run_metrics WHERE run_id = ? ORDER BY events_processed DESC
-''', (run_id,)).fetchall()
-for r in rows: print(r)
-conn.close()
-"
-```
-
-Also check the terminal/server logs for errors, timeouts, and warnings.
-
-### Step 3: Analyze
-Look for these issues in order of severity:
-1. **Failed providers** — `status != 'success'`, error messages, 0 events
-2. **Match rate drops** — `events_unmatched / events_processed` ratio increasing
-3. **Missing market types** — `spread_count=0` or `total_count=0` for providers that should have them
-4. **Timing regressions** — duration significantly higher than baseline
-5. **Sport-level gaps** — use `sport_run_metrics` to find sports with 0 events or 0 matches
-6. **Opportunity yield** — check if value bet count dropped (query `opportunities` table)
-
-Flag thresholds:
-- `!` Critical: provider failed, 0 events, match rate < 30%
-- `~` Warning: missing markets, slow extraction (>2x baseline), rate limits hit
-
-### Step 4: Update Performance File
-Record findings in `backend/docs/provider_performance.md`:
-- Update the tier performance tables with new numbers
-- Move resolved issues to changelog
-- Add new issues to Active Issues & Watchlist
-- Update timing baselines if they've shifted
-
-**This file is the single source of truth for extraction health over time.** Keep it concise and data-driven — numbers, not prose.
+Record findings in `backend/docs/provider_performance.md`.
 
 ## Specials / Odds Boosts Pipeline
 
@@ -294,3 +192,16 @@ EV logic (`src/analysis/ev_enrichment.py`):
 - De-vigs Pinnacle odds (multiplicative method) to get fair odds
 - `edge_pct = (boosted_odds / fair_odds - 1) * 100`
 - Sanity check: edge > 100% = wrong match, skip
+
+## Workflow Automation
+
+**Use plugins/skills to automate the development loop:**
+
+- **New features / providers**: `/brainstorm` → `/write-plan` → `/execute-plan` (superpowers)
+- **Debugging extraction**: `systematic-debugging` triggers automatically for root cause investigation
+- **Shipping**: `/commit-push-pr` (commit-commands) → `/code-review` (posts review comment on PR)
+- **Code review** runs 5 parallel agents checking: CLAUDE.md compliance, bugs, git history, previous PRs, code comments. Only issues scoring 80+ confidence are posted.
+- **Frontend changes**: Use Claude Preview (`preview_start`, `preview_screenshot`) to verify UI
+- **DB queries**: Use sqlite MCP directly — no Python scripts needed
+- **Multi-file sweeps**: `/ralph-loop` for repetitive changes across many files
+- **Docs lookup**: context7 MCP for FastAPI, SQLAlchemy, Playwright, rapidfuzz docs

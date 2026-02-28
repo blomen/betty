@@ -1,4 +1,4 @@
-import { useExtractionProgress, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useTiersProgress } from '@/hooks/useExtractionStatus';
 
 const TIER_LABELS: Record<string, string> = {
   sharp: 'sharp',
@@ -10,26 +10,32 @@ const TIER_LABELS: Record<string, string> = {
 const TIER_ORDER = ['sharp', 'api_soft', 'browser_soft', 'boosts'];
 
 export function ExtractionProgressBar() {
-  const progress = useExtractionProgress();
   const tiersProgress = useTiersProgress();
 
-  const anyTierRunning = tiersProgress ? Object.values(tiersProgress.tiers).some(t => t.running) : false;
-  if (!anyTierRunning && (!progress || !progress.running)) return null;
+  if (!tiersProgress) return null;
 
-  const pct = Math.min(progress?.progress_pct ?? 0, 100);
-  const filled = Math.round((pct / 100) * 24);
+  // Find all running tiers
+  const runningTiers: string[] = [];
+  let totalProviders = 0;
+  let completedProviders = 0;
 
-  // Build tier status: only show tiers still running
-  const tierParts: string[] = [];
-  if (tiersProgress) {
-    for (const key of TIER_ORDER) {
-      const tier = tiersProgress.tiers[key];
-      if (!tier) continue;
-      if (tier.running) {
-        tierParts.push(TIER_LABELS[key] || key);
-      }
+  for (const key of TIER_ORDER) {
+    const tier = tiersProgress.tiers[key];
+    if (!tier) continue;
+    if (tier.running) {
+      runningTiers.push(TIER_LABELS[key] || key);
+      totalProviders += tier.total_providers;
+      completedProviders += tier.completed_providers;
     }
   }
+
+  if (runningTiers.length === 0) return null;
+
+  // Compute overall progress from all running tiers combined
+  const pct = totalProviders > 0
+    ? Math.min((completedProviders / totalProviders) * 100, 100)
+    : 0;
+  const filled = Math.round((pct / 100) * 24);
 
   return (
     <div className="border-l-2 border-tabExtract mb-3 px-3 py-1.5 text-xs font-mono flex items-center gap-2">
@@ -38,9 +44,7 @@ export function ExtractionProgressBar() {
         {'█'.repeat(filled)}{'░'.repeat(24 - filled)}
       </span>
       <span className="text-muted">{pct.toFixed(0)}%</span>
-      {tierParts.length > 0 && (
-        <span className="text-muted2">{tierParts.join(' · ')}</span>
-      )}
+      <span className="text-muted2">{runningTiers.join(' · ')}</span>
     </div>
   );
 }

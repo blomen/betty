@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -239,12 +239,6 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
-  const formatTime = (dateStr: string | undefined) => {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  };
-
   const resolveOutcome = (outcome: string, home?: string, away?: string, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
     if (outcome === 'home' && home) return home;
@@ -339,7 +333,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                           {opp.sport}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
                           {opp.point != null ? ` · ${opp.point}` : ''}
-                          {' · '}{formatTime(opp.starts_at)}
+                          {' · '}{formatDateTime(opp.starts_at)}
                         </div>
                       </td>
                       <td className="text-right text-muted text-sm">

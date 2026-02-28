@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
@@ -73,12 +73,6 @@ export function ReversePage() {
   }), []);
   const { sorted, sort: reverseSort, toggle: toggleReverseSort } =
     useMultiSort<Opportunity, ReverseSortCol>(filtered, reverseSortExtractors, { column: 'edge', direction: 'desc' });
-
-  const formatTime = (dateStr: string | undefined) => {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  };
 
   const resolveOutcome = (opp: Opportunity): string => {
     const outcome = opp.outcome1;
@@ -235,7 +229,7 @@ export function ReversePage() {
                         {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {opp.sport}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatTime(opp.starts_at)}
+                        {opp.sport}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatDateTime(opp.starts_at)}
                       </div>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcome(opp)}</td>

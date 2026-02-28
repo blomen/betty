@@ -594,10 +594,12 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         fair_odds = round(original_odds * (1 + margin), 3)
         edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
 
-        if edge_pct > 100:
+        # Margin estimation is a crude heuristic — cap at 50% to avoid
+        # false positives from massive promotional boosts (e.g. 3x→10x)
+        if edge_pct > 50:
             logger.debug(
                 f"Skipping margin-est '{special.get('title')}': edge={edge_pct:.0f}% "
-                f"(boosted={boosted_odds:.2f} vs fair={fair_odds:.2f}) — likely parlay boost"
+                f"(boosted={boosted_odds:.2f} vs fair={fair_odds:.2f}) — exceeds margin-est cap"
             )
             continue
 
@@ -721,6 +723,9 @@ def filter_expired(specials: list[dict]) -> list[dict]:
 
 def store_specials_to_db(specials: list[dict], session: Session) -> int:
     """Full-replace specials in DB: delete all existing, insert new."""
+    if not specials:
+        logger.warning("store_specials_to_db called with empty list — skipping to preserve existing data")
+        return 0
     session.query(SpecialOdds).delete()
 
     count = 0

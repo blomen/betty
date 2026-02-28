@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { openProviderWindow } from '@/utils/providerWindow';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
@@ -160,12 +160,6 @@ export function ValuePage({ providers }: ValuePageProps) {
       if (next.has(p)) next.delete(p); else next.add(p);
       return next;
     });
-  };
-
-  const formatTime = (dateStr: string | undefined) => {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const handleSelectGroup = (idx: number) => {
@@ -372,7 +366,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {rep.sport}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatTime(rep.starts_at)}
+                        {rep.sport}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">

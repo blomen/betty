@@ -17,19 +17,7 @@ export function formatProviderName(name: string): string {
   return name.replace(/\.(se|com|no|dk|fi|de|uk|eu|net|org|io|co)$/i, '');
 }
 
-export function formatCurrency(value: number, currency = 'kr'): string {
-  return `${value.toFixed(2)} ${currency}`;
-}
-
-export function formatPercentage(value: number, decimals = 2): string {
-  return `${value.toFixed(decimals)}%`;
-}
-
-export function formatOdds(odds: number): string {
-  return odds.toFixed(2);
-}
-
-export function formatDateTime(isoString: string | null): string {
+export function formatDateTime(isoString: string | null | undefined): string {
   if (!isoString) return 'N/A';
   const date = new Date(isoString);
   return date.toLocaleString('en-US', {
@@ -38,145 +26,6 @@ export function formatDateTime(isoString: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-export function formatDate(isoString: string | null): string {
-  if (!isoString) return 'N/A';
-  const date = new Date(isoString);
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
-
-export function formatTime(isoString: string | null): string {
-  if (!isoString) return 'N/A';
-  const date = new Date(isoString);
-  return date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
-export function formatHealthScore(
-  score: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' | 'CRITICAL'
-): { text: string; color: string } {
-  switch (score) {
-    case 'EXCELLENT':
-      return { text: 'EXCELLENT', color: 'text-green-400' };
-    case 'GOOD':
-      return { text: 'GOOD', color: 'text-green-500' };
-    case 'FAIR':
-      return { text: 'FAIR', color: 'text-yellow-400' };
-    case 'POOR':
-      return { text: 'POOR', color: 'text-orange-400' };
-    case 'CRITICAL':
-      return { text: 'CRITICAL', color: 'text-red-400' };
-    default:
-      return { text: 'UNKNOWN', color: 'text-gray-400' };
-  }
-}
-
-export function formatCircuitState(
-  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'
-): { text: string; color: string } {
-  switch (state) {
-    case 'CLOSED':
-      return { text: 'CLOSED', color: 'text-green-400' };
-    case 'HALF_OPEN':
-      return { text: 'HALF_OPEN', color: 'text-yellow-400' };
-    case 'OPEN':
-      return { text: 'OPEN', color: 'text-red-400' };
-    default:
-      return { text: 'UNKNOWN', color: 'text-gray-400' };
-  }
-}
-
-export function formatSeverity(
-  severity: 'info' | 'warning' | 'critical'
-): { symbol: string; color: string } {
-  switch (severity) {
-    case 'info':
-      return { symbol: 'i', color: 'text-blue-400' };
-    case 'warning':
-      return { symbol: '!', color: 'text-yellow-400' };
-    case 'critical':
-      return { symbol: 'X', color: 'text-red-400' };
-    default:
-      return { symbol: '?', color: 'text-gray-400' };
-  }
-}
-
-export function formatBetResult(
-  result: 'pending' | 'won' | 'lost' | 'void'
-): { text: string; color: string; symbol: string } {
-  switch (result) {
-    case 'pending':
-      return { text: 'PENDING', color: 'text-yellow-400', symbol: '...' };
-    case 'won':
-      return { text: 'WON', color: 'text-green-400', symbol: '+' };
-    case 'lost':
-      return { text: 'LOST', color: 'text-red-400', symbol: '-' };
-    case 'void':
-      return { text: 'VOID', color: 'text-gray-400', symbol: '~' };
-    default:
-      return { text: 'UNKNOWN', color: 'text-gray-400', symbol: '?' };
-  }
-}
-
-export function formatOpportunityType(
-  type: 'arbitrage' | 'value' | 'bonus'
-): { text: string; color: string; symbol: string } {
-  switch (type) {
-    case 'arbitrage':
-      return { text: 'ARB', color: 'text-cyan-400', symbol: '<<>>' };
-    case 'value':
-      return { text: 'VALUE', color: 'text-purple-400', symbol: '<$>' };
-    case 'bonus':
-      return { text: 'BONUS', color: 'text-yellow-400', symbol: '<*>' };
-    default:
-      return { text: 'UNKNOWN', color: 'text-gray-400', symbol: '<?>' };
-  }
-}
-
-export function formatEventName(homeTeam: string, awayTeam: string): string {
-  return `${homeTeam} vs ${awayTeam}`;
-}
-
-export function formatTrend(
-  direction: 'IMPROVING' | 'STABLE' | 'DEGRADING'
-): { symbol: string; color: string } {
-  switch (direction) {
-    case 'IMPROVING':
-      return { symbol: '^', color: 'text-green-400' };
-    case 'STABLE':
-      return { symbol: '=', color: 'text-gray-400' };
-    case 'DEGRADING':
-      return { symbol: 'v', color: 'text-red-400' };
-    default:
-      return { symbol: '-', color: 'text-gray-400' };
-  }
-}
-
-export function formatNumber(value: number, decimals = 0): string {
-  return value.toFixed(decimals);
-}
-
-export function formatBoolean(value: boolean): string {
-  return value ? 'YES' : 'NO';
-}
-
-export function formatRetention(retention: number): { text: string; color: string } {
-  if (retention >= 90) return { text: `${retention.toFixed(1)}%`, color: 'text-green-400' };
-  if (retention >= 80) return { text: `${retention.toFixed(1)}%`, color: 'text-yellow-400' };
-  return { text: `${retention.toFixed(1)}%`, color: 'text-red-400' };
 }
 
 // ============ TTK (Time-to-Kickoff) Utilities ============
@@ -214,11 +63,37 @@ export function getTTKColor(hours: number | null): string {
 
 // ============ Markdown Table Formatters for Terminal Output ============
 
-import type { BankrollExposure, OpportunityWithEvent, Bet, BankrollStats, BonusArbOpportunity } from '@/types';
+import type { BankrollExposure, OpportunityWithEvent, Bet, BonusArbOpportunity } from '@/types';
 
-/**
- * Format bankroll exposure as compact table
- */
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1) + '…';
+}
+
+function pad(str: string, width: number, align: 'left' | 'right' = 'left'): string {
+  if (align === 'right') {
+    return str.padStart(width);
+  }
+  return str.padEnd(width);
+}
+
+function formatShortDateTime(isoString: string | null | undefined): string {
+  if (!isoString) return '-';
+  const date = new Date(isoString);
+  const day = date.getDate();
+  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${day} ${month} ${time}`;
+}
+
+export function outcomeToTeam(outcome: string | undefined, homeTeam?: string, awayTeam?: string): string {
+  if (!outcome) return '-';
+  if (outcome === 'home') return homeTeam || 'home';
+  if (outcome === 'away') return awayTeam || 'away';
+  if (outcome === 'draw') return 'draw';
+  return outcome;
+}
+
 export function formatBankrollTable(exposure: BankrollExposure): string {
   if (!exposure || exposure.providers.length === 0) {
     return 'No bankroll data. Configure providers first.';
@@ -226,9 +101,8 @@ export function formatBankrollTable(exposure: BankrollExposure): string {
 
   const fmt = (n: number) => n % 1 === 0 ? `${n} kr` : `${n.toFixed(0)} kr`;
 
-  // Find max provider name length for dynamic column width (after stripping suffixes)
   const maxNameLen = Math.max(
-    8, // minimum "Provider" header length
+    8,
     ...exposure.providers.map((p) => formatProviderName(p.provider_name).length)
   );
 
@@ -254,52 +128,6 @@ ${rows}
 \`\`\``;
 }
 
-/**
- * Truncate string to max length with ellipsis
- */
-function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 1) + '…';
-}
-
-/**
- * Pad string to fixed width (left or right aligned)
- */
-function pad(str: string, width: number, align: 'left' | 'right' = 'left'): string {
-  if (align === 'right') {
-    return str.padStart(width);
-  }
-  return str.padEnd(width);
-}
-
-/**
- * Format short datetime for table display (e.g., "3 Feb 18:30")
- */
-function formatShortDateTime(isoString: string | null | undefined): string {
-  if (!isoString) return '-';
-  const date = new Date(isoString);
-  const day = date.getDate();
-  const month = date.toLocaleDateString('en-US', { month: 'short' });
-  const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${day} ${month} ${time}`;
-}
-
-/**
- * Convert outcome code to team name
- */
-export function outcomeToTeam(outcome: string | undefined, homeTeam?: string, awayTeam?: string): string {
-  if (!outcome) return '-';
-  if (outcome === 'home') return homeTeam || 'home';
-  if (outcome === 'away') return awayTeam || 'away';
-  if (outcome === 'draw') return 'draw';
-  return outcome; // Return as-is if already a team name
-}
-
-/**
- * Format opportunities list as compact ASCII table
- * Now includes: Bet (team name), Sport, Time, Fair odds columns
- * Sorted by edge_pct descending (backend handles sorting)
- */
 export function formatOpportunitiesList(
   opportunities: OpportunityWithEvent[],
   _count: number
@@ -314,10 +142,8 @@ export function formatOpportunitiesList(
       const num = pad(String(idx + 1), 2, 'right');
       const value = opp.type === 'arbitrage' ? opp.profit_pct : opp.edge_pct;
       const edge = pad(`${value?.toFixed(1)}%`, 5, 'right');
-      // Get team names
       const homeTeam = opp.home_team || opp.event?.home_team;
       const awayTeam = opp.away_team || opp.event?.away_team;
-      // Convert outcome to team name
       const betOn = outcomeToTeam(opp.outcome1, homeTeam, awayTeam);
       const bet = pad(truncate(betOn, 18), 18);
       const provider = pad(truncate(opp.provider1, 10), 10);
@@ -336,9 +162,6 @@ ${rows}
 \`\`\``;
 }
 
-/**
- * Format bets list as compact table
- */
 export function formatBetsTable(bets: Bet[], status?: string): string {
   if (bets.length === 0) {
     return `No ${status || 'bets'} found.`;
@@ -366,23 +189,6 @@ ${rows}
 \`\`\``;
 }
 
-/**
- * Format betting statistics report - compact 2-line summary
- */
-export function formatStatsReport(stats: BankrollStats): string {
-  const winRate = stats.total_bets > 0 ? ((stats.wins / stats.total_bets) * 100).toFixed(0) : '0';
-  const profit = stats.total_profit || 0;
-  const profitStr = profit >= 0 ? `+${profit.toFixed(0)} kr` : `-${Math.abs(profit).toFixed(0)} kr`;
-  const roi = stats.roi_pct || 0;
-
-  return `Bets: ${stats.total_bets} | W/L: ${stats.wins}/${stats.losses} | Win: ${winRate}%
-Staked: ${(stats.total_staked || 0).toFixed(0)} kr | Profit: ${profitStr} | ROI: ${roi.toFixed(1)}%`;
-}
-
-
-/**
- * Format bonus arbitrage opportunities - compact (true arb with hedges)
- */
 export function formatBonusArbitrage(
   opportunities: BonusArbOpportunity[],
   anchorProvider: string,
@@ -403,7 +209,6 @@ export function formatBonusArbitrage(
         ? `${opp.home_team} vs ${opp.away_team}`
         : 'Unknown';
       const match = pad(truncate(eventName, 30), 30);
-      // Show anchor bet with team name
       const anchorLeg = opp.legs.find(l => l.is_anchor);
       const betOn = anchorLeg ? outcomeToTeam(anchorLeg.outcome, opp.home_team || undefined, opp.away_team || undefined) : '-';
       const bet = pad(truncate(betOn, 15), 15);

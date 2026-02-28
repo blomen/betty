@@ -304,24 +304,18 @@ class TenBetRetriever(BrowserRetriever):
             logger.debug(f"[{self.provider_id}] Scraping {comp_name} ({url})")
             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
 
-            # Wait for event items to render with retry
+            # Wait for event items to render (single attempt, longer timeout)
             events_loaded = False
-            for attempt in range(3):
-                try:
-                    await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=8000)
-                    events_loaded = True
-                    break
-                except Exception:
-                    # Check for empty state
-                    empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
-                    if empty:
-                        logger.debug(f"[{self.provider_id}] No matches for {comp_name}")
-                        return []
-                    if attempt < 2:
-                        logger.debug(f"[{self.provider_id}] EventListItem not found for {comp_name}, retry {attempt + 1}")
-                        await page.wait_for_timeout(2000)
-                    else:
-                        logger.debug(f"[{self.provider_id}] No EventListItem found for {comp_name} after 3 attempts")
+            try:
+                await page.wait_for_selector('[class*="ta-EventListItem"]', timeout=15000)
+                events_loaded = True
+            except Exception:
+                # Check for empty state
+                empty = await page.query_selector_all('text=/Inga matcher|Inga evenemang|No matches|No events/i')
+                if empty:
+                    logger.debug(f"[{self.provider_id}] No matches for {comp_name}")
+                    return []
+                logger.debug(f"[{self.provider_id}] No EventListItem found for {comp_name}")
 
             if not events_loaded:
                 return []

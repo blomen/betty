@@ -157,7 +157,7 @@ class PolymarketRetriever(Retriever):
         if not token_ids or not self.use_clob_midpoint:
             return
 
-        semaphore = asyncio.Semaphore(20)  # Limit concurrency to avoid rate limits
+        semaphore = asyncio.Semaphore(50)
         unique_tokens = list(set(token_ids))
 
         async def fetch_one(session: aiohttp.ClientSession, token_id: str):
