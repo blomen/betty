@@ -147,9 +147,10 @@ class PolymarketRetriever(Retriever):
         return self._clob_midpoints.get(token_id, gamma_price)
 
     async def _fetch_clob_midpoints(self, token_ids: list[str]):
-        """Batch-fetch CLOB midpoints for all tokens using concurrent requests.
+        """Batch-fetch CLOB midpoints using the /midpoints batch endpoint.
 
-        Populates self._clob_midpoints dict. Falls back to Gamma price on failure.
+        Sends chunks of token IDs to GET /midpoints (max ~100 per request)
+        instead of individual /midpoint calls. Populates self._clob_midpoints dict.
         """
         import aiohttp
         import asyncio
@@ -157,27 +158,47 @@ class PolymarketRetriever(Retriever):
         if not token_ids or not self.use_clob_midpoint:
             return
 
-        semaphore = asyncio.Semaphore(50)
         unique_tokens = list(set(token_ids))
+        BATCH_SIZE = 100  # Keep URL length reasonable for GET requests
+        semaphore = asyncio.Semaphore(10)  # 10 concurrent batch requests
 
-        async def fetch_one(session: aiohttp.ClientSession, token_id: str):
+        async def fetch_batch(session: aiohttp.ClientSession, batch: list[str]):
             async with semaphore:
                 try:
-                    url = f"{self.clob_url}/midpoint"
-                    async with session.get(url, params={"token_id": token_id}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    url = f"{self.clob_url}/midpoints"
+                    # Send as comma-separated token_ids query param
+                    params = [("token_ids", tid) for tid in batch]
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            mid = float(data.get("mid", 0))
-                            if 0.01 < mid < 0.99:
-                                self._clob_midpoints[token_id] = mid
-                except Exception:
-                    pass  # Fallback to Gamma price
+                            # Response is a dict of token_id -> midpoint
+                            if isinstance(data, dict):
+                                for tid, mid_val in data.items():
+                                    try:
+                                        mid = float(mid_val) if not isinstance(mid_val, dict) else float(mid_val.get("mid", 0))
+                                        if 0.01 < mid < 0.99:
+                                            self._clob_midpoints[str(tid)] = mid
+                                    except (ValueError, TypeError):
+                                        pass
+                            elif isinstance(data, list):
+                                # Some API versions return list of {token_id, mid}
+                                for item in data:
+                                    if isinstance(item, dict):
+                                        tid = str(item.get("token_id", ""))
+                                        mid = float(item.get("mid", 0))
+                                        if tid and 0.01 < mid < 0.99:
+                                            self._clob_midpoints[tid] = mid
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] CLOB batch midpoint failed: {e}")
 
         try:
+            # Split into batches
+            batches = [unique_tokens[i:i + BATCH_SIZE] for i in range(0, len(unique_tokens), BATCH_SIZE)]
             async with aiohttp.ClientSession() as session:
-                await asyncio.gather(*[fetch_one(session, tid) for tid in unique_tokens])
+                await asyncio.gather(*[fetch_batch(session, batch) for batch in batches])
             logger.debug(
-                f"[{self.provider_id}] CLOB midpoints: {len(self._clob_midpoints)}/{len(unique_tokens)} tokens"
+                f"[{self.provider_id}] CLOB midpoints: {len(self._clob_midpoints)}/{len(unique_tokens)} tokens "
+                f"({len(batches)} batch requests)"
             )
         except Exception as e:
             logger.warning(f"[{self.provider_id}] CLOB midpoint fetch failed: {e}")
@@ -232,18 +253,42 @@ class PolymarketRetriever(Retriever):
             offset += page_limit
             page += 1
 
-        # Phase 2: Collect all CLOB token IDs and fetch midpoints
+        # Phase 2: Collect CLOB token IDs from markets that pass basic filters
+        # Pre-filtering avoids fetching midpoints for markets we'll discard anyway
         if self.use_clob_midpoint and all_raw:
-            all_token_ids = []
+            needed_token_ids = []
             for item in all_raw:
                 for m in item.get("markets", []):
+                    # Skip low-volume markets (same filter as _parse_market)
+                    try:
+                        vol = float(m.get("volume", 0) or 0)
+                    except (ValueError, TypeError):
+                        vol = 0
+                    if vol < self.MIN_VOLUME:
+                        continue
+                    # Skip exact 50/50 (no trading activity)
+                    try:
+                        prices_raw = m.get("outcomePrices", "[]")
+                        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+                        prices = [float(p) for p in prices]
+                        if all(p == 0.5 for p in prices if p > 0):
+                            continue
+                        if not any(0.02 < p < 0.98 for p in prices):
+                            continue
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        continue
+                    # Market passes basic filters — collect its token IDs
                     raw_ids = m.get("clobTokenIds", "[]")
                     try:
                         ids = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
-                        all_token_ids.extend(str(t) for t in ids if t)
+                        needed_token_ids.extend(str(t) for t in ids if t)
                     except (json.JSONDecodeError, TypeError):
                         pass
-            await self._fetch_clob_midpoints(all_token_ids)
+            logger.debug(
+                f"[{self.provider_id}] Pre-filtered to {len(set(needed_token_ids))} tokens "
+                f"(from {sum(len(m.get('markets', [])) for m in all_raw)} total markets)"
+            )
+            await self._fetch_clob_midpoints(needed_token_ids)
 
         # Phase 3: Parse events (using CLOB midpoints + spread buffer)
         all_events = self._parse_all(all_raw)

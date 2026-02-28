@@ -229,9 +229,9 @@ providers:
     params:
       game_bets_tag_id: 100639
       # Spread buffer (cents) added to midpoint to estimate executable buy price.
-      # Polymarket Gamma API returns midpoints, but actual buy price is higher due
-      # to bid-ask spread. 2¢ matches observed spread on typical sports markets.
-      spread_buffer_cents: 2
+      # CLOB midpoint understates actual cost — buffer approximates the ask side.
+      # 1¢ balances between phantom edge removal and preserving genuine value.
+      spread_buffer_cents: 1
       # Use CLOB midpoint API for more accurate prices (true/false)
       use_clob_midpoint: true
 

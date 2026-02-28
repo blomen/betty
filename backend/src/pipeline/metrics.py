@@ -145,9 +145,14 @@ class ProviderMetrics:
         return sum(1 for s in self.sports.values() if s.success)
 
     @property
+    def sports_done(self) -> int:
+        """Number of sports fully completed (succeeded or failed)."""
+        return sum(1 for s in self.sports.values() if s.is_complete)
+
+    @property
     def sports_failed(self) -> int:
         """Number of sports that failed."""
-        return sum(1 for s in self.sports.values() if not s.success)
+        return sum(1 for s in self.sports.values() if s.is_complete and not s.success)
 
     @property
     def success_rate(self) -> float:

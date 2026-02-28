@@ -159,6 +159,16 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     LEAGUE_SETTLE_TIME = 0.04  # min seconds to wait for WS data after SPA link click
     MAX_LEAGUE_SETTLE_TIME = 0.15  # max seconds to wait (if WS data still arriving)
 
+    # Per-sport league caps — football has 200+ leagues but most are tiny
+    SPORT_LEAGUE_CAPS: Dict[str, int] = {
+        "football": 40,
+        "basketball": 30,
+        "ice_hockey": 30,
+        "tennis": 25,
+        "handball": 25,
+    }
+    DEFAULT_LEAGUE_CAP = 60
+
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
         Extract events for one sport by navigating to the sport page and
@@ -239,6 +249,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links after {link_timeout}ms wait")
             await asyncio.sleep(0.5)
 
+            # Pre-filter leagues via REST API: skip outright-only and 0-prematch leagues
+            # This avoids wasting time clicking leagues that yield no match odds
+            valid_league_ids = await self._get_valid_league_ids(page, sport_id)
+
             # Discover league links from DOM sidebar
             # These are React Router <Link> components — clicking them triggers
             # SPA navigation and WS subscription for that league's events.
@@ -296,20 +310,32 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                     unique_links.append(link)
             league_links = unique_links
 
+            # Filter out leagues with no prematch events (REST API pre-filter)
+            if valid_league_ids is not None:
+                before_filter = len(league_links)
+                league_links = [
+                    link for link in league_links
+                    if self._extract_league_id(link.get("href", "")) in valid_league_ids
+                ]
+                skipped = before_filter - len(league_links)
+                if skipped > 0:
+                    logger.debug(
+                        f"[{self.provider_id}] {canonical}: skipped {skipped}/{before_filter} "
+                        f"leagues (outright-only or 0 prematch events)"
+                    )
+
             if not league_links:
                 logger.debug(f"[{self.provider_id}] {canonical}: no league links in DOM")
                 return []
 
-            # Cap leagues per sport to stay within sport_timeout (~240s)
-            # Top leagues appear first in DOM (ordered by popularity/event count)
-            # 40 leagues × ~1.5s/league = ~60s, well within timeout
-            MAX_LEAGUES_PER_SPORT = 60
-            if len(league_links) > MAX_LEAGUES_PER_SPORT:
+            # Cap leagues per sport to stay within sport_timeout
+            max_leagues = self.SPORT_LEAGUE_CAPS.get(sport, self.DEFAULT_LEAGUE_CAP)
+            if len(league_links) > max_leagues:
                 logger.debug(
                     f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
-                    f"to top {MAX_LEAGUES_PER_SPORT}"
+                    f"to top {max_leagues}"
                 )
-                league_links = league_links[:MAX_LEAGUES_PER_SPORT]
+                league_links = league_links[:max_leagues]
 
             logger.debug(
                 f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process"
@@ -362,10 +388,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                         # Full navigation was used — go back to sport page
                         await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
                         self._setup_snabbare_ws(page, ws_messages)
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.05)
                     else:
                         await page.evaluate("window.history.back()")
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.02)
 
                 except Exception as e:
                     err_str = str(e)
@@ -421,6 +447,52 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         import re as _re
         match = _re.search(r'/leagues/(\d+)', href)
         return match.group(1) if match else ""
+
+    async def _get_valid_league_ids(self, page, sport_id: int) -> Optional[set]:
+        """Fetch league metadata from REST API and return IDs of leagues worth clicking.
+
+        Filters out:
+        - Outright-only leagues (no match odds, just futures)
+        - Leagues with 0 prematch events (eventCount - liveEventCount <= 0)
+
+        Returns None if API call fails (caller should skip filtering).
+        """
+        try:
+            data = await page.evaluate(f"""async () => {{
+                try {{
+                    const r = await fetch(
+                        'https://www.snabbare.com/sportsbook-api/api/leagues' +
+                        '?franchiseCode=SWEDEN_SNABBARE&locale=sv&sportIds={sport_id}'
+                    );
+                    if (!r.ok) return null;
+                    const leagues = await r.json();
+                    // Return only id, eventCount, liveEventCount, isOutrightsOnlyLeague
+                    return (leagues || []).map(l => ({{
+                        id: String(l.id),
+                        prematch: (l.eventCount || 0) - (l.liveEventCount || 0),
+                        outright: !!l.isOutrightsOnlyLeague
+                    }}));
+                }} catch(e) {{ return null; }}
+            }}""")
+            if data is None:
+                return None
+
+            valid = set()
+            for lg in data:
+                if lg.get("outright"):
+                    continue
+                if (lg.get("prematch", 0) or 0) <= 0:
+                    continue
+                valid.add(str(lg["id"]))
+
+            logger.debug(
+                f"[{self.provider_id}] REST API: {len(valid)}/{len(data)} leagues "
+                f"have prematch events for sportId={sport_id}"
+            )
+            return valid
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] REST API league pre-filter failed: {e}")
+            return None
 
     async def _remove_overlays(self, page) -> None:
         """Remove OneTrust cookie overlay and other blocking elements."""

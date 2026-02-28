@@ -932,7 +932,7 @@ class ExtractionScheduler:
                         "odds": pm.total_odds,
                         "duration_seconds": round(time.time() - pm.start_time, 1) if not pm.is_complete else pm.duration_seconds,
                         "error": pm.error,
-                        "sports_completed": pm.sports_succeeded,
+                        "sports_completed": pm.sports_done,
                         "sports_total": pm.total_sports_configured or pm.sports_attempted,
                         "current_sport": None,
                         "sports": {},

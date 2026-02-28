@@ -979,9 +979,12 @@ class OpportunityScanner:
                     continue  # Don't compare sharp vs sharp
 
                 # Skip if market types don't match (different outcome counts)
-                # Exception: spread markets — Pinnacle stores 1 outcome per
-                # point (Asian handicap), soft providers store 2 (home+away).
-                # 3-way spreads (European handicap with draw) are NOT comparable.
+                # Exceptions:
+                # 1. Spread markets — Pinnacle stores 1 outcome per point (Asian),
+                #    soft providers store 2 (home+away). 3-way European spreads excluded.
+                # 2. Polymarket binary markets — always 2-way (yes/no = home/away),
+                #    but football maps to 3-way 1x2 at Pinnacle. De-vigged fair odds
+                #    for each outcome are still valid from the full 3-way market.
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and sharp_outcome_count > 0:
                     is_spread_asymmetry = (
@@ -989,12 +992,19 @@ class OpportunityScanner:
                         and sharp_outcome_count in (1, 2)
                         and soft_count == 2
                     )
-                    if soft_count != sharp_outcome_count and not is_spread_asymmetry:
+                    is_polymarket_binary = (
+                        po["provider"] == "polymarket"
+                        and soft_count == 2
+                        and sharp_outcome_count == 3
+                    )
+                    if soft_count != sharp_outcome_count and not is_spread_asymmetry and not is_polymarket_binary:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
+                # Skip for Polymarket binary markets (2 outcomes in 3-way market = low prob_sum by design)
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
-                    continue  # Incomplete market at soft provider
+                    if not (po["provider"] == "polymarket" and soft_count < sharp_outcome_count):
+                        continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
                 if pinnacle_raw and pinnacle_raw > 1:
