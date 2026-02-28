@@ -29,6 +29,7 @@ async def list_opportunities(
     market: Optional[str] = None,
     sport: Optional[str] = None,
     min_value: Optional[float] = None,
+    limit: int = 500,
     service: OpportunityService = Depends(_get_service),
 ):
     """Get current value/bonus opportunities with enhanced filtering and stake recommendations."""
@@ -40,6 +41,7 @@ async def list_opportunities(
         market=market,
         sport=sport,
         min_value=min_value,
+        limit=min(limit, 2000),
     )
 
 

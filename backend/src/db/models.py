@@ -131,6 +131,7 @@ class Odds(Base):
         Index('ix_odds_updated_at', 'updated_at'),
         # Index for event-level market grouping (scanner.group_odds)
         Index('ix_odds_event_market_outcome', 'event_id', 'market', 'outcome'),
+        Index('ix_odds_event_market_point', 'event_id', 'market', 'point'),
     )
     
     # Relationships
@@ -201,6 +202,14 @@ class Bet(Base):
     # CLV tracking (filled post-event)
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %
+
+    __table_args__ = (
+        Index('ix_bet_profile_result', 'profile_id', 'result'),
+        Index('ix_bet_event_id', 'event_id'),
+        Index('ix_bet_provider_id', 'provider_id'),
+        Index('ix_bet_profile_provider_result', 'profile_id', 'provider_id', 'result'),
+        Index('ix_bet_result_placed_at', 'result', 'placed_at'),
+    )
 
     # Relationships
     event = relationship("Event", back_populates="bets")
@@ -314,6 +323,8 @@ class ProfileProviderBonus(Base):
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
+        Index('ix_bonus_profile_status', 'profile_id', 'bonus_status'),
+        Index('ix_bonus_profile_provider', 'profile_id', 'provider_id'),
     )
 
     # Relationships
@@ -344,6 +355,7 @@ class ProfileProviderBalance(Base):
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
+        Index('ix_balance_profile_id', 'profile_id'),
     )
 
     # Relationships
@@ -364,6 +376,9 @@ class Opportunity(Base):
     __tablename__ = "opportunities"
     __table_args__ = (
         Index("ix_opp_upsert", "event_id", "market", "outcome1", "provider1_id", "type"),
+        Index("ix_opp_active_edge", "is_active", "edge_pct"),
+        Index("ix_opp_type_active", "type", "is_active"),
+        Index("ix_opp_provider1_type", "provider1_id", "type"),
     )
 
     id = Column(Integer, primary_key=True)

@@ -60,8 +60,11 @@ class ExtractionScheduler:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._settlement_task: Optional[asyncio.Task] = None
         self._trading_reset_task: Optional[asyncio.Task] = None
-        # Lock ensures only one tier runs at a time — the pipeline shares
-        # a single DB session and event_cache, so concurrent runs corrupt state.
+        # Per-tier locks allow different tiers to run concurrently while
+        # preventing the same tier from overlapping with itself.
+        # Each tier creates its own pipeline instance with isolated DB session + caches.
+        self._tier_locks: dict[str, asyncio.Lock] = {}
+        # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
 
     @property
@@ -128,8 +131,11 @@ class ExtractionScheduler:
                     f"({len(tier.providers)} providers)"
                 )
 
-                # Acquire lock — only one tier can use the pipeline at a time
-                async with self._run_lock:
+                # Per-tier lock prevents same tier from overlapping with itself
+                # Different tiers run concurrently with isolated pipeline instances
+                if tier.name not in self._tier_locks:
+                    self._tier_locks[tier.name] = asyncio.Lock()
+                async with self._tier_locks[tier.name]:
                     results = await self._run_with_state_updates(tier.providers, tier_name=tier.name)
 
                 tier.last_run = datetime.now(timezone.utc)
@@ -771,9 +777,14 @@ class ExtractionScheduler:
     # ── Internal ───────────────────────────────────────────────────────
 
     async def _run_with_state_updates(self, providers: list[str], tier_name: str = "default") -> dict:
-        """Run extraction with UI state updates (both global and per-tier)."""
+        """Run extraction with UI state updates (both global and per-tier).
+
+        Each tier gets its own pipeline instance with isolated DB session + caches.
+        This allows different tiers to run concurrently without state corruption.
+        """
         from src.api.state import update_extraction_state, extraction_state, update_tier_state
         from src.api.routes.extraction import _build_final_state
+        from src.pipeline.orchestrator import ExtractionPipeline
 
         now = datetime.now(timezone.utc)
 
@@ -802,6 +813,10 @@ class ExtractionScheduler:
             elapsed_seconds=0,
         )
 
+        # Create per-tier pipeline instance with isolated DB session + caches
+        # This allows concurrent tiers without shared state corruption
+        tier_pipeline = ExtractionPipeline()
+
         _results = None
         try:
             # Start metrics polling task
@@ -811,7 +826,7 @@ class ExtractionScheduler:
             )
 
             try:
-                _results = await self.pipeline.run(providers=providers, tier_name=tier_name)
+                _results = await tier_pipeline.run(providers=providers, tier_name=tier_name)
             finally:
                 stop_event.set()
                 try:
@@ -883,6 +898,12 @@ class ExtractionScheduler:
             update_extraction_state(running=False)
             update_tier_state(tier_name, running=False)
 
+            # Close the per-tier pipeline's DB session
+            try:
+                tier_pipeline.session.close()
+            except Exception:
+                pass
+
         return _results or {}
 
     async def _poll_metrics_loop(
@@ -950,32 +971,37 @@ class ExtractionScheduler:
                             "duration": round(sm.duration_seconds, 1) if sm.is_complete else round(time.time() - sm.start_time, 1),
                         }
 
-                db.expire_all()
+                # DB counts with 5s cache to avoid hammering SQLite every 500ms
+                _now = time.time()
+                if not hasattr(self, '_db_counts_cache') or _now - self._db_counts_cache_time > 5.0:
+                    db.expire_all()
+                    _total_events = db.query(Event).count()
+                    _total_odds = db.query(Odds).count()
 
-                # Global counts (all providers)
-                total_events = db.query(Event).count()
-                total_odds = db.query(Odds).count()
+                    _tier_events = 0
+                    _tier_odds = 0
+                    if tier_providers:
+                        pin_event_ids = db.query(Odds.event_id).filter(
+                            Odds.provider_id == "pinnacle"
+                        ).distinct().subquery()
+                        row = db.query(
+                            func.count(func.distinct(Odds.event_id)),
+                            func.count(Odds.id),
+                        ).filter(
+                            Odds.provider_id.in_(tier_providers),
+                            Odds.event_id.in_(db.query(pin_event_ids)),
+                        ).first()
+                        if row:
+                            _tier_events = row[0] or 0
+                            _tier_odds = row[1] or 0
+                    else:
+                        _tier_events = _total_events
+                        _tier_odds = _total_odds
 
-                # Per-tier counts: only events matched with Pinnacle
-                tier_events = 0
-                tier_odds = 0
-                if tier_providers:
-                    pin_event_ids = db.query(Odds.event_id).filter(
-                        Odds.provider_id == "pinnacle"
-                    ).distinct().subquery()
-                    row = db.query(
-                        func.count(func.distinct(Odds.event_id)),
-                        func.count(Odds.id),
-                    ).filter(
-                        Odds.provider_id.in_(tier_providers),
-                        Odds.event_id.in_(db.query(pin_event_ids)),
-                    ).first()
-                    if row:
-                        tier_events = row[0] or 0
-                        tier_odds = row[1] or 0
-                else:
-                    tier_events = total_events
-                    tier_odds = total_odds
+                    self._db_counts_cache = (_total_events, _total_odds, _tier_events, _tier_odds)
+                    self._db_counts_cache_time = _now
+
+                total_events, total_odds, tier_events, tier_odds = self._db_counts_cache
 
                 # Update global state
                 update_extraction_state(

@@ -1,26 +1,28 @@
-import { useState, useCallback, useEffect } from 'react';
+import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import type { BettingContext } from '@/types';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
 import { RecordingBar } from './RecordingBar';
 import { RecorderProvider } from '@/contexts/RecorderContext';
+// Eager: core pages always in main bundle
 import {
   MonitorPage,
   ValuePage,
   DutchPage,
   ReversePage,
   PolymarketPage,
-  BetsPage,
   BankrollPage,
-  SpecialsPage,
-  ProfilePage,
   WelcomePage,
-  TradingBankrollPage,
-  TradingTodayPage,
-  TradingBuilderPage,
-  TradingTradesPage,
-  TradingJournalPage,
 } from './pages';
+// Lazy: secondary/heavy pages split into separate chunks
+const SpecialsPage = lazy(() => import('./pages/SpecialsPage').then(m => ({ default: m.SpecialsPage })));
+const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.BetsPage })));
+const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
+const TradingBankrollPage = lazy(() => import('./pages/TradingBankrollPage').then(m => ({ default: m.TradingBankrollPage })));
+const TradingTodayPage = lazy(() => import('./pages/TradingTodayPage').then(m => ({ default: m.TradingTodayPage })));
+const TradingBuilderPage = lazy(() => import('./pages/TradingBuilderPage').then(m => ({ default: m.TradingBuilderPage })));
+const TradingTradesPage = lazy(() => import('./pages/TradingTradesPage').then(m => ({ default: m.TradingTradesPage })));
+const TradingJournalPage = lazy(() => import('./pages/TradingJournalPage').then(m => ({ default: m.TradingJournalPage })));
 import { api } from '@/services/api';
 
 interface TerminalWindowProps {
@@ -144,15 +146,17 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
           )}
           <RecordingBar />
           <div className="flex-1 overflow-y-auto p-4">
-            {isProfileActive ? (
-              <ProfilePage onRefresh={onRefresh} />
-            ) : tabs.length > 0 ? (
-              renderPage()
-            ) : (
-              <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-                Coming soon.
-              </div>
-            )}
+            <Suspense fallback={<div className="p-4 text-muted text-sm">Loading...</div>}>
+              {isProfileActive ? (
+                <ProfilePage onRefresh={onRefresh} />
+              ) : tabs.length > 0 ? (
+                renderPage()
+              ) : (
+                <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+                  Coming soon.
+                </div>
+              )}
+            </Suspense>
           </div>
         </div>
       </div>

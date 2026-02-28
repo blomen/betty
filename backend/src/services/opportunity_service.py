@@ -31,6 +31,7 @@ class OpportunityService:
         market: str | None = None,
         sport: str | None = None,
         min_value: float | None = None,
+        limit: int = 2000,
     ) -> dict:
         """List active opportunities with stake recommendations for value bets."""
         provider_ids = (
@@ -46,6 +47,7 @@ class OpportunityService:
             sport=sport,
             min_edge=min_value,
             exclude_provider1=None if provider1 else "polymarket",
+            limit=limit,
         )
 
         # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
@@ -63,6 +65,19 @@ class OpportunityService:
                 )
             except Exception as e:
                 logger.warning(f"Could not initialize stake calculator: {e}")
+
+        # Batch pre-fetch provider_meta for all opportunities (avoid N+1)
+        meta_cache = self._batch_lookup_provider_meta(rows)
+
+        # Batch pre-fetch bonus statuses for all providers (avoid N+1)
+        bonus_cache = {}
+        if profile and type == 'value':
+            provider_ids = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
+            for pid in provider_ids:
+                try:
+                    bonus_cache[pid] = self.profile_repo.get_bonus_status(profile.id, pid)
+                except Exception:
+                    bonus_cache[pid] = {"is_cleared": True}
 
         # Build response
         results = []
@@ -90,14 +105,13 @@ class OpportunityService:
                 "starts_at": event.start_time.isoformat() if event and event.start_time else None,
             }
 
-            # Attach provider_meta from Odds table (for browser navigation URLs)
-            result["provider_meta"] = self._lookup_provider_meta(
-                opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point
-            )
+            # Attach provider_meta from pre-fetched cache
+            meta_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
+            result["provider_meta"] = meta_cache.get(meta_key)
 
             # Add stake recommendations for value bets
             if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
-                self._add_stake_recommendation(result, opp, profile, stake_calculator)
+                self._add_stake_recommendation(result, opp, profile, stake_calculator, bonus_cache)
 
             # Add dutch/reverse-specific fields
             if type in ('dutch', 'reverse') and stake_calculator and profile:
@@ -239,11 +253,11 @@ class OpportunityService:
             "anchor_balance": round(anchor_balance, 2),
         }
 
-    def _add_stake_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
+    def _add_stake_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator, bonus_cache: dict | None = None):
         """Add stake recommendation fields to an opportunity result dict."""
         try:
             edge_raw = (opp.odds1 / opp.odds2 - 1) if opp.odds2 > 1 else 0
-            bonus_status = self.profile_repo.get_bonus_status(profile.id, opp.provider1_id)
+            bonus_status = (bonus_cache or {}).get(opp.provider1_id) or self.profile_repo.get_bonus_status(profile.id, opp.provider1_id)
             min_odds = 0.0 if bonus_status.get("is_cleared", True) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
             stake_rec = stake_calculator.calculate(
@@ -402,6 +416,49 @@ class OpportunityService:
             result["kelly_fraction"] = None
             result["skip_reason"] = None
             result["bankroll_needed"] = None
+
+    def _batch_lookup_provider_meta(self, rows) -> dict:
+        """Batch-load provider_meta for all opportunities in one query."""
+        if not rows:
+            return {}
+
+        # Collect unique (event_id, canonical_provider_id) pairs
+        lookup_pairs = set()
+        for opp, _ in rows:
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            lookup_pairs.add((opp.event_id, canonical))
+
+        if not lookup_pairs:
+            return {}
+
+        # Batch query all relevant odds rows
+        event_ids = list({p[0] for p in lookup_pairs})
+        provider_ids = list({p[1] for p in lookup_pairs})
+
+        odds_rows = (
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.point, Odds.provider_meta)
+            .filter(
+                Odds.event_id.in_(event_ids),
+                Odds.provider_id.in_(provider_ids),
+                Odds.provider_meta.isnot(None),
+            )
+            .all()
+        )
+
+        # Build lookup dict keyed by (event_id, provider_id, market, outcome, point)
+        meta_index = {}
+        for eid, pid, market, outcome, point, meta in odds_rows:
+            meta_index[(eid, pid, market, outcome, point)] = meta
+
+        # Map back to original provider_ids (non-canonical)
+        result = {}
+        for opp, _ in rows:
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
+            orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
+            result[orig_key] = meta_index.get(key)
+
+        return result
 
     def _lookup_provider_meta(
         self,

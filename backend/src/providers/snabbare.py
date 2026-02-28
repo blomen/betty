@@ -169,6 +169,10 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     }
     DEFAULT_LEAGUE_CAP = 60
 
+    # Multi-tab parallelism for league clicking
+    PARALLEL_TABS = 3
+    MIN_LEAGUES_FOR_PARALLEL = 6
+
     async def _extract_sport(self, sport: str) -> List[StandardEvent]:
         """
         Extract events for one sport by navigating to the sport page and
@@ -341,85 +345,15 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 f"[{self.provider_id}] {canonical}: {len(league_links)} league links to process"
             )
 
-            # Click each league link via SPA router
-            leagues_processed = 0
-            leagues_with_data = 0
-            errors = 0
-
-            for j, link in enumerate(league_links):
-                ws_before = len(ws_messages)
-                try:
-                    href = link["href"]
-                    # Click the DOM link — React Router intercepts → component mount → WS subscription
-                    clicked = await page.evaluate(
-                        f"""() => {{
-                            const el = document.querySelector('a[href="{href}"]');
-                            if (el) {{ el.click(); return true; }}
-                            return false;
-                        }}"""
-                    )
-                    if not clicked:
-                        # Fallback: direct navigation (for REST API-discovered leagues
-                        # where DOM links don't exist yet). Full page load also triggers
-                        # WS connection + data delivery.
-                        full_url = f"{self.site_url}{href}" if href.startswith("/") else href
-                        try:
-                            await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
-                            self._setup_snabbare_ws(page, ws_messages)
-                        except Exception:
-                            errors += 1
-                            continue
-
-                    # Adaptive wait: wait minimum time, then check for WS data
-                    await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
-                    elapsed = self.LEAGUE_SETTLE_TIME
-                    # If no data yet, wait a bit more (up to MAX)
-                    while len(ws_messages) == ws_before and elapsed < self.MAX_LEAGUE_SETTLE_TIME:
-                        await asyncio.sleep(0.05)
-                        elapsed += 0.05
-
-                    leagues_processed += 1
-                    ws_delta = len(ws_messages) - ws_before
-                    if ws_delta > 0:
-                        leagues_with_data += 1
-
-                    # Navigate back to sport page for next league
-                    if not clicked:
-                        # Full navigation was used — go back to sport page
-                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
-                        self._setup_snabbare_ws(page, ws_messages)
-                        await asyncio.sleep(0.05)
-                    else:
-                        await page.evaluate("window.history.back()")
-                        await asyncio.sleep(0.02)
-
-                except Exception as e:
-                    err_str = str(e)
-                    logger.debug(f"[{self.provider_id}] {link['text']} error: {err_str}")
-                    errors += 1
-                    # Browser connection lost — reconnect and retry remaining leagues
-                    if "Connection closed" in err_str or "closed" in err_str.lower() or "Target crashed" in err_str:
-                        logger.warning(
-                            f"[{self.provider_id}] {canonical}: browser lost at league {j+1}/{len(league_links)}, reconnecting..."
-                        )
-                        try:
-                            page = await self._reconnect_browser()
-                            self._setup_snabbare_ws(page, ws_messages)
-                            await page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
-                            self._setup_snabbare_ws(page, ws_messages)
-                            await self._remove_overlays(page)
-                            await asyncio.sleep(1)
-                            continue  # Retry remaining leagues
-                        except Exception as reconn_err:
-                            logger.error(f"[{self.provider_id}] Reconnection failed: {reconn_err}")
-                            break
-                    # Non-connection error — try to recover to sport page
-                    try:
-                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
-                        self._setup_snabbare_ws(page, ws_messages)
-                        await asyncio.sleep(1)
-                    except Exception:
-                        break
+            # Click league links (parallel across tabs if enough leagues)
+            if len(league_links) >= self.MIN_LEAGUES_FOR_PARALLEL:
+                leagues_processed, leagues_with_data, errors = await self._click_leagues_parallel(
+                    sport_url, league_links, ws_messages, page, canonical,
+                )
+            else:
+                leagues_processed, leagues_with_data, errors = await self._click_league_group(
+                    page, league_links, sport_url, ws_messages,
+                )
 
             # Parse WS messages into events
             events_by_sport = self._parse_ws_data(ws_messages)
@@ -440,6 +374,136 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True
             )
             return []
+
+    async def _click_leagues_parallel(
+        self, sport_url: str, league_links: list, ws_messages: list,
+        main_page, canonical: str,
+    ) -> tuple:
+        """Click league links in parallel across multiple browser tabs.
+
+        Creates extra browser pages in the same context, splits league links
+        round-robin, and clicks in parallel via asyncio.gather().
+        All pages share the same ws_messages list for WS data collection.
+        Returns (leagues_processed, leagues_with_data, errors).
+        """
+        num_tabs = min(self.PARALLEL_TABS, len(league_links))
+
+        # Split league links round-robin across tabs
+        groups: list[list] = [[] for _ in range(num_tabs)]
+        for i, link in enumerate(league_links):
+            groups[i % num_tabs].append(link)
+
+        extra_pages = []
+        try:
+            context = self.transport.context
+            for _ in range(num_tabs - 1):
+                new_page = await context.new_page()
+                self._setup_snabbare_ws(new_page, ws_messages)
+                await new_page.goto(sport_url, wait_until="domcontentloaded", timeout=30000)
+                self._setup_snabbare_ws(new_page, ws_messages)  # Re-register after goto
+                await self._remove_overlays(new_page)
+                extra_pages.append(new_page)
+
+            all_pages = [main_page] + extra_pages
+
+            logger.debug(
+                f"[{self.provider_id}] {canonical}: clicking {len(league_links)} leagues "
+                f"across {num_tabs} parallel tabs"
+            )
+
+            results = await asyncio.gather(
+                *[
+                    self._click_league_group(all_pages[i], groups[i], sport_url, ws_messages)
+                    for i in range(num_tabs)
+                ],
+                return_exceptions=True,
+            )
+
+            total_processed = 0
+            total_with_data = 0
+            total_errors = 0
+            for r in results:
+                if isinstance(r, tuple):
+                    total_processed += r[0]
+                    total_with_data += r[1]
+                    total_errors += r[2]
+                else:
+                    logger.warning(f"[{self.provider_id}] {canonical}: parallel tab error: {r}")
+                    total_errors += 1
+
+            return total_processed, total_with_data, total_errors
+
+        finally:
+            for p in extra_pages:
+                try:
+                    await p.close()
+                except Exception:
+                    pass
+
+    async def _click_league_group(
+        self, page, links: list, sport_url: str, ws_messages: list,
+    ) -> tuple:
+        """Click a group of league links on a single page.
+
+        Returns (processed, with_data, errors).
+        """
+        processed = 0
+        with_data = 0
+        errors = 0
+
+        for link in links:
+            ws_before = len(ws_messages)
+            try:
+                href = link["href"]
+                clicked = await page.evaluate(
+                    f"""() => {{
+                        const el = document.querySelector('a[href="{href}"]');
+                        if (el) {{ el.click(); return true; }}
+                        return false;
+                    }}"""
+                )
+                if not clicked:
+                    full_url = f"{self.site_url}{href}" if href.startswith("/") else href
+                    try:
+                        await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
+                        self._setup_snabbare_ws(page, ws_messages)
+                    except Exception:
+                        errors += 1
+                        continue
+
+                # Adaptive wait
+                await asyncio.sleep(self.LEAGUE_SETTLE_TIME)
+                elapsed = self.LEAGUE_SETTLE_TIME
+                while len(ws_messages) == ws_before and elapsed < self.MAX_LEAGUE_SETTLE_TIME:
+                    await asyncio.sleep(0.05)
+                    elapsed += 0.05
+
+                processed += 1
+                if len(ws_messages) - ws_before > 0:
+                    with_data += 1
+
+                # Navigate back to sport page for next league
+                if not clicked:
+                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                    self._setup_snabbare_ws(page, ws_messages)
+                    await asyncio.sleep(0.05)
+                else:
+                    await page.evaluate("window.history.back()")
+                    await asyncio.sleep(0.02)
+
+            except Exception as e:
+                errors += 1
+                err_str = str(e)
+                if "Connection closed" in err_str or "closed" in err_str.lower() or "Target crashed" in err_str:
+                    break  # Page is dead, stop this group
+                try:
+                    await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                    self._setup_snabbare_ws(page, ws_messages)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    break
+
+        return processed, with_data, errors
 
     @staticmethod
     def _extract_league_id(href: str) -> str:

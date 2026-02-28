@@ -51,10 +51,17 @@ async def get_polymarket_value(
         except Exception as e:
             logger.warning(f"Could not initialize stake calculator: {e}")
 
+    # Batch-load all events (avoid N+1)
+    event_ids = list({vb.event_id for vb in poly_values})
+    events_map = {}
+    if event_ids:
+        events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
+        events_map = {e.id: e for e in events_list}
+
     # Enrich with event context
     results = []
     for vb in poly_values:
-        event = db.query(Event).filter(Event.id == vb.event_id).first()
+        event = events_map.get(vb.event_id)
         if not event:
             continue
 
@@ -245,10 +252,18 @@ async def get_polymarket_matched(
 
     events = query.order_by(Event.start_time).limit(limit).all()
 
+    # Batch-load all odds for matched events (avoid N+1)
+    matched_event_ids = [e.id for e in events]
+    all_event_odds = {}
+    if matched_event_ids:
+        odds_rows = db.query(Odds).filter(Odds.event_id.in_(matched_event_ids)).all()
+        for o in odds_rows:
+            all_event_odds.setdefault(o.event_id, []).append(o)
+
     result = []
     for event in events:
-        # Get all odds for this event
-        all_odds = db.query(Odds).filter(Odds.event_id == event.id).all()
+        # Get all odds for this event from pre-loaded batch
+        all_odds = all_event_odds.get(event.id, [])
 
         # Separate Polymarket, Pinnacle, and other provider odds
         polymarket_odds = []

@@ -154,9 +154,9 @@ class KambiRetriever(Retriever):
         # 3. Fetch Events for each group in parallel (with concurrency limit)
         all_events = []
 
-        # Use semaphore to limit concurrent requests (avoid overwhelming the API)
-        # Reduced from 5 to 2 to prevent rate limiting on Kambi's shared backend
-        sem = asyncio.Semaphore(2)
+        # Use semaphore to limit concurrent requests
+        # Kambi backend handles 50+ concurrent — 5 is safe and faster than 2
+        sem = asyncio.Semaphore(5)
 
         async def fetch_with_limit(group):
             async with sem:
