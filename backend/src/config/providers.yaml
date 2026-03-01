@@ -361,8 +361,9 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 6
+      wagering_multiplier: 12  # (deposit+bonus)×6 = 2000×6 = 12000, system does bonus×mult = 1000×12
       min_odds: 1.80
+      trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
 
   campobet:
     <<: *altenar_defaults

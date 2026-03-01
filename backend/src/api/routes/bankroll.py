@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ...services import BankrollService
 from ...repositories import ProfileRepo
-from ...db.models import Provider
+from ...db.models import Provider, ProfileProviderBonus
 from ..deps import get_db
 from ..schemas import BulkBalanceUpdate, BalanceAdjustment, BalanceSet, DepositRequest, TransferRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
 from .providers import load_provider_bonuses
@@ -294,7 +294,7 @@ async def bonus_transition(
     data: BonusTransitionRequest,
     db: Session = Depends(get_db),
 ):
-    """Advance bonus status for a provider (freebet phases)."""
+    """Advance bonus status for a provider (freebet or bonusdeposit phases)."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, f"Provider {provider_id} not found")
@@ -310,7 +310,28 @@ async def bonus_transition(
             min_odds=bonus_config.get("min_odds", 1.80),
         )
     elif data.action == "trigger_settled":
-        result = profile_repo.advance_freebet_status(profile.id, provider_id, "freebet_available")
+        # Check bonus type to decide next state
+        bonus_record = db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile.id,
+            ProfileProviderBonus.provider_id == provider_id,
+            ProfileProviderBonus.bonus_status == "trigger_needed",
+        ).first()
+        if not bonus_record:
+            raise HTTPException(400, f"No trigger_needed bonus for {provider_id}")
+
+        if bonus_record.bonus_type == "bonusdeposit":
+            # Bonus unlocked — add bonus money to balance, start wagering
+            bonus_amount = bonus_record.bonus_amount or 0.0
+            if bonus_amount > 0:
+                profile_repo.adjust_balance(profile.id, provider_id, bonus_amount)
+            bonus_record.bonus_status = "in_progress"
+            bonus_record.wagered_amount = 0.0
+            bonus_record.updated_at = __import__("datetime").datetime.utcnow()
+            result = profile_repo.get_bonus_status(profile.id, provider_id)
+            result["bonus_credited"] = bonus_amount
+        else:
+            # Freebet: trigger settled → freebet available
+            result = profile_repo.advance_freebet_status(profile.id, provider_id, "freebet_available")
     elif data.action == "freebet_used":
         result = profile_repo.advance_freebet_status(profile.id, provider_id, "completed")
     else:

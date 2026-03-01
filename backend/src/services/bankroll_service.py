@@ -359,6 +359,8 @@ class BankrollService:
         """Compute human-readable action string for a bonus."""
         amt = int(bonus_amount)
         if status == "trigger_needed":
+            if bonus_type == "bonusdeposit":
+                return f"Wager deposit 1x at 1.50+ odds to unlock {amt}kr bonus"
             return f"Place {amt}kr trigger bet at {min_odds}+ odds"
         elif status == "freebet_available":
             return f"Use {amt}kr freebet"
