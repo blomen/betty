@@ -119,16 +119,6 @@ class BetService:
         if not is_bonus:
             self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
 
-        # Record event exposure in StakeCalculator (so event cap works within session)
-        if event_id and not is_bonus:
-            try:
-                from .bankroll_service import BankrollService
-                bankroll_svc = BankrollService(self.db)
-                calc = bankroll_svc.get_stake_calculator(profile.id)
-                calc.event_tracker.record_bet(event_id, stake)
-            except Exception:
-                pass  # Non-critical — DB-seeded exposure still works on next request
-
         # Record wagering progress
         wagering_status = self.profile_repo.record_wagering(profile.id, provider_id, stake, odds)
 

@@ -1,9 +1,12 @@
 """
-URL Builder — constructs match/deposit/my-bets page URLs for each sportsbook.
+URL Builder — constructs event page and landing URLs for each sportsbook.
 
 Given a provider_id and optional provider_meta, returns the URL that opens
 the provider's website in the user's browser. Uses named browser windows
 per provider so the frontend can reuse existing sessions.
+
+Deposit/withdraw/transfer/my-bets are always manual — those functions just
+open the provider's landing page so the user navigates from there.
 
 Provider migration status (discovered 2026-03-01):
   DEAD/REDIRECTED:
@@ -45,14 +48,15 @@ KAMBI_EVENT_URLS: dict[str, str] = {
     "1x2": "https://www.1x2.se/en/betting/event",
 }
 
-# Altenar brand → direct event URL
+# Altenar brand → base sportsbook URL (event URL built via sportRoutingParams)
+# URL pattern: {base}/sv/sport?sportRoutingParams=page~event__sportId~{s}__categoryIds~{c}__championshipIds~{ch}__eventId~{e}
 # NOTE: campobet removed — redirects to speedybet (different operator)
 # NOTE: dbet removed — redirects to spelklubben (Gecko V2)
 # NOTE: swiper removed — redirects to betmgm (DEAD)
-ALTENAR_EVENT_URLS: dict[str, str] = {
-    "betinia": "https://www.betinia.se/sportsbook/event",
-    "lodur": "https://www.lodur.se/sportsbook/event",
-    "quickcasino": "https://www.quickcasino.se/sportsbook/event",
+ALTENAR_SPORTSBOOK_URLS: dict[str, str] = {
+    "betinia": "https://www.betinia.se/sv/sport",
+    "lodur": "https://www.lodur.se/sv/sport",
+    "quickcasino": "https://www.quickcasino.se/sv/sport",
 }
 
 # Provider landing pages — open the site so user can search manually
@@ -93,88 +97,6 @@ PROVIDER_LANDING_URLS: dict[str, str] = {
     "polymarket": "https://polymarket.com/portfolio",
 }
 
-# Deposit/cashier pages — for bankroll management
-PROVIDER_DEPOSIT_URLS: dict[str, str] = {
-    # Kambi
-    "unibet": "https://www.unibet.se/myaccount/cashier",
-    "leovegas": "https://www.leovegas.com/sv-se/my-account/deposit",
-    "speedybet": "https://www.speedybet.com/sv/betting?flowType=deposit",
-    "x3000": "https://www.x3000.com/betting?flowType=deposit",
-    "goldenbull": "https://www.goldenbull.se/en/betting?flowType=deposit",
-    "1x2": "https://www.1x2.se/en/betting?flowType=deposit",
-    # BetMGM (LeoVegas/MGM)
-    "betmgm": "https://www.betmgm.se/auth?intent=SIGNUP",
-    # Altenar
-    "betinia": "https://www.betinia.se/account/deposit",
-    "lodur": "https://www.lodur.se/account/deposit",
-    "quickcasino": "https://www.quickcasino.se/account/deposit",
-    # Spectate
-    "888sport": "https://www.888sport.se/cashier",
-    "mrgreen": "https://www.mrgreen.se/insattning",
-    # Gecko V2
-    "betsson": "https://www.betsson.com/sv/konto/insattning",
-    "spelklubben": "https://www.spelklubben.se/account/deposit",
-    # ComeOn Group
-    "comeon": "https://www.comeon.com/sv/cashier/deposit",
-    "hajper": "https://www.hajper.com/sv/cashier/deposit",
-    "lyllo": "https://www.lyllocasino.com/sv/cashier/deposit",
-    "snabbare": "https://www.snabbare.com/sv/konto/insattning",
-    # Standalone
-    "vbet": "https://www.vbet.se/sv/account/deposit",
-    "interwetten": "https://www.interwetten.se/sv/account/deposit",
-    "10bet": "https://www.10bet.se/account/deposit",
-    "coolbet": "https://www.coolbet.com/sv/konto/insattning",
-    "tipwin": "https://www.tipwin.se/sv/account/deposit",
-    # Sharp
-    "pinnacle": "https://www.pinnacle.com/en/funds/deposit",
-    # Prediction markets
-    "polymarket": "https://polymarket.com/portfolio",
-}
-
-# My Bets / Bet History pages — for settlement verification
-PROVIDER_MY_BETS_URLS: dict[str, str] = {
-    # Kambi
-    "unibet": "https://www.unibet.se/betting/sports/mybets",
-    "leovegas": "https://www.leovegas.com/sv-se/betting/mybets",
-    "speedybet": "https://www.speedybet.com/sv/betting/mybets",
-    "x3000": "https://www.x3000.com/betting/mybets",
-    "goldenbull": "https://www.goldenbull.se/en/betting/mybets",
-    "1x2": "https://www.1x2.se/en/betting/mybets",
-    # BetMGM
-    "betmgm": "https://www.betmgm.se/sport",
-    # Altenar — account section
-    "betinia": "https://www.betinia.se/account/my-bets",
-    "lodur": "https://www.lodur.se/account/my-bets",
-    "quickcasino": "https://www.quickcasino.se/account/my-bets",
-    # Spectate — within iframe
-    "888sport": "https://www.888sport.se/my-bets",
-    "mrgreen": "https://www.mrgreen.se/sport",
-    # Gecko V2 — "Öppna spel" tab in bet slip sidebar
-    "betsson": "https://www.betsson.com/sv/odds",
-    "spelklubben": "https://www.spelklubben.se/sv/betting",
-    # ComeOn Group
-    "comeon": "https://www.comeon.com/sv/sportsbook/my-bets",
-    "hajper": "https://www.hajper.com/sportsbook/my-bets",
-    "lyllo": "https://www.lyllocasino.com/sv/sportsbook/my-bets",
-    "snabbare": "https://www.snabbare.com/sportsbook/my-bets",
-    # Standalone — my bets typically in sidebar or account menu
-    "vbet": "https://www.vbet.se/sv/pre-match",
-    "interwetten": "https://www.interwetten.se/sv/sportsbook",
-    "10bet": "https://www.10bet.se/sports",
-    "coolbet": "https://www.coolbet.com/sv/odds",
-    "tipwin": "https://www.tipwin.se/sv/sports",
-    # Sharp
-    "pinnacle": "https://www.pinnacle.com/en/my-bets",
-    # Prediction markets
-    "polymarket": "https://polymarket.com/portfolio",
-}
-
-# Results/scores pages — for settlement data
-PROVIDER_RESULTS_URLS: dict[str, str] = {
-    "vbet": "https://www.vbet.se/sv/pre-match",  # "Resultat" tab in sub-nav
-}
-
-
 async def build_match_url(
     provider_id: str,
     provider_meta: dict | None = None,
@@ -198,26 +120,40 @@ async def build_match_url(
                 if base:
                     return f"{base}/{eid}"
 
-            # Altenar deep links
+            # Altenar deep links — uses sportRoutingParams query string
+            # Requires: sportId, categoryId, championshipId, eventId
             if platform == "altenar":
-                base = ALTENAR_EVENT_URLS.get(provider_id)
+                base = ALTENAR_SPORTSBOOK_URLS.get(provider_id)
                 if base:
-                    return f"{base}/{eid}"
+                    sport_id = provider_meta.get("sport_id")
+                    category_id = provider_meta.get("category_id")
+                    championship_id = provider_meta.get("championship_id")
+                    if sport_id and category_id and championship_id:
+                        params = (
+                            f"page~event"
+                            f"__sportId~{sport_id}"
+                            f"__categoryIds~{category_id}"
+                            f"__championshipIds~{championship_id}"
+                            f"__eventId~{eid}"
+                        )
+                        return f"{base}?sportRoutingParams={params}"
+                    # Fallback: just event ID (will need search)
+                    return base
 
     # Everything else: just open the site
     return PROVIDER_LANDING_URLS.get(provider_id)
 
 
 async def build_deposit_url(provider_id: str) -> str | None:
-    """Build a URL for the provider's deposit/cashier page."""
-    return PROVIDER_DEPOSIT_URLS.get(provider_id)
+    """Open provider's landing page — deposit/withdraw is always manual."""
+    return PROVIDER_LANDING_URLS.get(provider_id)
 
 
 async def build_my_bets_url(provider_id: str) -> str | None:
-    """Build a URL for the provider's my bets / bet history page."""
-    return PROVIDER_MY_BETS_URLS.get(provider_id)
+    """Open provider's landing page — my bets navigation is manual."""
+    return PROVIDER_LANDING_URLS.get(provider_id)
 
 
 async def build_results_url(provider_id: str) -> str | None:
-    """Build a URL for the provider's results/scores page (if available)."""
-    return PROVIDER_RESULTS_URLS.get(provider_id)
+    """Open provider's landing page — results navigation is manual."""
+    return PROVIDER_LANDING_URLS.get(provider_id)

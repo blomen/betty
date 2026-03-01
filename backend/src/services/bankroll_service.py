@@ -3,10 +3,8 @@
 import logging
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
-
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Profile, Provider, ProfileProviderBonus, Bet
+from ..db.models import Profile, Provider, ProfileProviderBonus
 from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ..config import get_exchange_rate, get_provider_currency
 
@@ -172,27 +170,11 @@ class BankrollService:
         calc.single_bet_cap_pct = single_bet_cap_pct
         calc.min_edge = min_edge
 
-        # Seed event exposures from pending bets in DB (survives server restart)
-        calc.event_tracker.exposures.clear()
-        pending_exposures = (
-            self.db.query(Bet.event_id, func.sum(Bet.stake))
-            .filter(
-                Bet.profile_id == profile_id,
-                Bet.result == "pending",
-                Bet.event_id.isnot(None),
-                Bet.is_bonus == False,
-            )
-            .group_by(Bet.event_id)
-            .all()
-        )
-        for event_id, total_stake in pending_exposures:
-            calc.event_tracker.exposures[event_id] = total_stake
-
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()
         bonuses = self.db.query(ProfileProviderBonus).filter(
             ProfileProviderBonus.profile_id == profile_id,
-            ProfileProviderBonus.bonus_status == "in_progress"
+            ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"])
         ).all()
 
         for bonus in bonuses:
@@ -282,8 +264,6 @@ class BankrollService:
             "profile_id": profile.id,
             "profile_name": profile.name,
             "bankroll": status["bankroll"],
-            "event_exposures": status["event_exposures"],
-            "event_cap_pct": calc.event_tracker.max_event_exposure_pct * 100,
             "bonus_progress": bonus_progress,
             "min_odds_bonus_default": BONUS_MIN_ODDS,
         }
@@ -360,7 +340,7 @@ class BankrollService:
         amt = int(bonus_amount)
         if status == "trigger_needed":
             if bonus_type == "bonusdeposit":
-                return f"Wager deposit 1x at 1.50+ odds to unlock {amt}kr bonus"
+                return f"Wager at {min_odds}+ odds to unlock {amt}kr bonus"
             return f"Place {amt}kr trigger bet at {min_odds}+ odds"
         elif status == "freebet_available":
             return f"Use {amt}kr freebet"
@@ -375,6 +355,6 @@ class BankrollService:
 
     @staticmethod
     def reset_calculators(profile_id: int | None = None):
-        """Reset stake calculator exposure tracking."""
+        """Reset stake calculator cache (forces reload from DB on next use)."""
         if profile_id and profile_id in _stake_calculators:
-            _stake_calculators[profile_id].reset_event_exposures()
+            del _stake_calculators[profile_id]

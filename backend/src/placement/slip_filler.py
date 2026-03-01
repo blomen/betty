@@ -22,7 +22,7 @@ try:
 except ImportError:
     from playwright.async_api import async_playwright, Page
 
-from .url_builder import build_match_url
+from .url_builder import build_match_url, PROVIDER_LANDING_URLS
 from ..constants import PLATFORM_MAP
 from ..recorder.chrome_launcher import get_chrome_launcher
 
@@ -61,6 +61,68 @@ class SlipResult:
     actual_odds: Optional[float] = None
 
 
+async def dismiss_cookie_banner(page: Page) -> None:
+    """Dismiss cookie banner if present (Altenar/Soft2Bet sites)."""
+    try:
+        btn = page.get_by_test_id("btnAcceptNecessaryCookies")
+        if await btn.is_visible(timeout=2000):
+            await btn.click()
+            logger.info("Cookie banner dismissed")
+    except Exception:
+        pass  # No banner or already dismissed
+
+
+async def check_logged_in(page: Page) -> bool:
+    """Check if the user is logged in by looking for login indicators."""
+    try:
+        content = await page.content()
+        # Logged OUT indicators
+        if "Spela Här" in content or "SPELA HÄR" in content:
+            return False
+        # Logged IN indicators (balance display, account menu)
+        if "account" in content.lower() and "saldo" in content.lower():
+            return True
+        # Check for the place bet button text
+        if "PLACERA SPEL" in content:
+            return True
+        if "LOGGA IN" in content.upper():
+            return False
+        # Default: assume logged in if no clear logout indicators
+        return True
+    except Exception:
+        return False
+
+
+async def ensure_logged_in(page: Page, base_url: str) -> bool:
+    """
+    Navigate to site and ensure logged in. Returns True if logged in.
+    If not logged in, navigates to login page and waits for BankID auth.
+    The CDP Chrome profile persists cookies, so login should stick across sessions.
+    """
+    await dismiss_cookie_banner(page)
+
+    if await check_logged_in(page):
+        return True
+
+    logger.warning("Not logged in — waiting for BankID authentication...")
+    # Navigate to trigger login modal
+    try:
+        # Click "SPELA HÄR" button if visible
+        btn = page.locator("button:has-text('Spela Här')")
+        if await btn.is_visible(timeout=3000):
+            await btn.click()
+            # Wait up to 120s for user to complete BankID login
+            for _ in range(60):
+                await page.wait_for_timeout(2000)
+                if await check_logged_in(page):
+                    logger.info("BankID login completed")
+                    return True
+    except Exception as e:
+        logger.error(f"Login flow error: {e}")
+
+    return False
+
+
 class SlipStrategy:
     """Base strategy — navigate to event page only (no auto-fill)."""
 
@@ -68,6 +130,7 @@ class SlipStrategy:
         """Navigate to the event page. Subclasses add odds clicking + stake fill."""
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(3000)  # Wait for widget to render
         except Exception as e:
             return SlipResult(
                 status=SlipStatus.ERROR,
@@ -75,6 +138,9 @@ class SlipStrategy:
                 provider_id=request.provider_id,
                 url=url,
             )
+
+        # Dismiss cookie banner if present
+        await dismiss_cookie_banner(page)
 
         return SlipResult(
             status=SlipStatus.NAVIGATED_ONLY,
@@ -114,14 +180,17 @@ class SlipFillerService:
                 provider_id=request.provider_id,
             )
 
-        # 2. Check CDP is available
+        # 2. Auto-start CDP Chrome if not running
         if not await chrome._is_cdp_available():
-            return SlipResult(
-                status=SlipStatus.ERROR,
-                message="CDP Chrome not available. Start Chrome with --remote-debugging-port=9222",
-                provider_id=request.provider_id,
-                url=url,
-            )
+            logger.info("CDP Chrome not running — auto-starting...")
+            started = await chrome.start()
+            if not started:
+                return SlipResult(
+                    status=SlipStatus.ERROR,
+                    message="Failed to auto-start CDP Chrome",
+                    provider_id=request.provider_id,
+                    url=url,
+                )
 
         # 3. Connect to CDP Chrome via Playwright
         playwright = None
@@ -147,7 +216,25 @@ class SlipFillerService:
             context = browser.contexts[0]
             page = await context.new_page()
 
-            # 5. Select platform strategy
+            # 5. Navigate to site and ensure logged in
+            # Extract base_url from the full URL (e.g. https://betinia.se)
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            landing = PROVIDER_LANDING_URLS.get(request.provider_id, base_url)
+            await page.goto(landing, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+
+            logged_in = await ensure_logged_in(page, base_url)
+            if not logged_in:
+                return SlipResult(
+                    status=SlipStatus.ERROR,
+                    message="Not logged in — BankID authentication required. Open Chrome and log in manually.",
+                    provider_id=request.provider_id,
+                    url=url,
+                )
+
+            # 6. Select platform strategy
             platform = PLATFORM_MAP.get(request.provider_id, "")
             strategy = self._strategies.get(platform, self._fallback)
 
@@ -157,7 +244,7 @@ class SlipFillerService:
                 f"stake={request.stake} odds={request.expected_odds}"
             )
 
-            # 6. Execute the strategy
+            # 7. Execute the strategy
             result = await strategy.fill(page, request, url)
             result.provider_id = request.provider_id
             result.url = url

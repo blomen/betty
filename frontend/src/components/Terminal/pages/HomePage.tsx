@@ -287,6 +287,39 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
     }
   };
 
+  // ── Scale up upcoming bet when odds have drifted higher ───
+  const handleMultiplyStake = async (bet: Bet, multiplier: number) => {
+    const currentOdds = bet.current_odds ?? bet.odds;
+    const additionalStake = bet.stake * (multiplier - 1);
+    const newStake = bet.stake + additionalStake;
+    // Weighted average odds across old + new position
+    const newAvgOdds = (bet.stake * bet.odds + additionalStake * currentOdds) / newStake;
+
+    try {
+      await api.editBet(bet.id, {
+        stake: newStake,
+        odds: parseFloat(newAvgOdds.toFixed(2)),
+      });
+      fetchAll();
+    } catch (err) {
+      console.error(`${multiplier}x stake failed:`, err);
+    }
+  };
+
+  const handleViewResult = async (bet: Bet) => {
+    try {
+      const nav = await api.navigateToMyBets(bet.provider);
+      startAutoRecord(bet.provider, 'check_result');
+      navigateCdp(nav.url);
+    } catch {
+      // Fall back: try navigating to the event page directly
+      if (bet.provider_site_url) {
+        startAutoRecord(bet.provider, 'check_result');
+        navigateCdp(bet.provider_site_url);
+      }
+    }
+  };
+
 
   if (isLoading && !stats) {
     return (
@@ -607,6 +640,11 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                         <td className="text-right" onClick={e => e.stopPropagation()}>
                           <span className="inline-flex gap-1">
                             <button
+                              className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors"
+                              onClick={() => handleViewResult(bet)}
+                              title={`Open ${formatProviderName(bet.provider)} My Bets`}
+                            >↗</button>
+                            <button
                               className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
                               onClick={() => handleManualSettle(bet, 'won')}
                             >W</button>
@@ -634,14 +672,12 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                               {bet.match_status && (
                                 <span className="text-muted">Status: <span className="text-text">{bet.match_status}</span></span>
                               )}
-                              {bet.provider_site_url && (
-                                <button
-                                  className="text-accent hover:underline"
-                                  onClick={(e) => { e.stopPropagation(); startAutoRecord(bet.provider, 'check_result'); navigateCdp(bet.provider_site_url!); }}
-                                >
-                                  Open {formatProviderName(bet.provider)} ↗
-                                </button>
-                              )}
+                              <button
+                                className="text-accent hover:underline"
+                                onClick={(e) => { e.stopPropagation(); handleViewResult(bet); }}
+                              >
+                                My Bets ({formatProviderName(bet.provider)}) ↗
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -757,7 +793,7 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                           <span className="text-[11px] text-muted">{(liveProb * 100).toFixed(0)}%</span>
                         ) : <span className="text-muted">-</span>}
                       </td>
-                      <td className="text-right">
+                      <td className="text-right" onClick={e => e.stopPropagation()}>
                         {editingCell?.betId === bet.id && editingCell.field === 'stake' ? (
                           <input
                             type="number"
@@ -767,26 +803,42 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             onKeyDown={e => { if (e.key === 'Enter') saveCellEdit(); if (e.key === 'Escape') cancelCellEdit(); }}
                             onBlur={saveCellEdit}
                             autoFocus
-                            onClick={e => e.stopPropagation()}
                           />
                         ) : (
-                          <span
-                            className="text-text text-sm cursor-pointer hover:text-accent transition-colors"
-                            onClick={e => { e.stopPropagation(); startCellEdit(bet.id, 'stake', bet.stake); }}
-                            title="Click to edit stake"
-                          >{bet.stake.toFixed(0)} kr</span>
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            <span
+                              className="text-text text-sm cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => startCellEdit(bet.id, 'stake', bet.stake)}
+                              title="Click to edit stake"
+                            >{bet.stake.toFixed(0)} kr</span>
+                            {bet.current_odds != null && bet.current_odds > bet.odds && (<>
+                              <button
+                                className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
+                                onClick={() => handleMultiplyStake(bet, 2)}
+                                title={`Double to ${bet.stake * 2} kr at ${bet.current_odds.toFixed(2)} odds`}
+                              >2x</button>
+                              <button
+                                className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
+                                onClick={() => handleMultiplyStake(bet, 3)}
+                                title={`Triple to ${bet.stake * 3} kr at ${bet.current_odds.toFixed(2)} odds`}
+                              >3x</button>
+                            </>)}
+                          </span>
                         )}
                       </td>
                       <td className="text-right">
-                        {placedEdge != null ? (
-                          <span className={`text-sm font-medium ${placedEdge >= 0 ? 'text-success' : 'text-error'}`}>
-                            {placedEdge >= 0 ? '+' : ''}{placedEdge.toFixed(1)}%
-                          </span>
-                        ) : liveEdge != null ? (
-                          <span className={`text-sm font-medium ${liveEdge >= 0 ? 'text-success' : 'text-error'}`}>
-                            {liveEdge >= 0 ? '+' : ''}{liveEdge.toFixed(1)}%
-                          </span>
-                        ) : <span className="text-muted">-</span>}
+                        {(() => {
+                          // Show live edge (vs current odds) when odds are drifting
+                          const displayEdge = liveEdge != null ? liveEdge : placedEdge;
+                          const edgeIncreasing = liveEdge != null && placedEdge != null && liveEdge > placedEdge;
+                          if (displayEdge != null) return (
+                            <span className={`text-sm font-medium ${displayEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                              {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
+                              {edgeIncreasing && <span className="text-[9px] text-success ml-0.5">↑</span>}
+                            </span>
+                          );
+                          return <span className="text-muted">-</span>;
+                        })()}
                       </td>
                       <td className="text-right text-accent text-sm font-medium">{(bet.stake * bet.odds).toFixed(0)} kr</td>
                     </tr>

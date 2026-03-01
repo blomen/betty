@@ -3,7 +3,6 @@ from .manager import arb_stakes, bonus_stakes
 from .stake_calculator import (
     StakeCalculator,
     StakeResult,
-    EventExposureTracker,
     BonusTracker,
     calculate_stake,
     get_kelly_fraction,

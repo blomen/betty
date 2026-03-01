@@ -169,7 +169,6 @@ export interface StakePreviewResult {
   raw_kelly_stake: number;
   single_bet_cap: number;
   was_capped_single: boolean;
-  was_capped_event: boolean;
   skip_reason: string | null;
   bonus_cleared: boolean;
   min_odds_applied: number;
@@ -867,11 +866,11 @@ export const api = {
     url: string | null;
     actual_odds: number | null;
   }> {
-    return fetchJson('/placement/fill-slip', {
+    return fetchWithRetry('/placement/fill-slip', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-    });
+    }, 0, 10000);  // No retries, 10s timeout — CDP either works fast or not at all
   },
 
   async navigateToEvent(request: {
@@ -898,6 +897,22 @@ export const api = {
 
   async navigateToDeposit(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
     return fetchJson('/placement/deposit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+  },
+
+  async navigateToMyBets(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
+    return fetchJson('/placement/my-bets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+  },
+
+  async navigateToResults(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
+    return fetchJson('/placement/results', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_id: providerId }),

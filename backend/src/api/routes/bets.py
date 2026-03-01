@@ -430,7 +430,6 @@ async def auto_place_bet(
         "bankroll": stake_result.bankroll,
         # Caps
         "was_capped_single": stake_result.was_capped_single,
-        "was_capped_event": stake_result.was_capped_event,
         # Risk
         "risk_score": bet_result.get("risk_score", 0.0),
         "noise_pct": round(noisy.noise_pct, 2),

@@ -10,8 +10,7 @@ Total bankroll approach:
 Key safety features:
 1. Dynamic Kelly scaling by edge (quarter Kelly default)
 2. Single bet cap (3% of bankroll)
-3. Event/cluster exposure cap (5%)
-4. Minimum stake guard (scales with bankroll: 5-25 kr)
+3. Minimum stake guard (scales with bankroll: 5-25 kr)
 
 Bonus clearing:
 - Track wagered amount per provider
@@ -84,7 +83,6 @@ class StakeResult:
     raw_kelly_stake: float
     single_bet_cap: float
     was_capped_single: bool
-    was_capped_event: bool
 
     # Reasoning
     skip_reason: Optional[str] = None
@@ -193,7 +191,6 @@ def calculate_stake(
     edge_raw: float,
     odds: float,
     single_bet_cap_pct: float = 0.03,
-    event_exposure_remaining: Optional[float] = None,
     min_edge: float = 0.01,
     min_odds: float = BONUS_MIN_ODDS,
     min_odds_sanity: float = 1.10,
@@ -210,7 +207,6 @@ def calculate_stake(
         edge_raw: Raw estimated edge (decimal, e.g., 0.05 for 5%)
         odds: Decimal odds (e.g., 2.0)
         single_bet_cap_pct: Max stake as % of bankroll (0.03 = 3%)
-        event_exposure_remaining: Max additional exposure allowed on this event
         min_edge: Minimum edge to place bet
         min_odds: Minimum odds (for bonus requirements, 0 to disable)
         min_odds_sanity: Minimum odds for sanity (avoid division issues)
@@ -233,7 +229,6 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            was_capped_event=False,
             skip_reason=f"Odds {odds:.2f} below sanity minimum {min_odds_sanity}"
         )
 
@@ -248,7 +243,6 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            was_capped_event=False,
             skip_reason=f"Odds {odds:.2f} below minimum {min_odds} (bonus requirement)"
         )
 
@@ -262,7 +256,6 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            was_capped_event=False,
             skip_reason=f"Edge {edge_raw*100:.1f}% below minimum {min_edge*100:.1f}%"
         )
 
@@ -276,7 +269,6 @@ def calculate_stake(
             raw_kelly_stake=0.0,
             single_bet_cap=0.0,
             was_capped_single=False,
-            was_capped_event=False,
             skip_reason="No bankroll"
         )
 
@@ -292,12 +284,6 @@ def calculate_stake(
     single_bet_cap = bankroll_total * single_bet_cap_pct
     stake = min(raw_stake, single_bet_cap)
     was_capped_single = raw_stake > single_bet_cap
-
-    # Apply event exposure cap (if provided)
-    was_capped_event = False
-    if event_exposure_remaining is not None and stake > event_exposure_remaining:
-        stake = event_exposure_remaining
-        was_capped_event = True
 
     # Ensure non-negative
     stake = max(0.0, stake)
@@ -322,10 +308,7 @@ def calculate_stake(
     if stake < min_stake or (min_expected_profit > 0 and stake * edge_used < min_expected_profit):
         additional = round(additional, 0)
 
-        # Determine appropriate skip reason
-        if was_capped_event:
-            skip_reason = "event cap"
-        elif additional < 1:
+        if additional < 1:
             skip_reason = "low EV"
         else:
             if additional >= 1000:
@@ -343,7 +326,6 @@ def calculate_stake(
             raw_kelly_stake=round(raw_stake, 2),
             single_bet_cap=round(single_bet_cap, 2),
             was_capped_single=was_capped_single,
-            was_capped_event=was_capped_event,
             skip_reason=skip_reason,
             bankroll_needed=additional,
         )
@@ -357,43 +339,7 @@ def calculate_stake(
         raw_kelly_stake=round(raw_stake, 2),
         single_bet_cap=round(single_bet_cap, 2),
         was_capped_single=was_capped_single,
-        was_capped_event=was_capped_event,
     )
-
-
-class EventExposureTracker:
-    """
-    Track exposure per event/cluster to prevent correlation blowups.
-
-    Example: Multiple bets on same match (home/away/draw) or
-    correlated events (same team in multiple markets).
-    """
-
-    def __init__(self, max_event_exposure_pct: float = 0.05):
-        """
-        Args:
-            max_event_exposure_pct: Max exposure per event as % of bankroll (0.05 = 5%)
-        """
-        self.max_event_exposure_pct = max_event_exposure_pct
-        self.exposures: dict[str, float] = {}  # event_id -> total exposure
-
-    def get_remaining_exposure(self, event_id: str, bankroll: float) -> float:
-        """Get remaining allowed exposure for an event."""
-        max_exposure = bankroll * self.max_event_exposure_pct
-        current = self.exposures.get(event_id, 0.0)
-        return max(0.0, max_exposure - current)
-
-    def record_bet(self, event_id: str, stake: float):
-        """Record a bet's exposure."""
-        self.exposures[event_id] = self.exposures.get(event_id, 0.0) + stake
-
-    def get_exposure(self, event_id: str) -> float:
-        """Get current exposure for an event."""
-        return self.exposures.get(event_id, 0.0)
-
-    def reset(self):
-        """Reset all exposures (e.g., after events settle)."""
-        self.exposures.clear()
 
 
 class BonusTracker:
@@ -503,7 +449,6 @@ class StakeCalculator:
         self,
         bankroll: float,
         single_bet_cap_pct: float = 0.03,
-        event_cap_pct: float = 0.05,
         min_edge: float = 0.01,
         max_kelly: float = 0.75,
         min_stake: float | None = None,
@@ -517,7 +462,6 @@ class StakeCalculator:
         self.max_kelly = effective_max_kelly(max_kelly, bankroll)  # Boosted at low bankroll
         self.min_expected_profit = min_expected_profit
 
-        self.event_tracker = EventExposureTracker(event_cap_pct)
         self.bonus_tracker = BonusTracker()
 
     def update_bankroll(self, new_bankroll: float):
@@ -570,18 +514,11 @@ class StakeCalculator:
             else:
                 min_odds = BONUS_MIN_ODDS  # Default to bonus requirement
 
-        event_exposure = None
-        if event_id:
-            event_exposure = self.event_tracker.get_remaining_exposure(
-                event_id, self.bankroll
-            )
-
         return calculate_stake(
             bankroll_total=self.bankroll,
             edge_raw=edge_raw,
             odds=odds,
             single_bet_cap_pct=self.single_bet_cap_pct,
-            event_exposure_remaining=event_exposure,
             min_edge=self.min_edge,
             min_odds=min_odds,
             min_stake=self.min_stake,
@@ -598,7 +535,7 @@ class StakeCalculator:
         odds: float,
     ):
         """
-        Record a placed bet for exposure and bonus tracking.
+        Record a placed bet for bonus tracking.
 
         Args:
             event_id: The event ID
@@ -606,7 +543,6 @@ class StakeCalculator:
             stake: The stake amount
             odds: The odds at which bet was placed
         """
-        self.event_tracker.record_bet(event_id, stake)
         self.bonus_tracker.record_bet(provider_id, stake, odds)
 
     def start_bonus(
@@ -623,13 +559,8 @@ class StakeCalculator:
         """Get current calculator status."""
         return {
             "bankroll": self.bankroll,
-            "event_exposures": dict(self.event_tracker.exposures),
             "bonus_progress": self.bonus_tracker.get_all_progress(),
         }
-
-    def reset_event_exposures(self):
-        """Reset event exposure tracking (after events settle)."""
-        self.event_tracker.reset()
 
 
 # Convenience function for quick calculations

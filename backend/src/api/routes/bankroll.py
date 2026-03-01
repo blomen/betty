@@ -257,7 +257,6 @@ async def preview_stake(data: StakePreviewRequest, service: BankrollService = De
         "raw_kelly_stake": result.raw_kelly_stake,
         "single_bet_cap": result.single_bet_cap,
         "was_capped_single": result.was_capped_single,
-        "was_capped_event": result.was_capped_event,
         "skip_reason": result.skip_reason,
         "bonus_cleared": bonus_cleared,
         "min_odds_applied": 0.0 if bonus_cleared else calc.get_min_odds_for_provider(data.provider_id or ""),
@@ -283,7 +282,6 @@ async def record_bet_exposure(data: RecordBetRequest, service: BankrollService =
 
     return {
         "success": True,
-        "event_exposure": calc.event_tracker.get_exposure(data.event_id),
         "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
     }
 
@@ -320,12 +318,15 @@ async def bonus_transition(
             raise HTTPException(400, f"No trigger_needed bonus for {provider_id}")
 
         if bonus_record.bonus_type == "bonusdeposit":
-            # Bonus unlocked — add bonus money to balance, start wagering
+            # Bonus unlocked — add bonus money to balance, start real wagering
             bonus_amount = bonus_record.bonus_amount or 0.0
             if bonus_amount > 0:
                 profile_repo.adjust_balance(profile.id, provider_id, bonus_amount)
+            bonus_config = load_provider_bonuses().get(provider_id, {})
             bonus_record.bonus_status = "in_progress"
             bonus_record.wagered_amount = 0.0
+            bonus_record.wagering_requirement = bonus_amount * bonus_config.get("wagering_multiplier", 12.0)
+            bonus_record.min_odds = bonus_config.get("min_odds", 1.80)
             bonus_record.updated_at = __import__("datetime").datetime.utcnow()
             result = profile_repo.get_bonus_status(profile.id, provider_id)
             result["bonus_credited"] = bonus_amount

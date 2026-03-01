@@ -241,7 +241,8 @@ class AltenarRetriever(Retriever):
         self,
         event_data: Dict,
         sport: str,
-        reference_data: Dict[str, List[Dict]]
+        reference_data: Dict[str, List[Dict]],
+        sport_id: int = None,
     ) -> Optional[StandardEvent]:
         """
         Parse event data from Altenar API.
@@ -294,6 +295,8 @@ class AltenarRetriever(Retriever):
             champ_id = event_data.get('champId')
             champ = champ_idx.get(champ_id)
             league = champ['name'] if champ else 'Unknown'
+            # Category ID (country) for URL building
+            category_id = champ.get('catId') if champ else None
 
             # Parse markets
             markets = []
@@ -363,13 +366,21 @@ class AltenarRetriever(Retriever):
                         outcomes.append(outcome_dict)
 
                 if outcomes:
+                    market_meta = {
+                        'event_id': event_id,
+                        'market_id': str(market_id),
+                    }
+                    # Include Altenar routing IDs for bet placement URL building
+                    if sport_id is not None:
+                        market_meta['sport_id'] = str(sport_id)
+                    if category_id is not None:
+                        market_meta['category_id'] = str(category_id)
+                    if champ_id is not None:
+                        market_meta['championship_id'] = str(champ_id)
                     market_dict = {
                         'type': market_type,
                         'outcomes': outcomes,
-                        'provider_meta': {
-                            'event_id': event_id,
-                            'market_id': str(market_id),
-                        },
+                        'provider_meta': market_meta,
                     }
                     markets.append(market_dict)
 
@@ -464,7 +475,7 @@ class AltenarRetriever(Retriever):
             # Parse events
             events = []
             for event_data in sport_events:
-                event = self._parse_event(event_data, sport, reference_data)
+                event = self._parse_event(event_data, sport, reference_data, sport_id=sport_id)
                 if event:
                     events.append(event)
 

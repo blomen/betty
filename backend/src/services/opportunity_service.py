@@ -276,12 +276,21 @@ class OpportunityService:
 
             # Freebet phase overrides: force stake to bonus_amount
             bs = bonus_status.get("status")
+            bonus_type = bonus_status.get("bonus_type")
             bonus_amount = bonus_status.get("bonus_amount", 0)
-            result["bonus_status"] = bs if bs in ("trigger_needed", "freebet_available") else None
-            result["bonus_amount"] = bonus_amount if result["bonus_status"] else None
+            # Bonusdeposit triggers look like normal bets (no TRG badge)
+            show_bonus = bs in ("trigger_needed", "freebet_available")
+            if bs == "trigger_needed" and bonus_type == "bonusdeposit":
+                show_bonus = False
+            result["bonus_status"] = bs if show_bonus else None
+            result["bonus_amount"] = bonus_amount if show_bonus else None
             result["min_odds_applied"] = min_odds if min_odds > 0 else None
 
-            if bs in ("trigger_needed", "freebet_available") and bonus_amount > 0:
+            # Bonusdeposit triggers use normal Kelly stakes — no override needed
+            # Only freebets and freebet triggers get stake overrides
+            if bs == "trigger_needed" and bonus_type == "bonusdeposit":
+                pass  # Keep Kelly stake, bets count toward trigger wagering naturally
+            elif bs in ("trigger_needed", "freebet_available") and bonus_amount > 0:
                 # Check if a pending trigger bet already exists for this provider
                 if bs == "trigger_needed":
                     from ..db.models import Bet
@@ -328,14 +337,19 @@ class OpportunityService:
             guaranteed_profit_pct = opp.profit_pct or 0
             total_stake = 0.0
 
-            # Check if any leg's provider is in trigger_needed or freebet_available mode
+            # Check if any leg's provider is in freebet trigger/available mode
+            # (bonusdeposit triggers play normally, no stake override needed)
             trigger_provider = None
             trigger_amount = 0.0
             for leg in (opp.outcomes or []):
                 pid = leg.get("provider_id") or leg.get("provider", "")
                 if pid:
                     bs = self.profile_repo.get_bonus_status(profile.id, pid)
-                    if bs.get("status") in ("trigger_needed", "freebet_available"):
+                    bst = bs.get("status")
+                    btype = bs.get("bonus_type")
+                    if bst == "trigger_needed" and btype == "bonusdeposit":
+                        continue  # Normal Kelly for bonusdeposit triggers
+                    if bst in ("trigger_needed", "freebet_available"):
                         trigger_provider = pid
                         trigger_amount = bs.get("bonus_amount", 0)
                         break

@@ -182,7 +182,7 @@ class ProfileRepo:
             ProfileProviderBonus.provider_id == provider_id
         ).first()
 
-        if not record or record.bonus_status != "in_progress":
+        if not record or record.bonus_status not in ("in_progress", "trigger_needed"):
             return self.get_bonus_status(profile_id, provider_id)
 
         # Check if bonus has expired
@@ -199,7 +199,11 @@ class ProfileRepo:
         record.updated_at = datetime.utcnow()
 
         if record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement:
-            record.bonus_status = "completed"
+            if record.bonus_status == "trigger_needed":
+                # Trigger met — don't auto-advance, user must activate on provider site
+                pass
+            else:
+                record.bonus_status = "completed"
 
         return self.get_bonus_status(profile_id, provider_id)
 
