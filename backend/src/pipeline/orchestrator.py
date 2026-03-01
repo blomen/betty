@@ -452,7 +452,7 @@ class ExtractionPipeline:
         pipeline_start_time = time.time()
 
         # Start metrics collection
-        run_id = f"run_{int(time.time())}"
+        run_id = f"run_{tier_name or 'manual'}_{int(time.time())}"
         self._current_run_id = run_id
         if self.metrics:
             self.metrics.start_run(run_id)

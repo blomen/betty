@@ -152,7 +152,11 @@ async def lifespan(app: FastAPI):
         '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     ))
-    logging.getLogger().addHandler(extraction_handler)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(extraction_handler)
+    # Ensure root logger passes DEBUG+ to handlers (uvicorn sets it to WARNING)
+    if root_logger.level > logging.DEBUG:
+        root_logger.setLevel(logging.DEBUG)
 
     # Launch dedicated Chrome with CDP for bet placement recording
     from ..recorder.chrome_launcher import get_chrome_launcher

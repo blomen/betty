@@ -66,6 +66,10 @@ class ExtractionScheduler:
         self._tier_locks: dict[str, asyncio.Lock] = {}
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
+        # Sharp-ready gate: soft tiers wait for sharp tier's first run before starting.
+        # Without this, soft tiers on startup find an empty DB (just purged) and extract
+        # blindly with no Pinnacle baseline — wasting time on unmatchable events.
+        self._sharp_ready = asyncio.Event()
 
     @property
     def pipeline(self):
@@ -83,6 +87,7 @@ class ExtractionScheduler:
         providers: list[str],
         interval_seconds: int,
         run_immediately: bool = True,
+        wait_for_sharp: bool = False,
     ):
         """Start a named extraction tier.
 
@@ -91,6 +96,7 @@ class ExtractionScheduler:
             providers: Provider IDs to extract
             interval_seconds: Seconds between runs
             run_immediately: Run first extraction immediately (default: True)
+            wait_for_sharp: Wait for sharp tier's first run before starting (default: False)
         """
         if name in self._tiers and self._tiers[name].running:
             logger.warning(f"[Scheduler] Tier '{name}' already running")
@@ -107,15 +113,25 @@ class ExtractionScheduler:
         logger.info(
             f"[Scheduler] Starting tier '{name}': "
             f"providers={providers}, interval={interval_seconds}s, "
-            f"run_immediately={run_immediately}"
+            f"run_immediately={run_immediately}, wait_for_sharp={wait_for_sharp}"
         )
 
         tier.task = asyncio.create_task(
-            self._tier_loop(tier, run_immediately)
+            self._tier_loop(tier, run_immediately, wait_for_sharp)
         )
 
-    async def _tier_loop(self, tier: TierState, run_immediately: bool):
+    async def _tier_loop(self, tier: TierState, run_immediately: bool, wait_for_sharp: bool = False):
         """Extraction loop for a single tier."""
+        # Wait for sharp tier to populate Pinnacle data before soft tiers start.
+        # Without this, soft tiers on startup find an empty DB and extract blindly.
+        if wait_for_sharp and not self._sharp_ready.is_set():
+            logger.info(f"[Scheduler:{tier.name}] Waiting for sharp tier to complete first run...")
+            try:
+                await asyncio.wait_for(self._sharp_ready.wait(), timeout=120)
+                logger.info(f"[Scheduler:{tier.name}] Sharp tier ready, starting extraction")
+            except asyncio.TimeoutError:
+                logger.warning(f"[Scheduler:{tier.name}] Sharp tier timeout (120s), starting anyway")
+
         # Optionally wait before first run (e.g. stagger browser tier)
         if not run_immediately:
             logger.info(f"[Scheduler:{tier.name}] Waiting {tier.interval_seconds}s before first run")
@@ -198,6 +214,7 @@ class ExtractionScheduler:
         )
 
         # API soft tier — fast REST/WS extractors
+        # wait_for_sharp: don't start until Pinnacle data is in DB
         await self.start_tier(
             name="api_soft",
             providers=[
@@ -213,9 +230,11 @@ class ExtractionScheduler:
             ],
             interval_seconds=3600,  # 60 min
             run_immediately=True,
+            wait_for_sharp=True,
         )
 
         # Browser soft tier — heavy browser-based extractors
+        # wait_for_sharp: don't start until Pinnacle data is in DB
         await self.start_tier(
             name="browser_soft",
             providers=[
@@ -236,6 +255,7 @@ class ExtractionScheduler:
             ],
             interval_seconds=7200,  # 120 min
             run_immediately=True,
+            wait_for_sharp=True,
         )
 
         # Boosts tier — oddsboost scraping (standalone, no pipeline lock needed)
@@ -835,6 +855,11 @@ class ExtractionScheduler:
                     pass
 
         finally:
+            # Signal soft tiers that sharp data is available
+            if tier_name == "sharp" and _results and not self._sharp_ready.is_set():
+                self._sharp_ready.set()
+                logger.info("[Scheduler] Sharp tier first run complete — soft tiers unblocked")
+
             # Final state update in finally block (guaranteed to run)
             if _results:
                 try:
