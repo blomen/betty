@@ -86,7 +86,7 @@ async def get_polymarket_value(
             "away_team": event.away_team,
             "sport": event.sport,
             "league": event.league,
-            "start_time": event.start_time.isoformat() if event.start_time else None,
+            "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
             # Polymarket-native fields
             "price_cents": price_cents,
             "fair_price_cents": fair_price_cents,
@@ -334,7 +334,7 @@ async def get_polymarket_matched(
             "league": event.league,
             "home_team": event.home_team,
             "away_team": event.away_team,
-            "start_time": event.start_time.isoformat() if event.start_time else None,
+            "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
             "polymarket_odds": polymarket_odds,
             "other_providers": other_providers,
             "edges": edges[:10],

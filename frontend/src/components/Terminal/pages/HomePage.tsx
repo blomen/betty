@@ -6,6 +6,7 @@ import { TabIcon, TAB_COLORS } from '../TabBar';
 import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { useMultiSort } from '@/hooks/useMultiSort';
+import { useRecorder } from '@/contexts/RecorderContext';
 import type { TabName } from '../Sidebar';
 import type { Bet, Opportunity, BankrollStats, BankrollExposure, PolymarketValueBet } from '@/types';
 
@@ -95,6 +96,7 @@ interface MonitorPageProps {
 }
 
 export function MonitorPage({ onTabChange }: MonitorPageProps) {
+  const { startAutoRecord, navigateCdp } = useRecorder();
   const [bets, setBets] = useState<Bet[]>([]);
   const [stats, setStats] = useState<BankrollStats | null>(null);
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
@@ -649,9 +651,12 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                                 <span className="text-muted">Status: <span className="text-text">{bet.match_status}</span></span>
                               )}
                               {bet.provider_site_url && (
-                                <a href={bet.provider_site_url} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                                <button
+                                  className="text-accent hover:underline"
+                                  onClick={(e) => { e.stopPropagation(); startAutoRecord(bet.provider, 'check_result'); navigateCdp(bet.provider_site_url!); }}
+                                >
                                   Open {formatProviderName(bet.provider)} ↗
-                                </a>
+                                </button>
                               )}
                             </div>
                           </td>

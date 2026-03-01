@@ -148,7 +148,7 @@ async def list_bets(
             "away_team": ev.away_team if ev else None,
             "sport": ev.sport if ev else None,
             "league": ev.league if ev else None,
-            "start_time": ev.start_time.isoformat() if ev and ev.start_time else None,
+            "start_time": (ev.start_time.isoformat() + "Z") if ev and ev.start_time else None,
             "home_score": ev.home_score if ev else None,
             "away_score": ev.away_score if ev else None,
             "match_status": ev.match_status if ev else None,
@@ -442,6 +442,6 @@ async def auto_place_bet(
             "home_team": event.home_team if event else None,
             "away_team": event.away_team if event else None,
             "sport": event.sport if event else None,
-            "start_time": event.start_time.isoformat() if event and event.start_time else None,
+            "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
         } if event else None,
     }
