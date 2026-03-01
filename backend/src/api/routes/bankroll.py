@@ -7,7 +7,7 @@ from ...services import BankrollService
 from ...repositories import ProfileRepo
 from ...db.models import Provider
 from ..deps import get_db
-from ..schemas import BulkBalanceUpdate, BalanceAdjustment, DepositRequest, TransferRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
+from ..schemas import BulkBalanceUpdate, BalanceAdjustment, BalanceSet, DepositRequest, TransferRequest, BonusTransitionRequest, StakePreviewRequest, RecordBetRequest
 from .providers import load_provider_bonuses
 
 router = APIRouter(prefix="/api/bankroll", tags=["bankroll"])
@@ -63,6 +63,33 @@ async def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db
         "updated_count": updated_count,
         "balance_per_provider": data.balance,
         "total_balance": total_balance,
+    }
+
+
+@router.post("/set/{provider_id}")
+async def set_balance(
+    provider_id: str,
+    data: BalanceSet,
+    db: Session = Depends(get_db),
+):
+    """Set exact balance for a provider (for manual sync)."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    old_balance = profile_repo.get_balance(profile.id, provider_id)
+    profile_repo.set_balance(profile.id, provider_id, data.balance)
+    db.commit()
+
+    return {
+        "success": True,
+        "profile_id": profile.id,
+        "provider_id": provider_id,
+        "old_balance": old_balance,
+        "new_balance": data.balance,
     }
 
 

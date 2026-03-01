@@ -123,12 +123,12 @@ class PolymarketRetriever(Retriever):
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.clob_url = config.get("clob_url", "https://clob.polymarket.com")
         self.game_bets_tag_id = config.get("params", {}).get("game_bets_tag_id", 100639)
-        # Spread buffer: cents added to midpoint to estimate executable buy price
-        self.spread_buffer = config.get("params", {}).get("spread_buffer_cents", 2) / 100.0
-        self.use_clob_midpoint = config.get("params", {}).get("use_clob_midpoint", True)
+        # Spread buffer: cents added to price to account for slippage (0 when using ask prices)
+        self.spread_buffer = config.get("params", {}).get("spread_buffer_cents", 0) / 100.0
+        self.use_clob_prices = config.get("params", {}).get("use_clob_prices", True)
         self._cached_events: list = None  # Cache all events to avoid re-fetching
         self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
-        self._clob_midpoints: dict = {}  # token_id -> midpoint price (populated during extraction)
+        self._clob_prices: dict = {}  # token_id -> ask price (populated during extraction)
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
@@ -143,65 +143,63 @@ class PolymarketRetriever(Retriever):
         return round(1 / adjusted, 3) if adjusted > 0.01 else 100.0
 
     def _get_clob_price(self, token_id: str, gamma_price: float) -> float:
-        """Get best price for a token: CLOB midpoint if available, else Gamma."""
-        return self._clob_midpoints.get(token_id, gamma_price)
+        """Get best price for a token: CLOB ask price if available, else Gamma."""
+        return self._clob_prices.get(token_id, gamma_price)
 
-    async def _fetch_clob_midpoints(self, token_ids: list[str]):
-        """Batch-fetch CLOB midpoints using the /midpoints batch endpoint.
+    async def _fetch_clob_prices(self, token_ids: list[str]):
+        """Batch-fetch CLOB ask prices using the POST /prices endpoint.
 
-        Sends chunks of token IDs to GET /midpoints (max ~100 per request)
-        instead of individual /midpoint calls. Populates self._clob_midpoints dict.
+        Fetches the actual ask price (what you'd pay to buy shares) via side=SELL,
+        which returns the best resting sell order price — matching the Polymarket
+        website display. Replaces the old /midpoints approach that understated cost.
+
+        POST /prices body: [{token_id, side: "SELL"}, ...]
+        Response: {token_id: {"SELL": "0.24"}, ...}
         """
         import aiohttp
         import asyncio
 
-        if not token_ids or not self.use_clob_midpoint:
+        if not token_ids or not self.use_clob_prices:
             return
 
         unique_tokens = list(set(token_ids))
-        BATCH_SIZE = 100  # Keep URL length reasonable for GET requests
-        semaphore = asyncio.Semaphore(10)  # 10 concurrent batch requests
+        BATCH_SIZE = 100
+        semaphore = asyncio.Semaphore(10)
 
         async def fetch_batch(session: aiohttp.ClientSession, batch: list[str]):
             async with semaphore:
                 try:
-                    url = f"{self.clob_url}/midpoints"
-                    # Send as comma-separated token_ids query param
-                    params = [("token_ids", tid) for tid in batch]
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    url = f"{self.clob_url}/prices"
+                    body = [{"token_id": tid, "side": "SELL"} for tid in batch]
+                    async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            # Response is a dict of token_id -> midpoint
                             if isinstance(data, dict):
-                                for tid, mid_val in data.items():
+                                for tid, price_val in data.items():
                                     try:
-                                        mid = float(mid_val) if not isinstance(mid_val, dict) else float(mid_val.get("mid", 0))
-                                        if 0.01 < mid < 0.99:
-                                            self._clob_midpoints[str(tid)] = mid
+                                        if isinstance(price_val, dict):
+                                            price = float(price_val.get("SELL", price_val.get("sell", 0)))
+                                        else:
+                                            price = float(price_val)
+                                        if 0.01 < price < 0.99:
+                                            self._clob_prices[str(tid)] = price
                                     except (ValueError, TypeError):
                                         pass
-                            elif isinstance(data, list):
-                                # Some API versions return list of {token_id, mid}
-                                for item in data:
-                                    if isinstance(item, dict):
-                                        tid = str(item.get("token_id", ""))
-                                        mid = float(item.get("mid", 0))
-                                        if tid and 0.01 < mid < 0.99:
-                                            self._clob_midpoints[tid] = mid
+                        else:
+                            logger.debug(f"[{self.provider_id}] CLOB /prices returned {resp.status}")
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] CLOB batch midpoint failed: {e}")
+                    logger.debug(f"[{self.provider_id}] CLOB batch prices failed: {e}")
 
         try:
-            # Split into batches
             batches = [unique_tokens[i:i + BATCH_SIZE] for i in range(0, len(unique_tokens), BATCH_SIZE)]
             async with aiohttp.ClientSession() as session:
                 await asyncio.gather(*[fetch_batch(session, batch) for batch in batches])
             logger.debug(
-                f"[{self.provider_id}] CLOB midpoints: {len(self._clob_midpoints)}/{len(unique_tokens)} tokens "
+                f"[{self.provider_id}] CLOB ask prices: {len(self._clob_prices)}/{len(unique_tokens)} tokens "
                 f"({len(batches)} batch requests)"
             )
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] CLOB midpoint fetch failed: {e}")
+            logger.warning(f"[{self.provider_id}] CLOB price fetch failed: {e}")
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         """Parse API response - delegates to _parse_all."""
@@ -254,8 +252,8 @@ class PolymarketRetriever(Retriever):
             page += 1
 
         # Phase 2: Collect CLOB token IDs from markets that pass basic filters
-        # Pre-filtering avoids fetching midpoints for markets we'll discard anyway
-        if self.use_clob_midpoint and all_raw:
+        # Pre-filtering avoids fetching prices for markets we'll discard anyway
+        if self.use_clob_prices and all_raw:
             needed_token_ids = []
             for item in all_raw:
                 for m in item.get("markets", []):
@@ -288,15 +286,14 @@ class PolymarketRetriever(Retriever):
                 f"[{self.provider_id}] Pre-filtered to {len(set(needed_token_ids))} tokens "
                 f"(from {sum(len(m.get('markets', [])) for m in all_raw)} total markets)"
             )
-            await self._fetch_clob_midpoints(needed_token_ids)
+            await self._fetch_clob_prices(needed_token_ids)
 
-        # Phase 3: Parse events (using CLOB midpoints + spread buffer)
+        # Phase 3: Parse events (using CLOB ask prices)
         all_events = self._parse_all(all_raw)
 
         logger.debug(
             f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket "
-            f"({page} pages, spread={self.spread_buffer*100:.0f}¢, "
-            f"clob_midpoints={len(self._clob_midpoints)})"
+            f"({page} pages, clob_ask_prices={len(self._clob_prices)})"
         )
         return all_events
 

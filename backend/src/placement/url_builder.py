@@ -71,7 +71,7 @@ PROVIDER_LANDING_URLS: dict[str, str] = {
     # Sharp
     "pinnacle": "https://www.pinnacle.com/en/sports",
     # Prediction markets
-    "polymarket": "https://polymarket.com/sports",
+    "polymarket": "https://polymarket.com/portfolio",
 }
 
 # Deposit/cashier pages — for bankroll management
@@ -113,6 +113,8 @@ PROVIDER_DEPOSIT_URLS: dict[str, str] = {
     "tipwin": "https://www.tipwin.se/sv/account/deposit",
     # Sharp
     "pinnacle": "https://www.pinnacle.com/en/funds/deposit",
+    # Prediction markets
+    "polymarket": "https://polymarket.com/portfolio",
 }
 
 

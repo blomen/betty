@@ -471,6 +471,22 @@ export const api = {
     });
   },
 
+  async setBalance(
+    providerId: string,
+    balance: number
+  ): Promise<{
+    success: boolean;
+    provider_id: string;
+    old_balance: number;
+    new_balance: number;
+  }> {
+    return fetchJson(`/bankroll/set/${providerId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ balance }),
+    });
+  },
+
   async transferFunds(
     fromProviderId: string,
     toProviderId: string,

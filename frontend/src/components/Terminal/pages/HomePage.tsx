@@ -550,14 +550,11 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                           <span className="text-text">{resolveOutcome(bet)}</span>
                           {bet.point != null && <span className="text-muted2 text-[10px] ml-0.5">{bet.point > 0 ? '+' : ''}{bet.point}</span>}
                           {bet.provider_site_url ? (
-                            <a
-                              href={bet.provider_site_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
                               className="text-accent text-[10px] ml-1 hover:underline"
                               title="Check result on provider"
-                              onClick={e => e.stopPropagation()}
-                            >{formatProviderName(bet.provider)} ↗</a>
+                              onClick={(e) => { e.stopPropagation(); startAutoRecord(bet.provider, 'check_result'); navigateCdp(bet.provider_site_url!); }}
+                            >{formatProviderName(bet.provider)} ↗</button>
                           ) : (
                             <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
                           )}

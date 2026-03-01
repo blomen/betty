@@ -33,6 +33,10 @@ class BalanceAdjustment(BaseModel):
     amount: float  # Can be positive (add) or negative (subtract)
 
 
+class BalanceSet(BaseModel):
+    balance: float  # Absolute balance to set
+
+
 class DepositRequest(BaseModel):
     amount: float  # Deposit amount (positive)
 

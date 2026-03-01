@@ -209,6 +209,28 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     }
   };
 
+  const handleSetBalance = async (providerId: string) => {
+    const balance = parseFloat(adjustAmount);
+    if (isNaN(balance) || balance < 0) return;
+
+    try {
+      const result = await api.setBalance(providerId, balance);
+      setDepositResult({
+        success: true,
+        message: `Balance set to ${fmtAmount(providerId, balance)} (was ${fmtAmount(providerId, result.old_balance)})`,
+      });
+      setAdjustingProvider(null);
+      setAdjustAmount('');
+      fetchData();
+      onRefresh();
+    } catch (err) {
+      setDepositResult({
+        success: false,
+        message: err instanceof Error ? err.message : 'Set balance failed',
+      });
+    }
+  };
+
   const getTransferDestBonus = () => {
     if (!transferTo) return null;
     return getProviderBonus(transferTo);
@@ -430,7 +452,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                               type="number"
                               value={adjustAmount}
                               onChange={(e) => setAdjustAmount(e.target.value)}
-                              placeholder={provider.currency && provider.currency !== 'SEK' ? '$ Amount' : 'Amount'}
+                              placeholder={provider.currency && provider.currency !== 'SEK' ? `$${provider.total_balance.toFixed(2)}` : `${provider.total_balance.toFixed(0)}`}
                               step={provider.currency && provider.currency !== 'SEK' ? '0.01' : '1'}
                               className="w-20 px-2 py-1 bg-panel2 border border-border text-text text-xs"
                               autoFocus
@@ -438,14 +460,23 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                             <button
                               onClick={() => handleDeposit(provider.provider_id)}
                               className="px-2 py-1 text-xs bg-success/20 text-success hover:bg-success/30"
+                              title="Deposit (add amount)"
                             >
                               +
                             </button>
                             <button
                               onClick={() => handleWithdraw(provider.provider_id)}
                               className="px-2 py-1 text-xs bg-error/20 text-error hover:bg-error/30"
+                              title="Withdraw (subtract amount)"
                             >
                               -
+                            </button>
+                            <button
+                              onClick={() => handleSetBalance(provider.provider_id)}
+                              className="px-2 py-1 text-xs bg-tabBankroll/20 text-tabBankroll hover:bg-tabBankroll/30"
+                              title="Set exact balance"
+                            >
+                              =
                             </button>
                             <button
                               onClick={() => { setAdjustingProvider(null); setAdjustAmount(''); }}

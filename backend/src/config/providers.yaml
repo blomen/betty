@@ -228,12 +228,11 @@ providers:
     exchange_rate_sek: 10.50
     params:
       game_bets_tag_id: 100639
-      # Spread buffer (cents) added to midpoint to estimate executable buy price.
-      # CLOB midpoint understates actual cost — buffer approximates the ask side.
-      # 1¢ balances between phantom edge removal and preserving genuine value.
-      spread_buffer_cents: 1
-      # Use CLOB midpoint API for more accurate prices (true/false)
-      use_clob_midpoint: true
+      # Spread buffer (cents) added to ask price for slippage. 0 = no buffer.
+      # Now using CLOB ask prices directly (POST /prices side=SELL), so no buffer needed.
+      spread_buffer_cents: 0
+      # Use CLOB /prices API for actual ask prices (true/false)
+      use_clob_prices: true
 
   # --------------------------------------------------------------------------
   # Kambi API providers (same API, different brands)
