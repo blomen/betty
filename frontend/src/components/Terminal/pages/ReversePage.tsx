@@ -84,7 +84,7 @@ export function ReversePage() {
     return outcome;
   };
 
-  // Step 1: Navigate browser to Pinnacle, enter "awaiting confirm" state
+  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
   const startPlaceBet = async (opp: Opportunity) => {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
@@ -95,21 +95,46 @@ export function ReversePage() {
     try {
       let navUrl: string | null = null;
       let windowName = 'bbq_pinnacle';
+      let slipOdds = opp.odds1;
+
+      // Try CDP slip filling first
       try {
-        const nav = await api.navigateToEvent({
+        const slip = await api.fillSlip({
           provider_id: 'pinnacle',
+          event_id: opp.event_id,
+          market: opp.market,
+          outcome: opp.outcome1,
+          point: opp.point,
+          stake,
+          expected_odds: opp.odds1,
           provider_meta: opp.provider_meta,
           home_team: opp.home_team,
           away_team: opp.away_team,
-          event_id: opp.event_id,
         });
-        navUrl = nav.url;
-        windowName = nav.window_name;
+        navUrl = slip.url;
+        if (slip.actual_odds) slipOdds = slip.actual_odds;
+        if (slip.status === 'ready') {
+          setBetSuccess('Bet slip filled — review and confirm on Pinnacle.');
+          setTimeout(() => setBetSuccess(null), 8000);
+        }
       } catch {
-        // Navigation is best-effort
+        // CDP not available — fall back to URL navigation
+        try {
+          const nav = await api.navigateToEvent({
+            provider_id: 'pinnacle',
+            provider_meta: opp.provider_meta,
+            home_team: opp.home_team,
+            away_team: opp.away_team,
+            event_id: opp.event_id,
+          });
+          navUrl = nav.url;
+          windowName = nav.window_name;
+        } catch {
+          // Navigation is best-effort
+        }
       }
 
-      setPendingBet({ oppId: opp.id, opp, actualOdds: opp.odds1, navUrl, windowName });
+      setPendingBet({ oppId: opp.id, opp, actualOdds: slipOdds, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setBetError(msg);

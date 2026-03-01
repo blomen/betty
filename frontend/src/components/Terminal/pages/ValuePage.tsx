@@ -184,7 +184,7 @@ export function ValuePage({ providers }: ValuePageProps) {
     return oddsOverride[groupKey] ?? opp.odds1;
   };
 
-  // Step 1: Navigate browser to match page, enter "awaiting confirm" state
+  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
   const startPlaceBet = async (opp: Opportunity, useFreebet: boolean) => {
     const odds = getEffectiveOdds(opp);
     setIsPlacing(true);
@@ -195,22 +195,47 @@ export function ValuePage({ providers }: ValuePageProps) {
     try {
       let navUrl: string | null = null;
       let windowName = `bbq_${opp.provider1}`;
+      let slipOdds = odds;
+
+      // Try CDP slip filling first (navigates + clicks odds + fills stake)
       try {
-        const nav = await api.navigateToEvent({
+        const slip = await api.fillSlip({
           provider_id: opp.provider1,
+          event_id: opp.event_id,
+          market: opp.market,
+          outcome: opp.outcome1,
+          point: opp.point,
+          stake: opp.final_stake ?? 0,
+          expected_odds: odds,
           provider_meta: opp.provider_meta,
           home_team: opp.home_team,
           away_team: opp.away_team,
-          event_id: opp.event_id,
         });
-        navUrl = nav.url;
-        windowName = nav.window_name;
+        navUrl = slip.url;
+        if (slip.actual_odds) slipOdds = slip.actual_odds;
+        if (slip.status === 'ready') {
+          setBetSuccess('Bet slip filled — review and confirm on the provider site.');
+          setTimeout(() => setBetSuccess(null), 8000);
+        }
       } catch {
-        // Navigation is best-effort
+        // CDP not available — fall back to URL navigation
+        try {
+          const nav = await api.navigateToEvent({
+            provider_id: opp.provider1,
+            provider_meta: opp.provider_meta,
+            home_team: opp.home_team,
+            away_team: opp.away_team,
+            event_id: opp.event_id,
+          });
+          navUrl = nav.url;
+          windowName = nav.window_name;
+        } catch {
+          // Navigation is best-effort
+        }
       }
 
       const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
-      setPendingBet({ groupKey, opp, actualOdds: odds, useFreebet, navUrl, windowName });
+      setPendingBet({ groupKey, opp, actualOdds: slipOdds, useFreebet, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setBetError(msg);

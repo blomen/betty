@@ -847,7 +847,32 @@ export const api = {
     });
   },
 
-  // ============ Placement (Navigation) ============
+  // ============ Placement (Navigation + Slip Filling) ============
+
+  async fillSlip(request: {
+    provider_id: string;
+    event_id?: string;
+    market?: string;
+    outcome?: string;
+    point?: number | null;
+    stake?: number;
+    expected_odds?: number;
+    provider_meta?: Record<string, string | number> | null;
+    home_team?: string;
+    away_team?: string;
+  }): Promise<{
+    status: 'ready' | 'navigated_only' | 'error';
+    message: string;
+    provider_id: string;
+    url: string | null;
+    actual_odds: number | null;
+  }> {
+    return fetchJson('/placement/fill-slip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  },
 
   async navigateToEvent(request: {
     provider_id: string;

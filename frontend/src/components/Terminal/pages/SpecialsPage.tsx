@@ -132,7 +132,7 @@ export function SpecialsPage() {
     finally { setIsLoadingPreview(false); }
   };
 
-  // Step 1: Navigate to provider site, enter "awaiting confirm" state
+  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
   const startPlaceBet = async (special: SpecialItem, providerId: string, groupKey: string) => {
     if (!stakePreview || !special.boosted_odds) return;
     let stake = stakePreview.recommended_stake;
@@ -146,14 +146,33 @@ export function SpecialsPage() {
     try {
       let navUrl: string | null = null;
       let windowName = `bbq_${providerId}`;
+      let slipOdds = odds;
+
+      // Try CDP slip filling first
       try {
-        const nav = await api.navigateToProvider(providerId);
-        navUrl = nav.url;
-        windowName = nav.window_name;
+        const slip = await api.fillSlip({
+          provider_id: providerId,
+          stake,
+          expected_odds: odds,
+        });
+        navUrl = slip.url;
+        if (slip.actual_odds) slipOdds = slip.actual_odds;
+        if (slip.status === 'ready') {
+          setBetSuccess('Bet slip filled — review and confirm on the provider site.');
+          setTimeout(() => setBetSuccess(null), 8000);
+        }
       } catch {
-        // Navigation is best-effort
+        // CDP not available — fall back to URL navigation
+        try {
+          const nav = await api.navigateToProvider(providerId);
+          navUrl = nav.url;
+          windowName = nav.window_name;
+        } catch {
+          // Navigation is best-effort
+        }
       }
-      setPendingBet({ groupKey, special, providerId, actualOdds: odds, stake, navUrl, windowName });
+
+      setPendingBet({ groupKey, special, providerId, actualOdds: slipOdds, stake, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setPlacementError(msg);

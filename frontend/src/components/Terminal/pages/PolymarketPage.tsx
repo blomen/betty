@@ -93,7 +93,7 @@ export function PolymarketPage() {
     return { priceCents, fairCents, edgePct, stakeUsdc, shares, payoutUsdc, profitUsdc };
   };
 
-  // Step 1: Navigate browser to Polymarket, enter "awaiting confirm" state
+  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
   const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
     const stake = vb.final_stake;
     if (!stake || stake <= 0) return;
@@ -105,19 +105,44 @@ export function PolymarketPage() {
     try {
       let navUrl: string | null = null;
       let windowName = 'bbq_polymarket';
+      let slipOdds = odds;
+
+      // Try CDP slip filling first
       try {
-        const nav = await api.navigateToEvent({
+        const slip = await api.fillSlip({
           provider_id: 'polymarket',
+          event_id: vb.event_id,
+          market: vb.market,
+          outcome: vb.outcome,
+          point: vb.point,
+          stake,
+          expected_odds: odds,
           home_team: vb.home_team,
           away_team: vb.away_team,
-          event_id: vb.event_id,
         });
-        navUrl = nav.url;
-        windowName = nav.window_name;
+        navUrl = slip.url;
+        if (slip.actual_odds) slipOdds = slip.actual_odds;
+        if (slip.status === 'ready') {
+          setBetSuccess('Bet slip filled — review and confirm on Polymarket.');
+          setTimeout(() => setBetSuccess(null), 8000);
+        }
       } catch {
-        // Navigation is best-effort
+        // CDP not available — fall back to URL navigation
+        try {
+          const nav = await api.navigateToEvent({
+            provider_id: 'polymarket',
+            home_team: vb.home_team,
+            away_team: vb.away_team,
+            event_id: vb.event_id,
+          });
+          navUrl = nav.url;
+          windowName = nav.window_name;
+        } catch {
+          // Navigation is best-effort
+        }
       }
-      setPendingBet({ idx, vb, actualOdds: odds, navUrl, windowName });
+
+      setPendingBet({ idx, vb, actualOdds: slipOdds, navUrl, windowName });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to navigate';
       setBetError(msg);

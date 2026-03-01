@@ -241,7 +241,6 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
   const pendingStake = exposure?.total_pending ?? 0;
 
   const [expandedSettleId, setExpandedSettleId] = useState<number | null>(null);
-  const [isAutoSettling, setIsAutoSettling] = useState(false);
 
   // ── Inline editing state ───────────────────────────────────────
   const [editingCell, setEditingCell] = useState<{ betId: number; field: 'odds' | 'stake' } | null>(null);
@@ -288,17 +287,6 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
     }
   };
 
-  const handleAutoSettle = async () => {
-    setIsAutoSettling(true);
-    try {
-      await api.autoSettleBets();
-      fetchAll();
-    } catch (err) {
-      console.error('Auto-settle failed:', err);
-    } finally {
-      setIsAutoSettling(false);
-    }
-  };
 
   if (isLoading && !stats) {
     return (
@@ -490,7 +478,6 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
             title="Settle"
             count={needsSettleBets.length}
             actions={[
-              { label: 'Auto-settle', onClick: handleAutoSettle, loading: isAutoSettling },
               { label: 'History', onClick: () => onTabChange('stats') },
             ]}
           />
@@ -641,8 +628,8 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                               <span className="text-muted">Market: <span className="text-text">{bet.market ?? '-'}{bet.point != null ? ` ${bet.point > 0 ? '+' : ''}${bet.point}` : ''}</span></span>
                               <span className="text-muted">Placed: <span className="text-text">{bet.odds.toFixed(2)}</span></span>
                               <span className="text-muted">Close: <span className="text-text">{(bet.closing_odds ?? bet.odds).toFixed(2)}</span></span>
-                              {bet.edge_pct != null && (
-                                <span className="text-muted">Edge: <span className={bet.edge_pct >= 0 ? 'text-success' : 'text-error'}>{bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%</span></span>
+                              {bet.placed_edge_pct != null && (
+                                <span className="text-muted">Edge: <span className={bet.placed_edge_pct >= 0 ? 'text-success' : 'text-error'}>{bet.placed_edge_pct >= 0 ? '+' : ''}{bet.placed_edge_pct.toFixed(1)}%</span></span>
                               )}
                               {bet.match_status && (
                                 <span className="text-muted">Status: <span className="text-text">{bet.match_status}</span></span>
