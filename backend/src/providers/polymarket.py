@@ -419,7 +419,6 @@ class PolymarketRetriever(Retriever):
             return None  # Skip events without valid markets
 
         # Inject event_slug into provider_meta for all markets
-        # Used by url_builder to construct deep links: polymarket.com/event/{slug}
         if event_slug:
             for m in markets:
                 meta = m.get("provider_meta", {})
@@ -674,10 +673,8 @@ class PolymarketRetriever(Retriever):
                             return {
                                 "type": "moneyline",
                                 "outcomes": [
-                                    {"name": matched_team, "odds": self._price_to_odds(yes_price),
-                                     "clob_token_id": yes_token},
-                                    {"name": other_team, "odds": self._price_to_odds(no_price),
-                                     "clob_token_id": no_token},
+                                    {"name": matched_team, "odds": self._price_to_odds(yes_price)},
+                                    {"name": other_team, "odds": self._price_to_odds(no_price)},
                                 ]
                             }
 
@@ -698,7 +695,6 @@ class PolymarketRetriever(Retriever):
                     formatted_outcomes.append({
                         "name": name,
                         "odds": self._price_to_odds(price),
-                        "clob_token_id": token_id,
                     })
 
             if not formatted_outcomes:
@@ -789,7 +785,6 @@ class PolymarketRetriever(Retriever):
                     "name": norm,
                     "odds": self._price_to_odds(price),
                     "point": point,
-                    "clob_token_id": token_id,
                 })
 
             if len(result_outcomes) != 2:
@@ -868,7 +863,6 @@ class PolymarketRetriever(Retriever):
                         "name": "over",
                         "odds": self._price_to_odds(price),
                         "point": point,
-                        "clob_token_id": token_id,
                     })
                 elif name_lower == "under":
                     price = self._get_clob_price(token_id, p) if token_id else p
@@ -876,7 +870,6 @@ class PolymarketRetriever(Retriever):
                         "name": "under",
                         "odds": self._price_to_odds(price),
                         "point": point,
-                        "clob_token_id": token_id,
                     })
 
             if len(result_outcomes) != 2:
@@ -902,9 +895,6 @@ class PolymarketRetriever(Retriever):
         home_odds = None
         draw_odds = None
         away_odds = None
-        home_token_id = None
-        draw_token_id = None
-        away_token_id = None
 
         home_lower = home.lower()
         away_lower = away.lower()
@@ -959,24 +949,21 @@ class PolymarketRetriever(Retriever):
             # Only match specific patterns to avoid BTTS, spreads, totals
             if "end in a draw" in question:
                 draw_odds = odds
-                draw_token_id = token_id
             elif question.startswith("will ") and " win" in question:
                 # This is a "Will X win?" market - match team name
                 if home_lower in question:
                     home_odds = odds
-                    home_token_id = token_id
                 elif away_lower in question:
                     away_odds = odds
-                    away_token_id = token_id
 
         # Build combined 1x2 market
         if home_odds and away_odds:
             outcomes = [
-                {"name": home, "odds": home_odds, "clob_token_id": home_token_id},
+                {"name": home, "odds": home_odds},
             ]
             if draw_odds:
-                outcomes.append({"name": "Draw", "odds": draw_odds, "clob_token_id": draw_token_id})
-            outcomes.append({"name": away, "odds": away_odds, "clob_token_id": away_token_id})
+                outcomes.append({"name": "Draw", "odds": draw_odds})
+            outcomes.append({"name": away, "odds": away_odds})
 
             return [{
                 "type": "1x2",

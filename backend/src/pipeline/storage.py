@@ -440,13 +440,12 @@ def store_polymarket_event(
                 if market_type == "spread" and point_value is not None:
                     point_value = -point_value
 
-            clob_token_id = outcome.get("clob_token_id")
             outcome_meta = outcome.get('provider_meta', {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
 
     return is_new_event, odds_processed, odds_new
 
@@ -844,7 +843,6 @@ def upsert_odds(
     outcome: str,
     odds: float,
     point: float = None,
-    clob_token_id: str = None,
     provider_meta: dict = None,
 ) -> int:
     """
@@ -858,8 +856,7 @@ def upsert_odds(
         outcome: Outcome name
         odds: Decimal odds
         point: Point/line value (optional)
-        clob_token_id: Polymarket CLOB token ID (optional)
-        provider_meta: Provider-specific IDs for placement (optional)
+        provider_meta: Provider-specific IDs (optional)
 
     Returns:
         1 if new odds inserted, 0 if updated
@@ -882,8 +879,6 @@ def upsert_odds(
     if existing:
         existing.odds = odds
         existing.updated_at = datetime.now(timezone.utc)
-        if clob_token_id:
-            existing.clob_token_id = clob_token_id
         if provider_meta:
             existing.provider_meta = provider_meta
         return 0
@@ -895,7 +890,6 @@ def upsert_odds(
             outcome=outcome,
             odds=odds,
             point=point,
-            clob_token_id=clob_token_id,
             provider_meta=provider_meta,
         ))
         return 1
@@ -926,7 +920,6 @@ class OddsBatchProcessor:
         outcome: str,
         odds: float,
         point: float = None,
-        clob_token_id: str = None,
         provider_meta: dict = None,
     ):
         """Add odds record to batch (will be processed on flush)."""
@@ -939,7 +932,6 @@ class OddsBatchProcessor:
             "outcome": outcome,
             "odds": odds,
             "point": point,
-            "clob_token_id": clob_token_id,
             "provider_meta": provider_meta,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
@@ -1023,8 +1015,6 @@ class OddsBatchProcessor:
                 existing = existing_records[key]
                 existing.odds = record["odds"]
                 existing.updated_at = now
-                if record.get("clob_token_id"):
-                    existing.clob_token_id = record["clob_token_id"]
                 if record.get("provider_meta"):
                     existing.provider_meta = record["provider_meta"]
                 self._update_count += 1

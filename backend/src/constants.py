@@ -86,56 +86,6 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
     for _group in PLATFORM_GROUPS.values()
 }
 
-# Provider domain → provider_id mapping (for CDP session discovery)
-# Built from providers.yaml `domain` fields
-PROVIDER_DOMAINS: dict[str, str] = {
-    # Kambi brands
-    "unibet.se": "unibet",
-    "leovegas.com": "leovegas",
-    "expekt.se": "expekt",
-    "betmgm.se": "betmgm",
-    "speedybet.com": "speedybet",
-    "x3000.se": "x3000",
-    "goldenbull.se": "goldenbull",
-    "1x2.se": "1x2",
-    # Altenar brands
-    "betinia.se": "betinia",
-    "campobet.se": "campobet",
-    "swiper.se": "swiper",
-    "lodur.se": "lodur",
-    "dbet.com": "dbet",
-    "quickcasino.se": "quickcasino",
-    # Spectate
-    "mrgreen.se": "mrgreen",
-    "888sport.se": "888sport",
-    # Gecko V2
-    "betsson.com": "betsson",
-    "betsafe.com": "betsafe",
-    "nordicbet.com": "nordicbet",
-    "spelklubben.se": "spelklubben",
-    "bethard.com": "bethard",
-    # ComeOn Group
-    "comeon.com": "comeon",
-    "hajper.com": "hajper",
-    "lyllocasino.com": "lyllo",
-    # Standalone
-    "vbet.se": "vbet",
-    "interwetten.se": "interwetten",
-    "10bet.se": "10bet",
-    "snabbare.com": "snabbare",
-    "coolbet.com": "coolbet",
-    "tipwin.se": "tipwin",
-    # Sharp — Pinnacle uses several domains
-    "pinnacle.com": "pinnacle",
-    "pinnacle.se": "pinnacle",
-    "pinnacle.bet": "pinnacle",
-    "pinnacle.ca": "pinnacle",
-    "ps3838.com": "pinnacle",         # Asian mirror
-    "arcadia.pinnacle.com": "pinnacle",
-    # Prediction markets
-    "polymarket.com": "polymarket",
-}
-
 # Sports to extract - these have pinnacle_id in sports.yaml
 # Only extract sports where Pinnacle provides sharp lines AND soft providers
 # have head-to-head match coverage for value comparison.

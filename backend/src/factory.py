@@ -168,7 +168,7 @@ class ExtractorFactory:
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected
             # Uses Camoufox (anti-detect Firefox) to bypass Imperva automatically.
-            # Falls back to CDP if camoufox unavailable.
+            # Requires camoufox (anti-detect Firefox) to bypass Imperva.
             # Install: pip install camoufox[geoip] && python -m camoufox fetch
             retriever = CoolbetRetriever(config, transport=None)
         elif retriever_type == "tipwin":
