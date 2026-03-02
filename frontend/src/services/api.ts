@@ -17,6 +17,7 @@ import type {
   OpportunityInput,
   SelectOpportunityResponse,
   RiskAwareStake,
+  CombosResponse,
 } from '@/types';
 
 // ============ Placement Types ============
@@ -670,6 +671,55 @@ export const api = {
     return fetchJson('/bets/auto-settle', { method: 'POST' });
   },
 
+  async syncProviderBets(providerId: string): Promise<{
+    success: boolean;
+    provider_id: string;
+    settled_count: number;
+    settled_bets: Array<{
+      bet_id: number;
+      result: string;
+      payout: number;
+      odds: number;
+      coupon_id: string;
+      event_text: string;
+      profit: number | null;
+    }>;
+    unmatched: Array<{
+      result: string;
+      odds: number;
+      stake: number;
+      payout: number;
+      event_text: string;
+      coupon_id: string;
+    }>;
+    balance: number | null;
+    bonus_balance: number | null;
+    balance_updated: boolean;
+    pending_remaining: number;
+    error: string | null;
+  }> {
+    return fetchWithRetry(`/bets/sync/${providerId}`, {
+      method: 'POST',
+    }, 0, 60000);  // No retries, 60s timeout (browser sync is slow)
+  },
+
+  async getSyncStatus(): Promise<{
+    watching: boolean;
+    syncing: boolean;
+    auth_state: Record<string, boolean>;
+    last_syncs: Record<string, string>;
+    sync_results: Record<string, {
+      settled_count?: number;
+      balance?: number | null;
+      balance_updated?: boolean;
+      pending_remaining?: number;
+      error?: string | null;
+      timestamp?: string;
+    }>;
+  }> {
+    return fetchJson('/bets/sync/status');
+  },
+
   async settleBet(
     betId: number,
     data: { result: 'won' | 'lost' | 'void'; payout: number }
@@ -703,6 +753,40 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/value?${params}`);
+  },
+
+  async getPolymarketWallet(): Promise<import('@/types').PolyWallet> {
+    return fetchJson('/polymarket/wallet');
+  },
+
+  async setPolymarketWallet(address: string): Promise<{ success: boolean; wallet_address: string }> {
+    return fetchJson('/polymarket/wallet', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet_address: address }),
+    });
+  },
+
+  async getPolymarketPortfolio(): Promise<import('@/types').PolyPortfolio> {
+    return fetchJson('/polymarket/portfolio');
+  },
+
+  async syncPolymarket(): Promise<{
+    success: boolean;
+    settled_count: number;
+    balance: number | null;
+    balance_updated: boolean;
+    pending_remaining: number;
+    error: string | null;
+  }> {
+    return fetchWithRetry('/polymarket/sync', { method: 'POST' }, 0, 30000);
+  },
+
+  async getPolymarketMyBets(status?: string, limit = 100): Promise<import('@/types').PolyMyBetsResponse> {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    params.set('limit', limit.toString());
+    return fetchJson(`/polymarket/mybets?${params}`);
   },
 
   // ============ Risk Management ============
@@ -811,6 +895,22 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+  },
+
+  // ============ Combos ============
+  async getCombos(filters?: {
+    provider?: string;
+    min_legs?: number;
+    max_legs?: number;
+    min_edge_pct?: number;
+  }): Promise<CombosResponse> {
+    const params = new URLSearchParams();
+    if (filters?.provider) params.set('provider', filters.provider);
+    if (filters?.min_legs) params.set('min_legs', filters.min_legs.toString());
+    if (filters?.max_legs) params.set('max_legs', filters.max_legs.toString());
+    if (filters?.min_edge_pct) params.set('min_edge_pct', filters.min_edge_pct.toString());
+    const qs = params.toString();
+    return fetchJson(`/combos${qs ? `?${qs}` : ''}`);
   },
 
   // ============ Profiles ============

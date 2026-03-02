@@ -199,6 +199,9 @@ class Bet(Base):
     actual_odds_at_placement = Column(Float, nullable=True)  # Odds when actually placed
     placement_latency_ms = Column(Float, nullable=True)      # Time from request to confirmation
 
+    # Edge tracking (filled at placement)
+    fair_odds_at_placement = Column(Float, nullable=True)  # De-vigged Pinnacle fair odds when bet placed
+
     # CLV tracking (filled post-event)
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %
@@ -346,6 +349,9 @@ class ProfileProviderBalance(Base):
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     balance = Column(Float, default=0.0)
+
+    # Polymarket wallet address (0x...) for API-based portfolio sync
+    wallet_address = Column(String, nullable=True)
 
     # Manual account opened date for pre-existing accounts
     # Used for dormant account handling - accounts opened before +EV betting
@@ -1105,6 +1111,16 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE profiles ADD COLUMN chrome_port INTEGER")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add wallet_address to profile_provider_balances (Polymarket wallet sync)
+        try:
+            cursor.execute("SELECT wallet_address FROM profile_provider_balances LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_balances ADD COLUMN wallet_address TEXT")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass

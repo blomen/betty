@@ -39,6 +39,8 @@ PLATFORM_MAP: dict[str, str] = {
     'tipwin': 'tipwin', 'coolbet': 'coolbet', 'snabbare': 'snabbare',
     # Sharp
     'pinnacle': 'pinnacle',
+    # Prediction markets
+    'polymarket': 'polymarket',
 }
 
 # Platform groups for consolidation: extract once per platform, store under canonical
@@ -130,6 +132,8 @@ PROVIDER_DOMAINS: dict[str, str] = {
     "pinnacle.ca": "pinnacle",
     "ps3838.com": "pinnacle",         # Asian mirror
     "arcadia.pinnacle.com": "pinnacle",
+    # Prediction markets
+    "polymarket.com": "polymarket",
 }
 
 # Sports to extract - these have pinnacle_id in sports.yaml

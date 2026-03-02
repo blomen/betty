@@ -5,6 +5,7 @@ REST API for the React frontend.
 Connects to SQLite database and analysis modules.
 """
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -41,6 +42,7 @@ from .routes import (
     placement_router,
     trading_router,
     recorder_router,
+    combos_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,10 +177,17 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start_continuous(interval_seconds=300)
 
+    # Start auth watcher — monitors CDP Chrome tabs for provider logins
+    from ..services.auth_watcher import get_auth_watcher
+    watcher = get_auth_watcher()
+    watcher_task = asyncio.create_task(watcher.start())
+
     yield  # App is running
 
-    # Graceful shutdown: stop all scheduler tiers
+    # Graceful shutdown: stop all scheduler tiers + auth watcher
     logger.info("Shutting down: stopping scheduler tiers...")
+    watcher.stop()
+    watcher_task.cancel()
     scheduler.stop_all()
     chrome.stop()
     logger.info("Scheduler stopped.")
@@ -304,6 +313,7 @@ app.include_router(specials_router)
 app.include_router(placement_router)
 app.include_router(trading_router)
 app.include_router(recorder_router)
+app.include_router(combos_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)

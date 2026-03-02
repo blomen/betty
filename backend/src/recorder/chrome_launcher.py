@@ -143,6 +143,22 @@ class ChromeLauncher:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def list_tabs(self) -> list[dict] | None:
+        """Fetch all open tabs from CDP via /json/list."""
+        loop = asyncio.get_event_loop()
+
+        def _list():
+            try:
+                with urllib.request.urlopen(
+                    f"http://localhost:{self._port}/json/list", timeout=5
+                ) as resp:
+                    return json.loads(resp.read())
+            except Exception as e:
+                logger.debug(f"Failed to list CDP tabs: {e}")
+                return None
+
+        return await loop.run_in_executor(None, _list)
+
     async def _is_cdp_available(self) -> bool:
         """Check if CDP is responding on our port."""
         loop = asyncio.get_event_loop()

@@ -87,8 +87,12 @@ async def list_bets(
     for b in bets:
         ev = events_map.get(b.event_id) if b.event_id else None
 
-        # Snapshot values from placement time
-        placed_edge_pct = round(b.utility_score * 100, 2) if b.utility_score else None
+        # Edge at placement: compute from stored fair_odds_at_placement
+        placed_edge_pct = None
+        if b.fair_odds_at_placement and b.fair_odds_at_placement > 1.0:
+            placed_edge_pct = round((b.odds / b.fair_odds_at_placement - 1) * 100, 2)
+        elif b.utility_score:
+            placed_edge_pct = round(b.utility_score * 100, 2)
 
         # Current values from latest Pinnacle odds
         fair_odds = None
@@ -118,6 +122,10 @@ async def list_bets(
         if sel_prob is None and b.selection_probability:
             sel_prob = b.selection_probability
 
+        # Selection probability from stored fair odds if not already set
+        if sel_prob is None and b.fair_odds_at_placement and b.fair_odds_at_placement > 1.0:
+            sel_prob = round(1.0 / b.fair_odds_at_placement, 4)
+
         bet_list.append({
             "id": b.id,
             "event_id": b.event_id,
@@ -141,6 +149,7 @@ async def list_bets(
             "fair_odds": fair_odds,
             "selection_probability": sel_prob,
             "placed_edge_pct": placed_edge_pct,
+            "fair_odds_at_placement": b.fair_odds_at_placement,
             "current_odds": current_odds,
             "point": b.point,
             "settlement_source": b.settlement_source,
@@ -288,6 +297,34 @@ async def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_ge
 
     if "error" in result:
         raise HTTPException(404, result["error"])
+
+    return result
+
+
+@router.get("/sync/status")
+async def get_sync_status():
+    """Get auth watcher status: which providers are logged in, last syncs."""
+    from ...services.auth_watcher import get_auth_watcher
+    return get_auth_watcher().get_status()
+
+
+@router.post("/sync/{provider_id}")
+async def sync_provider_bets(provider_id: str, db: Session = Depends(get_db)):
+    """Browser-based bet settlement + balance sync via CDP Chrome.
+
+    Connects to the user's Chrome, navigates to the provider's bet history,
+    scrapes settled bets, matches against pending DB bets, and updates balance.
+    Requires Chrome running with CDP and the user logged in.
+    """
+    from ...services.account_sync_service import AccountSyncService
+    from ...placement.strategies.kambi_account import KambiAccountStrategy
+
+    service = AccountSyncService(db)
+    service.register_strategy("kambi", KambiAccountStrategy())
+    result = await service.sync_provider(provider_id)
+
+    if "error" in result and not result.get("success"):
+        raise HTTPException(400, result["error"])
 
     return result
 

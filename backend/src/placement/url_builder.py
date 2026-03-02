@@ -35,6 +35,17 @@ Provider migration status (discovered 2026-03-01):
 
 from ..constants import PLATFORM_MAP
 
+# Provider-specific "My Bets" URLs (verified via browser exploration)
+# Kambi brands share the /betting/sports/bethistory path
+PROVIDER_MY_BETS_URLS: dict[str, str] = {
+    "unibet": "https://www.unibet.se/betting/sports/bethistory",
+    "leovegas": "https://www.leovegas.com/sv-se/betting/bethistory",
+    "speedybet": "https://www.speedybet.com/sv/betting/bethistory",
+    "x3000": "https://www.x3000.com/betting/bethistory",
+    "goldenbull": "https://www.goldenbull.se/en/betting/bethistory",
+    "1x2": "https://www.1x2.se/en/betting/bethistory",
+}
+
 # Kambi brand → direct event URL (SPA hash routing — these actually work)
 # NOTE: expekt removed — redirects to campobet (Altenar)
 # NOTE: betmgm removed — NOT Kambi, it's LeoVegas/MGM platform
@@ -62,7 +73,7 @@ ALTENAR_SPORTSBOOK_URLS: dict[str, str] = {
 # Provider landing pages — open the site so user can search manually
 PROVIDER_LANDING_URLS: dict[str, str] = {
     # Kambi
-    "unibet": "https://www.unibet.se/betting/sports",
+    "unibet": "https://www.unibet.se/betting/sports/home",
     "leovegas": "https://www.leovegas.com/sv-se/betting",
     "speedybet": "https://www.speedybet.com/sv/betting",
     "x3000": "https://www.x3000.com/betting",
@@ -112,6 +123,13 @@ async def build_match_url(
     platform = PLATFORM_MAP.get(provider_id)
 
     if provider_meta:
+        # Polymarket deep links — uses event slug
+        # URL pattern: https://polymarket.com/event/{slug}
+        if platform == "polymarket":
+            event_slug = provider_meta.get("event_slug")
+            if event_slug:
+                return f"https://polymarket.com/event/{event_slug}"
+
         eid = provider_meta.get("event_id")
         if eid:
             # Kambi deep links
@@ -150,8 +168,8 @@ async def build_deposit_url(provider_id: str) -> str | None:
 
 
 async def build_my_bets_url(provider_id: str) -> str | None:
-    """Open provider's landing page — my bets navigation is manual."""
-    return PROVIDER_LANDING_URLS.get(provider_id)
+    """Return provider-specific my bets URL, or fallback to landing page."""
+    return PROVIDER_MY_BETS_URLS.get(provider_id) or PROVIDER_LANDING_URLS.get(provider_id)
 
 
 async def build_results_url(provider_id: str) -> str | None:

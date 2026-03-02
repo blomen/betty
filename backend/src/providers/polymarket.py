@@ -347,6 +347,7 @@ class PolymarketRetriever(Retriever):
         """Parse a single Polymarket event."""
         title = item.get("title", "")
         event_id = str(item.get("id", ""))
+        event_slug = item.get("slug", "")
         start_time = item.get("startTime")
 
         # Normalize startTime: Gamma API may return epoch timestamp (int/float)
@@ -416,6 +417,14 @@ class PolymarketRetriever(Retriever):
 
         if not markets:
             return None  # Skip events without valid markets
+
+        # Inject event_slug into provider_meta for all markets
+        # Used by url_builder to construct deep links: polymarket.com/event/{slug}
+        if event_slug:
+            for m in markets:
+                meta = m.get("provider_meta", {})
+                meta["event_slug"] = event_slug
+                m["provider_meta"] = meta
 
         return StandardEvent(
             id=event_id,

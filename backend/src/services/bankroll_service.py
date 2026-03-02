@@ -64,11 +64,14 @@ class BankrollService:
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])
 
-        # Bonus deposits = pure profit, but only after wagering is completed
+        # Bonus deposits = pure profit, but only after wagering is completed.
+        # Exclude freebets — their profit is already tracked via the settled
+        # bet's b.profit (is_bonus=True), counted in freebet_profit above.
         bonus_records = self.db.query(ProfileProviderBonus).filter(
             ProfileProviderBonus.profile_id == profile.id,
             ProfileProviderBonus.bonus_amount > 0,
             ProfileProviderBonus.bonus_status.in_(["completed", "claimed"]),
+            ProfileProviderBonus.bonus_type != "freebet",
         ).all()
         bonus_profit = sum(b.bonus_amount for b in bonus_records)
 

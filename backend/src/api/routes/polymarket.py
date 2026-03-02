@@ -1,16 +1,19 @@
-"""Polymarket API routes: matched events, value bets, stats."""
+"""Polymarket API routes: matched events, value bets, stats, portfolio, wallet, sync, mybets."""
 
 import logging
+import re
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from ...db.models import Event, Odds
-from ...repositories import ProfileRepo
+from ...db.models import Event, Odds, Bet, ProfileProviderBalance
+from ...repositories import ProfileRepo, BetRepo
 from ...analysis.scanner import OpportunityScanner
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ...config import get_exchange_rate
+from ...services.polymarket_client import PolymarketDataClient
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,20 @@ async def get_polymarket_value(
         events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events_list}
 
+    # Batch-load provider_meta from Odds for event_slug (needed for deep links)
+    # Key: (event_id, market, outcome) → provider_meta dict
+    odds_meta_map: dict[tuple, dict] = {}
+    if event_ids:
+        poly_odds = (
+            db.query(Odds)
+            .filter(Odds.event_id.in_(event_ids), Odds.provider_id == "polymarket")
+            .all()
+        )
+        for o in poly_odds:
+            key = (o.event_id, o.market, o.outcome)
+            if o.provider_meta and "event_slug" in (o.provider_meta if isinstance(o.provider_meta, dict) else {}):
+                odds_meta_map[key] = o.provider_meta
+
     # Enrich with event context
     results = []
     for vb in poly_values:
@@ -72,6 +89,10 @@ async def get_polymarket_value(
         price_cents = round(1 / vb.provider_odds * 100) if vb.provider_odds > 0 else 0
         fair_price_cents = round(1 / vb.fair_odds * 100) if vb.fair_odds > 0 else 0
         usdc_rate = get_exchange_rate("polymarket")  # USDC → SEK
+
+        # Look up provider_meta for deep link URL
+        meta = odds_meta_map.get((vb.event_id, vb.market, vb.outcome), {})
+        event_slug = meta.get("event_slug") if isinstance(meta, dict) else None
 
         result = {
             "event_id": vb.event_id,
@@ -91,6 +112,9 @@ async def get_polymarket_value(
             "price_cents": price_cents,
             "fair_price_cents": fair_price_cents,
             "exchange_rate_sek": usdc_rate,
+            # Navigation — event_slug for deep linking to polymarket.com/event/{slug}
+            "event_slug": event_slug,
+            "provider_meta": {"event_slug": event_slug} if event_slug else None,
         }
 
         # Add stake recommendation
@@ -348,4 +372,283 @@ async def get_polymarket_matched(
     return {
         "events": result,
         "count": len(result),
+    }
+
+
+# ──────────────────── Wallet Management ────────────────────
+
+
+class WalletUpdate(BaseModel):
+    wallet_address: str
+
+
+@router.get("/wallet")
+async def get_wallet(db: Session = Depends(get_db)):
+    """Get current Polymarket wallet address for active profile."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    row = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == "polymarket",
+    ).first()
+
+    return {
+        "wallet_address": row.wallet_address if row else None,
+        "balance": row.balance if row else 0.0,
+    }
+
+
+@router.put("/wallet")
+async def set_wallet(data: WalletUpdate, db: Session = Depends(get_db)):
+    """Set Polymarket wallet address for active profile."""
+    addr = data.wallet_address.strip()
+    if not re.match(r'^0x[a-fA-F0-9]{40}$', addr):
+        raise HTTPException(400, "Invalid wallet address — must be 0x followed by 40 hex chars")
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    row = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == "polymarket",
+    ).first()
+
+    if row:
+        row.wallet_address = addr
+    else:
+        row = ProfileProviderBalance(
+            profile_id=profile.id,
+            provider_id="polymarket",
+            balance=0.0,
+            wallet_address=addr,
+        )
+        db.add(row)
+
+    db.commit()
+    return {"success": True, "wallet_address": addr}
+
+
+# ──────────────────── Portfolio (Data API) ────────────────────
+
+
+@router.get("/portfolio")
+async def get_portfolio(db: Session = Depends(get_db)):
+    """Get Polymarket portfolio: positions, balance, P&L from public Data API."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    row = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == "polymarket",
+    ).first()
+
+    wallet = row.wallet_address if row else None
+    if not wallet:
+        return {
+            "wallet": None,
+            "positions": [],
+            "closed_positions": [],
+            "total_value_usdc": 0,
+            "total_pnl_usdc": 0,
+            "unrealized_pnl": 0,
+            "realized_pnl": 0,
+            "open_count": 0,
+            "closed_count": 0,
+            "total_value_sek": 0,
+        }
+
+    client = PolymarketDataClient()
+    try:
+        portfolio = await client.get_portfolio(wallet)
+    except Exception as e:
+        raise HTTPException(502, f"Polymarket Data API error: {e}")
+
+    usdc_rate = get_exchange_rate("polymarket")
+
+    # Update stored balance from portfolio value
+    if row and portfolio.total_value_usdc > 0:
+        row.balance = portfolio.total_value_usdc
+        db.commit()
+
+    return {
+        "wallet": wallet,
+        "positions": [
+            {
+                "condition_id": p.condition_id,
+                "title": p.title,
+                "outcome": p.outcome,
+                "size": p.size,
+                "avg_price": p.avg_price,
+                "current_value": p.current_value,
+                "cur_price": p.cur_price,
+                "cash_pnl": p.cash_pnl,
+                "percent_pnl": p.percent_pnl,
+                "redeemable": p.redeemable,
+                "initial_value": p.initial_value,
+                "slug": p.slug,
+                "event_slug": p.event_slug,
+            }
+            for p in portfolio.positions
+        ],
+        "closed_positions": [
+            {
+                "condition_id": c.condition_id,
+                "title": c.title,
+                "outcome": c.outcome,
+                "avg_price": c.avg_price,
+                "total_bought": c.total_bought,
+                "realized_pnl": c.realized_pnl,
+                "end_date": c.end_date,
+                "cur_price": c.cur_price,
+            }
+            for c in portfolio.closed_positions
+        ],
+        "total_value_usdc": portfolio.total_value_usdc,
+        "total_value_sek": round(portfolio.total_value_usdc * usdc_rate, 2),
+        "total_pnl_usdc": portfolio.total_pnl_usdc,
+        "unrealized_pnl": portfolio.unrealized_pnl,
+        "realized_pnl": portfolio.realized_pnl,
+        "open_count": portfolio.open_count,
+        "closed_count": portfolio.closed_count,
+    }
+
+
+# ──────────────────── Manual Sync ────────────────────
+
+
+@router.post("/sync")
+async def trigger_sync(db: Session = Depends(get_db)):
+    """Manually trigger Polymarket account sync (settlement + balance)."""
+    from ...services.account_sync_service import AccountSyncService
+    from ...placement.strategies.kambi_account import KambiAccountStrategy
+    from ...placement.strategies.polymarket_account import PolymarketAccountStrategy
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    row = db.query(ProfileProviderBalance).filter(
+        ProfileProviderBalance.profile_id == profile.id,
+        ProfileProviderBalance.provider_id == "polymarket",
+    ).first()
+
+    wallet = row.wallet_address if row else None
+    if not wallet:
+        raise HTTPException(400, "No wallet address configured. Set one via PUT /api/polymarket/wallet or log into polymarket.com in Chrome.")
+
+    service = AccountSyncService(db)
+    service.register_strategy("kambi", KambiAccountStrategy())
+    service.register_strategy("polymarket", PolymarketAccountStrategy(wallet))
+
+    result = await service.sync_provider("polymarket")
+    return result
+
+
+# ──────────────────── My Bets (Polymarket) ────────────────────
+
+
+@router.get("/mybets")
+async def get_mybets(
+    status: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Get Polymarket bet history with P&L stats."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    usdc_rate = get_exchange_rate("polymarket")
+
+    query = db.query(Bet).filter(
+        Bet.profile_id == profile.id,
+        Bet.provider_id == "polymarket",
+    )
+    if status:
+        query = query.filter(Bet.result == status)
+
+    bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
+
+    # Batch-load events
+    event_ids = list({b.event_id for b in bets if b.event_id})
+    events_map = {}
+    if event_ids:
+        events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
+        events_map = {e.id: e for e in events_list}
+
+    bet_items = []
+    for b in bets:
+        event = events_map.get(b.event_id) if b.event_id else None
+        stake_usdc = round(b.stake / usdc_rate, 2) if usdc_rate > 0 else b.stake
+        profit_usdc = round(b.profit / usdc_rate, 2) if usdc_rate > 0 else b.profit
+        payout_usdc = round(b.payout / usdc_rate, 2) if usdc_rate > 0 else b.payout
+
+        # Compute edge from fair odds at placement
+        edge_pct = None
+        if b.fair_odds_at_placement and b.fair_odds_at_placement > 1 and b.odds > 0:
+            edge_pct = round((b.odds / b.fair_odds_at_placement - 1) * 100, 2)
+
+        bet_items.append({
+            "id": b.id,
+            "event_id": b.event_id,
+            "market": b.market,
+            "outcome": b.outcome,
+            "odds": b.odds,
+            "stake_sek": b.stake,
+            "stake_usdc": stake_usdc,
+            "result": b.result,
+            "payout_sek": b.payout,
+            "payout_usdc": payout_usdc,
+            "profit_sek": b.profit,
+            "profit_usdc": profit_usdc,
+            "placed_at": b.placed_at.isoformat() + "Z" if b.placed_at else None,
+            "edge_pct": edge_pct,
+            "fair_odds": b.fair_odds_at_placement,
+            "settlement_source": b.settlement_source,
+            "home_team": event.home_team if event else None,
+            "away_team": event.away_team if event else None,
+            "sport": event.sport if event else None,
+            "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
+        })
+
+    # Aggregate stats
+    all_bets = db.query(Bet).filter(
+        Bet.profile_id == profile.id,
+        Bet.provider_id == "polymarket",
+    ).all()
+
+    settled = [b for b in all_bets if b.result in ("won", "lost", "void")]
+    wins = sum(1 for b in settled if b.result == "won")
+    losses = sum(1 for b in settled if b.result == "lost")
+    voids = sum(1 for b in settled if b.result == "void")
+    pending = sum(1 for b in all_bets if b.result == "pending")
+    total_staked = sum(b.stake for b in all_bets)
+    total_profit = sum(b.profit for b in all_bets)
+    total_staked_usdc = round(total_staked / usdc_rate, 2) if usdc_rate > 0 else total_staked
+    total_profit_usdc = round(total_profit / usdc_rate, 2) if usdc_rate > 0 else total_profit
+    roi_pct = round(total_profit / total_staked * 100, 2) if total_staked > 0 else 0
+    win_rate = round(wins / len(settled) * 100, 1) if settled else 0
+
+    # Average edge at placement (computed from fair_odds_at_placement)
+    edges = []
+    for b in all_bets:
+        if b.fair_odds_at_placement and b.fair_odds_at_placement > 1 and b.odds > 0:
+            edges.append((b.odds / b.fair_odds_at_placement - 1) * 100)
+    avg_edge = round(sum(edges) / len(edges), 2) if edges else 0
+
+    return {
+        "bets": bet_items,
+        "count": len(bet_items),
+        "stats": {
+            "total_bets": len(all_bets),
+            "pending": pending,
+            "wins": wins,
+            "losses": losses,
+            "voids": voids,
+            "win_rate": win_rate,
+            "total_staked_sek": round(total_staked, 2),
+            "total_staked_usdc": total_staked_usdc,
+            "total_profit_sek": round(total_profit, 2),
+            "total_profit_usdc": total_profit_usdc,
+            "roi_pct": roi_pct,
+            "avg_edge": avg_edge,
+        },
     }

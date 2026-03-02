@@ -206,6 +206,7 @@ export interface Bet {
   fair_odds?: number | null;
   selection_probability?: number | null;
   placed_edge_pct?: number | null;
+  fair_odds_at_placement?: number | null;
   current_odds?: number | null;
   settlement_source?: string | null;
   home_score?: number | null;
@@ -522,6 +523,9 @@ export interface PolymarketValueBet {
   skip_reason?: string | null;
   bankroll_needed?: number | null;
   bonus_cleared?: boolean | null;
+  // Navigation — event slug for deep links to polymarket.com/event/{slug}
+  event_slug?: string | null;
+  provider_meta?: Record<string, string | number> | null;
 }
 
 export interface PolymarketValueResponse {
@@ -544,6 +548,96 @@ export interface PolymarketStats {
   match_rate: number;
   normalization_rate: number;
   sports: PolymarketSportStat[];
+}
+
+// Polymarket Portfolio & Account Types
+export interface PolyPosition {
+  condition_id: string;
+  title: string;
+  outcome: string;
+  size: number;
+  avg_price: number;
+  current_value: number;
+  cur_price: number;
+  cash_pnl: number;
+  percent_pnl: number;
+  redeemable: boolean;
+  initial_value: number;
+  slug: string;
+  event_slug: string;
+}
+
+export interface PolyClosedPosition {
+  condition_id: string;
+  title: string;
+  outcome: string;
+  avg_price: number;
+  total_bought: number;
+  realized_pnl: number;
+  end_date: string;
+  cur_price: number;
+}
+
+export interface PolyPortfolio {
+  wallet: string | null;
+  positions: PolyPosition[];
+  closed_positions: PolyClosedPosition[];
+  total_value_usdc: number;
+  total_value_sek: number;
+  total_pnl_usdc: number;
+  unrealized_pnl: number;
+  realized_pnl: number;
+  open_count: number;
+  closed_count: number;
+}
+
+export interface PolyWallet {
+  wallet_address: string | null;
+  balance: number;
+}
+
+export interface PolyMyBet {
+  id: number;
+  event_id: string | null;
+  market: string | null;
+  outcome: string | null;
+  odds: number;
+  stake_sek: number;
+  stake_usdc: number;
+  result: 'pending' | 'won' | 'lost' | 'void';
+  payout_sek: number;
+  payout_usdc: number;
+  profit_sek: number;
+  profit_usdc: number;
+  placed_at: string | null;
+  edge_pct: number | null;
+  fair_odds: number | null;
+  settlement_source: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  sport: string | null;
+  start_time: string | null;
+}
+
+export interface PolyMyBetsStats {
+  total_bets: number;
+  pending: number;
+  wins: number;
+  losses: number;
+  voids: number;
+  win_rate: number;
+  total_staked_sek: number;
+  total_staked_usdc: number;
+  total_profit_sek: number;
+  total_profit_usdc: number;
+  roi_pct: number;
+  avg_edge: number;
+}
+
+export interface PolyMyBetsResponse {
+  bets: PolyMyBet[];
+  count: number;
+  stats: PolyMyBetsStats;
 }
 
 // Bonus Arbitrage Types (True Arb with Hedges)
@@ -817,5 +911,52 @@ export interface StakeNoiseResult {
   noise_pct: number;
   was_rounded: boolean;
   reason: string;
+}
+
+// Combo Profit Boost Types
+export interface ComboLeg {
+  event_id: string;
+  market: string;
+  outcome: string;
+  provider_odds: number;
+  fair_odds: number;
+  edge_pct: number;
+  home_team: string | null;
+  away_team: string | null;
+  sport: string | null;
+  start_time: string | null;
+  point: number | null;
+}
+
+export interface ComboRecommendation {
+  provider: string;
+  num_legs: number;
+  legs: ComboLeg[];
+  combined_offered_odds: number;
+  combined_fair_odds: number;
+  boost_pct: number;
+  effective_odds: number;
+  edge_pct: number;
+  win_probability: number;
+  ev_per_unit: number;
+  kelly_fraction: number;
+  recommended_stake: number | null;
+  skip_reason: string | null;
+}
+
+export interface ComboProviderResult {
+  provider: string;
+  config: {
+    min_odds_per_leg: number;
+    boost_table: Record<string, number>;
+  };
+  combos: ComboRecommendation[];
+  combo_count: number;
+}
+
+export interface CombosResponse {
+  providers: ComboProviderResult[];
+  total_combos: number;
+  value_bets_scanned: number;
 }
 

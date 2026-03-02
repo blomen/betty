@@ -292,8 +292,8 @@ def parse_combo_legs(market_label: str, title: str, event: str = "") -> list[Com
 # Value: multiplicative factor on combined probability.
 CORRELATION_FACTORS: dict[tuple[str, str], float] = {
     # 1x2 + BTTS
-    ("1x2_draw", "btts_yes"): 0.85,     # Scoring draws slightly less likely
-    ("1x2_draw", "btts_no"): 1.20,      # 0-0 draws more likely than independent
+    ("1x2_draw", "btts_yes"): 1.20,     # Scoring draws (1-1, 2-2) more likely than independent
+    ("1x2_draw", "btts_no"): 0.70,      # 0-0 draws less likely than independent
     ("1x2_home", "btts_yes"): 1.05,     # Home win + both score: slight positive
     ("1x2_home", "btts_no"): 0.95,      # Home clean sheet: slight negative
     ("1x2_away", "btts_yes"): 1.05,
@@ -460,6 +460,9 @@ def _price_single_leg(leg: ComboLeg, pinnacle_data: dict) -> Optional[float]:
         totals = pinnacle_data.get("total", {})
 
         # Find main total line (usually 2.5 for football)
+        # BTTS proxy: P(BTTS) ≈ P(Over X) × multiplier, calibrated via Poisson
+        # For higher total lines, BTTS exceeds Over since BTTS only needs 1 goal
+        # per team while Over needs total > line.
         for point in (2.5, 2.0, 3.0, 3.5):
             point_market = totals.get(point)
             if point_market and len(point_market) >= 2:
@@ -467,14 +470,14 @@ def _price_single_leg(leg: ComboLeg, pinnacle_data: dict) -> Optional[float]:
                 fair_over = get_fair_odds_for_outcome("over", point_market, method="multiplicative")
                 if fair_over and fair_over > 1:
                     over_prob = 1.0 / fair_over
-                    # BTTS yes ≈ over_prob * 0.85 (rough: most overs have both teams scoring)
-                    # BTTS no ≈ 1 - btts_yes
-                    if point == 2.5:
-                        btts_yes_prob = over_prob * 0.82
-                    elif point == 2.0:
-                        btts_yes_prob = over_prob * 0.75
-                    else:
+                    if point <= 2.0:
                         btts_yes_prob = over_prob * 0.70
+                    elif point == 2.5:
+                        btts_yes_prob = over_prob * 1.00
+                    elif point == 3.0:
+                        btts_yes_prob = over_prob * 1.10
+                    else:  # 3.5+
+                        btts_yes_prob = over_prob * 1.30
 
                     btts_yes_prob = min(btts_yes_prob, 0.85)  # Clamp
 

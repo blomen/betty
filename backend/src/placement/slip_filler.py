@@ -22,9 +22,14 @@ try:
 except ImportError:
     from playwright.async_api import async_playwright, Page
 
+import re as _re
+
 from .url_builder import build_match_url, PROVIDER_LANDING_URLS
 from ..constants import PLATFORM_MAP
 from ..recorder.chrome_launcher import get_chrome_launcher
+
+# Platforms that use wallet/non-BankID login (skip Swedish login flow)
+WALLET_PLATFORMS = {"polymarket"}
 
 logger = logging.getLogger(__name__)
 
@@ -59,34 +64,56 @@ class SlipResult:
     provider_id: str = ""
     url: str = ""
     actual_odds: Optional[float] = None
+    # Post-login sync results (Polymarket wallet-based)
+    balance: Optional[float] = None
+    wallet_address: Optional[str] = None
+    balance_updated: bool = False
 
 
 async def dismiss_cookie_banner(page: Page) -> None:
-    """Dismiss cookie banner if present (Altenar/Soft2Bet sites)."""
+    """Dismiss cookie banner if present."""
+    # Altenar/Soft2Bet sites
     try:
         btn = page.get_by_test_id("btnAcceptNecessaryCookies")
         if await btn.is_visible(timeout=2000):
             await btn.click()
-            logger.info("Cookie banner dismissed")
+            logger.info("Cookie banner dismissed (Altenar)")
+            return
     except Exception:
-        pass  # No banner or already dismissed
+        pass
+    # Unibet/Kindred — OneTrust banner with "Avvisa alla" (decline all)
+    try:
+        btn = page.get_by_role("button", name="Avvisa alla")
+        if await btn.is_visible(timeout=2000):
+            await btn.click()
+            logger.info("Cookie banner dismissed (Unibet/OneTrust)")
+            return
+    except Exception:
+        pass
 
 
 async def check_logged_in(page: Page) -> bool:
     """Check if the user is logged in by looking for login indicators."""
     try:
         content = await page.content()
+        content_upper = content.upper()
         # Logged OUT indicators
-        if "Spela Här" in content or "SPELA HÄR" in content:
+        if "SPELA HÄR" in content_upper:
             return False
-        # Logged IN indicators (balance display, account menu)
-        if "account" in content.lower() and "saldo" in content.lower():
-            return True
-        # Check for the place bet button text
-        if "PLACERA SPEL" in content:
-            return True
-        if "LOGGA IN" in content.upper():
+        if "LOGGA IN" in content_upper:
             return False
+        # Logged IN indicators
+        # Unibet/Kambi: balance display ("Saldo X kr"), customerLoggedIn param
+        if "saldo" in content.lower():
+            return True
+        if "customerLoggedIn=true" in content:
+            return True
+        # Kambi: place bet button
+        if "PLACERA SPEL" in content_upper:
+            return True
+        # Unibet: post-login gambling limits modal
+        if "SPELGRÄNSER" in content_upper:
+            return True
         # Default: assume logged in if no clear logout indicators
         return True
     except Exception:
@@ -107,20 +134,176 @@ async def ensure_logged_in(page: Page, base_url: str) -> bool:
     logger.warning("Not logged in — waiting for BankID authentication...")
     # Navigate to trigger login modal
     try:
-        # Click "SPELA HÄR" button if visible
-        btn = page.locator("button:has-text('Spela Här')")
+        # Unibet/Kambi: "Spela här" button triggers BankID modal
+        btn = page.get_by_role("button", name="Spela här")
         if await btn.is_visible(timeout=3000):
             await btn.click()
+            await page.wait_for_timeout(1000)
+
+            # Click "Starta BankID" if the BankID modal appeared
+            bankid_btn = page.get_by_role("button", name="Starta BankID")
+            try:
+                if await bankid_btn.is_visible(timeout=3000):
+                    await bankid_btn.click()
+                    logger.info("BankID QR code displayed — waiting for user to scan...")
+            except Exception:
+                pass
+
             # Wait up to 120s for user to complete BankID login
             for _ in range(60):
                 await page.wait_for_timeout(2000)
                 if await check_logged_in(page):
                     logger.info("BankID login completed")
+                    # Dismiss post-login gambling limits modal if present
+                    try:
+                        okej_btn = page.get_by_role("button", name="okej")
+                        if await okej_btn.is_visible(timeout=3000):
+                            await okej_btn.click()
+                            logger.info("Post-login limits modal dismissed")
+                    except Exception:
+                        pass
                     return True
     except Exception as e:
         logger.error(f"Login flow error: {e}")
 
     return False
+
+
+async def check_polymarket_logged_in(page: Page) -> bool:
+    """Check if user is wallet-connected on Polymarket."""
+    try:
+        content = await page.content()
+        content_lower = content.lower()
+        # Logged IN indicators: portfolio link, wallet address, position data
+        if "portfolio" in content_lower and "0x" in content:
+            return True
+        # Profile menu or wallet display
+        if "deposit" in content_lower and "withdraw" in content_lower:
+            return True
+        # Check for connect wallet button (logged OUT)
+        if "connect wallet" in content_lower or "log in" in content_lower:
+            return False
+        # Default: assume logged in if no clear logout indicators
+        return True
+    except Exception:
+        return False
+
+
+async def ensure_polymarket_logged_in(page: Page) -> bool:
+    """
+    Navigate Polymarket and check wallet connection.
+    If not connected, page stays on Polymarket for user to connect manually.
+    Returns True if wallet is connected.
+    """
+    await page.wait_for_timeout(2000)
+
+    if await check_polymarket_logged_in(page):
+        return True
+
+    logger.warning("Polymarket wallet not connected — user needs to connect manually")
+    # Wait a bit in case user connects quickly
+    for _ in range(15):
+        await page.wait_for_timeout(2000)
+        if await check_polymarket_logged_in(page):
+            logger.info("Polymarket wallet connected")
+            return True
+
+    # Not connected after 30s — still navigated, user can connect manually
+    return False
+
+
+async def _extract_wallet_from_page(page: Page) -> Optional[str]:
+    """Extract wallet address from Polymarket page DOM."""
+    try:
+        html = await page.content()
+        addresses = _re.findall(r'0x[a-fA-F0-9]{40}', html)
+        if addresses:
+            return addresses[0]
+        # Try JS evaluation
+        try:
+            addr = await page.evaluate("() => window.ethereum?.selectedAddress || null")
+            if addr and _re.match(r'^0x[a-fA-F0-9]{40}$', addr):
+                return addr
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return None
+
+
+async def _sync_polymarket_after_login(page: Page) -> tuple[Optional[str], Optional[float]]:
+    """
+    Post-login sync: extract wallet + fetch balance via Data API.
+
+    Returns (wallet_address, balance_usdc) — either may be None on failure.
+    Stores wallet + updates balance in DB as a side effect.
+    """
+    # 1. Extract wallet from page
+    wallet = await _extract_wallet_from_page(page)
+    if not wallet:
+        logger.info("[SlipFiller] Could not extract wallet from Polymarket page")
+        return None, None
+
+    logger.info(f"[SlipFiller] Extracted wallet: {wallet[:6]}...{wallet[-4:]}")
+
+    # 2. Store wallet in DB
+    try:
+        from ..db.models import get_session, ProfileProviderBalance
+        from ..repositories import ProfileRepo
+
+        session = get_session()
+        try:
+            profile_repo = ProfileRepo(session)
+            profile = profile_repo.get_active()
+
+            balance_row = session.query(ProfileProviderBalance).filter(
+                ProfileProviderBalance.profile_id == profile.id,
+                ProfileProviderBalance.provider_id == "polymarket",
+            ).first()
+
+            if balance_row:
+                if balance_row.wallet_address != wallet:
+                    balance_row.wallet_address = wallet
+                    session.commit()
+            else:
+                balance_row = ProfileProviderBalance(
+                    profile_id=profile.id,
+                    provider_id="polymarket",
+                    balance=0.0,
+                    wallet_address=wallet,
+                )
+                session.add(balance_row)
+                session.commit()
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"[SlipFiller] Failed to store wallet: {e}")
+
+    # 3. Quick balance fetch via Data API
+    balance = None
+    try:
+        from ..services.polymarket_client import PolymarketDataClient
+        client = PolymarketDataClient()
+        portfolio = await client.get_portfolio(wallet)
+        balance = portfolio.total_value_usdc
+        logger.info(f"[SlipFiller] Polymarket balance: ${balance:.2f}")
+
+        # Update balance in DB
+        try:
+            session = get_session()
+            try:
+                profile_repo = ProfileRepo(session)
+                profile = profile_repo.get_active()
+                profile_repo.set_balance(profile.id, "polymarket", balance)
+                session.commit()
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[SlipFiller] Failed to update balance: {e}")
+    except Exception as e:
+        logger.warning(f"[SlipFiller] Data API balance fetch failed: {e}")
+
+    return wallet, balance
 
 
 class SlipStrategy:
@@ -217,25 +400,61 @@ class SlipFillerService:
             page = await context.new_page()
 
             # 5. Navigate to site and ensure logged in
-            # Extract base_url from the full URL (e.g. https://betinia.se)
             from urllib.parse import urlparse
             parsed = urlparse(url)
             base_url = f"{parsed.scheme}://{parsed.netloc}"
-            landing = PROVIDER_LANDING_URLS.get(request.provider_id, base_url)
-            await page.goto(landing, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)
+            platform = PLATFORM_MAP.get(request.provider_id, "")
 
-            logged_in = await ensure_logged_in(page, base_url)
-            if not logged_in:
+            if platform in WALLET_PLATFORMS:
+                # Polymarket: navigate to polymarket.com first to check login
+                await page.goto("https://polymarket.com", wait_until="domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(3000)
+                logged_in = await ensure_polymarket_logged_in(page)
+
+                wallet = None
+                balance = None
+                balance_updated = False
+
+                if logged_in:
+                    # Post-login: extract wallet + sync balance via Data API
+                    wallet, balance = await _sync_polymarket_after_login(page)
+                    balance_updated = balance is not None
+
+                    # Navigate to the actual event page
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        await page.wait_for_timeout(2000)
+                    except Exception as e:
+                        logger.warning(f"[SlipFiller] Event navigation failed: {e}")
+
+                    msg = "Synced balance and navigated to event."
+                else:
+                    msg = "Connect your wallet on Polymarket, then try again."
+
                 return SlipResult(
-                    status=SlipStatus.ERROR,
-                    message="Not logged in — BankID authentication required. Open Chrome and log in manually.",
+                    status=SlipStatus.NAVIGATED_ONLY,
+                    message=msg,
                     provider_id=request.provider_id,
                     url=url,
+                    wallet_address=wallet,
+                    balance=balance,
+                    balance_updated=balance_updated,
                 )
+            else:
+                # Swedish sportsbooks: navigate to landing, check BankID login
+                landing = PROVIDER_LANDING_URLS.get(request.provider_id, base_url)
+                await page.goto(landing, wait_until="domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(2000)
+                logged_in = await ensure_logged_in(page, base_url)
+                if not logged_in:
+                    return SlipResult(
+                        status=SlipStatus.ERROR,
+                        message="Not logged in — BankID authentication required. Open Chrome and log in manually.",
+                        provider_id=request.provider_id,
+                        url=url,
+                    )
 
-            # 6. Select platform strategy
-            platform = PLATFORM_MAP.get(request.provider_id, "")
+            # 6. Select platform strategy (platform already resolved above)
             strategy = self._strategies.get(platform, self._fallback)
 
             logger.info(

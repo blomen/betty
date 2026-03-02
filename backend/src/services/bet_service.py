@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
+from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,24 @@ class BetService:
         risk_score = self._get_risk_score(provider_id)
         is_round = stake == round(stake) and stake % 5 == 0 and stake >= 10
 
+        # Compute fair odds at placement from current Pinnacle odds
+        fair_odds_at_placement = None
+        if event_id and market and outcome:
+            pin_rows = (
+                self.db.query(Odds)
+                .filter(
+                    Odds.event_id == event_id,
+                    Odds.provider_id == "pinnacle",
+                    Odds.market == market,
+                )
+                .all()
+            )
+            pin_market = {row.outcome: row.odds for row in pin_rows}
+            if len(pin_market) >= 2 and outcome in pin_market:
+                fair = get_fair_odds_for_outcome(outcome, pin_market, method="multiplicative")
+                if fair and fair > 1.0:
+                    fair_odds_at_placement = round(fair, 4)
+
         bet = self.bet_repo.create(
             profile_id=profile.id,
             event_id=event_id,
@@ -113,6 +132,7 @@ class BetService:
             risk_score_at_bet=risk_score,
             utility_score=utility_score,
             selection_probability=selection_probability,
+            fair_odds_at_placement=fair_odds_at_placement,
         )
 
         # Deduct stake from balance (unless free bet)

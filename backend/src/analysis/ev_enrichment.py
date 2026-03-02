@@ -556,6 +556,18 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         if edge_pct > 100:
             continue
 
+        # Sanity: original_odds vs fair_odds ratio — combo pricing uses
+        # BTTS/total proxies that can be wildly off; reject extreme ratios
+        original_odds = special.get("original_odds")
+        if original_odds and fair_odds:
+            ratio = original_odds / fair_odds
+            if ratio > 1.6 or ratio < 0.35:
+                logger.debug(
+                    f"Skipping combo '{special.get('title', '')[:50]}': "
+                    f"orig/fair ratio={ratio:.2f} (orig={original_odds:.2f} fair={fair_odds:.2f})"
+                )
+                continue
+
         _set_enrichment(special, edge_pct, fair_odds, boosted_odds,
                         method, None, pin_key, event_info,
                         market="combo")

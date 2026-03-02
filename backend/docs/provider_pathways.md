@@ -23,7 +23,7 @@
 
 | Platform | Canonical | Other Brands | Sportsbook Type |
 |----------|-----------|--------------|-----------------|
-| Kambi | unibet.se | leovegas, expekt, betmgm, speedybet, x3000, goldenbull, 1x2 | Embedded JS widget (Kambi client-static) |
+| Kambi | unibet.se | leovegas, speedybet, x3000, goldenbull, 1x2 | Embedded JS widget (Kambi client-static) |
 | Altenar | betinia.se | campobet, swiper, lodur, dbet, quickcasino | Embedded JS widget (Altenar WSDK) |
 | Spectate (888/Evoke) | mrgreen.se | 888sport | Embedded iframe (Spectate) |
 | Gecko V2 / OBG | betsson.com | nordicbet, spelklubben, bethard | Native SPA (OBG platform) |
@@ -38,93 +38,109 @@
 
 ## 1. Kambi Platform (unibet.se — canonical)
 
-**Brands:** unibet.se, leovegas.com, expekt.se, betmgm.se, speedybet.com, x3000.se, goldenbull.se, 1x2.se
+**Brands:** unibet.se, leovegas.com, speedybet.com, x3000.com, goldenbull.se, 1x2.se
 **Deep-linking:** YES — event pages via `/betting/sports/event/{kambi_event_id}`
+**Verified:** 2026-03-02 via live browser session (Unibet)
 
-### Place Bet
+### Login (VERIFIED)
+```
+Flow (Unibet — BankID):
+1. Navigate to landing page: /betting/sports/home
+2. Cookie banner: OneTrust — click button "Avvisa alla" (decline all)
+3. Click button "Spela här" → BankID modal opens
+4. Click button "Starta BankID" → QR code displayed
+5. User scans QR code on phone → wait up to 120s
+6. Post-login: "MINA SPELGRÄNSER" modal appears → click button "okej"
+7. Logged in — "saldo" balance visible in header
+
+Login detection indicators:
+- Logged OUT: "SPELA HÄR" or "LOGGA IN" in page content
+- Logged IN: "saldo" in content, "customerLoggedIn=true", "PLACERA SPEL", "SPELGRÄNSER"
+
+Selectors:
+- Cookie: page.get_by_role("button", name="Avvisa alla")
+- Login trigger: page.get_by_role("button", name="Spela här")
+- BankID start: page.get_by_role("button", name="Starta BankID")
+- Post-login dismiss: page.get_by_role("button", name="okej")
+```
+
+### Place Bet (VERIFIED)
 ```
 URL: https://{domain}/betting/sports/event/{kambi_event_id}
+Example: https://www.unibet.se/betting/sports/event/1024182463
+
 Flow:
-1. Navigate to sports page: /betting/sports/home
-2. Browse sports (left sidebar) → leagues → matches
-3. Click odds button (e.g. "1.75") → bet slip appears at BOTTOM of page
+1. Navigate to event page via deep link
+2. Wait for Kambi widget to render (~3s after domcontentloaded)
+3. Click odds button (e.g. "Real Madrid 1.35") → bet slip appears at BOTTOM
 4. Bet slip structure:
-   - Header: "Singlar" with count (1) and total odds "@ 1.75"
+   - Header: "Singlar" with count (1) and total odds "@ 1.35"
    - Selection: team name + "Cash Out" badge + "Fulltid" (market type)
    - Remove: button "Avlägsna resultat {team}"
    - Odds display: current odds value
    - Stake input: textbox placeholder="0.00 kr"
    - Payout: "Möjlig utbetalning: {amount} kr"
    - Submit: button "Lägg spel" (disabled until stake entered)
-5. Enter stake in textbox → "Lägg spel" button enables → click to place
+5. CRITICAL: Must use pressSequentially (character-by-character typing) for stake input.
+   fill() bypasses Kambi's React event handlers, leaving payout at "0.00 kr".
+6. If odds change during fill: "Godkänn förändrat odds" button replaces "Lägg spel"
+7. User confirms manually — we do NOT click "Lägg spel"
 
-CSS selectors (from Kambi widget):
-- Odds buttons: within match row, button with odds value text
-- Bet slip: appears as floating panel at bottom
-- Stake input: textbox with aria label containing "Mata in insats"
+Selectors (verified):
+- Odds buttons: [class*="outcome__odds"], [class*="mod-outcome"] button, button[class*="outcome"]
+- Stake input: input[placeholder*="0.00"], input[aria-label*="insats" i], [class*="betslip"] input
 - Place bet: button "Lägg spel"
+- Accept changed odds: button "Godkänn förändrat odds"
 
 API interception:
-- Kambi uses XHR to https://eu1.offering-api.kambicdn.com/offering/v2018/{brand}/...
-- Bet placement likely via https://{domain}/betting/betplacement/...
+- Kambi offering API: https://eu1.offering-api.kambicdn.com/offering/v2018/{brand}/...
 ```
 
 ### Check Balance
 ```
 Location: Top right header area (visible when logged in)
-URL: GET /wallitt/mainbalance (returns 401 when not logged in)
-Note: Balance fetch is automatic via internal API
+Shows "Saldo X kr" after login
 ```
 
-### My Bets
+### My Bets (VERIFIED)
 ```
-URL: /betting/sports/mybets (redirects to login if not authenticated)
-Also accessible from bet slip sidebar when logged in
+URL: /betting/sports/bethistory (confirmed working)
+Tabs: Singlar, Kombination, System
+Shows settled + open bets with outcomes
 ```
 
-### Deposit
+### Deposit (VERIFIED)
 ```
-URL: /myaccount/cashier (gives 404 when not logged in — requires auth session)
-Payment methods: Swish, Swedbank, Apple Pay, Visa, Visa Electron, MasterCard, Maestro, Trustly
+URL: /myaccount/cashier → RETURNS 404 (DEAD!)
+ACTUAL: Deposit is a modal overlay triggered by clicking the deposit icon button
+        in the header bar (not a separate URL page).
+Navigate to landing page and user deposits manually via header icon.
 ```
 
 ### Withdraw
 ```
-URL: /myaccount/cashier (same page as deposit, different tab/section)
+Same as deposit — modal overlay from header, NOT a URL page
 ```
 
 ### Settle/Results
 ```
 No dedicated results page observed.
 Live scores visible on match pages during play.
-Score display: within match row showing "0 - 0" and match clock "48:21"
 ```
 
 ### Bonus Status
 ```
-Likely under /myaccount/ section (requires login)
-```
-
-### Login
-```
-Button: "Spela här" (disabled without JavaScript interaction)
-Method: BankID verification
-Responsible gaming links in top bar:
-- /myaccount/responsiblegaming/selfexclusion
-- /myaccount/responsiblegaming/gamblingprofile
-- /myaccount/responsiblegaming/depositlimit
+Under /myaccount/ section (requires login)
 ```
 
 ### Brand URL Patterns
 ```
-unibet:    /betting/sports/event/{id}  | /myaccount/cashier
-leovegas:  /sv-se/betting/event/{id}   | /sv-se/my-account/deposit
-expekt:    /betting/event/{id}         | /myaccount/cashier
-betmgm:    /betting/event/{id}         | /myaccount/cashier
-speedybet: /sv/betting/event/{id}      | /sv/myaccount/cashier
-x3000:     /betting/event/{id}         | /myaccount/cashier
-goldenbull:/betting/event/{id}         | /myaccount/cashier
-1x2:       /betting/event/{id}         | /myaccount/cashier
+unibet:    /betting/sports/event/{id}  | landing: /betting/sports/home     | my bets: /betting/sports/bethistory
+leovegas:  /sv-se/betting/event/{id}   | landing: /sv-se/betting           | my bets: /sv-se/betting/bethistory (unverified)
+speedybet: /sv/betting/event/{id}      | landing: /sv/betting              | my bets: /sv/betting/bethistory (unverified)
+x3000:     /betting/event/{id}         | landing: /betting                 | my bets: /betting/bethistory (unverified)
+goldenbull:/en/betting/event/{id}      | landing: /en/betting              | my bets: /en/betting/bethistory (unverified)
+1x2:       /en/betting/event/{id}      | landing: /en/betting              | my bets: /en/betting/bethistory (unverified)
 ```
 
 ---

@@ -127,6 +127,36 @@ orchestrator:
     notify_circuit_breaker_after: 2  # Notify circuit breaker after N consecutive 429s
 
 # ============================================================================
+# Combo boost tables (YAML anchors)
+# ============================================================================
+# Combo profit boosts: bookmaker adds X% to parlay profit based on leg count.
+# Payout = stake + (combined_odds - 1) × stake × (1 + boost_pct/100)
+
+combo_boost_campobet: &combo_boost_campobet
+  enabled: true
+  min_odds_per_leg: 1.40
+  max_legs: 20
+  boost_table:
+    3: 3
+    4: 5
+    5: 8
+    6: 10
+    7: 13
+    8: 15
+    9: 20
+    10: 30
+    11: 35
+    12: 40
+    13: 45
+    14: 50
+    15: 55
+    16: 60
+    17: 65
+    18: 70
+    19: 80
+    20: 100
+
+# ============================================================================
 # Base configurations (YAML anchors)
 # ============================================================================
 
@@ -374,8 +404,11 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 6
+      wagering_multiplier: 12
       min_odds: 1.80
+      trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
+    combo_boost:
+      <<: *combo_boost_campobet
 
   swiper:
     <<: *altenar_defaults

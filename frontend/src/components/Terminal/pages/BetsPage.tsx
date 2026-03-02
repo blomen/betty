@@ -43,7 +43,7 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 
 // ── Sort types ───────────────────────────────────────────────────────
 
-type SortKey = 'date' | 'provider' | 'odds' | 'stake' | 'profit' | 'clv' | 'edge' | 'prob' | 'ttk' | 'status';
+type SortKey = 'date' | 'provider' | 'odds' | 'close' | 'clv' | 'edge' | 'stake' | 'profit' | 'prob' | 'ttk' | 'status';
 type SortDir = 'asc' | 'desc';
 
 function getSortValue(bet: Bet, key: SortKey): number | string {
@@ -51,10 +51,11 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
     case 'date': return new Date(bet.placed_at).getTime();
     case 'provider': return bet.provider;
     case 'odds': return bet.odds;
+    case 'close': return bet.closing_odds ?? -9999;
+    case 'clv': return bet.clv_pct ?? -9999;
+    case 'edge': return bet.placed_edge_pct ?? -9999;
     case 'stake': return bet.stake;
     case 'profit': return bet.profit;
-    case 'clv': return bet.clv_pct ?? -9999;
-    case 'edge': return bet.edge_pct ?? -9999;
     case 'prob': return bet.selection_probability ?? -9999;
     case 'ttk': return getTTK(bet) ?? 99999;
     case 'status': {
@@ -767,12 +768,12 @@ export function BetsPage() {
               <tr>
                 <SortHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
                 <SortHeader label="Provider" sortKey="provider" currentSort={sort} onSort={handleSort} />
-                <th>Outcome</th>
                 <SortHeader label="Odds" sortKey="odds" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="Stake" sortKey="stake" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="Profit" sortKey="profit" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Close" sortKey="close" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="CLV" sortKey="clv" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Edge" sortKey="edge" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Stake" sortKey="stake" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Profit" sortKey="profit" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Prob" sortKey="prob" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="TTK" sortKey="ttk" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Status" sortKey="status" currentSort={sort} onSort={handleSort} align="right" />
@@ -793,13 +794,15 @@ export function BetsPage() {
                     >
                       <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
                       <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
-                      <td className="text-text text-sm">{resolveOutcome(bet)}</td>
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
                       <td className="text-right">
-                        <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
-                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
-                        </span>
+                        {bet.closing_odds != null ? (
+                          <span className={`text-sm ${bet.closing_odds > bet.odds ? 'text-success' : bet.closing_odds < bet.odds ? 'text-error' : 'text-text'}`}>
+                            {bet.closing_odds.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-sm text-muted">-</span>
+                        )}
                       </td>
                       <td className="text-right">
                         {bet.clv_pct != null ? (
@@ -811,13 +814,19 @@ export function BetsPage() {
                         )}
                       </td>
                       <td className="text-right">
-                        {bet.edge_pct != null ? (
-                          <span className={`text-sm font-medium ${bet.edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            {bet.edge_pct >= 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%
+                        {bet.placed_edge_pct != null ? (
+                          <span className={`text-sm font-medium ${bet.placed_edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                            +{bet.placed_edge_pct.toFixed(1)}%
                           </span>
                         ) : (
                           <span className="text-sm text-muted">-</span>
                         )}
+                      </td>
+                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right">
+                        <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
+                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
+                        </span>
                       </td>
                       <td className="text-right">
                         {bet.selection_probability != null ? (
@@ -841,20 +850,20 @@ export function BetsPage() {
                           <div className="px-3 py-2 bg-panel space-y-2">
                             <div className="flex items-center gap-6 text-xs text-muted">
                               <div>
-                                <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                                <span className="text-text">{bet.market || '-'}</span>
+                                <span className="text-muted2 uppercase tracking-wider">Selection: </span>
+                                <span className="text-text">{resolveOutcome(bet)}</span>
+                                {bet.market && <span className="text-muted2 ml-1">({bet.market}{bet.point != null ? ` ${bet.point}` : ''})</span>}
                               </div>
+                              {bet.fair_odds_at_placement != null && (
+                                <div>
+                                  <span className="text-muted2 uppercase tracking-wider">Fair: </span>
+                                  <span className="text-text">{bet.fair_odds_at_placement.toFixed(3)}</span>
+                                </div>
+                              )}
                               {ttk !== null && (
                                 <div>
                                   <span className="text-muted2 uppercase tracking-wider">CLV Conf: </span>
                                   <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
-                                </div>
-                              )}
-                              {bet.closing_odds != null && (
-                                <div>
-                                  <span className="text-muted2 uppercase tracking-wider">Close: </span>
-                                  <span className="text-text">{bet.closing_odds.toFixed(2)}</span>
-                                  <span className="text-muted2 ml-1">({bet.odds.toFixed(2)} placed)</span>
                                 </div>
                               )}
                               {!isEditing && (

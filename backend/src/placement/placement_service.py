@@ -93,10 +93,18 @@ class PlacementService:
             away_team=kwargs.get("away_team", ""),
         )
         result = await filler.fill_slip(request)
-        return {
+        resp = {
             "status": result.status.value,
             "message": result.message,
             "provider_id": result.provider_id,
             "url": result.url,
             "actual_odds": result.actual_odds,
         }
+        # Include post-login sync data (Polymarket wallet-based)
+        if result.balance is not None:
+            resp["balance"] = result.balance
+        if result.wallet_address:
+            resp["wallet_address"] = result.wallet_address
+        if result.balance_updated:
+            resp["balance_updated"] = True
+        return resp

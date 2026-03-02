@@ -234,15 +234,23 @@ class KambiSlipStrategy(SlipStrategy):
     # ------------------------------------------------------------------
 
     async def _fill_stake(self, page: Page, stake: float) -> bool:
-        """Find the stake input in the bet slip and fill it."""
+        """Find the stake input in the bet slip and fill it.
+
+        Uses press_sequentially (character-by-character typing) instead of fill()
+        because Kambi's React widget listens for keydown/keyup events to update
+        its internal state. fill() bypasses these handlers, leaving the payout
+        display at "0.00 kr" and the "Lägg spel" button disabled.
+        """
         for sel in _STAKE_INPUT_SELECTORS:
             try:
                 elem = await page.query_selector(sel)
                 if elem:
                     await elem.click()
-                    await elem.fill("")
+                    # Triple-click to select all existing text, then delete
+                    await elem.click(click_count=3)
+                    await page.keyboard.press("Backspace")
                     stake_str = str(int(stake)) if stake == int(stake) else f"{stake:.0f}"
-                    await elem.fill(stake_str)
+                    await elem.press_sequentially(stake_str, delay=50)
                     logger.debug(f"Filled stake: {stake_str} kr")
                     return True
             except Exception:
