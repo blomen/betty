@@ -48,6 +48,7 @@ export interface SpecialItem {
   matched_outcome: string | null;
   matched_event_id: string | null;
   matched_market: string | null;
+  enrichment_method: string | null;
 }
 
 export interface SpecialsFilters {
@@ -701,6 +702,7 @@ export const api = {
     category?: string;
     sort?: string;
     order?: string;
+    measurable_only?: boolean;
   }): Promise<SpecialsResponse> {
     const params = new URLSearchParams();
     if (filters?.sport) params.set('sport', filters.sport);
@@ -708,6 +710,7 @@ export const api = {
     if (filters?.category) params.set('category', filters.category);
     if (filters?.sort) params.set('sort', filters.sort);
     if (filters?.order) params.set('order', filters.order);
+    if (filters?.measurable_only !== undefined) params.set('measurable_only', String(filters.measurable_only));
     const qs = params.toString();
     return fetchJson(`/specials${qs ? `?${qs}` : ''}`);
   },

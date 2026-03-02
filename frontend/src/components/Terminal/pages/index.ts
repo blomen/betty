@@ -5,7 +5,6 @@ export { ReversePage } from './ReversePage';
 export { PolymarketPage } from './PolymarketPage';
 export { BetsPage } from './BetsPage';
 export { BankrollPage } from './BankrollPage';
-export { SpecialsPage } from './SpecialsPage';
 export { ProfilePage } from './ProfilePage';
 export { WelcomePage } from './WelcomePage';
 export { TradingBankrollPage } from './TradingBankrollPage';

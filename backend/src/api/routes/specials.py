@@ -85,6 +85,7 @@ async def get_specials(
     provider: Optional[str] = Query(None, description="Filter by provider (matches provider + shared_providers)"),
     category: Optional[str] = Query(None, description="Filter by category (boost, superboost)"),
     ev_only: bool = Query(False, description="Only return +EV boosts"),
+    measurable_only: bool = Query(True, description="Only return boosts with verified EV measurement"),
     sort: str = Query("boost_pct", description="Sort field: boost_pct, edge_pct, boosted_odds, event_time"),
     order: str = Query("desc", description="Sort order: desc (default), asc"),
     db: Session = Depends(get_db),
@@ -100,6 +101,10 @@ async def get_specials(
 
     # Use unfiltered set for filter dropdown values
     all_specials = list(specials)
+
+    # Filter to measurable boosts only (has enrichment_method set)
+    if measurable_only:
+        specials = [s for s in specials if s.get("enrichment_method")]
 
     # --- Filters ---
     if sport:
