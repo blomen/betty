@@ -5,7 +5,6 @@ import { SortableHeader } from '../SortableHeader';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
 import { useTableSort } from '@/hooks/useTableSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
 
@@ -27,7 +26,6 @@ interface BankrollPageProps {
 }
 
 export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
-  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
@@ -183,17 +181,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     setBonusPopup(null);
     setFreebetPopup(null);
 
-    let navUrl: string | null = null;
-    let windowName = `bbq_${providerId}`;
-    try {
-      const nav = await api.navigateToDeposit(providerId);
-      navUrl = nav.url;
-      windowName = nav.window_name;
-    } catch {
-      // Navigation is best-effort
-    }
-
-    setPendingDeposit({ providerId, amount, withBonus, navUrl, windowName });
+    setPendingDeposit({ providerId, amount, withBonus, navUrl: null, windowName: `bbq_${providerId}` });
   };
 
   // Step 2: Confirm deposit — record balance adjustment
@@ -223,7 +211,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setPendingDeposit(null);
       setAdjustingProvider(null);
       setAdjustAmount('');
-      stopAutoRecord();
       fetchData();
       onRefresh();
     } catch (err) {
@@ -384,7 +371,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                   if (ago !== null) {
                     info += ` synced ${ago < 1 ? 'just now' : `${ago}m ago`}`;
                     if (settled > 0) info += ` (${settled} settled)`;
-                    if (bal !== null) info += ` · ${bal.toFixed(0)} kr`;
+                    if (bal != null) info += ` · ${bal.toFixed(0)} kr`;
                   } else {
                     info += ' logged in';
                   }
@@ -496,16 +483,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                     <td className="text-right">
                       {pendingDeposit?.providerId === provider.provider_id ? (
                         <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => {
-                              startAutoRecord(pendingDeposit.providerId, 'deposit');
-                              navigateCdp(pendingDeposit.navUrl);
-                            }}
-                            className="px-2 py-1 text-xs text-tabBankroll hover:text-text transition-colors"
-                            title={pendingDeposit.navUrl ?? 'Open deposit page'}
-                          >
-                            Go&thinsp;&#8599;
-                          </button>
                           <span className="text-xs text-muted">
                             {provider.currency && provider.currency !== 'SEK'
                               ? `${(pendingDeposit.amount * (provider.exchange_rate_sek ?? 1)).toFixed(0)} kr ($${pendingDeposit.amount.toFixed(2)})`
@@ -519,7 +496,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                             Confirm
                           </button>
                           <button
-                            onClick={() => { stopAutoRecord(); setPendingDeposit(null); setAdjustingProvider(null); setAdjustAmount(''); }}
+                            onClick={() => { setPendingDeposit(null); setAdjustingProvider(null); setAdjustAmount(''); }}
                             className="px-2 py-1 text-xs text-muted hover:text-text"
                           >
                             Cancel
@@ -589,30 +566,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                         </div>
                       ) : (
                         <div className="flex gap-1 justify-end">
-                          <button
-                            onClick={async () => {
-                              startAutoRecord(provider.provider_id, 'check_balance');
-                              try {
-                                const nav = await api.navigateToProvider(provider.provider_id);
-                                navigateCdp(nav.url);
-                              } catch { /* ignore */ }
-                            }}
-                            className="px-2 py-1 text-xs text-muted hover:text-text"
-                          >
-                            Balance&thinsp;&#8599;
-                          </button>
-                          <button
-                            onClick={async () => {
-                              startAutoRecord(provider.provider_id, 'withdraw');
-                              try {
-                                const nav = await api.navigateToProvider(provider.provider_id);
-                                navigateCdp(nav.url);
-                              } catch { /* ignore */ }
-                            }}
-                            className="px-2 py-1 text-xs text-muted hover:text-text"
-                          >
-                            Withdraw&thinsp;&#8599;
-                          </button>
                           <button
                             onClick={() => setAdjustingProvider(provider.provider_id)}
                             className="px-2 py-1 text-xs text-tabBankroll hover:opacity-80"

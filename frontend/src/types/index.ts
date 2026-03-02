@@ -550,56 +550,6 @@ export interface PolymarketStats {
   sports: PolymarketSportStat[];
 }
 
-// Polymarket Portfolio & Account Types
-export interface PolyPosition {
-  condition_id: string;
-  title: string;
-  outcome: string;
-  size: number;
-  avg_price: number;
-  current_value: number;
-  cur_price: number;
-  cash_pnl: number;
-  percent_pnl: number;
-  redeemable: boolean;
-  initial_value: number;
-  slug: string;
-  event_slug: string;
-}
-
-export interface PolyClosedPosition {
-  condition_id: string;
-  title: string;
-  outcome: string;
-  avg_price: number;
-  total_bought: number;
-  realized_pnl: number;
-  end_date: string;
-  cur_price: number;
-}
-
-export interface PolyPortfolio {
-  wallet: string | null;
-  positions: PolyPosition[];
-  closed_positions: PolyClosedPosition[];
-  total_value_usdc: number;
-  total_value_sek: number;
-  total_pnl_usdc: number;
-  unrealized_pnl: number;
-  realized_pnl: number;
-  open_count: number;
-  closed_count: number;
-  // Balance breakdown
-  cash_balance: number;         // USDC.e in wallet (not in positions)
-  position_value: number;       // Active position market value
-  redeemable_value: number;     // Winning resolved positions (redeemable)
-}
-
-export interface PolyWallet {
-  wallet_address: string | null;
-  balance: number;
-}
-
 export interface PolyMyBet {
   id: number;
   event_id: string | null;

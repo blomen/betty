@@ -6,7 +6,6 @@ import { TabIcon, TAB_COLORS } from '../TabBar';
 import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { useMultiSort } from '@/hooks/useMultiSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import type { TabName } from '../Sidebar';
 import type { Bet, Opportunity, BankrollStats, BankrollExposure, PolymarketValueBet } from '@/types';
 
@@ -96,7 +95,6 @@ interface MonitorPageProps {
 }
 
 export function MonitorPage({ onTabChange }: MonitorPageProps) {
-  const { startAutoRecord, navigateCdp } = useRecorder();
   const [bets, setBets] = useState<Bet[]>([]);
   const [stats, setStats] = useState<BankrollStats | null>(null);
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
@@ -306,17 +304,9 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
     }
   };
 
-  const handleViewResult = async (bet: Bet) => {
-    try {
-      const nav = await api.navigateToMyBets(bet.provider);
-      startAutoRecord(bet.provider, 'check_result');
-      navigateCdp(nav.url);
-    } catch {
-      // Fall back: try navigating to the event page directly
-      if (bet.provider_site_url) {
-        startAutoRecord(bet.provider, 'check_result');
-        navigateCdp(bet.provider_site_url);
-      }
+  const handleViewResult = (bet: Bet) => {
+    if (bet.provider_site_url) {
+      window.open(bet.provider_site_url, '_blank');
     }
   };
 
@@ -573,7 +563,7 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             <button
                               className="text-accent text-[10px] ml-1 hover:underline"
                               title="Check result on provider"
-                              onClick={(e) => { e.stopPropagation(); startAutoRecord(bet.provider, 'check_result'); navigateCdp(bet.provider_site_url!); }}
+                              onClick={(e) => { e.stopPropagation(); window.open(bet.provider_site_url!, '_blank'); }}
                             >{formatProviderName(bet.provider)} ↗</button>
                           ) : (
                             <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>

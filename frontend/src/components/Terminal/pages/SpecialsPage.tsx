@@ -4,7 +4,6 @@ import type { SpecialItem, SpecialsFilters, StakePreviewResult } from '@/service
 import { formatProviderName, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -16,7 +15,6 @@ interface GroupedSpecial {
 }
 
 export function SpecialsPage() {
-  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [specials, setSpecials] = useState<SpecialItem[]>([]);
   const [filters, setFilters] = useState<SpecialsFilters | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
@@ -143,42 +141,7 @@ export function SpecialsPage() {
     setPlacementError(null);
     setBetSuccess(null);
 
-    try {
-      let navUrl: string | null = null;
-      let windowName = `bbq_${providerId}`;
-      let slipOdds = odds;
-
-      // Try CDP slip filling first
-      try {
-        const slip = await api.fillSlip({
-          provider_id: providerId,
-          stake,
-          expected_odds: odds,
-        });
-        navUrl = slip.url;
-        if (slip.actual_odds) slipOdds = slip.actual_odds;
-        if (slip.status === 'ready') {
-          setBetSuccess('Bet slip filled — review and confirm on the provider site.');
-          setTimeout(() => setBetSuccess(null), 8000);
-        }
-      } catch {
-        // CDP not available — fall back to URL navigation
-        try {
-          const nav = await api.navigateToProvider(providerId);
-          navUrl = nav.url;
-          windowName = nav.window_name;
-        } catch {
-          // Navigation is best-effort
-        }
-      }
-
-      setPendingBet({ groupKey, special, providerId, actualOdds: slipOdds, stake, navUrl, windowName });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to navigate';
-      setPlacementError(msg);
-    } finally {
-      setIsPlacing(false);
-    }
+    setPendingBet({ groupKey, special, providerId, actualOdds: odds, stake, navUrl: null, windowName: `bbq_${providerId}` });
   };
 
   // Step 2: Confirm bet with actual odds
@@ -199,7 +162,6 @@ export function SpecialsPage() {
         utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined,
         selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined,
       });
-      stopAutoRecord();
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
 
@@ -334,11 +296,9 @@ export function SpecialsPage() {
                           selectedProviderIdx={selectedBetProvider[group.key] ?? 0}
                           onSelectProvider={(idx) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: idx }))}
                           onStartPlaceBet={(providerId) => startPlaceBet(s, providerId, group.key)}
-                          startAutoRecord={startAutoRecord}
-                          navigateCdp={navigateCdp}
                           pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
                           onConfirmBet={confirmPlaceBet}
-                          onCancelPending={() => { stopAutoRecord(); setPendingBet(null); }}
+                          onCancelPending={() => setPendingBet(null)}
                           onUpdatePendingOdds={(val) => setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null)}
                           oddsOverride={oddsOverride[group.key] ?? null}
                           editingOdds={editingOdds === group.key}
@@ -361,7 +321,7 @@ export function SpecialsPage() {
   );
 }
 
-function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onStartPlaceBet, startAutoRecord, navigateCdp, pendingBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
+function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, placementError, selectedProviderIdx, onSelectProvider, onStartPlaceBet, pendingBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit }: {
   special: SpecialItem;
   groupKey: string;
   providers: string[];
@@ -372,8 +332,6 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
   selectedProviderIdx: number;
   onSelectProvider: (idx: number) => void;
   onStartPlaceBet: (providerId: string) => void;
-  startAutoRecord: (provider: string, action: string) => void;
-  navigateCdp: (url: string | null) => Promise<void>;
   pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number; navUrl: string | null; windowName: string } | null;
   onConfirmBet: () => void;
   onCancelPending: () => void;
@@ -451,13 +409,6 @@ function ExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPrev
               <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
             ) : pendingBet ? (
               <>
-                <button
-                  onClick={() => { startAutoRecord(pendingBet.providerId, 'place_bet'); navigateCdp(pendingBet.navUrl); }}
-                  className="px-2 py-1.5 text-xs text-tabBonus hover:text-text transition-colors"
-                  title={pendingBet.navUrl ?? 'Open provider'}
-                >
-                  Go&thinsp;&#8599;
-                </button>
                 <span className="text-muted text-xs">Odds:</span>
                 <input
                   type="number"

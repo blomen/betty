@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..db.models import init_db
-from .state import ws_manager, recorder_ws_manager
+from .state import ws_manager
 from .routes import (
     providers_router,
     bankroll_router,
@@ -39,9 +39,7 @@ from .routes import (
     polymarket_router,
     risk_router,
     specials_router,
-    placement_router,
     trading_router,
-    recorder_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,36 +157,16 @@ async def lifespan(app: FastAPI):
     if root_logger.level > logging.DEBUG:
         root_logger.setLevel(logging.DEBUG)
 
-    # Launch dedicated Chrome with CDP for bet placement recording
-    from ..recorder.chrome_launcher import get_chrome_launcher
-    chrome = get_chrome_launcher()
-    try:
-        cdp_ok = await chrome.start()
-        if cdp_ok:
-            logger.info("Chrome CDP ready for recording")
-        else:
-            logger.warning("Chrome CDP unavailable — recording disabled")
-    except Exception as e:
-        logger.warning(f"Chrome CDP launch failed (non-fatal): {e}")
-
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
     await scheduler.start_continuous(interval_seconds=300)
 
-    # Start auth watcher — monitors CDP Chrome tabs for provider logins
-    from ..services.auth_watcher import get_auth_watcher
-    watcher = get_auth_watcher()
-    watcher_task = asyncio.create_task(watcher.start())
-
     yield  # App is running
 
-    # Graceful shutdown: stop all scheduler tiers + auth watcher
+    # Graceful shutdown: stop all scheduler tiers
     logger.info("Shutting down: stopping scheduler tiers...")
-    watcher.stop()
-    watcher_task.cancel()
     scheduler.stop_all()
-    chrome.stop()
     logger.info("Scheduler stopped.")
 
 
@@ -309,9 +287,7 @@ app.include_router(chat_router)
 app.include_router(polymarket_router)
 app.include_router(risk_router)
 app.include_router(specials_router)
-app.include_router(placement_router)
 app.include_router(trading_router)
-app.include_router(recorder_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)
@@ -328,22 +304,6 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
-
-
-# WebSocket endpoint for recorder live feed
-@app.websocket("/ws/recorder")
-async def websocket_recorder(websocket: WebSocket):
-    """WebSocket endpoint for real-time recording action feed."""
-    await recorder_ws_manager.connect(websocket)
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_json({"type": "pong"})
-
-    except WebSocketDisconnect:
-        recorder_ws_manager.disconnect(websocket)
 
 
 # Version endpoint

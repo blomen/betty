@@ -1,19 +1,16 @@
-"""Polymarket API routes: matched events, value bets, stats, portfolio, wallet, sync, mybets."""
+"""Polymarket API routes: matched events, value bets, stats, mybets."""
 
 import logging
-import re
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from ...db.models import Event, Odds, Bet, ProfileProviderBalance
+from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
 from ...analysis.scanner import OpportunityScanner
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ...config import get_exchange_rate
-from ...services.polymarket_client import PolymarketDataClient
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -373,179 +370,6 @@ async def get_polymarket_matched(
         "events": result,
         "count": len(result),
     }
-
-
-# ──────────────────── Wallet Management ────────────────────
-
-
-class WalletUpdate(BaseModel):
-    wallet_address: str
-
-
-@router.get("/wallet")
-async def get_wallet(db: Session = Depends(get_db)):
-    """Get current Polymarket wallet address for active profile."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    row = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == "polymarket",
-    ).first()
-
-    return {
-        "wallet_address": row.wallet_address if row else None,
-        "balance": row.balance if row else 0.0,
-    }
-
-
-@router.put("/wallet")
-async def set_wallet(data: WalletUpdate, db: Session = Depends(get_db)):
-    """Set Polymarket wallet address for active profile."""
-    addr = data.wallet_address.strip()
-    if not re.match(r'^0x[a-fA-F0-9]{40}$', addr):
-        raise HTTPException(400, "Invalid wallet address — must be 0x followed by 40 hex chars")
-
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    row = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == "polymarket",
-    ).first()
-
-    if row:
-        row.wallet_address = addr
-    else:
-        row = ProfileProviderBalance(
-            profile_id=profile.id,
-            provider_id="polymarket",
-            balance=0.0,
-            wallet_address=addr,
-        )
-        db.add(row)
-
-    db.commit()
-    return {"success": True, "wallet_address": addr}
-
-
-# ──────────────────── Portfolio (Data API) ────────────────────
-
-
-@router.get("/portfolio")
-async def get_portfolio(db: Session = Depends(get_db)):
-    """Get Polymarket portfolio: positions, balance, P&L from public Data API."""
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    row = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == "polymarket",
-    ).first()
-
-    wallet = row.wallet_address if row else None
-    if not wallet:
-        return {
-            "wallet": None,
-            "positions": [],
-            "closed_positions": [],
-            "total_value_usdc": 0,
-            "total_pnl_usdc": 0,
-            "unrealized_pnl": 0,
-            "realized_pnl": 0,
-            "open_count": 0,
-            "closed_count": 0,
-            "total_value_sek": 0,
-        }
-
-    client = PolymarketDataClient()
-    try:
-        portfolio = await client.get_portfolio(wallet)
-    except Exception as e:
-        raise HTTPException(502, f"Polymarket Data API error: {e}")
-
-    usdc_rate = get_exchange_rate("polymarket")
-
-    # Update stored balance from portfolio total value (cash + positions)
-    if row and portfolio.total_value_usdc > 0:
-        row.balance = portfolio.total_value_usdc
-        db.commit()
-
-    return {
-        "wallet": wallet,
-        "positions": [
-            {
-                "condition_id": p.condition_id,
-                "title": p.title,
-                "outcome": p.outcome,
-                "size": p.size,
-                "avg_price": p.avg_price,
-                "current_value": p.current_value,
-                "cur_price": p.cur_price,
-                "cash_pnl": p.cash_pnl,
-                "percent_pnl": p.percent_pnl,
-                "redeemable": p.redeemable,
-                "initial_value": p.initial_value,
-                "slug": p.slug,
-                "event_slug": p.event_slug,
-            }
-            for p in portfolio.positions
-        ],
-        "closed_positions": [
-            {
-                "condition_id": c.condition_id,
-                "title": c.title,
-                "outcome": c.outcome,
-                "avg_price": c.avg_price,
-                "total_bought": c.total_bought,
-                "realized_pnl": c.realized_pnl,
-                "end_date": c.end_date,
-                "cur_price": c.cur_price,
-            }
-            for c in portfolio.closed_positions
-        ],
-        "total_value_usdc": portfolio.total_value_usdc,
-        "total_value_sek": round(portfolio.total_value_usdc * usdc_rate, 2),
-        "total_pnl_usdc": portfolio.total_pnl_usdc,
-        "unrealized_pnl": portfolio.unrealized_pnl,
-        "realized_pnl": portfolio.realized_pnl,
-        "open_count": portfolio.open_count,
-        "closed_count": portfolio.closed_count,
-        # Balance breakdown
-        "cash_balance": portfolio.cash_balance,
-        "position_value": portfolio.position_value,
-        "redeemable_value": portfolio.redeemable_value,
-    }
-
-
-# ──────────────────── Manual Sync ────────────────────
-
-
-@router.post("/sync")
-async def trigger_sync(db: Session = Depends(get_db)):
-    """Manually trigger Polymarket account sync (settlement + balance)."""
-    from ...services.account_sync_service import AccountSyncService
-    from ...placement.strategies.kambi_account import KambiAccountStrategy
-    from ...placement.strategies.polymarket_account import PolymarketAccountStrategy
-
-    profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
-
-    row = db.query(ProfileProviderBalance).filter(
-        ProfileProviderBalance.profile_id == profile.id,
-        ProfileProviderBalance.provider_id == "polymarket",
-    ).first()
-
-    wallet = row.wallet_address if row else None
-    if not wallet:
-        raise HTTPException(400, "No wallet address configured. Set one via PUT /api/polymarket/wallet or log into polymarket.com in Chrome.")
-
-    service = AccountSyncService(db)
-    service.register_strategy("kambi", KambiAccountStrategy())
-    service.register_strategy("polymarket", PolymarketAccountStrategy(wallet))
-
-    result = await service.sync_provider("polymarket")
-    return result
 
 
 # ──────────────────── My Bets (Polymarket) ────────────────────

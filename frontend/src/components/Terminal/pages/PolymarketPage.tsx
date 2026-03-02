@@ -3,28 +3,14 @@ import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import { SortableHeader } from '../SortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { PolymarketValueBet, PolyPortfolio, PolyMyBetsResponse, PolyMyBet } from '@/types';
+import type { PolymarketValueBet, PolyMyBetsResponse, PolyMyBet } from '@/types';
 
-type PolyTab = 'value' | 'portfolio' | 'mybets';
+type PolyTab = 'value' | 'mybets';
 
 export function PolymarketPage() {
-  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
-
-  // Wallet state
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [walletInput, setWalletInput] = useState('');
-  const [isEditingWallet, setIsEditingWallet] = useState(false);
-  const [walletError, setWalletError] = useState<string | null>(null);
-
-  // Portfolio state
-  const [portfolio, setPortfolio] = useState<PolyPortfolio | null>(null);
-  const [portfolioLoading, setPortfolioLoading] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   // MyBets state
   const [myBetsData, setMyBetsData] = useState<PolyMyBetsResponse | null>(null);
@@ -47,83 +33,8 @@ export function PolymarketPage() {
   const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
   const [editingStake, setEditingStake] = useState<string | null>(null);
 
-  // Two-step placement: tracks which bet is awaiting confirm after browser opened
-  const [pendingBet, setPendingBet] = useState<{
-    idx: number;
-    vb: PolymarketValueBet;
-    actualOdds: number;
-    navUrl: string | null;
-    windowName: string;
-  } | null>(null);
-
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
-
-  // ──────────────────── Wallet ────────────────────
-
-  const fetchWallet = useCallback(async () => {
-    try {
-      const res = await api.getPolymarketWallet();
-      setWalletAddress(res.wallet_address);
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => { fetchWallet(); }, [fetchWallet]);
-
-  const saveWallet = async () => {
-    const addr = walletInput.trim();
-    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
-      setWalletError('Invalid address — must be 0x + 40 hex chars');
-      return;
-    }
-    try {
-      await api.setPolymarketWallet(addr);
-      setWalletAddress(addr);
-      setIsEditingWallet(false);
-      setWalletError(null);
-    } catch (err) {
-      setWalletError(err instanceof Error ? err.message : 'Failed to save wallet');
-    }
-  };
-
-  // ──────────────────── Portfolio ────────────────────
-
-  const fetchPortfolio = useCallback(async () => {
-    setPortfolioLoading(true);
-    try {
-      const res = await api.getPolymarketPortfolio();
-      setPortfolio(res);
-      if (res.wallet) setWalletAddress(res.wallet);
-    } catch (err) {
-      console.error('Portfolio fetch failed:', err);
-    } finally {
-      setPortfolioLoading(false);
-    }
-  }, []);
-
-  const triggerSync = async () => {
-    setIsSyncing(true);
-    setSyncMessage(null);
-    try {
-      const res = await api.syncPolymarket();
-      if (res.error) {
-        setSyncMessage(`Sync error: ${res.error}`);
-      } else {
-        const parts = [];
-        if (res.settled_count > 0) parts.push(`${res.settled_count} settled`);
-        if (res.balance_updated && res.balance != null) parts.push(`balance: $${res.balance.toFixed(2)}`);
-        if (res.pending_remaining > 0) parts.push(`${res.pending_remaining} pending`);
-        setSyncMessage(parts.length > 0 ? parts.join(', ') : 'Up to date');
-      }
-      // Refresh portfolio after sync
-      fetchPortfolio();
-      setTimeout(() => setSyncMessage(null), 8000);
-    } catch (err) {
-      setSyncMessage(err instanceof Error ? err.message : 'Sync failed');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   // ──────────────────── MyBets ────────────────────
 
@@ -167,15 +78,13 @@ export function PolymarketPage() {
   // Fetch data based on active tab
   useEffect(() => {
     if (activeTab === 'value') fetchValueData();
-    else if (activeTab === 'portfolio') fetchPortfolio();
     else if (activeTab === 'mybets') fetchMyBets();
-  }, [activeTab, fetchValueData, fetchPortfolio, fetchMyBets]);
+  }, [activeTab, fetchValueData, fetchMyBets]);
 
   useRefreshOnExtraction(fetchValueData);
 
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
-    setPendingBet(null);
   };
 
   const getOddsKey = (vb: PolymarketValueBet) =>
@@ -218,81 +127,11 @@ export function PolymarketPage() {
     return vb.final_stake;
   };
 
-  // Step 1: Fill bet slip via CDP
-  const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
+  // Record bet directly (no CDP navigation)
+  const recordBet = async (vb: PolymarketValueBet) => {
     const stake = getEffectiveStake(vb);
     if (!stake || stake <= 0) return;
     const odds = getEffectiveOdds(vb);
-    setIsPlacing(true);
-    setBetError(null);
-    setBetSuccess(null);
-
-    try {
-      let navUrl: string | null = null;
-      let windowName = 'bbq_polymarket';
-      let slipOdds = odds;
-
-      try {
-        const slip = await api.fillSlip({
-          provider_id: 'polymarket',
-          event_id: vb.event_id,
-          market: vb.market,
-          outcome: vb.outcome,
-          point: vb.point,
-          stake,
-          expected_odds: odds,
-          home_team: vb.home_team,
-          away_team: vb.away_team,
-          provider_meta: vb.provider_meta,
-        });
-        navUrl = slip.url;
-        if (slip.actual_odds) slipOdds = slip.actual_odds;
-
-        // Post-login sync: update wallet + refresh stakes if balance synced
-        const slipAny = slip as Record<string, unknown>;
-        if (slipAny.wallet_address && typeof slipAny.wallet_address === 'string') {
-          setWalletAddress(slipAny.wallet_address as string);
-        }
-        if (slipAny.balance_updated) {
-          // Balance synced — refresh value bets to recalculate stakes
-          fetchValueData();
-          const bal = typeof slipAny.balance === 'number' ? `$${(slipAny.balance as number).toFixed(2)}` : '';
-          setBetSuccess(`Synced ${bal} — place bet on Polymarket and confirm below.`);
-          setTimeout(() => setBetSuccess(null), 8000);
-        } else if (slip.status === 'ready' || slip.status === 'navigated_only') {
-          setBetSuccess('Opened on Polymarket — place bet and confirm below.');
-          setTimeout(() => setBetSuccess(null), 8000);
-        }
-      } catch {
-        try {
-          const nav = await api.navigateToEvent({
-            provider_id: 'polymarket',
-            provider_meta: vb.provider_meta,
-            home_team: vb.home_team,
-            away_team: vb.away_team,
-            event_id: vb.event_id,
-          });
-          navUrl = nav.url;
-          windowName = nav.window_name;
-        } catch { /* best-effort */ }
-      }
-
-      setPendingBet({ idx, vb, actualOdds: slipOdds, navUrl, windowName });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to navigate';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
-    } finally {
-      setIsPlacing(false);
-    }
-  };
-
-  // Step 2: Confirm bet with actual odds
-  const confirmPlaceBet = async () => {
-    if (!pendingBet) return;
-    const { vb, actualOdds } = pendingBet;
-    const stake = getEffectiveStake(vb);
-    if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
 
@@ -302,20 +141,18 @@ export function PolymarketPage() {
         provider_id: 'polymarket',
         market: vb.market,
         outcome: vb.outcome,
-        odds: actualOdds,
+        odds,
         stake,
         is_bonus: false,
         utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined,
         selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
       });
-      stopAutoRecord();
       const outcomeLabel = resolveOutcome(vb);
-      const stakeUsdc = vb.final_stake_usdc ?? (stake / (vb.exchange_rate_sek ?? 10.5));
-      setBetSuccess(`Recorded: $${stakeUsdc.toFixed(2)} on ${outcomeLabel} @ ${oddsToCents(actualOdds)}¢ (Polymarket)`);
+      const stakeUsdc = getEffectiveMetrics(vb).stakeUsdc;
+      setBetSuccess(`Recorded: $${stakeUsdc.toFixed(2)} on ${outcomeLabel} @ ${oddsToCents(odds)}¢ (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);
 
       setPlacedKeys(prev => new Set(prev).add(getPlacedKey(vb)));
-      setPendingBet(null);
       setSelectedOpp(null);
       fetchValueData();
     } catch (err) {
@@ -363,7 +200,6 @@ export function PolymarketPage() {
 
   // ──────────────────── Helpers ────────────────────
 
-  const truncAddr = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   const pnlColor = (v: number) => v > 0.01 ? 'text-success' : v < -0.01 ? 'text-error' : 'text-muted';
   const pnlSign = (v: number) => v > 0 ? '+' : '';
   const resultBadge = (r: string) => {
@@ -383,53 +219,10 @@ export function PolymarketPage() {
         </h2>
       </div>
 
-      {/* Wallet Status Bar */}
-      <div className="px-3 py-2 bg-panel border border-border flex items-center gap-3 text-xs">
-        <span className="text-muted2 uppercase tracking-wider">Wallet:</span>
-        {isEditingWallet ? (
-          <>
-            <input
-              type="text"
-              value={walletInput}
-              onChange={(e) => setWalletInput(e.target.value)}
-              placeholder="0x..."
-              className="flex-1 max-w-xs bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1 focus:outline-none focus:border-tabPolymarket font-mono"
-              onKeyDown={(e) => { if (e.key === 'Enter') saveWallet(); if (e.key === 'Escape') setIsEditingWallet(false); }}
-              autoFocus
-            />
-            <button onClick={saveWallet} className="px-2 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90">Save</button>
-            <button onClick={() => { setIsEditingWallet(false); setWalletError(null); }} className="text-muted hover:text-text text-xs">Cancel</button>
-            {walletError && <span className="text-error text-xs">{walletError}</span>}
-          </>
-        ) : walletAddress ? (
-          <>
-            <span className="font-mono text-text">{truncAddr(walletAddress)}</span>
-            <button
-              onClick={() => { setWalletInput(walletAddress); setIsEditingWallet(true); }}
-              className="text-muted2 hover:text-text text-[10px]"
-            >
-              edit
-            </button>
-          </>
-        ) : (
-          <>
-            <span className="text-muted">No wallet detected</span>
-            <button
-              onClick={() => { setWalletInput(''); setIsEditingWallet(true); }}
-              className="px-2 py-1 border border-tabPolymarket/40 text-tabPolymarket text-xs hover:bg-tabPolymarket/10"
-            >
-              Set manually
-            </button>
-            <span className="text-muted2">or log into polymarket.com in Chrome to auto-detect</span>
-          </>
-        )}
-      </div>
-
       {/* Tab Selector */}
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
-          { id: 'portfolio' as PolyTab, label: 'Portfolio' },
           { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsData?.stats.total_bets },
         ]).map(tab => (
           <button
@@ -458,151 +251,6 @@ export function PolymarketPage() {
         <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
           <span>{betError}</span>
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-        </div>
-      )}
-      {syncMessage && (
-        <div className={`px-3 py-2 text-xs border ${syncMessage.includes('error') || syncMessage.includes('failed') ? 'bg-error/10 border-error/30 text-error' : 'bg-success/10 border-success/30 text-success'} flex items-center justify-between`}>
-          <span>Sync: {syncMessage}</span>
-          <button onClick={() => setSyncMessage(null)} className="ml-2 opacity-60 hover:opacity-100">x</button>
-        </div>
-      )}
-
-      {/* ═══════════════ PORTFOLIO TAB ═══════════════ */}
-      {activeTab === 'portfolio' && (
-        <div className="space-y-3">
-          {/* Summary Cards */}
-          {portfolioLoading && !portfolio ? (
-            <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading portfolio...</div>
-          ) : !walletAddress ? (
-            <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Set a wallet address to view portfolio.</div>
-          ) : portfolio ? (
-            <>
-              <div className="grid grid-cols-5 gap-2">
-                {[
-                  {
-                    label: 'Total Value',
-                    value: `$${portfolio.total_value_usdc.toFixed(2)}`,
-                    sub: `${portfolio.total_value_sek.toFixed(0)} SEK`,
-                  },
-                  {
-                    label: 'Cash',
-                    value: `$${(portfolio.cash_balance ?? 0).toFixed(2)}`,
-                    sub: portfolio.position_value > 0 ? `+$${portfolio.position_value.toFixed(2)} in positions` : portfolio.redeemable_value > 0 ? `+$${portfolio.redeemable_value.toFixed(2)} redeemable` : undefined,
-                  },
-                  { label: 'Open', value: String(portfolio.open_count), sub: `${portfolio.closed_count} closed` },
-                  { label: 'Unrealized', value: `${pnlSign(portfolio.unrealized_pnl)}$${Math.abs(portfolio.unrealized_pnl).toFixed(2)}`, color: pnlColor(portfolio.unrealized_pnl) },
-                  { label: 'Realized', value: `${pnlSign(portfolio.realized_pnl)}$${Math.abs(portfolio.realized_pnl).toFixed(2)}`, color: pnlColor(portfolio.realized_pnl) },
-                ].map(card => (
-                  <div key={card.label} className="bg-panel border border-border px-3 py-2">
-                    <div className="text-muted2 text-[10px] uppercase tracking-wider">{card.label}</div>
-                    <div className={`text-sm font-semibold ${card.color ?? 'text-text'}`}>{card.value}</div>
-                    {card.sub && <div className="text-muted2 text-[10px]">{card.sub}</div>}
-                  </div>
-                ))}
-              </div>
-
-              {/* Sync Button */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={triggerSync}
-                  disabled={isSyncing}
-                  className="px-3 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50"
-                >
-                  {isSyncing ? 'Syncing...' : 'Sync Account'}
-                </button>
-                <button
-                  onClick={fetchPortfolio}
-                  disabled={portfolioLoading}
-                  className="px-3 py-1.5 border border-border text-muted text-xs hover:text-text disabled:opacity-50"
-                >
-                  Refresh
-                </button>
-              </div>
-
-              {/* Open Positions */}
-              {portfolio.positions.length > 0 && (
-                <>
-                  <h3 className="text-xs text-muted2 uppercase tracking-wider">Open Positions ({portfolio.positions.length})</h3>
-                  <div className="border-l-2 border-tabPolymarket">
-                    <table className="sq">
-                      <thead>
-                        <tr>
-                          <th>Event</th>
-                          <th className="text-right">Outcome</th>
-                          <th className="text-right">Shares</th>
-                          <th className="text-right">Avg</th>
-                          <th className="text-right">Current</th>
-                          <th className="text-right">Value</th>
-                          <th className="text-right">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {portfolio.positions.map(p => (
-                          <tr key={`${p.condition_id}-${p.outcome}`}>
-                            <td>
-                              <span className="text-text text-sm">{p.title}</span>
-                              {p.redeemable && <span className="ml-1 text-[9px] px-1 py-0.5 bg-success/15 text-success">REDEEMABLE</span>}
-                            </td>
-                            <td className="text-right text-text text-sm">{p.outcome}</td>
-                            <td className="text-right text-text text-sm">{p.size.toFixed(1)}</td>
-                            <td className="text-right text-muted text-sm">{Math.round(p.avg_price * 100)}¢</td>
-                            <td className="text-right text-text text-sm">{Math.round(p.cur_price * 100)}¢</td>
-                            <td className="text-right text-text text-sm font-medium">${p.current_value.toFixed(2)}</td>
-                            <td className={`text-right text-sm font-medium ${pnlColor(p.cash_pnl)}`}>
-                              {pnlSign(p.cash_pnl)}${Math.abs(p.cash_pnl).toFixed(2)}
-                              <span className="text-muted2 text-[10px] ml-1">({pnlSign(p.percent_pnl)}{Math.abs(p.percent_pnl).toFixed(0)}%)</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-
-              {/* Closed Positions */}
-              {portfolio.closed_positions.length > 0 && (
-                <>
-                  <h3 className="text-xs text-muted2 uppercase tracking-wider">Closed Positions ({portfolio.closed_positions.length})</h3>
-                  <div className="border-l-2 border-muted/30">
-                    <table className="sq">
-                      <thead>
-                        <tr>
-                          <th>Event</th>
-                          <th className="text-right">Outcome</th>
-                          <th className="text-right">Shares</th>
-                          <th className="text-right">Avg</th>
-                          <th className="text-right">Final</th>
-                          <th className="text-right">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {portfolio.closed_positions.map(c => (
-                          <tr key={`${c.condition_id}-${c.outcome}`} className="opacity-70">
-                            <td>
-                              <span className="text-text text-sm">{c.title}</span>
-                              {c.end_date && <div className="text-muted2 text-[10px]">{c.end_date}</div>}
-                            </td>
-                            <td className="text-right text-text text-sm">{c.outcome}</td>
-                            <td className="text-right text-muted text-sm">{c.total_bought.toFixed(1)}</td>
-                            <td className="text-right text-muted text-sm">{Math.round(c.avg_price * 100)}¢</td>
-                            <td className="text-right text-muted text-sm">{Math.round(c.cur_price * 100)}¢</td>
-                            <td className={`text-right text-sm font-medium ${pnlColor(c.realized_pnl)}`}>
-                              {pnlSign(c.realized_pnl)}${Math.abs(c.realized_pnl).toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-
-              {portfolio.positions.length === 0 && portfolio.closed_positions.length === 0 && (
-                <div className="text-muted text-sm py-4 text-center">No positions found for this wallet.</div>
-              )}
-            </>
-          ) : null}
         </div>
       )}
 
@@ -782,11 +430,7 @@ export function PolymarketPage() {
                         </td>
                         <td className="text-right text-tabPolymarket font-semibold text-sm">+{m.edgePct.toFixed(1)}%</td>
                       </tr>
-                      {isSelected && !isSkipped && (() => {
-                        const isPending = pendingBet?.idx === idx;
-                        const pendingCents = isPending ? oddsToCents(pendingBet!.actualOdds) : 0;
-
-                        return (
+                      {isSelected && !isSkipped && (
                         <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
                           <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
                             {/* Top row: Kelly, Price (editable), Payout, Profit, Market */}
@@ -870,64 +514,30 @@ export function PolymarketPage() {
                                   <span className="text-text">{vb.point}</span>
                                 </div>
                               )}
-                            </div>
-                            {/* Bottom row: Two-step bet flow */}
-                            <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                              {isPending ? (
-                                <>
-                                  <button
-                                    onClick={() => { startAutoRecord('polymarket', 'place_bet'); navigateCdp(pendingBet!.navUrl); }}
-                                    className="px-2 py-1.5 text-xs text-tabPolymarket hover:text-text transition-colors"
-                                    title={pendingBet!.navUrl ?? 'Open Polymarket'}
-                                  >
-                                    Go&thinsp;&#8599;
-                                  </button>
-                                  <span className="text-muted text-xs">Price:</span>
-                                  <input
-                                    type="number"
-                                    step="1"
-                                    min="1"
-                                    max="99"
-                                    autoFocus
-                                    value={pendingCents}
-                                    onChange={(e) => {
-                                      const cents = parseInt(e.target.value, 10);
-                                      if (!isNaN(cents) && cents >= 1 && cents <= 99) {
-                                        setPendingBet(prev => prev ? { ...prev, actualOdds: 100 / cents } : null);
-                                      }
-                                    }}
-                                    className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabPolymarket"
-                                    onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
-                                  />
-                                  <span className="text-muted text-xs">¢</span>
-                                  <button
-                                    onClick={confirmPlaceBet}
-                                    disabled={isPlacing || pendingBet!.actualOdds < 1.01}
-                                    className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                                  >
-                                    {isPlacing ? '...' : 'Confirm'}
-                                  </button>
-                                  <button
-                                    onClick={() => { stopAutoRecord(); setPendingBet(null); }}
-                                    className="px-2 py-1.5 text-xs text-muted hover:text-text"
-                                  >
-                                    Cancel
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  onClick={() => startPlaceBet(vb, idx)}
-                                  disabled={(!hasStake && !m.stakeOverridden) || isPlacing}
-                                  className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                              {vb.event_slug && (
+                                <a
+                                  href={`https://polymarket.com/event/${vb.event_slug}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-tabPolymarket hover:underline text-xs ml-auto"
                                 >
-                                  {isPlacing ? '...' : 'Place Bet'}
-                                </button>
+                                  Open on Polymarket &#8599;
+                                </a>
                               )}
+                            </div>
+                            {/* Bottom row: Record bet */}
+                            <div className="px-3 py-2 bg-panel flex items-center gap-2">
+                              <button
+                                onClick={() => recordBet(vb)}
+                                disabled={(!hasStake && !m.stakeOverridden) || isPlacing}
+                                className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                              >
+                                {isPlacing ? '...' : 'Record Bet'}
+                              </button>
                             </div>
                           </td>
                         </tr>
-                        );
-                      })()}
+                      )}
                     </>
                   );
                 })}

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName } from '@/utils/formatters';
-import { useRecorder } from '@/contexts/RecorderContext';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
 
@@ -355,7 +354,6 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
 // ── Main page — History only ────────────────────────────────────────
 
 export function BetsPage() {
-  const { startAutoRecord, navigateCdp } = useRecorder();
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
@@ -424,13 +422,9 @@ export function BetsPage() {
     }).catch(() => {});
   }, []);
 
-  const openWorkflow = useCallback(async (providerId: string, workflow: string) => {
-    startAutoRecord(providerId, workflow);
-    try {
-      const nav = await api.navigateToProvider(providerId);
-      navigateCdp(nav.url);
-    } catch { /* ignore */ }
-  }, [startAutoRecord, navigateCdp]);
+  const openWorkflow = useCallback((_providerId: string, _workflow: string) => {
+    // CDP navigation removed — manual placement only
+  }, []);
 
   // ── History (settled bets only) ─────────────────────────────────
 
