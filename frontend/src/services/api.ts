@@ -17,7 +17,6 @@ import type {
   OpportunityInput,
   SelectOpportunityResponse,
   RiskAwareStake,
-  CombosResponse,
 } from '@/types';
 
 // ============ Placement Types ============
@@ -895,22 +894,6 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-  },
-
-  // ============ Combos ============
-  async getCombos(filters?: {
-    provider?: string;
-    min_legs?: number;
-    max_legs?: number;
-    min_edge_pct?: number;
-  }): Promise<CombosResponse> {
-    const params = new URLSearchParams();
-    if (filters?.provider) params.set('provider', filters.provider);
-    if (filters?.min_legs) params.set('min_legs', filters.min_legs.toString());
-    if (filters?.max_legs) params.set('max_legs', filters.max_legs.toString());
-    if (filters?.min_edge_pct) params.set('min_edge_pct', filters.min_edge_pct.toString());
-    const qs = params.toString();
-    return fetchJson(`/combos${qs ? `?${qs}` : ''}`);
   },
 
   // ============ Profiles ============

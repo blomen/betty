@@ -14,7 +14,6 @@ const SPORTS_TABS: Tab[] = [
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
-  { name: 'combos',     label: 'Combos',     color: '#22D3EE' },
   { name: 'specials',   label: 'Specials',   color: '#A78BFA' },
 ];
 
@@ -45,7 +44,6 @@ export const TAB_COLORS: Record<string, string> = {
   polymarket: '#A855F7',
   stats: '#4FC3F7',
   bankroll: '#EC4899',
-  combos: '#22D3EE',
   specials: '#A78BFA',
   bets: '#4FC3F7',
   profiles: '#A78BFA',

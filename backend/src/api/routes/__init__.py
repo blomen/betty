@@ -16,7 +16,6 @@ from .specials import router as specials_router
 from .placement import router as placement_router
 from .trading import router as trading_router
 from .recorder import router as recorder_router
-from .combos import router as combos_router
 
 __all__ = [
     'providers_router',
@@ -35,5 +34,4 @@ __all__ = [
     'placement_router',
     'trading_router',
     'recorder_router',
-    'combos_router',
 ]

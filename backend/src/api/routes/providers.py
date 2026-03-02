@@ -30,23 +30,6 @@ def load_provider_bonuses() -> dict[str, dict]:
 
 
 @lru_cache(maxsize=1)
-def load_combo_boost_configs() -> dict[str, dict]:
-    """Load combo_boost config for providers that have it enabled."""
-    from ...paths import get_config_path
-    config_path = get_config_path("providers.yaml")
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        return {
-            pid: p['combo_boost']
-            for pid, p in config.get('providers', {}).items()
-            if 'combo_boost' in p and p['combo_boost'].get('enabled', False)
-        }
-    except Exception:
-        return {}
-
-
-@lru_cache(maxsize=1)
 def load_provider_site_urls() -> dict[str, str]:
     """Load site_url from providers.yaml config (cached).
 

@@ -15,7 +15,6 @@ import {
   WelcomePage,
 } from './pages';
 // Lazy: secondary/heavy pages split into separate chunks
-const CombosPage = lazy(() => import('./pages/CombosPage').then(m => ({ default: m.CombosPage })));
 const SpecialsPage = lazy(() => import('./pages/SpecialsPage').then(m => ({ default: m.SpecialsPage })));
 const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.BetsPage })));
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
@@ -101,8 +100,6 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <BetsPage />;
       case 'bankroll':
         return <BankrollPage providers={context.providers} onRefresh={onRefresh} />;
-      case 'combos':
-        return <CombosPage />;
       case 'specials':
         return <SpecialsPage />;
       case 'profiles':
