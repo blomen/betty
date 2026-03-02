@@ -459,9 +459,18 @@ export function PolymarketPage() {
             <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Set a wallet address to view portfolio.</div>
           ) : portfolio ? (
             <>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-5 gap-2">
                 {[
-                  { label: 'Value', value: `$${portfolio.total_value_usdc.toFixed(2)}`, sub: `${portfolio.total_value_sek.toFixed(0)} SEK` },
+                  {
+                    label: 'Total Value',
+                    value: `$${portfolio.total_value_usdc.toFixed(2)}`,
+                    sub: `${portfolio.total_value_sek.toFixed(0)} SEK`,
+                  },
+                  {
+                    label: 'Cash',
+                    value: `$${(portfolio.cash_balance ?? 0).toFixed(2)}`,
+                    sub: portfolio.position_value > 0 ? `+$${portfolio.position_value.toFixed(2)} in positions` : portfolio.redeemable_value > 0 ? `+$${portfolio.redeemable_value.toFixed(2)} redeemable` : undefined,
+                  },
                   { label: 'Open', value: String(portfolio.open_count), sub: `${portfolio.closed_count} closed` },
                   { label: 'Unrealized', value: `${pnlSign(portfolio.unrealized_pnl)}$${Math.abs(portfolio.unrealized_pnl).toFixed(2)}`, color: pnlColor(portfolio.unrealized_pnl) },
                   { label: 'Realized', value: `${pnlSign(portfolio.realized_pnl)}$${Math.abs(portfolio.realized_pnl).toFixed(2)}`, color: pnlColor(portfolio.realized_pnl) },

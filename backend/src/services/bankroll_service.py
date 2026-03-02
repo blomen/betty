@@ -292,23 +292,41 @@ class BankrollService:
         deposit_amount = amount
         bonus_amount = 0.0
         bonus_limit = bonus_config.get('amount', 0)
+        trigger_odds = bonus_config.get('trigger_odds')
 
         # Bonusdeposit: match deposit with bonus money
         if bonus_type == 'bonusdeposit' and is_available and bonus_limit > 0:
             bonus_amount = min(deposit_amount, bonus_limit)
 
         old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
-        total_added = deposit_amount + bonus_amount
+
+        # Two-phase bonus (trigger_odds set): only add deposit now, bonus
+        # gets added when trigger wagering is completed.  Without trigger_odds
+        # the bonus is available immediately.
+        if trigger_odds and bonus_amount > 0:
+            total_added = deposit_amount  # bonus locked until trigger met
+        else:
+            total_added = deposit_amount + bonus_amount
         new_balance = self.profile_repo.adjust_balance(active_profile.id, provider_id, total_added)
 
         bonus_info = None
         if bonus_type == 'bonusdeposit' and bonus_amount > 0:
             wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
             bonus_min_odds = bonus_config.get('min_odds', 1.80)
-            bonus_info = self.profile_repo.start_bonus_wagering(
-                active_profile.id, provider_id, bonus_amount,
-                wagering_multiplier, min_odds=bonus_min_odds,
-            )
+            if trigger_odds:
+                # Two-phase: start in trigger_needed with deposit×1 at trigger_odds
+                bonus_info = self.profile_repo.start_bonus_trigger(
+                    active_profile.id, provider_id, bonus_amount,
+                    trigger_wagering=deposit_amount,
+                    trigger_min_odds=trigger_odds,
+                    main_wagering_multiplier=wagering_multiplier,
+                    main_min_odds=bonus_min_odds,
+                )
+            else:
+                bonus_info = self.profile_repo.start_bonus_wagering(
+                    active_profile.id, provider_id, bonus_amount,
+                    wagering_multiplier, min_odds=bonus_min_odds,
+                )
         elif bonus_type == 'freebet' and is_available and bonus_limit > 0:
             # Freebet: start trigger tracking (no bonus money added to balance)
             bonus_min_odds = bonus_config.get('min_odds', 1.80)

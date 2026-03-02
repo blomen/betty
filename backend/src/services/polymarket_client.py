@@ -9,6 +9,7 @@ Endpoints:
     - GET /positions?user=0x{addr} → open positions
     - GET /closed-positions?user=0x{addr} → resolved positions
     - GET /trades?user=0x{addr} → trade history
+    - Polygon RPC eth_call → on-chain USDC.e balance
 """
 
 import logging
@@ -19,6 +20,15 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 DATA_API_BASE = "https://data-api.polymarket.com"
+
+# USDC.e on Polygon (6 decimals) — used by Polymarket
+USDC_E_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+# Public Polygon RPC endpoints (fallback chain, all free/no-key-required)
+POLYGON_RPCS = [
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://1rpc.io/matic",
+    "https://polygon.drpc.org",
+]
 
 
 # ───────────────────────── Data models ─────────────────────────
@@ -81,6 +91,9 @@ class PolyPortfolio:
     realized_pnl: float = 0.0
     open_count: int = 0
     closed_count: int = 0
+    cash_balance: float = 0.0        # USDC.e sitting in wallet (not in positions)
+    position_value: float = 0.0      # Active (non-resolved) position market value
+    redeemable_value: float = 0.0    # Winning resolved positions (can redeem for $1/share)
 
 
 # ───────────────────────── Client ─────────────────────────
@@ -179,13 +192,72 @@ class PolymarketDataClient:
                 logger.debug(f"Skipping trade: {e}")
         return trades
 
+    async def get_usdc_balance(self, wallet: str) -> float:
+        """Query on-chain USDC.e balance on Polygon via public RPC.
+
+        Returns the USDC balance (float, 2 decimal places).
+        This is the cash sitting in the Polymarket proxy wallet — not in positions.
+        """
+        wallet_clean = wallet.lower().replace("0x", "")
+        # ERC-20 balanceOf(address) — function selector 0x70a08231
+        call_data = f"0x70a08231000000000000000000000000{wallet_clean}"
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [{"to": USDC_E_CONTRACT, "data": call_data}, "latest"],
+            "id": 1,
+        }
+
+        for rpc_url in POLYGON_RPCS:
+            try:
+                async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                    async with session.post(rpc_url, json=payload) as resp:
+                        if resp.status != 200:
+                            continue
+                        result = await resp.json()
+                        # RPC errors come back as {"error": {...}} with 200 status
+                        if "error" in result:
+                            logger.debug(f"Polygon RPC {rpc_url} returned error: {result['error']}")
+                            continue
+                        hex_balance = result.get("result", "0x0")
+                        if not hex_balance or hex_balance == "0x":
+                            hex_balance = "0x0"
+                        raw = int(hex_balance, 16)
+                        return round(raw / 1e6, 2)  # USDC has 6 decimals
+            except Exception as e:
+                logger.debug(f"Polygon RPC {rpc_url} failed: {e}")
+                continue
+
+        logger.warning("[PolyClient] All Polygon RPCs failed for USDC balance")
+        return 0.0
+
     async def get_portfolio(self, wallet: str) -> PolyPortfolio:
-        """Fetch aggregated portfolio: positions + closed positions."""
+        """Fetch aggregated portfolio: positions + closed positions + on-chain USDC balance.
+
+        Total value = cash_balance + active_position_value + redeemable_value
+        Where:
+          - cash_balance: USDC.e in the wallet (not deployed in positions)
+          - active_position_value: market value of non-resolved positions
+          - redeemable_value: winning resolved positions (shares * $1, can be redeemed)
+        """
         positions = await self.get_positions(wallet)
         closed = await self.get_closed_positions(wallet)
+        cash_balance = await self.get_usdc_balance(wallet)
 
-        total_value = sum(p.current_value for p in positions)
-        unrealized = sum(p.cash_pnl for p in positions)
+        # Separate active (trading) vs resolved (redeemable) positions
+        active = [p for p in positions if not p.redeemable]
+        redeemable = [p for p in positions if p.redeemable]
+
+        # Active position value = sum of current market values
+        position_value = sum(p.current_value for p in active)
+
+        # Redeemable value = shares from winning resolved positions
+        # If curPrice > 0 the position won (each share redeems at $1)
+        # If curPrice == 0 the position lost (redeemable but worth $0)
+        redeemable_value = sum(p.size for p in redeemable if p.cur_price > 0)
+
+        total_value = cash_balance + position_value + redeemable_value
+        unrealized = sum(p.cash_pnl for p in active)
         realized = sum(c.realized_pnl for c in closed)
         total_pnl = unrealized + realized
 
@@ -196,6 +268,9 @@ class PolymarketDataClient:
             total_pnl_usdc=round(total_pnl, 2),
             unrealized_pnl=round(unrealized, 2),
             realized_pnl=round(realized, 2),
-            open_count=len(positions),
+            open_count=len(active),
             closed_count=len(closed),
+            cash_balance=round(cash_balance, 2),
+            position_value=round(position_value, 2),
+            redeemable_value=round(redeemable_value, 2),
         )

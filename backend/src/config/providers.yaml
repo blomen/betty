@@ -391,7 +391,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 12  # (deposit+bonus)×6 = 2000×6 = 12000, system does bonus×mult = 1000×12
+      wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
       min_odds: 1.80
       trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
 
@@ -404,7 +404,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 12
+      wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
       min_odds: 1.80
       trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
     combo_boost:

@@ -200,8 +200,20 @@ class ProfileRepo:
 
         if record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement:
             if record.bonus_status == "trigger_needed":
-                # Trigger met — don't auto-advance, user must activate on provider site
-                pass
+                if record.bonus_type == "bonusdeposit":
+                    # Two-phase bonusdeposit: trigger met → unlock bonus money
+                    # Add bonus to balance and start main wagering phase
+                    # wagering_requirement during trigger = deposit (1x), so we
+                    # recover it for the (deposit+bonus)×mult formula
+                    deposit = record.wagering_requirement
+                    self.adjust_balance(profile_id, provider_id, record.bonus_amount)
+                    record.bonus_status = "in_progress"
+                    record.wagering_requirement = (deposit + record.bonus_amount) * record.wagering_multiplier
+                    record.wagered_amount = 0.0
+                    record.min_odds = record.main_min_odds or BONUS_MIN_ODDS
+                else:
+                    # Freebet trigger — don't auto-advance, user must activate
+                    pass
             else:
                 record.bonus_status = "completed"
 
@@ -249,6 +261,56 @@ class ProfileRepo:
                 min_odds=min_odds,
                 claimed_at=now,
                 expires_at=expires,
+            )
+            self.db.add(record)
+
+        return self.get_bonus_status(profile_id, provider_id)
+
+    def start_bonus_trigger(
+        self,
+        profile_id: int,
+        provider_id: str,
+        bonus_amount: float,
+        trigger_wagering: float,
+        trigger_min_odds: float = 1.50,
+        main_wagering_multiplier: float = 12.0,
+        main_min_odds: float = 1.80,
+    ) -> dict:
+        """Start two-phase bonus: trigger bet first, then main wagering.
+
+        Phase 1 (trigger_needed): wager deposit×1 at trigger_odds to unlock bonus.
+        Phase 2 (in_progress): bonus added to balance, wager bonus×multiplier at main_min_odds.
+        """
+        record = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile_id,
+            ProfileProviderBonus.provider_id == provider_id
+        ).first()
+
+        now = datetime.utcnow()
+        expires = now + timedelta(days=BONUS_WAGERING_DAYS)
+
+        kwargs = dict(
+            bonus_status="trigger_needed",
+            bonus_type="bonusdeposit",
+            bonus_amount=bonus_amount,
+            wagering_multiplier=main_wagering_multiplier,
+            wagering_requirement=trigger_wagering,   # Phase 1: wager deposit×1
+            wagered_amount=0.0,
+            min_odds=trigger_min_odds,               # Phase 1: trigger odds
+            main_min_odds=main_min_odds,             # Saved for phase 2
+            claimed_at=now,
+            expires_at=expires,
+            updated_at=now,
+        )
+
+        if record:
+            for k, v in kwargs.items():
+                setattr(record, k, v)
+        else:
+            record = ProfileProviderBonus(
+                profile_id=profile_id,
+                provider_id=provider_id,
+                **kwargs,
             )
             self.db.add(record)
 

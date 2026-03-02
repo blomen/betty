@@ -589,6 +589,10 @@ export interface PolyPortfolio {
   realized_pnl: number;
   open_count: number;
   closed_count: number;
+  // Balance breakdown
+  cash_balance: number;         // USDC.e in wallet (not in positions)
+  position_value: number;       // Active position market value
+  redeemable_value: number;     // Winning resolved positions (redeemable)
 }
 
 export interface PolyWallet {

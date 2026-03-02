@@ -466,7 +466,7 @@ async def get_portfolio(db: Session = Depends(get_db)):
 
     usdc_rate = get_exchange_rate("polymarket")
 
-    # Update stored balance from portfolio value
+    # Update stored balance from portfolio total value (cash + positions)
     if row and portfolio.total_value_usdc > 0:
         row.balance = portfolio.total_value_usdc
         db.commit()
@@ -511,6 +511,10 @@ async def get_portfolio(db: Session = Depends(get_db)):
         "realized_pnl": portfolio.realized_pnl,
         "open_count": portfolio.open_count,
         "closed_count": portfolio.closed_count,
+        # Balance breakdown
+        "cash_balance": portfolio.cash_balance,
+        "position_value": portfolio.position_value,
+        "redeemable_value": portfolio.redeemable_value,
     }
 
 

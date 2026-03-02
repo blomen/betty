@@ -317,6 +317,7 @@ class ProfileProviderBonus(Base):
     wagering_requirement = Column(Float, default=0.0)   # Total wagering required (bonus_amount * multiplier)
     wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
     min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
+    main_min_odds = Column(Float, nullable=True)        # Main wagering min_odds (used after trigger phase completes)
 
     # Timer tracking
     claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
@@ -1121,6 +1122,16 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE profile_provider_balances ADD COLUMN wallet_address TEXT")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add main_min_odds to profile_provider_bonuses (two-phase bonus trigger)
+        try:
+            cursor.execute("SELECT main_min_odds FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN main_min_odds REAL")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
