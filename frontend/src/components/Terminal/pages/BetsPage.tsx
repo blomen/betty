@@ -359,9 +359,6 @@ export function BetsPage() {
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
-  const [providerIds, setProviderIds] = useState<string[]>([]);
-  const [showProviderActions, setShowProviderActions] = useState(false);
-
   // Sort (for history table)
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -410,21 +407,6 @@ export function BetsPage() {
   }, []);
 
   useEffect(() => { fetchBets(); fetchStats(); fetchBonuses(); }, [fetchBets, fetchStats, fetchBonuses]);
-
-  // Load provider list for quick actions
-  useEffect(() => {
-    api.getProviders().then((res) => {
-      const ids = (res.providers || [])
-        .filter((p: { is_enabled: boolean }) => p.is_enabled)
-        .map((p: { id: string }) => p.id)
-        .sort();
-      setProviderIds(ids);
-    }).catch(() => {});
-  }, []);
-
-  const openWorkflow = useCallback((_providerId: string, _workflow: string) => {
-    // CDP navigation removed — manual placement only
-  }, []);
 
   // ── History (settled bets only) ─────────────────────────────────
 
@@ -689,60 +671,6 @@ export function BetsPage() {
               })}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Provider Quick Actions */}
-      {providerIds.length > 0 && (
-        <div className="border border-border bg-panel rounded">
-          <button
-            onClick={() => setShowProviderActions(p => !p)}
-            className="w-full px-3 py-2 flex items-center justify-between text-xs text-muted hover:text-text"
-          >
-            <span className="font-medium uppercase tracking-wider">Provider Actions</span>
-            <span>{showProviderActions ? '\u25BC' : '\u25B6'} {providerIds.length} providers</span>
-          </button>
-          {showProviderActions && (
-            <div className="border-t border-border max-h-64 overflow-y-auto">
-              <table className="w-full text-xs sq">
-                <thead>
-                  <tr className="text-muted text-left border-b border-border">
-                    <th className="px-2 py-1.5">Provider</th>
-                    <th className="px-2 py-1.5 text-center">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {providerIds.map(pid => (
-                    <tr key={pid} className="border-t border-border/30 hover:bg-panel2">
-                      <td className="px-2 py-1.5 font-medium">{formatProviderName(pid)}</td>
-                      <td className="px-2 py-1.5">
-                        <div className="flex gap-1 justify-center">
-                          <button
-                            onClick={() => openWorkflow(pid, 'my_bets')}
-                            className="px-2 py-0.5 text-[11px] text-muted hover:text-text bg-panel2 rounded"
-                          >
-                            My Bets&thinsp;&#8599;
-                          </button>
-                          <button
-                            onClick={() => openWorkflow(pid, 'bet_history')}
-                            className="px-2 py-0.5 text-[11px] text-muted hover:text-text bg-panel2 rounded"
-                          >
-                            History&thinsp;&#8599;
-                          </button>
-                          <button
-                            onClick={() => openWorkflow(pid, 'view_score')}
-                            className="px-2 py-0.5 text-[11px] text-muted hover:text-text bg-panel2 rounded"
-                          >
-                            Score&thinsp;&#8599;
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       )}
 

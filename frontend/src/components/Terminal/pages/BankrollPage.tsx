@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from './Card';
 import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
@@ -65,22 +65,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     windowName: string;
   } | null>(null);
 
-  // Auth watcher status
-  const [syncStatus, setSyncStatus] = useState<{
-    watching: boolean;
-    syncing: boolean;
-    auth_state: Record<string, boolean>;
-    last_syncs: Record<string, string>;
-    sync_results: Record<string, {
-      settled_count?: number;
-      balance?: number | null;
-      balance_updated?: boolean;
-      pending_remaining?: number;
-      error?: string | null;
-      timestamp?: string;
-    }>;
-  } | null>(null);
-  const lastSyncTimestampRef = useRef<string>('');
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -98,33 +82,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     fetchData();
   }, [fetchData]);
 
-  // Poll auth watcher status every 10s
-  useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const status = await api.getSyncStatus();
-        if (active) {
-          setSyncStatus(status);
-          // Check if a new sync completed — refresh data
-          const latestTimestamp = Object.values(status.sync_results)
-            .map(r => r.timestamp || '')
-            .sort()
-            .pop() || '';
-          if (latestTimestamp && latestTimestamp !== lastSyncTimestampRef.current) {
-            lastSyncTimestampRef.current = latestTimestamp;
-            fetchData();
-            onRefresh();
-          }
-        }
-      } catch {
-        // Ignore — watcher may not be available
-      }
-    };
-    poll();
-    const interval = setInterval(poll, 10000);
-    return () => { active = false; clearInterval(interval); };
-  }, [fetchData, onRefresh]);
 
   // Clear deposit result after 5 seconds
   useEffect(() => {
@@ -348,38 +305,6 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       {depositResult && (
         <div className={`text-sm p-3 ${depositResult.success ? 'bg-success/10 text-success border border-success/20' : 'bg-error/10 text-error border border-error/20'}`}>
           {depositResult.message}
-        </div>
-      )}
-
-      {/* Auth Watcher Status */}
-      {syncStatus && (Object.keys(syncStatus.auth_state).length > 0 || syncStatus.syncing) && (
-        <div className="text-xs px-3 py-2 bg-panel2 border border-border flex items-center gap-3">
-          <span className={`w-1.5 h-1.5 rounded-full ${syncStatus.syncing ? 'bg-tabBankroll animate-pulse' : 'bg-success'}`} />
-          {syncStatus.syncing ? (
-            <span className="text-muted">Syncing...</span>
-          ) : (
-            <span className="text-muted">
-              {Object.entries(syncStatus.auth_state)
-                .filter(([, loggedIn]) => loggedIn)
-                .map(([pid]) => {
-                  const result = syncStatus.sync_results[pid];
-                  const ts = result?.timestamp ? new Date(result.timestamp) : null;
-                  const ago = ts ? Math.round((Date.now() - ts.getTime()) / 60000) : null;
-                  const settled = result?.settled_count ?? 0;
-                  const bal = result?.balance;
-                  let info = formatProviderName(pid);
-                  if (ago !== null) {
-                    info += ` synced ${ago < 1 ? 'just now' : `${ago}m ago`}`;
-                    if (settled > 0) info += ` (${settled} settled)`;
-                    if (bal != null) info += ` · ${bal.toFixed(0)} kr`;
-                  } else {
-                    info += ' logged in';
-                  }
-                  return info;
-                })
-                .join(' · ') || 'Watching for logins...'}
-            </span>
-          )}
         </div>
       )}
 

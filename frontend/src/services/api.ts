@@ -575,55 +575,6 @@ export const api = {
     return fetchJson('/bets/auto-settle', { method: 'POST' });
   },
 
-  async syncProviderBets(providerId: string): Promise<{
-    success: boolean;
-    provider_id: string;
-    settled_count: number;
-    settled_bets: Array<{
-      bet_id: number;
-      result: string;
-      payout: number;
-      odds: number;
-      coupon_id: string;
-      event_text: string;
-      profit: number | null;
-    }>;
-    unmatched: Array<{
-      result: string;
-      odds: number;
-      stake: number;
-      payout: number;
-      event_text: string;
-      coupon_id: string;
-    }>;
-    balance: number | null;
-    bonus_balance: number | null;
-    balance_updated: boolean;
-    pending_remaining: number;
-    error: string | null;
-  }> {
-    return fetchWithRetry(`/bets/sync/${providerId}`, {
-      method: 'POST',
-    }, 0, 60000);  // No retries, 60s timeout (browser sync is slow)
-  },
-
-  async getSyncStatus(): Promise<{
-    watching: boolean;
-    syncing: boolean;
-    auth_state: Record<string, boolean>;
-    last_syncs: Record<string, string>;
-    sync_results: Record<string, {
-      settled_count?: number;
-      balance?: number | null;
-      balance_updated?: boolean;
-      pending_remaining?: number;
-      error?: string | null;
-      timestamp?: string;
-    }>;
-  }> {
-    return fetchJson('/bets/sync/status');
-  },
-
   async settleBet(
     betId: number,
     data: { result: 'won' | 'lost' | 'void'; payout: number }

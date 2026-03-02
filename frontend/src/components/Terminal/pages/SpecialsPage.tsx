@@ -31,7 +31,7 @@ export function SpecialsPage() {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
 
-  // Two-step placement: tracks which special is awaiting confirm after browser opened
+  // Two-step placement: Place → enter actual odds → Confirm
   const [pendingBet, setPendingBet] = useState<{
     groupKey: string;
     special: SpecialItem;
@@ -130,7 +130,7 @@ export function SpecialsPage() {
     finally { setIsLoadingPreview(false); }
   };
 
-  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
+  // Step 1: Start placement — enter "awaiting confirm" state
   const startPlaceBet = async (special: SpecialItem, providerId: string, groupKey: string) => {
     if (!stakePreview || !special.boosted_odds) return;
     let stake = stakePreview.recommended_stake;

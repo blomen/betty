@@ -127,7 +127,7 @@ export function PolymarketPage() {
     return vb.final_stake;
   };
 
-  // Record bet directly (no CDP navigation)
+  // Record bet placement
   const recordBet = async (vb: PolymarketValueBet) => {
     const stake = getEffectiveStake(vb);
     if (!stake || stake <= 0) return;

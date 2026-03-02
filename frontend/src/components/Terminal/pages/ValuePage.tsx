@@ -39,7 +39,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
 
-  // Two-step placement: tracks which group is awaiting confirm after browser opened
+  // Two-step placement: Place → enter actual odds → Confirm
   const [pendingBet, setPendingBet] = useState<{
     groupKey: string;
     opp: Opportunity;

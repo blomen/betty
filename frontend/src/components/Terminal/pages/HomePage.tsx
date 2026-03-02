@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, getTTKFromNow } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -19,14 +19,6 @@ function resolveOutcome(bet: Bet): string {
   if (outcome === 'over') return 'Over';
   if (outcome === 'under') return 'Under';
   return outcome;
-}
-
-/** Hours from NOW to kickoff (0 if already started) */
-function getLiveTTK(bet: Bet): number | null {
-  if (!bet.start_time) return null;
-  const start = new Date(bet.start_time).getTime();
-  const now = Date.now();
-  return Math.max(0, (start - now) / (1000 * 60 * 60));
 }
 
 function formatTTK(hours: number): string {
@@ -709,7 +701,7 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
               </thead>
               <tbody>
                 {sortedUpcoming.map(bet => {
-                  const ttk = getLiveTTK(bet);
+                  const ttk = getTTKFromNow(bet.start_time);
                   const mkt = formatMarketShort(bet.market);
                   const fairOdds = bet.fair_odds ?? (bet.edge_pct != null && bet.edge_pct > -100 ? bet.odds / (1 + bet.edge_pct / 100) : null);
                   const liveOdds = bet.current_odds ?? bet.odds;

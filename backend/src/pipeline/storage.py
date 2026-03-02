@@ -6,7 +6,7 @@ Functions for storing events and odds in the database.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..core import StandardEvent
 from ..db.models import Event, Odds
@@ -38,7 +38,6 @@ def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_
     # ±1 day for timezone issues
     try:
         d = datetime.strptime(event_date, "%Y%m%d")
-        from datetime import timedelta
         for delta in (-1, 1):
             adj_date = (d + timedelta(days=delta)).strftime("%Y%m%d")
             if adj_date in sport_dates:
