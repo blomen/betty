@@ -43,6 +43,10 @@ export function PolymarketPage() {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
 
+  // Stake editing state (USDC override, bypasses balance constraints)
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
+
   // Two-step placement: tracks which bet is awaiting confirm after browser opened
   const [pendingBet, setPendingBet] = useState<{
     idx: number;
@@ -186,23 +190,37 @@ export function PolymarketPage() {
   // Convert decimal odds to price in cents (1/odds * 100)
   const oddsToCents = (odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0;
 
-  // Recalculate edge/stake/shares when price is overridden
+  // Recalculate edge/stake/shares when price or stake is overridden
   const getEffectiveMetrics = (vb: PolymarketValueBet) => {
     const effectiveOdds = getEffectiveOdds(vb);
     const priceCents = oddsToCents(effectiveOdds);
     const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
     const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
     const edgeRatio = vb.edge_pct > 0 ? edgePct / vb.edge_pct : 1;
-    const stakeUsdc = (vb.final_stake_usdc ?? 0) * Math.max(0, edgeRatio);
+    const key = getOddsKey(vb);
+    const stakeUsdc = key in stakeOverride
+      ? stakeOverride[key]
+      : (vb.final_stake_usdc ?? 0) * Math.max(0, edgeRatio);
     const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
     const payoutUsdc = shares * 1.0;
     const profitUsdc = payoutUsdc - stakeUsdc;
-    return { priceCents, fairCents, edgePct, stakeUsdc, shares, payoutUsdc, profitUsdc };
+    const stakeOverridden = key in stakeOverride;
+    return { priceCents, fairCents, edgePct, stakeUsdc, shares, payoutUsdc, profitUsdc, stakeOverridden };
+  };
+
+  // Get effective stake in SEK (uses override if set)
+  const getEffectiveStake = (vb: PolymarketValueBet) => {
+    const key = getOddsKey(vb);
+    if (key in stakeOverride) {
+      const rate = vb.exchange_rate_sek ?? 10.5;
+      return stakeOverride[key] * rate;
+    }
+    return vb.final_stake;
   };
 
   // Step 1: Fill bet slip via CDP
   const startPlaceBet = async (vb: PolymarketValueBet, idx: number) => {
-    const stake = vb.final_stake;
+    const stake = getEffectiveStake(vb);
     if (!stake || stake <= 0) return;
     const odds = getEffectiveOdds(vb);
     setIsPlacing(true);
@@ -273,7 +291,7 @@ export function PolymarketPage() {
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { vb, actualOdds } = pendingBet;
-    const stake = vb.final_stake;
+    const stake = getEffectiveStake(vb);
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
@@ -719,8 +737,45 @@ export function PolymarketPage() {
                         <td className="text-right">
                           {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                         </td>
-                        <td className="text-right text-sm font-medium text-text">
-                          {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
+                        <td className="text-right text-sm font-medium text-text" onClick={e => e.stopPropagation()}>
+                          {editingStake === oddsKey ? (
+                            <input
+                              type="number"
+                              step="0.5"
+                              min="0.01"
+                              autoFocus
+                              defaultValue={m.stakeUsdc.toFixed(2)}
+                              className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+                              onBlur={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val > 0) {
+                                  setStakeOverride(prev => ({ ...prev, [oddsKey]: val }));
+                                }
+                                setEditingStake(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                if (e.key === 'Escape') setEditingStake(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingStake(oddsKey)}
+                              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${m.stakeOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'border-transparent'}`}
+                              title="Click to edit stake"
+                            >
+                              {m.stakeUsdc > 0 ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
+                            </span>
+                          )}
+                          {m.stakeOverridden && (
+                            <button
+                              onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })}
+                              className="text-muted2 hover:text-text text-[10px] ml-0.5"
+                              title="Reset to calculated"
+                            >
+                              x
+                            </button>
+                          )}
                         </td>
                         <td className="text-right text-sm text-muted">
                           {m.shares > 0 ? Math.round(m.shares) : '-'}
@@ -862,7 +917,7 @@ export function PolymarketPage() {
                               ) : (
                                 <button
                                   onClick={() => startPlaceBet(vb, idx)}
-                                  disabled={!hasStake || isPlacing}
+                                  disabled={(!hasStake && !m.stakeOverridden) || isPlacing}
                                   className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
                                 >
                                   {isPlacing ? '...' : 'Place Bet'}

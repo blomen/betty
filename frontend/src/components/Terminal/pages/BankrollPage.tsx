@@ -136,10 +136,13 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
     }
   }, [depositResult]);
 
-  // Format amount with correct currency for a provider
+  // Format amount in SEK for a provider (converting non-SEK currencies)
   const fmtAmount = (providerId: string, amount: number) => {
     const prov = exposure?.providers.find(p => p.provider_id === providerId);
-    if (prov?.currency && prov.currency !== 'SEK') return `$${amount.toFixed(2)}`;
+    if (prov?.currency && prov.currency !== 'SEK') {
+      const sek = amount * (prov.exchange_rate_sek ?? 1);
+      return `${sek.toFixed(0)} kr`;
+    }
     return `${amount.toFixed(0)} kr`;
   };
 

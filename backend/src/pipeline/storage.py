@@ -409,6 +409,9 @@ def store_polymarket_event(
         # Store ALL spread/total lines — scanner groups by market+point
         # (e.g., "spread_-1.5") so value detection only compares matching points.
 
+        # Build provider_meta from market-level metadata (e.g., event_slug for deep links)
+        market_meta = market.get('provider_meta', {})
+
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
             odds = outcome.get("odds", 0)
@@ -439,10 +442,12 @@ def store_polymarket_event(
                     point_value = -point_value
 
             clob_token_id = outcome.get("clob_token_id")
+            outcome_meta = outcome.get('provider_meta', {})
+            provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
 
     return is_new_event, odds_processed, odds_new
 

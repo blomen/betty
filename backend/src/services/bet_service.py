@@ -8,6 +8,7 @@ from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
+from ..config import get_exchange_rate
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,11 @@ class BetService:
 
         # Validate sufficient balance (unless free bet)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
-        if not is_bonus and current_balance < stake:
+        rate = get_exchange_rate(provider_id)
+        balance_sek = current_balance * rate
+        if not is_bonus and balance_sek < stake:
             return {
-                "error": f"Insufficient balance: {current_balance:.2f} available, {stake:.2f} required"
+                "error": f"Insufficient balance: {balance_sek:.0f} kr available, {stake:.0f} kr required"
             }
 
         # Populate behavioral fields
