@@ -6,8 +6,14 @@ import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider } from '@/types';
+import type { Opportunity, Provider, Bet } from '@/types';
+
+type ValueTab = 'value' | 'mybets';
+
+const valueBetFilter = (b: Bet) =>
+  b.provider !== 'pinnacle' && b.provider !== 'polymarket' && b.market !== 'boost';
 
 interface GroupedOpp {
   key: string;
@@ -21,6 +27,7 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
+  const [activeTab, setActiveTab] = useState<ValueTab>('value');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -255,10 +262,36 @@ export function ValuePage({ providers }: ValuePageProps) {
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="value" color={TAB_COLORS.value} size={16} />
           Soft
-          <span className="text-muted text-sm font-normal ml-1">({filteredCount})</span>
         </h2>
       </div>
 
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount },
+          { id: 'mybets' as ValueTab, label: 'My Bets' },
+        ]).map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+              activeTab === tab.id
+                ? 'border-tabValue text-tabValue'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* MyBets tab */}
+      {activeTab === 'mybets' && (
+        <MyBetsSection filter={valueBetFilter} colorKey="value" />
+      )}
+
+      {activeTab === 'value' && <>
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
@@ -553,6 +586,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         </table>
         </div>
       )}
+      </>}
 
       {/* Freebet Popup */}
       {freebetPopup && (

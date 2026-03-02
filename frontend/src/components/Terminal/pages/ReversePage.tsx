@@ -4,10 +4,16 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/ut
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity } from '@/types';
+import type { Opportunity, Bet } from '@/types';
+
+type ReverseTab = 'reverse' | 'mybets';
+
+const reverseBetFilter = (b: Bet) => b.provider === 'pinnacle';
 
 export function ReversePage() {
+  const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
@@ -138,11 +144,36 @@ export function ReversePage() {
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="reverse" color={TAB_COLORS.reverse} size={16} />
           Reverse
-          <span className="text-muted text-sm font-normal ml-1">({sorted.length})</span>
         </h2>
-        <span className="text-muted2 text-xs">Pinnacle vs soft consensus · odds 3.50-15.00 · 5+ platforms</span>
       </div>
 
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { id: 'reverse' as ReverseTab, label: 'Reverse Bets', count: sorted.length },
+          { id: 'mybets' as ReverseTab, label: 'My Bets' },
+        ]).map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+              activeTab === tab.id
+                ? 'border-tabReverse text-tabReverse'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* MyBets tab */}
+      {activeTab === 'mybets' && (
+        <MyBetsSection filter={reverseBetFilter} colorKey="reverse" />
+      )}
+
+      {activeTab === 'reverse' && <>
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
@@ -296,6 +327,7 @@ export function ReversePage() {
         </table>
         </div>
       )}
+      </>}
     </div>
   );
 }

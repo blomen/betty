@@ -6,7 +6,13 @@ import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import type { Bet } from '@/types';
+
+type SpecialsTab = 'specials' | 'mybets';
+
+const boostBetFilter = (b: Bet) => b.market === 'boost';
 
 interface GroupedSpecial {
   key: string;
@@ -15,6 +21,7 @@ interface GroupedSpecial {
 }
 
 export function SpecialsPage() {
+  const [activeTab, setActiveTab] = useState<SpecialsTab>('specials');
   const [specials, setSpecials] = useState<SpecialItem[]>([]);
   const [filters, setFilters] = useState<SpecialsFilters | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(null);
@@ -196,11 +203,37 @@ export function SpecialsPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="specials" color={TAB_COLORS.specials} size={16} />Specials
-          <span className="text-muted text-sm font-normal ml-1">({sortedSpecials.length})</span>
         </h2>
         {timeAgo && <span className="text-muted text-xs">{timeAgo}</span>}
       </div>
 
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { id: 'specials' as SpecialsTab, label: 'Boosts', count: sortedSpecials.length },
+          { id: 'mybets' as SpecialsTab, label: 'My Bets' },
+        ]).map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+              activeTab === tab.id
+                ? 'border-tabBonus text-tabBonus'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* MyBets tab */}
+      {activeTab === 'mybets' && (
+        <MyBetsSection filter={boostBetFilter} colorKey="specials" />
+      )}
+
+      {activeTab === 'specials' && <>
       {error && <div className="text-error text-sm bg-error/10 px-3 py-2 border border-error/20">{error}</div>}
 
       {/* Feedback toasts */}
@@ -317,6 +350,7 @@ export function SpecialsPage() {
         </table>
         </div>
       )}
+      </>}
     </div>
   );
 }

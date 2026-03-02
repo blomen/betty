@@ -4,17 +4,16 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/ut
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { PolymarketValueBet, PolyMyBetsResponse, PolyMyBet } from '@/types';
+import type { PolymarketValueBet, Bet } from '@/types';
+
+const polyBetFilter = (b: Bet) => b.provider === 'polymarket';
 
 type PolyTab = 'value' | 'mybets';
 
 export function PolymarketPage() {
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
-
-  // MyBets state
-  const [myBetsData, setMyBetsData] = useState<PolyMyBetsResponse | null>(null);
-  const [myBetsLoading, setMyBetsLoading] = useState(false);
 
   // Value bets state
   const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
@@ -35,20 +34,6 @@ export function PolymarketPage() {
 
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
-
-  // ──────────────────── MyBets ────────────────────
-
-  const fetchMyBets = useCallback(async () => {
-    setMyBetsLoading(true);
-    try {
-      const res = await api.getPolymarketMyBets(undefined, 100);
-      setMyBetsData(res);
-    } catch (err) {
-      console.error('MyBets fetch failed:', err);
-    } finally {
-      setMyBetsLoading(false);
-    }
-  }, []);
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -75,11 +60,7 @@ export function PolymarketPage() {
     }
   }, []);
 
-  // Fetch data based on active tab
-  useEffect(() => {
-    if (activeTab === 'value') fetchValueData();
-    else if (activeTab === 'mybets') fetchMyBets();
-  }, [activeTab, fetchValueData, fetchMyBets]);
+  useEffect(() => { fetchValueData(); }, [fetchValueData]);
 
   useRefreshOnExtraction(fetchValueData);
 
@@ -164,7 +145,7 @@ export function PolymarketPage() {
     }
   };
 
-  const resolveOutcome = (vb: PolymarketValueBet | PolyMyBet): string => {
+  const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
     const home = 'home_team' in vb ? vb.home_team : null;
     const away = 'away_team' in vb ? vb.away_team : null;
@@ -200,15 +181,6 @@ export function PolymarketPage() {
 
   // ──────────────────── Helpers ────────────────────
 
-  const pnlColor = (v: number) => v > 0.01 ? 'text-success' : v < -0.01 ? 'text-error' : 'text-muted';
-  const pnlSign = (v: number) => v > 0 ? '+' : '';
-  const resultBadge = (r: string) => {
-    if (r === 'won') return 'text-success';
-    if (r === 'lost') return 'text-error';
-    if (r === 'void') return 'text-muted';
-    return 'text-warning';
-  };
-
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -223,7 +195,7 @@ export function PolymarketPage() {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
-          { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsData?.stats.total_bets },
+          { id: 'mybets' as PolyTab, label: 'My Bets' },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -256,80 +228,7 @@ export function PolymarketPage() {
 
       {/* ═══════════════ MY BETS TAB ═══════════════ */}
       {activeTab === 'mybets' && (
-        <div className="space-y-3">
-          {myBetsLoading && !myBetsData ? (
-            <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading bets...</div>
-          ) : myBetsData ? (
-            <>
-              {/* Stats Summary */}
-              <div className="grid grid-cols-5 gap-2">
-                {[
-                  { label: 'Bets', value: String(myBetsData.stats.total_bets), sub: `${myBetsData.stats.pending} pending` },
-                  { label: 'Win Rate', value: `${myBetsData.stats.win_rate.toFixed(0)}%`, sub: `${myBetsData.stats.wins}W ${myBetsData.stats.losses}L` },
-                  { label: 'P&L', value: `${pnlSign(myBetsData.stats.total_profit_usdc)}$${Math.abs(myBetsData.stats.total_profit_usdc).toFixed(2)}`, color: pnlColor(myBetsData.stats.total_profit_usdc) },
-                  { label: 'ROI', value: `${pnlSign(myBetsData.stats.roi_pct)}${Math.abs(myBetsData.stats.roi_pct).toFixed(1)}%`, color: pnlColor(myBetsData.stats.roi_pct) },
-                  { label: 'Avg Edge', value: `${myBetsData.stats.avg_edge.toFixed(1)}%` },
-                ].map(card => (
-                  <div key={card.label} className="bg-panel border border-border px-3 py-2">
-                    <div className="text-muted2 text-[10px] uppercase tracking-wider">{card.label}</div>
-                    <div className={`text-sm font-semibold ${card.color ?? 'text-text'}`}>{card.value}</div>
-                    {card.sub && <div className="text-muted2 text-[10px]">{card.sub}</div>}
-                  </div>
-                ))}
-              </div>
-
-              {/* Bets Table */}
-              {myBetsData.bets.length > 0 ? (
-                <div className="border-l-2 border-tabPolymarket">
-                  <table className="sq">
-                    <thead>
-                      <tr>
-                        <th>Event</th>
-                        <th className="text-right">Outcome</th>
-                        <th className="text-right">Price</th>
-                        <th className="text-right">Stake</th>
-                        <th className="text-right">Edge</th>
-                        <th className="text-right">Result</th>
-                        <th className="text-right">P&L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {myBetsData.bets.map(b => {
-                        const priceCents = b.odds > 0 ? Math.round(1 / b.odds * 100) : 0;
-                        return (
-                          <tr key={b.id}>
-                            <td>
-                              <div className="text-text text-sm">{b.home_team && b.away_team ? `${b.home_team} vs ${b.away_team}` : `Bet #${b.id}`}</div>
-                              <div className="text-muted2 text-[10px]">
-                                {b.sport}{b.placed_at ? ` · ${formatDateTime(b.placed_at)}` : ''}
-                              </div>
-                            </td>
-                            <td className="text-right text-text text-sm">{resolveOutcome(b)}</td>
-                            <td className="text-right text-text text-sm">{priceCents}¢</td>
-                            <td className="text-right text-text text-sm font-medium">${b.stake_usdc.toFixed(2)}</td>
-                            <td className="text-right text-tabPolymarket text-sm">
-                              {b.edge_pct != null ? `+${b.edge_pct.toFixed(1)}%` : '-'}
-                            </td>
-                            <td className={`text-right text-sm font-medium ${resultBadge(b.result)}`}>
-                              {b.result}
-                            </td>
-                            <td className={`text-right text-sm font-medium ${pnlColor(b.profit_usdc)}`}>
-                              {b.result === 'pending' ? '-' : `${pnlSign(b.profit_usdc)}$${Math.abs(b.profit_usdc).toFixed(2)}`}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="text-muted text-sm py-4 text-center">No Polymarket bets placed yet.</div>
-              )}
-            </>
-          ) : (
-            <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No data available.</div>
-          )}
-        </div>
+        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" />
       )}
 
       {/* ═══════════════ VALUE BETS TAB ═══════════════ */}
