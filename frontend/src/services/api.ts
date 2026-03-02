@@ -19,101 +19,6 @@ import type {
   RiskAwareStake,
 } from '@/types';
 
-// ============ Placement Types ============
-
-export interface PlaceBetRequest {
-  event_id: string;
-  provider_id: string;
-  market: string;
-  outcome: string;
-  point?: number | null;
-  expected_odds: number;
-  stake: number;
-  is_bonus?: boolean;
-  bonus_type?: string | null;
-  home_team?: string;
-  away_team?: string;
-  sport?: string;
-  start_time?: string;
-  provider_event_id?: string | null;
-  provider_betoffer_id?: string | null;
-  provider_outcome_id?: string | null;
-  min_acceptable_odds?: number;
-}
-
-export interface PlacementResult {
-  status: string;
-  confirmation_id: string | null;
-  actual_odds: number | null;
-  actual_stake: number | null;
-  error_message: string | null;
-  current_odds: number | null;
-  latency_ms: number;
-  provider_event_id: string | null;
-}
-
-export interface PlacementBatchResult {
-  results: PlacementResult[];
-  summary: {
-    total: number;
-    success: number;
-    odds_changed: number;
-    failed: number;
-  };
-}
-
-// ============ Recorder Types ============
-
-export interface RecordingSession {
-  id: number;
-  provider_id: string | null;
-  action_type: string;
-  label: string | null;
-  started_at: string | null;
-  ended_at: string | null;
-  duration_seconds: number | null;
-  action_count: number;
-  cdp_url: string | null;
-  status: string;
-  notes: string | null;
-}
-
-export interface RecordedAction {
-  id: number;
-  session_id: number;
-  action_type: string;
-  timestamp: string | null;
-  sequence: number;
-  url: string | null;
-  page_title: string | null;
-  provider_id: string | null;
-  css_selector: string | null;
-  xpath: string | null;
-  element_tag: string | null;
-  element_text: string | null;
-  element_id: string | null;
-  element_class: string | null;
-  x: number | null;
-  y: number | null;
-  viewport_width: number | null;
-  viewport_height: number | null;
-  input_value: string | null;
-  input_type: string | null;
-  request_method: string | null;
-  request_url: string | null;
-  response_status: number | null;
-  meta: Record<string, unknown> | null;
-}
-
-export interface RecorderStatus {
-  is_recording: boolean;
-  session_id: number | null;
-  cdp_url: string | null;
-  action_count: number;
-  buffered_actions: number;
-  cdp_available?: boolean;
-}
-
 // ============ Oddsboost Types ============
 
 export interface SpecialItem {
@@ -670,55 +575,6 @@ export const api = {
     return fetchJson('/bets/auto-settle', { method: 'POST' });
   },
 
-  async syncProviderBets(providerId: string): Promise<{
-    success: boolean;
-    provider_id: string;
-    settled_count: number;
-    settled_bets: Array<{
-      bet_id: number;
-      result: string;
-      payout: number;
-      odds: number;
-      coupon_id: string;
-      event_text: string;
-      profit: number | null;
-    }>;
-    unmatched: Array<{
-      result: string;
-      odds: number;
-      stake: number;
-      payout: number;
-      event_text: string;
-      coupon_id: string;
-    }>;
-    balance: number | null;
-    bonus_balance: number | null;
-    balance_updated: boolean;
-    pending_remaining: number;
-    error: string | null;
-  }> {
-    return fetchWithRetry(`/bets/sync/${providerId}`, {
-      method: 'POST',
-    }, 0, 60000);  // No retries, 60s timeout (browser sync is slow)
-  },
-
-  async getSyncStatus(): Promise<{
-    watching: boolean;
-    syncing: boolean;
-    auth_state: Record<string, boolean>;
-    last_syncs: Record<string, string>;
-    sync_results: Record<string, {
-      settled_count?: number;
-      balance?: number | null;
-      balance_updated?: boolean;
-      pending_remaining?: number;
-      error?: string | null;
-      timestamp?: string;
-    }>;
-  }> {
-    return fetchJson('/bets/sync/status');
-  },
-
   async settleBet(
     betId: number,
     data: { result: 'won' | 'lost' | 'void'; payout: number }
@@ -752,33 +608,6 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/value?${params}`);
-  },
-
-  async getPolymarketWallet(): Promise<import('@/types').PolyWallet> {
-    return fetchJson('/polymarket/wallet');
-  },
-
-  async setPolymarketWallet(address: string): Promise<{ success: boolean; wallet_address: string }> {
-    return fetchJson('/polymarket/wallet', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wallet_address: address }),
-    });
-  },
-
-  async getPolymarketPortfolio(): Promise<import('@/types').PolyPortfolio> {
-    return fetchJson('/polymarket/portfolio');
-  },
-
-  async syncPolymarket(): Promise<{
-    success: boolean;
-    settled_count: number;
-    balance: number | null;
-    balance_updated: boolean;
-    pending_remaining: number;
-    error: string | null;
-  }> {
-    return fetchWithRetry('/polymarket/sync', { method: 'POST' }, 0, 30000);
   },
 
   async getPolymarketMyBets(status?: string, limit = 100): Promise<import('@/types').PolyMyBetsResponse> {
@@ -926,79 +755,6 @@ export const api = {
   async deleteProfile(id: number): Promise<{ success: boolean }> {
     return fetchJson(`/profiles/${id}`, {
       method: 'DELETE',
-    });
-  },
-
-  // ============ Placement (Navigation + Slip Filling) ============
-
-  async fillSlip(request: {
-    provider_id: string;
-    event_id?: string;
-    market?: string;
-    outcome?: string;
-    point?: number | null;
-    stake?: number;
-    expected_odds?: number;
-    provider_meta?: Record<string, string | number> | null;
-    home_team?: string;
-    away_team?: string;
-  }): Promise<{
-    status: 'ready' | 'navigated_only' | 'error';
-    message: string;
-    provider_id: string;
-    url: string | null;
-    actual_odds: number | null;
-  }> {
-    return fetchWithRetry('/placement/fill-slip', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    }, 0, 10000);  // No retries, 10s timeout — CDP either works fast or not at all
-  },
-
-  async navigateToEvent(request: {
-    provider_id: string;
-    provider_meta?: Record<string, string | number> | null;
-    home_team?: string;
-    away_team?: string;
-    event_id?: string;
-  }): Promise<{ url: string | null; provider_id: string; window_name: string }> {
-    return fetchJson('/placement/navigate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-  },
-
-  async navigateToProvider(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
-    return fetchJson('/placement/navigate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_id: providerId }),
-    });
-  },
-
-  async navigateToDeposit(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
-    return fetchJson('/placement/deposit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_id: providerId }),
-    });
-  },
-
-  async navigateToMyBets(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
-    return fetchJson('/placement/my-bets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_id: providerId }),
-    });
-  },
-
-  async navigateToResults(providerId: string): Promise<{ url: string | null; provider_id: string; window_name: string }> {
-    return fetchJson('/placement/results', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_id: providerId }),
     });
   },
 
@@ -1150,32 +906,6 @@ export const api = {
     if (filters?.account_id) params.set('account_id', filters.account_id.toString());
     if (filters?.instrument) params.set('instrument', filters.instrument);
     return `${API_BASE}/trading/export/csv?${params}`;
-  },
-
-  // ============ Recorder ============
-
-  async startRecording(data: { action_type?: string; label?: string }): Promise<{ session_id: number; status: string }> {
-    return fetchJson('/recorder/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  },
-
-  async stopRecording(sessionId: number): Promise<{ success: boolean; session: RecordingSession }> {
-    return fetchJson(`/recorder/sessions/${sessionId}/stop`, { method: 'POST' });
-  },
-
-  async getRecorderStatus(): Promise<RecorderStatus> {
-    return fetchJson('/recorder/status');
-  },
-
-  async navigateCdpBrowser(url: string): Promise<{ success: boolean; tab_id: string | null }> {
-    return fetchJson('/recorder/navigate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
   },
 
 };

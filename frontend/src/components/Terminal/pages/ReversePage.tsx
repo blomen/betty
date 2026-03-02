@@ -3,13 +3,11 @@ import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity } from '@/types';
 
 export function ReversePage() {
-  const { startAutoRecord, stopAutoRecord, navigateCdp } = useRecorder();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
@@ -84,64 +82,13 @@ export function ReversePage() {
     return outcome;
   };
 
-  // Step 1: Fill bet slip via CDP (or fall back to navigation), enter "awaiting confirm" state
-  const startPlaceBet = async (opp: Opportunity) => {
+  // Enter "awaiting confirm" state for two-step bet recording
+  const startPlaceBet = (opp: Opportunity) => {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
-    setIsPlacing(true);
     setBetError(null);
     setBetSuccess(null);
-
-    try {
-      let navUrl: string | null = null;
-      let windowName = 'bbq_pinnacle';
-      let slipOdds = opp.odds1;
-
-      // Try CDP slip filling first
-      try {
-        const slip = await api.fillSlip({
-          provider_id: 'pinnacle',
-          event_id: opp.event_id,
-          market: opp.market,
-          outcome: opp.outcome1,
-          point: opp.point,
-          stake,
-          expected_odds: opp.odds1,
-          provider_meta: opp.provider_meta,
-          home_team: opp.home_team,
-          away_team: opp.away_team,
-        });
-        navUrl = slip.url;
-        if (slip.actual_odds) slipOdds = slip.actual_odds;
-        if (slip.status === 'ready') {
-          setBetSuccess('Bet slip filled — review and confirm on Pinnacle.');
-          setTimeout(() => setBetSuccess(null), 8000);
-        }
-      } catch {
-        // CDP not available — fall back to URL navigation
-        try {
-          const nav = await api.navigateToEvent({
-            provider_id: 'pinnacle',
-            provider_meta: opp.provider_meta,
-            home_team: opp.home_team,
-            away_team: opp.away_team,
-            event_id: opp.event_id,
-          });
-          navUrl = nav.url;
-          windowName = nav.window_name;
-        } catch {
-          // Navigation is best-effort
-        }
-      }
-
-      setPendingBet({ oppId: opp.id, opp, actualOdds: slipOdds, navUrl, windowName });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to navigate';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
-    } finally {
-      setIsPlacing(false);
-    }
+    setPendingBet({ oppId: opp.id, opp, actualOdds: opp.odds1, navUrl: null, windowName: 'bbq_pinnacle' });
   };
 
   // Step 2: Confirm bet with actual odds
@@ -166,7 +113,6 @@ export function ReversePage() {
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
 
-      stopAutoRecord();
       const outcomeLabel = resolveOutcome(opp);
       setBetSuccess(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -301,13 +247,6 @@ export function ReversePage() {
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
                           {pendingBet?.oppId === opp.id ? (
                             <>
-                              <button
-                                onClick={() => { startAutoRecord('pinnacle', 'place_bet'); navigateCdp(pendingBet.navUrl); }}
-                                className="px-2 py-1.5 text-xs text-tabReverse hover:text-text transition-colors"
-                                title={pendingBet.navUrl ?? 'Open Pinnacle'}
-                              >
-                                Go&thinsp;&#8599;
-                              </button>
                               <span className="text-muted text-xs">Odds:</span>
                               <input
                                 type="number"
@@ -331,7 +270,7 @@ export function ReversePage() {
                                 {isPlacing ? '...' : 'Confirm'}
                               </button>
                               <button
-                                onClick={() => { stopAutoRecord(); setPendingBet(null); }}
+                                onClick={() => setPendingBet(null)}
                                 className="px-2 py-1.5 text-xs text-muted hover:text-text"
                               >
                                 Cancel

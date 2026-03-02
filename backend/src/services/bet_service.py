@@ -8,6 +8,7 @@ from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
+from ..config import get_exchange_rate
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,11 @@ class BetService:
 
         # Validate sufficient balance (unless free bet)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
-        if not is_bonus and current_balance < stake:
+        rate = get_exchange_rate(provider_id)
+        balance_sek = current_balance * rate
+        if not is_bonus and balance_sek < stake:
             return {
-                "error": f"Insufficient balance: {current_balance:.2f} available, {stake:.2f} required"
+                "error": f"Insufficient balance: {balance_sek:.0f} kr available, {stake:.0f} kr required"
             }
 
         # Populate behavioral fields
@@ -136,8 +139,10 @@ class BetService:
         )
 
         # Deduct stake from balance (unless free bet)
+        # Balance is stored in native currency; stake is in SEK → convert
         if not is_bonus:
-            self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
+            rate = get_exchange_rate(provider_id)
+            self.profile_repo.adjust_balance(profile.id, provider_id, -stake / rate)
 
         # Record wagering progress
         wagering_status = self.profile_repo.record_wagering(profile.id, provider_id, stake, odds)
@@ -177,9 +182,10 @@ class BetService:
         if clv_pct is not None:
             bet.clv_pct = clv_pct
 
-        # Add payout to balance
+        # Add payout to balance (payout is SEK → convert to native currency)
         if bet.profile_id and payout > 0:
-            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout)
+            rate = get_exchange_rate(bet.provider_id)
+            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout / rate)
 
         # Auto-advance freebet: if trigger bet settled, unlock the freebet
         if bet.profile_id:
@@ -337,6 +343,7 @@ class BetService:
             bet.payout = 0.0
 
         # Adjust balance: reverse old payout+stake, apply new payout+stake
+        # All amounts are SEK → convert to native currency for balance adjustment
         if bet.profile_id:
             # Balance delta = (new_payout - old_payout) + (old_stake - new_stake)
             # old flow: -old_stake at placement, +old_payout at settlement
@@ -344,7 +351,8 @@ class BetService:
             # net correction = (new_payout - old_payout) - (new_stake - old_stake)
             balance_delta = (bet.payout - old_payout) - (bet.stake - old_stake)
             if balance_delta != 0:
-                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta)
+                rate = get_exchange_rate(bet.provider_id)
+                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta / rate)
 
         # Recalculate CLV if closing odds exist
         if bet.closing_odds and bet.closing_odds > 1.0:

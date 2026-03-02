@@ -118,17 +118,6 @@ class BetEdit(BaseModel):
     result: Optional[str] = None  # "won", "lost", "void", "pending"
 
 
-class AutoPlaceBetRequest(BaseModel):
-    """Auto-place a bet with full pipeline: edge → Kelly stake → risk → noise → record."""
-    event_id: str
-    provider_id: str
-    market: str
-    outcome: str
-    odds: float
-    point: Optional[float] = None
-    is_bonus: bool = False
-    bonus_type: Optional[str] = None
-
 
 # ============ Profile Schemas ============
 

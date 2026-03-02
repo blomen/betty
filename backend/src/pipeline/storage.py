@@ -6,7 +6,7 @@ Functions for storing events and odds in the database.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..core import StandardEvent
 from ..db.models import Event, Odds
@@ -38,7 +38,6 @@ def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_
     # ±1 day for timezone issues
     try:
         d = datetime.strptime(event_date, "%Y%m%d")
-        from datetime import timedelta
         for delta in (-1, 1):
             adj_date = (d + timedelta(days=delta)).strftime("%Y%m%d")
             if adj_date in sport_dates:
@@ -409,6 +408,9 @@ def store_polymarket_event(
         # Store ALL spread/total lines — scanner groups by market+point
         # (e.g., "spread_-1.5") so value detection only compares matching points.
 
+        # Build provider_meta from market-level metadata (e.g., event_slug for deep links)
+        market_meta = market.get('provider_meta', {})
+
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
             odds = outcome.get("odds", 0)
@@ -439,10 +441,12 @@ def store_polymarket_event(
                     point_value = -point_value
 
             clob_token_id = outcome.get("clob_token_id")
+            outcome_meta = outcome.get('provider_meta', {})
+            provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, clob_token_id, provider_meta=provider_meta)
 
     return is_new_event, odds_processed, odds_new
 

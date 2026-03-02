@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, getTTKFromNow } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { ExtractionProgressBar } from '../ExtractionProgressBar';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { useMultiSort } from '@/hooks/useMultiSort';
-import { useRecorder } from '@/contexts/RecorderContext';
 import type { TabName } from '../Sidebar';
 import type { Bet, Opportunity, BankrollStats, BankrollExposure, PolymarketValueBet } from '@/types';
 
@@ -20,14 +19,6 @@ function resolveOutcome(bet: Bet): string {
   if (outcome === 'over') return 'Over';
   if (outcome === 'under') return 'Under';
   return outcome;
-}
-
-/** Hours from NOW to kickoff (0 if already started) */
-function getLiveTTK(bet: Bet): number | null {
-  if (!bet.start_time) return null;
-  const start = new Date(bet.start_time).getTime();
-  const now = Date.now();
-  return Math.max(0, (start - now) / (1000 * 60 * 60));
 }
 
 function formatTTK(hours: number): string {
@@ -96,7 +87,6 @@ interface MonitorPageProps {
 }
 
 export function MonitorPage({ onTabChange }: MonitorPageProps) {
-  const { startAutoRecord, navigateCdp } = useRecorder();
   const [bets, setBets] = useState<Bet[]>([]);
   const [stats, setStats] = useState<BankrollStats | null>(null);
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
@@ -306,17 +296,9 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
     }
   };
 
-  const handleViewResult = async (bet: Bet) => {
-    try {
-      const nav = await api.navigateToMyBets(bet.provider);
-      startAutoRecord(bet.provider, 'check_result');
-      navigateCdp(nav.url);
-    } catch {
-      // Fall back: try navigating to the event page directly
-      if (bet.provider_site_url) {
-        startAutoRecord(bet.provider, 'check_result');
-        navigateCdp(bet.provider_site_url);
-      }
+  const handleViewResult = (bet: Bet) => {
+    if (bet.provider_site_url) {
+      window.open(bet.provider_site_url, '_blank');
     }
   };
 
@@ -573,7 +555,7 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
                             <button
                               className="text-accent text-[10px] ml-1 hover:underline"
                               title="Check result on provider"
-                              onClick={(e) => { e.stopPropagation(); startAutoRecord(bet.provider, 'check_result'); navigateCdp(bet.provider_site_url!); }}
+                              onClick={(e) => { e.stopPropagation(); window.open(bet.provider_site_url!, '_blank'); }}
                             >{formatProviderName(bet.provider)} ↗</button>
                           ) : (
                             <span className="text-muted2 text-[10px] ml-1">{formatProviderName(bet.provider)}</span>
@@ -719,7 +701,7 @@ export function MonitorPage({ onTabChange }: MonitorPageProps) {
               </thead>
               <tbody>
                 {sortedUpcoming.map(bet => {
-                  const ttk = getLiveTTK(bet);
+                  const ttk = getTTKFromNow(bet.start_time);
                   const mkt = formatMarketShort(bet.market);
                   const fairOdds = bet.fair_odds ?? (bet.edge_pct != null && bet.edge_pct > -100 ? bet.odds / (1 + bet.edge_pct / 100) : null);
                   const liveOdds = bet.current_odds ?? bet.odds;

@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from ..config import ConfigLoader
 from ..core import Retriever, StandardEvent
 from ..matching.normalizer import normalize_team_name
 from .shared.metrics import ExtractionMetrics
@@ -24,7 +25,6 @@ class PinnacleRetriever(Retriever):
         self.base_url = config.get("api_base", "https://guest.api.arcadia.pinnacle.com/0.1")
 
         # Build sport ID map from config
-        from ..config import ConfigLoader
         config_loader = ConfigLoader.get_instance()
         self._sport_map = {
             s.key: s.pinnacle_sport_id
