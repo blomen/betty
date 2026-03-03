@@ -480,11 +480,12 @@ export function BetsPage() {
 
   const resolveOutcome = (bet: Bet): string => {
     const outcome = bet.outcome || '-';
-    if (outcome === 'home') return displayTeamName(bet.home_team, bet.display_home);
-    if (outcome === 'away') return displayTeamName(bet.away_team, bet.display_away);
+    const point = bet.point != null ? ` ${bet.point}` : '';
+    if (outcome === 'home') return `${displayTeamName(bet.home_team, bet.display_home)}${point}`;
+    if (outcome === 'away') return `${displayTeamName(bet.away_team, bet.display_away)}${point}`;
     if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return 'Over';
-    if (outcome === 'under') return 'Under';
+    if (outcome === 'over') return `Over${point}`;
+    if (outcome === 'under') return `Under${point}`;
     return outcome;
   };
 

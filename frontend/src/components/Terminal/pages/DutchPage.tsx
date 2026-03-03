@@ -69,6 +69,13 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [betError, setBetError] = useState<string | null>(null);
   // Track placed legs per opp: oppId -> Set of legIdx
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
+  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.getBets('pending', 500).then(({ bets }) => {
+      setMyBetsCount(bets.filter(dutchBetFilter).length);
+    }).catch(() => {});
+  }, []);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -261,8 +268,8 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
-    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}`;
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${p}`;
     if (outcome === 'under') return `Under${p}`;
@@ -282,7 +289,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
-          { id: 'mybets' as DutchTab, label: 'My Bets' },
+          { id: 'mybets' as DutchTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -372,7 +379,16 @@ export function DutchPage({ providers }: DutchPageProps) {
                       onClick={() => setSelectedOpp(isSelected ? null : idx)}
                     >
                       <td>
-                        <div className="text-text text-sm">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</div>
+                        <div className="flex items-center gap-2 min-w-0 group/copy">
+                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</span>
+                          <button
+                            title="Copy event"
+                            className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home)); }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                          </button>
+                        </div>
                         <div className="text-muted2 text-[11px]">
                           {opp.sport}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}

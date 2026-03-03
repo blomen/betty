@@ -409,9 +409,18 @@ class PolymarketRetriever(Retriever):
             if t:
                 total_candidates.append((t, float(m_data.get("volume", 0) or 0)))
 
-        # Keep ALL spread/total lines — storage filters to Pinnacle's point
-        for s, _ in spread_candidates:
+        # Deduplicate spread markets per absolute point — Polymarket often has
+        # two questions for the same spread (e.g. "Spread: Bruins (-1.5)" and
+        # "Spread: Penguins (+1.5)") which map to identical DB keys but carry
+        # different prices. Keep highest-volume per point.
+        spread_by_point: dict[float, tuple] = {}
+        for s, vol in spread_candidates:
+            abs_pt = abs(s["outcomes"][0]["point"]) if s["outcomes"] else 0
+            if abs_pt not in spread_by_point or vol > spread_by_point[abs_pt][1]:
+                spread_by_point[abs_pt] = (s, vol)
+        for s, _ in spread_by_point.values():
             markets.append(s)
+
         for t, _ in total_candidates:
             markets.append(t)
 

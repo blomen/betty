@@ -32,6 +32,7 @@ export function ReversePage() {
 
   // Track placed market+outcome+point combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
   // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
   useEffect(() => {
@@ -43,6 +44,7 @@ export function ReversePage() {
         }
       }
       if (keys.size > 0) setPlacedKeys(keys);
+      setMyBetsCount(bets.filter(reverseBetFilter).length);
     }).catch(() => {});
   }, []);
 
@@ -82,8 +84,8 @@ export function ReversePage() {
   const resolveOutcome = (opp: Opportunity): string => {
     const outcome = opp.outcome1;
     const point = opp.point != null ? ` ${opp.point}` : '';
-    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
-    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${point}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${point}`;
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${point}`;
     if (outcome === 'under') return `Under${point}`;
@@ -153,7 +155,7 @@ export function ReversePage() {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'reverse' as ReverseTab, label: 'Reverse Bets', count: sorted.length },
-          { id: 'mybets' as ReverseTab, label: 'My Bets' },
+          { id: 'mybets' as ReverseTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -228,8 +230,15 @@ export function ReversePage() {
                     onClick={() => { if (!isSkipped) { setSelectedRow(isSelected ? null : idx); setPendingBet(null); } }}
                   >
                     <td>
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0 group/copy">
                         <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</span>
+                        <button
+                          title="Copy event"
+                          className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home)); }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        </button>
                         {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
                       </div>
                       <div className="text-muted2 text-[11px]">

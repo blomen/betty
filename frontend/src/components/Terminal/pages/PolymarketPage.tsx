@@ -36,6 +36,7 @@ export function PolymarketPage() {
 
   // Track placed market+outcome combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -49,6 +50,7 @@ export function PolymarketPage() {
         }
       }
       if (keys.size > 0) setPlacedKeys(keys);
+      setMyBetsCount(bets.filter(polyBetFilter).length);
     }).catch(() => {});
   }, []);
 
@@ -149,8 +151,8 @@ export function PolymarketPage() {
 
   const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
-    if (vb.outcome === 'home') return displayTeamName(vb.home_team, vb.display_home);
-    if (vb.outcome === 'away') return displayTeamName(vb.away_team, vb.display_away);
+    if (vb.outcome === 'home') return `${displayTeamName(vb.home_team, vb.display_home)}${point}`;
+    if (vb.outcome === 'away') return `${displayTeamName(vb.away_team, vb.display_away)}${point}`;
     if (vb.outcome === 'draw') return 'Draw';
     if (vb.outcome === 'over') return `Over${point}`;
     if (vb.outcome === 'under') return `Under${point}`;
@@ -195,7 +197,7 @@ export function PolymarketPage() {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
-          { id: 'mybets' as PolyTab, label: 'My Bets' },
+          { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -269,8 +271,15 @@ export function PolymarketPage() {
                       onClick={() => !isSkipped && handleSelectOpp(idx)}
                     >
                       <td>
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0 group/copy">
                           <span className="text-text text-sm truncate">{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</span>
+                          <button
+                            title="Copy event"
+                            className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(vb.home_team, vb.display_home)); }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                          </button>
                           {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
                         </div>
                         <div className="text-muted2 text-[11px]">
