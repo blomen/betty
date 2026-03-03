@@ -64,6 +64,14 @@ def start_server(port: int):
     """Run uvicorn in a background thread."""
     logger = logging.getLogger("launcher.server")
     try:
+        # Ensure ProactorEventLoop on Windows — required for browser-based
+        # extraction (patchright needs asyncio.create_subprocess_exec).
+        # Without this, some Windows configurations fall back to
+        # SelectorEventLoop which raises NotImplementedError on subprocess.
+        import asyncio
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
         import uvicorn
         logger.info("Importing FastAPI app...")
         from src.api import app

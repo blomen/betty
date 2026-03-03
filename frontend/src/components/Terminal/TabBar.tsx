@@ -7,14 +7,12 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
-  { name: 'monitor',    label: 'Monitor',   color: '#64748B' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
   { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
-  { name: 'specials',   label: 'Specials',   color: '#A78BFA' },
 ];
 
 const STOCKS_TABS: Tab[] = [
@@ -31,13 +29,12 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 };
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
-  sports: 'monitor',
+  sports: 'value',
   stocks: 'tradingBankroll',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
 export const TAB_COLORS: Record<string, string> = {
-  monitor: '#64748B',
   value: '#FF9800',
   dutch: '#10b981',
   reverse: '#EF5350',

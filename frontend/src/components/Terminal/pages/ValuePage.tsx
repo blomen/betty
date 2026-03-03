@@ -1,13 +1,23 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
+import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
+import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
+import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider } from '@/types';
+import type { Opportunity, Provider, Bet } from '@/types';
+
+type ValueTab = 'value' | 'boosts' | 'mybets';
+
+const valueBetFilter = (b: Bet) =>
+  b.provider !== 'pinnacle' && b.provider !== 'polymarket' && b.market !== 'boost';
+const boostBetFilter = (b: Bet) => b.market === 'boost';
 
 interface GroupedOpp {
   key: string;
@@ -16,11 +26,18 @@ interface GroupedOpp {
   providers: string[];
 }
 
+interface GroupedSpecial {
+  key: string;
+  rep: SpecialItem;
+  providers: string[];
+}
+
 interface ValuePageProps {
   providers: Provider[];
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
+  const [activeTab, setActiveTab] = useState<ValueTab>('value');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -49,6 +66,25 @@ export function ValuePage({ providers }: ValuePageProps) {
     windowName: string;
   } | null>(null);
 
+  // --- Boosts state ---
+  const [specials, setSpecials] = useState<SpecialItem[]>([]);
+  const [boostFilters, setBoostFilters] = useState<{ providers: string[] } | null>(null);
+  const [boostExpandedIdx, setBoostExpandedIdx] = useState<number | null>(null);
+  const [boostStakePreview, setBoostStakePreview] = useState<StakePreviewResult | null>(null);
+  const [isLoadingBoostPreview, setIsLoadingBoostPreview] = useState(false);
+  const [boostSelectedProviders, setBoostSelectedProviders] = useState<Set<string>>(new Set());
+  const [boostSelectedBetProvider, setBoostSelectedBetProvider] = useState<Record<string, number>>({});
+  const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
+  const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
+  const [boostPendingBet, setBoostPendingBet] = useState<{
+    groupKey: string;
+    special: SpecialItem;
+    providerId: string;
+    actualOdds: number;
+    stake: number;
+  } | null>(null);
+  const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
+
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
@@ -56,18 +92,31 @@ export function ValuePage({ providers }: ValuePageProps) {
   useEffect(() => {
     api.getBets('pending', 500).then(({ bets }) => {
       const keys = new Set<string>();
+      const bKeys = new Set<string>();
       for (const b of bets) {
-        if (b.event_id) keys.add(`${b.event_id}|${b.provider}`);
+        if (b.market === 'boost' && b.outcome) {
+          bKeys.add(b.outcome);
+        } else if (b.event_id) {
+          keys.add(`${b.event_id}|${b.provider}`);
+        }
       }
       if (keys.size > 0) setPlacedKeys(keys);
+      if (bKeys.size > 0) setBoostPlacedKeys(bKeys);
     }).catch(() => {});
   }, []);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3);
+      const [res, boostRes] = await Promise.all([
+        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+        api.getSpecials({}).catch(() => null),
+      ]);
       setOpportunities(res.opportunities);
+      if (boostRes) {
+        setSpecials(boostRes.specials || []);
+        if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
+      }
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {
@@ -157,6 +206,94 @@ export function ValuePage({ providers }: ValuePageProps) {
       if (next.has(p)) next.delete(p); else next.add(p);
       return next;
     });
+  };
+
+  // --- Boosts grouping & sorting ---
+  const boostNonExpired = useMemo(() => specials.filter(s => {
+    if (s.event_time) { try { if (new Date(s.event_time).getTime() <= Date.now()) return false; } catch { /* keep */ } }
+    if (!s.expires_at) return true;
+    try { return new Date(s.expires_at).getTime() > Date.now(); } catch { return true; }
+  }), [specials]);
+
+  const boostGrouped = useMemo(() => {
+    const groups: GroupedSpecial[] = [];
+    for (const s of boostNonExpired) {
+      const allProviders = [s.provider, ...(s.shared_providers || [])];
+      const key = `${s.provider}-${s.title}-${s.boosted_odds}`;
+      if (boostPlacedKeys.has(key) || boostPlacedKeys.has(s.title)) continue;
+      groups.push({ key, rep: s, providers: allProviders });
+    }
+    return groups;
+  }, [boostNonExpired, boostPlacedKeys]);
+
+  const boostActiveGroups = useMemo(() => {
+    if (boostSelectedProviders.size === 0) return boostGrouped;
+    return boostGrouped.filter(g =>
+      g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
+    );
+  }, [boostGrouped, boostSelectedProviders]);
+
+  type BoostSortCol = 'odds' | 'prob' | 'max' | 'edge' | 'ttk';
+  const boostSortExtractors = useMemo(() => ({
+    odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
+    prob: (g: GroupedSpecial) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
+    max: (g: GroupedSpecial) => g.rep.max_stake ?? 0,
+    edge: (g: GroupedSpecial) => g.rep.edge_pct ?? 0,
+    ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
+  }), []);
+  const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
+    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'edge', direction: 'desc' });
+
+  const toggleBoostProvider = (p: string) => {
+    setBoostSelectedProviders(prev => { const next = new Set(prev); const key = p.toLowerCase(); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+    setBoostExpandedIdx(null);
+  };
+
+  const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
+    if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
+    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null);
+    const s = group.rep;
+    if (!s.boosted_odds || !s.edge_pct) return;
+    setIsLoadingBoostPreview(true);
+    try { const preview = await api.getBoostStakePreview({ edge_pct: s.edge_pct, odds: s.boosted_odds, provider_id: s.provider }); setBoostStakePreview(preview); }
+    catch (err) { console.error('Failed to load stake preview:', err); }
+    finally { setIsLoadingBoostPreview(false); }
+  };
+
+  const startBoostPlaceBet = (special: SpecialItem, providerId: string, groupKey: string) => {
+    if (!boostStakePreview || !special.boosted_odds) return;
+    let stake = boostStakePreview.recommended_stake;
+    if (special.max_stake != null && stake > special.max_stake) stake = special.max_stake;
+    if (stake <= 0) return;
+    const odds = boostOddsOverride[groupKey] ?? special.boosted_odds;
+    setBetError(null); setBetSuccess(null);
+    setBoostPendingBet({ groupKey, special, providerId, actualOdds: odds, stake });
+  };
+
+  const confirmBoostPlaceBet = async () => {
+    if (!boostPendingBet) return;
+    const { special, providerId, actualOdds, stake, groupKey } = boostPendingBet;
+    setIsPlacing(true); setBetError(null);
+    try {
+      await api.createBet({
+        provider_id: providerId,
+        market: 'boost',
+        outcome: special.title,
+        odds: actualOdds,
+        stake,
+        is_bonus: false,
+        utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined,
+        selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined,
+      });
+      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
+      setTimeout(() => setBetSuccess(null), 5000);
+      setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
+      setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
+      fetchData();
+    } catch (err) {
+      setBetError(err instanceof Error ? err.message : 'Failed to place bet');
+      setTimeout(() => setBetError(null), 5000);
+    } finally { setIsPlacing(false); }
   };
 
   const handleSelectGroup = (idx: number) => {
@@ -255,10 +392,175 @@ export function ValuePage({ providers }: ValuePageProps) {
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="value" color={TAB_COLORS.value} size={16} />
           Soft
-          <span className="text-muted text-sm font-normal ml-1">({filteredCount})</span>
         </h2>
       </div>
 
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
+          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabBonus text-tabBonus' },
+          { id: 'mybets' as ValueTab, label: 'My Bets', activeClass: 'border-tabValue text-tabValue' },
+        ]).map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+              activeTab === tab.id
+                ? tab.activeClass
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* MyBets tab — show both value and boost bets */}
+      {activeTab === 'mybets' && (
+        <>
+          <MyBetsSection filter={valueBetFilter} colorKey="value" />
+          <MyBetsSection filter={boostBetFilter} colorKey="specials" />
+        </>
+      )}
+
+      {/* Boosts tab */}
+      {activeTab === 'boosts' && <>
+      {/* Feedback toasts */}
+      {betSuccess && (
+        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
+          <span>{betSuccess}</span>
+          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
+        </div>
+      )}
+      {betError && (
+        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
+          <span>{betError}</span>
+          <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
+        </div>
+      )}
+
+      {boostFilters && boostFilters.providers.length > 0 && (
+        <FilterBar>
+          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderName} accentColor="tabBonus" />
+        </FilterBar>
+      )}
+
+      {sortedBoosts.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          No active boosts. Boosts are scraped automatically every 2 hours.
+        </div>
+      ) : (
+        <div className="border-l-2 border-tabBonus">
+        <table className="sq">
+          <thead>
+            <tr>
+              <th>Boost</th>
+              <th className="text-right">Providers</th>
+              <SortableHeader column="odds" label="Odds" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="prob" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="max" label="Max" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="edge" label="Edge" sort={boostSort} onToggle={toggleBoostSort} />
+            </tr>
+          </thead>
+          <tbody>
+            {sortedBoosts.map((group, idx) => {
+              const s = group.rep;
+              const isExpanded = boostExpandedIdx === idx;
+              const providerCount = group.providers.length;
+              const methodLabel = s.enrichment_method?.startsWith('combo') ? 'COMBO'
+                : s.enrichment_method === 'consensus' ? 'CONS'
+                : s.enrichment_method === 'unverified' ? 'UNVERIFIED'
+                : null;
+
+              return (
+                <Fragment key={group.key}>
+                  <tr className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
+                    <td>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-text text-sm truncate">{s.title}</span>
+                        {methodLabel && (
+                          <span className={`text-[9px] px-1 py-0.5 ${
+                            methodLabel === 'UNVERIFIED' ? 'bg-warning/20 text-warning' : 'bg-tabBonus/15 text-tabBonus'
+                          }`}>{methodLabel}</span>
+                        )}
+                      </div>
+                      <div className="text-muted2 text-[11px] truncate">
+                        {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}{s.league ? ` · ${s.league}` : ''}
+                        {s.event_time && isFutureDate(s.event_time) ? ` · ${formatEventTime(s.event_time)}` : s.expires_at ? ` · ${formatTimeRemaining(s.expires_at)}` : ''}
+                      </div>
+                    </td>
+                    <td className="text-right text-sm min-w-0">
+                      {providerCount <= 3 ? (
+                        <span className="text-text truncate">{group.providers.map(formatProviderName).join(', ')}</span>
+                      ) : (
+                        <span className="text-text truncate">
+                          {formatProviderName(group.providers[0])}
+                          <span className="text-muted ml-1">+{providerCount - 1}</span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {s.original_odds != null && (<><span className="text-muted line-through text-xs">{s.original_odds.toFixed(2)}</span><span className="text-muted text-xs">&rarr;</span></>)}
+                        <span className="text-success font-bold text-sm">{s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}</span>
+                      </div>
+                    </td>
+                    <td className="text-right text-muted text-sm">{s.fair_odds != null && s.fair_odds > 1 ? `${(100 / s.fair_odds).toFixed(0)}%` : '-'}</td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
+                    <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
+                    <td className="text-right">
+                      {s.edge_pct != null ? (
+                        <span className={`font-semibold text-sm ${s.edge_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
+                          {s.edge_pct > 0 ? '+' : ''}{s.edge_pct.toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-muted2 text-sm">-</span>
+                      )}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${group.key}-exp`}>
+                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
+                        <BoostExpandedRow
+                          special={s}
+                          groupKey={group.key}
+                          providers={group.providers}
+                          stakePreview={boostStakePreview}
+                          isLoadingPreview={isLoadingBoostPreview}
+                          isPlacing={isPlacing}
+                          pendingBet={boostPendingBet?.groupKey === group.key ? boostPendingBet : null}
+                          selectedProviderIdx={boostSelectedBetProvider[group.key] ?? 0}
+                          onSelectProvider={(i) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: i }))}
+                          onStartPlaceBet={(pid) => startBoostPlaceBet(s, pid, group.key)}
+                          onConfirmBet={confirmBoostPlaceBet}
+                          onCancelPending={() => setBoostPendingBet(null)}
+                          onUpdatePendingOdds={(val) => setBoostPendingBet(prev => prev ? { ...prev, actualOdds: val } : null)}
+                          oddsOverride={boostOddsOverride[group.key] ?? null}
+                          editingOdds={boostEditingOdds === group.key}
+                          onEditOdds={() => setBoostEditingOdds(group.key)}
+                          onSetOdds={(val) => { setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
+                          onResetOdds={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }}
+                          onCancelEdit={() => setBoostEditingOdds(null)}
+                          betError={betError}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        </div>
+      )}
+      </>}
+
+      {activeTab === 'value' && <>
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
@@ -323,9 +625,8 @@ export function ValuePage({ providers }: ValuePageProps) {
               const providerCount = groupProviders.length;
 
               return (
-                <>
+                <Fragment key={group.key}>
                   <tr
-                    key={group.key}
                     className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
                     onClick={() => !isSkipped && handleSelectGroup(idx)}
                   >
@@ -546,13 +847,14 @@ export function ValuePage({ providers }: ValuePageProps) {
                     </tr>
                     );
                   })()}
-                </>
+                </Fragment>
               );
             })}
           </tbody>
         </table>
         </div>
       )}
+      </>}
 
       {/* Freebet Popup */}
       {freebetPopup && (
@@ -608,4 +910,147 @@ function resolveOutcomeName(opp: Opportunity): string {
   if (outcome === 'over') return `Over${point}`;
   if (outcome === 'under') return `Under${point}`;
   return outcome;
+}
+
+
+// --- Boost helpers ---
+
+function formatEventTime(isoString: string): string {
+  try {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = date.getTime() - now.getTime();
+    if (diffMs <= 0) return 'started';
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHrs = Math.floor(diffMin / 60);
+    const diffDays = Math.floor(diffHrs / 24);
+    if (diffHrs < 24) { if (diffMin < 60) return `in ${diffMin}m`; const remMin = diffMin % 60; return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`; }
+    if (diffDays < 7) return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+
+function formatTimeRemaining(isoString: string): string {
+  try {
+    const date = new Date(isoString);
+    const diffMs = date.getTime() - Date.now();
+    if (diffMs <= 0) return 'expired';
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHrs = Math.floor(diffMin / 60);
+    const diffDays = Math.floor(diffHrs / 24);
+    if (diffMin < 60) return `${diffMin}m left`;
+    if (diffHrs < 24) { const remMin = diffMin % 60; return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`; }
+    if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`;
+    return `${diffDays}d left`;
+  } catch { return ''; }
+}
+
+function isFutureDate(isoString: string): boolean {
+  try { return new Date(isoString).getTime() > Date.now(); } catch { return false; }
+}
+
+
+// --- Boost Expanded Row ---
+
+function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, pendingBet, selectedProviderIdx, onSelectProvider, onStartPlaceBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit, betError }: {
+  special: SpecialItem;
+  groupKey: string;
+  providers: string[];
+  stakePreview: StakePreviewResult | null;
+  isLoadingPreview: boolean;
+  isPlacing: boolean;
+  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number } | null;
+  selectedProviderIdx: number;
+  onSelectProvider: (idx: number) => void;
+  onStartPlaceBet: (providerId: string) => void;
+  onConfirmBet: () => void;
+  onCancelPending: () => void;
+  onUpdatePendingOdds: (val: number) => void;
+  oddsOverride: number | null;
+  editingOdds: boolean;
+  onEditOdds: () => void;
+  onSetOdds: (val: number) => void;
+  onResetOdds: () => void;
+  onCancelEdit: () => void;
+  betError: string | null;
+}) {
+  void groupKey;
+  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : 0;
+  const effectiveOdds = oddsOverride ?? special.boosted_odds ?? 0;
+  const oddsChanged = oddsOverride != null;
+  const potentialReturn = stake * effectiveOdds;
+  const potentialProfit = potentialReturn - stake;
+
+  return (
+    <div className="px-3 py-2 bg-panel">
+      {isLoadingPreview ? (<div className="text-muted text-sm">Calculating stake...</div>) : stakePreview ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-6 text-xs text-muted flex-wrap">
+            <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span></div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted2 uppercase tracking-wider">Odds: </span>
+              {editingOdds ? (
+                <input
+                  type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
+                  className="w-16 bg-bg border border-tabBonus/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabBonus"
+                  onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
+                />
+              ) : (
+                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabBonus/50 transition-colors ${oddsChanged ? 'text-tabBonus font-medium border-tabBonus/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
+                  {effectiveOdds.toFixed(2)}
+                </span>
+              )}
+              {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+            </div>
+            <div><span className="text-muted2 uppercase tracking-wider">Stake: </span><span className="text-text font-medium">{stake.toFixed(0)} kr</span>{stakePreview.was_capped_single && <span className="text-warning text-[10px] ml-1">capped</span>}{special.max_stake != null && stakePreview.recommended_stake > special.max_stake && <span className="text-warning text-[10px] ml-1">max</span>}</div>
+            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-success text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
+            <div><span className="text-muted2 uppercase tracking-wider">Bankroll: </span><span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span></div>
+            {special.fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">Fair: </span><span className="text-text">{special.fair_odds.toFixed(2)}</span></div>}
+            {special.boost_pct != null && <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>}
+            {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
+          </div>
+          <div className="flex items-center gap-2">
+            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
+            {stakePreview.skip_reason ? (
+              <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
+            ) : pendingBet ? (
+              <>
+                <span className="text-muted text-xs">Odds:</span>
+                <input
+                  type="number" step="0.01" autoFocus value={pendingBet.actualOdds}
+                  onChange={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val)) onUpdatePendingOdds(val); }}
+                  className="w-20 bg-bg border border-tabBonus/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabBonus"
+                  onKeyDown={(e) => { if (e.key === 'Enter') onConfirmBet(); if (e.key === 'Escape') onCancelPending(); }}
+                />
+                <button onClick={onConfirmBet} disabled={isPlacing || pendingBet.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">
+                  {isPlacing ? '...' : 'Confirm'}
+                </button>
+                <button onClick={onCancelPending} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
+              </>
+            ) : (
+              <>
+                <select
+                  value={selectedProviderIdx}
+                  onChange={(e) => onSelectProvider(Number(e.target.value))}
+                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabBonus/50 cursor-pointer"
+                >
+                  {providers.map((pid, i) => (
+                    <option key={pid} value={i}>{formatProviderName(pid)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
+                  disabled={stake <= 0 || isPlacing}
+                  className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
+                >
+                  {isPlacing ? '...' : 'Place Bet'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      ) : (<div className="text-muted text-sm">No preview available — missing boost data</div>)}
+    </div>
+  );
 }

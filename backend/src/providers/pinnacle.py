@@ -401,7 +401,7 @@ class PinnacleRetriever(Retriever):
             if not prices:
                 continue
 
-            # Capture placement-critical IDs at market level
+            # Capture provider-specific IDs at market level
             market_meta = {
                 "matchup_id": str(market.get("matchupId", "")),
                 "period": period,

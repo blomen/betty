@@ -114,8 +114,8 @@ class Odds(Base):
     outcome = Column(String, nullable=False)    # "home", "away", "draw"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
     point = Column(Float, nullable=True)        # Reserved for future use
-    clob_token_id = Column(String, nullable=True)  # Polymarket CLOB token ID for order book
-    provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs for placement: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
+    provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
 
     updated_at = Column(DateTime, default=_utcnow)
     
@@ -193,13 +193,13 @@ class Bet(Base):
     utility_score = Column(Float, nullable=True)      # EV - λ*RiskPenalty
     selection_probability = Column(Float, nullable=True)  # Softmax selection prob
 
-    # Placement tracking (auto-filled by PlacementService)
+    # Bet confirmation
     confirmation_id = Column(String, nullable=True)          # Provider's bet reference
-    placement_status = Column(String, default="manual")      # "manual" | "submitted" | "confirmed" | "failed"
-    actual_odds_at_placement = Column(Float, nullable=True)  # Odds when actually placed
-    placement_latency_ms = Column(Float, nullable=True)      # Time from request to confirmation
+    placement_status = Column(String, default="manual")      # Legacy — always "manual"
+    actual_odds_at_placement = Column(Float, nullable=True)  # Odds user confirmed at placement
+    placement_latency_ms = Column(Float, nullable=True)      # Legacy — no longer populated
 
-    # Edge tracking (filled at placement)
+    # Edge tracking (filled at bet entry)
     fair_odds_at_placement = Column(Float, nullable=True)  # De-vigged Pinnacle fair odds when bet placed
 
     # CLV tracking (filled post-event)
@@ -351,8 +351,7 @@ class ProfileProviderBalance(Base):
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     balance = Column(Float, default=0.0)
 
-    # Polymarket wallet address (0x...) for API-based portfolio sync
-    wallet_address = Column(String, nullable=True)
+    wallet_address = Column(String, nullable=True)  # Legacy — no longer populated
 
     # Manual account opened date for pre-existing accounts
     # Used for dormant account handling - accounts opened before +EV betting

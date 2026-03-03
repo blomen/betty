@@ -4,7 +4,6 @@ import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
 // Eager: core pages always in main bundle
 import {
-  MonitorPage,
   ValuePage,
   DutchPage,
   ReversePage,
@@ -13,7 +12,6 @@ import {
   WelcomePage,
 } from './pages';
 // Lazy: secondary/heavy pages split into separate chunks
-const SpecialsPage = lazy(() => import('./pages/SpecialsPage').then(m => ({ default: m.SpecialsPage })));
 const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.BetsPage })));
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const TradingBankrollPage = lazy(() => import('./pages/TradingBankrollPage').then(m => ({ default: m.TradingBankrollPage })));
@@ -30,7 +28,7 @@ interface TerminalWindowProps {
 
 export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
-  const [activeTab, setActiveTab] = useState<TabName>('monitor');
+  const [activeTab, setActiveTab] = useState<TabName>('value');
   const [isProfileActive, setIsProfileActive] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
@@ -84,8 +82,6 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
 
   const renderPage = () => {
     switch (activeTab) {
-      case 'monitor':
-        return <MonitorPage onTabChange={handleTabChange} />;
       case 'value':
         return <ValuePage providers={context.providers} />;
       case 'dutch':
@@ -98,8 +94,6 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <BetsPage />;
       case 'bankroll':
         return <BankrollPage providers={context.providers} onRefresh={onRefresh} />;
-      case 'specials':
-        return <SpecialsPage />;
       case 'profiles':
         return <ProfilePage onRefresh={onRefresh} />;
       case 'tradingBankroll':

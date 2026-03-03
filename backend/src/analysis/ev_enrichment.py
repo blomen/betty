@@ -4,7 +4,7 @@ EV Enrichment for Odds Boosts
 Three-pass enrichment pipeline:
 1. Pinnacle direct match: De-vig Pinnacle 1x2/total/spread for pure single-market boosts
 2. Combo decomposition: Parse multi-leg combos, price each leg from Pinnacle
-3. Margin estimation: Fallback for remaining boosts using estimated bookmaker margin
+3. Consensus pricing: Use soft provider consensus as fallback for remaining boosts
 
 Also provides store_specials_to_db() for persisting enriched specials.
 """
@@ -16,13 +16,14 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..db.models import Event, Odds, SpecialOdds
-from .devig import get_fair_odds_for_outcome
+from .devig import get_fair_odds_for_outcome, compute_consensus_fair_odds
 from .combo_decomposition import (
     classify_boost, parse_combo_legs, price_combo_legs,
     DECOMPOSABLE_TYPES,
 )
 from ..matching.normalizer import normalize_team_name
 from ..matching.matcher import get_team_match_score
+from ..constants import PLATFORM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -35,58 +36,8 @@ MATCH_WINNER_LABELS = {
     "vinner matchen", "to win", "att vinna", "matchresultat",
 }
 
-# ── Margin estimation by boost type ──────────────────────────────────────
-# Bookmaker margin (overround fraction) baked into original_odds.
-# Higher margin → we trust original_odds less → estimate more conservative fair_odds.
-#
-# Checked in order; first match wins.
-
-_MARGIN_RULES: list[tuple[list[str], float]] = [
-    # Combos: result + totals, result + BTTS — margins compound across legs
-    (["resultat +", "result +", " + "], 0.25),
-    # Goalscorer / player props — wide margins
-    (["målgörare", "goalscorer", "gör mål", "scores", "to score",
-      "två eller fler mål", "two or more goals"], 0.20),
-    # HT/FT — large market with many outcomes
-    (["halvtid/fulltid", "halftime/fulltime", "ht/ft",
-      "halvtid/slutställning", "spelförlopp"], 0.18),
-    # Exact score / correct score
-    (["rätt resultat", "correct score"], 0.30),
-    # Player stats (shots, assists, rebounds)
-    (["spelarens", "player", "skott", "shot", "assist", "rebound", "poäng"], 0.20),
-    # Both halves, clean sheet, period props
-    (["båda halvlekarna", "both halves", "nollan", "clean sheet",
-      "period med", "period with"], 0.15),
-    # Timing of first goal
-    (["tidpunkt", "time of"], 0.20),
-    # Corners, cards
-    (["hörna", "corner", "kort", "card", "hörnor"], 0.15),
-    # Over/under, totals
-    (["antal mål", "antal", "över", "under", "over", "totalt antal"], 0.10),
-    # Handicap / spread
-    (["handikapp", "handicap"], 0.08),
-    # BTTS
-    (["båda lagen", "both teams", "btts"], 0.10),
-    # Win half / win period
-    (["vinner en av", "vinner halvlek", "win half", "win period"], 0.12),
-    # Simple 1x2 / match winner — tightest markets
-    (["1x2", "vinnare", "winner", "att vinna", "to win", "vinner matchen"], 0.06),
-]
-
-# Fallback if no rule matches
-_DEFAULT_MARGIN = 0.12
-
-
-def estimate_margin(title: str) -> float:
-    """Estimate bookmaker margin from boost title keywords.
-
-    Returns a fraction (e.g. 0.10 for 10% overround).
-    """
-    t = _fix_encoding(title).lower()
-    for keywords, margin in _MARGIN_RULES:
-        if any(kw in t for kw in keywords):
-            return margin
-    return _DEFAULT_MARGIN
+# Minimum boost percentage to show unmeasurable boosts (no Pinnacle, no consensus)
+_UNVERIFIED_MIN_BOOST_PCT = 50
 
 
 def _fix_encoding(text: str) -> str:
@@ -217,6 +168,37 @@ def _load_pinnacle_data(db: Session, sports: set[str]) -> tuple[dict, dict]:
     return pinnacle_markets, event_info
 
 
+def _load_soft_odds_for_event(db: Session, event_id: str) -> dict[str, dict[str, list[dict]]]:
+    """Load all soft provider odds for an event, grouped by market+outcome.
+
+    Returns: {market_key: {outcome: [{provider, odds}, ...]}}
+    where market_key is "1x2", "moneyline", "total_2.5", "spread_-1.5", etc.
+    """
+    rows = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id == event_id,
+            Odds.provider_id != "pinnacle",
+            Odds.provider_id != "polymarket",
+        )
+        .all()
+    )
+
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for row in rows:
+        market_key = row.market if row.point is None else f"{row.market}_{row.point}"
+        if market_key not in grouped:
+            grouped[market_key] = {}
+        if row.outcome not in grouped[market_key]:
+            grouped[market_key][row.outcome] = []
+        grouped[market_key][row.outcome].append({
+            "provider": row.provider_id,
+            "odds": row.odds,
+        })
+
+    return grouped
+
+
 def _find_pinnacle_event(
     sport: str,
     home_norm: str,
@@ -339,7 +321,7 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
     Pass 1: Pinnacle direct match (1x2, total, spread)
     Pass 2: Combo decomposition (multi-leg boosts)
-    Pass 3: Margin estimation (fallback for everything else)
+    Pass 3: Consensus pricing from soft providers (fallback)
     """
     if not specials:
         return specials
@@ -353,7 +335,6 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
     pinnacle_count = 0
     combo_count = 0
-    margin_count = 0
 
     # ══════════════════════════════════════════════════════════════════
     # PASS 1: Pinnacle direct match (pure 1x2, total, spread boosts)
@@ -391,6 +372,12 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         if not pin_data:
             continue
 
+        # Always record matched event (even if market pricing fails, for consensus fallback)
+        if pin_key and event_info:
+            info = event_info.get(pin_key, {})
+            if info.get("event_id"):
+                special["matched_event_id"] = info["event_id"]
+
         title_lower = title.lower()
         original_odds = special.get("original_odds")
 
@@ -425,10 +412,6 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
                             "pinnacle_1x2", best_outcome, pin_key, event_info,
                             market="1x2")
             pinnacle_count += 1
-
-            # Calibration logging
-            if original_odds:
-                _log_calibration(title, market_label, original_odds, fair_odds)
 
         # ── Pure total ──
         elif boost_type == "pure_total":
@@ -465,9 +448,6 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
                             "pinnacle_total", outcome, pin_key, event_info,
                             market="total")
             pinnacle_count += 1
-
-            if original_odds:
-                _log_calibration(title, market_label, original_odds, fair_odds)
 
         # ── Pure spread ──
         elif boost_type == "pure_spread":
@@ -540,6 +520,12 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         if not pin_data:
             continue
 
+        # Always record matched event for consensus fallback
+        if pin_key and event_info:
+            info = event_info.get(pin_key, {})
+            if info.get("event_id"):
+                special["matched_event_id"] = info["event_id"]
+
         # Parse legs
         legs = parse_combo_legs(market_label, title, event_name)
         if not legs or len(legs) < 2:
@@ -573,62 +559,150 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
                         market="combo")
         combo_count += 1
 
-        # Calibration: compare combo fair_odds vs margin-estimated
-        original_odds = special.get("original_odds")
-        if original_odds and original_odds > 1:
-            est_margin = estimate_margin(title + " " + market_label)
-            est_fair = original_odds * (1 + est_margin)
-            logger.debug(
-                f"CALIBRATION combo: '{title[:60]}' "
-                f"decomposed_fair={fair_odds:.3f} margin_est_fair={est_fair:.3f} "
-                f"diff={((fair_odds / est_fair) - 1) * 100:.1f}%"
-            )
-
     logger.info(f"EV enrichment pass 2: {combo_count} specials priced via combo decomposition")
 
     # ══════════════════════════════════════════════════════════════════
-    # PASS 3: Margin-based estimation for remaining specials
+    # PASS 3: Consensus pricing from soft providers
     # ══════════════════════════════════════════════════════════════════
+
+    consensus_count = 0
+    unverified_count = 0
+
+    # Cache soft odds per event to avoid repeated DB queries
+    _soft_odds_cache: dict[str, dict] = {}
 
     for special in specials:
         if special.get("edge_pct") is not None:
+            continue  # Already enriched by Pass 1 or 2
+
+        boosted_odds = special.get("boosted_odds")
+        if not boosted_odds:
             continue
+
+        matched_event_id = special.get("matched_event_id")
+        if not matched_event_id:
+            # No event match — mark as unverified if huge boost
+            boost_pct = special.get("boost_pct") or 0
+            if boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+                special["enrichment_method"] = "unverified"
+                unverified_count += 1
+            continue
+
+        # Classify boost type — consensus only works for markets we extract
+        market_label = _fix_encoding(special.get("market_label", ""))
+        title = _fix_encoding(special.get("title", ""))
+        title_lower = title.lower()
+        boost_type = classify_boost(market_label, title)
+
+        # Load soft odds (cached per event)
+        if matched_event_id not in _soft_odds_cache:
+            _soft_odds_cache[matched_event_id] = _load_soft_odds_for_event(db, matched_event_id)
+        soft_odds = _soft_odds_cache[matched_event_id]
+
+        if not soft_odds:
+            boost_pct = special.get("boost_pct") or 0
+            if boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+                special["enrichment_method"] = "unverified"
+                unverified_count += 1
+            continue
+
+        # Determine which market to look up for consensus
+        candidate_market_key = None
+        if boost_type == "pure_1x2":
+            # Try 1x2 then moneyline
+            for mk in ("1x2", "moneyline"):
+                if mk in soft_odds:
+                    candidate_market_key = mk
+                    break
+        elif boost_type == "pure_total":
+            point = _extract_point_from_title(title)
+            if point is not None:
+                candidate_market_key = f"total_{point}"
+        elif boost_type == "pure_spread":
+            point = _extract_point_from_title(title)
+            if point is not None:
+                # Try both signs
+                for try_key in (f"spread_{point}", f"spread_{-point}"):
+                    if try_key in soft_odds:
+                        candidate_market_key = try_key
+                        break
+        # Combo, prop, unknown — can't do consensus
+
+        if not candidate_market_key or candidate_market_key not in soft_odds:
+            boost_pct = special.get("boost_pct") or 0
+            if boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+                special["enrichment_method"] = "unverified"
+                unverified_count += 1
+            continue
+
+        odds_by_outcome = soft_odds[candidate_market_key]
+
+        # Infer which outcome this boost targets
+        # Build a flat odds dict for _infer_outcome (avg odds per outcome)
+        avg_odds: dict[str, float] = {}
+        for out, provs in odds_by_outcome.items():
+            if provs:
+                avg_odds[out] = sum(p["odds"] for p in provs) / len(provs)
 
         original_odds = special.get("original_odds")
-        boosted_odds = special.get("boosted_odds")
-        if not original_odds or not boosted_odds or original_odds <= 1.0:
+        event_name = special.get("event", "")
+        teams = _parse_boost_teams(event_name)
+        home_norm = normalize_team_name(teams[0]).lower() if teams else ""
+        away_norm = normalize_team_name(teams[1]).lower() if teams else ""
+
+        # For totals, infer over/under from title
+        if boost_type == "pure_total":
+            if any(kw in title_lower for kw in ("över", "over")):
+                outcome = "over"
+            elif "under" in title_lower:
+                outcome = "under"
+            else:
+                outcome = None
+        else:
+            outcome = _infer_outcome(original_odds, avg_odds, title_lower, home_norm, away_norm)
+
+        if not outcome or outcome not in odds_by_outcome:
+            boost_pct = special.get("boost_pct") or 0
+            if boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+                special["enrichment_method"] = "unverified"
+                unverified_count += 1
             continue
 
-        title = special.get("title", "") + " " + special.get("market_label", "")
-        margin = estimate_margin(title)
+        # Compute consensus fair odds (min_platforms=3 for boost fallback)
+        consensus_result = compute_consensus_fair_odds(
+            outcome, odds_by_outcome, PLATFORM_MAP, min_platforms=3,
+        )
+        if not consensus_result:
+            boost_pct = special.get("boost_pct") or 0
+            if boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+                special["enrichment_method"] = "unverified"
+                unverified_count += 1
+            continue
 
-        # fair_odds = original_odds corrected for margin
-        fair_odds = round(original_odds * (1 + margin), 3)
+        fair_odds, n_platforms = consensus_result
         edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
 
-        # Margin estimation is a crude heuristic — cap at 50% to avoid
-        # false positives from massive promotional boosts (e.g. 3x→10x)
-        if edge_pct > 50:
-            logger.debug(
-                f"Skipping margin-est '{special.get('title')}': edge={edge_pct:.0f}% "
-                f"(boosted={boosted_odds:.2f} vs fair={fair_odds:.2f}) — exceeds margin-est cap"
-            )
+        # Sanity checks
+        if edge_pct > 100:
             continue
+        if original_odds and fair_odds:
+            ratio = original_odds / fair_odds
+            if ratio > 1.6 or ratio < 0.5:
+                continue
 
-        special["fair_odds"] = fair_odds
-        special["edge_pct"] = edge_pct
-        special["ev_per_unit"] = round(boosted_odds * (1.0 / fair_odds) - 1, 4)
-        special["is_positive_ev"] = edge_pct > 0
-        special["margin_estimate"] = margin
-        special["enrichment_method"] = "margin_estimate"
-        margin_count += 1
+        _set_enrichment(special, edge_pct, fair_odds, boosted_odds,
+                        "consensus", outcome, market=candidate_market_key.split("_")[0])
+        special["matched_event_id"] = matched_event_id
+        consensus_count += 1
 
     logger.info(
-        f"EV enrichment pass 3: {margin_count} specials estimated via margin correction"
+        f"EV enrichment pass 3: {consensus_count} specials priced via consensus, "
+        f"{unverified_count} marked unverified"
     )
     logger.info(
         f"EV enrichment total: pinnacle={pinnacle_count} combo={combo_count} "
-        f"margin={margin_count} none={len(specials) - pinnacle_count - combo_count - margin_count}"
+        f"consensus={consensus_count} unverified={unverified_count} "
+        f"none={len(specials) - pinnacle_count - combo_count - consensus_count - unverified_count}"
     )
 
     return specials
@@ -680,22 +754,6 @@ def _infer_outcome(
         return "away"
 
     return None
-
-
-# ── Calibration logging ────────────────────────────────────────────────
-
-def _log_calibration(title: str, market_label: str, original_odds: float, fair_odds: float):
-    """Log comparison of margin estimate vs actual Pinnacle fair odds for calibration."""
-    estimated_margin = estimate_margin(title + " " + market_label)
-    estimated_fair = original_odds * (1 + estimated_margin)
-    actual_margin = (fair_odds / original_odds) - 1 if original_odds > 0 else 0
-
-    logger.debug(
-        f"CALIBRATION: '{market_label[:40]}' "
-        f"est_margin={estimated_margin:.2%} actual_margin={actual_margin:.2%} "
-        f"est_fair={estimated_fair:.2f} actual_fair={fair_odds:.3f} "
-        f"diff={((estimated_fair / fair_odds) - 1) * 100:+.1f}%"
-    )
 
 
 # ── Expiry filter ──────────────────────────────────────────────────────

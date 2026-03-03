@@ -5,8 +5,14 @@ import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Provider } from '@/types';
+import type { Provider, Bet } from '@/types';
+
+type DutchTab = 'dutch' | 'mybets';
+
+const dutchBetFilter = (b: Bet) =>
+  b.provider !== 'pinnacle' && b.provider !== 'polymarket' && b.market !== 'boost';
 
 interface DutchLeg {
   outcome: string;
@@ -44,6 +50,7 @@ interface DutchPageProps {
 const MAX_ROWS = 50;
 
 export function DutchPage({ providers }: DutchPageProps) {
+  const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
   const [opportunities, setOpportunities] = useState<DutchOpp[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
@@ -257,12 +264,36 @@ export function DutchPage({ providers }: DutchPageProps) {
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
           Dutch
-          <span className="text-muted text-sm font-normal ml-1">
-            ({sortedDutch.length}{selectedProviders.size > 0 ? ` of ${opportunities.length}` : ''})
-          </span>
         </h2>
       </div>
 
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
+          { id: 'mybets' as DutchTab, label: 'My Bets' },
+        ]).map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+              activeTab === tab.id
+                ? 'border-success text-success'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* MyBets tab */}
+      {activeTab === 'mybets' && (
+        <MyBetsSection filter={dutchBetFilter} colorKey="dutch" />
+      )}
+
+      {activeTab === 'dutch' && <>
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
@@ -504,6 +535,7 @@ export function DutchPage({ providers }: DutchPageProps) {
           </table>
         </div>
       )}
+      </>}
     </div>
   );
 }

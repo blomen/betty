@@ -54,77 +54,70 @@ def _startup_purge():
     Events linked to bets are kept (needed for history). All other events, odds,
     opportunities, specials, and live status flags are wiped so re-extraction
     starts fresh.
+
+    Uses a dedicated sqlite3 connection with a short busy_timeout. Each DELETE
+    runs as its own transaction so it grabs and releases the write lock quickly.
+    If any step hits a lock (e.g. from MCP sqlite tool), it skips gracefully —
+    stale data gets overwritten on next extraction anyway.
     """
-    from ..db.models import Event, Odds, Opportunity, Bet, get_session
+    import sqlite3
+    from ..db.models import DB_PATH
+    from ..constants import SHARP_PROVIDERS
 
-    session = get_session()
+    sharp_list = ",".join(f"'{p}'" for p in SHARP_PROVIDERS)
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=1)
     try:
-        # Find events that have bets — these must be preserved
-        event_ids_with_bets = set(
-            row[0] for row in session.query(Bet.event_id).filter(
-                Bet.event_id.isnot(None)
-            ).distinct().all()
-            if row[0]
-        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=200")  # 200ms per step — fast skip if locked
 
-        # Get ALL event IDs
-        all_event_ids = [
-            row[0] for row in session.query(Event.id).all()
+        steps = [
+            ("opportunities", "DELETE FROM opportunities"),
+            ("specials", "DELETE FROM specials"),
+            ("odds (no bets)", """
+                DELETE FROM odds WHERE event_id IN (
+                    SELECT e.id FROM events e
+                    WHERE e.id NOT IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
+                )
+            """),
+            ("events (no bets)", """
+                DELETE FROM events WHERE id NOT IN (
+                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
+                )
+            """),
+            ("live status", """
+                UPDATE events SET match_status = NULL, match_minute = NULL,
+                    match_period = NULL, stats_json = NULL
+                WHERE id IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
+            """),
+            ("non-sharp odds", f"""
+                DELETE FROM odds WHERE event_id IN (
+                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
+                ) AND provider_id NOT IN ({sharp_list})
+            """),
         ]
-        deletable_ids = [eid for eid in all_event_ids if eid not in event_ids_with_bets]
 
-        # 1. Delete all opportunities
-        opps_deleted = session.query(Opportunity).delete()
+        completed = 0
+        for label, sql in steps:
+            try:
+                conn.execute(sql)
+                conn.commit()
+                completed += 1
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    logger.warning(f"[Startup] Purge skipped '{label}' (DB locked)")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                else:
+                    raise
 
-        # 2. Delete all specials
-        from ..db.models import SpecialOdds
-        specials_deleted = session.query(SpecialOdds).delete()
-
-        # 3. Delete odds + events that have no bets (batched)
-        odds_deleted = 0
-        events_deleted = 0
-        for i in range(0, len(deletable_ids), 500):
-            batch = deletable_ids[i:i + 500]
-            odds_deleted += session.query(Odds).filter(
-                Odds.event_id.in_(batch)
-            ).delete(synchronize_session=False)
-            events_deleted += session.query(Event).filter(
-                Event.id.in_(batch)
-            ).delete(synchronize_session=False)
-
-        # 4. For bet-linked events: clear live status (stale from last session)
-        #    but keep the event row + odds for history/CLV
-        if event_ids_with_bets:
-            session.query(Event).filter(
-                Event.id.in_(list(event_ids_with_bets))
-            ).update({
-                Event.match_status: None,
-                Event.match_minute: None,
-                Event.match_period: None,
-                Event.stats_json: None,
-            }, synchronize_session=False)
-
-        # 5. Delete odds for bet-linked events from non-sharp providers
-        #    (keep Pinnacle odds for CLV reference)
-        if event_ids_with_bets:
-            from ..constants import SHARP_PROVIDERS
-            session.query(Odds).filter(
-                Odds.event_id.in_(list(event_ids_with_bets)),
-                ~Odds.provider_id.in_(SHARP_PROVIDERS),
-            ).delete(synchronize_session=False)
-
-        session.commit()
-        logger.info(
-            f"[Startup] Purged extracted data: "
-            f"{events_deleted} events, {odds_deleted} odds, "
-            f"{opps_deleted} opportunities, {specials_deleted} specials "
-            f"({len(event_ids_with_bets)} bet-linked events preserved)"
-        )
+        logger.info(f"[Startup] Purge completed ({completed}/{len(steps)} steps)")
     except Exception as e:
-        session.rollback()
-        logger.error(f"[Startup] Purge failed: {e}", exc_info=True)
+        logger.error(f"[Startup] Purge failed: {e}")
     finally:
-        session.close()
+        conn.close()
 
 
 @asynccontextmanager
@@ -344,7 +337,9 @@ if _frontend_dir.exists():
             return FileResponse(str(index), media_type="text/html")
 
 
-# Entry point for development
+# Dev entry point (no --reload). On Windows, --reload forces SelectorEventLoop
+# which breaks patchright subprocess spawning. Without --reload, uvicorn uses
+# ProactorEventLoop correctly. Use run_dev.py if you need hot-reload.
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.api:app", host="127.0.0.1", port=8000)
