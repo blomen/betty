@@ -31,6 +31,12 @@ interface GroupedSpecial {
   providers: string[];
 }
 
+// Verified enrichment methods get green edge, estimated get amber
+const VERIFIED_METHODS = new Set([
+  'pinnacle_1x2', 'pinnacle_total', 'pinnacle_spread',
+  'combo_full', 'combo_partial', 'consensus',
+]);
+
 interface ValuePageProps {
   providers: Provider[];
 }
@@ -477,7 +483,8 @@ export function ValuePage({ providers }: ValuePageProps) {
               const providerCount = group.providers.length;
               const methodLabel = s.enrichment_method?.startsWith('combo') ? 'COMBO'
                 : s.enrichment_method === 'consensus' ? 'CONS'
-                : s.enrichment_method === 'unverified' ? 'UNVERIFIED'
+                : s.enrichment_method === 'margin_estimate' ? 'EST'
+                : s.enrichment_method === 'boost_heuristic' ? 'HEUR'
                 : null;
 
               return (
@@ -488,7 +495,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         <span className="text-text text-sm truncate">{s.title}</span>
                         {methodLabel && (
                           <span className={`text-[9px] px-1 py-0.5 ${
-                            methodLabel === 'UNVERIFIED' ? 'bg-warning/20 text-warning' : 'bg-tabBonus/15 text-tabBonus'
+                            methodLabel === 'EST' || methodLabel === 'HEUR' ? 'bg-warning/15 text-warning' : 'bg-tabBonus/15 text-tabBonus'
                           }`}>{methodLabel}</span>
                         )}
                       </div>
@@ -523,7 +530,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
                     <td className="text-right">
                       {s.edge_pct != null ? (
-                        <span className={`font-semibold text-sm ${s.edge_pct > 0 ? 'text-tabBonus' : 'text-error'}`}>
+                        <span className={`font-semibold text-sm ${
+                          VERIFIED_METHODS.has(s.enrichment_method ?? '')
+                            ? (s.edge_pct > 0 ? 'text-success' : 'text-error')
+                            : (s.edge_pct > 0 ? 'text-warning' : 'text-error')
+                        }`}>
                           {s.edge_pct > 0 ? '+' : ''}{s.edge_pct.toFixed(1)}%
                         </span>
                       ) : (
@@ -1020,6 +1031,9 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
             {special.fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">Fair: </span><span className="text-text">{special.fair_odds.toFixed(2)}</span></div>}
             {special.boost_pct != null && <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>}
             {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
+            {(special.enrichment_method === 'margin_estimate' || special.enrichment_method === 'boost_heuristic') && (
+              <div className="text-warning/70 text-[10px] uppercase tracking-wider">Estimated edge (assumed margin)</div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}

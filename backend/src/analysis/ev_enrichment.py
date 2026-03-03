@@ -39,6 +39,19 @@ MATCH_WINNER_LABELS = {
 # Minimum boost percentage to show unmeasurable boosts (no Pinnacle, no consensus)
 _UNVERIFIED_MIN_BOOST_PCT = 50
 
+# Assumed bookmaker margins by boost type (for heuristic edge estimation in Pass 4)
+_MARGIN_BY_BOOST_TYPE = {
+    "pure_1x2": 0.05,
+    "pure_total": 0.06,
+    "pure_spread": 0.05,
+    "combo_1x2_btts": 0.15,
+    "combo_1x2_total": 0.15,
+    "combo_htft": 0.20,
+    "combo_multi": 0.25,
+    "prop": 0.30,
+    "unknown": 0.25,
+}
+
 
 def _fix_encoding(text: str) -> str:
     """Fix double-encoded UTF-8 (e.g., 'mÃ¥lgÃ¶rare' → 'målgörare')."""
@@ -696,13 +709,71 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
         consensus_count += 1
 
     logger.info(
-        f"EV enrichment pass 3: {consensus_count} specials priced via consensus, "
-        f"{unverified_count} marked unverified"
+        f"EV enrichment pass 3: {consensus_count} consensus, {unverified_count} unverified"
     )
+
+    # ══════════════════════════════════════════════════════════════════
+    # PASS 4: Margin-based estimation for remaining boosts
+    # ══════════════════════════════════════════════════════════════════
+
+    margin_estimate_count = 0
+    boost_heuristic_count = 0
+
+    for special in specials:
+        if special.get("edge_pct") is not None:
+            continue  # Already enriched by Pass 1, 2, or 3
+
+        boosted_odds = special.get("boosted_odds")
+        if not boosted_odds or boosted_odds <= 1.0:
+            continue
+
+        market_label = _fix_encoding(special.get("market_label", ""))
+        title = _fix_encoding(special.get("title", ""))
+        boost_type = classify_boost(market_label, title)
+        assumed_margin = _MARGIN_BY_BOOST_TYPE.get(boost_type, 0.25)
+
+        original_odds = special.get("original_odds")
+        boost_pct = special.get("boost_pct") or 0
+
+        if original_odds and original_odds > 1.0:
+            # Path A: We have original_odds — estimate fair odds with margin
+            estimated_fair = original_odds * (1 + assumed_margin)
+            if estimated_fair <= 1.0:
+                continue
+            edge_pct = round((boosted_odds / estimated_fair - 1) * 100, 2)
+            if edge_pct > 200:
+                continue
+
+            _set_enrichment(special, edge_pct, round(estimated_fair, 3),
+                            boosted_odds, "margin_estimate")
+            margin_estimate_count += 1
+
+        elif boost_pct >= _UNVERIFIED_MIN_BOOST_PCT:
+            # Path B: No original_odds, but boost_pct is known and large
+            # Reconstruct original_odds from boost_pct
+            inferred_original = boosted_odds / (1 + boost_pct / 100)
+            if inferred_original <= 1.0:
+                continue
+            estimated_fair = inferred_original * (1 + assumed_margin)
+            if estimated_fair <= 1.0:
+                continue
+            edge_pct = round((boosted_odds / estimated_fair - 1) * 100, 2)
+            if edge_pct > 200:
+                continue
+
+            _set_enrichment(special, edge_pct, round(estimated_fair, 3),
+                            boosted_odds, "boost_heuristic")
+            boost_heuristic_count += 1
+
+    logger.info(
+        f"EV enrichment pass 4: {margin_estimate_count} margin-estimated, "
+        f"{boost_heuristic_count} boost-heuristic"
+    )
+    remaining = len(specials) - pinnacle_count - combo_count - consensus_count - margin_estimate_count - boost_heuristic_count
     logger.info(
         f"EV enrichment total: pinnacle={pinnacle_count} combo={combo_count} "
-        f"consensus={consensus_count} unverified={unverified_count} "
-        f"none={len(specials) - pinnacle_count - combo_count - consensus_count - unverified_count}"
+        f"consensus={consensus_count} margin_est={margin_estimate_count} "
+        f"boost_heur={boost_heuristic_count} none={remaining}"
     )
 
     return specials
