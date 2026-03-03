@@ -49,15 +49,15 @@ def _row_to_dict(row: SpecialOdds) -> dict:
         "source": row.source or "",
         "market_label": row.market_label or "",
         "shared_providers": row.shared_providers,
-        # EV fields (pre-computed at scrape time)
-        "edge_pct": row.edge_pct,
-        "fair_odds": row.fair_odds,
-        "ev_per_unit": row.ev_per_unit,
+        # Boost edge (boosted/original) — fallback to boost_pct for old data
+        "edge_pct": row.edge_pct if row.edge_pct is not None else row.boost_pct,
         "is_positive_ev": row.is_positive_ev,
-        "matched_outcome": row.matched_outcome,
-        "matched_event_id": row.matched_event_id,
-        "matched_market": row.matched_market,
-        "enrichment_method": row.enrichment_method,
+        # LLM enrichment
+        "llm_probability": row.llm_probability,
+        "llm_fair_odds": row.llm_fair_odds,
+        "llm_edge_pct": row.llm_edge_pct,
+        "llm_reasoning": row.llm_reasoning,
+        "llm_confidence": row.llm_confidence,
     }
 
 
@@ -90,21 +90,21 @@ async def get_specials(
     order: str = Query("desc", description="Sort order: desc (default), asc"),
     db: Session = Depends(get_db),
 ):
-    """Get current odds boosts with pre-computed EV analysis vs Pinnacle fair odds."""
+    """Get current odds boosts with boost edge and optional LLM probability."""
 
-    # Primary: load from DB (EV already computed at scrape time)
+    # Primary: load from DB (edge already computed at scrape time)
     specials = _load_from_db(db)
 
-    # Fallback: if DB empty (first run), load from JSON + compute EV on the fly
+    # Fallback: if DB empty (first run), load from JSON + compute edge on the fly
     if not specials:
         specials = _load_from_json_fallback(db)
 
     # Use unfiltered set for filter dropdown values
     all_specials = list(specials)
 
-    # Filter to measurable boosts only (has enrichment_method set)
+    # Filter to measurable boosts only (has edge_pct computed)
     if measurable_only:
-        specials = [s for s in specials if s.get("enrichment_method")]
+        specials = [s for s in specials if s.get("edge_pct") is not None]
 
     # --- Filters ---
     if sport:
@@ -140,6 +140,8 @@ async def get_specials(
             return et
         if sort_key == "edge_pct":
             return s.get("edge_pct") or -999.0
+        if sort_key == "llm_edge_pct":
+            return s.get("llm_edge_pct") or -999.0
         # Default: boost_pct
         return s.get("boost_pct") or 0.0
 
@@ -166,12 +168,14 @@ async def get_specials(
     # Summary stats
     ev_count = sum(1 for s in specials if s.get("is_positive_ev"))
     matched_count = sum(1 for s in specials if s.get("edge_pct") is not None)
+    llm_count = sum(1 for s in specials if s.get("llm_probability") is not None)
 
     return {
         "specials": specials,
         "count": len(specials),
         "ev_positive_count": ev_count,
         "matched_count": matched_count,
+        "llm_count": llm_count,
         "scraped_at": scraped_at,
         "filters": {
             "sports": sports,
@@ -195,10 +199,15 @@ async def scrape_specials(db: Session = Depends(get_db)):
     save_specials(specials)
     _persist_boost_log(run_log)
 
-    # EV enrichment + DB storage
+    # EV enrichment + LLM research + DB storage
     active = filter_expired([asdict(s) for s in specials])
     active = deduplicate_specials(active)
     active = enrich_specials_with_ev(active, db)
+
+    # LLM probability research (async — Brave Search + Claude Haiku)
+    from ...analysis.llm_enrichment import enrich_specials_with_llm
+    active = await enrich_specials_with_llm(active, db)
+
     try:
         store_specials_to_db(active, db)
     except Exception as e:

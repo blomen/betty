@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # Load .env from user data directory (AppData in bundled mode, backend/ in dev)
 from ..paths import get_env_path
-load_dotenv(get_env_path())
+load_dotenv(get_env_path(), override=True)
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware

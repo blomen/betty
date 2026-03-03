@@ -598,15 +598,24 @@ class SpecialOdds(Base):
     # Scrape tracking
     scraped_at = Column(String, nullable=False)     # ISO datetime string
 
-    # EV enrichment (computed at scrape time vs Pinnacle fair odds)
+    # Boost edge (simple: boosted_odds / original_odds - 1)
     edge_pct = Column(Float, nullable=True)
+    is_positive_ev = Column(Boolean, nullable=True)
+
+    # Legacy columns (kept for schema compat, no longer populated)
     fair_odds = Column(Float, nullable=True)
     ev_per_unit = Column(Float, nullable=True)
-    is_positive_ev = Column(Boolean, nullable=True)
     matched_event_id = Column(String, nullable=True)
-    matched_outcome = Column(String, nullable=True)  # "home", "away", "draw"
-    matched_market = Column(String, nullable=True)   # "1x2", "moneyline"
-    enrichment_method = Column(String, nullable=True)  # How fair_odds was determined
+    matched_outcome = Column(String, nullable=True)
+    matched_market = Column(String, nullable=True)
+    enrichment_method = Column(String, nullable=True)
+
+    # LLM enrichment (AI-estimated probability from Claude Haiku + Brave Search)
+    llm_probability = Column(Float, nullable=True)    # 0.01-0.99
+    llm_fair_odds = Column(Float, nullable=True)      # 1 / llm_probability
+    llm_edge_pct = Column(Float, nullable=True)       # (boosted / llm_fair - 1) * 100
+    llm_reasoning = Column(Text, nullable=True)       # AI reasoning text
+    llm_confidence = Column(String, nullable=True)    # "low", "medium", "high"
 
     __table_args__ = (
         Index("ix_specials_provider", "provider"),
@@ -1073,6 +1082,23 @@ def _run_migrations(engine):
             except sqlite3.OperationalError:
                 try:
                     cursor.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
+                    raw.commit()
+                except sqlite3.OperationalError:
+                    pass
+
+        # Add LLM enrichment fields to specials
+        for col, col_type in [
+            ("llm_probability", "FLOAT"),
+            ("llm_fair_odds", "FLOAT"),
+            ("llm_edge_pct", "FLOAT"),
+            ("llm_reasoning", "TEXT"),
+            ("llm_confidence", "TEXT"),
+        ]:
+            try:
+                cursor.execute(f"SELECT {col} FROM specials LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    cursor.execute(f"ALTER TABLE specials ADD COLUMN {col} {col_type}")
                     raw.commit()
                 except sqlite3.OperationalError:
                     pass

@@ -31,11 +31,12 @@ interface GroupedSpecial {
   providers: string[];
 }
 
-// Verified enrichment methods get green edge, estimated get amber
-const VERIFIED_METHODS = new Set([
-  'pinnacle_1x2', 'pinnacle_total', 'pinnacle_spread',
-  'combo_full', 'combo_partial', 'consensus',
-]);
+// LLM confidence colors
+const LLM_CONFIDENCE_COLOR: Record<string, string> = {
+  high: 'text-success',
+  medium: 'text-sky-400',
+  low: 'text-warning',
+};
 
 interface ValuePageProps {
   providers: Provider[];
@@ -106,6 +107,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
   // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
   useEffect(() => {
@@ -121,6 +123,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       }
       if (keys.size > 0) setPlacedKeys(keys);
       if (bKeys.size > 0) setBoostPlacedKeys(bKeys);
+      setMyBetsCount(bets.filter(softBetFilter).length);
     }).catch(() => {});
   }, []);
 
@@ -261,12 +264,13 @@ export function ValuePage({ providers }: ValuePageProps) {
     );
   }, [boostGrouped, boostSelectedProviders]);
 
-  type BoostSortCol = 'odds' | 'prob' | 'max' | 'edge' | 'ttk';
+  type BoostSortCol = 'odds' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'max';
   const boostSortExtractors = useMemo(() => ({
     odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
-    prob: (g: GroupedSpecial) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
+    aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? 0,
+    aiEdge: (g: GroupedSpecial) => g.rep.llm_edge_pct ?? -999,
     max: (g: GroupedSpecial) => g.rep.max_stake ?? 0,
-    edge: (g: GroupedSpecial) => g.rep.edge_pct ?? 0,
+    edge: (g: GroupedSpecial) => g.rep.edge_pct ?? g.rep.boost_pct ?? 0,
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
   }), []);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
@@ -281,9 +285,11 @@ export function ValuePage({ providers }: ValuePageProps) {
     if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
     setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null);
     const s = group.rep;
-    if (!s.boosted_odds || !s.edge_pct) return;
+    // Use LLM edge if available, otherwise boost edge
+    const edgeForStake = s.llm_edge_pct ?? s.edge_pct;
+    if (!s.boosted_odds || edgeForStake == null) return;
     setIsLoadingBoostPreview(true);
-    try { const preview = await api.getBoostStakePreview({ edge_pct: s.edge_pct, odds: s.boosted_odds, provider_id: s.provider }); setBoostStakePreview(preview); }
+    try { const preview = await api.getBoostStakePreview({ edge_pct: edgeForStake, odds: s.boosted_odds, provider_id: s.provider }); setBoostStakePreview(preview); }
     catch (err) { console.error('Failed to load stake preview:', err); }
     finally { setIsLoadingBoostPreview(false); }
   };
@@ -310,8 +316,8 @@ export function ValuePage({ providers }: ValuePageProps) {
         odds: actualOdds,
         stake,
         is_bonus: false,
-        utility_score: special.edge_pct != null ? special.edge_pct / 100 : undefined,
-        selection_probability: special.fair_odds != null && special.fair_odds > 1 ? 1 / special.fair_odds : undefined,
+        utility_score: (special.llm_edge_pct ?? special.edge_pct) != null ? (special.llm_edge_pct ?? special.edge_pct)! / 100 : undefined,
+        selection_probability: special.llm_probability ?? undefined,
       });
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -405,8 +411,8 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const resolveOutcome = (outcome: string, opp: Opportunity, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
-    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}`;
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${p}`;
     if (outcome === 'under') return `Under${p}`;
@@ -428,7 +434,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         {([
           { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
           { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabBonus text-tabBonus' },
-          { id: 'mybets' as ValueTab, label: 'My Bets', activeClass: 'border-tabValue text-tabValue' },
+          { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -484,10 +490,11 @@ export function ValuePage({ providers }: ValuePageProps) {
               <th>Boost</th>
               <th className="text-right">Providers</th>
               <SortableHeader column="odds" label="Odds" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="prob" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="edge" label="Boost" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="aiProb" label="AI Prob" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="aiEdge" label="AI Edge" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="max" label="Max" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="edge" label="Edge" sort={boostSort} onToggle={toggleBoostSort} />
             </tr>
           </thead>
           <tbody>
@@ -495,11 +502,7 @@ export function ValuePage({ providers }: ValuePageProps) {
               const s = group.rep;
               const isExpanded = boostExpandedIdx === idx;
               const providerCount = group.providers.length;
-              const methodLabel = s.enrichment_method?.startsWith('combo') ? 'COMBO'
-                : s.enrichment_method === 'consensus' ? 'CONS'
-                : s.enrichment_method === 'margin_estimate' ? 'EST'
-                : s.enrichment_method === 'boost_heuristic' ? 'HEUR'
-                : null;
+              const hasLLM = s.llm_probability != null;
 
               return (
                 <Fragment key={group.key}>
@@ -507,10 +510,8 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td>
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="text-text text-sm truncate">{s.title}</span>
-                        {methodLabel && (
-                          <span className={`text-[9px] px-1 py-0.5 ${
-                            methodLabel === 'EST' || methodLabel === 'HEUR' ? 'bg-warning/15 text-warning' : 'bg-tabBonus/15 text-tabBonus'
-                          }`}>{methodLabel}</span>
+                        {hasLLM && (
+                          <span className="text-[9px] px-1 py-0.5 bg-sky-500/15 text-sky-400">AI</span>
                         )}
                       </div>
                       <div className="text-muted2 text-[11px] truncate">
@@ -537,28 +538,35 @@ export function ValuePage({ providers }: ValuePageProps) {
                         <span className="text-success font-bold text-sm">{s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}</span>
                       </div>
                     </td>
-                    <td className="text-right text-muted text-sm">{s.fair_odds != null && s.fair_odds > 1 ? `${(100 / s.fair_odds).toFixed(0)}%` : '-'}</td>
+                    <td className="text-right">
+                      {(s.edge_pct ?? s.boost_pct) != null ? (
+                        <span className="font-semibold text-sm text-tabBonus">
+                          +{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
+                        </span>
+                      ) : <span className="text-muted2 text-sm">-</span>}
+                    </td>
+                    <td className="text-right text-sm">
+                      {s.llm_probability != null ? (
+                        <span className={LLM_CONFIDENCE_COLOR[s.llm_confidence ?? 'low'] ?? 'text-muted'}>
+                          {(s.llm_probability * 100).toFixed(0)}%
+                        </span>
+                      ) : <span className="text-muted2">-</span>}
+                    </td>
+                    <td className="text-right">
+                      {s.llm_edge_pct != null ? (
+                        <span className={`font-semibold text-sm ${s.llm_edge_pct > 0 ? 'text-sky-400' : 'text-error'}`}>
+                          {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
+                        </span>
+                      ) : <span className="text-muted2 text-sm">-</span>}
+                    </td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
                     <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
-                    <td className="text-right">
-                      {s.edge_pct != null ? (
-                        <span className={`font-semibold text-sm ${
-                          VERIFIED_METHODS.has(s.enrichment_method ?? '')
-                            ? (s.edge_pct > 0 ? 'text-success' : 'text-error')
-                            : (s.edge_pct > 0 ? 'text-warning' : 'text-error')
-                        }`}>
-                          {s.edge_pct > 0 ? '+' : ''}{s.edge_pct.toFixed(1)}%
-                        </span>
-                      ) : (
-                        <span className="text-muted2 text-sm">-</span>
-                      )}
-                    </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${group.key}-exp`}>
-                      <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
                         <BoostExpandedRow
                           special={s}
                           groupKey={group.key}
@@ -669,7 +677,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         <button
                           title="Copy event"
                           className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(`${displayTeamName(rep.home_team, rep.display_home)} vs ${displayTeamName(rep.away_team, rep.display_away)}`); }}
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home)); }}
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                         </button>
@@ -970,8 +978,8 @@ export function ValuePage({ providers }: ValuePageProps) {
 function resolveOutcomeName(opp: Opportunity): string {
   const outcome = opp.outcome1;
   const point = opp.point != null ? ` ${opp.point}` : '';
-  if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
-  if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
+  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${point}`;
+  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${point}`;
   if (outcome === 'draw') return 'Draw';
   if (outcome === 'over') return `Over${point}`;
   if (outcome === 'under') return `Under${point}`;
@@ -1072,11 +1080,14 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
             <div><span className="text-muted2 uppercase tracking-wider">Stake: </span><span className="text-text font-medium">{stake.toFixed(0)} kr</span>{stakePreview.was_capped_single && <span className="text-warning text-[10px] ml-1">capped</span>}{special.max_stake != null && stakePreview.recommended_stake > special.max_stake && <span className="text-warning text-[10px] ml-1">max</span>}</div>
             <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-success text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
             <div><span className="text-muted2 uppercase tracking-wider">Bankroll: </span><span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span></div>
-            {special.fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">Fair: </span><span className="text-text">{special.fair_odds.toFixed(2)}</span></div>}
             {special.boost_pct != null && <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>}
+            {special.llm_fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">AI Fair: </span><span className="text-sky-400">{special.llm_fair_odds.toFixed(2)}</span></div>}
             {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
-            {(special.enrichment_method === 'margin_estimate' || special.enrichment_method === 'boost_heuristic') && (
-              <div className="text-warning/70 text-[10px] uppercase tracking-wider">Estimated edge (assumed margin)</div>
+            {special.llm_reasoning && (
+              <div className="text-sky-400/70 text-[10px]">
+                <span className="uppercase tracking-wider">AI ({special.llm_confidence || 'low'}): </span>
+                <span className="text-sky-400/50 normal-case">{special.llm_reasoning}</span>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-2">

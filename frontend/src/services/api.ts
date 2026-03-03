@@ -40,15 +40,15 @@ export interface SpecialItem {
   source: string;
   market_label: string;
   shared_providers: string[] | null;
-  // EV fields (pre-computed at scrape time vs Pinnacle fair odds)
+  // Boost edge (boosted/original)
   edge_pct: number | null;
-  fair_odds: number | null;
-  ev_per_unit: number | null;
   is_positive_ev: boolean | null;
-  matched_outcome: string | null;
-  matched_event_id: string | null;
-  matched_market: string | null;
-  enrichment_method: string | null;
+  // LLM enrichment (AI-estimated probability)
+  llm_probability: number | null;
+  llm_fair_odds: number | null;
+  llm_edge_pct: number | null;
+  llm_reasoning: string | null;
+  llm_confidence: string | null;
 }
 
 export interface SpecialsFilters {

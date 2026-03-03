@@ -360,9 +360,15 @@ class ExtractionScheduler:
                 specials_dicts = filter_expired([asdict(s) for s in specials])
                 specials_dicts = deduplicate_specials(specials_dicts)
                 specials_dicts = enrich_specials_with_ev(specials_dicts, session)
+
+                # LLM probability research (async — Brave Search + Claude Haiku)
+                from src.analysis.llm_enrichment import enrich_specials_with_llm
+                specials_dicts = await enrich_specials_with_llm(specials_dicts, session)
+
                 count = store_specials_to_db(specials_dicts, session)
                 ev_count = sum(1 for s in specials_dicts if s.get("is_positive_ev"))
-                logger.info(f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV)")
+                llm_count = sum(1 for s in specials_dicts if s.get("llm_probability") is not None)
+                logger.info(f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV, {llm_count} LLM-researched)")
             except Exception as e:
                 logger.error(f"[Scheduler:boosts] DB storage failed: {e}", exc_info=True)
                 try:
