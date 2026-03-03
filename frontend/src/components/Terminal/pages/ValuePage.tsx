@@ -1086,7 +1086,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
             {special.llm_reasoning && (
               <div className="text-sky-400/70 text-[10px]">
                 <span className="uppercase tracking-wider">AI ({special.llm_confidence || 'low'}): </span>
-                <span className="text-sky-400/50 normal-case">{special.llm_reasoning}</span>
+                <span className="text-sky-400/50 normal-case">{special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '')}</span>)}</span>
               </div>
             )}
           </div>

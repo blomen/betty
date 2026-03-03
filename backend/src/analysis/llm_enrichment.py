@@ -174,7 +174,10 @@ RULES:
 OUTPUT FORMAT (strict — follow exactly):
 PROBABILITY: 0.XX
 CONFIDENCE: low|medium|high
-REASONING: One paragraph explaining your estimate based on available data."""
+REASONING: 2-3 bullet points, each max 10 words. Key stats/facts only. Example:
+- Team A won 8 of last 10 home games
+- Player B: 0.4 goals/game this season
+- H2H: 3-1 in last 4 meetings"""
 
 
 def _build_user_prompt(special: dict, search_results: str) -> str:
