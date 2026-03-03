@@ -218,8 +218,8 @@ class ExtractionScheduler:
         await self.start_tier(
             name="api_soft",
             providers=[
-                # Kambi API (8)
-                "unibet", "leovegas", "expekt", "betmgm",
+                # Kambi API (7) — expekt removed: sportsbook dead
+                "unibet", "leovegas", "betmgm",
                 "speedybet", "x3000", "goldenbull", "1x2",
                 # Altenar API (6)
                 "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",

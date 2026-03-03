@@ -514,7 +514,7 @@ async def run_soft_extraction(
 
     # Define tier mappings
     tier_providers = {
-        "kambi": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "kambi": ["unibet", "leovegas", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
         "altenar": ["betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino"],
         "gecko": ["betsson", "nordicbet", "spelklubben", "bethard"],
         "spectate": ["mrgreen", "888sport"],
@@ -588,7 +588,7 @@ async def start_tier(tier_name: str):
         },
         "api_soft": {
             "providers": [
-                "unibet", "leovegas", "expekt", "betmgm",
+                "unibet", "leovegas", "betmgm",
                 "speedybet", "x3000", "goldenbull", "1x2",
                 "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",
                 "betsson", "nordicbet", "spelklubben", "bethard",

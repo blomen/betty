@@ -140,6 +140,15 @@ export function ValuePage({ providers }: ValuePageProps) {
     return Array.from(set).sort();
   }, [providers, opportunities]);
 
+  const balanceMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of providers) m.set(p.id, p.balance);
+    return m;
+  }, [providers]);
+
+  const hasBalance = (providerIds: string[]) =>
+    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
+
   const grouped = useMemo(() => {
     let result = opportunities;
     // Remove started/imminent events (less than 1 min to kickoff)
@@ -493,14 +502,17 @@ export function ValuePage({ providers }: ValuePageProps) {
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">
-                      {providerCount <= 3 ? (
-                        <span className="text-text truncate">{group.providers.map(formatProviderName).join(', ')}</span>
-                      ) : (
-                        <span className="text-text truncate">
-                          {formatProviderName(group.providers[0])}
-                          <span className="text-muted ml-1">+{providerCount - 1}</span>
-                        </span>
-                      )}
+                      <span className="inline-flex items-center gap-1.5 justify-end">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
+                        {providerCount <= 3 ? (
+                          <span className="text-text truncate">{group.providers.map(formatProviderName).join(', ')}</span>
+                        ) : (
+                          <span className="text-text truncate">
+                            {formatProviderName(group.providers[0])}
+                            <span className="text-muted ml-1">+{providerCount - 1}</span>
+                          </span>
+                        )}
+                      </span>
                     </td>
                     <td className="text-right">
                       <div className="flex items-center justify-end gap-1.5">
@@ -642,14 +654,17 @@ export function ValuePage({ providers }: ValuePageProps) {
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">
-                      {providerCount <= 3 ? (
-                        <span className="text-text truncate">{groupProviders.map(formatProviderName).join(', ')}</span>
-                      ) : (
-                        <span className="text-text truncate">
-                          {formatProviderName(groupProviders[0])}
-                          <span className="text-muted ml-1">+{providerCount - 1}</span>
-                        </span>
-                      )}
+                      <span className="inline-flex items-center gap-1.5 justify-end">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
+                        {providerCount <= 3 ? (
+                          <span className="text-text truncate">{groupProviders.map(formatProviderName).join(', ')}</span>
+                        ) : (
+                          <span className="text-text truncate">
+                            {formatProviderName(groupProviders[0])}
+                            <span className="text-muted ml-1">+{providerCount - 1}</span>
+                          </span>
+                        )}
+                      </span>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcomeName(rep)}</td>
                     <td className="text-right text-text text-sm font-medium">{rep.odds1.toFixed(2)}</td>

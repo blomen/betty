@@ -97,6 +97,15 @@ export function DutchPage({ providers }: DutchPageProps) {
     return Array.from(set).sort();
   }, [providers, opportunities]);
 
+  const balanceMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of providers) m.set(p.id, p.balance);
+    return m;
+  }, [providers]);
+
+  const hasBalance = (providerIds: string[]) =>
+    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
+
   const filtered = useMemo(() => {
     let result = opportunities;
     // Remove started/imminent events
@@ -370,10 +379,13 @@ export function DutchPage({ providers }: DutchPageProps) {
                         </div>
                       </td>
                       <td className="text-right text-muted text-sm">
-                        {uniqueProviders.length <= 3
-                          ? uniqueProviders.map(formatProviderName).join(', ')
-                          : <>{formatProviderName(uniqueProviders[0])} <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
-                        }
+                        <span className="inline-flex items-center gap-1.5 justify-end">
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
+                          {uniqueProviders.length <= 3
+                            ? uniqueProviders.map(formatProviderName).join(', ')
+                            : <>{formatProviderName(uniqueProviders[0])} <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
+                          }
+                        </span>
                       </td>
                       <td className="text-right">
                         {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}

@@ -436,6 +436,14 @@ class KambiRetriever(Retriever):
             if bet_offer_type_id not in ALLOWED_BET_OFFER_TYPE_IDS:
                 return None
 
+            # For spread/total: only keep main lines (skip alternates)
+            # Kambi tags main lines with 'MAIN_LINE'; without this filter,
+            # basketball events can have 30+ alternate spread/total lines each
+            tags = betoffer.get("tags", [])
+            if bet_offer_type_id in (1, 6, 7):
+                if "MAIN_LINE" not in tags:
+                    return None
+
             # Filter by criterion label
             criterion = betoffer.get("criterion", {})
             label = (criterion.get("englishLabel") or criterion.get("label") or "").lower()
@@ -450,6 +458,10 @@ class KambiRetriever(Retriever):
                 "conference winner", "division winner",        # Season futures
                 "group winner",                                # Tournament futures
                 "team total", "lags total",                    # Team-specific totals (not match total)
+                "total goals by", "total points by",            # Kambi team totals (e.g. "Total Goals by Sweden")
+                "total games by", "total sets by",              # Tennis team totals
+                "total corners", "total cards", "total shots",  # Prop totals (not match total)
+                "total fouls", "total offsides",                # Prop totals (not match total)
             )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None

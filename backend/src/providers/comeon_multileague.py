@@ -223,10 +223,11 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             if sport_path not in current_url:
                 logger.debug(f"[{self.provider_id}] Cookie redirect detected, navigating back to {main_url}")
                 await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
+                await page.wait_for_timeout(1000)
 
             # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
             # Football has 60+ leagues → larger payload → needs more time
-            ws_wait = 3000 if sport_normalized == 'football' else 2000
+            ws_wait = 5000 if sport_normalized == 'football' else 3000
             await page.wait_for_timeout(ws_wait)
 
             # Step 1: Collect today's events from initial WS messages

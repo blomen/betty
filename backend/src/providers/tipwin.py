@@ -64,6 +64,7 @@ class TipwinRetriever(BrowserRetriever):
     # Tipwin bettingType abbreviation → our standard market type
     MARKET_ABRV_MAP = {
         "3way":          "1x2",
+        "winner":        "1x2",       # Renamed from 3way (~Feb 2026)
         "over-under":    "total",
         "handicap-hcp":  "spread",
     }
@@ -73,6 +74,7 @@ class TipwinRetriever(BrowserRetriever):
         "1": "home",
         "2": "away",
         "X": "draw",
+        "None": "draw",  # Renamed from X (~Feb 2026)
         "+": "over",
         "-": "under",
     }
@@ -298,7 +300,7 @@ class TipwinRetriever(BrowserRetriever):
                 # Parse items format (full listing page)
                 for category in resp_data.get('items', []):
                     sport_id = category.get('sportId', '')
-                    sport_info = sports_lookup.get(sport_id, {})
+                    sport_info = sports_lookup.get(sport_id) or sports_lookup.get(str(sport_id), {})
                     sport_abrv = sport_info.get('abrv', '')
                     canonical_sport = self.SPORT_ABRV_MAP.get(sport_abrv)
                     if not canonical_sport:
@@ -306,7 +308,7 @@ class TipwinRetriever(BrowserRetriever):
 
                     for tournament_group in category.get('items', []):
                         tid = tournament_group.get('tournamentId', '')
-                        tinfo = tournaments.get(tid, {})
+                        tinfo = tournaments.get(tid) or tournaments.get(str(tid), {})
                         tname = tinfo.get('name', 'Unknown')
 
                         # Skip special/prop markets
@@ -420,7 +422,7 @@ class TipwinRetriever(BrowserRetriever):
 
         # Resolve sport
         sport_id = ev.get('sportId', '')
-        sport_info = sports_lookup.get(sport_id, {})
+        sport_info = sports_lookup.get(sport_id) or sports_lookup.get(str(sport_id), {})
         sport_abrv = sport_info.get('abrv', '')
         canonical_sport = self.SPORT_ABRV_MAP.get(sport_abrv)
         if not canonical_sport:
@@ -534,6 +536,9 @@ class TipwinRetriever(BrowserRetriever):
                 outcomes.append(outcome_dict)
 
             if outcomes:
+                # 2-way winner markets (tennis, basketball, esports) → moneyline
+                if market_type == "1x2" and not any(o["name"] == "draw" for o in outcomes):
+                    market_type = "moneyline"
                 markets.append({"type": market_type, "outcomes": outcomes})
                 seen_types.add(market_type)
 

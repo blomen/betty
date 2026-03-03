@@ -314,7 +314,7 @@ providers:
     <<: *kambi_defaults
     id: x3000
     name: X3000
-    domain: x3000.se
+    domain: x3000.com
     brand: speedyspelse
     bonus:
       type: bonusdeposit
@@ -541,8 +541,8 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
-    provider_timeout: 600              # DOM scraping needs time for many competitions
-    sport_timeout: 300                 # Football capped at 40 competitions — needs ~200s + margin
+    provider_timeout: 700              # DOM scraping needs time for many competitions
+    sport_timeout: 360                 # Ice hockey needs ~270s with 20 comps + margin
     supported_sports:
       - football
       - basketball
@@ -812,7 +812,7 @@ extraction_tiers:
     # Platform consolidation: only canonical providers extracted (others get fanned-out opportunities)
     # Runs on startup, then every 60 minutes
     providers:
-      # Kambi — canonical only (represents 8 brands: unibet, leovegas, expekt, betmgm, speedybet, x3000, goldenbull, 1x2)
+      # Kambi — canonical only (represents 7 brands: unibet, leovegas, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
       # Altenar — main group canonical (represents 5: betinia, campobet, lodur, quickcasino, swiper)
       - betinia
@@ -944,7 +944,6 @@ boosts:
     primary_provider: expekt
     shared_with: []
     enabled: true
-    note: "Kambi — expekt_specials group. No original odds (only boosted). Events may be 0 outside promo periods."
 
   betmgm:
     type: null

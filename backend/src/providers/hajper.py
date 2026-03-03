@@ -202,9 +202,10 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             if sport_path not in current_url:
                 logger.debug(f"[{self.provider_id}] Cookie redirect detected, navigating back to {sport_url}")
                 await page.goto(sport_url, wait_until='domcontentloaded', timeout=30000)
+                await page.wait_for_timeout(1000)
 
-            # Wait for WS data to arrive
-            await page.wait_for_timeout(3000)
+            # Wait for WS data to arrive (5s to ensure INITIAL_STATE is delivered)
+            await page.wait_for_timeout(5000)
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
@@ -288,10 +289,10 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                         }''', label)
 
                         if clicked:
-                            # Adaptive wait: min 0.5s, poll for WS data, max 2.0s
+                            # Adaptive wait: min 0.5s, poll for WS data, max 4.0s
                             await asyncio.sleep(0.5)
                             elapsed = 0.5
-                            while len(ws_messages) == ws_before and elapsed < 2.0:
+                            while len(ws_messages) == ws_before and elapsed < 4.0:
                                 await asyncio.sleep(0.1)
                                 elapsed += 0.1
                             self._collect_ws_events(ws_messages, all_events_data)

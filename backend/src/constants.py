@@ -23,7 +23,7 @@ EXCLUDED_FROM_SCANS = frozenset()
 # Used for consensus calculations where we need independent pricing sources.
 PLATFORM_MAP: dict[str, str] = {
     # Kambi — 100% identical odds across all brands
-    'unibet': 'kambi', 'leovegas': 'kambi', 'expekt': 'kambi', 'betmgm': 'kambi',
+    'unibet': 'kambi', 'leovegas': 'kambi', 'betmgm': 'kambi',
     'speedybet': 'kambi', 'x3000': 'kambi', 'goldenbull': 'kambi', '1x2': 'kambi',
     # Altenar — 99.7% identical
     'dbet': 'altenar', 'betinia': 'altenar', 'lodur': 'altenar',
@@ -49,7 +49,7 @@ PLATFORM_MAP: dict[str, str] = {
 PLATFORM_GROUPS: dict[str, dict] = {
     "kambi": {
         "canonical": "unibet",
-        "members": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "members": ["unibet", "leovegas", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
     },
     "spectate": {
         "canonical": "888sport",
@@ -106,7 +106,6 @@ ALLOWED_SPORTS = frozenset({
     'handball',
     'darts',
     'table_tennis',
-    'snooker',
     'curling',
 })
 

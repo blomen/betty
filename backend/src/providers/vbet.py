@@ -201,6 +201,11 @@ class VbetRetriever(Retriever):
             if not isinstance(game_markets, dict):
                 return None
 
+            # Collect all markets, then deduplicate spread/total to main line only
+            # BetConstruct returns many alternate lines; keep lowest order (main line)
+            spread_candidates = []  # [(order, mkt_base, market_dict)]
+            total_candidates = []
+
             for mkt_id, market in game_markets.items():
                 mkt_type_raw = market.get("type", "")
                 mkt_type = self.MARKET_TYPE_MAP.get(mkt_type_raw)
@@ -222,6 +227,13 @@ class VbetRetriever(Retriever):
                 market_events = market.get("event", {})
                 if not isinstance(market_events, dict):
                     continue
+
+                # Determine market order (lowest order = main line)
+                min_order = 999
+                for ev_id, ev in market_events.items():
+                    order = ev.get("order", 999)
+                    if order < min_order:
+                        min_order = order
 
                 for ev_id, ev in market_events.items():
                     price = ev.get("price")
@@ -257,7 +269,21 @@ class VbetRetriever(Retriever):
                     outcomes.append(outcome_dict)
 
                 if outcomes:
-                    markets.append({"type": mkt_type, "outcomes": outcomes})
+                    mkt_dict = {"type": mkt_type, "outcomes": outcomes}
+                    if mkt_type == "spread":
+                        spread_candidates.append((min_order, mkt_dict))
+                    elif mkt_type == "total":
+                        total_candidates.append((min_order, mkt_dict))
+                    else:
+                        markets.append(mkt_dict)
+
+            # Keep only main line for spread/total (lowest order value)
+            if spread_candidates:
+                spread_candidates.sort(key=lambda x: x[0])
+                markets.append(spread_candidates[0][1])
+            if total_candidates:
+                total_candidates.sort(key=lambda x: x[0])
+                markets.append(total_candidates[0][1])
 
             if not markets:
                 return None

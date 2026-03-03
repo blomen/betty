@@ -199,10 +199,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                 <th className="text-right">Odds</th>
                 {activeCategory === 'ft' ? (
                   <th className="text-right">Close</th>
+                ) : activeCategory === 'live' ? (
+                  <th className="text-right">Current</th>
                 ) : (
                   <th className="text-right">Fair</th>
                 )}
-                {activeCategory === 'ft' ? (
+                {activeCategory === 'ft' || activeCategory === 'live' ? (
                   <th className="text-right">CLV</th>
                 ) : (
                   <th className="text-right">Edge</th>
@@ -246,12 +248,18 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                             <span className={b.closing_odds > b.odds ? 'text-success' : b.closing_odds < b.odds ? 'text-error' : 'text-text'}>{b.closing_odds.toFixed(2)}</span>
                           ) : <span className="text-muted">-</span>}
                         </td>
+                      ) : activeCategory === 'live' ? (
+                        <td className="text-right text-sm">
+                          {b.current_odds != null ? (
+                            <span className={b.current_odds > b.odds ? 'text-success' : b.current_odds < b.odds ? 'text-error' : 'text-text'}>{b.current_odds.toFixed(2)}</span>
+                          ) : <span className="text-muted">-</span>}
+                        </td>
                       ) : (
                         <td className="text-right text-sm text-muted">
                           {b.fair_odds_at_placement != null ? b.fair_odds_at_placement.toFixed(2) : b.fair_odds != null ? b.fair_odds.toFixed(2) : '-'}
                         </td>
                       )}
-                      {activeCategory === 'ft' ? (
+                      {activeCategory === 'ft' || activeCategory === 'live' ? (
                         <td className="text-right text-sm font-medium">
                           {b.clv_pct != null ? (
                             <span className={b.clv_pct >= 0 ? 'text-success' : 'text-error'}>{b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%</span>
