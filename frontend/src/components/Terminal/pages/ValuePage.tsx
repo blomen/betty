@@ -15,9 +15,8 @@ import type { Opportunity, Provider, Bet } from '@/types';
 
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
-const valueBetFilter = (b: Bet) =>
-  b.provider !== 'pinnacle' && b.provider !== 'polymarket' && b.market !== 'boost';
-const boostBetFilter = (b: Bet) => b.market === 'boost';
+const softBetFilter = (b: Bet) =>
+  b.provider !== 'pinnacle' && b.provider !== 'polymarket';
 
 interface GroupedOpp {
   key: string;
@@ -426,12 +425,9 @@ export function ValuePage({ providers }: ValuePageProps) {
         ))}
       </div>
 
-      {/* MyBets tab — show both value and boost bets */}
+      {/* MyBets tab — all soft provider bets (value + boosts) */}
       {activeTab === 'mybets' && (
-        <>
-          <MyBetsSection filter={valueBetFilter} colorKey="value" />
-          <MyBetsSection filter={boostBetFilter} colorKey="specials" />
-        </>
+        <MyBetsSection filter={softBetFilter} colorKey="value" />
       )}
 
       {/* Boosts tab */}

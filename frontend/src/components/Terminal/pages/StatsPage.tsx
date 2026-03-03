@@ -58,7 +58,6 @@ export function StatsPage() {
           <thead>
             <tr>
               <th>Total Bets</th>
-              <th className="text-right">Win Rate</th>
               <th className="text-right">ROI</th>
               <th className="text-right">Total Profit</th>
             </tr>
@@ -66,7 +65,6 @@ export function StatsPage() {
           <tbody>
             <tr>
               <td className="text-text text-2xl font-semibold">{stats.total_bets}</td>
-              <td className="text-right text-text text-2xl font-semibold">{stats.win_rate.toFixed(1)}%</td>
               <td className={`text-right text-2xl font-semibold ${stats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
                 {stats.roi_pct >= 0 ? '+' : ''}{stats.roi_pct.toFixed(1)}%
               </td>
@@ -82,7 +80,6 @@ export function StatsPage() {
                   <span className="text-muted font-medium">{stats.voids} V</span>
                 </div>
               </td>
-              <td></td>
               <td></td>
               <td className="text-right text-sm space-y-0.5">
                 <div className="text-muted">{stats.total_staked.toFixed(0)} kr staked</div>

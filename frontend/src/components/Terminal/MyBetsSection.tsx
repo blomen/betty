@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
@@ -30,7 +30,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const fetchBets = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getBets(undefined, 500);
+      const res = await api.getBets('pending', 500);
       setBets(res.bets.filter(filter));
     } catch (err) {
       console.error('MyBets fetch failed:', err);
@@ -94,16 +94,20 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const ft: Bet[] = [];
 
     for (const b of bets) {
-      if (b.result !== 'pending') {
-        ft.push(b);
-      } else if (b.start_time && new Date(b.start_time).getTime() <= now) {
-        live.push(b);
-      } else {
+      if (!b.start_time || new Date(b.start_time).getTime() > now) {
         upcoming.push(b);
+      } else {
+        // Past start — split into Live (has live data) vs FT (needs settling)
+        const hasLiveData = b.home_score != null || b.match_minute != null || b.match_status === 'live';
+        if (hasLiveData) {
+          live.push(b);
+        } else {
+          ft.push(b);
+        }
       }
     }
 
-    // Sort: upcoming by start_time asc, live by start_time desc, ft by placed_at desc
+    // Sort: upcoming by start_time asc, live/ft by start_time desc
     upcoming.sort((a, b) => {
       const ta = a.start_time ? new Date(a.start_time).getTime() : Infinity;
       const tb = b.start_time ? new Date(b.start_time).getTime() : Infinity;
@@ -115,8 +119,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
       return tb - ta;
     });
     ft.sort((a, b) => {
-      const ta = a.placed_at ? new Date(a.placed_at).getTime() : 0;
-      const tb = b.placed_at ? new Date(b.placed_at).getTime() : 0;
+      const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
+      const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
       return tb - ta;
     });
 
@@ -126,19 +130,26 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const categories: { id: BetCategory; label: string; count: number }[] = [
     { id: 'upcoming', label: 'Upcoming', count: categorized.upcoming.length },
     { id: 'live', label: 'Live', count: categorized.live.length },
-    { id: 'ft', label: 'FT', count: categorized.ft.length },
+    { id: 'ft', label: 'Settle', count: categorized.ft.length },
   ];
 
   const activeBets = categorized[activeCategory];
 
-  const pnlColor = (v: number) => v > 0.01 ? 'text-success' : v < -0.01 ? 'text-error' : 'text-muted';
-  const pnlSign = (v: number) => v > 0 ? '+' : '';
-
-  const resultBadge = (r: string) => {
-    if (r === 'won') return 'text-success';
-    if (r === 'lost') return 'text-error';
-    if (r === 'void') return 'text-muted';
-    return 'text-warning';
+  // ── 2x/3x stake multiplier when odds drifted higher ──
+  const handleMultiplyStake = async (bet: Bet, multiplier: number) => {
+    const currentOdds = bet.current_odds ?? bet.odds;
+    const additionalStake = bet.stake * (multiplier - 1);
+    const newStake = bet.stake + additionalStake;
+    const newAvgOdds = (bet.stake * bet.odds + additionalStake * currentOdds) / newStake;
+    try {
+      await api.editBet(bet.id, {
+        stake: newStake,
+        odds: parseFloat(newAvgOdds.toFixed(2)),
+      });
+      fetchBets();
+    } catch (err) {
+      console.error(`${multiplier}x stake failed:`, err);
+    }
   };
 
   const resolveOutcome = (b: Bet): string => {
@@ -186,52 +197,69 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
       {/* Bets table */}
       {activeBets.length === 0 ? (
         <div className="text-muted text-sm py-4 text-center">
-          No {activeCategory === 'ft' ? 'settled' : activeCategory} bets.
+          No {activeCategory === 'ft' ? 'bets to settle' : activeCategory} bets.
         </div>
       ) : (
         <div className="border-l-2" style={{ borderColor: color }}>
           <table className="sq">
             <thead>
               <tr>
+                {activeCategory === 'upcoming' && <th className="text-left">TTK</th>}
                 <th>Event</th>
                 <th className="text-right">Outcome</th>
                 <th className="text-right">Provider</th>
                 <th className="text-right">Odds</th>
-                {activeCategory === 'ft' ? (
-                  <th className="text-right">Close</th>
-                ) : activeCategory === 'live' ? (
+                {activeCategory === 'live' ? (
                   <th className="text-right">Current</th>
                 ) : (
                   <th className="text-right">Fair</th>
                 )}
-                {activeCategory === 'ft' || activeCategory === 'live' ? (
+                {activeCategory === 'live' ? (
                   <th className="text-right">CLV</th>
                 ) : (
                   <th className="text-right">Edge</th>
                 )}
                 <th className="text-right">Stake</th>
-                {activeCategory === 'ft' ? (
-                  <>
-                    <th className="text-right">Result</th>
-                    <th className="text-right">P&L</th>
-                  </>
-                ) : activeCategory === 'live' ? (
+                {activeCategory === 'live' ? (
                   <th className="text-right">Score</th>
-                ) : null}
+                ) : activeCategory === 'ft' ? (
+                  <th className="text-right">Settle</th>
+                ) : (
+                  <th className="text-right">Return</th>
+                )}
               </tr>
             </thead>
             <tbody>
               {activeBets.map(b => {
                 const isExpanded = expandedId === b.id;
                 const isEditing = editingId === b.id;
-                const colCount = activeCategory === 'ft' ? 9 : activeCategory === 'live' ? 8 : 7;
+                const colCount = activeCategory === 'upcoming' ? 9 : 8;
                 const edgePct = b.edge_pct ?? (b.placed_edge_pct != null ? b.placed_edge_pct * 100 : null);
+
+                // Live odds tracking for upcoming bets
+                const fairOdds = b.fair_odds ?? (b.fair_odds_at_placement != null ? b.fair_odds_at_placement : null);
+                const liveOdds = b.current_odds ?? b.odds;
+                const liveEdge = fairOdds != null && fairOdds > 1 ? (liveOdds / fairOdds - 1) * 100 : null;
+                const placedEdge = edgePct;
+                const edgeIncreasing = liveEdge != null && placedEdge != null && liveEdge > placedEdge;
+
                 return (
                   <Fragment key={b.id}>
                     <tr
                       className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
                       onClick={() => { if (!isEditing) setExpandedId(isExpanded ? null : b.id); }}
                     >
+                      {/* TTK column for upcoming */}
+                      {activeCategory === 'upcoming' && (() => {
+                        const ttk = getTTKFromNow(b.start_time);
+                        return (
+                          <td className="whitespace-nowrap">
+                            <span className={`text-[10px] ${getTTKColor(ttk)}`}>
+                              {formatTTKLabel(ttk)}
+                            </span>
+                          </td>
+                        );
+                      })()}
                       <td>
                         <div className="text-text text-sm">{eventLabel(b)}</div>
                         <div className="text-muted2 text-[10px]">
@@ -239,16 +267,29 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                           {b.start_time ? ` · ${formatDateTime(b.start_time)}` : b.placed_at ? ` · ${formatDateTime(b.placed_at)}` : ''}
                         </div>
                       </td>
-                      <td className="text-right text-text text-sm">{resolveOutcome(b)}</td>
+                      <td className="text-right text-text text-sm">
+                        {resolveOutcome(b)}
+                        {b.point != null && <span className="text-muted2 text-[10px] ml-0.5">{b.point > 0 ? '+' : ''}{b.point}</span>}
+                      </td>
                       <td className="text-right text-muted text-sm">{formatProviderName(b.provider)}</td>
-                      <td className="text-right text-text text-sm font-medium">{b.odds.toFixed(2)}</td>
-                      {activeCategory === 'ft' ? (
-                        <td className="text-right text-sm">
-                          {b.closing_odds != null ? (
-                            <span className={b.closing_odds > b.odds ? 'text-success' : b.closing_odds < b.odds ? 'text-error' : 'text-text'}>{b.closing_odds.toFixed(2)}</span>
-                          ) : <span className="text-muted">-</span>}
+
+                      {/* Odds column — upcoming shows current vs placed */}
+                      {activeCategory === 'upcoming' ? (
+                        <td className="text-right">
+                          <div className="flex flex-col items-end">
+                            <span className="text-sm font-medium text-text">{b.odds.toFixed(2)}</span>
+                            {b.current_odds != null && Math.abs(b.current_odds - b.odds) > 0.005 && (
+                              <span className={`text-[9px] ${b.current_odds > b.odds ? 'text-success' : 'text-error'}`}>
+                                now {b.current_odds.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
                         </td>
-                      ) : activeCategory === 'live' ? (
+                      ) : (
+                        <td className="text-right text-text text-sm font-medium">{b.odds.toFixed(2)}</td>
+                      )}
+
+                      {activeCategory === 'live' ? (
                         <td className="text-right text-sm">
                           {b.current_odds != null ? (
                             <span className={b.current_odds > b.odds ? 'text-success' : b.current_odds < b.odds ? 'text-error' : 'text-text'}>{b.current_odds.toFixed(2)}</span>
@@ -256,33 +297,83 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       ) : (
                         <td className="text-right text-sm text-muted">
-                          {b.fair_odds_at_placement != null ? b.fair_odds_at_placement.toFixed(2) : b.fair_odds != null ? b.fair_odds.toFixed(2) : '-'}
+                          {fairOdds != null ? fairOdds.toFixed(2) : '-'}
                         </td>
                       )}
-                      {activeCategory === 'ft' || activeCategory === 'live' ? (
+
+                      {/* Edge / CLV column — upcoming shows live edge with arrow */}
+                      {activeCategory === 'live' ? (
                         <td className="text-right text-sm font-medium">
                           {b.clv_pct != null ? (
                             <span className={b.clv_pct >= 0 ? 'text-success' : 'text-error'}>{b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%</span>
                           ) : <span className="text-muted">-</span>}
+                        </td>
+                      ) : activeCategory === 'upcoming' ? (
+                        <td className="text-right text-sm font-medium">
+                          {(() => {
+                            const displayEdge = liveEdge != null ? liveEdge : placedEdge;
+                            if (displayEdge != null) return (
+                              <span className={displayEdge >= 0 ? 'text-success' : 'text-error'}>
+                                {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
+                                {edgeIncreasing && <span className="text-[9px] text-success ml-0.5">&#8593;</span>}
+                              </span>
+                            );
+                            return <span className="text-muted">-</span>;
+                          })()}
                         </td>
                       ) : (
                         <td className="text-right text-sm font-medium" style={{ color }}>
                           {edgePct != null ? `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%` : '-'}
                         </td>
                       )}
-                      <td className="text-right text-text text-sm font-medium">
-                        {b.stake.toFixed(0)} kr
-                        {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                      </td>
+
+                      {/* Stake column — upcoming shows 2x/3x buttons */}
+                      {activeCategory === 'upcoming' ? (
+                        <td className="text-right" onClick={e => e.stopPropagation()}>
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            <span className="text-text text-sm font-medium">{b.stake.toFixed(0)} kr</span>
+                            {b.is_bonus && <span className="text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
+                            {b.current_odds != null && b.current_odds > b.odds && (<>
+                              <button
+                                className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
+                                onClick={() => handleMultiplyStake(b, 2)}
+                                title={`Double to ${b.stake * 2} kr at ${b.current_odds!.toFixed(2)} odds`}
+                              >2x</button>
+                              <button
+                                className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
+                                onClick={() => handleMultiplyStake(b, 3)}
+                                title={`Triple to ${b.stake * 3} kr at ${b.current_odds!.toFixed(2)} odds`}
+                              >3x</button>
+                            </>)}
+                          </span>
+                        </td>
+                      ) : (
+                        <td className="text-right text-text text-sm font-medium">
+                          {b.stake.toFixed(0)} kr
+                          {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
+                        </td>
+                      )}
+
                       {activeCategory === 'ft' ? (
-                        <>
-                          <td className={`text-right text-sm font-medium ${resultBadge(b.result)}`}>
-                            {b.result}
-                          </td>
-                          <td className={`text-right text-sm font-medium ${pnlColor(b.profit)}`}>
-                            {`${pnlSign(b.profit)}${b.profit.toFixed(0)} kr`}
-                          </td>
-                        </>
+                        <td className="text-right" onClick={e => e.stopPropagation()}>
+                          <span className="inline-flex gap-1 justify-end">
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors disabled:opacity-50"
+                              onClick={() => handleSettle(b, 'won')}
+                              disabled={settling === b.id}
+                            >W</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors disabled:opacity-50"
+                              onClick={() => handleSettle(b, 'lost')}
+                              disabled={settling === b.id}
+                            >L</button>
+                            <button
+                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors disabled:opacity-50"
+                              onClick={() => handleSettle(b, 'void')}
+                              disabled={settling === b.id}
+                            >V</button>
+                          </span>
+                        </td>
                       ) : activeCategory === 'live' ? (
                         <td className="text-right text-sm text-warning">
                           {b.home_score != null && b.away_score != null
@@ -291,40 +382,18 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                               ? `${b.match_minute}'`
                               : 'LIVE'}
                         </td>
-                      ) : null}
+                      ) : (
+                        <td className="text-right text-sm font-medium" style={{ color }}>
+                          {(b.stake * b.odds).toFixed(0)} kr
+                        </td>
+                      )}
                     </tr>
                     {isExpanded && (
                       <tr key={`${b.id}-x`}>
                         <td colSpan={colCount} className="!p-0" onClick={e => e.stopPropagation()}>
                           <div className="px-3 py-2 bg-panel">
-                            {/* Settle buttons for pending bets */}
-                            {b.result === 'pending' && !isEditing && (
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] text-muted2 uppercase tracking-wider mr-1">Settle:</span>
-                                <button
-                                  className="text-[10px] px-2 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors disabled:opacity-50"
-                                  onClick={() => handleSettle(b, 'won')}
-                                  disabled={settling === b.id}
-                                >Won</button>
-                                <button
-                                  className="text-[10px] px-2 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors disabled:opacity-50"
-                                  onClick={() => handleSettle(b, 'lost')}
-                                  disabled={settling === b.id}
-                                >Lost</button>
-                                <button
-                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors disabled:opacity-50"
-                                  onClick={() => handleSettle(b, 'void')}
-                                  disabled={settling === b.id}
-                                >Void</button>
-                                <button
-                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
-                                  onClick={() => startEditing(b)}
-                                >Edit</button>
-                              </div>
-                            )}
-
-                            {/* Edit button for settled bets */}
-                            {b.result !== 'pending' && !isEditing && (
+                            {/* Edit button */}
+                            {!isEditing && (
                               <div className="flex items-center">
                                 <button
                                   className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"

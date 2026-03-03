@@ -90,11 +90,11 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   if (data.length < 2) return null;
 
   const W = 600;
-  const H = 120;
-  const PX = 32;
-  const PR = 8;
-  const PT = 8;
-  const PB = 16;
+  const H = 200;
+  const PX = 40;
+  const PR = 12;
+  const PT = 12;
+  const PB = 24;
 
   const minVal = Math.min(...data.map(d => d.value));
   const maxVal = Math.max(...data.map(d => d.value));
@@ -114,16 +114,35 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   const stroke = isUp ? '#10b981' : '#ef4444';
   const gradId = 'bankroll-grad';
 
-  const ySteps = 4;
+  const ySteps = 5;
   const yLabels = Array.from({ length: ySteps }, (_, i) => {
     const v = minVal + (range * i) / (ySteps - 1);
     return { value: v, label: `${(v / 1000).toFixed(1)}k`, yPos: y(v) };
   });
 
-  const xLabels = [data[0], data[data.length - 1]].map(p => ({
-    label: p.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-    xPos: x(p.date),
-  }));
+  // Generate month-based x labels
+  const xLabels: { label: string; xPos: number }[] = [];
+  {
+    const seen = new Set<string>();
+    for (const p of data) {
+      const key = `${p.date.getFullYear()}-${p.date.getMonth()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        xLabels.push({
+          label: p.date.toLocaleDateString('en-US', { month: 'short' }),
+          xPos: x(p.date),
+        });
+      }
+    }
+    const last = data[data.length - 1];
+    const lastKey = `${last.date.getFullYear()}-${last.date.getMonth()}-end`;
+    if (!seen.has(lastKey) && xLabels.length > 0) {
+      xLabels.push({
+        label: last.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        xPos: x(last.date),
+      });
+    }
+  }
 
   const profit = lastVal - firstVal;
   const profitPct = ((profit / firstVal) * 100).toFixed(1);
@@ -133,44 +152,42 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
 
   return (
     <div className="border border-border bg-panel overflow-hidden">
-      <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-        <span className="text-[10px] text-muted uppercase tracking-wider">Bankroll</span>
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] ${isUp ? 'text-success/70' : 'text-error/70'}`}>
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">Bankroll</span>
+        <div className="flex items-center gap-3">
+          <span className={`text-xs ${isUp ? 'text-success/70' : 'text-error/70'}`}>
             {profit >= 0 ? '+' : ''}{profit.toFixed(0)} kr ({profit >= 0 ? '+' : ''}{profitPct}%)
           </span>
-          <span className={`text-xs font-semibold ${isUp ? 'text-success' : 'text-error'}`}>
+          <span className={`text-sm font-semibold ${isUp ? 'text-success' : 'text-error'}`}>
             {lastVal.toFixed(0)} kr
           </span>
         </div>
       </div>
-      <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" preserveAspectRatio="none">
+      <div className="relative" style={{ paddingBottom: '33.3%' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={stroke} stopOpacity="0.2" />
-              <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+              <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
+              <stop offset="60%" stopColor={stroke} stopOpacity="0.1" />
+              <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
             </linearGradient>
           </defs>
           {yLabels.map((l, i) => (
-            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray={i === 0 ? 'none' : '3,3'} />
+            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="4,4" />
           ))}
           <path
-            d={`${pathD} L${x(data[data.length - 1].date).toFixed(1)},${y(minVal).toFixed(1)} L${x(data[0].date).toFixed(1)},${y(minVal).toFixed(1)} Z`}
+            d={`${pathD} L${x(data[data.length - 1].date).toFixed(1)},${(H - PB).toFixed(1)} L${x(data[0].date).toFixed(1)},${(H - PB).toFixed(1)} Z`}
             fill={`url(#${gradId})`}
           />
-          <path d={pathD} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-          {data.map((p, i) => (
-            <circle key={i} cx={x(p.date)} cy={y(p.value)} r={i === data.length - 1 ? 2.5 : 1.2} fill={stroke} fillOpacity={i === data.length - 1 ? 1 : 0.4} />
-          ))}
-          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="5" fill={stroke} fillOpacity="0.15" />
-          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="2.5" fill={stroke} />
+          <path d={pathD} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="6" fill={stroke} fillOpacity="0.12" />
+          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="3" fill={stroke} />
         </svg>
         {yLabels.map((l, i) => (
-          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
+          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), left: '2px' }}>{l.label}</span>
         ))}
         {xLabels.map((l, i) => (
-          <span key={`x${i}`} className={`absolute text-[10px] text-muted2 ${i === 0 ? '' : 'translate-x-[-100%]'}`} style={{ bottom: 0, left: xPct(l.xPos) }}>{l.label}</span>
+          <span key={`x${i}`} className="absolute text-[10px] text-muted2 -translate-x-1/2" style={{ bottom: '2px', left: xPct(l.xPos) }}>{l.label}</span>
         ))}
       </div>
     </div>
@@ -196,11 +213,11 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
   if (data.length < 2) return null;
 
   const W = 600;
-  const H = 120;
-  const PX = 32;
-  const PR = 8;
-  const PT = 8;
-  const PB = 16;
+  const H = 200;
+  const PX = 40;
+  const PR = 12;
+  const PT = 12;
+  const PB = 24;
 
   const clvValues = data.map(d => d.clv);
   const absMax = Math.max(Math.abs(Math.min(...clvValues)), Math.abs(Math.max(...clvValues)), 5);
@@ -240,19 +257,30 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
     return { label: `${v > 0 ? '+' : ''}${v.toFixed(0)}%`, yPos: y(v) };
   });
 
-  const xLabels = [data[0], data[data.length - 1]].map(p => ({
-    label: p.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-    xPos: x(p.date),
-  }));
+  // Generate month-based x labels
+  const xLabels: { label: string; xPos: number }[] = [];
+  {
+    const seen = new Set<string>();
+    for (const d of data) {
+      const key = `${d.date.getFullYear()}-${d.date.getMonth()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        xLabels.push({
+          label: d.date.toLocaleDateString('en-US', { month: 'short' }),
+          xPos: x(d.date),
+        });
+      }
+    }
+  }
 
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
     <div className="border border-border bg-panel overflow-hidden">
-      <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted uppercase tracking-wider">CLV Distribution</span>
+          <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
           {showTTKLegend && (
             <div className="flex items-center gap-1.5 text-[9px] text-muted2">
               <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-80" /> &lt;6h</span>
@@ -263,54 +291,48 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted">{data.length} bets</span>
           <span className="text-[10px] text-muted">{beatPct}% beat close</span>
-          <span className={`text-xs font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
+          <span className={`text-sm font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
             {lastAvg >= 0 ? '+' : ''}{lastAvg.toFixed(1)}% avg
           </span>
         </div>
       </div>
-      <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" preserveAspectRatio="none">
+      <div className="relative" style={{ paddingBottom: '33.3%' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
           <defs>
             <linearGradient id="clv-avg-grad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={avgColor} stopOpacity="0.12" />
-              <stop offset="100%" stopColor={avgColor} stopOpacity="0" />
+              <stop offset="0%" stopColor={avgColor} stopOpacity="0.35" />
+              <stop offset="60%" stopColor={avgColor} stopOpacity="0.1" />
+              <stop offset="100%" stopColor={avgColor} stopOpacity="0.02" />
             </linearGradient>
           </defs>
-          <rect x={PX} y={PT} width={W - PX - PR} height={zeroY - PT} fill="#10b981" fillOpacity="0.02" />
-          <rect x={PX} y={zeroY} width={W - PX - PR} height={H - PB - zeroY} fill="#ef4444" fillOpacity="0.02" />
           {yLabels.map((l, i) => (
-            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="3,3" />
+            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="4,4" />
           ))}
-          <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#7A7F87" strokeWidth="0.6" strokeDasharray="4,3" />
+          <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#555" strokeWidth="0.8" />
           {data.map((d, i) => {
             const cx = x(d.date);
             const cy = y(d.clv);
             const color = d.clv >= 0 ? '#10b981' : '#ef4444';
-            const r = 1.2 + d.confidence * 1.2;
-            const opacity = 0.25 + d.confidence * 0.55;
-            return (
-              <g key={i}>
-                <line x1={cx} y1={zeroY} x2={cx} y2={cy} stroke={color} strokeWidth="0.8" strokeOpacity={opacity * 0.4} />
-                <circle cx={cx} cy={cy} r={r} fill={color} fillOpacity={opacity} />
-              </g>
-            );
+            const r = 1.0 + d.confidence * 0.8;
+            const opacity = 0.15 + d.confidence * 0.35;
+            return <circle key={i} cx={cx} cy={cy} r={r} fill={color} fillOpacity={opacity} />;
           })}
           <path
             d={`${avgPathD} L${x(avgPoints[avgPoints.length - 1].date).toFixed(1)},${zeroY.toFixed(1)} L${x(avgPoints[0].date).toFixed(1)},${zeroY.toFixed(1)} Z`}
             fill="url(#clv-avg-grad)"
           />
-          <path d={avgPathD} fill="none" stroke={avgColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="5" fill={avgColor} fillOpacity="0.15" />
-          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="2.5" fill={avgColor} />
+          <path d={avgPathD} fill="none" stroke={avgColor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="6" fill={avgColor} fillOpacity="0.12" />
+          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="3" fill={avgColor} />
         </svg>
         {yLabels.map((l, i) => (
-          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: xPct(W - PX + 4) }}>{l.label}</span>
+          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), left: '2px' }}>{l.label}</span>
         ))}
         {xLabels.map((l, i) => (
-          <span key={`x${i}`} className={`absolute text-[10px] text-muted2 ${i === 0 ? '' : 'translate-x-[-100%]'}`} style={{ bottom: 0, left: xPct(l.xPos) }}>{l.label}</span>
+          <span key={`x${i}`} className="absolute text-[10px] text-muted2 -translate-x-1/2" style={{ bottom: '2px', left: xPct(l.xPos) }}>{l.label}</span>
         ))}
       </div>
     </div>
@@ -517,7 +539,7 @@ export function BetsPage() {
       {/* Stats Summary */}
       {bankrollStats && (
         <div className="border-l-2 border-tabBets">
-          <div className="grid grid-cols-5 gap-px bg-border border border-border">
+          <div className="grid grid-cols-4 gap-px bg-border border border-border">
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Bets</div>
               <div className="text-text text-lg font-semibold">{bankrollStats.total_bets}</div>
@@ -528,15 +550,11 @@ export function BetsPage() {
               </div>
             </div>
             <div className="bg-panel2 px-3 py-2.5">
-              <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Win Rate</div>
-              <div className="text-text text-lg font-semibold">{bankrollStats.win_rate.toFixed(1)}%</div>
-              <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
-            </div>
-            <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">ROI</div>
               <div className={`text-lg font-semibold ${bankrollStats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
                 {bankrollStats.roi_pct >= 0 ? '+' : ''}{bankrollStats.roi_pct.toFixed(1)}%
               </div>
+              <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Profit</div>
