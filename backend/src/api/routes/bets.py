@@ -153,6 +153,8 @@ async def list_bets(
             "settlement_source": b.settlement_source,
             "home_team": ev.home_team if ev else None,
             "away_team": ev.away_team if ev else None,
+            "display_home": ev.display_home if ev else None,
+            "display_away": ev.display_away if ev else None,
             "sport": ev.sport if ev else None,
             "league": ev.league if ev else None,
             "start_time": (ev.start_time.isoformat() + "Z") if ev and ev.start_time else None,

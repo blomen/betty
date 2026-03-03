@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -384,7 +384,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         utility_score: placedEdge,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
       });
-      const outcomeLabel = resolveOutcome(opp.outcome1, opp.home_team, opp.away_team, opp.point);
+      const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
       setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
@@ -403,10 +403,10 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
-  const resolveOutcome = (outcome: string, home?: string, away?: string, point?: number | null): string => {
+  const resolveOutcome = (outcome: string, opp: Opportunity, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home' && home) return home;
-    if (outcome === 'away' && away) return away;
+    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
+    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${p}`;
     if (outcome === 'under') return `Under${p}`;
@@ -660,12 +660,19 @@ export function ValuePage({ providers }: ValuePageProps) {
               return (
                 <Fragment key={group.key}>
                   <tr
-                    className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
+                    className={`cursor-pointer group ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
                     onClick={() => !isSkipped && handleSelectGroup(idx)}
                   >
                     <td>
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-text text-sm truncate">{rep.home_team} vs {rep.away_team}</span>
+                      <div className="flex items-center gap-1 min-w-0">
+                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home)} vs {displayTeamName(rep.away_team, rep.display_away)}</span>
+                        <button
+                          title="Copy event"
+                          className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(`${displayTeamName(rep.home_team, rep.display_home)} vs ${displayTeamName(rep.away_team, rep.display_away)}`); }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        </button>
                         {isSkipped && (
                           <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
                         )}
@@ -926,7 +933,7 @@ export function ValuePage({ providers }: ValuePageProps) {
               <tbody>
                 <tr>
                   <td className="text-muted">Match</td>
-                  <td className="text-right text-text">{freebetPopup.opp.home_team} vs {freebetPopup.opp.away_team}</td>
+                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.display_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.display_away)}</td>
                 </tr>
                 <tr>
                   <td className="text-muted">Stake</td>
@@ -963,8 +970,8 @@ export function ValuePage({ providers }: ValuePageProps) {
 function resolveOutcomeName(opp: Opportunity): string {
   const outcome = opp.outcome1;
   const point = opp.point != null ? ` ${opp.point}` : '';
-  if (outcome === 'home' && opp.home_team) return opp.home_team;
-  if (outcome === 'away' && opp.away_team) return opp.away_team;
+  if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
+  if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
   if (outcome === 'draw') return 'Draw';
   if (outcome === 'over') return `Over${point}`;
   if (outcome === 'under') return `Under${point}`;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -149,10 +149,8 @@ export function PolymarketPage() {
 
   const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
-    const home = 'home_team' in vb ? vb.home_team : null;
-    const away = 'away_team' in vb ? vb.away_team : null;
-    if (vb.outcome === 'home' && home) return home;
-    if (vb.outcome === 'away' && away) return away;
+    if (vb.outcome === 'home') return displayTeamName(vb.home_team, vb.display_home);
+    if (vb.outcome === 'away') return displayTeamName(vb.away_team, vb.display_away);
     if (vb.outcome === 'draw') return 'Draw';
     if (vb.outcome === 'over') return `Over${point}`;
     if (vb.outcome === 'under') return `Under${point}`;
@@ -272,7 +270,7 @@ export function PolymarketPage() {
                     >
                       <td>
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-text text-sm truncate">{vb.home_team} vs {vb.away_team}</span>
+                          <span className="text-text text-sm truncate">{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</span>
                           {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
                         </div>
                         <div className="text-muted2 text-[11px]">

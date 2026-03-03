@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
@@ -155,8 +155,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const resolveOutcome = (b: Bet): string => {
     const outcome = b.outcome ?? '';
     const point = b.point != null ? ` ${b.point}` : '';
-    if (outcome === 'home' && b.home_team) return b.home_team;
-    if (outcome === 'away' && b.away_team) return b.away_team;
+    if (outcome === 'home') return displayTeamName(b.home_team, b.display_home);
+    if (outcome === 'away') return displayTeamName(b.away_team, b.display_away);
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${point}`;
     if (outcome === 'under') return `Under${point}`;
@@ -164,7 +164,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   };
 
   const eventLabel = (b: Bet): string => {
-    if (b.home_team && b.away_team) return `${b.home_team} vs ${b.away_team}`;
+    if (b.home_team && b.away_team) return `${displayTeamName(b.home_team, b.display_home)} vs ${displayTeamName(b.away_team, b.display_away)}`;
     if (b.outcome) return b.outcome;
     return `Bet #${b.id}`;
   };

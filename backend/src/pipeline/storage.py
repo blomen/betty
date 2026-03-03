@@ -20,6 +20,22 @@ from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, PR
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_display_names(event_name: str) -> tuple[str | None, str | None]:
+    """Parse original cased team names from event.name (e.g. 'León vs Necaxa')."""
+    if not event_name:
+        return None, None
+    for sep in [' vs. ', ' vs ', ' @ ']:
+        if sep in event_name:
+            parts = event_name.split(sep, 1)
+            if len(parts) == 2:
+                home = parts[0].strip()
+                away = parts[1].strip()
+                if home and away:
+                    return home, away
+    return None, None
+
+
 def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_date: str) -> list:
     """
     Get fuzzy-match candidates for a sport+date using the date index.
@@ -323,12 +339,16 @@ def store_polymarket_event(
             except (ValueError, TypeError):
                 start_dt = None
 
+        display_home, display_away = _parse_display_names(event.name)
+
         db_event = Event(
             id=matched_id,
             sport=kambi_sport,
             league=event.league,
             home_team=home_team,
             away_team=away_team,
+            display_home=display_home,
+            display_away=display_away,
             start_time=start_dt,
         )
         session.add(db_event)
@@ -680,12 +700,17 @@ def store_provider_event(
             except (ValueError, TypeError):
                 start_dt = None
 
+        # Parse original cased names from event.name (e.g. "León vs Necaxa")
+        display_home, display_away = _parse_display_names(event.name)
+
         db_event = Event(
             id=final_id,
             sport=event.sport,
             league=event.league,
             home_team=event.home_team,
             away_team=event.away_team,
+            display_home=display_home,
+            display_away=display_away,
             start_time=start_dt,
         )
         session.add(db_event)
@@ -703,6 +728,13 @@ def store_provider_event(
             event_cache, date_index or {},
             event.sport, final_id, db_event.home_team, db_event.away_team, date_str,
         )
+
+    # ── Update display names from Pinnacle (best quality names) ────
+    if provider == "pinnacle" and not db_event.display_home:
+        dh, da = _parse_display_names(event.name)
+        if dh and da:
+            db_event.display_home = dh
+            db_event.display_away = da
 
     # ── Update live scores from Pinnacle ────────────────────────────
     if event.live_state and provider == "pinnacle":

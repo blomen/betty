@@ -42,6 +42,8 @@ export interface Opportunity {
   league?: string;
   home_team?: string;
   away_team?: string;
+  display_home?: string | null;
+  display_away?: string | null;
   starts_at?: string;
   // Stake recommendations (for value bets)
   suggested_stake?: number | null;
@@ -65,6 +67,8 @@ export interface EventSummary {
   league: string;
   home_team: string;
   away_team: string;
+  display_home?: string | null;
+  display_away?: string | null;
   start_time: string | null;
   odds_count: number;
 }
@@ -79,6 +83,8 @@ export interface LiveEvent {
   league: string;
   home_team: string;
   away_team: string;
+  display_home?: string | null;
+  display_away?: string | null;
   start_time: string | null;
   home_score: number | null;
   away_score: number | null;
@@ -197,6 +203,8 @@ export interface Bet {
   placed_at: string;
   home_team?: string | null;
   away_team?: string | null;
+  display_home?: string | null;
+  display_away?: string | null;
   sport?: string | null;
   league?: string | null;
   clv_pct?: number | null;
@@ -481,6 +489,8 @@ export interface PolymarketMatchedEvent {
   league: string | null;
   home_team: string;
   away_team: string;
+  display_home?: string | null;
+  display_away?: string | null;
   start_time: string | null;
   polymarket_odds: PolymarketOddsEntry[];
   other_providers: Record<string, PolymarketOddsEntry[]>;
@@ -506,6 +516,8 @@ export interface PolymarketValueBet {
   point: number | null;
   home_team: string;
   away_team: string;
+  display_home?: string | null;
+  display_away?: string | null;
   sport: string;
   league: string | null;
   start_time: string | null;

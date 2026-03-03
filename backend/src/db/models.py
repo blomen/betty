@@ -57,6 +57,8 @@ class Event(Base):
     league = Column(String)
     home_team = Column(String, nullable=False)  # Normalized name
     away_team = Column(String, nullable=False)  # Normalized name
+    display_home = Column(String, nullable=True)  # Original cased name from provider
+    display_away = Column(String, nullable=True)  # Original cased name from provider
     start_time = Column(DateTime)
 
     # Live score tracking (populated from Pinnacle live data)
@@ -1063,6 +1065,8 @@ def _run_migrations(engine):
             ("match_minute", "INTEGER"),
             ("match_period", "INTEGER"),
             ("stats_json", "TEXT"),
+            ("display_home", "TEXT"),
+            ("display_away", "TEXT"),
         ]:
             try:
                 cursor.execute(f"SELECT {col} FROM events LIMIT 1")

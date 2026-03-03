@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -37,6 +37,8 @@ interface DutchOpp {
   sport?: string;
   home_team?: string;
   away_team?: string;
+  display_home?: string | null;
+  display_away?: string | null;
   starts_at?: string;
   guaranteed_profit_pct?: number;
   total_stake?: number;
@@ -174,7 +176,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         return { ...prev, [opp.id]: next };
       });
 
-      const outcomeLabel = resolveOutcome(leg.outcome, opp.home_team, opp.away_team, opp.point);
+      const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point);
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       fetchData();
@@ -257,10 +259,10 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
-  const resolveOutcome = (outcome: string, home?: string, away?: string, point?: number | null): string => {
+  const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home' && home) return home;
-    if (outcome === 'away' && away) return away;
+    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
+    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${p}`;
     if (outcome === 'under') return `Under${p}`;
@@ -370,7 +372,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                       onClick={() => setSelectedOpp(isSelected ? null : idx)}
                     >
                       <td>
-                        <div className="text-text text-sm">{opp.home_team} vs {opp.away_team}</div>
+                        <div className="text-text text-sm">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</div>
                         <div className="text-muted2 text-[11px]">
                           {opp.sport}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
@@ -431,7 +433,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                   <tr key={legIdx}>
                                     <td>
                                       <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
-                                      {resolveOutcome(leg.outcome, opp.home_team, opp.away_team, opp.point)}
+                                      {resolveOutcome(leg.outcome, opp, opp.point)}
                                       {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
                                     </td>
                                     <td className="text-right">{formatProviderName(leg.provider)}</td>

@@ -102,6 +102,8 @@ class OpportunityService:
                 "league": event.league if event else None,
                 "home_team": event.home_team if event else None,
                 "away_team": event.away_team if event else None,
+                "display_home": event.display_home if event else None,
+                "display_away": event.display_away if event else None,
                 "starts_at": event.start_time.isoformat() if event and event.start_time else None,
             }
 

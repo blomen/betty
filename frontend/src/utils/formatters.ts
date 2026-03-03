@@ -28,6 +28,23 @@ export function formatDateTime(isoString: string | null | undefined): string {
   });
 }
 
+/**
+ * Title-case a normalized team name: "odense bulldogs" → "Odense Bulldogs"
+ */
+function toTitleCase(s: string): string {
+  return s.replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
+ * Get display name for a team, preferring the original cased name from the API
+ * and falling back to title-cased normalized name.
+ */
+export function displayTeamName(normalized: string | undefined | null, display: string | undefined | null): string {
+  if (display) return display;
+  if (normalized) return toTitleCase(normalized);
+  return '';
+}
+
 // ============ TTK (Time-to-Kickoff) Utilities ============
 
 /** Hours from now until event start. Returns null if no start time. */

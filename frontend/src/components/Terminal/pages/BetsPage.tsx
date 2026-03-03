@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, displayTeamName } from '@/utils/formatters';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
 
@@ -480,8 +480,8 @@ export function BetsPage() {
 
   const resolveOutcome = (bet: Bet): string => {
     const outcome = bet.outcome || '-';
-    if (outcome === 'home' && bet.home_team) return bet.home_team;
-    if (outcome === 'away' && bet.away_team) return bet.away_team;
+    if (outcome === 'home') return displayTeamName(bet.home_team, bet.display_home);
+    if (outcome === 'away') return displayTeamName(bet.away_team, bet.display_away);
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return 'Over';
     if (outcome === 'under') return 'Under';

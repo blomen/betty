@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -82,8 +82,8 @@ export function ReversePage() {
   const resolveOutcome = (opp: Opportunity): string => {
     const outcome = opp.outcome1;
     const point = opp.point != null ? ` ${opp.point}` : '';
-    if (outcome === 'home' && opp.home_team) return opp.home_team;
-    if (outcome === 'away' && opp.away_team) return opp.away_team;
+    if (outcome === 'home') return displayTeamName(opp.home_team, opp.display_home);
+    if (outcome === 'away') return displayTeamName(opp.away_team, opp.display_away);
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${point}`;
     if (outcome === 'under') return `Under${point}`;
@@ -229,7 +229,7 @@ export function ReversePage() {
                   >
                     <td>
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-text text-sm truncate">{opp.home_team} vs {opp.away_team}</span>
+                        <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</span>
                         {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
                       </div>
                       <div className="text-muted2 text-[11px]">

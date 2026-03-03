@@ -32,6 +32,8 @@ async def list_events(
                 "league": e.league,
                 "home_team": e.home_team,
                 "away_team": e.away_team,
+                "display_home": e.display_home,
+                "display_away": e.display_away,
                 "start_time": (e.start_time.isoformat() + "Z") if e.start_time else None,
                 "odds_count": len(e.odds),
             }
@@ -59,6 +61,8 @@ def get_live_events(db: Session = Depends(get_db)):
                 "league": e.league,
                 "home_team": e.home_team,
                 "away_team": e.away_team,
+                "display_home": e.display_home,
+                "display_away": e.display_away,
                 "start_time": (e.start_time.isoformat() + "Z") if e.start_time else None,
                 "home_score": e.home_score,
                 "away_score": e.away_score,
@@ -97,6 +101,8 @@ async def get_event(event_id: str, db: Session = Depends(get_db)):
         "league": event.league,
         "home_team": event.home_team,
         "away_team": event.away_team,
+        "display_home": event.display_home,
+        "display_away": event.display_away,
         "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
         "odds": odds_by_market,
     }
