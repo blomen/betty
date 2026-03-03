@@ -337,7 +337,9 @@ if _frontend_dir.exists():
             return FileResponse(str(index), media_type="text/html")
 
 
-# Entry point for development
+# Dev entry point (no --reload). On Windows, --reload forces SelectorEventLoop
+# which breaks patchright subprocess spawning. Without --reload, uvicorn uses
+# ProactorEventLoop correctly. Use run_dev.py if you need hot-reload.
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.api:app", host="127.0.0.1", port=8000)

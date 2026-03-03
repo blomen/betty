@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, formatDateTime } from '@/utils/formatters';
 import { TAB_COLORS } from './TabBar';
@@ -17,6 +17,13 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const [bets, setBets] = useState<Bet[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState<BetCategory>('upcoming');
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [settling, setSettling] = useState<number | null>(null);
+  // Inline edit state
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editStake, setEditStake] = useState('');
+  const [editOdds, setEditOdds] = useState('');
+  const [editResult, setEditResult] = useState('');
 
   const color = TAB_COLORS[colorKey] ?? '#64748B';
 
@@ -33,6 +40,52 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   }, [filter]);
 
   useEffect(() => { fetchBets(); }, [fetchBets]);
+
+  const handleSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
+    setSettling(bet.id);
+    try {
+      await api.editBet(bet.id, { result });
+      setExpandedId(null);
+      fetchBets();
+    } catch (err) {
+      console.error('Settle failed:', err);
+    } finally {
+      setSettling(null);
+    }
+  };
+
+  const startEditing = (bet: Bet) => {
+    setEditingId(bet.id);
+    setEditStake(bet.stake.toFixed(0));
+    setEditOdds(bet.odds.toFixed(2));
+    setEditResult(bet.result);
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditStake('');
+    setEditOdds('');
+    setEditResult('');
+  };
+
+  const saveEdit = async (betId: number) => {
+    const original = bets.find(b => b.id === betId);
+    if (!original) return;
+    const changes: { stake?: number; odds?: number; result?: string } = {};
+    const newStake = parseFloat(editStake);
+    const newOdds = parseFloat(editOdds);
+    if (!isNaN(newStake) && newStake !== original.stake) changes.stake = newStake;
+    if (!isNaN(newOdds) && newOdds !== original.odds) changes.odds = newOdds;
+    if (editResult && editResult !== original.result) changes.result = editResult;
+    if (Object.keys(changes).length === 0) { cancelEditing(); return; }
+    try {
+      await api.editBet(betId, changes);
+      cancelEditing();
+      fetchBets();
+    } catch (err) {
+      console.error('Edit bet failed:', err);
+    }
+  };
 
   const categorized = useMemo(() => {
     const now = Date.now();
@@ -144,6 +197,16 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                 <th className="text-right">Outcome</th>
                 <th className="text-right">Provider</th>
                 <th className="text-right">Odds</th>
+                {activeCategory === 'ft' ? (
+                  <th className="text-right">Close</th>
+                ) : (
+                  <th className="text-right">Fair</th>
+                )}
+                {activeCategory === 'ft' ? (
+                  <th className="text-right">CLV</th>
+                ) : (
+                  <th className="text-right">Edge</th>
+                )}
                 <th className="text-right">Stake</th>
                 {activeCategory === 'ft' ? (
                   <>
@@ -152,52 +215,171 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                   </>
                 ) : activeCategory === 'live' ? (
                   <th className="text-right">Score</th>
-                ) : (
-                  <th className="text-right">Edge</th>
-                )}
+                ) : null}
               </tr>
             </thead>
             <tbody>
-              {activeBets.map(b => (
-                <tr key={b.id}>
-                  <td>
-                    <div className="text-text text-sm">{eventLabel(b)}</div>
-                    <div className="text-muted2 text-[10px]">
-                      {b.sport}{b.market && b.market !== '1x2' && b.market !== 'moneyline' && b.market !== 'boost' ? ` · ${b.market}` : ''}
-                      {b.start_time ? ` · ${formatDateTime(b.start_time)}` : b.placed_at ? ` · ${formatDateTime(b.placed_at)}` : ''}
-                    </div>
-                  </td>
-                  <td className="text-right text-text text-sm">{resolveOutcome(b)}</td>
-                  <td className="text-right text-muted text-sm">{formatProviderName(b.provider)}</td>
-                  <td className="text-right text-text text-sm font-medium">{b.odds.toFixed(2)}</td>
-                  <td className="text-right text-text text-sm font-medium">
-                    {b.stake.toFixed(0)} kr
-                    {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                  </td>
-                  {activeCategory === 'ft' ? (
-                    <>
-                      <td className={`text-right text-sm font-medium ${resultBadge(b.result)}`}>
-                        {b.result}
+              {activeBets.map(b => {
+                const isExpanded = expandedId === b.id;
+                const isEditing = editingId === b.id;
+                const colCount = activeCategory === 'ft' ? 9 : activeCategory === 'live' ? 8 : 7;
+                const edgePct = b.edge_pct ?? (b.placed_edge_pct != null ? b.placed_edge_pct * 100 : null);
+                return (
+                  <Fragment key={b.id}>
+                    <tr
+                      className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
+                      onClick={() => { if (!isEditing) setExpandedId(isExpanded ? null : b.id); }}
+                    >
+                      <td>
+                        <div className="text-text text-sm">{eventLabel(b)}</div>
+                        <div className="text-muted2 text-[10px]">
+                          {b.sport}{b.market && b.market !== '1x2' && b.market !== 'moneyline' && b.market !== 'boost' ? ` · ${b.market}` : ''}
+                          {b.start_time ? ` · ${formatDateTime(b.start_time)}` : b.placed_at ? ` · ${formatDateTime(b.placed_at)}` : ''}
+                        </div>
                       </td>
-                      <td className={`text-right text-sm font-medium ${pnlColor(b.profit)}`}>
-                        {`${pnlSign(b.profit)}${b.profit.toFixed(0)} kr`}
+                      <td className="text-right text-text text-sm">{resolveOutcome(b)}</td>
+                      <td className="text-right text-muted text-sm">{formatProviderName(b.provider)}</td>
+                      <td className="text-right text-text text-sm font-medium">{b.odds.toFixed(2)}</td>
+                      {activeCategory === 'ft' ? (
+                        <td className="text-right text-sm">
+                          {b.closing_odds != null ? (
+                            <span className={b.closing_odds > b.odds ? 'text-success' : b.closing_odds < b.odds ? 'text-error' : 'text-text'}>{b.closing_odds.toFixed(2)}</span>
+                          ) : <span className="text-muted">-</span>}
+                        </td>
+                      ) : (
+                        <td className="text-right text-sm text-muted">
+                          {b.fair_odds_at_placement != null ? b.fair_odds_at_placement.toFixed(2) : b.fair_odds != null ? b.fair_odds.toFixed(2) : '-'}
+                        </td>
+                      )}
+                      {activeCategory === 'ft' ? (
+                        <td className="text-right text-sm font-medium">
+                          {b.clv_pct != null ? (
+                            <span className={b.clv_pct >= 0 ? 'text-success' : 'text-error'}>{b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%</span>
+                          ) : <span className="text-muted">-</span>}
+                        </td>
+                      ) : (
+                        <td className="text-right text-sm font-medium" style={{ color }}>
+                          {edgePct != null ? `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%` : '-'}
+                        </td>
+                      )}
+                      <td className="text-right text-text text-sm font-medium">
+                        {b.stake.toFixed(0)} kr
+                        {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
                       </td>
-                    </>
-                  ) : activeCategory === 'live' ? (
-                    <td className="text-right text-sm text-warning">
-                      {b.home_score != null && b.away_score != null
-                        ? `${b.home_score}-${b.away_score}`
-                        : b.match_minute != null
-                          ? `${b.match_minute}'`
-                          : 'LIVE'}
-                    </td>
-                  ) : (
-                    <td className="text-right text-sm font-medium" style={{ color }}>
-                      {b.edge_pct != null ? `+${b.edge_pct.toFixed(1)}%` : b.placed_edge_pct != null ? `+${(b.placed_edge_pct * 100).toFixed(1)}%` : '-'}
-                    </td>
-                  )}
-                </tr>
-              ))}
+                      {activeCategory === 'ft' ? (
+                        <>
+                          <td className={`text-right text-sm font-medium ${resultBadge(b.result)}`}>
+                            {b.result}
+                          </td>
+                          <td className={`text-right text-sm font-medium ${pnlColor(b.profit)}`}>
+                            {`${pnlSign(b.profit)}${b.profit.toFixed(0)} kr`}
+                          </td>
+                        </>
+                      ) : activeCategory === 'live' ? (
+                        <td className="text-right text-sm text-warning">
+                          {b.home_score != null && b.away_score != null
+                            ? `${b.home_score}-${b.away_score}`
+                            : b.match_minute != null
+                              ? `${b.match_minute}'`
+                              : 'LIVE'}
+                        </td>
+                      ) : null}
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${b.id}-x`}>
+                        <td colSpan={colCount} className="!p-0" onClick={e => e.stopPropagation()}>
+                          <div className="px-3 py-2 bg-panel">
+                            {/* Settle buttons for pending bets */}
+                            {b.result === 'pending' && !isEditing && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-muted2 uppercase tracking-wider mr-1">Settle:</span>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors disabled:opacity-50"
+                                  onClick={() => handleSettle(b, 'won')}
+                                  disabled={settling === b.id}
+                                >Won</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors disabled:opacity-50"
+                                  onClick={() => handleSettle(b, 'lost')}
+                                  disabled={settling === b.id}
+                                >Lost</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors disabled:opacity-50"
+                                  onClick={() => handleSettle(b, 'void')}
+                                  disabled={settling === b.id}
+                                >Void</button>
+                                <button
+                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
+                                  onClick={() => startEditing(b)}
+                                >Edit</button>
+                              </div>
+                            )}
+
+                            {/* Edit button for settled bets */}
+                            {b.result !== 'pending' && !isEditing && (
+                              <div className="flex items-center">
+                                <button
+                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
+                                  onClick={() => startEditing(b)}
+                                >Edit</button>
+                              </div>
+                            )}
+
+                            {/* Inline edit form */}
+                            {isEditing && (
+                              <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Stake:</span>
+                                  <input
+                                    type="number"
+                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editStake}
+                                    onChange={e => setEditStake(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(b.id); if (e.key === 'Escape') cancelEditing(); }}
+                                    autoFocus
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Odds:</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editOdds}
+                                    onChange={e => setEditOdds(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(b.id); if (e.key === 'Escape') cancelEditing(); }}
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Result:</span>
+                                  <select
+                                    className="px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={editResult}
+                                    onChange={e => setEditResult(e.target.value)}
+                                  >
+                                    <option value="pending">pending</option>
+                                    <option value="won">won</option>
+                                    <option value="lost">lost</option>
+                                    <option value="void">void</option>
+                                  </select>
+                                </div>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
+                                  onClick={() => saveEdit(b.id)}
+                                >Save</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                                  onClick={cancelEditing}
+                                >Cancel</button>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

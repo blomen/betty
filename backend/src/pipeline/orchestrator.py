@@ -401,7 +401,7 @@ class ExtractionPipeline:
                         retry_config.max_backoff_seconds
                     )
                     logger.warning(
-                        f"[{provider_id}] Error on attempt {attempt+1}/{retry_config.max_retries}: {e}, "
+                        f"[{provider_id}] Error on attempt {attempt+1}/{retry_config.max_retries}: {str(e) or repr(e)}, "
                         f"retrying in {backoff:.1f}s..."
                     )
                     await asyncio.sleep(backoff)
@@ -798,11 +798,13 @@ class ExtractionPipeline:
                         }
 
                     except Exception as e:
-                        logger.error(f"Failed to extract from {provider_id}: {e}", exc_info=True)
+                        # Use repr(e) — str(NotImplementedError()) is empty, hiding the cause
+                        error_str = str(e) or repr(e)
+                        logger.error(f"Failed to extract from {provider_id}: {error_str}", exc_info=True)
 
                         # End provider metrics on failure
                         if self.metrics:
-                            self.metrics.end_provider(provider_id, success=False, error=str(e))
+                            self.metrics.end_provider(provider_id, success=False, error=error_str)
 
                         # Record failure in circuit breaker
                         if self.circuit_breaker:
@@ -813,7 +815,7 @@ class ExtractionPipeline:
                             "events_new": 0,
                             "odds_processed": 0,
                             "odds_new": 0,
-                            "error": str(e)
+                            "error": error_str
                         }
 
                 # Wrap provider extraction with type-aware concurrency control
@@ -1278,12 +1280,13 @@ class ExtractionPipeline:
                     }
 
                 except Exception as e:
-                    logger.warning(f"[{provider_id}] {sport} failed: {e}", exc_info=True)
+                    error_str = str(e) or repr(e)
+                    logger.warning(f"[{provider_id}] {sport} failed: {error_str}", exc_info=True)
                     if self.metrics:
                         self.metrics.end_sport(
                             provider_id, sport,
                             success=False,
-                            error=str(e),
+                            error=error_str,
                         )
                     return {
                         "sport": sport,
@@ -1294,7 +1297,7 @@ class ExtractionPipeline:
                         "odds_processed": 0,
                         "odds_new": 0,
                         "market_counts": {},
-                        "error": {"error": str(e), "error_type": type(e).__name__}
+                        "error": {"error": error_str, "error_type": type(e).__name__}
                     }
 
         try:
