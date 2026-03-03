@@ -30,15 +30,17 @@ export function ReversePage() {
     windowName: string;
   } | null>(null);
 
-  // Track placed event+provider combos for immediate removal from list
+  // Track placed market+outcome+point combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
-  // Load placed bets from DB on mount to filter out already-bet events on Pinnacle
+  // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
   useEffect(() => {
     api.getBets('pending', 500).then(({ bets }) => {
       const keys = new Set<string>();
       for (const b of bets) {
-        if (b.event_id && b.provider === 'pinnacle') keys.add(`${b.event_id}|pinnacle`);
+        if (b.event_id && b.provider === 'pinnacle') {
+          keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
+        }
       }
       if (keys.size > 0) setPlacedKeys(keys);
     }).catch(() => {});
@@ -62,7 +64,7 @@ export function ReversePage() {
   const filtered = useMemo(() => {
     return opportunities
       .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
-      .filter(o => !placedKeys.has(`${o.event_id}|pinnacle`));
+      .filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
   }, [opportunities, placedKeys]);
 
   type ReverseSortCol = 'odds' | 'consensus' | 'prob' | 'ttk' | 'stake' | 'edge';
@@ -124,7 +126,7 @@ export function ReversePage() {
       setTimeout(() => setBetSuccess(null), 5000);
 
       // Remove from list immediately
-      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|pinnacle`));
+      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
       setPendingBet(null);
       setSelectedRow(null);
       fetchData();

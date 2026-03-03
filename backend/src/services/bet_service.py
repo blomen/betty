@@ -68,16 +68,22 @@ class BetService:
         if not provider:
             return {"error": f"Provider {provider_id} not found"}
 
-        # Block duplicate: same event + provider already has a pending bet
-        if event_id:
-            existing = self.db.query(Bet).filter(
+        # Block duplicate: same event + market + outcome + point already has a pending bet (any provider)
+        if event_id and market and outcome:
+            dup_query = self.db.query(Bet).filter(
                 Bet.profile_id == profile.id,
                 Bet.event_id == event_id,
-                Bet.provider_id == provider_id,
+                Bet.market == market,
+                Bet.outcome == outcome,
                 Bet.result == "pending",
-            ).first()
+            )
+            if point is not None:
+                dup_query = dup_query.filter(Bet.point == point)
+            else:
+                dup_query = dup_query.filter(Bet.point.is_(None))
+            existing = dup_query.first()
             if existing:
-                return {"error": f"Already have a pending bet on this event at {provider_id}"}
+                return {"error": f"Already have a pending bet on this market ({market} {outcome} {point}) at {existing.provider_id}"}
 
         # Check cooldown
         cooldown_reason = self._check_cooldown(provider_id)

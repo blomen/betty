@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
@@ -60,6 +60,20 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
+  const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
+  const providerDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close provider dropdown on outside click
+  useEffect(() => {
+    if (!providerDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (providerDropdownRef.current && !providerDropdownRef.current.contains(e.target as Node)) {
+        setProviderDropdownOpen(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [providerDropdownOpen]);
 
   // Two-step placement: Place → enter actual odds → Confirm
   const [pendingBet, setPendingBet] = useState<{
@@ -93,7 +107,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
 
-  // Load placed bets from DB on mount to filter out already-bet event+provider combos
+  // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
   useEffect(() => {
     api.getBets('pending', 500).then(({ bets }) => {
       const keys = new Set<string>();
@@ -102,7 +116,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         if (b.market === 'boost' && b.outcome) {
           bKeys.add(b.outcome);
         } else if (b.event_id) {
-          keys.add(`${b.event_id}|${b.provider}`);
+          keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
         }
       }
       if (keys.size > 0) setPlacedKeys(keys);
@@ -161,9 +175,9 @@ export function ValuePage({ providers }: ValuePageProps) {
       const ttk = getTTKFromNow(o.starts_at);
       return ttk === null || ttk > 1 / 60;
     });
-    // Remove placed event+provider combos
+    // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
-      result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.provider1}`));
+      result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
     }
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
@@ -375,8 +389,8 @@ export function ValuePage({ providers }: ValuePageProps) {
       setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
 
-      // Remove from list immediately
-      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.provider1}`));
+      // Remove from list immediately (same market+outcome+point hidden across all providers)
+      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
       setPendingBet(null);
       setSelectedGroup(null);
       fetchData();
@@ -835,24 +849,47 @@ export function ValuePage({ providers }: ValuePageProps) {
                               </>
                             ) : (
                               <>
-                                <select
-                                  value={selIdx}
-                                  onChange={(e) => setSelectedBetProvider(prev => ({ ...prev, [group.key]: Number(e.target.value) }))}
-                                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer"
-                                >
-                                  {opps.map((opp, i) => {
-                                    const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
-                                    const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
-                                      : opp.bonus_status === 'freebet_available' ? ' [FREE]'
-                                      : opp.skip_reason ? ` (${opp.skip_reason})`
-                                      : '';
-                                    return (
-                                      <option key={opp.id} value={i}>
-                                        {formatProviderName(opp.provider1)}{s}{tag}
-                                      </option>
-                                    );
-                                  })}
-                                </select>
+                                <div className="relative" ref={providerDropdownOpen === group.key ? providerDropdownRef : undefined}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
+                                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
+                                  >
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${(balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
+                                    <span className="truncate">
+                                      {formatProviderName(selOpp.provider1)}
+                                      {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
+                                      {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                                    </span>
+                                    <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                  </button>
+                                  {providerDropdownOpen === group.key && (
+                                    <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
+                                      {opps.map((opp, i) => {
+                                        const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
+                                        const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                                          : opp.bonus_status === 'freebet_available' ? ' [FREE]'
+                                          : opp.skip_reason ? ` (${opp.skip_reason})`
+                                          : '';
+                                        const hasBal = (balanceMap.get(opp.provider1) ?? 0) > 0;
+                                        return (
+                                          <button
+                                            key={opp.id}
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedBetProvider(prev => ({ ...prev, [group.key]: i }));
+                                              setProviderDropdownOpen(null);
+                                            }}
+                                            className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
+                                          >
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBal ? 'bg-success' : 'bg-muted/40'}`} />
+                                            {formatProviderName(opp.provider1)}{s}{tag}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
                                 <button
                                   onClick={() => handlePlaceBetClick(selOpp)}
                                   disabled={isDisabled}
