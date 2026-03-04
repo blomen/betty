@@ -576,8 +576,9 @@ export function BetsPage() {
                           bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
                           'bg-tabBonus/15 text-tabBonus'
                         }`}>
-                          {bonus.status === 'trigger_needed' ? 'TRIGGER NEEDED' :
-                           bonus.status === 'freebet_available' ? 'FREEBET READY' :
+                          {bonus.status === 'trigger_needed'
+                            ? (bonus.bonus_type === 'bonusdeposit' ? 'ROLLOVER NEEDED' : 'TRIGGER NEEDED')
+                            : bonus.status === 'freebet_available' ? 'FREEBET READY' :
                            `${pct.toFixed(0)}%`}
                         </span>
                         {days !== null && (
@@ -591,7 +592,7 @@ export function BetsPage() {
 
                     <div className="text-xs text-muted">{bonus.action_needed}</div>
 
-                    {bonus.status === 'in_progress' && bonus.wagering_requirement > 0 && (
+                    {(bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0 && (
                       <div className="space-y-1">
                         <div className="h-1.5 bg-panel overflow-hidden">
                           <div
@@ -608,7 +609,7 @@ export function BetsPage() {
                       </div>
                     )}
 
-                    {bonus.prognosis && bonus.status === 'in_progress' && (() => {
+                    {bonus.prognosis && (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && (() => {
                       const p = bonus.prognosis;
                       const betsPlaced = p.bets_per_week;
                       const needBetsWk = p.required_weekly_wagering > 0 && p.avg_stake > 0
