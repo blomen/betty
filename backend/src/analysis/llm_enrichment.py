@@ -31,9 +31,8 @@ LLM_MODEL = "claude-haiku-4-5-20251001"
 LLM_MAX_TOKENS = 1024
 BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 MAX_CONCURRENT_LLM = 10
-MAX_BOOSTS_PER_RUN = 250
+MAX_BOOSTS_PER_RUN = 500
 BRAVE_RATE_LIMIT_DELAY = 1.1  # seconds between Brave requests (free: 1 req/sec)
-MIN_EDGE_PCT = 20  # Only research boosts with >= 20% boost edge
 
 
 # ── In-memory rate-limit state ────────────────────────────────────────
@@ -61,6 +60,7 @@ def _load_cache_from_db(db: Session) -> dict[str, dict]:
             "llm_fair_odds": r.llm_fair_odds,
             "llm_reasoning": r.llm_reasoning,
             "llm_confidence": r.llm_confidence,
+            "llm_event_time": getattr(r, "llm_event_time", None),
         }
     logger.debug(f"Loaded {len(cache)} LLM results from persistent cache")
     return cache
@@ -77,6 +77,7 @@ def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float
         existing.llm_fair_odds = round(1 / result["probability"], 3) if result["probability"] > 0 else None
         existing.llm_confidence = result.get("confidence", "low")
         existing.llm_reasoning = result.get("reasoning", "")
+        existing.llm_event_time = result.get("event_time")
         existing.last_used_at = now
     else:
         db.add(LlmBoostCache(
@@ -88,6 +89,7 @@ def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float
             llm_fair_odds=round(1 / result["probability"], 3) if result["probability"] > 0 else None,
             llm_confidence=result.get("confidence", "low"),
             llm_reasoning=result.get("reasoning", ""),
+            llm_event_time=result.get("event_time"),
             created_at=now,
             last_used_at=now,
         ))
@@ -132,6 +134,10 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
             # Recompute edge from current boosted_odds (may have changed)
             if fair_odds and fair_odds > 1.0 and boosted_odds > 1.0:
                 s["llm_edge_pct"] = round((boosted_odds / fair_odds - 1) * 100, 2)
+            # Apply LLM event_time if scraped event_time is missing
+            llm_et = prev.get("llm_event_time")
+            if llm_et and not s.get("event_time"):
+                s["event_time"] = llm_et
             count += 1
             used_keys.append(key)
     return count, used_keys
@@ -140,17 +146,11 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
 # ── Candidate filtering ────────────────────────────────────────────────
 
 def _is_llm_candidate(special: dict) -> bool:
-    """Check if a boost should be sent to LLM for probability research."""
-    if not special.get("boosted_odds"):
-        return False
-    edge = special.get("edge_pct")
-    if edge is not None and edge >= MIN_EDGE_PCT:
-        return True
-    # No edge computed (no original_odds) — use boost_pct as fallback
-    boost = special.get("boost_pct") or 0
-    if edge is None and boost >= MIN_EDGE_PCT:
-        return True
-    return False
+    """Check if a boost should be sent to LLM for probability research.
+
+    All boosts with valid boosted_odds are candidates.
+    """
+    return bool(special.get("boosted_odds"))
 
 
 # ── Brave Search ───────────────────────────────────────────────────────
@@ -200,20 +200,20 @@ def _build_search_queries(special: dict) -> list[str]:
     sport = special.get("sport", "unknown")
     league = special.get("league", "")
 
+    today = datetime.now(timezone.utc).strftime("%Y")
     queries = []
     if event:
         teams = event.replace(" vs ", " ").replace(" - ", " ")
         ctx = f"{league} " if league else f"{sport} "
-        queries.append(f"{teams} {ctx}match prediction odds 2026")
+        queries.append(f"{teams} {ctx}match prediction odds {today}")
     if title and title != event:
-        # For player props or combo bets, search the specific market
         queries.append(f"{title} {sport} statistics probability")
     return queries[:2]
 
 
 # ── LLM prompt ─────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted odds offer and search results about the event, estimate the TRUE probability of the outcome occurring.
+SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted odds offer and search results about the event, estimate the TRUE probability of the outcome occurring. Also identify when the event takes place.
 
 RULES:
 - Base your estimate on statistics, recent form, and market context
@@ -221,9 +221,11 @@ RULES:
 - For combo bets (multiple outcomes combined), multiply independent probabilities
 - For player props (goalscorer, assists, etc.), use base rates and player statistics
 - Express your probability as a decimal between 0.01 and 0.99
+- Determine the event start time from search results, event context, or league schedules
 
 OUTPUT FORMAT (strict — follow exactly):
 TITLE: A short, clear English title for this bet (max 8 words). Translate any non-English terms. Examples: "Arsenal wins & both teams score", "Real Sociedad leads HT & wins FT", "Man Utd wins & over 2.5 goals"
+EVENT_TIME: ISO 8601 datetime with timezone (e.g. 2026-03-05T20:00:00+01:00). Use UNKNOWN if you cannot determine it.
 PROBABILITY: 0.XX
 CONFIDENCE: low|medium|high
 REASONING: 2-3 bullet points, each max 10 words. Key stats/facts only. Example:
@@ -241,14 +243,19 @@ def _build_user_prompt(special: dict, search_results: str) -> str:
     boosted_odds = special.get("boosted_odds", 0)
     original_odds = special.get("original_odds")
     boost_pct = special.get("boost_pct")
+    event_time = special.get("event_time")
 
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     parts = [
+        f"TODAY'S DATE: {today}",
         f"BOOST TITLE: {title}",
         f"EVENT: {event}",
         f"SPORT: {sport}" + (f" ({league})" if league else ""),
     ]
     if market_label:
         parts.append(f"MARKET: {market_label}")
+    if event_time:
+        parts.append(f"EVENT TIME (from scraper): {event_time}")
     parts.append(f"BOOSTED ODDS: {boosted_odds}")
     if original_odds:
         parts.append(f"ORIGINAL ODDS: {original_odds} (bookmaker implied: {100/original_odds:.0f}%)")
@@ -260,16 +267,31 @@ def _build_user_prompt(special: dict, search_results: str) -> str:
     else:
         parts.append("\n(No search results available — use your knowledge)")
 
-    parts.append("\nEstimate the true probability of this outcome occurring.")
+    parts.append("\nEstimate the true probability and identify the event start time.")
     return "\n".join(parts)
 
 
 # ── Response parsing ───────────────────────────────────────────────────
 
 _TITLE_RE = re.compile(r'TITLE:\s*(.+)', re.IGNORECASE)
+_EVENT_TIME_RE = re.compile(r'EVENT_TIME:\s*(\S+)', re.IGNORECASE)
 _PROB_RE = re.compile(r'PROBABILITY:\s*(0\.\d+)', re.IGNORECASE)
 _CONF_RE = re.compile(r'CONFIDENCE:\s*(low|medium|high)', re.IGNORECASE)
 _REASONING_RE = re.compile(r'REASONING:\s*(.+)', re.IGNORECASE | re.DOTALL)
+
+
+def _parse_event_time(raw: str) -> Optional[str]:
+    """Parse and validate an ISO 8601 datetime from LLM output."""
+    if not raw or raw.upper() == "UNKNOWN":
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        # Ensure timezone-aware (assume UTC if naive)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 def _parse_llm_response(text: str) -> Optional[dict]:
@@ -283,9 +305,12 @@ def _parse_llm_response(text: str) -> Optional[dict]:
     title_match = _TITLE_RE.search(text)
     title = title_match.group(1).strip()[:100] if title_match else ""
     # Clean: stop at next field marker if present
-    for marker in ("PROBABILITY:", "CONFIDENCE:", "REASONING:"):
+    for marker in ("EVENT_TIME:", "PROBABILITY:", "CONFIDENCE:", "REASONING:"):
         if marker in title:
             title = title[:title.index(marker)].strip()
+
+    event_time_match = _EVENT_TIME_RE.search(text)
+    event_time = _parse_event_time(event_time_match.group(1)) if event_time_match else None
 
     conf_match = _CONF_RE.search(text)
     confidence = conf_match.group(1).lower() if conf_match else "low"
@@ -295,6 +320,7 @@ def _parse_llm_response(text: str) -> Optional[dict]:
 
     return {
         "title": title,
+        "event_time": event_time,
         "probability": probability,
         "confidence": confidence,
         "reasoning": reasoning,
@@ -364,10 +390,11 @@ async def _research_single_boost(
 # ── Main entry point ───────────────────────────────────────────────────
 
 async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] = None) -> list[dict]:
-    """LLM-based probability estimation for boosts.
+    """LLM-based probability estimation and event time extraction for boosts.
 
     Runs AFTER enrich_specials_with_ev() (which sets edge_pct = boost_pct).
-    Only processes boosts meeting the edge/boost threshold.
+    Processes ALL boosts with valid boosted_odds. Also extracts event_time
+    when not available from the scraper.
 
     Uses the persistent `llm_boost_cache` table to avoid re-researching
     boosts that have already been analyzed. Each boost is researched once
@@ -435,6 +462,10 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
             special["llm_edge_pct"] = edge_pct
             special["llm_reasoning"] = result["reasoning"]
             special["llm_confidence"] = result["confidence"]
+            # Apply LLM event_time if scraped event_time is missing
+            llm_et = result.get("event_time")
+            if llm_et and not special.get("event_time"):
+                special["event_time"] = llm_et
             enriched_count += 1
 
             # Save to persistent cache immediately

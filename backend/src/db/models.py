@@ -647,6 +647,7 @@ class LlmBoostCache(Base):
     llm_fair_odds = Column(Float, nullable=True)
     llm_confidence = Column(String, default="low")
     llm_reasoning = Column(Text, nullable=True)
+    llm_event_time = Column(String, nullable=True)     # ISO datetime — event start time from LLM
 
     # Metadata
     created_at = Column(String, nullable=False)       # ISO datetime
