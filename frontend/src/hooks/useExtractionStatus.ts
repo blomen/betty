@@ -177,24 +177,35 @@ export interface ExtractionFreshness {
 }
 
 /**
- * Hook that fetches extraction freshness timestamps and auto-refreshes
- * every 30 seconds + on extraction complete events.
+ * Hook that fetches extraction freshness timestamps.
+ * - Fetches once on mount and on extraction complete events.
+ * - Does NOT refetch while extraction is running (prevents backward timer
+ *   caused by odds being written with new timestamps during extraction).
+ * - Refetches every 60s only while idle.
  */
 export function useExtractionFreshness(): ExtractionFreshness {
   const [freshness, setFreshness] = useState<ExtractionFreshness>({ soft: null, sharp: null, poly: null });
 
-  const fetch = useRef(() => {
+  const fetchFreshness = useRef(() => {
     api.getExtractionFreshness().then(setFreshness).catch(() => {});
   });
 
   useEffect(() => {
-    fetch.current();
-    const id = setInterval(() => fetch.current(), 30_000);
-    return () => clearInterval(id);
+    fetchFreshness.current();
   }, []);
 
-  // Re-fetch on extraction complete
-  useRefreshOnExtraction(() => fetch.current());
+  // Periodic refetch only while idle (no extraction running)
+  const tiersProgress = useTiersProgress();
+  const anyRunning = tiersProgress?.any_running ?? false;
+
+  useEffect(() => {
+    if (anyRunning) return; // Don't refetch while extracting
+    const id = setInterval(() => fetchFreshness.current(), 60_000);
+    return () => clearInterval(id);
+  }, [anyRunning]);
+
+  // Re-fetch when extraction completes (gives fresh post-extraction timestamp)
+  useRefreshOnExtraction(() => fetchFreshness.current());
 
   return freshness;
 }

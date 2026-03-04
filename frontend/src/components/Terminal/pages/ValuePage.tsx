@@ -832,21 +832,6 @@ export function ValuePage({ providers }: ValuePageProps) {
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
                             {isPending ? (
                               <>
-                                <span className="text-muted text-xs">Odds:</span>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  autoFocus
-                                  value={pendingBet!.actualOdds}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value);
-                                    if (!isNaN(val)) {
-                                      setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
-                                    }
-                                  }}
-                                  className="w-20 bg-bg border border-tabValue/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabValue"
-                                  onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
-                                />
                                 <button
                                   onClick={confirmPlaceBet}
                                   disabled={isPlacing || pendingBet!.actualOdds < 1.01}
@@ -854,6 +839,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                 >
                                   {isPlacing ? '...' : 'Confirm'}
                                 </button>
+                                <span className="text-muted text-xs">@ {pendingBet!.actualOdds.toFixed(2)}</span>
                                 <button
                                   onClick={() => setPendingBet(null)}
                                   className="px-2 py-1.5 text-xs text-muted hover:text-text"

@@ -655,7 +655,8 @@ async def get_extraction_freshness():
             .group_by("tier")
             .all()
         )
-        result = {row.tier: row.latest.isoformat() if row.latest else None for row in rows}
+        # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
+        result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
         return {"soft": result.get("soft"), "sharp": result.get("sharp"), "poly": result.get("poly")}
     finally:
         session.close()
