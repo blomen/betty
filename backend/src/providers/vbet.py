@@ -30,6 +30,7 @@ import asyncio
 import websockets
 
 from ..core import Retriever, StandardEvent
+from ..core.exceptions import RetryableError
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
@@ -353,9 +354,10 @@ class VbetRetriever(Retriever):
                     )
                     await asyncio.sleep(delay)
 
-        # All retries exhausted
-        logger.error(f"[{self.provider_id}] Error extracting {sport} after {self.WS_MAX_RETRIES} attempts: {last_err}")
-        return []
+        # All retries exhausted — raise so orchestrator sees this as a real failure
+        error_msg = f"WebSocket failed for {sport} after {self.WS_MAX_RETRIES} attempts: {last_err}"
+        logger.error(f"[{self.provider_id}] {error_msg}")
+        raise RetryableError(error_msg)
 
     async def _fetch_sport(
         self, ws, sport: str, bc_alias: str, limit: int
@@ -409,9 +411,18 @@ class VbetRetriever(Retriever):
             winner_events = self._parse_games(
                 match_winner_resp, sport, ["P1XP2", "P1P2"]
             )
-            logger.debug(
-                f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
-            )
+            if not winner_events:
+                # WS returned success but no parseable events — log response structure
+                inner = match_winner_resp.get("data", {})
+                sport_keys = list(inner.get("data", inner).get("sport", {}).keys()) if isinstance(inner, dict) else []
+                logger.warning(
+                    f"[{self.provider_id}] {sport}: WS code=0 but 0 ML events parsed "
+                    f"(sport_keys={sport_keys[:3]}, resp_keys={list(match_winner_resp.keys())[:5]})"
+                )
+            else:
+                logger.debug(
+                    f"[{self.provider_id}] {sport}: {len(winner_events)} events with 1x2/moneyline"
+                )
             all_events.extend(winner_events)
         else:
             logger.warning(

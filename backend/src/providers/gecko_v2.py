@@ -148,6 +148,7 @@ class GeckoV2Retriever(BrowserRetriever):
         self._api_headers: Optional[Dict[str, str]] = None
         # API base URL (may differ from site_url, e.g., bethard uses d-cf.bethardplayground.net)
         self._api_base: Optional[str] = None
+        self._last_run_id: Optional[str] = None
 
     async def _ensure_session(self) -> bool:
         """
@@ -264,6 +265,15 @@ class GeckoV2Retriever(BrowserRetriever):
         """
         Extract events by calling events-table/v2 API with pagination.
         """
+        # Invalidate cached session on new extraction run
+        run_id = kwargs.get("run_id")
+        if run_id and run_id != self._last_run_id:
+            self._api_headers = None
+            self._api_base = None
+            self._session_ready = False
+            logger.debug(f"[{self.provider_id}] New run {run_id[:12]}... — clearing cached session")
+        self._last_run_id = run_id
+
         if not await self._ensure_session():
             return []
 

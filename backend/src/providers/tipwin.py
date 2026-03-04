@@ -157,6 +157,16 @@ class TipwinRetriever(BrowserRetriever):
             await self.transport._ensure_browser()
             page = self.transport.page
 
+            # Validate page is still alive (browser may have been recycled)
+            try:
+                await page.evaluate("() => true", timeout=5000)
+            except Exception:
+                logger.warning(f"[{self.provider_id}] Page context dead, reinitializing browser")
+                self._session_ready = False
+                await self.transport.close()
+                await self.transport._ensure_browser()
+                page = self.transport.page
+
             # Storage for intercepted API data
             api_responses: List[Dict] = []
             pending_tasks: List[asyncio.Task] = []
@@ -169,8 +179,16 @@ class TipwinRetriever(BrowserRetriever):
                         has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
                         if has_items or has_offer:
                             api_responses.append(data)
-                except Exception:
-                    pass
+                        else:
+                            logger.debug(
+                                f"[{self.provider_id}] API response has no items/offer "
+                                f"(keys={list(data.keys())[:5]}, url={response.url[:80]})"
+                            )
+                except Exception as e:
+                    logger.warning(
+                        f"[{self.provider_id}] Failed to parse API response: {e} "
+                        f"(url={response.url[:80]}, status={response.status})"
+                    )
 
             def intercept_response(response):
                 url = response.url

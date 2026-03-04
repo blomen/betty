@@ -199,6 +199,15 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             await self.transport._ensure_browser()
             page = self.transport.page
 
+            # Validate page is still alive (browser may have been recycled)
+            try:
+                await page.evaluate("() => true", timeout=5000)
+            except Exception:
+                logger.warning(f"[{self.provider_id}] Page context dead, reinitializing browser")
+                await self.transport.close()
+                await self.transport._ensure_browser()
+                page = self.transport.page
+
             # Setup WS interception — persists across SPA navigations
             def on_websocket(ws):
                 def on_frame_received(payload):

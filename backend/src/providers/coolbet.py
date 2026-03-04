@@ -102,7 +102,14 @@ class CoolbetRetriever(BrowserRetriever):
     async def _ensure_camoufox(self):
         """Launch Camoufox anti-detect browser if not already running."""
         if self._camoufox_page is not None:
-            return self._camoufox_page
+            # Validate cached page is still alive
+            try:
+                await self._camoufox_page.evaluate("() => true", timeout=5000)
+                return self._camoufox_page
+            except Exception:
+                logger.warning(f"[{self.provider_id}] Camoufox page died, relaunching")
+                await self._cleanup_camoufox()
+                self._session_ready = False
 
         if CoolbetRetriever._camoufox_unavailable:
             return None
