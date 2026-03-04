@@ -1068,9 +1068,9 @@ boosts:
     type: comeon
     url: "https://www.comeon.com/sv/sportsbook/sport/85-odds-boost"
     primary_provider: comeon
-    shared_with: [hajper, snabbare]
+    shared_with: [hajper, snabbare, lyllo]
     enabled: true
-    note: "ComeOn RSocket SPA — sport/85 = Odds Boost. Combo boosts via WS. ~3-5 boosts/day. Identical boosts on hajper+snabbare (100% match confirmed 2026-02-17)."
+    note: "ComeOn RSocket SPA — sport/85 = Odds Boost. Combo boosts via WS. ~3-5 boosts/day. Identical boosts on hajper+snabbare+lyllo (100% match confirmed 2026-03-04)."
 
   hajper:
     type: comeon
@@ -1086,7 +1086,7 @@ boosts:
     primary_provider: lyllo
     shared_with: []
     enabled: false
-    note: "Lyllo has no Odds Boost section in sidebar navigation. Disabled."
+    note: "CONSOLIDATED: Same boosts as ComeOn (100% identical odds). Scraped via comeon shared_with. Confirmed active 2026-03-04."
 
   # ═══════════════════════════════════════════════════════
   # SNABBARE — same Sportradar MTS/Komigen platform as ComeOn Group
