@@ -136,6 +136,16 @@ class GeckoV2Retriever(BrowserRetriever):
         "HANDICAPDRAW": "draw",
     }
 
+    # Keywords in market name that indicate half-time / period-specific markets
+    # These should be skipped — we only want full-match markets.
+    _PERIOD_KEYWORDS = (
+        'halvtid', 'half time', 'half-time', 'halvlek',
+        '1st half', '2nd half', 'first half', 'second half',
+        'halvtid/fulltid', 'ht/ft',
+        'quarter', 'period',
+        '1st set', '2nd set', '3rd set',
+    )
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
 
@@ -510,6 +520,11 @@ class GeckoV2Retriever(BrowserRetriever):
             template_id = market.get('marketTemplateId', '')
             market_type = self.MARKET_TEMPLATE_MAP.get(template_id)
             if not market_type:
+                continue
+
+            # Skip half-time / period-specific markets by label
+            market_label = (market.get('label') or '').lower()
+            if any(kw in market_label for kw in self._PERIOD_KEYWORDS):
                 continue
 
             # Skip duplicate market types (keep first)

@@ -120,11 +120,12 @@ class BankrollService:
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
             pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
 
+            pending_native = pending_exposure / rate  # Convert SEK pending to native currency
             exposure_data.append({
                 "provider_id": provider.id,
                 "provider_name": provider.name,
-                "total_balance": balance,
-                "balance_sek": round(balance_sek, 2),
+                "total_balance": balance + pending_native,
+                "balance_sek": round(balance_sek + pending_exposure, 2),
                 "currency": currency,
                 "exchange_rate_sek": rate,
                 "pending_exposure": pending_exposure,

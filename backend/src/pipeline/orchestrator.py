@@ -96,19 +96,18 @@ class ExtractionPipeline:
             logger.debug(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
 
     def _detect_finished_events(self) -> int:
-        """Mark events as 'finished' when they were live but Pinnacle no longer reports them.
+        """Mark events as 'finished' when they are no longer active.
 
-        Two detection strategies:
+        Three detection strategies:
         1. Staleness: match_status='live' and updated_at > 3 min ago = Pinnacle dropped them
-        2. Time-based: start_time + 6 hours ago = event must be over regardless of Pinnacle
-
-        Strategy 2 catches events that went live while the app was closed — on restart,
-        Pinnacle no longer returns them, but updated_at might have been refreshed.
-        Also catches sports where Pinnacle doesn't provide scores (esports, tennis, etc.)
+        2. Time-based (live): match_status='live' and start_time + 6 hours ago = over
+        3. Time-based (never-live): match_status IS NULL, has pending bets, start_time + 3 hours ago
+           Catches events where the app was off during the game so 'live' was never set.
 
         Returns number of events marked as finished.
         """
         from datetime import datetime, timedelta
+        from sqlalchemy import or_
 
         now = datetime.utcnow()
 
@@ -136,10 +135,27 @@ class ExtractionPipeline:
             .all()
         )
 
+        # Strategy 3: never-live events with pending bets, start_time + 3 hours ago
+        # Catches: app was off during game, Polymarket-only events, etc.
+        from ..db.models import Bet
+        never_live_cutoff = now - timedelta(hours=3)
+        never_live_events = (
+            self.session.query(Event)
+            .join(Bet, Bet.event_id == Event.id)
+            .filter(
+                Bet.result == "pending",
+                or_(Event.match_status.is_(None), Event.match_status == "prematch"),
+                Event.start_time.isnot(None),
+                Event.start_time < never_live_cutoff,
+            )
+            .distinct()
+            .all()
+        )
+
         # Merge (deduplicate by id)
         seen = set()
         all_finished = []
-        for ev in stale_events + overtime_events:
+        for ev in stale_events + overtime_events + never_live_events:
             if ev.id not in seen:
                 seen.add(ev.id)
                 all_finished.append(ev)

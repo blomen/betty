@@ -96,14 +96,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     for (const b of bets) {
       if (!b.start_time || new Date(b.start_time).getTime() > now) {
         upcoming.push(b);
+      } else if (b.match_status === 'live') {
+        // Explicitly live from Pinnacle
+        live.push(b);
       } else {
-        // Past start — split into Live (has live data) vs FT (needs settling)
-        const hasLiveData = b.home_score != null || b.match_minute != null || b.match_status === 'live';
-        if (hasLiveData) {
-          live.push(b);
-        } else {
-          ft.push(b);
-        }
+        // Past start + finished/null/unknown → settle tab
+        ft.push(b);
       }
     }
 
@@ -356,7 +354,10 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
 
                       {activeCategory === 'ft' ? (
                         <td className="text-right" onClick={e => e.stopPropagation()}>
-                          <span className="inline-flex gap-1 justify-end">
+                          <span className="inline-flex gap-1 items-center justify-end">
+                            {b.home_score != null && b.away_score != null && (
+                              <span className="text-[10px] text-muted mr-1">{b.home_score}-{b.away_score}</span>
+                            )}
                             <button
                               className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors disabled:opacity-50"
                               onClick={() => handleSettle(b, 'won')}

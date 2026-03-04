@@ -497,12 +497,12 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                           >
                             Adjust
                           </button>
-                          {provider.total_balance > 0 && (
+                          {provider.available > 0 && (
                             <button
                               onClick={() => setTransferPopup({
                                 fromProviderId: provider.provider_id,
                                 fromName: provider.provider_name,
-                                fromBalance: provider.total_balance,
+                                fromBalance: provider.available,
                               })}
                               className="px-2 py-1 text-xs text-muted hover:text-text"
                             >
