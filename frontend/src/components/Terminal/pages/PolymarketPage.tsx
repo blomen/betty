@@ -317,18 +317,20 @@ export function PolymarketPage() {
                               </div>
                             )}
                             <div className="flex items-center gap-1">
-                              <span className="text-muted2 uppercase tracking-wider">Odds: </span>
+                              <span className="text-muted2 uppercase tracking-wider">Price: </span>
                               {editingOdds === oddsKey ? (
                                 <input
                                   type="number"
-                                  step="0.01"
+                                  step="1"
+                                  min="1"
+                                  max="99"
                                   autoFocus
-                                  defaultValue={getEffectiveOdds(vb).toFixed(2)}
+                                  defaultValue={m.priceCents}
                                   className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
                                   onBlur={(e) => {
-                                    const val = parseFloat(e.target.value);
-                                    if (!isNaN(val) && val >= 1.01) {
-                                      setOddsOverride(prev => ({ ...prev, [oddsKey]: val }));
+                                    const cents = parseInt(e.target.value);
+                                    if (!isNaN(cents) && cents >= 1 && cents <= 99) {
+                                      setOddsOverride(prev => ({ ...prev, [oddsKey]: 100 / cents }));
                                     }
                                     setEditingOdds(null);
                                   }}
@@ -341,9 +343,9 @@ export function PolymarketPage() {
                                 <span
                                   onClick={() => setEditingOdds(oddsKey)}
                                   className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                                  title="Click to adjust odds"
+                                  title="Click to adjust price"
                                 >
-                                  {getEffectiveOdds(vb).toFixed(2)} ({m.priceCents}¢)
+                                  {m.priceCents}¢
                                 </span>
                               )}
                               {isOverridden && (

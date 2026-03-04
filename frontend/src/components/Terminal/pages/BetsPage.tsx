@@ -194,28 +194,21 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   );
 }
 
-export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKLegend?: boolean }) {
+export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const data = useMemo(() => {
     return bets
       .filter(b => b.result !== 'pending' && b.clv_pct != null)
       .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime())
-      .map(b => {
-        const ttkHours = getTTK(b);
-        const confidence = ttkHours === null ? 0.5 :
-          ttkHours <= 6 ? 1.0 :
-          ttkHours <= 12 ? 0.85 :
-          ttkHours <= 24 ? 0.6 :
-          ttkHours <= 48 ? 0.35 : 0.2;
-        return { date: new Date(b.placed_at), clv: b.clv_pct!, ttkHours, confidence };
-      });
+      .map(b => ({ date: new Date(b.placed_at), clv: b.clv_pct! }));
   }, [bets]);
 
   if (data.length < 2) return null;
 
+  const LINE_COLOR = '#3b82f6';
   const W = 600;
   const H = 200;
-  const PX = 40;
-  const PR = 12;
+  const PL = 12;
+  const PR = 40;
   const PT = 12;
   const PB = 24;
 
@@ -228,7 +221,7 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
   const maxDate = data[data.length - 1].date.getTime();
   const dateRange = maxDate - minDate || 1;
 
-  const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
+  const x = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
   const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
 
   const zeroY = y(0);
@@ -245,9 +238,8 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.date).toFixed(1)},${y(p.avg).toFixed(1)}`)
     .join(' ');
 
-  const lastAvg = avgPoints[avgPoints.length - 1].avg;
-  const isPositive = lastAvg >= 0;
-  const avgColor = isPositive ? '#10b981' : '#ef4444';
+  const totalAvg = data.reduce((s, d) => s + d.clv, 0) / data.length;
+  const isPositive = totalAvg >= 0;
   const positiveCount = data.filter(d => d.clv >= 0).length;
   const beatPct = ((positiveCount / data.length) * 100).toFixed(0);
 
@@ -277,59 +269,28 @@ export function CLVChart({ bets, showTTKLegend = true }: { bets: Bet[]; showTTKL
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="border border-border bg-panel overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
-          {showTTKLegend && (
-            <div className="flex items-center gap-1.5 text-[9px] text-muted2">
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-80" /> &lt;6h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1.5 h-1.5 rounded-full bg-success opacity-65" /> 6-12h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-45" /> 12-24h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-30" /> 24-48h</span>
-              <span className="flex items-center gap-0.5"><span className="inline-block w-1 h-1 rounded-full bg-success opacity-15" /> 48h+</span>
-            </div>
-          )}
-        </div>
+    <div className="bg-panel overflow-hidden">
+      <div className="px-3 py-2 flex items-center justify-between">
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted">{data.length} bets</span>
           <span className="text-[10px] text-muted">{beatPct}% beat close</span>
           <span className={`text-sm font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
-            {lastAvg >= 0 ? '+' : ''}{lastAvg.toFixed(1)}% avg
+            {totalAvg >= 0 ? '+' : ''}{totalAvg.toFixed(1)}% avg
           </span>
         </div>
       </div>
       <div className="relative" style={{ paddingBottom: '33.3%' }}>
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="clv-avg-grad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={avgColor} stopOpacity="0.35" />
-              <stop offset="60%" stopColor={avgColor} stopOpacity="0.1" />
-              <stop offset="100%" stopColor={avgColor} stopOpacity="0.02" />
-            </linearGradient>
-          </defs>
           {yLabels.map((l, i) => (
-            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="4,4" />
+            <line key={i} x1={PL} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="2,4" />
           ))}
-          <line x1={PX} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#555" strokeWidth="0.8" />
-          {data.map((d, i) => {
-            const cx = x(d.date);
-            const cy = y(d.clv);
-            const color = d.clv >= 0 ? '#10b981' : '#ef4444';
-            const r = 1.0 + d.confidence * 0.8;
-            const opacity = 0.15 + d.confidence * 0.35;
-            return <circle key={i} cx={cx} cy={cy} r={r} fill={color} fillOpacity={opacity} />;
-          })}
-          <path
-            d={`${avgPathD} L${x(avgPoints[avgPoints.length - 1].date).toFixed(1)},${zeroY.toFixed(1)} L${x(avgPoints[0].date).toFixed(1)},${zeroY.toFixed(1)} Z`}
-            fill="url(#clv-avg-grad)"
-          />
-          <path d={avgPathD} fill="none" stroke={avgColor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="6" fill={avgColor} fillOpacity="0.12" />
-          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(lastAvg)} r="3" fill={avgColor} />
+          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#333" strokeWidth="0.5" strokeDasharray="2,4" />
+          <path d={avgPathD} fill="none" stroke={LINE_COLOR} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(avgPoints[avgPoints.length - 1].avg)} r="3" fill={LINE_COLOR} />
         </svg>
         {yLabels.map((l, i) => (
-          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), left: '2px' }}>{l.label}</span>
+          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: '4px' }}>{l.label}</span>
         ))}
         {xLabels.map((l, i) => (
           <span key={`x${i}`} className="absolute text-[10px] text-muted2 -translate-x-1/2" style={{ bottom: '2px', left: xPct(l.xPos) }}>{l.label}</span>
