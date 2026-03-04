@@ -162,6 +162,7 @@ def store_specials_to_db(specials: list[dict], session: Session) -> int:
             edge_pct=s.get("edge_pct"),
             is_positive_ev=s.get("is_positive_ev"),
             # LLM enrichment fields
+            llm_title=s.get("llm_title"),
             llm_probability=s.get("llm_probability"),
             llm_fair_odds=s.get("llm_fair_odds"),
             llm_edge_pct=s.get("llm_edge_pct"),

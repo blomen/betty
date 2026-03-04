@@ -43,7 +43,8 @@ export interface SpecialItem {
   // Boost edge (boosted/original)
   edge_pct: number | null;
   is_positive_ev: boolean | null;
-  // LLM enrichment (AI-estimated probability)
+  // LLM enrichment
+  llm_title: string | null;
   llm_probability: number | null;
   llm_fair_odds: number | null;
   llm_edge_pct: number | null;

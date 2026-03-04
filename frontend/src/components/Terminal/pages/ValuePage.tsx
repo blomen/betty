@@ -491,8 +491,8 @@ export function ValuePage({ providers }: ValuePageProps) {
               <th className="text-right">Providers</th>
               <SortableHeader column="odds" label="Odds" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="edge" label="Boost" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="aiProb" label="AI Prob" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="aiEdge" label="AI Edge" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="aiProb" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="aiEdge" label="Est Edge" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="max" label="Max" sort={boostSort} onToggle={toggleBoostSort} />
             </tr>
@@ -502,17 +502,13 @@ export function ValuePage({ providers }: ValuePageProps) {
               const s = group.rep;
               const isExpanded = boostExpandedIdx === idx;
               const providerCount = group.providers.length;
-              const hasLLM = s.llm_probability != null;
 
               return (
                 <Fragment key={group.key}>
                   <tr className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
                     <td>
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-text text-sm truncate">{s.title}</span>
-                        {hasLLM && (
-                          <span className="text-[9px] px-1 py-0.5 bg-sky-500/15 text-sky-400">AI</span>
-                        )}
+                        <span className="text-text text-sm truncate">{s.llm_title || s.title}</span>
                       </div>
                       <div className="text-muted2 text-[11px] truncate">
                         {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}{s.league ? ` · ${s.league}` : ''}
@@ -1081,11 +1077,11 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
             <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-success text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
             <div><span className="text-muted2 uppercase tracking-wider">Bankroll: </span><span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span></div>
             {special.boost_pct != null && <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>}
-            {special.llm_fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">AI Fair: </span><span className="text-sky-400">{special.llm_fair_odds.toFixed(2)}</span></div>}
+            {special.llm_fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">Est Fair: </span><span className="text-sky-400">{special.llm_fair_odds.toFixed(2)}</span></div>}
             {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
             {special.llm_reasoning && (
               <div className="text-sky-400/70 text-[10px]">
-                <span className="uppercase tracking-wider">AI ({special.llm_confidence || 'low'}): </span>
+                <span className="uppercase tracking-wider">Research ({special.llm_confidence || 'low'}): </span>
                 <span className="text-sky-400/50 normal-case">{special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '')}</span>)}</span>
               </div>
             )}

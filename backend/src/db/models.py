@@ -611,6 +611,7 @@ class SpecialOdds(Base):
     enrichment_method = Column(String, nullable=True)
 
     # LLM enrichment (AI-estimated probability from Claude Haiku + Brave Search)
+    llm_title = Column(String, nullable=True)         # Simplified English title
     llm_probability = Column(Float, nullable=True)    # 0.01-0.99
     llm_fair_odds = Column(Float, nullable=True)      # 1 / llm_probability
     llm_edge_pct = Column(Float, nullable=True)       # (boosted / llm_fair - 1) * 100
@@ -623,6 +624,33 @@ class SpecialOdds(Base):
         Index("ix_specials_positive_ev", "is_positive_ev"),
         Index("ix_specials_scraped_at", "scraped_at"),
     )
+
+
+class LlmBoostCache(Base):
+    """Persistent cache for LLM research results on odds boosts.
+
+    Keyed by cache_key = md5(title.lower() + "|" + boosted_odds).
+    Survives backend restarts and specials table purges.
+    Once a boost is researched, it's never re-researched (until expired).
+    """
+    __tablename__ = "llm_boost_cache"
+
+    cache_key = Column(String, primary_key=True)    # md5 hash
+
+    # Original boost identity (for debugging / human lookup)
+    title = Column(String, nullable=False)
+    boosted_odds = Column(Float, nullable=False)
+
+    # LLM research results
+    llm_title = Column(String, nullable=True)
+    llm_probability = Column(Float, nullable=False)
+    llm_fair_odds = Column(Float, nullable=True)
+    llm_confidence = Column(String, default="low")
+    llm_reasoning = Column(Text, nullable=True)
+
+    # Metadata
+    created_at = Column(String, nullable=False)       # ISO datetime
+    last_used_at = Column(String, nullable=False)      # ISO datetime — updated on carry-forward
 
 
 # ============ Risk Management ============

@@ -53,6 +53,7 @@ def _row_to_dict(row: SpecialOdds) -> dict:
         "edge_pct": row.edge_pct if row.edge_pct is not None else row.boost_pct,
         "is_positive_ev": row.is_positive_ev,
         # LLM enrichment
+        "llm_title": getattr(row, "llm_title", None) or "",
         "llm_probability": row.llm_probability,
         "llm_fair_odds": row.llm_fair_odds,
         "llm_edge_pct": row.llm_edge_pct,

@@ -680,106 +680,222 @@ async def _scrape_gecko_boosts(
     context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
 ) -> list[Special]:
     """
-    Scrape Gecko V2 (Betsson group) odds boosts via API interception.
+    Scrape Gecko V2 (Betsson group) odds boosts from the rendered DOM.
 
-    The boost page makes two key API calls:
-    1. globalbonuses — returns PriceBoost bonus objects with:
-       - bonusData.boostedOdds = the boosted (enhanced) odds
-       - bonusData.type = "Multiplier" or "FixedOdds"
-       - bonusData.isSuperBoost = true/false
-       - criteria.criteriaEntityDetails[].marketSelectionId = selection to match
-       - conditions.maximumStake = max bet amount
+    The boost page renders inside Shadow DOM web components. We pierce the
+    shadow DOM to extract all text, then parse the repeating card pattern:
 
-    2. event-market — returns events, markets, and selections with:
-       - selection.odds = the ORIGINAL (pre-boost) odds
-       - selection.label = bet description
-       - event.participants[].label = team names
-       - event.competitionName = league name
-       - event.deadline = event start time
+        [League]
+        [Team1]
+        [Team2]
+        [Boost description]
+        Förut  Nu
+        [original_odds]  [boosted_odds]
+        Maxinsats [amount]
+        [time info]
 
-    The page only loads event-market data for visible cards. We need to
-    scroll to load all cards, then fetch any remaining missing selections
-    by requesting their market IDs directly.
+    The globalbonuses API only returns betslip campaign boosts ("Boost to 7",
+    "Boost to 10") which are NOT the boosts visible on the odds-boost page.
+    DOM scraping is the only reliable way to get the actual page boosts.
     """
     import asyncio
 
     page = await context.new_page()
     boosts: list[Special] = []
 
-    bonus_data = None
-    all_events: dict[str, dict] = {}
-    all_markets: dict[str, dict] = {}
-    all_selections: dict[str, dict] = {}
-
     try:
-        async def capture_response(response):
-            nonlocal bonus_data
-            if response.status != 200:
-                return
-            ct = response.headers.get('content-type', '')
-            if 'json' not in ct:
-                return
-            url = response.url
-            try:
-                data = await response.json()
-            except Exception:
-                return
-
-            if 'globalbonuses' in url:
-                bonus_data = data
-            elif 'event-market' in url:
-                _collect_event_market(data, all_events, all_markets, all_selections)
-
-        page.on('response', capture_response)
         await page.goto(boost_url, wait_until='load', timeout=30000)
+        await asyncio.sleep(3)
 
-        # Handle cookie consent
+        # Handle cookie consent (try multiple common selectors)
         for selector in [
             '#onetrust-accept-btn-handler',
+            '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
             'button:has-text("Acceptera")', 'button:has-text("Accept")',
-            'button:has-text("Godkänn")', '[data-testid="cookie-accept"]',
+            'button:has-text("Godkänn")', 'button:has-text("Tillåt")',
+            '[data-testid="cookie-accept"]',
         ]:
             try:
                 btn = page.locator(selector).first
                 if await btn.is_visible(timeout=2000):
                     await btn.click()
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
                     break
             except Exception:
                 continue
 
-        # Wait for initial API load
-        await asyncio.sleep(5)
+        # Wait for page to render after cookie dismissal
+        await asyncio.sleep(4)
+
+        # Determine target frame: main page or sportsbook iframe
+        # Some OBG sites (Bethard) load the sportsbook in a cross-origin iframe
+        target_frame = page
+        for f in page.frames:
+            if f.name == 'sb-iframe' or 'playground' in f.url:
+                target_frame = f
+                if verbose:
+                    print(f"    [{provider_id}] Using sportsbook iframe: {f.url[:80]}")
+                await asyncio.sleep(3)
+                break
 
         # Scroll incrementally to trigger lazy loading of all boost cards
-        for i in range(8):
-            await page.evaluate(f"window.scrollTo(0, {(i + 1) * 1000})")
+        for i in range(12):
+            await target_frame.evaluate(f"window.scrollTo(0, {(i + 1) * 500})")
             await asyncio.sleep(1)
 
         # Final scroll to bottom
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await target_frame.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await asyncio.sleep(3)
 
-        page.remove_listener('response', capture_response)
+        # Extract boost card data from shadow DOM (pierce all shadow roots)
+        raw_cards = await target_frame.evaluate(r"""() => {
+            // Recursively extract all text from shadow DOMs
+            function getAllLines(root) {
+                const lines = [];
+                if (!root) return lines;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                    const text = walker.currentNode.textContent.trim();
+                    if (text) lines.push(text);
+                }
+                const elements = root.querySelectorAll('*');
+                for (const el of elements) {
+                    if (el.shadowRoot) {
+                        lines.push(...getAllLines(el.shadowRoot));
+                    }
+                }
+                return lines;
+            }
 
-        if not bonus_data:
-            if verbose:
-                print(f"    [{provider_id}] No globalbonuses response captured")
-            await page.close()
-            return boosts
+            const lines = getAllLines(document);
 
-        bonuses = bonus_data.get('data', {}).get('bonuses', [])
-        price_boosts = [b for b in bonuses if b.get('type') == 'PriceBoost']
+            // Find all boost cards by the "Förut" / "Nu" pattern
+            const cards = [];
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i] !== 'Förut') continue;
+                // Expected pattern: "Förut", "Nu", odds1, odds2
+                if (i + 3 >= lines.length || lines[i + 1] !== 'Nu') continue;
+
+                const forut = parseFloat(lines[i + 2]);
+                const nu = parseFloat(lines[i + 3]);
+                if (isNaN(forut) || isNaN(nu) || nu <= forut) continue;
+
+                // Look backward for card context
+                let description = '';
+                let team1 = '';
+                let team2 = '';
+                let league = '';
+                let leaguePath = '';
+                let maxStake = null;
+
+                // The description is the line right before "Förut"
+                if (i - 1 >= 0) description = lines[i - 1];
+
+                // Team names are typically 2 lines before description
+                // Pattern: ...League, Team1, Team2, Description, Förut, Nu, odds, odds...
+                if (i - 2 >= 0) team2 = lines[i - 2];
+                if (i - 3 >= 0) team1 = lines[i - 3];
+
+                // League is before team names, look for "Fotboll / ..." pattern
+                for (let j = i - 4; j >= Math.max(0, i - 8); j--) {
+                    if (lines[j].includes(' / ') || lines[j].includes('Fotboll') ||
+                        lines[j].includes('Premier League') || lines[j].includes('La Liga') ||
+                        lines[j].includes('Serie A') || lines[j].includes('Bundesliga') ||
+                        lines[j].includes('Champions League') || lines[j].includes('Copa')) {
+                        leaguePath = lines[j];
+                        break;
+                    }
+                }
+
+                // Look forward for max stake and time info
+                let timeInfo = '';
+                for (let j = i + 4; j < Math.min(lines.length, i + 12); j++) {
+                    const line = lines[j];
+                    if (line.startsWith('Maxinsats')) {
+                        const m = line.match(/[\d,.]+/);
+                        if (m) maxStake = parseFloat(m[0].replace(',', '.'));
+                    }
+                    if (/^\d{2}:\d{2}$/.test(line) || line.includes('Ikväll') ||
+                        line.includes('Imorgon') || /^\d{4}-\d{2}-\d{2}/.test(line)) {
+                        timeInfo = line;
+                    }
+                    // Stop at next card boundary
+                    if (line === 'Förut') break;
+                }
+
+                cards.push({
+                    forut: forut,
+                    nu: nu,
+                    description: description,
+                    team1: team1,
+                    team2: team2,
+                    leaguePath: leaguePath,
+                    maxStake: maxStake,
+                    timeInfo: timeInfo,
+                });
+            }
+            return cards;
+        }""")
 
         if verbose:
-            print(f"    [{provider_id}] {len(price_boosts)} PriceBoost bonuses, "
-                  f"{len(all_selections)} selections loaded")
+            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM")
 
-        # Parse boosts with full data
-        boosts = _parse_gecko_boosts(
-            price_boosts, all_events, all_markets, all_selections,
-            provider_id, boost_url, now_iso, verbose
-        )
+        # Convert raw cards to Special objects
+        for card in raw_cards:
+            original_odds = card.get('forut')
+            boosted_odds = card.get('nu')
+            if not original_odds or not boosted_odds:
+                continue
+
+            # Sanity check: real boosts are 3-80%
+            boost_ratio = boosted_odds / original_odds
+            if boost_ratio > 2.0 or boost_ratio < 1.01:
+                continue
+
+            description = card.get('description', '')
+            team1 = card.get('team1', '')
+            team2 = card.get('team2', '')
+            league_path = card.get('leaguePath', '')
+            max_stake = card.get('maxStake')
+
+            # Build event name from team names
+            event_name = f"{team1} vs {team2}" if team1 and team2 else ''
+
+            # Extract league from path like "Fotboll / Premier League (EPL)"
+            league = ''
+            if league_path:
+                parts = league_path.split(' / ')
+                league = parts[-1].strip() if len(parts) > 1 else league_path.strip()
+
+            # Title is the boost description
+            title = description if description else event_name
+
+            # Calculate boost percentage
+            boost_pct_val = ((boosted_odds / original_odds) - 1) * 100
+
+            # Sport detection
+            sport = detect_sport(
+                f"{title} {event_name} {league} {league_path}"
+            )
+
+            boosts.append(Special(
+                provider=provider_id,
+                title=title,
+                event=event_name,
+                original_odds=round(original_odds, 2),
+                boosted_odds=round(boosted_odds, 2),
+                boost_pct=round(boost_pct_val, 1),
+                max_stake=max_stake,
+                sport=sport,
+                league=league,
+                category="boost",
+                expires_at=None,
+                event_time=None,
+                source=provider_id,
+                scraped_at=now_iso,
+                url=boost_url,
+                market_label="",
+            ))
 
     except Exception as e:
         if verbose:
@@ -790,190 +906,6 @@ async def _scrape_gecko_boosts(
         await page.close()
 
     return boosts
-
-
-def _collect_event_market(
-    data: dict,
-    events: dict[str, dict],
-    markets: dict[str, dict],
-    selections: dict[str, dict],
-) -> None:
-    """Collect events, markets, and selections from an event-market API response."""
-    d = data.get('data', {})
-
-    evts = d.get('events', [])
-    if isinstance(evts, list):
-        for e in evts:
-            if isinstance(e, dict) and 'id' in e:
-                events[e['id']] = e
-    elif isinstance(evts, dict):
-        events.update(evts)
-
-    mkts = d.get('markets', [])
-    if isinstance(mkts, list):
-        for m in mkts:
-            if isinstance(m, dict) and 'id' in m:
-                markets[m['id']] = m
-    elif isinstance(mkts, dict):
-        markets.update(mkts)
-
-    sels = d.get('marketSelections', [])
-    if isinstance(sels, list):
-        for s in sels:
-            if isinstance(s, dict) and 'id' in s:
-                selections[s['id']] = s
-    elif isinstance(sels, dict):
-        selections.update(sels)
-
-
-def _parse_gecko_boosts(
-    price_boosts: list[dict],
-    events: dict[str, dict],
-    markets: dict[str, dict],
-    selections: dict[str, dict],
-    provider_id: str,
-    boost_url: str,
-    now_iso: str,
-    verbose: bool,
-) -> list[Special]:
-    """
-    Parse Gecko V2 PriceBoost bonuses into Special objects.
-
-    Key mapping:
-      - bonusData.boostedOdds = the BOOSTED (enhanced) odds
-      - selection.odds = the ORIGINAL (pre-boost) odds
-      - bonusData.isSuperBoost = true for super boosts
-      - bonusData.type = "Multiplier" (most) or "FixedOdds"
-
-    Boosts whose selections weren't loaded by the page (combo/prop markets
-    like MWBTTS, AGSNAB, etc.) have no original odds and no bet description.
-    These are skipped since they're not useful without edge calculation.
-    """
-    boosts = []
-
-    for bonus in price_boosts:
-        bonus_d = bonus.get('bonusData', {})
-        boosted_odds = bonus_d.get('boostedOdds')
-        is_super = bonus_d.get('isSuperBoost', False)
-
-        if not boosted_odds:
-            continue
-
-        max_stake = bonus.get('conditions', {}).get('maximumStake')
-        expiry = bonus.get('expiryDate')
-        bonus_name = bonus.get('name', '')
-
-        details = bonus.get('criteria', {}).get('criteriaEntityDetails', [])
-        if not details:
-            continue
-
-        # Collect enriched selection labels for multi-leg boosts
-        # Combine market.label + selection.label for descriptive titles
-        sel_labels = []
-        market_labels = []
-        original_odds = None
-        event_id = None
-        for detail in details:
-            sel_id = detail.get('marketSelectionId', '')
-            if not event_id:
-                event_id = detail.get('eventId', '')
-
-            sel = selections.get(sel_id, {})
-            sel_label = sel.get('label', '')
-            if sel_label:
-                # Look up parent market for context
-                market_id = sel.get('marketId', sel.get('market_id', ''))
-                market = markets.get(market_id, {})
-                market_label = market.get('label', '')
-
-                # Combine: "Båda lagen gör mål: Ja" instead of just "Ja"
-                # Skip generic labels like "Pre-built" that add no context
-                generic_labels = {'pre-built', 'custom', 'special'}
-                if (market_label
-                    and market_label.lower() not in generic_labels
-                    and market_label.lower() != sel_label.lower()):
-                    sel_labels.append(f"{market_label}: {sel_label}")
-                else:
-                    sel_labels.append(sel_label)
-                if market_label:
-                    market_labels.append(market_label)
-            # Use odds from first selection that has them
-            if original_odds is None and sel.get('odds'):
-                original_odds = sel.get('odds')
-
-        # Skip boosts without original odds — these are combo/prop markets
-        # where selections weren't loaded, so we can't calculate edge
-        if original_odds is None:
-            continue
-
-        # Skip if original >= boosted (data anomaly)
-        if float(original_odds) >= float(boosted_odds):
-            continue
-
-        # Build title from selection labels or fall back to bonus name
-        if sel_labels:
-            title = ','.join(sel_labels)
-        elif bonus_name:
-            title = bonus_name
-        else:
-            continue
-
-        # Get event info
-        event = events.get(event_id, {}) if event_id else {}
-        participants = event.get('participants', [])
-        part_names = [p.get('label', '') for p in participants if p.get('label')]
-        event_name = ' vs '.join(part_names) if part_names else ''
-        category_name = event.get('categoryName', '')
-        competition_name = event.get('competitionName', '')
-        # startDate = actual match kickoff, deadline = often same as bonus expiry
-        event_start = event.get('startDate') or event.get('deadline')
-
-        # Fallback: extract event name from CCRM-style bonus name
-        # e.g. "CCRM PB Man Utd v Tottenham" -> "Man Utd vs Tottenham"
-        if not event_name and bonus_name:
-            m = re.match(r'^(?:CCRM\s+)?PB\s+(.+?)\s+v\s+(.+)$', bonus_name, re.IGNORECASE)
-            if m:
-                event_name = f"{m.group(1).strip()} vs {m.group(2).strip()}"
-            elif not bonus_name.startswith('CCRM'):
-                event_name = bonus_name
-
-        # Clean CCRM prefix from title if it leaked through
-        if title.startswith('CCRM '):
-            m = re.match(r'^(?:CCRM\s+)?PB\s+(.+?)\s+v\s+(.+)$', title, re.IGNORECASE)
-            if m:
-                title = f"{m.group(1).strip()} vs {m.group(2).strip()}"
-
-        # Sport detection
-        sport = detect_sport(
-            f"{title} {event_name} {category_name} {competition_name}"
-        )
-
-        # Use startDate as event_time (actual kickoff), skip if same as expiry
-        real_event_time = event_start if (event_start and event_start != expiry) else None
-
-        # Calculate boost percentage
-        orig_f = float(original_odds) if original_odds else None
-        boosted_f = float(boosted_odds)
-        boost_pct_val = ((boosted_f / orig_f) - 1) * 100 if orig_f else None
-
-        boosts.append(Special(
-            provider=provider_id,
-            title=title,
-            event=event_name,
-            original_odds=orig_f,
-            boosted_odds=boosted_f,
-            boost_pct=round(boost_pct_val, 1) if boost_pct_val is not None else None,
-            max_stake=float(max_stake) if max_stake else None,
-            sport=sport,
-            league=competition_name,
-            category="superboost" if is_super else "boost",
-            expires_at=expiry,
-            event_time=real_event_time,
-            source=f"{provider_id}",
-            scraped_at=now_iso,
-            url=boost_url,
-            market_label=', '.join(market_labels) if market_labels else "",
-        ))
 
     if verbose:
         with_orig = sum(1 for b in boosts if b.original_odds is not None)

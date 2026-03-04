@@ -6,6 +6,9 @@ and historical data to estimate true probabilities for boosted bets.
 
 Called after the simple boost-edge enrichment (ev_enrichment.py) as a
 separate async pass. Skipped gracefully if API keys are not configured.
+
+LLM results are persisted in the `llm_boost_cache` table so each boost
+is only researched once, surviving backend restarts and specials purges.
 """
 
 import asyncio
@@ -14,6 +17,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -26,16 +30,14 @@ logger = logging.getLogger(__name__)
 LLM_MODEL = "claude-haiku-4-5-20251001"
 LLM_MAX_TOKENS = 1024
 BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
-CACHE_TTL_SECONDS = 4 * 3600  # 4 hours
-MAX_CONCURRENT_LLM = 5
-MAX_BOOSTS_PER_RUN = 40
+MAX_CONCURRENT_LLM = 10
+MAX_BOOSTS_PER_RUN = 250
 BRAVE_RATE_LIMIT_DELAY = 1.1  # seconds between Brave requests (free: 1 req/sec)
 MIN_EDGE_PCT = 20  # Only research boosts with >= 20% boost edge
 
 
-# ── In-memory cache ────────────────────────────────────────────────────
+# ── In-memory rate-limit state ────────────────────────────────────────
 
-_llm_cache: dict[str, tuple[float, dict]] = {}  # key -> (timestamp, result)
 _brave_last_call: float = 0.0  # timestamp of last Brave API call
 _brave_lock: asyncio.Lock | None = None  # lazy-init per event loop
 
@@ -45,45 +47,94 @@ def _cache_key(title: str, boosted_odds: float) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _get_cached(key: str) -> Optional[dict]:
-    entry = _llm_cache.get(key)
-    if entry and (time.time() - entry[0]) < CACHE_TTL_SECONDS:
-        return entry[1]
-    if entry:
-        del _llm_cache[key]
-    return None
+# ── Persistent DB cache ──────────────────────────────────────────────
 
-
-# ── DB carry-forward ──────────────────────────────────────────────────
-
-def _load_existing_llm_data(db: Session) -> dict[str, dict]:
-    """Load existing LLM results from DB, keyed by cache_key(title, boosted_odds)."""
-    from src.db.models import SpecialOdds
-    rows = db.query(SpecialOdds).filter(SpecialOdds.llm_probability.isnot(None)).all()
-    existing = {}
+def _load_cache_from_db(db: Session) -> dict[str, dict]:
+    """Load ALL LLM results from the persistent llm_boost_cache table."""
+    from src.db.models import LlmBoostCache
+    rows = db.query(LlmBoostCache).all()
+    cache = {}
     for r in rows:
-        key = _cache_key(r.title or "", r.boosted_odds or 0)
-        existing[key] = {
+        cache[r.cache_key] = {
+            "llm_title": r.llm_title or "",
             "llm_probability": r.llm_probability,
             "llm_fair_odds": r.llm_fair_odds,
-            "llm_edge_pct": r.llm_edge_pct,
             "llm_reasoning": r.llm_reasoning,
             "llm_confidence": r.llm_confidence,
         }
-    return existing
+    logger.debug(f"Loaded {len(cache)} LLM results from persistent cache")
+    return cache
 
 
-def _carry_forward_llm(specials: list[dict], existing: dict[str, dict]) -> int:
-    """Apply existing LLM data to matching specials. Returns count carried forward."""
+def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float, result: dict) -> None:
+    """Save a single LLM result to the persistent cache table (upsert)."""
+    from src.db.models import LlmBoostCache
+    now = datetime.now(timezone.utc).isoformat()
+    existing = db.query(LlmBoostCache).filter_by(cache_key=key).first()
+    if existing:
+        existing.llm_title = result.get("title") or ""
+        existing.llm_probability = result["probability"]
+        existing.llm_fair_odds = round(1 / result["probability"], 3) if result["probability"] > 0 else None
+        existing.llm_confidence = result.get("confidence", "low")
+        existing.llm_reasoning = result.get("reasoning", "")
+        existing.last_used_at = now
+    else:
+        db.add(LlmBoostCache(
+            cache_key=key,
+            title=title,
+            boosted_odds=boosted_odds,
+            llm_title=result.get("title") or "",
+            llm_probability=result["probability"],
+            llm_fair_odds=round(1 / result["probability"], 3) if result["probability"] > 0 else None,
+            llm_confidence=result.get("confidence", "low"),
+            llm_reasoning=result.get("reasoning", ""),
+            created_at=now,
+            last_used_at=now,
+        ))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _touch_cache_entries(db: Session, keys: list[str]) -> None:
+    """Update last_used_at for cache entries that were carried forward."""
+    if not keys:
+        return
+    from src.db.models import LlmBoostCache
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        db.query(LlmBoostCache).filter(LlmBoostCache.cache_key.in_(keys)).update(
+            {"last_used_at": now}, synchronize_session=False
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> tuple[int, list[str]]:
+    """Apply cached LLM data to matching specials. Returns (count, list of used keys)."""
     count = 0
+    used_keys = []
     for s in specials:
         key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0))
-        prev = existing.get(key)
+        prev = cache.get(key)
         if prev and prev.get("llm_probability"):
-            for field in ("llm_probability", "llm_fair_odds", "llm_edge_pct", "llm_reasoning", "llm_confidence"):
-                s[field] = prev[field]
+            probability = prev["llm_probability"]
+            fair_odds = round(1 / probability, 3) if probability > 0 else None
+            boosted_odds = s.get("boosted_odds", 0)
+
+            s["llm_title"] = prev.get("llm_title", "")
+            s["llm_probability"] = probability
+            s["llm_fair_odds"] = fair_odds
+            s["llm_reasoning"] = prev.get("llm_reasoning", "")
+            s["llm_confidence"] = prev.get("llm_confidence", "low")
+            # Recompute edge from current boosted_odds (may have changed)
+            if fair_odds and fair_odds > 1.0 and boosted_odds > 1.0:
+                s["llm_edge_pct"] = round((boosted_odds / fair_odds - 1) * 100, 2)
             count += 1
-    return count
+            used_keys.append(key)
+    return count, used_keys
 
 
 # ── Candidate filtering ────────────────────────────────────────────────
@@ -172,6 +223,7 @@ RULES:
 - Express your probability as a decimal between 0.01 and 0.99
 
 OUTPUT FORMAT (strict — follow exactly):
+TITLE: A short, clear English title for this bet (max 8 words). Translate any non-English terms. Examples: "Arsenal wins & both teams score", "Real Sociedad leads HT & wins FT", "Man Utd wins & over 2.5 goals"
 PROBABILITY: 0.XX
 CONFIDENCE: low|medium|high
 REASONING: 2-3 bullet points, each max 10 words. Key stats/facts only. Example:
@@ -214,6 +266,7 @@ def _build_user_prompt(special: dict, search_results: str) -> str:
 
 # ── Response parsing ───────────────────────────────────────────────────
 
+_TITLE_RE = re.compile(r'TITLE:\s*(.+)', re.IGNORECASE)
 _PROB_RE = re.compile(r'PROBABILITY:\s*(0\.\d+)', re.IGNORECASE)
 _CONF_RE = re.compile(r'CONFIDENCE:\s*(low|medium|high)', re.IGNORECASE)
 _REASONING_RE = re.compile(r'REASONING:\s*(.+)', re.IGNORECASE | re.DOTALL)
@@ -227,6 +280,13 @@ def _parse_llm_response(text: str) -> Optional[dict]:
     if probability < 0.01 or probability > 0.99:
         return None
 
+    title_match = _TITLE_RE.search(text)
+    title = title_match.group(1).strip()[:100] if title_match else ""
+    # Clean: stop at next field marker if present
+    for marker in ("PROBABILITY:", "CONFIDENCE:", "REASONING:"):
+        if marker in title:
+            title = title[:title.index(marker)].strip()
+
     conf_match = _CONF_RE.search(text)
     confidence = conf_match.group(1).lower() if conf_match else "low"
 
@@ -234,6 +294,7 @@ def _parse_llm_response(text: str) -> Optional[dict]:
     reasoning = reasoning_match.group(1).strip()[:500] if reasoning_match else ""
 
     return {
+        "title": title,
         "probability": probability,
         "confidence": confidence,
         "reasoning": reasoning,
@@ -250,16 +311,6 @@ async def _research_single_boost(
     async with semaphore:
         title = special.get("title", "")[:60]
         try:
-            # Check cache
-            cache_key = _cache_key(
-                special.get("title", ""),
-                special.get("boosted_odds", 0),
-            )
-            cached = _get_cached(cache_key)
-            if cached:
-                logger.debug(f"LLM cache hit: {title}")
-                return cached
-
             # Brave searches
             queries = _build_search_queries(special)
             search_texts = []
@@ -299,7 +350,6 @@ async def _research_single_boost(
             parsed = _parse_llm_response(text)
 
             if parsed:
-                _llm_cache[cache_key] = (time.time(), parsed)
                 logger.debug(f"LLM researched: {title} → p={parsed['probability']:.2f} ({parsed['confidence']})")
             else:
                 logger.warning(f"LLM parse failed for: {title}")
@@ -318,23 +368,29 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
 
     Runs AFTER enrich_specials_with_ev() (which sets edge_pct = boost_pct).
     Only processes boosts meeting the edge/boost threshold.
-    Carries forward existing LLM data from DB to avoid re-researching.
+
+    Uses the persistent `llm_boost_cache` table to avoid re-researching
+    boosts that have already been analyzed. Each boost is researched once
+    and the result is saved permanently.
+
     Skipped if ANTHROPIC_API_KEY is not set.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.info("LLM enrichment skipped: ANTHROPIC_API_KEY not set")
         return specials
 
-    # Carry forward existing LLM results from DB (avoid re-calling LLM)
+    # Carry forward existing LLM results from persistent cache
     carried = 0
     if db:
-        existing = _load_existing_llm_data(db)
-        carried = _carry_forward_llm(specials, existing)
+        cache = _load_cache_from_db(db)
+        carried, used_keys = _carry_forward_from_cache(specials, cache)
+        # Update last_used_at for carried entries
+        _touch_cache_entries(db, used_keys)
 
     # Only send boosts that still need LLM research
     candidates = [s for s in specials if _is_llm_candidate(s) and s.get("llm_probability") is None]
     if not candidates:
-        logger.info(f"LLM enrichment: 0 new candidates ({carried} carried from DB)")
+        logger.info(f"LLM enrichment: 0 new candidates ({carried} carried from cache)")
         return specials
 
     # Prioritize highest edge/boost, cap to MAX_BOOSTS_PER_RUN
@@ -347,7 +403,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     has_brave = bool(os.environ.get("BRAVE_API_KEY"))
     logger.info(
         f"LLM enrichment: researching {len(candidates)} new boosts, "
-        f"{carried} carried from DB (brave={'yes' if has_brave else 'no'})"
+        f"{carried} carried from cache (brave={'yes' if has_brave else 'no'})"
     )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
@@ -373,6 +429,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
 
             edge_pct = round((boosted_odds / fair_odds - 1) * 100, 2)
 
+            special["llm_title"] = result.get("title") or ""
             special["llm_probability"] = round(probability, 4)
             special["llm_fair_odds"] = fair_odds
             special["llm_edge_pct"] = edge_pct
@@ -380,8 +437,13 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
             special["llm_confidence"] = result["confidence"]
             enriched_count += 1
 
+            # Save to persistent cache immediately
+            if db:
+                key = _cache_key(special.get("title", ""), boosted_odds)
+                _save_result_to_cache(db, key, special.get("title", ""), boosted_odds, result)
+
     logger.info(
         f"LLM enrichment: {enriched_count}/{len(candidates)} "
-        f"successfully researched"
+        f"successfully researched (total cached: {carried + enriched_count})"
     )
     return specials

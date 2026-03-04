@@ -73,7 +73,8 @@ def _startup_purge():
 
         steps = [
             ("opportunities", "DELETE FROM opportunities"),
-            ("specials", "DELETE FROM specials"),
+            # NOTE: specials are NOT purged — LLM research results are expensive
+            # and must persist across restarts. The scraper fully replaces them on each run.
             ("odds (no bets)", """
                 DELETE FROM odds WHERE event_id IN (
                     SELECT e.id FROM events e
