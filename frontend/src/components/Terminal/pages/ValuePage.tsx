@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -43,6 +43,7 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ValueTab>('value');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -472,11 +473,12 @@ export function ValuePage({ providers }: ValuePageProps) {
         </div>
       )}
 
-      {boostFilters && boostFilters.providers.length > 0 && (
-        <FilterBar>
+      <FilterBar>
+        {boostFilters && boostFilters.providers.length > 0 && (
           <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderName} accentColor="tabBonus" />
-        </FilterBar>
-      )}
+        )}
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+      </FilterBar>
 
       {sortedBoosts.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
@@ -624,6 +626,7 @@ export function ValuePage({ providers }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
       {/* Value bets table */}

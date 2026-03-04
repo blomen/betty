@@ -634,3 +634,28 @@ async def stop_tier(tier_name: str):
     scheduler.stop_tier(tier_name)
 
     return {"status": "stopped", "tier": tier_name}
+
+
+@router.get("/freshness")
+async def get_extraction_freshness():
+    """Get the most recent odds update time per extraction tier (soft/sharp/poly)."""
+    from sqlalchemy import func, case
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                case(
+                    (Odds.provider_id == "pinnacle", "sharp"),
+                    (Odds.provider_id == "polymarket", "poly"),
+                    else_="soft",
+                ).label("tier"),
+                func.max(Odds.updated_at).label("latest"),
+            )
+            .group_by("tier")
+            .all()
+        )
+        result = {row.tier: row.latest.isoformat() if row.latest else None for row in rows}
+        return {"soft": result.get("soft"), "sharp": result.get("sharp"), "poly": result.get("poly")}
+    finally:
+        session.close()

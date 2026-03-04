@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider, Bet } from '@/types';
@@ -40,6 +40,7 @@ interface DutchOpp {
   display_home?: string | null;
   display_away?: string | null;
   starts_at?: string;
+  detected_at?: string;
   guaranteed_profit_pct?: number;
   total_stake?: number;
   legs?: DutchLeg[];
@@ -52,6 +53,7 @@ interface DutchPageProps {
 const MAX_ROWS = 50;
 
 export function DutchPage({ providers }: DutchPageProps) {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
   const [opportunities, setOpportunities] = useState<DutchOpp[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -326,8 +328,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         </div>
       )}
 
-      {availableProviders.length > 0 && (
-        <FilterBar>
+      <FilterBar>
+        {availableProviders.length > 0 && (
           <MultiSelectDropdown
             label="Provider"
             options={availableProviders}
@@ -337,8 +339,9 @@ export function DutchPage({ providers }: DutchPageProps) {
             format={formatProviderName}
             accentColor="success"
           />
-        </FilterBar>
-      )}
+        )}
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+      </FilterBar>
 
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">

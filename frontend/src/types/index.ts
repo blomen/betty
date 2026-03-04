@@ -538,6 +538,7 @@ export interface PolymarketValueBet {
   // Navigation — event slug for deep links to polymarket.com/event/{slug}
   event_slug?: string | null;
   provider_meta?: Record<string, string | number> | null;
+  updated_at?: string | null;
 }
 
 export interface PolymarketValueResponse {

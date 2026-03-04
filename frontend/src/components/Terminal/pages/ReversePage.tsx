@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
+import { FilterBar, FreshnessIndicator } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity, Bet } from '@/types';
@@ -13,6 +14,7 @@ type ReverseTab = 'reverse' | 'mybets';
 const reverseBetFilter = (b: Bet) => b.provider === 'pinnacle';
 
 export function ReversePage() {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -191,6 +193,10 @@ export function ReversePage() {
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
+
+      <FilterBar>
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+      </FilterBar>
 
       {/* Table */}
       {isLoading && opportunities.length === 0 ? (

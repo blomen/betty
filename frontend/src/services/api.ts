@@ -318,6 +318,10 @@ export const api = {
     return fetchJson<TiersProgressResponse>('/extraction/tiers/progress');
   },
 
+  async getExtractionFreshness(): Promise<{ soft: string | null; sharp: string | null; poly: string | null }> {
+    return fetchJson('/extraction/freshness');
+  },
+
   // ============ Providers ============
   async getProviders(): Promise<ProvidersResponse> {
     return fetchJson<ProvidersResponse>('/providers');

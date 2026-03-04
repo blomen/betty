@@ -169,3 +169,32 @@ export function useRefreshOnExtraction(callback: () => void) {
     return () => window.removeEventListener(EXTRACTION_COMPLETE_EVENT, handler);
   }, []);
 }
+
+export interface ExtractionFreshness {
+  soft: string | null;
+  sharp: string | null;
+  poly: string | null;
+}
+
+/**
+ * Hook that fetches extraction freshness timestamps and auto-refreshes
+ * every 30 seconds + on extraction complete events.
+ */
+export function useExtractionFreshness(): ExtractionFreshness {
+  const [freshness, setFreshness] = useState<ExtractionFreshness>({ soft: null, sharp: null, poly: null });
+
+  const fetch = useRef(() => {
+    api.getExtractionFreshness().then(setFreshness).catch(() => {});
+  });
+
+  useEffect(() => {
+    fetch.current();
+    const id = setInterval(() => fetch.current(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Re-fetch on extraction complete
+  useRefreshOnExtraction(() => fetch.current());
+
+  return freshness;
+}
