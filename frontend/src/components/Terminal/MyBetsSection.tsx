@@ -232,10 +232,14 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                 const isExpanded = expandedId === b.id;
                 const isEditing = editingId === b.id;
                 const colCount = activeCategory === 'upcoming' ? 9 : 8;
-                const edgePct = b.edge_pct ?? (b.placed_edge_pct != null ? b.placed_edge_pct * 100 : null);
+                const edgePct = b.edge_pct ?? b.placed_edge_pct ?? null;
 
                 // Live odds tracking for upcoming bets
-                const fairOdds = b.fair_odds ?? (b.fair_odds_at_placement != null ? b.fair_odds_at_placement : null);
+                const fairOdds = b.fair_odds ?? b.fair_odds_at_placement ?? null;
+
+                // FT tab: use placement values (current odds are meaningless post-match)
+                const ftFairOdds = b.fair_odds_at_placement ?? fairOdds;
+                const ftEdgePct = b.placed_edge_pct ?? edgePct;
                 const liveOdds = b.current_odds ?? b.odds;
                 const liveEdge = fairOdds != null && fairOdds > 1 ? (liveOdds / fairOdds - 1) * 100 : null;
                 const placedEdge = edgePct;
@@ -295,7 +299,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       ) : (
                         <td className="text-right text-sm text-muted">
-                          {fairOdds != null ? fairOdds.toFixed(2) : '-'}
+                          {(activeCategory === 'ft' ? ftFairOdds : fairOdds)?.toFixed(2) ?? '-'}
                         </td>
                       )}
 
@@ -318,6 +322,19 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                             );
                             return <span className="text-muted">-</span>;
                           })()}
+                        </td>
+                      ) : activeCategory === 'ft' ? (
+                        <td className="text-right">
+                          <div className="flex flex-col items-end">
+                            <span className="text-sm font-medium" style={{ color }}>
+                              {ftEdgePct != null ? `${ftEdgePct >= 0 ? '+' : ''}${ftEdgePct.toFixed(1)}%` : '-'}
+                            </span>
+                            {b.clv_pct != null && (
+                              <span className={`text-[9px] ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                                CLV {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
                         </td>
                       ) : (
                         <td className="text-right text-sm font-medium" style={{ color }}>

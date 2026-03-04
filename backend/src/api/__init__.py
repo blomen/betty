@@ -66,10 +66,10 @@ def _startup_purge():
 
     sharp_list = ",".join(f"'{p}'" for p in SHARP_PROVIDERS)
 
-    conn = sqlite3.connect(str(DB_PATH), timeout=1)
+    conn = sqlite3.connect(str(DB_PATH), timeout=5)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=200")  # 200ms per step — fast skip if locked
+        conn.execute("PRAGMA busy_timeout=5000")  # 5s — enough for engine pool to settle
 
         steps = [
             ("opportunities", "DELETE FROM opportunities"),
