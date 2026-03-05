@@ -11,7 +11,7 @@ import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider, Bet } from '@/types';
+import type { Opportunity, Provider, Bet, ProviderExposure } from '@/types';
 
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
@@ -106,6 +106,9 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
   const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
 
+  // Wagering priority: provider_id → remaining wagering amount (higher = play first)
+  const [wageringPriority, setWageringPriority] = useState<Map<string, number>>(new Map());
+
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
@@ -131,14 +134,26 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [res, boostRes] = await Promise.all([
+      const [res, boostRes, exposureRes] = await Promise.all([
         api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
         api.getSpecials({}).catch(() => null),
+        api.getBankrollExposure().catch(() => null),
       ]);
       setOpportunities(res.opportunities);
       if (boostRes) {
         setSpecials(boostRes.specials || []);
         if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
+      }
+      if (exposureRes?.providers) {
+        const m = new Map<string, number>();
+        for (const p of exposureRes.providers) {
+          if (p.wagering && p.wagering.remaining > 0) {
+            // Priority = locked capital at this provider
+            // Completing rollover here unlocks more bankroll → higher stakes → faster wagering everywhere
+            m.set(p.provider_id, p.balance_sek ?? 0);
+          }
+        }
+        setWageringPriority(m);
       }
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
@@ -196,6 +211,10 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     const groups: GroupedOpp[] = [];
     for (const [key, opps] of map) {
+      // Sort providers within group: highest wagering remaining first
+      if (wageringPriority.size > 0) {
+        opps.sort((a, b) => (wageringPriority.get(b.provider1) ?? -1) - (wageringPriority.get(a.provider1) ?? -1));
+      }
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     // Bonus-first when user actively filters to those providers
@@ -214,7 +233,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, placedKeys]);
+  }, [opportunities, selectedProviders, placedKeys, wageringPriority]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -828,8 +847,19 @@ export function ValuePage({ providers }: ValuePageProps) {
                             : 'Place Bet';
                           const isPending = pendingBet?.groupKey === group.key;
 
+                          // Find recommended provider: the one with most wagering remaining in this group
+                          let recommended: { provider: string } | null = null;
+                          if (wageringPriority.size > 0 && opps.length > 1) {
+                            let maxRem = 0;
+                            for (const opp of opps) {
+                              const rem = wageringPriority.get(opp.provider1) ?? 0;
+                              if (rem > maxRem) { maxRem = rem; recommended = { provider: opp.provider1 }; }
+                            }
+                          }
+
                           return (
-                          <div className="px-3 py-2 bg-panel flex items-center gap-2">
+                          <div className="px-3 py-2 bg-panel">
+                            <div className="flex items-center gap-2">
                             {isPending ? (
                               <>
                                 <button
@@ -855,7 +885,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                     onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
                                     className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                                   >
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${(balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabBonus' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
                                     <span className="truncate">
                                       {formatProviderName(selOpp.provider1)}
                                       {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
@@ -882,8 +912,10 @@ export function ValuePage({ providers }: ValuePageProps) {
                                             }}
                                             className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                                           >
-                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBal ? 'bg-success' : 'bg-muted/40'}`} />
-                                            {formatProviderName(opp.provider1)}{s}{tag}
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === opp.provider1 ? 'bg-tabBonus' : hasBal ? 'bg-success' : 'bg-muted/40'}`} />
+                                            <span className="truncate">
+                                              {formatProviderName(opp.provider1)}{s}{tag}
+                                            </span>
                                           </button>
                                         );
                                       })}
@@ -899,6 +931,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                 </button>
                               </>
                             )}
+                            </div>
                           </div>
                           );
                         })()}

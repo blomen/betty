@@ -93,15 +93,35 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const live: Bet[] = [];
     const ft: Bet[] = [];
 
+    // Typical sport durations (ms) — used when Pinnacle hasn't set match_status
+    const SPORT_DURATION: Record<string, number> = {
+      football: 2.5 * 3600000,
+      basketball: 3 * 3600000,
+      ice_hockey: 3 * 3600000,
+      tennis: 4 * 3600000,
+      esports: 4 * 3600000,
+      handball: 2.5 * 3600000,
+      mma: 3 * 3600000,
+    };
+    const DEFAULT_DURATION = 3 * 3600000;
+
     for (const b of bets) {
-      if (!b.start_time || new Date(b.start_time).getTime() > now) {
+      const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
+
+      if (!startMs || startMs > now) {
         upcoming.push(b);
+      } else if (b.match_status === 'finished') {
+        ft.push(b);
       } else if (b.match_status === 'live') {
-        // Explicitly live from Pinnacle
         live.push(b);
       } else {
-        // Past start + finished/null/unknown → settle tab
-        ft.push(b);
+        // No explicit status — use sport duration heuristic
+        const duration = SPORT_DURATION[b.sport ?? ''] ?? DEFAULT_DURATION;
+        if (now < startMs + duration) {
+          live.push(b); // Within typical game duration → probably playing
+        } else {
+          ft.push(b);   // Past duration → probably finished
+        }
       }
     }
 
@@ -218,20 +238,19 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                   <th className="text-right">Edge</th>
                 )}
                 <th className="text-right">Stake</th>
+                <th className="text-right">Return</th>
                 {activeCategory === 'live' ? (
                   <th className="text-right">Score</th>
                 ) : activeCategory === 'ft' ? (
                   <th className="text-right">Settle</th>
-                ) : (
-                  <th className="text-right">Return</th>
-                )}
+                ) : null}
               </tr>
             </thead>
             <tbody>
               {activeBets.map(b => {
                 const isExpanded = expandedId === b.id;
                 const isEditing = editingId === b.id;
-                const colCount = activeCategory === 'upcoming' ? 9 : 8;
+                const colCount = activeCategory === 'upcoming' ? 9 : activeCategory === 'ft' || activeCategory === 'live' ? 9 : 8;
                 const edgePct = b.edge_pct ?? b.placed_edge_pct ?? null;
 
                 // Live odds tracking for upcoming bets
@@ -369,6 +388,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       )}
 
+                      {/* Return column — always shown */}
+                      <td className="text-right text-sm font-medium" style={{ color }}>
+                        {(b.stake * b.odds).toFixed(0)} kr
+                      </td>
+
+                      {/* Last column: Score (live), Settle (ft), or nothing (upcoming) */}
                       {activeCategory === 'ft' ? (
                         <td className="text-right" onClick={e => e.stopPropagation()}>
                           <span className="inline-flex gap-1 items-center justify-end">
@@ -400,11 +425,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                               ? `${b.match_minute}'`
                               : 'LIVE'}
                         </td>
-                      ) : (
-                        <td className="text-right text-sm font-medium" style={{ color }}>
-                          {(b.stake * b.odds).toFixed(0)} kr
-                        </td>
-                      )}
+                      ) : null}
                     </tr>
                     {isExpanded && (
                       <tr key={`${b.id}-x`}>

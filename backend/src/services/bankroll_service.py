@@ -1,12 +1,14 @@
 """Bankroll service - balance management, bonus tracking, stake calculation."""
 
 import logging
+from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Profile, Provider, ProfileProviderBonus
 from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ..config import get_exchange_rate, get_provider_currency
+from ..constants import PLATFORM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +110,17 @@ class BankrollService:
         profile = self.profile_repo.get_active()
         providers = self.db.query(Provider).filter(Provider.is_enabled == True).all()
 
+        # Load active bonus statuses for all providers
+        active_bonuses = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile.id,
+            ProfileProviderBonus.bonus_status.in_(["in_progress", "trigger_needed"]),
+        ).all()
+        bonus_map = {b.provider_id: b for b in active_bonuses}
+
         exposure_data = []
         total_balance_sek = 0.0
+        total_locked_sek = 0.0
+        total_free_sek = 0.0
         for provider in providers:
             balance = self.profile_repo.get_balance(profile.id, provider.id)
             currency = get_provider_currency(provider.id)
@@ -119,6 +130,38 @@ class BankrollService:
 
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
             pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
+
+            # Wagering progress for this provider
+            bonus = bonus_map.get(provider.id)
+            wagering_info = None
+            is_locked = False
+            if bonus and bonus.wagering_requirement and bonus.wagering_requirement > 0:
+                is_locked = True
+                wagered = bonus.wagered_amount or 0.0
+                requirement = bonus.wagering_requirement
+                remaining = max(0, requirement - wagered)
+
+                # Deadline info
+                days_remaining = None
+                if bonus.expires_at and bonus.bonus_status in ("in_progress", "trigger_needed"):
+                    delta = bonus.expires_at - datetime.utcnow()
+                    days_remaining = max(0, round(delta.total_seconds() / 86400, 1))
+
+                wagering_info = {
+                    "status": bonus.bonus_status,
+                    "wagered": round(wagered, 0),
+                    "requirement": round(requirement, 0),
+                    "progress_pct": round(min(100.0, wagered / requirement * 100), 1),
+                    "remaining": round(remaining, 0),
+                    "min_odds": bonus.min_odds or BONUS_MIN_ODDS,
+                    "days_remaining": days_remaining,
+                    "expires_at": bonus.expires_at.isoformat() if bonus.expires_at else None,
+                }
+
+            if is_locked:
+                total_locked_sek += balance_sek
+            else:
+                total_free_sek += balance_sek
 
             pending_native = pending_exposure / rate  # Convert SEK pending to native currency
             exposure_data.append({
@@ -131,6 +174,9 @@ class BankrollService:
                 "pending_exposure": pending_exposure,
                 "pending_bets_count": len(pending_bets),
                 "available": balance,
+                "platform": PLATFORM_MAP.get(provider.id, provider.id),
+                "is_locked": is_locked,
+                "wagering": wagering_info,
             })
 
         total_pending = sum(e["pending_exposure"] for e in exposure_data)
@@ -141,6 +187,8 @@ class BankrollService:
             "total_balance": total_balance_sek + total_pending,
             "total_pending": total_pending,
             "total_available": total_balance_sek,
+            "total_free": round(total_free_sek, 0),
+            "total_locked": round(total_locked_sek, 0),
             "providers": exposure_data,
         }
 
