@@ -130,9 +130,7 @@ async def get_specials(
     # --- Pre-compute Kelly stakes for all boosts ---
     try:
         from ...services.bankroll_service import BankrollService
-        from ...repositories.profile_repo import ProfileRepo
-        from ...repositories.bet_repo import BetRepo
-        svc = BankrollService(ProfileRepo(db), BetRepo(db), db)
+        svc = BankrollService(db)
         profile = svc.profile_repo.get_active()
         calc = svc.get_stake_calculator(profile.id)
         for s in specials:

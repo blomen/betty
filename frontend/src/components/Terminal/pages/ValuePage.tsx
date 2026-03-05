@@ -273,7 +273,7 @@ export function ValuePage({ providers }: ValuePageProps) {
     const groups: GroupedSpecial[] = [];
     for (const s of boostNonExpired) {
       const allProviders = [s.provider, ...(s.shared_providers || [])];
-      const key = `${s.provider}-${s.title}-${s.boosted_odds}`;
+      const key = `${s.provider}-${s.title}-${s.boosted_odds}-${s.event || ''}`;
       if (boostPlacedKeys.has(key) || boostPlacedKeys.has(s.title)) continue;
       groups.push({ key, rep: s, providers: allProviders });
     }
@@ -287,28 +287,16 @@ export function ValuePage({ providers }: ValuePageProps) {
     );
   }, [boostGrouped, boostSelectedProviders]);
 
-  // Client-side Kelly stake: f = edge / (odds - 1), stake = bankroll * f * 0.25 (quarter Kelly)
-  const calcBoostStake = useCallback((s: SpecialItem): number => {
-    if (!bankrollTotal) return 0;
-    const edge = s.llm_edge_pct ?? s.edge_pct;
-    const odds = s.boosted_odds;
-    if (edge == null || odds == null || odds <= 1 || edge <= 0) return 0;
-    const kellyFrac = (edge / 100) / (odds - 1);
-    let stake = bankrollTotal * kellyFrac * 0.25; // quarter Kelly
-    if (s.max_stake != null && stake > s.max_stake) stake = s.max_stake;
-    return Math.round(stake);
-  }, [bankrollTotal]);
-
   type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
     odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
     fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? 0,
     aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? 0,
     aiEdge: (g: GroupedSpecial) => g.rep.llm_edge_pct ?? -999,
-    stake: (g: GroupedSpecial) => calcBoostStake(g.rep),
+    stake: (g: GroupedSpecial) => g.rep.recommended_stake ?? 0,
     edge: (g: GroupedSpecial) => g.rep.edge_pct ?? g.rep.boost_pct ?? 0,
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
-  }), [calcBoostStake]);
+  }), []);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
     useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'edge', direction: 'desc' });
 
@@ -585,15 +573,15 @@ export function ValuePage({ providers }: ValuePageProps) {
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
                     <td className="text-right text-sm font-medium">
-                      {(() => { const st = calcBoostStake(s); return st > 0 ? <span className="text-text">{st} kr</span> : <span className="text-muted2">-</span>; })()}
+                      {(() => { const st = s.recommended_stake ?? 0; return st > 0 ? <span className="text-text">{Math.round(st)} kr</span> : <span className="text-muted2">-</span>; })()}
                     </td>
                     <td className="text-right font-semibold text-sm">
                       {s.llm_edge_pct != null ? (
-                        <span className={s.llm_edge_pct > 0 ? 'text-success' : 'text-error'}>
+                        <span className="text-text">
                           {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
                         </span>
                       ) : (s.edge_pct ?? s.boost_pct) != null ? (
-                        <span className={(s.edge_pct ?? s.boost_pct)! > 0 ? 'text-success' : 'text-error'}>
+                        <span className="text-text">
                           {(s.edge_pct ?? s.boost_pct)! > 0 ? '+' : ''}{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
                         </span>
                       ) : <span className="text-muted2">-</span>}
@@ -623,6 +611,8 @@ export function ValuePage({ providers }: ValuePageProps) {
                           onResetOdds={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }}
                           onCancelEdit={() => setBoostEditingOdds(null)}
                           betError={betError}
+                          balanceMap={balanceMap}
+                          wageringPriority={wageringPriority}
                         />
                       </td>
                     </tr>
@@ -1062,7 +1052,7 @@ function isFutureDate(isoString: string): boolean {
 
 // --- Boost Expanded Row ---
 
-function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, pendingBet, selectedProviderIdx, onSelectProvider, onStartPlaceBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit, betError }: {
+function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, pendingBet, selectedProviderIdx, onSelectProvider, onStartPlaceBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit, betError, balanceMap, wageringPriority }: {
   special: SpecialItem;
   groupKey: string;
   providers: string[];
@@ -1083,13 +1073,48 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
   onResetOdds: () => void;
   onCancelEdit: () => void;
   betError: string | null;
+  balanceMap: Map<string, number>;
+  wageringPriority: Map<string, number>;
 }) {
   void groupKey;
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [dropdownOpen]);
+
   const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0);
   const effectiveOdds = oddsOverride ?? special.boosted_odds ?? 0;
   const oddsChanged = oddsOverride != null;
   const potentialReturn = stake * effectiveOdds;
   const potentialProfit = potentialReturn - stake;
+
+  // Find recommended provider: the one with most wagering remaining in this group
+  let recommended: { provider: string } | null = null;
+  if (wageringPriority.size > 0 && providers.length > 1) {
+    let maxRem = 0;
+    for (const pid of providers) {
+      const rem = wageringPriority.get(pid) ?? 0;
+      if (rem > maxRem) { maxRem = rem; recommended = { provider: pid }; }
+    }
+  }
+
+  const selProvider = providers[selectedProviderIdx] || providers[0];
+
+  const getDotColor = (pid: string) => {
+    if (recommended?.provider === pid) return 'bg-tabBonus';
+    if ((balanceMap.get(pid) ?? 0) > 0) return 'bg-success';
+    return 'bg-muted/40';
+  };
 
   return (
     <div className="px-3 py-2 bg-panel">
@@ -1102,18 +1127,18 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
               {editingOdds ? (
                 <input
                   type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
-                  className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                  className="w-16 bg-bg border border-tabBonus/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabBonus"
                   onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
                 />
               ) : (
-                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
+                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabBonus/50 transition-colors ${oddsChanged ? 'text-tabBonus font-medium border-tabBonus/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
                   {effectiveOdds.toFixed(2)}
                 </span>
               )}
               {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
             </div>
-            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
+            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabBonus text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
           </div>
           {special.llm_reasoning && (
             <div className="text-muted2 text-[10px] leading-relaxed">
@@ -1141,19 +1166,45 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
               </>
             ) : (
               <>
-                <select
-                  value={selectedProviderIdx}
-                  onChange={(e) => onSelectProvider(Number(e.target.value))}
-                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer"
-                >
-                  {providers.map((pid, i) => (
-                    <option key={pid} value={i}>{formatProviderName(pid)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}</option>
-                  ))}
-                </select>
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setDropdownOpen(prev => !prev)}
+                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabBonus/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
+                  >
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(selProvider)}`} />
+                    <span className="truncate">
+                      {formatProviderName(selProvider)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
+                    </span>
+                    <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                  {dropdownOpen && (
+                    <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
+                      {providers.map((pid, i) => {
+                        return (
+                          <button
+                            key={pid}
+                            type="button"
+                            onClick={() => {
+                              onSelectProvider(i);
+                              setDropdownOpen(false);
+                            }}
+                            className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selectedProviderIdx ? 'bg-panel text-text' : 'text-muted'}`}
+                          >
+                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(pid)}`} />
+                            <span className="truncate">
+                              {formatProviderName(pid)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
                   disabled={stake <= 0 || isPlacing}
-                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
+                  className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
                 >
                   {isPlacing ? '...' : 'Place Bet'}
                 </button>

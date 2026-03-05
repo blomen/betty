@@ -73,11 +73,27 @@ def deduplicate_specials(specials: list[dict]) -> list[dict]:
 
         result.append(best)
 
-    removed = len(specials) - len(result)
-    if removed > 0:
-        logger.info(f"Dedup: {len(specials)} → {len(result)} specials ({removed} duplicates merged)")
+    # Second pass: remove same-provider boosts with identical (title, original_odds, boosted_odds)
+    # but different events — these are the same boost returned by multiple API event responses.
+    seen_content: set[tuple] = set()
+    deduped: list[dict] = []
+    for s in result:
+        content_key = (
+            s.get("provider", "").lower(),
+            s.get("title", "").lower().strip(),
+            s.get("original_odds"),
+            s.get("boosted_odds"),
+        )
+        if content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+        deduped.append(s)
 
-    return result
+    removed = len(specials) - len(deduped)
+    if removed > 0:
+        logger.info(f"Dedup: {len(specials)} → {len(deduped)} specials ({removed} duplicates merged)")
+
+    return deduped
 
 
 def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:

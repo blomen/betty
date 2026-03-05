@@ -659,9 +659,15 @@ async def get_extraction_freshness():
         # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
         result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
 
-        # Boost freshness from boost_extraction_logs (latest scraped_at)
-        boost_latest = session.query(func.max(BoostExtractionLog.scraped_at)).scalar()
-        boosts_ts = boost_latest.isoformat() + "Z" if boost_latest else None
+        # Boost freshness: use tier state last_run (includes LLM enrichment time),
+        # falling back to boost_extraction_logs scraped_at for first load
+        from ...api.state import get_tier_states
+        tier_states = get_tier_states()
+        boosts_state = tier_states.get("boosts", {})
+        boosts_ts = boosts_state.get("last_run")  # already ISO string with timezone
+        if not boosts_ts:
+            boost_latest = session.query(func.max(BoostExtractionLog.scraped_at)).scalar()
+            boosts_ts = boost_latest.isoformat() + "Z" if boost_latest else None
 
         return {
             "soft": result.get("soft"),

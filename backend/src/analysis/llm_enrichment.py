@@ -41,8 +41,8 @@ _brave_last_call: float = 0.0  # timestamp of last Brave API call
 _brave_lock: asyncio.Lock | None = None  # lazy-init per event loop
 
 
-def _cache_key(title: str, boosted_odds: float) -> str:
-    raw = f"{title.strip().lower()}|{boosted_odds}"
+def _cache_key(title: str, boosted_odds: float, event: str = "") -> str:
+    raw = f"{title.strip().lower()}|{boosted_odds}|{event.strip().lower()}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -119,7 +119,7 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
     count = 0
     used_keys = []
     for s in specials:
-        key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0))
+        key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0), s.get("event", ""))
         prev = cache.get(key)
         if prev and prev.get("llm_probability"):
             probability = prev["llm_probability"]
@@ -470,7 +470,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
 
             # Save to persistent cache immediately
             if db:
-                key = _cache_key(special.get("title", ""), boosted_odds)
+                key = _cache_key(special.get("title", ""), boosted_odds, special.get("event", ""))
                 _save_result_to_cache(db, key, special.get("title", ""), boosted_odds, result)
 
     logger.info(

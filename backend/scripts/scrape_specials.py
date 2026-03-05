@@ -48,10 +48,12 @@ PROVIDER_ALIASES: dict[str, str] = {
 
 SPORT_KEYWORDS: dict[str, list[str]] = {
     "football": [
-        "fotboll", "football", "soccer", "premier league", "champions league",
+        "fotboll", "football", "soccer", "futbol", "fútbol",
+        "premier league", "champions league",
         "allsvenskan", "la liga", "serie a", "bundesliga", "ligue 1",
         "europa league", "vm kval", "nations league", "conference league",
         "fa cup", "carabao", "copa del rey", "superettan", "eredivisie",
+        "süper lig", "super lig", "lig a",
         "manchester", "arsenal", "liverpool", "chelsea", "tottenham",
         "barcelona", "real madrid", "atletico", "juventus", "inter milan",
         "ac milan", "bayern", "dortmund", "psg", "napoli",
@@ -69,6 +71,7 @@ SPORT_KEYWORDS: dict[str, list[str]] = {
         "sevilla", "villarreal", "betis", "sociedad",
         "svenska cupen", "fa cup", "coppa italia", "dfb pokal",
         "coupe de france", "copa del rey",
+        "halvtid", "hörnor", "slutställning", "resultat",
         "vinner", "båda vinner",
     ],
     "ice_hockey": [
@@ -571,6 +574,7 @@ async def _scrape_altenar_boosts(
                 results.extend(batch_results)
 
             events_with_boosts = 0
+            seen_sel_keys: set[tuple] = set()  # deduplicate boosts across events by selectionIds
             for result in results:
                 if result is None or isinstance(result, Exception):
                     continue
@@ -597,6 +601,12 @@ async def _scrape_altenar_boosts(
                         continue
                     if float(original_price) >= float(boosted_price):
                         continue
+
+                    # Deduplicate: same boost returned by multiple event detail responses
+                    sel_key = tuple(sorted(o.get("selectionId", 0) for o in b.get("odds", [])))
+                    if sel_key in seen_sel_keys:
+                        continue
+                    seen_sel_keys.add(sel_key)
 
                     is_bet_of_day = bi.get("isBetOfTheDay", False)
                     prop = bi.get("property", 0)
@@ -1298,7 +1308,6 @@ async def _scrape_interwetten_boosts(
             seen_keys.add(key)
 
             # Parse context for event/market info
-            sport = detect_sport(context_text)
             boost_pct_val = ((boosted / orig) - 1) * 100
 
             # Try to extract a meaningful title from context
@@ -1306,10 +1315,33 @@ async def _scrape_interwetten_boosts(
             # Clean up multiline
             title = ' '.join(title.split())
 
+            # Extract event name from title: "Team A - Team B Market: Selection"
+            event_name = ""
+            market_kws = [
+                "halvtid", "resultat", "totalt", "vinnare", "poäng",
+                "mål", "tips", "tip", "1x2", "över", "under",
+                "antal", "båda", "first", "sista", "handicap",
+            ]
+            if " - " in title:
+                # Find where the market description starts after the teams
+                title_lower = title.lower()
+                split_pos = len(title)
+                for kw in market_kws:
+                    idx = title_lower.find(kw)
+                    if idx > 0 and idx < split_pos:
+                        split_pos = idx
+                event_name = title[:split_pos].strip().rstrip(" -–—")
+                # Normalize "Team A - Team B" to "Team A vs Team B"
+                if " - " in event_name:
+                    parts = event_name.split(" - ", 1)
+                    event_name = f"{parts[0].strip()} vs {parts[1].strip()}"
+
+            sport = detect_sport(f"{title} {event_name} {context_text}")
+
             boosts.append(Special(
                 provider=provider_id,
                 title=title,
-                event="",
+                event=event_name,
                 original_odds=round(orig, 2),
                 boosted_odds=round(boosted, 2),
                 boost_pct=round(boost_pct_val, 1),

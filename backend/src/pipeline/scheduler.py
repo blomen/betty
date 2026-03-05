@@ -70,6 +70,9 @@ class ExtractionScheduler:
         # Without this, soft tiers on startup find an empty DB (just purged) and extract
         # blindly with no Pinnacle baseline — wasting time on unmatchable events.
         self._sharp_ready = asyncio.Event()
+        # Boost trigger: fired when api_soft tier completes, so boosts run
+        # right after fresh odds are available for EV enrichment.
+        self._boost_trigger = asyncio.Event()
 
     @property
     def pipeline(self):
@@ -162,6 +165,10 @@ class ExtractionScheduler:
                     f"{results.get('total_events', 0)} events, "
                     f"{results.get('total_odds', 0)} odds in {elapsed:.1f}s"
                 )
+
+                # Trigger boost scrape after api_soft completes (fresh odds available)
+                if tier.name == "api_soft":
+                    self._boost_trigger.set()
 
                 # Wait remaining interval time
                 wait_time = max(0, tier.interval_seconds - elapsed)
@@ -295,10 +302,11 @@ class ExtractionScheduler:
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
     async def start_boosts_tier(self, interval_seconds: int = 3600):
-        """Start the oddsboost scraper on a recurring schedule.
+        """Start the oddsboost scraper, triggered after api_soft extraction.
 
-        Runs independently of extraction tiers — doesn't need the pipeline
-        lock since it uses its own Playwright browser and saves to JSON.
+        Waits for api_soft to complete each cycle so boosts are enriched
+        against fresh Pinnacle odds. Falls back to interval_seconds timeout
+        if api_soft doesn't fire. Also purges expired boosts from DB.
         """
         if self._boosts_task and not self._boosts_task.done():
             logger.warning("[Scheduler] Boosts tier already running")
@@ -310,27 +318,47 @@ class ExtractionScheduler:
         )
 
     async def _boosts_loop(self, interval_seconds: int):
-        """Recurring loop for oddsboost scraping."""
+        """Recurring loop for oddsboost scraping.
+
+        Waits for api_soft tier to complete before each run, so boosts are
+        enriched against fresh Pinnacle odds. Falls back to the interval
+        timeout if api_soft doesn't fire (e.g. tier disabled or errored).
+        """
         from src.api.state import update_tier_state
 
+        # Wait for sharp tier first (Pinnacle data needed for EV enrichment)
+        if not self._sharp_ready.is_set():
+            logger.info("[Scheduler:boosts] Waiting for sharp tier before first run...")
+            try:
+                await asyncio.wait_for(self._sharp_ready.wait(), timeout=120)
+            except asyncio.TimeoutError:
+                logger.warning("[Scheduler:boosts] Sharp tier timeout, starting anyway")
+
         while True:
+            # Wait for api_soft to complete, or fall back to timer
+            self._boost_trigger.clear()
+            try:
+                await asyncio.wait_for(self._boost_trigger.wait(), timeout=interval_seconds)
+                logger.info("[Scheduler:boosts] Triggered by api_soft completion")
+            except asyncio.TimeoutError:
+                logger.info("[Scheduler:boosts] Timeout reached, running on schedule")
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:boosts] Loop cancelled")
+                update_tier_state("boosts", running=False)
+                break
+
             try:
                 logger.info("[Scheduler:boosts] Starting boost scrape")
                 await self._run_boost_scrape()
                 logger.info("[Scheduler:boosts] Boost scrape complete")
+                update_tier_state("boosts", running=False, completed_providers=1, last_run=datetime.now(timezone.utc).isoformat())
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Loop cancelled")
                 update_tier_state("boosts", running=False)
                 break
             except Exception as e:
                 logger.error(f"[Scheduler:boosts] Error: {e}", exc_info=True)
-            finally:
-                update_tier_state("boosts", running=False, completed_providers=1, last_run=datetime.now(timezone.utc).isoformat())
-
-            try:
-                await asyncio.sleep(interval_seconds)
-            except asyncio.CancelledError:
-                break
+                update_tier_state("boosts", running=False)
 
     async def _run_boost_scrape(self):
         """Execute the boost scraper in a thread executor."""
@@ -350,13 +378,14 @@ class ExtractionScheduler:
 
         loop = asyncio.get_running_loop()
         specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
-        if specials:
-            # JSON backup (kept for transition)
-            save_specials(specials)
 
-            # EV enrichment + DB storage
-            session = get_session()
-            try:
+        session = get_session()
+        try:
+            if specials:
+                # JSON backup (kept for transition)
+                save_specials(specials)
+
+                # EV enrichment + DB storage (full replace: DELETE all + INSERT new)
                 specials_dicts = filter_expired([asdict(s) for s in specials])
                 specials_dicts = deduplicate_specials(specials_dicts)
                 specials_dicts = enrich_specials_with_ev(specials_dicts, session)
@@ -369,22 +398,39 @@ class ExtractionScheduler:
                 ev_count = sum(1 for s in specials_dicts if s.get("is_positive_ev"))
                 llm_count = sum(1 for s in specials_dicts if s.get("llm_probability") is not None)
                 logger.info(f"[Scheduler:boosts] Stored {count} boosts to DB ({ev_count} +EV, {llm_count} LLM-researched)")
-            except Exception as e:
-                logger.error(f"[Scheduler:boosts] DB storage failed: {e}", exc_info=True)
-                try:
-                    session.rollback()
-                except Exception:
-                    pass
-            finally:
-                try:
-                    session.close()
-                except Exception:
-                    pass
-        else:
-            logger.info("[Scheduler:boosts] No boosts found")
+            else:
+                # Scrape returned empty — still purge expired boosts from DB
+                self._purge_expired_boosts(session)
+                logger.info("[Scheduler:boosts] No boosts scraped, purged expired from DB")
+        except Exception as e:
+            logger.error(f"[Scheduler:boosts] DB storage failed: {e}", exc_info=True)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
         # Persist extraction log to DB
         self._persist_boost_log(run_log)
+
+    @staticmethod
+    def _purge_expired_boosts(session):
+        """Remove boosts from DB whose event has already started."""
+        from src.db.models import SpecialOdds
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        deleted = (
+            session.query(SpecialOdds)
+            .filter(SpecialOdds.event_time.isnot(None), SpecialOdds.event_time <= now_iso)
+            .delete(synchronize_session="fetch")
+        )
+        if deleted:
+            session.commit()
+            logger.info(f"[Scheduler:boosts] Purged {deleted} expired boosts from DB")
 
     def _persist_boost_log(self, run_log, max_runs: int = 10):
         """Persist boost extraction log to DB. Keeps last `max_runs` runs."""
