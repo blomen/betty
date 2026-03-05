@@ -212,10 +212,8 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const PT = 12;
   const PB = 24;
 
-  const clvValues = data.map(d => d.clv);
-  const absMax = Math.max(Math.abs(Math.min(...clvValues)), Math.abs(Math.max(...clvValues)), 5);
-  const minVal = -absMax;
-  const maxVal = absMax;
+  const minVal = -50;
+  const maxVal = 50;
   const range = maxVal - minVal || 1;
   const minDate = data[0].date.getTime();
   const maxDate = data[data.length - 1].date.getTime();
@@ -269,8 +267,8 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="bg-panel overflow-hidden">
-      <div className="px-3 py-2 flex items-center justify-between">
+    <div className="border border-border bg-panel overflow-hidden">
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted">{data.length} bets</span>
@@ -285,7 +283,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
           {yLabels.map((l, i) => (
             <line key={i} x1={PL} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="2,4" />
           ))}
-          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#333" strokeWidth="0.5" strokeDasharray="2,4" />
+          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#555" strokeWidth="1" />
           <path d={avgPathD} fill="none" stroke={LINE_COLOR} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
           <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(avgPoints[avgPoints.length - 1].avg)} r="3" fill={LINE_COLOR} />
         </svg>
@@ -544,114 +542,94 @@ export function BetsPage() {
         </div>
       )}
 
-      {/* Bankroll Chart */}
-      {bets.length > 0 && currentBankroll > 0 && (
-        <BankrollChart bets={bets} currentBankroll={currentBankroll} />
-      )}
-
-      {/* CLV Trend Chart */}
-      <CLVChart bets={bets} />
+      {/* Charts — side by side */}
+      <div className="grid grid-cols-2 gap-3">
+        {bets.length > 0 && currentBankroll > 0 && (
+          <BankrollChart bets={bets} currentBankroll={currentBankroll} />
+        )}
+        <CLVChart bets={bets} />
+      </div>
 
       {/* Active Bonuses */}
       {activeBonuses.length > 0 && (
-        <div className="border-l-2 border-tabBonus">
-          <div className="border border-border">
-            <div className="px-3 py-2 border-b border-border bg-panel">
-              <h3 className="text-muted font-semibold text-xs uppercase tracking-wider">Active Bonuses</h3>
-            </div>
-            <div className="divide-y divide-border">
+        <div className="border-l-2 border-tabBets">
+          <table className="sq">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Type</th>
+                <th className="text-right">Progress</th>
+                <th className="text-right">Remaining</th>
+                <th className="text-right">Kr/wk</th>
+                <th className="text-right">Deadline</th>
+                <th className="text-right">ETA</th>
+              </tr>
+            </thead>
+            <tbody>
               {activeBonuses.map(([providerId, bonus]) => {
                 const pct = Math.min(100, bonus.progress_pct);
                 const days = bonus.days_remaining;
                 const urgent = days !== null && days <= 10;
                 const warning = days !== null && days > 10 && days <= 30;
+                const remaining = bonus.wagering_requirement - bonus.wagered_amount;
+                const hasProgress = (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
+                const estDays = bonus.prognosis?.est_weeks != null ? Math.round(bonus.prognosis.est_weeks * 7) : null;
+                const onTrack = estDays !== null && days !== null && estDays <= days;
+                const requiredPerWk = bonus.prognosis?.required_weekly_wagering ?? null;
 
                 return (
-                  <div key={providerId} className="px-3 py-2.5 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-text text-sm font-medium">{formatProviderName(providerId)}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
-                          bonus.status === 'trigger_needed' ? 'bg-amber-400/15 text-amber-400' :
-                          bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
-                          'bg-tabBonus/15 text-tabBonus'
-                        }`}>
-                          {bonus.status === 'trigger_needed'
-                            ? (bonus.bonus_type === 'bonusdeposit' ? 'ROLLOVER NEEDED' : 'TRIGGER NEEDED')
-                            : bonus.status === 'freebet_available' ? 'FREEBET READY' :
-                           `${pct.toFixed(0)}%`}
+                  <tr key={providerId}>
+                    <td className="text-text text-sm font-medium">{formatProviderName(providerId)}</td>
+                    <td>
+                      <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                        bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
+                        'bg-tabBets/15 text-tabBets'
+                      }`}>
+                        {bonus.bonus_type === 'freebet' ? 'FREEBET'
+                          : bonus.bonus_type === 'bonusdeposit' ? 'ROLLOVER'
+                          : 'WAGER'}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {hasProgress ? (
+                        <div className="flex items-center gap-2 justify-end">
+                          <div className="w-16 h-1.5 bg-bg overflow-hidden">
+                            <div
+                              className={`h-full ${urgent ? 'bg-error' : warning ? 'bg-amber-400' : 'bg-tabBets'}`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-muted2">{pct.toFixed(0)}%</span>
+                        </div>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right text-sm text-text">
+                      {hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
+                    </td>
+                    <td className="text-right">
+                      {requiredPerWk != null && requiredPerWk > 0 ? (
+                        <span className="text-sm text-text">{requiredPerWk.toFixed(0)}</span>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right">
+                      {days !== null ? (
+                        <span className={`text-sm ${urgent ? 'text-error font-medium' : warning ? 'text-amber-400' : 'text-muted'}`}>
+                          {days}d
                         </span>
-                        {days !== null && (
-                          <span className={`text-[10px] font-mono ${urgent ? 'text-error' : warning ? 'text-amber-400' : 'text-muted'}`}>
-                            {days}d left
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2" />
-                    </div>
-
-                    <div className="text-xs text-muted">{bonus.action_needed}</div>
-
-                    {(bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0 && (
-                      <div className="space-y-1">
-                        <div className="h-1.5 bg-panel overflow-hidden">
-                          <div
-                            className={`h-full transition-all duration-500 ${
-                              urgent ? 'bg-error' : warning ? 'bg-amber-400' : 'bg-tabBonus'
-                            }`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center justify-between text-[10px] text-muted2">
-                          <span>{bonus.wagered_amount.toFixed(0)} / {bonus.wagering_requirement.toFixed(0)} kr</span>
-                          <span>{(bonus.wagering_requirement - bonus.wagered_amount).toFixed(0)} kr remaining</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {bonus.prognosis && (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && (() => {
-                      const p = bonus.prognosis;
-                      const betsPlaced = p.bets_per_week;
-                      const needBetsWk = p.required_weekly_wagering > 0 && p.avg_stake > 0
-                        ? Math.ceil(p.required_weekly_wagering / p.avg_stake)
-                        : null;
-                      const estDays = p.est_weeks !== null ? Math.round(p.est_weeks * 7) : null;
-                      const onTrack = p.required_weekly_wagering > 0 && p.weekly_wagering >= p.required_weekly_wagering;
-
-                      return (
-                        <div className="flex items-center gap-3 text-[10px]">
-                          {needBetsWk !== null ? (
-                            <span className={onTrack ? 'text-success' : 'text-amber-400'}>
-                              {Math.round(betsPlaced)}/{needBetsWk} bets/wk
-                            </span>
-                          ) : betsPlaced > 0 ? (
-                            <span className="text-muted2">{Math.round(betsPlaced)} bets/wk</span>
-                          ) : (
-                            <span className="text-muted2">No qualifying bets yet</span>
-                          )}
-                          {p.avg_stake > 0 && (
-                            <span className="text-muted2">{p.avg_stake} kr avg</span>
-                          )}
-                          {estDays !== null && days !== null ? (
-                            estDays <= days ? (
-                              <span className="text-success">~{estDays}d to clear</span>
-                            ) : (
-                              <span className="text-error">~{estDays}d to clear ({days}d left)</span>
-                            )
-                          ) : estDays !== null ? (
-                            <span className="text-muted2">~{estDays}d to clear</span>
-                          ) : null}
-                          {p.required_weekly_wagering > 0 && !onTrack && (
-                            <span className="text-amber-400">need {p.required_weekly_wagering} kr/wk</span>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right">
+                      {estDays !== null ? (
+                        <span className={`text-sm ${onTrack ? 'text-success' : 'text-error'}`}>
+                          ~{estDays}d
+                        </span>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
-          </div>
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -671,14 +649,14 @@ export function BetsPage() {
               <tr>
                 <SortHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
                 <SortHeader label="Provider" sortKey="provider" currentSort={sort} onSort={handleSort} />
-                <SortHeader label="Odds" sortKey="odds" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Entry" sortKey="odds" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Close" sortKey="close" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="CLV" sortKey="clv" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="Edge" sortKey="edge" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Est Edge" sortKey="edge" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Stake" sortKey="stake" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Profit" sortKey="profit" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Prob" sortKey="prob" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="TTK" sortKey="ttk" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Entry TTK" sortKey="ttk" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Status" sortKey="status" currentSort={sort} onSort={handleSort} align="right" />
               </tr>
             </thead>
@@ -752,6 +730,13 @@ export function BetsPage() {
                         <td colSpan={11} className="!p-0" onClick={e => e.stopPropagation()}>
                           <div className="px-3 py-2 bg-panel space-y-2">
                             <div className="flex items-center gap-6 text-xs text-muted">
+                              {bet.home_team && bet.away_team && (
+                                <div>
+                                  <span className="text-muted2 uppercase tracking-wider">Event: </span>
+                                  <span className="text-text">{displayTeamName(bet.home_team, bet.display_home)} vs {displayTeamName(bet.away_team, bet.display_away)}</span>
+                                  {bet.sport && <span className="text-muted2 ml-1">({bet.sport})</span>}
+                                </div>
+                              )}
                               <div>
                                 <span className="text-muted2 uppercase tracking-wider">Selection: </span>
                                 <span className="text-text">{resolveOutcome(bet)}</span>
