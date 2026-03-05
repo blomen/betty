@@ -831,10 +831,8 @@ extraction_tiers:
     providers:
       # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group — keep all 3 (too different: 1.7-83% identity)
+      # ComeOn Group (1) — hajper/lyllo fanned out via PLATFORM_GROUPS
       - comeon
-      - hajper
-      - lyllo
       # Snabbare (1)
       - snabbare
       # 10Bet (1)

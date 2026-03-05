@@ -272,11 +272,20 @@ class InterwettenRetriever(BrowserRetriever):
     TOTAL_LABELS = {"How many goals", "Over/Under", "How many games"}
 
     # JS to extract spread/total from event detail page data-betting attributes
+    # NOTE: Interwetten renders Asian Handicap with each side (home/away) as
+    # SEPARATE sibling containers, each with 1 outcome. We accumulate outcomes
+    # across sibling containers sharing the same label until we have >= 2.
     JS_EXTRACT_DETAIL_MARKETS = """() => {
         const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games"]);
         const TOTAL = new Set(["How many goals", "Over/Under", "How many games"]);
         const results = { spread: null, total: null };
         const allBetting = document.querySelectorAll('[data-betting]');
+
+        // Accumulate across sibling containers for the same market
+        let spreadOutcomes = [];
+        let spreadLabel = null;
+        let totalOutcomes = [];
+        let totalLabel = null;
 
         for (const el of allBetting) {
             try {
@@ -286,30 +295,36 @@ class InterwettenRetriever(BrowserRetriever):
                 if (typeof raw[1] !== 'number' || raw[1] < 100000) continue;
                 const label = (raw[3] || '').trim();
 
-                // Spread markets (first occurrence = main line)
+                // Spread markets — accumulate across sibling containers
                 if (SPREAD.has(label) && !results.spread) {
-                    const outcomes = [];
-                    for (const oel of el.querySelectorAll('[data-betting]')) {
-                        try {
-                            const od = JSON.parse(oel.getAttribute('data-betting'));
-                            if (typeof od[1] === 'string')
-                                outcomes.push({ type: od[1], name: od[2], odds: od[4] });
-                        } catch(e) {}
+                    if (!spreadLabel) spreadLabel = label;
+                    if (label === spreadLabel) {
+                        for (const oel of el.querySelectorAll('[data-betting]')) {
+                            try {
+                                const od = JSON.parse(oel.getAttribute('data-betting'));
+                                if (typeof od[1] === 'string')
+                                    spreadOutcomes.push({ type: od[1], name: od[2], odds: od[4] });
+                            } catch(e) {}
+                        }
+                        if (spreadOutcomes.length >= 2)
+                            results.spread = { label: spreadLabel, outcomes: spreadOutcomes };
                     }
-                    if (outcomes.length >= 2) results.spread = { label, outcomes };
                 }
 
-                // Total markets (first occurrence = main line)
+                // Total markets — accumulate across sibling containers
                 if (TOTAL.has(label) && !results.total) {
-                    const outcomes = [];
-                    for (const oel of el.querySelectorAll('[data-betting]')) {
-                        try {
-                            const od = JSON.parse(oel.getAttribute('data-betting'));
-                            if (typeof od[1] === 'string')
-                                outcomes.push({ type: od[1], name: od[2], odds: od[4] });
-                        } catch(e) {}
+                    if (!totalLabel) totalLabel = label;
+                    if (label === totalLabel) {
+                        for (const oel of el.querySelectorAll('[data-betting]')) {
+                            try {
+                                const od = JSON.parse(oel.getAttribute('data-betting'));
+                                if (typeof od[1] === 'string')
+                                    totalOutcomes.push({ type: od[1], name: od[2], odds: od[4] });
+                            } catch(e) {}
+                        }
+                        if (totalOutcomes.length >= 2)
+                            results.total = { label: totalLabel, outcomes: totalOutcomes };
                     }
-                    if (outcomes.length >= 2) results.total = { label, outcomes };
                 }
 
                 if (results.spread && results.total) break;

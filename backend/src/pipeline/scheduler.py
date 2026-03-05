@@ -240,8 +240,8 @@ class ExtractionScheduler:
             providers=[
                 # Spectate (2)
                 "mrgreen", "888sport",
-                # ComeOn Group (3)
-                "comeon", "hajper", "lyllo",
+                # ComeOn Group (1) — hajper/lyllo fanned out via PLATFORM_GROUPS
+                "comeon",
                 # Snabbare (1)
                 "snabbare",
                 # 10Bet (1)

@@ -376,9 +376,8 @@ class ExtractionReport:
                 platform_map[label] = []
             platform_map[label].append(canonical)
 
-        # Add standalone platforms
+        # Add standalone platforms (not in PLATFORM_GROUPS)
         standalone = {
-            "comeon": ["comeon", "hajper", "lyllo"],
             "vbet": ["vbet"],
             "tipwin": ["tipwin"],
             "iwetten": ["interwetten"],
