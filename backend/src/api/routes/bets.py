@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from ...services import BetService, ResultsService
+from ...services import BetService
 from ...repositories import BetRepo, ProfileRepo
 from ...db.models import Odds, Event
 from ...analysis.devig import get_fair_odds_for_outcome
@@ -209,10 +209,8 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
 
 @router.post("/auto-settle")
 async def auto_settle_bets(db: Session = Depends(get_db)):
-    """Auto-settle pending bets on finished events using stored scores."""
-    svc = ResultsService(db)
-    result = svc.auto_settle()
-    return {"success": True, **result}
+    """Disabled — Pinnacle scores are unreliable (mid-game/pre-OT snapshots)."""
+    return {"success": False, "message": "Auto-settle disabled — use manual settlement via Settle tab"}
 
 
 @router.post("/batch")

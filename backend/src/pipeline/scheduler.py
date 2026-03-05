@@ -690,24 +690,13 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Auto-settle bets using Pinnacle scores, then snapshot closing odds for CLV."""
+        """Snapshot closing odds for CLV (auto-settle disabled — Pinnacle scores unreliable)."""
         from src.services.bet_service import BetService
-        from src.services.results_service import ResultsService
         from src.db.models import get_session
 
         session = get_session()
         try:
-            # Step 1: Score-based auto-settle (fast, pure DB)
-            results_service = ResultsService(session)
-            settle_stats = results_service.auto_settle()
-
-            if settle_stats.get("settled", 0) > 0:
-                logger.info(
-                    f"[Scheduler:settlement] Auto-settled: "
-                    f"{settle_stats['settled']}/{settle_stats['checked']} bets"
-                )
-
-            # Step 2: CLV snapshots (existing)
+            # CLV snapshots only — auto-settle disabled (scores can be mid-game/pre-OT)
             bet_service = BetService(session)
             clv_stats = bet_service.snapshot_closing_odds()
             session.commit()
@@ -718,7 +707,7 @@ class ExtractionScheduler:
                     f"{clv_stats['updated']}/{clv_stats['processed']} bets updated"
                 )
 
-            return {**settle_stats, **clv_stats}
+            return clv_stats
         except Exception:
             session.rollback()
             raise

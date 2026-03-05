@@ -153,12 +153,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
 
   const activeBets = categorized[activeCategory];
 
-  // ── 2x/3x stake multiplier when odds drifted higher ──
-  const handleMultiplyStake = async (bet: Bet, multiplier: number) => {
+  // ── Raise: add initial stake again at current odds ──
+  const handleRaise = async (bet: Bet) => {
     const currentOdds = bet.current_odds ?? bet.odds;
-    const additionalStake = bet.stake * (multiplier - 1);
-    const newStake = bet.stake + additionalStake;
-    const newAvgOdds = (bet.stake * bet.odds + additionalStake * currentOdds) / newStake;
+    const raiseAmount = bet.stake; // add current stake again
+    const newStake = bet.stake + raiseAmount;
+    const newAvgOdds = (bet.stake * bet.odds + raiseAmount * currentOdds) / newStake;
     try {
       await api.editBet(bet.id, {
         stake: newStake,
@@ -166,7 +166,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
       });
       fetchBets();
     } catch (err) {
-      console.error(`${multiplier}x stake failed:`, err);
+      console.error('Raise failed:', err);
     }
   };
 
@@ -345,7 +345,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       ) : activeCategory === 'ft' ? (
                         <td className="text-right">
                           <div className="flex flex-col items-end">
-                            <span className="text-sm font-medium" style={{ color }}>
+                            <span className={`text-sm font-medium ${ftEdgePct != null && ftEdgePct >= 0 ? 'text-success' : 'text-error'}`}>
                               {ftEdgePct != null ? `${ftEdgePct >= 0 ? '+' : ''}${ftEdgePct.toFixed(1)}%` : '-'}
                             </span>
                             {b.clv_pct != null && (
@@ -356,7 +356,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                           </div>
                         </td>
                       ) : (
-                        <td className="text-right text-sm font-medium" style={{ color }}>
+                        <td className={`text-right text-sm font-medium ${edgePct != null && edgePct >= 0 ? 'text-success' : 'text-error'}`}>
                           {edgePct != null ? `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%` : '-'}
                         </td>
                       )}
@@ -367,18 +367,13 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                           <span className="inline-flex items-center gap-1 justify-end">
                             <span className="text-text text-sm font-medium">{b.stake.toFixed(0)} kr</span>
                             {b.is_bonus && <span className="text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                            {b.current_odds != null && b.current_odds > b.odds && (<>
+                            {b.current_odds != null && b.current_odds > b.odds && (
                               <button
                                 className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
-                                onClick={() => handleMultiplyStake(b, 2)}
-                                title={`Double to ${b.stake * 2} kr at ${b.current_odds!.toFixed(2)} odds`}
-                              >2x</button>
-                              <button
-                                className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
-                                onClick={() => handleMultiplyStake(b, 3)}
-                                title={`Triple to ${b.stake * 3} kr at ${b.current_odds!.toFixed(2)} odds`}
-                              >3x</button>
-                            </>)}
+                                onClick={() => handleRaise(b)}
+                                title={`Raise +${b.stake} kr at ${b.current_odds!.toFixed(2)} odds`}
+                              >r</button>
+                            )}
                           </span>
                         </td>
                       ) : (
@@ -389,7 +384,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       )}
 
                       {/* Return column — always shown */}
-                      <td className="text-right text-sm font-medium" style={{ color }}>
+                      <td className="text-right text-sm font-medium text-text">
                         {(b.stake * b.odds).toFixed(0)} kr
                       </td>
 

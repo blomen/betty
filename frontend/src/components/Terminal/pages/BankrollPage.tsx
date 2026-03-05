@@ -265,7 +265,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
   // Sort provider balances table — default by bonus priority (freebet > bonusdeposit > none)
   const providerList = useMemo(() => exposure?.providers ?? [], [exposure]);
   const { sorted: tableSorted, sort: provSort, toggle: toggleProvSort } =
-    useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: null, direction: 'desc' });
+    useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'balance', direction: 'desc' });
 
   // When no column sort is active, sort by bonus priority: freebet first, then bonusdeposit, then rest
   const sortedProviders = useMemo(() => {
