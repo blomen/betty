@@ -155,9 +155,6 @@ class BetService:
             rate = get_exchange_rate(provider_id)
             self.profile_repo.adjust_balance(profile.id, provider_id, -stake / rate)
 
-        # Record wagering progress
-        wagering_status = self.profile_repo.record_wagering(profile.id, provider_id, stake, odds)
-
         # Auto-advance freebet: mark as completed when freebet is used
         if is_bonus:
             bonus = self.db.query(ProfileProviderBonus).filter(
@@ -170,12 +167,15 @@ class BetService:
                 bonus.updated_at = datetime.utcnow()
                 logger.info(f"[BetService] Auto-completed freebet for {provider_id}")
 
+        # Check current wagering status (but don't record — wagering counts on settlement)
+        wagering_status = self.profile_repo.get_bonus_status(profile.id, provider_id)
+
         return {
             "success": True,
             "bet_id": bet.id,
             "profile_id": profile.id,
             "risk_score": risk_score,
-            "bonus_wagering": wagering_status if wagering_status.get("status") == "in_progress" else None,
+            "bonus_wagering": wagering_status if wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
 
     def settle_bet(self, bet_id: int, result: str, payout: float) -> dict:
@@ -198,6 +198,13 @@ class BetService:
             rate = get_exchange_rate(bet.provider_id)
             self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout / rate)
 
+        # Record wagering progress on settlement (not placement)
+        wagering_status = None
+        if bet.profile_id and result in ("won", "lost", "void"):
+            wagering_status = self.profile_repo.record_wagering(
+                bet.profile_id, bet.provider_id, bet.stake, bet.odds
+            )
+
         # Auto-advance freebet: if trigger bet settled, unlock the freebet
         if bet.profile_id:
             bonus = self.db.query(ProfileProviderBonus).filter(
@@ -216,6 +223,7 @@ class BetService:
             "profit": bet.profit,
             "profile_id": bet.profile_id,
             "clv_pct": clv_pct,
+            "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
 
     def _calculate_clv(self, bet: Bet) -> float | None:

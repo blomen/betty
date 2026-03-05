@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -114,33 +115,38 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
-  // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
-  useEffect(() => {
-    api.getBets('pending', 500).then(({ bets }) => {
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [res, boostRes, exposureRes, bankrollRes, betsRes] = await Promise.all([
+        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+        api.getSpecials({}).catch(() => null),
+        api.getBankrollExposure().catch(() => null),
+        api.getBankroll().catch(() => null),
+        api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
+      ]);
+      // Build placed-bet keys before setting opportunities (no race condition)
       const keys = new Set<string>();
       const bKeys = new Set<string>();
-      for (const b of bets) {
+      for (const b of betsRes.bets) {
         if (b.market === 'boost' && b.outcome) {
           bKeys.add(b.outcome);
         } else if (b.event_id) {
           keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
         }
       }
-      if (keys.size > 0) setPlacedKeys(keys);
-      if (bKeys.size > 0) setBoostPlacedKeys(bKeys);
-      setMyBetsCount(bets.filter(softBetFilter).length);
-    }).catch(() => {});
-  }, []);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [res, boostRes, exposureRes, bankrollRes] = await Promise.all([
-        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
-        api.getSpecials({}).catch(() => null),
-        api.getBankrollExposure().catch(() => null),
-        api.getBankroll().catch(() => null),
-      ]);
+      setPlacedKeys(prev => {
+        // Merge: keep in-session keys + DB keys
+        const merged = new Set(prev);
+        for (const k of keys) merged.add(k);
+        return merged;
+      });
+      setBoostPlacedKeys(prev => {
+        const merged = new Set(prev);
+        for (const k of bKeys) merged.add(k);
+        return merged;
+      });
+      setMyBetsCount(betsRes.bets.filter(softBetFilter).length);
       setOpportunities(res.opportunities);
       if (boostRes) {
         setSpecials(boostRes.specials || []);
@@ -349,6 +355,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
+      setMyBetsCount(prev => (prev ?? 0) + 1);
       setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
       fetchData();
     } catch (err) {
@@ -424,6 +431,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
       // Remove from list immediately (same market+outcome+point hidden across all providers)
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
+      setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedGroup(null);
       fetchData();
@@ -501,7 +509,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
       <FilterBar>
         {boostFilters && boostFilters.providers.length > 0 && (
-          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderName} accentColor="tabValue" />
+          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderWithPlatform} accentColor="tabValue" />
         )}
         <FreshnessIndicator tiers={[['boosts', freshness.boosts]]} />
       </FilterBar>
@@ -554,10 +562,10 @@ export function ValuePage({ providers }: ValuePageProps) {
                       <span className="inline-flex items-center gap-1.5 justify-end">
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount <= 3 ? (
-                          <span className="text-text truncate">{group.providers.map(formatProviderName).join(', ')}</span>
+                          <span className="text-text truncate">{group.providers.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
                         ) : (
                           <span className="text-text truncate">
-                            {formatProviderName(group.providers[0])}
+                            <ProviderName name={group.providers[0]} />
                             <span className="text-muted ml-1">+{providerCount - 1}</span>
                           </span>
                         )}
@@ -659,7 +667,7 @@ export function ValuePage({ providers }: ValuePageProps) {
             selected={selectedProviders}
             onToggle={toggleProvider}
             onClear={() => setSelectedProviders(new Set())}
-            format={formatProviderName}
+            format={formatProviderWithPlatform}
             accentColor="tabValue"
           />
         )}
@@ -729,10 +737,10 @@ export function ValuePage({ providers }: ValuePageProps) {
                       <span className="inline-flex items-center gap-1.5 justify-end">
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount <= 3 ? (
-                          <span className="text-text truncate">{groupProviders.map(formatProviderName).join(', ')}</span>
+                          <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
                         ) : (
                           <span className="text-text truncate">
-                            {formatProviderName(groupProviders[0])}
+                            <ProviderName name={groupProviders[0]} />
                             <span className="text-muted ml-1">+{providerCount - 1}</span>
                           </span>
                         )}
@@ -905,7 +913,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                   >
                                     <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabValue' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
                                     <span className="truncate">
-                                      {formatProviderName(selOpp.provider1)}
+                                      <ProviderName name={selOpp.provider1} />
                                       {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
                                       {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                                     </span>
@@ -932,7 +940,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                           >
                                             <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === opp.provider1 ? 'bg-tabValue' : hasBal ? 'bg-success' : 'bg-muted/40'}`} />
                                             <span className="truncate">
-                                              {formatProviderName(opp.provider1)}{s}{tag}
+                                              <ProviderName name={opp.provider1} />{s}{tag}
                                             </span>
                                           </button>
                                         );
@@ -1184,7 +1192,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                   >
                     <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(selProvider)}`} />
                     <span className="truncate">
-                      {formatProviderName(selProvider)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
+                      <ProviderName name={selProvider} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
                     </span>
                     <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
@@ -1203,7 +1211,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                           >
                             <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(pid)}`} />
                             <span className="truncate">
-                              {formatProviderName(pid)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
+                              <ProviderName name={pid} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
                             </span>
                           </button>
                         );

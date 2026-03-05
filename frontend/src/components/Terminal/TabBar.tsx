@@ -7,12 +7,12 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
-  { name: 'value',      label: 'Soft',      color: '#FF9800' },
-  { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
-  { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
-  { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
+  { name: 'value',      label: 'Soft',      color: '#FF9800' },
+  { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
+  { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
+  { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
 ];
 
 const STOCKS_TABS: Tab[] = [

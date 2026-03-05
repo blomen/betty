@@ -42,24 +42,26 @@ export function PolymarketPage() {
 
   // ──────────────────── Value Bets ────────────────────
 
-  // Load placed bets from DB on mount to filter out already-bet market+outcome combos
-  useEffect(() => {
-    api.getBets('pending', 500).then(({ bets }) => {
+  const fetchValueData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [valueRes, betsRes] = await Promise.all([
+        api.getPolymarketValue(3, undefined, 50),
+        api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
+      ]);
+      // Build placed-bet keys before setting value bets (no race condition)
       const keys = new Set<string>();
-      for (const b of bets) {
+      for (const b of betsRes.bets) {
         if (b.event_id && b.provider === 'polymarket') {
           keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
         }
       }
-      if (keys.size > 0) setPlacedKeys(keys);
-      setMyBetsCount(bets.filter(polyBetFilter).length);
-    }).catch(() => {});
-  }, []);
-
-  const fetchValueData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const valueRes = await api.getPolymarketValue(3, undefined, 50);
+      setPlacedKeys(prev => {
+        const merged = new Set(prev);
+        for (const k of keys) merged.add(k);
+        return merged;
+      });
+      setMyBetsCount(betsRes.bets.filter(polyBetFilter).length);
       setValueBets(valueRes.value_bets);
     } catch (err) {
       console.error('Failed to fetch Polymarket data:', err);

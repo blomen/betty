@@ -423,7 +423,7 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 500
-      wagering_multiplier: 6
+      wagering_multiplier: 1
       min_odds: 1.80
 
   # --------------------------------------------------------------------------

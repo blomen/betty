@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -336,7 +337,7 @@ export function DutchPage({ providers }: DutchPageProps) {
             selected={selectedProviders}
             onToggle={toggleProvider}
             onClear={() => setSelectedProviders(new Set())}
-            format={formatProviderName}
+            format={formatProviderWithPlatform}
             accentColor="success"
           />
         )}
@@ -403,8 +404,8 @@ export function DutchPage({ providers }: DutchPageProps) {
                         <span className="inline-flex items-center gap-1.5 justify-end">
                           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
                           {uniqueProviders.length <= 3
-                            ? uniqueProviders.map(formatProviderName).join(', ')
-                            : <>{formatProviderName(uniqueProviders[0])} <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
+                            ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
+                            : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
                           }
                         </span>
                       </td>
@@ -455,7 +456,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                       {resolveOutcome(leg.outcome, opp, opp.point)}
                                       {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
                                     </td>
-                                    <td className="text-right">{formatProviderName(leg.provider)}</td>
+                                    <td className="text-right"><ProviderName name={leg.provider} /></td>
                                     <td className="text-right font-medium">
                                       <div className="flex items-center justify-end gap-1">
                                         {isEditingThis ? (

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, displayTeamName } from '@/utils/formatters';
+import { ProviderName } from '../ProviderName';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
 
@@ -579,15 +580,15 @@ export function BetsPage() {
 
                 return (
                   <tr key={providerId}>
-                    <td className="text-text text-sm font-medium">{formatProviderName(providerId)}</td>
+                    <td className="text-text text-sm font-medium"><ProviderName name={providerId} /></td>
                     <td>
                       <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
                         bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
                         'bg-tabBets/15 text-tabBets'
                       }`}>
                         {bonus.bonus_type === 'freebet' ? 'FREEBET'
-                          : bonus.bonus_type === 'bonusdeposit' ? 'ROLLOVER'
-                          : 'WAGER'}
+                          : bonus.status === 'trigger_needed' ? 'UNLOCK'
+                          : 'ROLLOVER'}
                       </span>
                     </td>
                     <td className="text-right">
@@ -674,7 +675,7 @@ export function BetsPage() {
                       onClick={() => { if (!isEditing) setExpandedIdx(isExpanded ? null : bet.id); }}
                     >
                       <td className="text-muted text-[11px] whitespace-nowrap">{formatDate(bet.placed_at)}</td>
-                      <td className="text-text text-sm">{formatProviderName(bet.provider)}</td>
+                      <td className="text-text text-sm"><ProviderName name={bet.provider} /></td>
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
                       <td className="text-right">
                         {bet.closing_odds != null ? (

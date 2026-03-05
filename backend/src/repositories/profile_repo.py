@@ -215,9 +215,9 @@ class ProfileRepo:
                     # Freebet trigger — don't auto-advance, user must activate
                     pass
             else:
-                # Wagering complete — credit bonus to balance
-                if record.bonus_type == "bonusdeposit" and record.bonus_amount > 0:
-                    self.adjust_balance(profile_id, provider_id, record.bonus_amount)
+                # Rollover complete — withdrawal restriction lifted
+                # For bonusdeposit: bonus was already credited at UNLOCK (trigger_needed → in_progress)
+                # so no additional balance adjustment needed here.
                 record.bonus_status = "completed"
 
         return self.get_bonus_status(profile_id, provider_id)

@@ -3,7 +3,8 @@ import { Card } from './Card';
 import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
 import { api } from '@/services/api';
-import { formatProviderName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform } from '@/utils/formatters';
+import { ProviderName } from '../ProviderName';
 import { useTableSort } from '@/hooks/useTableSort';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
@@ -353,7 +354,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                 return (
                   <tr key={provider.provider_id}>
                     <td className="text-text">
-                      {formatProviderName(provider.provider_name)}
+                      <ProviderName name={provider.provider_name} />
                       {(() => {
                         const bonus = getProviderBonus(provider.provider_id);
                         if (!bonus?.hasUnclaimedBonus || !bonus.bonus) return null;
@@ -610,7 +611,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                   .filter(p => p.provider_id !== transferPopup.fromProviderId)
                   .map(p => (
                     <option key={p.provider_id} value={p.provider_id}>
-                      {formatProviderName(p.provider_name)} ({p.total_balance.toFixed(0)} kr)
+                      {formatProviderWithPlatform(p.provider_name)} ({p.total_balance.toFixed(0)} kr)
                     </option>
                   ))
                 }

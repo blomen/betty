@@ -17,6 +17,41 @@ export function formatProviderName(name: string): string {
   return name.replace(/\.(se|com|no|dk|fi|de|uk|eu|net|org|io|co)$/i, '');
 }
 
+/** Provider → platform mapping for UI display (keyed by provider_id) */
+export const PLATFORM_MAP: Record<string, string> = {
+  // Kambi
+  unibet: 'kambi', leovegas: 'kambi', expekt: 'kambi', betmgm: 'kambi',
+  speedybet: 'kambi', x3000: 'kambi', goldenbull: 'kambi', '1x2': 'kambi',
+  // Altenar
+  dbet: 'altenar', betinia: 'altenar', lodur: 'altenar',
+  campobet: 'altenar', swiper: 'altenar', quickcasino: 'altenar',
+  // Gecko V2
+  betsson: 'gecko', nordicbet: 'gecko', bethard: 'gecko', spelklubben: 'gecko',
+  // Spectate
+  mrgreen: 'spectate', '888sport': 'spectate',
+  // ComeOn Group
+  comeon: 'comeon', hajper: 'comeon', lyllo: 'comeon',
+};
+
+/** Display name → provider_id for names that differ from their ID */
+const NAME_TO_ID: Record<string, string> = {
+  lyllocasino: 'lyllo',
+  '888sport': '888sport',
+};
+
+/** Get platform tag for a provider, or null if standalone */
+export function getProviderPlatform(name: string): string | null {
+  const clean = formatProviderName(name).toLowerCase();
+  return PLATFORM_MAP[clean] ?? PLATFORM_MAP[NAME_TO_ID[clean] ?? ''] ?? null;
+}
+
+/** Format provider name with platform tag as plain string: "unibet (kambi)" */
+export function formatProviderWithPlatform(name: string): string {
+  const clean = formatProviderName(name);
+  const platform = getProviderPlatform(name);
+  return platform ? `${clean} (${platform})` : clean;
+}
+
 export function formatDateTime(isoString: string | null | undefined): string {
   if (!isoString) return 'N/A';
   const date = new Date(isoString);

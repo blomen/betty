@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { ProviderName } from './ProviderName';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
@@ -304,7 +305,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                           </>
                         )}
                       </td>
-                      <td className="text-right text-muted text-sm">{formatProviderName(b.provider)}</td>
+                      <td className="text-right text-muted text-sm"><ProviderName name={b.provider} /></td>
 
                       {/* Odds column — upcoming shows current vs placed */}
                       {activeCategory === 'upcoming' ? (
