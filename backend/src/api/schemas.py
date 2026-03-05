@@ -84,6 +84,9 @@ class BetCreate(BaseModel):
     utility_score: Optional[float] = None
     selection_probability: Optional[float] = None
     stake_noise_applied: Optional[float] = None
+    fair_odds_at_placement: Optional[float] = None  # For boosts: pass LLM fair odds directly
+    boost_event: Optional[str] = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
+    boost_title: Optional[str] = None  # For boosts: LLM-simplified title at placement
 
 
 class BatchBetLeg(BaseModel):

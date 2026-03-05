@@ -298,7 +298,7 @@ export function ValuePage({ providers }: ValuePageProps) {
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
   }), []);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
-    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'edge', direction: 'desc' });
+    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'aiEdge', direction: 'desc' });
 
   const toggleBoostProvider = (p: string) => {
     setBoostSelectedProviders(prev => { const next = new Set(prev); const key = p.toLowerCase(); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -342,6 +342,9 @@ export function ValuePage({ providers }: ValuePageProps) {
         is_bonus: false,
         utility_score: (special.llm_edge_pct ?? special.edge_pct) != null ? (special.llm_edge_pct ?? special.edge_pct)! / 100 : undefined,
         selection_probability: special.llm_probability ?? undefined,
+        fair_odds_at_placement: special.llm_fair_odds ?? undefined,
+        boost_event: special.event ?? undefined,
+        boost_title: special.llm_title ?? special.title,
       });
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -530,10 +533,17 @@ export function ValuePage({ providers }: ValuePageProps) {
 
               return (
                 <Fragment key={group.key}>
-                  <tr className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
+                  <tr className={`cursor-pointer group bg-tabValue/[0.03] hover:bg-tabValue/[0.07] ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
                     <td>
                       <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-text text-sm truncate">{s.llm_title || s.title}</span>
+                        <span className="text-text text-sm truncate" title={s.llm_title ? s.title : undefined}>{s.llm_title || s.title}</span>
+                        <button
+                          title="Copy event"
+                          className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText((s.event || '').split(/\s+vs\s+/i)[0] || s.llm_title || s.title); }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        </button>
                       </div>
                       <div className="text-muted2 text-[11px] truncate">
                         {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}
@@ -1111,7 +1121,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
   const selProvider = providers[selectedProviderIdx] || providers[0];
 
   const getDotColor = (pid: string) => {
-    if (recommended?.provider === pid) return 'bg-tabBonus';
+    if (recommended?.provider === pid) return 'bg-tabValue';
     if ((balanceMap.get(pid) ?? 0) > 0) return 'bg-success';
     return 'bg-muted/40';
   };
@@ -1127,18 +1137,18 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
               {editingOdds ? (
                 <input
                   type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
-                  className="w-16 bg-bg border border-tabBonus/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabBonus"
+                  className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
                   onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
                 />
               ) : (
-                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabBonus/50 transition-colors ${oddsChanged ? 'text-tabBonus font-medium border-tabBonus/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
+                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
                   {effectiveOdds.toFixed(2)}
                 </span>
               )}
               {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
             </div>
-            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabBonus text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
+            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
           </div>
           {special.llm_reasoning && (
             <div className="text-muted2 text-[10px] leading-relaxed">
@@ -1170,7 +1180,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                   <button
                     type="button"
                     onClick={() => setDropdownOpen(prev => !prev)}
-                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabBonus/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
+                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                   >
                     <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(selProvider)}`} />
                     <span className="truncate">
@@ -1204,7 +1214,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                 <button
                   onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
                   disabled={stake <= 0 || isPlacing}
-                  className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
+                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
                 >
                   {isPlacing ? '...' : 'Place Bet'}
                 </button>

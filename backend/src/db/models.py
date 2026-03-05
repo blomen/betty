@@ -204,6 +204,10 @@ class Bet(Base):
     # Edge tracking (filled at bet entry)
     fair_odds_at_placement = Column(Float, nullable=True)  # De-vigged Pinnacle fair odds when bet placed
 
+    # Boost metadata (filled at placement for boost bets)
+    boost_event = Column(String, nullable=True)   # "Arsenal vs Sunderland" — event name at placement
+    boost_title = Column(String, nullable=True)    # LLM-simplified English title at placement
+
     # CLV tracking (filled post-event)
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %

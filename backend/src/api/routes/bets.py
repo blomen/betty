@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...services import BetService
 from ...repositories import BetRepo, ProfileRepo
-from ...db.models import Odds, Event
+from ...db.models import Odds, Event, SpecialOdds
 from ...analysis.devig import get_fair_odds_for_outcome
 from ..deps import get_db
 from ..schemas import BetCreate, BetUpdate, BetEdit, BatchBetCreate
@@ -16,6 +16,29 @@ from .providers import load_provider_site_urls
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/bets", tags=["bets"])
+
+
+def _boost_event_str(bet, sp) -> str | None:
+    """Get boost event string from bet record or specials fallback."""
+    if bet.boost_event:
+        return bet.boost_event
+    if sp and sp.event:
+        return sp.event
+    return None
+
+
+def _boost_home(bet, sp) -> str | None:
+    ev_str = _boost_event_str(bet, sp)
+    if ev_str and " vs " in ev_str:
+        return ev_str.split(" vs ")[0].strip()
+    return None
+
+
+def _boost_away(bet, sp) -> str | None:
+    ev_str = _boost_event_str(bet, sp)
+    if ev_str and " vs " in ev_str:
+        return ev_str.split(" vs ")[1].strip()
+    return None
 
 
 def _get_service(db: Session = Depends(get_db)) -> BetService:
@@ -42,6 +65,14 @@ async def list_bets(
     if event_ids:
         events = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events}
+
+    # Pre-fetch specials data for boost bets (event name, sport, time)
+    boost_titles = [b.outcome for b in bets if b.market == "boost" and b.outcome]
+    specials_map: dict[str, SpecialOdds] = {}
+    if boost_titles:
+        specials = db.query(SpecialOdds).filter(SpecialOdds.title.in_(boost_titles)).all()
+        for s in specials:
+            specials_map[s.title] = s
 
     # Pre-fetch Pinnacle odds for de-vigging (compute edge/prob on the fly)
     pinnacle_map: dict[tuple[str, str], dict[str, float]] = {}  # (event_id, market) -> {outcome: odds}
@@ -84,6 +115,7 @@ async def list_bets(
     bet_list = []
     for b in bets:
         ev = events_map.get(b.event_id) if b.event_id else None
+        sp = specials_map.get(b.outcome) if b.market == "boost" and b.outcome else None
 
         # Edge at placement: compute from stored fair_odds_at_placement
         placed_edge_pct = None
@@ -151,17 +183,18 @@ async def list_bets(
             "current_odds": current_odds,
             "point": b.point,
             "settlement_source": b.settlement_source,
-            "home_team": ev.home_team if ev else None,
-            "away_team": ev.away_team if ev else None,
+            "home_team": ev.home_team if ev else (_boost_home(b, sp)),
+            "away_team": ev.away_team if ev else (_boost_away(b, sp)),
             "display_home": ev.display_home if ev else None,
             "display_away": ev.display_away if ev else None,
-            "sport": ev.sport if ev else None,
-            "league": ev.league if ev else None,
-            "start_time": (ev.start_time.isoformat() + "Z") if ev and ev.start_time else None,
+            "sport": ev.sport if ev else (sp.sport if sp and sp.sport != "unknown" else None),
+            "league": ev.league if ev else (sp.league if sp else None),
+            "start_time": (ev.start_time.isoformat() + "Z") if ev and ev.start_time else (sp.event_time if sp else None),
             "home_score": ev.home_score if ev else None,
             "away_score": ev.away_score if ev else None,
             "match_status": ev.match_status if ev else None,
             "provider_site_url": site_urls.get(b.provider_id),
+            "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
         })
 
     return {
@@ -187,6 +220,9 @@ async def create_bet(bet: BetCreate, service: BetService = Depends(_get_service)
         utility_score=bet.utility_score,
         selection_probability=bet.selection_probability,
         stake_noise_applied=bet.stake_noise_applied,
+        fair_odds_at_placement=bet.fair_odds_at_placement,
+        boost_event=bet.boost_event,
+        boost_title=bet.boost_title,
     )
 
     if "error" in result:

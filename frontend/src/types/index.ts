@@ -222,6 +222,7 @@ export interface Bet {
   match_status?: string | null;
   match_minute?: number | null;
   provider_site_url?: string | null;
+  boost_title?: string | null;
 }
 
 // Profile

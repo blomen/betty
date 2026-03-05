@@ -656,7 +656,7 @@ async def _scrape_altenar_boosts(
                         original_odds=orig_f,
                         boosted_odds=boosted_f,
                         boost_pct=round(boost_pct_val, 1),
-                        max_stake=None,
+                        max_stake=200,
                         sport=sport if sport != "unknown" else detect_sport(
                             f"{title} {event_name} {league}"
                         ),

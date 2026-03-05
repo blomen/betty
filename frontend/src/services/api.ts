@@ -524,6 +524,9 @@ export const api = {
     bonus_type?: string;
     utility_score?: number;
     selection_probability?: number;
+    fair_odds_at_placement?: number;
+    boost_event?: string;
+    boost_title?: string;
   }): Promise<{ success: boolean; bet_id: number }> {
     return fetchJson('/bets', {
       method: 'POST',

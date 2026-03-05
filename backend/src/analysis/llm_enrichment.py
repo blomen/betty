@@ -223,8 +223,14 @@ RULES:
 - Express your probability as a decimal between 0.01 and 0.99
 - Determine the event start time from search results, event context, or league schedules
 
+SCANDINAVIAN BOOST TITLE FORMATS:
+- "Halvtid/fulltid: TeamA/TeamB" means TeamA leads at halftime AND TeamB wins at full-time. The teams after the colon are the SELECTIONS, not the event participants. E.g. for "Leipzig vs Augsburg", title "Halvtid/fulltid: FC Augsburg/FC Augsburg" = Augsburg leads HT & Augsburg wins FT.
+- "1x2 & båda lagen gör mål: X & Y" means match result X AND both teams score Y (ja=yes, nej=no). "Oavgjort" = draw.
+- "Halvtid/fulltid - rätt resultat: X Y+" means HT/FT correct score X with Y+ total goals.
+- Always interpret the SELECTION text literally — do NOT flip teams.
+
 OUTPUT FORMAT (strict — follow exactly):
-TITLE: A short, clear English title for this bet (max 8 words). Translate any non-English terms. Examples: "Arsenal wins & both teams score", "Real Sociedad leads HT & wins FT", "Man Utd wins & over 2.5 goals"
+TITLE: A short, clear English title for this bet (max 8 words). Translate any non-English terms. Use the SELECTION teams from the original title, not the event home team. Examples: "Arsenal wins & both teams score", "Real Sociedad leads HT & wins FT", "Man Utd wins & over 2.5 goals"
 EVENT_TIME: ISO 8601 datetime with timezone (e.g. 2026-03-05T20:00:00+01:00). Use UNKNOWN if you cannot determine it.
 PROBABILITY: 0.XX
 CONFIDENCE: low|medium|high

@@ -262,12 +262,14 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                 const liveOdds = b.current_odds ?? b.odds;
                 const liveEdge = fairOdds != null && fairOdds > 1 ? (liveOdds / fairOdds - 1) * 100 : null;
                 const placedEdge = edgePct;
-                const edgeIncreasing = liveEdge != null && placedEdge != null && liveEdge > placedEdge;
+                const edgeDirection = liveEdge != null && placedEdge != null
+                  ? (liveEdge > placedEdge + 0.5 ? 'up' : liveEdge < placedEdge - 0.5 ? 'down' : null)
+                  : null;
 
                 return (
                   <Fragment key={b.id}>
                     <tr
-                      className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
+                      className={`cursor-pointer ${b.market === 'boost' ? 'bg-tabValue/[0.03] hover:bg-tabValue/[0.07]' : ''} ${isExpanded ? 'expanded' : ''}`}
                       onClick={() => { if (!isEditing) setExpandedId(isExpanded ? null : b.id); }}
                     >
                       {/* TTK column for upcoming */}
@@ -282,15 +284,25 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         );
                       })()}
                       <td>
-                        <div className="text-text text-sm">{eventLabel(b)}</div>
+                        <div className="text-text text-sm">
+                          {b.market === 'boost' && <span className="text-tabValue mr-0.5">⚡</span>}
+                          {b.market === 'boost' && b.home_team ? eventLabel(b) : b.market === 'boost' ? (b.boost_title || b.outcome || `Bet #${b.id}`) : eventLabel(b)}
+                        </div>
                         <div className="text-muted2 text-[10px]">
+                          {b.market === 'boost' && b.boost_title && b.home_team ? <>{b.boost_title} · </> : null}
                           {b.sport}{b.market && b.market !== '1x2' && b.market !== 'moneyline' && b.market !== 'boost' ? ` · ${b.market}` : ''}
                           {b.start_time ? ` · ${formatDateTime(b.start_time)}` : b.placed_at ? ` · ${formatDateTime(b.placed_at)}` : ''}
                         </div>
                       </td>
                       <td className="text-right text-text text-sm">
-                        {resolveOutcome(b)}
-                        {b.point != null && <span className="text-muted2 text-[10px] ml-0.5">{b.point > 0 ? '+' : ''}{b.point}</span>}
+                        {b.market === 'boost' ? (
+                          <span className="text-muted">boost</span>
+                        ) : (
+                          <>
+                            {resolveOutcome(b)}
+                            {b.point != null && <span className="text-muted2 text-[10px] ml-0.5">{b.point > 0 ? '+' : ''}{b.point}</span>}
+                          </>
+                        )}
                       </td>
                       <td className="text-right text-muted text-sm">{formatProviderName(b.provider)}</td>
 
@@ -336,7 +348,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                             if (displayEdge != null) return (
                               <span className={displayEdge >= 0 ? 'text-success' : 'text-error'}>
                                 {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
-                                {edgeIncreasing && <span className="text-[9px] text-success ml-0.5">&#8593;</span>}
+                                {edgeDirection === 'up' && <span className="text-[9px] text-success ml-0.5">&#9650;</span>}
+                                {edgeDirection === 'down' && <span className="text-[9px] text-error ml-0.5">&#9660;</span>}
                               </span>
                             );
                             return <span className="text-muted">-</span>;
@@ -426,6 +439,13 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       <tr key={`${b.id}-x`}>
                         <td colSpan={colCount} className="!p-0" onClick={e => e.stopPropagation()}>
                           <div className="px-3 py-2 bg-panel">
+                            {/* Boost conditions */}
+                            {b.market === 'boost' && b.outcome && (
+                              <div className="text-xs text-muted2 mb-1">
+                                <span className="uppercase tracking-wider text-muted">Condition: </span>
+                                <span className="text-text">{b.outcome}</span>
+                              </div>
+                            )}
                             {/* Edit button */}
                             {!isEditing && (
                               <div className="flex items-center">
