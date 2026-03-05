@@ -2,16 +2,16 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider, Bet } from '@/types';
+import type { Opportunity, Provider, Bet, ProviderExposure } from '@/types';
 
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
@@ -43,6 +43,7 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers }: ValuePageProps) {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ValueTab>('value');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -105,6 +106,10 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
   const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
 
+  // Wagering priority: provider_id → remaining wagering amount (higher = play first)
+  const [wageringPriority, setWageringPriority] = useState<Map<string, number>>(new Map());
+  const [bankrollTotal, setBankrollTotal] = useState<number>(0);
+
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
@@ -130,14 +135,28 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [res, boostRes] = await Promise.all([
+      const [res, boostRes, exposureRes, bankrollRes] = await Promise.all([
         api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
         api.getSpecials({}).catch(() => null),
+        api.getBankrollExposure().catch(() => null),
+        api.getBankroll().catch(() => null),
       ]);
       setOpportunities(res.opportunities);
       if (boostRes) {
         setSpecials(boostRes.specials || []);
         if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
+      }
+      if (bankrollRes?.total != null) setBankrollTotal(bankrollRes.total);
+      if (exposureRes?.providers) {
+        const m = new Map<string, number>();
+        for (const p of exposureRes.providers) {
+          if (p.wagering && p.wagering.remaining > 0) {
+            // Priority = locked capital at this provider
+            // Completing rollover here unlocks more bankroll → higher stakes → faster wagering everywhere
+            m.set(p.provider_id, p.balance_sek ?? 0);
+          }
+        }
+        setWageringPriority(m);
       }
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
@@ -195,6 +214,10 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     const groups: GroupedOpp[] = [];
     for (const [key, opps] of map) {
+      // Sort providers within group: highest wagering remaining first
+      if (wageringPriority.size > 0) {
+        opps.sort((a, b) => (wageringPriority.get(b.provider1) ?? -1) - (wageringPriority.get(a.provider1) ?? -1));
+      }
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     // Bonus-first when user actively filters to those providers
@@ -213,7 +236,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, placedKeys]);
+  }, [opportunities, selectedProviders, placedKeys, wageringPriority]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -264,15 +287,28 @@ export function ValuePage({ providers }: ValuePageProps) {
     );
   }, [boostGrouped, boostSelectedProviders]);
 
-  type BoostSortCol = 'odds' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'max';
+  // Client-side Kelly stake: f = edge / (odds - 1), stake = bankroll * f * 0.25 (quarter Kelly)
+  const calcBoostStake = useCallback((s: SpecialItem): number => {
+    if (!bankrollTotal) return 0;
+    const edge = s.llm_edge_pct ?? s.edge_pct;
+    const odds = s.boosted_odds;
+    if (edge == null || odds == null || odds <= 1 || edge <= 0) return 0;
+    const kellyFrac = (edge / 100) / (odds - 1);
+    let stake = bankrollTotal * kellyFrac * 0.25; // quarter Kelly
+    if (s.max_stake != null && stake > s.max_stake) stake = s.max_stake;
+    return Math.round(stake);
+  }, [bankrollTotal]);
+
+  type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
     odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
+    fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? 0,
     aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? 0,
     aiEdge: (g: GroupedSpecial) => g.rep.llm_edge_pct ?? -999,
-    max: (g: GroupedSpecial) => g.rep.max_stake ?? 0,
+    stake: (g: GroupedSpecial) => calcBoostStake(g.rep),
     edge: (g: GroupedSpecial) => g.rep.edge_pct ?? g.rep.boost_pct ?? 0,
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
-  }), []);
+  }), [calcBoostStake]);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
     useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'edge', direction: 'desc' });
 
@@ -433,7 +469,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabBonus text-tabBonus' },
+          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabValue text-tabValue' },
           { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
         ]).map(tab => (
           <button
@@ -472,29 +508,30 @@ export function ValuePage({ providers }: ValuePageProps) {
         </div>
       )}
 
-      {boostFilters && boostFilters.providers.length > 0 && (
-        <FilterBar>
-          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderName} accentColor="tabBonus" />
-        </FilterBar>
-      )}
+      <FilterBar>
+        {boostFilters && boostFilters.providers.length > 0 && (
+          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderName} accentColor="tabValue" />
+        )}
+        <FreshnessIndicator tiers={[['boosts', freshness.boosts]]} />
+      </FilterBar>
 
       {sortedBoosts.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          No active boosts. Boosts are scraped automatically every 2 hours.
+          No active boosts. Boosts are scraped automatically every hour.
         </div>
       ) : (
-        <div className="border-l-2 border-tabBonus">
+        <div className="border-l-2 border-tabValue">
         <table className="sq">
           <thead>
             <tr>
               <th>Boost</th>
               <th className="text-right">Providers</th>
               <SortableHeader column="odds" label="Odds" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="edge" label="Boost" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="fair" label="Fair" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="aiProb" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="aiEdge" label="Est Edge" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="max" label="Max" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="stake" label="Stake" sort={boostSort} onToggle={toggleBoostSort} />
+              <SortableHeader column="aiEdge" label="Edge" sort={boostSort} onToggle={toggleBoostSort} />
             </tr>
           </thead>
           <tbody>
@@ -507,12 +544,12 @@ export function ValuePage({ providers }: ValuePageProps) {
                 <Fragment key={group.key}>
                   <tr className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
                     <td>
-                      <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="flex items-center gap-1 min-w-0">
                         <span className="text-text text-sm truncate">{s.llm_title || s.title}</span>
                       </div>
                       <div className="text-muted2 text-[11px] truncate">
-                        {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}{s.league ? ` · ${s.league}` : ''}
-                        {s.event_time && isFutureDate(s.event_time) ? ` · ${formatEventTime(s.event_time)}` : s.expires_at ? ` · ${formatTimeRemaining(s.expires_at)}` : ''}
+                        {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}
+                        {s.event_time ? ` · ${formatDateTime(s.event_time)}` : ''}
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">
@@ -528,37 +565,39 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </span>
                     </td>
-                    <td className="text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        {s.original_odds != null && (<><span className="text-muted line-through text-xs">{s.original_odds.toFixed(2)}</span><span className="text-muted text-xs">&rarr;</span></>)}
-                        <span className="text-success font-bold text-sm">{s.boosted_odds != null ? s.boosted_odds.toFixed(2) : '-'}</span>
-                      </div>
-                    </td>
-                    <td className="text-right">
-                      {(s.edge_pct ?? s.boost_pct) != null ? (
-                        <span className="font-semibold text-sm text-tabBonus">
-                          +{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
-                        </span>
-                      ) : <span className="text-muted2 text-sm">-</span>}
-                    </td>
                     <td className="text-right text-sm">
-                      {s.llm_probability != null ? (
-                        <span className={LLM_CONFIDENCE_COLOR[s.llm_confidence ?? 'low'] ?? 'text-muted'}>
-                          {(s.llm_probability * 100).toFixed(0)}%
-                        </span>
-                      ) : <span className="text-muted2">-</span>}
+                      {s.original_odds != null && s.boosted_odds != null ? (
+                        <>
+                          <span className="text-muted2">{s.original_odds.toFixed(2)}</span>
+                          <span className="text-muted2 mx-0.5">&rarr;</span>
+                          <span className="text-success font-medium">{s.boosted_odds.toFixed(2)}</span>
+                          {s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
+                        </>
+                      ) : (
+                        <span className="text-text font-medium">{s.boosted_odds?.toFixed(2) ?? '-'}</span>
+                      )}
                     </td>
-                    <td className="text-right">
-                      {s.llm_edge_pct != null ? (
-                        <span className={`font-semibold text-sm ${s.llm_edge_pct > 0 ? 'text-sky-400' : 'text-error'}`}>
-                          {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
-                        </span>
-                      ) : <span className="text-muted2 text-sm">-</span>}
+                    <td className="text-right text-muted text-sm">{s.llm_fair_odds != null ? s.llm_fair_odds.toFixed(2) : '-'}</td>
+                    <td className="text-right text-muted text-sm">
+                      {s.llm_probability != null ? `${(s.llm_probability * 100).toFixed(0)}%` : '-'}
                     </td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-muted text-sm">{s.max_stake != null ? `${s.max_stake.toFixed(0)} kr` : '-'}</td>
+                    <td className="text-right text-sm font-medium">
+                      {(() => { const st = calcBoostStake(s); return st > 0 ? <span className="text-text">{st} kr</span> : <span className="text-muted2">-</span>; })()}
+                    </td>
+                    <td className="text-right font-semibold text-sm">
+                      {s.llm_edge_pct != null ? (
+                        <span className={s.llm_edge_pct > 0 ? 'text-success' : 'text-error'}>
+                          {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
+                        </span>
+                      ) : (s.edge_pct ?? s.boost_pct) != null ? (
+                        <span className={(s.edge_pct ?? s.boost_pct)! > 0 ? 'text-success' : 'text-error'}>
+                          {(s.edge_pct ?? s.boost_pct)! > 0 ? '+' : ''}{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
+                        </span>
+                      ) : <span className="text-muted2">-</span>}
+                    </td>
                   </tr>
                   {isExpanded && (
                     <tr key={`${group.key}-exp`}>
@@ -624,6 +663,7 @@ export function ValuePage({ providers }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
       {/* Value bets table */}
@@ -720,7 +760,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         </>
                       ) : '-'}
                     </td>
-                    <td className="text-right text-tabValue font-semibold text-sm">+{rep.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${(rep.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(rep.edge_pct ?? 0) > 0 ? '+' : ''}{rep.edge_pct?.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (() => {
@@ -825,25 +865,21 @@ export function ValuePage({ providers }: ValuePageProps) {
                             : 'Place Bet';
                           const isPending = pendingBet?.groupKey === group.key;
 
+                          // Find recommended provider: the one with most wagering remaining in this group
+                          let recommended: { provider: string } | null = null;
+                          if (wageringPriority.size > 0 && opps.length > 1) {
+                            let maxRem = 0;
+                            for (const opp of opps) {
+                              const rem = wageringPriority.get(opp.provider1) ?? 0;
+                              if (rem > maxRem) { maxRem = rem; recommended = { provider: opp.provider1 }; }
+                            }
+                          }
+
                           return (
-                          <div className="px-3 py-2 bg-panel flex items-center gap-2">
+                          <div className="px-3 py-2 bg-panel">
+                            <div className="flex items-center gap-2">
                             {isPending ? (
                               <>
-                                <span className="text-muted text-xs">Odds:</span>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  autoFocus
-                                  value={pendingBet!.actualOdds}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value);
-                                    if (!isNaN(val)) {
-                                      setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
-                                    }
-                                  }}
-                                  className="w-20 bg-bg border border-tabValue/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabValue"
-                                  onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
-                                />
                                 <button
                                   onClick={confirmPlaceBet}
                                   disabled={isPlacing || pendingBet!.actualOdds < 1.01}
@@ -851,6 +887,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                 >
                                   {isPlacing ? '...' : 'Confirm'}
                                 </button>
+                                <span className="text-muted text-xs">@ {pendingBet!.actualOdds.toFixed(2)}</span>
                                 <button
                                   onClick={() => setPendingBet(null)}
                                   className="px-2 py-1.5 text-xs text-muted hover:text-text"
@@ -866,7 +903,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                     onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
                                     className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                                   >
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${(balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabValue' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
                                     <span className="truncate">
                                       {formatProviderName(selOpp.provider1)}
                                       {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
@@ -893,8 +930,10 @@ export function ValuePage({ providers }: ValuePageProps) {
                                             }}
                                             className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                                           >
-                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBal ? 'bg-success' : 'bg-muted/40'}`} />
-                                            {formatProviderName(opp.provider1)}{s}{tag}
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === opp.provider1 ? 'bg-tabValue' : hasBal ? 'bg-success' : 'bg-muted/40'}`} />
+                                            <span className="truncate">
+                                              {formatProviderName(opp.provider1)}{s}{tag}
+                                            </span>
                                           </button>
                                         );
                                       })}
@@ -910,6 +949,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                 </button>
                               </>
                             )}
+                            </div>
                           </div>
                           );
                         })()}
@@ -1045,7 +1085,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
   betError: string | null;
 }) {
   void groupKey;
-  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : 0;
+  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0);
   const effectiveOdds = oddsOverride ?? special.boosted_odds ?? 0;
   const oddsChanged = oddsOverride != null;
   const potentialReturn = stake * effectiveOdds;
@@ -1053,7 +1093,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
 
   return (
     <div className="px-3 py-2 bg-panel">
-      {isLoadingPreview ? (<div className="text-muted text-sm">Calculating stake...</div>) : stakePreview ? (
+      {isLoadingPreview ? (<div className="text-muted text-sm">Loading...</div>) : stakePreview ? (
         <div className="space-y-2">
           <div className="flex items-center gap-6 text-xs text-muted flex-wrap">
             <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span></div>
@@ -1062,46 +1102,41 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
               {editingOdds ? (
                 <input
                   type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
-                  className="w-16 bg-bg border border-tabBonus/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabBonus"
+                  className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
                   onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
                 />
               ) : (
-                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabBonus/50 transition-colors ${oddsChanged ? 'text-tabBonus font-medium border-tabBonus/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
+                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
                   {effectiveOdds.toFixed(2)}
                 </span>
               )}
               {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
             </div>
-            <div><span className="text-muted2 uppercase tracking-wider">Stake: </span><span className="text-text font-medium">{stake.toFixed(0)} kr</span>{stakePreview.was_capped_single && <span className="text-warning text-[10px] ml-1">capped</span>}{special.max_stake != null && stakePreview.recommended_stake > special.max_stake && <span className="text-warning text-[10px] ml-1">max</span>}</div>
-            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-success text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
-            <div><span className="text-muted2 uppercase tracking-wider">Bankroll: </span><span className="text-text">{stakePreview.bankroll.toFixed(0)} kr</span></div>
-            {special.boost_pct != null && <div><span className="text-muted2 uppercase tracking-wider">Boost: </span><span className="text-tabBonus">{special.boost_pct > 0 ? '+' : ''}{special.boost_pct.toFixed(0)}%</span></div>}
-            {special.llm_fair_odds != null && <div><span className="text-muted2 uppercase tracking-wider">Est Fair: </span><span className="text-sky-400">{special.llm_fair_odds.toFixed(2)}</span></div>}
-            {!stakePreview.bonus_cleared && <div><span className="text-warning uppercase tracking-wider text-[10px]">Bonus active </span><span className="text-warning text-xs">min odds {stakePreview.min_odds_applied.toFixed(2)}</span></div>}
-            {special.llm_reasoning && (
-              <div className="text-sky-400/70 text-[10px]">
-                <span className="uppercase tracking-wider">Research ({special.llm_confidence || 'low'}): </span>
-                <span className="text-sky-400/50 normal-case">{special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '')}</span>)}</span>
-              </div>
-            )}
+            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
           </div>
+          {special.llm_reasoning && (
+            <div className="text-muted2 text-[10px] leading-relaxed">
+              <span className="uppercase tracking-wider">{special.llm_confidence || 'low'}: </span>
+              {special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
+                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-2">
             {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
             {stakePreview.skip_reason ? (
               <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
             ) : pendingBet ? (
               <>
-                <span className="text-muted text-xs">Odds:</span>
-                <input
-                  type="number" step="0.01" autoFocus value={pendingBet.actualOdds}
-                  onChange={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val)) onUpdatePendingOdds(val); }}
-                  className="w-20 bg-bg border border-tabBonus/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabBonus"
-                  onKeyDown={(e) => { if (e.key === 'Enter') onConfirmBet(); if (e.key === 'Escape') onCancelPending(); }}
-                />
-                <button onClick={onConfirmBet} disabled={isPlacing || pendingBet.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">
+                <button
+                  onClick={onConfirmBet}
+                  disabled={isPlacing || pendingBet.actualOdds < 1.01}
+                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                >
                   {isPlacing ? '...' : 'Confirm'}
                 </button>
+                <span className="text-muted text-xs">@ {pendingBet.actualOdds.toFixed(2)}</span>
                 <button onClick={onCancelPending} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
               </>
             ) : (
@@ -1109,7 +1144,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                 <select
                   value={selectedProviderIdx}
                   onChange={(e) => onSelectProvider(Number(e.target.value))}
-                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabBonus/50 cursor-pointer"
+                  className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer"
                 >
                   {providers.map((pid, i) => (
                     <option key={pid} value={i}>{formatProviderName(pid)} {stake > 0 ? `${stake.toFixed(0)} kr` : ''}</option>
@@ -1118,7 +1153,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
                 <button
                   onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
                   disabled={stake <= 0 || isPlacing}
-                  className="px-4 py-1.5 bg-tabBonus text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
+                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
                 >
                   {isPlacing ? '...' : 'Place Bet'}
                 </button>
@@ -1126,7 +1161,7 @@ function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadin
             )}
           </div>
         </div>
-      ) : (<div className="text-muted text-sm">No preview available — missing boost data</div>)}
+      ) : (<div className="text-muted text-sm">No data</div>)}
     </div>
   );
 }

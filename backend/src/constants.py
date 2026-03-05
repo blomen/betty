@@ -24,7 +24,7 @@ EXCLUDED_FROM_SCANS = frozenset()
 PLATFORM_MAP: dict[str, str] = {
     # Kambi — 100% identical odds across all brands
     'unibet': 'kambi', 'leovegas': 'kambi', 'betmgm': 'kambi',
-    'speedybet': 'kambi', 'x3000': 'kambi', 'goldenbull': 'kambi', '1x2': 'kambi',
+    'speedybet': 'kambi', 'x3000': 'kambi', 'goldenbull': 'kambi', '1x2': 'kambi', 'expekt': 'kambi',
     # Altenar — 99.7% identical
     'dbet': 'altenar', 'betinia': 'altenar', 'lodur': 'altenar',
     'campobet': 'altenar', 'swiper': 'altenar', 'quickcasino': 'altenar',
@@ -49,7 +49,7 @@ PLATFORM_MAP: dict[str, str] = {
 PLATFORM_GROUPS: dict[str, dict] = {
     "kambi": {
         "canonical": "unibet",
-        "members": ["unibet", "leovegas", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "members": ["unibet", "leovegas", "betmgm", "speedybet", "x3000", "goldenbull", "1x2", "expekt"],
     },
     "spectate": {
         "canonical": "888sport",
@@ -66,6 +66,10 @@ PLATFORM_GROUPS: dict[str, dict] = {
     "gecko_bethard": {
         "canonical": "bethard",
         "members": ["bethard", "spelklubben"],
+    },
+    "comeon": {
+        "canonical": "comeon",
+        "members": ["comeon", "hajper", "lyllo"],
     },
 }
 

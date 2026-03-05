@@ -8,7 +8,7 @@ import { useTableSort } from '@/hooks/useTableSort';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
 
-type BankrollSortCol = 'provider' | 'balance' | 'pending' | 'available';
+type BankrollSortCol = 'provider' | 'balance' | 'pending' | 'available' | 'withdraw';
 
 const bankrollSortExtractors: Record<BankrollSortCol, (p: ProviderExposure) => number> = {
   provider: (p) => {
@@ -18,6 +18,7 @@ const bankrollSortExtractors: Record<BankrollSortCol, (p: ProviderExposure) => n
   balance: (p) => p.total_balance,
   pending: (p) => p.pending_exposure,
   available: (p) => p.available,
+  withdraw: (p) => p.is_locked ? 0 : p.available,
 };
 
 interface BankrollPageProps {
@@ -316,14 +317,12 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
             <thead>
               <tr>
                 <th>Total Balance</th>
-                <th className="text-right">Available</th>
                 <th className="text-right">Pending</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td className="text-text text-xl font-semibold">{exposure.total_balance.toFixed(0)} kr</td>
-                <td className="text-right text-success text-xl font-semibold">{exposure.total_available.toFixed(0)} kr</td>
                 <td className="text-right text-tabBets text-xl font-semibold">{exposure.total_pending.toFixed(0)} kr</td>
               </tr>
             </tbody>
@@ -343,6 +342,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                 <SortableHeader column="balance" label="Balance" sort={provSort} onToggle={toggleProvSort} />
                 <SortableHeader column="pending" label="Pending" sort={provSort} onToggle={toggleProvSort} />
                 <SortableHeader column="available" label="Available" sort={provSort} onToggle={toggleProvSort} />
+                <SortableHeader column="withdraw" label="Withdraw" sort={provSort} onToggle={toggleProvSort} />
                 <th className="text-right"></th>
               </tr>
             </thead>
@@ -380,14 +380,16 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                       })()}
                     </td>
                     <td className="text-right text-text">
-                      {provider.currency && provider.currency !== 'SEK' ? (
-                        <span title={`$${provider.total_balance.toFixed(2)}`}>
-                          {provider.balance_sek?.toFixed(0) ?? '?'} kr
-                          <span className="text-muted2 text-[10px] ml-1">(${provider.total_balance.toFixed(2)})</span>
-                        </span>
-                      ) : (
-                        <>{provider.total_balance.toFixed(0)} kr</>
-                      )}
+                      <div>
+                        {provider.currency && provider.currency !== 'SEK' ? (
+                          <span title={`$${provider.total_balance.toFixed(2)}`}>
+                            {provider.balance_sek?.toFixed(0) ?? '?'} kr
+                            <span className="text-muted2 text-[10px] ml-1">(${provider.total_balance.toFixed(2)})</span>
+                          </span>
+                        ) : (
+                          <>{provider.total_balance.toFixed(0)} kr</>
+                        )}
+                      </div>
                     </td>
                     <td className="text-right text-muted">
                       {provider.pending_exposure.toFixed(0)} kr
@@ -403,6 +405,20 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                         </span>
                       ) : (
                         <>{provider.available.toFixed(0)} kr</>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      {provider.is_locked ? (
+                        <span className="text-muted2">0 kr</span>
+                      ) : provider.available > 0 ? (
+                        <span className="text-success">
+                          {provider.currency && provider.currency !== 'SEK'
+                            ? `${(provider.available * (provider.exchange_rate_sek ?? 1)).toFixed(0)} kr`
+                            : `${provider.available.toFixed(0)} kr`
+                          }
+                        </span>
+                      ) : (
+                        <span className="text-muted2">0 kr</span>
                       )}
                     </td>
                     <td className="text-right">

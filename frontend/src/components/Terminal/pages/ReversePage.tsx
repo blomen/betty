@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
+import { FilterBar, FreshnessIndicator } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity, Bet } from '@/types';
@@ -13,6 +14,7 @@ type ReverseTab = 'reverse' | 'mybets';
 const reverseBetFilter = (b: Bet) => b.provider === 'pinnacle';
 
 export function ReversePage() {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -192,6 +194,10 @@ export function ReversePage() {
         </div>
       )}
 
+      <FilterBar>
+        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+      </FilterBar>
+
       {/* Table */}
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
@@ -259,7 +265,7 @@ export function ReversePage() {
                         <span className="text-text">{opp.final_stake!.toFixed(0)} kr</span>
                       ) : '-'}
                     </td>
-                    <td className="text-right text-tabReverse font-semibold text-sm">+{opp.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(opp.edge_pct ?? 0) > 0 ? '+' : ''}{opp.edge_pct?.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (

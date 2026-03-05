@@ -10,6 +10,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTiersProgress } from '@/hooks/useExtractionStatus';
 
 // Map accent color tokens to their hex values (avoids Tailwind purge issues with dynamic classes)
 const ACCENT_COLORS: Record<string, string> = {
@@ -381,6 +382,89 @@ export function SingleSelectPills({
   );
 }
 
+
+// ── Extraction freshness indicators ───────────────────────────────────
+
+/** Map display tier labels to scheduler tier names for running-state detection */
+const TIER_RUNNING_MAP: Record<string, string[]> = {
+  soft: ['api_soft', 'browser_soft'],
+  sharp: ['sharp'],
+  poly: ['sharp'], // polymarket is part of the sharp tier
+  boosts: ['boosts'],
+};
+
+function formatAge(isoTimestamp: string): { label: string; color: string } {
+  const ageMs = Date.now() - new Date(isoTimestamp).getTime();
+  const totalSec = Math.max(0, Math.floor(ageMs / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const label = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+
+  const ageMin = totalSec / 60;
+  const ageHr = ageMin / 60;
+  const color = ageMin < 15 ? 'text-success' : ageMin < 60 ? 'text-yellow' : ageHr < 3 ? 'text-warning' : 'text-error';
+  return { label, color };
+}
+
+interface FreshnessIndicatorProps {
+  /** Array of [label, isoTimestamp] pairs, e.g. [["soft", "2026-..."], ["sharp", "2026-..."]] */
+  tiers: [string, string | null][];
+}
+
+/**
+ * Shows extraction age per tier in HH:MM format with color coding.
+ * Shows "extracting" for tiers currently running.
+ * Auto-refreshes every second.
+ */
+export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
+  const [, setTick] = useState(0);
+  const tiersProgress = useTiersProgress();
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Determine which display tiers are currently extracting
+  const runningDisplayTiers = new Set<string>();
+  if (tiersProgress?.tiers) {
+    for (const [displayTier, schedulerTiers] of Object.entries(TIER_RUNNING_MAP)) {
+      if (schedulerTiers.some(st => tiersProgress.tiers[st]?.running)) {
+        runningDisplayTiers.add(displayTier);
+      }
+    }
+  }
+
+  // Show all tiers: running ones as "extracting", others with age (or hide if null and not running)
+  const entries = tiers.filter(([tier, ts]) => ts != null || runningDisplayTiers.has(tier));
+  if (entries.length === 0) return null;
+
+  return (
+    <span className="ml-auto shrink-0 flex items-center gap-3">
+      {entries.map(([tier, ts]) => {
+        const isRunning = runningDisplayTiers.has(tier);
+
+        if (isRunning) {
+          return (
+            <span key={tier} className="text-[10px] text-tabExtract">
+              <span className="text-muted2 uppercase">{tier}</span>{' '}
+              <span className="animate-pulse">extracting</span>
+            </span>
+          );
+        }
+
+        if (!ts) return null;
+        const { label, color } = formatAge(ts);
+        return (
+          <span key={tier} className={`text-[10px] ${color}`} title={new Date(ts).toLocaleString()}>
+            <span className="text-muted2 uppercase">{tier}</span> {label}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 // ── Filter bar container ─────────────────────────────────────────────
 

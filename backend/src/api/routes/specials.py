@@ -127,6 +127,35 @@ async def get_specials(
     if ev_only:
         specials = [s for s in specials if s.get("is_positive_ev")]
 
+    # --- Pre-compute Kelly stakes for all boosts ---
+    try:
+        from ...services.bankroll_service import BankrollService
+        from ...repositories.profile_repo import ProfileRepo
+        from ...repositories.bet_repo import BetRepo
+        svc = BankrollService(ProfileRepo(db), BetRepo(db), db)
+        profile = svc.profile_repo.get_active()
+        calc = svc.get_stake_calculator(profile.id)
+        for s in specials:
+            edge_pct = s.get("llm_edge_pct") if s.get("llm_edge_pct") is not None else s.get("edge_pct")
+            odds = s.get("boosted_odds")
+            if edge_pct is not None and odds is not None and odds > 1:
+                result = calc.calculate(
+                    edge_raw=edge_pct / 100.0,
+                    odds=odds,
+                    provider_id=s.get("provider"),
+                    high_confidence=True,
+                )
+                stake = result.stake
+                if s.get("max_stake") is not None and stake > s["max_stake"]:
+                    stake = s["max_stake"]
+                s["recommended_stake"] = round(stake, 1)
+                s["kelly_fraction"] = result.kelly_fraction
+            else:
+                s["recommended_stake"] = None
+                s["kelly_fraction"] = None
+    except Exception as e:
+        logger.warning(f"Failed to compute boost stakes: {e}")
+
     # --- Sorting ---
     sort_key = sort.lower()
     reverse = order.lower() != "asc"

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
+import { FilterBar, FreshnessIndicator } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet, Bet } from '@/types';
@@ -13,6 +14,7 @@ const polyBetFilter = (b: Bet) => b.provider === 'polymarket';
 type PolyTab = 'value' | 'mybets';
 
 export function PolymarketPage() {
+  const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
 
   // Value bets state
@@ -235,6 +237,10 @@ export function PolymarketPage() {
           </div>
         )}
 
+        <FilterBar>
+          <FreshnessIndicator tiers={[['poly', freshness.poly], ['sharp', freshness.sharp]]} />
+        </FilterBar>
+
         {isLoading && valueBets.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
         ) : sortedBets.length === 0 ? (
@@ -302,7 +308,7 @@ export function PolymarketPage() {
                       <td className="text-right text-sm font-medium text-text">
                         {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
                       </td>
-                      <td className="text-right text-tabPolymarket font-semibold text-sm">+{m.edgePct.toFixed(1)}%</td>
+                      <td className={`text-right font-semibold text-sm ${m.edgePct > 0 ? 'text-success' : 'text-error'}`}>{m.edgePct > 0 ? '+' : ''}{m.edgePct.toFixed(1)}%</td>
                     </tr>
 
                     {isSelected && !isSkipped && (

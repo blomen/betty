@@ -429,7 +429,20 @@ export interface BankrollExposure {
   total_balance: number;
   total_pending: number;
   total_available: number;
+  total_free: number;
+  total_locked: number;
   providers: ProviderExposure[];
+}
+
+export interface ProviderWagering {
+  status: string;
+  wagered: number;
+  requirement: number;
+  progress_pct: number;
+  remaining: number;
+  min_odds: number;
+  days_remaining: number | null;
+  expires_at: string | null;
 }
 
 export interface ProviderExposure {
@@ -442,6 +455,9 @@ export interface ProviderExposure {
   pending_exposure: number;
   pending_bets_count: number;
   available: number;
+  platform: string;
+  is_locked: boolean;
+  wagering?: ProviderWagering | null;
 }
 
 // Opportunity with Event Details
@@ -538,6 +554,7 @@ export interface PolymarketValueBet {
   // Navigation — event slug for deep links to polymarket.com/event/{slug}
   event_slug?: string | null;
   provider_meta?: Record<string, string | number> | null;
+  updated_at?: string | null;
 }
 
 export interface PolymarketValueResponse {

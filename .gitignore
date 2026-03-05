@@ -19,6 +19,7 @@ venv/
 .env
 .mcp.json
 .claude/
+/.playwright-mcp
 
 # Data
 backend/data/
@@ -46,3 +47,4 @@ node_modules/
 /package.json
 /package-lock.json
 /scripts/
+

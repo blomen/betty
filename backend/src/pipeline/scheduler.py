@@ -240,8 +240,8 @@ class ExtractionScheduler:
             providers=[
                 # Spectate (2)
                 "mrgreen", "888sport",
-                # ComeOn Group (3)
-                "comeon", "hajper", "lyllo",
+                # ComeOn Group (1) — hajper/lyllo fanned out via PLATFORM_GROUPS
+                "comeon",
                 # Snabbare (1)
                 "snabbare",
                 # 10Bet (1)
@@ -294,7 +294,7 @@ class ExtractionScheduler:
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
-    async def start_boosts_tier(self, interval_seconds: int = 7200):
+    async def start_boosts_tier(self, interval_seconds: int = 3600):
         """Start the oddsboost scraper on a recurring schedule.
 
         Runs independently of extraction tiers — doesn't need the pipeline

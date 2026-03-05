@@ -826,15 +826,13 @@ extraction_tiers:
     interval_minutes: 60
 
   browser_soft:
-    # Heavy browser-based extractors — every 120 minutes
-    # Runs on startup, then every 120 minutes
+    # Heavy browser-based extractors — every 60 minutes
+    # Runs on startup, then every 60 minutes
     providers:
       # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group — keep all 3 (too different: 1.7-83% identity)
+      # ComeOn Group (1) — hajper/lyllo fanned out via PLATFORM_GROUPS
       - comeon
-      - hajper
-      - lyllo
       # Snabbare (1)
       - snabbare
       # 10Bet (1)
@@ -845,7 +843,7 @@ extraction_tiers:
       - coolbet
       # Tipwin (1)
       - tipwin
-    interval_minutes: 120
+    interval_minutes: 60
 
 # ============================================================================
 # Active providers (subset used for extraction)

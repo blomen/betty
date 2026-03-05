@@ -95,14 +95,26 @@ class ExtractionPipeline:
         if total > 0:
             logger.debug(f"Pre-populated event cache from DB: {total} events across {len(self.event_cache)} sports")
 
+    # Typical sport durations (hours) — used for time-based FT detection
+    SPORT_DURATION_HOURS: dict[str, float] = {
+        "football": 2.5,
+        "basketball": 3.0,
+        "ice_hockey": 3.0,
+        "tennis": 4.0,
+        "esports": 4.0,
+        "handball": 2.5,
+        "mma": 3.0,
+    }
+    DEFAULT_DURATION_HOURS = 3.0
+
     def _detect_finished_events(self) -> int:
         """Mark events as 'finished' when they are no longer active.
 
         Three detection strategies:
         1. Staleness: match_status='live' and updated_at > 3 min ago = Pinnacle dropped them
         2. Time-based (live): match_status='live' and start_time + 6 hours ago = over
-        3. Time-based (never-live): match_status IS NULL, has pending bets, start_time + 3 hours ago
-           Catches events where the app was off during the game so 'live' was never set.
+        3. Time-based (never-live): pending bets, match_status NULL/prematch,
+           start_time + sport duration has elapsed.
 
         Returns number of events marked as finished.
         """
@@ -123,7 +135,6 @@ class ExtractionPipeline:
         )
 
         # Strategy 2: time-based — start_time + 6 hours = definitely over
-        # Covers: app was closed during match, esports with no scores, etc.
         time_cutoff = now - timedelta(hours=6)
         overtime_events = (
             self.session.query(Event)
@@ -135,22 +146,29 @@ class ExtractionPipeline:
             .all()
         )
 
-        # Strategy 3: never-live events with pending bets, start_time + 3 hours ago
-        # Catches: app was off during game, Polymarket-only events, etc.
+        # Strategy 3: never-live events with pending bets, past sport duration
         from ..db.models import Bet
-        never_live_cutoff = now - timedelta(hours=3)
-        never_live_events = (
+        # Use the shortest sport duration as the DB filter, then refine per-sport in Python
+        min_hours = min(self.SPORT_DURATION_HOURS.values())
+        broad_cutoff = now - timedelta(hours=min_hours)
+        never_live_candidates = (
             self.session.query(Event)
             .join(Bet, Bet.event_id == Event.id)
             .filter(
                 Bet.result == "pending",
                 or_(Event.match_status.is_(None), Event.match_status == "prematch"),
                 Event.start_time.isnot(None),
-                Event.start_time < never_live_cutoff,
+                Event.start_time < broad_cutoff,
             )
             .distinct()
             .all()
         )
+        # Refine: only mark finished if past sport-specific duration
+        never_live_events = []
+        for ev in never_live_candidates:
+            hours = self.SPORT_DURATION_HOURS.get(ev.sport, self.DEFAULT_DURATION_HOURS)
+            if ev.start_time < now - timedelta(hours=hours):
+                never_live_events.append(ev)
 
         # Merge (deduplicate by id)
         seen = set()

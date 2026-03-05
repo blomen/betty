@@ -50,6 +50,9 @@ export interface SpecialItem {
   llm_edge_pct: number | null;
   llm_reasoning: string | null;
   llm_confidence: string | null;
+  // Pre-computed Kelly stake
+  recommended_stake: number | null;
+  kelly_fraction: number | null;
 }
 
 export interface SpecialsFilters {
@@ -316,6 +319,10 @@ export const api = {
 
   async getTiersProgress(): Promise<TiersProgressResponse> {
     return fetchJson<TiersProgressResponse>('/extraction/tiers/progress');
+  },
+
+  async getExtractionFreshness(): Promise<{ soft: string | null; sharp: string | null; poly: string | null; boosts: string | null }> {
+    return fetchJson('/extraction/freshness');
   },
 
   // ============ Providers ============

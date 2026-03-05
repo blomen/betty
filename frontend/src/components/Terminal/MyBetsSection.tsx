@@ -93,15 +93,35 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const live: Bet[] = [];
     const ft: Bet[] = [];
 
+    // Typical sport durations (ms) — used when Pinnacle hasn't set match_status
+    const SPORT_DURATION: Record<string, number> = {
+      football: 2.5 * 3600000,
+      basketball: 3 * 3600000,
+      ice_hockey: 3 * 3600000,
+      tennis: 4 * 3600000,
+      esports: 4 * 3600000,
+      handball: 2.5 * 3600000,
+      mma: 3 * 3600000,
+    };
+    const DEFAULT_DURATION = 3 * 3600000;
+
     for (const b of bets) {
-      if (!b.start_time || new Date(b.start_time).getTime() > now) {
+      const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
+
+      if (!startMs || startMs > now) {
         upcoming.push(b);
+      } else if (b.match_status === 'finished') {
+        ft.push(b);
       } else if (b.match_status === 'live') {
-        // Explicitly live from Pinnacle
         live.push(b);
       } else {
-        // Past start + finished/null/unknown → settle tab
-        ft.push(b);
+        // No explicit status — use sport duration heuristic
+        const duration = SPORT_DURATION[b.sport ?? ''] ?? DEFAULT_DURATION;
+        if (now < startMs + duration) {
+          live.push(b); // Within typical game duration → probably playing
+        } else {
+          ft.push(b);   // Past duration → probably finished
+        }
       }
     }
 
@@ -218,24 +238,27 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                   <th className="text-right">Edge</th>
                 )}
                 <th className="text-right">Stake</th>
+                <th className="text-right">Return</th>
                 {activeCategory === 'live' ? (
                   <th className="text-right">Score</th>
                 ) : activeCategory === 'ft' ? (
                   <th className="text-right">Settle</th>
-                ) : (
-                  <th className="text-right">Return</th>
-                )}
+                ) : null}
               </tr>
             </thead>
             <tbody>
               {activeBets.map(b => {
                 const isExpanded = expandedId === b.id;
                 const isEditing = editingId === b.id;
-                const colCount = activeCategory === 'upcoming' ? 9 : 8;
-                const edgePct = b.edge_pct ?? (b.placed_edge_pct != null ? b.placed_edge_pct * 100 : null);
+                const colCount = activeCategory === 'upcoming' ? 9 : activeCategory === 'ft' || activeCategory === 'live' ? 9 : 8;
+                const edgePct = b.edge_pct ?? b.placed_edge_pct ?? null;
 
                 // Live odds tracking for upcoming bets
-                const fairOdds = b.fair_odds ?? (b.fair_odds_at_placement != null ? b.fair_odds_at_placement : null);
+                const fairOdds = b.fair_odds ?? b.fair_odds_at_placement ?? null;
+
+                // FT tab: use placement values (current odds are meaningless post-match)
+                const ftFairOdds = b.fair_odds_at_placement ?? fairOdds;
+                const ftEdgePct = b.placed_edge_pct ?? edgePct;
                 const liveOdds = b.current_odds ?? b.odds;
                 const liveEdge = fairOdds != null && fairOdds > 1 ? (liveOdds / fairOdds - 1) * 100 : null;
                 const placedEdge = edgePct;
@@ -295,7 +318,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       ) : (
                         <td className="text-right text-sm text-muted">
-                          {fairOdds != null ? fairOdds.toFixed(2) : '-'}
+                          {(activeCategory === 'ft' ? ftFairOdds : fairOdds)?.toFixed(2) ?? '-'}
                         </td>
                       )}
 
@@ -318,6 +341,19 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                             );
                             return <span className="text-muted">-</span>;
                           })()}
+                        </td>
+                      ) : activeCategory === 'ft' ? (
+                        <td className="text-right">
+                          <div className="flex flex-col items-end">
+                            <span className="text-sm font-medium" style={{ color }}>
+                              {ftEdgePct != null ? `${ftEdgePct >= 0 ? '+' : ''}${ftEdgePct.toFixed(1)}%` : '-'}
+                            </span>
+                            {b.clv_pct != null && (
+                              <span className={`text-[9px] ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                                CLV {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
                         </td>
                       ) : (
                         <td className="text-right text-sm font-medium" style={{ color }}>
@@ -352,6 +388,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       )}
 
+                      {/* Return column — always shown */}
+                      <td className="text-right text-sm font-medium" style={{ color }}>
+                        {(b.stake * b.odds).toFixed(0)} kr
+                      </td>
+
+                      {/* Last column: Score (live), Settle (ft), or nothing (upcoming) */}
                       {activeCategory === 'ft' ? (
                         <td className="text-right" onClick={e => e.stopPropagation()}>
                           <span className="inline-flex gap-1 items-center justify-end">
@@ -383,11 +425,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                               ? `${b.match_minute}'`
                               : 'LIVE'}
                         </td>
-                      ) : (
-                        <td className="text-right text-sm font-medium" style={{ color }}>
-                          {(b.stake * b.odds).toFixed(0)} kr
-                        </td>
-                      )}
+                      ) : null}
                     </tr>
                     {isExpanded && (
                       <tr key={`${b.id}-x`}>

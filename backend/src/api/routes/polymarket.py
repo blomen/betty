@@ -58,9 +58,10 @@ async def get_polymarket_value(
         events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events_list}
 
-    # Batch-load provider_meta from Odds for event_slug (needed for deep links)
+    # Batch-load provider_meta + updated_at from Odds for event_slug (needed for deep links)
     # Key: (event_id, market, outcome) → provider_meta dict
     odds_meta_map: dict[tuple, dict] = {}
+    odds_updated_map: dict[tuple, str] = {}
     if event_ids:
         poly_odds = (
             db.query(Odds)
@@ -71,6 +72,8 @@ async def get_polymarket_value(
             key = (o.event_id, o.market, o.outcome)
             if o.provider_meta and "event_slug" in (o.provider_meta if isinstance(o.provider_meta, dict) else {}):
                 odds_meta_map[key] = o.provider_meta
+            if o.updated_at:
+                odds_updated_map[key] = o.updated_at.isoformat()
 
     # Enrich with event context
     results = []
@@ -114,6 +117,7 @@ async def get_polymarket_value(
             # Navigation — event_slug for deep linking to polymarket.com/event/{slug}
             "event_slug": event_slug,
             "provider_meta": {"event_slug": event_slug} if event_slug else None,
+            "updated_at": odds_updated_map.get((vb.event_id, vb.market, vb.outcome)),
         }
 
         # Add stake recommendation
