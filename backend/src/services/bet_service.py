@@ -83,7 +83,8 @@ class BetService:
                 dup_query = dup_query.filter(Bet.point.is_(None))
             existing = dup_query.first()
             if existing:
-                return {"error": f"Already have a pending bet on this market ({market} {outcome} {point}) at {existing.provider_id}"}
+                point_str = f" {point}" if point is not None else ""
+                return {"error": f"Already have a pending bet on this market ({market} {outcome}{point_str}) at {existing.provider_id}"}
 
         # Check cooldown
         cooldown_reason = self._check_cooldown(provider_id)

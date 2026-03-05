@@ -139,6 +139,7 @@ export function PolymarketPage() {
       setTimeout(() => setBetSuccess(null), 5000);
 
       setPlacedKeys(prev => new Set(prev).add(getPlacedKey(vb)));
+      setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedOpp(null);
       fetchValueData();
@@ -402,24 +403,7 @@ export function PolymarketPage() {
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
                             {isPending ? (
                               <>
-                                <span className="text-muted text-xs">Price:</span>
-                                <input
-                                  type="number"
-                                  step="1"
-                                  min="1"
-                                  max="99"
-                                  autoFocus
-                                  value={pendingBet!.actualCents}
-                                  onChange={(e) => {
-                                    const val = parseInt(e.target.value);
-                                    if (!isNaN(val)) {
-                                      setPendingBet(prev => prev ? { ...prev, actualCents: val } : null);
-                                    }
-                                  }}
-                                  className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabPolymarket"
-                                  onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
-                                />
-                                <span className="text-muted text-xs">¢</span>
+                                <span className="text-muted text-xs">{m.priceCents}¢</span>
                                 <button
                                   onClick={confirmPlaceBet}
                                   disabled={isPlacing || pendingBet!.actualCents < 1}
