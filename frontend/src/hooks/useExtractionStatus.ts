@@ -174,6 +174,7 @@ export interface ExtractionFreshness {
   soft: string | null;
   sharp: string | null;
   poly: string | null;
+  boosts: string | null;
 }
 
 /**
@@ -184,7 +185,7 @@ export interface ExtractionFreshness {
  * - Refetches every 60s only while idle.
  */
 export function useExtractionFreshness(): ExtractionFreshness {
-  const [freshness, setFreshness] = useState<ExtractionFreshness>({ soft: null, sharp: null, poly: null });
+  const [freshness, setFreshness] = useState<ExtractionFreshness>({ soft: null, sharp: null, poly: null, boosts: null });
 
   const fetchFreshness = useRef(() => {
     api.getExtractionFreshness().then(setFreshness).catch(() => {});

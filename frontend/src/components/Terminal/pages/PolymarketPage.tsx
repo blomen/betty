@@ -308,7 +308,7 @@ export function PolymarketPage() {
                       <td className="text-right text-sm font-medium text-text">
                         {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
                       </td>
-                      <td className="text-right text-tabPolymarket font-semibold text-sm">+{m.edgePct.toFixed(1)}%</td>
+                      <td className={`text-right font-semibold text-sm ${m.edgePct > 0 ? 'text-success' : 'text-error'}`}>{m.edgePct > 0 ? '+' : ''}{m.edgePct.toFixed(1)}%</td>
                     </tr>
 
                     {isSelected && !isSkipped && (

@@ -265,7 +265,7 @@ export function ReversePage() {
                         <span className="text-text">{opp.final_stake!.toFixed(0)} kr</span>
                       ) : '-'}
                     </td>
-                    <td className="text-right text-tabReverse font-semibold text-sm">+{opp.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(opp.edge_pct ?? 0) > 0 ? '+' : ''}{opp.edge_pct?.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (

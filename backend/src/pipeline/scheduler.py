@@ -294,7 +294,7 @@ class ExtractionScheduler:
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
-    async def start_boosts_tier(self, interval_seconds: int = 7200):
+    async def start_boosts_tier(self, interval_seconds: int = 3600):
         """Start the oddsboost scraper on a recurring schedule.
 
         Runs independently of extraction tiers — doesn't need the pipeline

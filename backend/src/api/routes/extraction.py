@@ -638,8 +638,9 @@ async def stop_tier(tier_name: str):
 
 @router.get("/freshness")
 async def get_extraction_freshness():
-    """Get the most recent odds update time per extraction tier (soft/sharp/poly)."""
+    """Get the most recent odds update time per extraction tier (soft/sharp/poly/boosts)."""
     from sqlalchemy import func, case
+    from ...db.models import BoostExtractionLog
 
     session = get_session()
     try:
@@ -657,6 +658,16 @@ async def get_extraction_freshness():
         )
         # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
         result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
-        return {"soft": result.get("soft"), "sharp": result.get("sharp"), "poly": result.get("poly")}
+
+        # Boost freshness from boost_extraction_logs (latest scraped_at)
+        boost_latest = session.query(func.max(BoostExtractionLog.scraped_at)).scalar()
+        boosts_ts = boost_latest.isoformat() + "Z" if boost_latest else None
+
+        return {
+            "soft": result.get("soft"),
+            "sharp": result.get("sharp"),
+            "poly": result.get("poly"),
+            "boosts": boosts_ts,
+        }
     finally:
         session.close()

@@ -390,6 +390,7 @@ const TIER_RUNNING_MAP: Record<string, string[]> = {
   soft: ['api_soft', 'browser_soft'],
   sharp: ['sharp'],
   poly: ['sharp'], // polymarket is part of the sharp tier
+  boosts: ['boosts'],
 };
 
 function formatAge(isoTimestamp: string): { label: string; color: string } {
