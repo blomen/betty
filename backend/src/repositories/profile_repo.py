@@ -207,10 +207,17 @@ class ProfileRepo:
                     # recover it for the (deposit+bonus)×mult formula
                     deposit = record.wagering_requirement
                     self.adjust_balance(profile_id, provider_id, record.bonus_amount)
-                    record.bonus_status = "in_progress"
-                    record.wagering_requirement = (deposit + record.bonus_amount) * record.wagering_multiplier
-                    record.wagered_amount = 0.0
-                    record.min_odds = record.main_min_odds or BONUS_MIN_ODDS
+                    wager_req = (deposit + record.bonus_amount) * record.wagering_multiplier
+                    if wager_req <= 0:
+                        # Wager-first model: no wager phase, bonus is cash
+                        record.bonus_status = "completed"
+                        record.wagering_requirement = 0.0
+                        record.wagered_amount = 0.0
+                    else:
+                        record.bonus_status = "in_progress"
+                        record.wagering_requirement = wager_req
+                        record.wagered_amount = 0.0
+                        record.min_odds = record.main_min_odds or BONUS_MIN_ODDS
                 else:
                     # Freebet trigger — don't auto-advance, user must activate
                     pass
