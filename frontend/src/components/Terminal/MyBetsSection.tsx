@@ -7,6 +7,12 @@ import type { Bet } from '@/types';
 
 type BetCategory = 'upcoming' | 'live' | 'ft';
 
+/** Format amount in the bet's native currency. */
+function fmtAmount(amount: number, currency: string, decimals?: number): string {
+  if (currency === 'USD') return `$${amount.toFixed(decimals ?? 2)}`;
+  return `${amount.toFixed(decimals ?? 0)} kr`;
+}
+
 interface MyBetsSectionProps {
   /** Filter function to select only bets relevant to this page */
   filter: (bet: Bet) => boolean;
@@ -394,27 +400,27 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       {activeCategory === 'upcoming' ? (
                         <td className="text-right" onClick={e => e.stopPropagation()}>
                           <span className="inline-flex items-center gap-1 justify-end">
-                            <span className="text-text text-sm font-medium">{b.stake.toFixed(0)} kr</span>
+                            <span className="text-text text-sm font-medium">{fmtAmount(b.stake, b.currency)}</span>
                             {b.is_bonus && <span className="text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
                             {b.current_odds != null && b.current_odds > b.odds && (
                               <button
                                 className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
                                 onClick={() => handleRaise(b)}
-                                title={`Raise +${b.stake} kr at ${b.current_odds!.toFixed(2)} odds`}
+                                title={`Raise +${fmtAmount(b.stake, b.currency)} at ${b.current_odds!.toFixed(2)} odds`}
                               >r</button>
                             )}
                           </span>
                         </td>
                       ) : (
                         <td className="text-right text-text text-sm font-medium">
-                          {b.stake.toFixed(0)} kr
+                          {fmtAmount(b.stake, b.currency)}
                           {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
                         </td>
                       )}
 
                       {/* Return column — always shown */}
                       <td className="text-right text-sm font-medium text-text">
-                        {(b.stake * b.odds).toFixed(0)} kr
+                        {fmtAmount(b.stake * b.odds, b.currency)}
                       </td>
 
                       {/* Last column: Score (live), Settle (ft), or nothing (upcoming) */}

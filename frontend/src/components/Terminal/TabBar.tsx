@@ -12,14 +12,14 @@ const SPORTS_TABS: Tab[] = [
   { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
   { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
-  { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
+  { name: 'stats',      label: 'Stats',     color: '#1E88E5' },
 ];
 
 const STOCKS_TABS: Tab[] = [
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingToday',    label: 'Today',    color: '#FACC15' },
   { name: 'tradingBuilder',  label: 'Builder',  color: '#22C55E' },
-  { name: 'tradingTrades',   label: 'Trades',   color: '#4FC3F7' },
+  { name: 'tradingTrades',   label: 'Trades',   color: '#1E88E5' },
   { name: 'tradingJournal',  label: 'Journal',  color: '#A78BFA' },
 ];
 
@@ -39,16 +39,16 @@ export const TAB_COLORS: Record<string, string> = {
   dutch: '#10b981',
   reverse: '#EF5350',
   polymarket: '#A855F7',
-  stats: '#4FC3F7',
+  stats: '#1E88E5',
   bankroll: '#EC4899',
   specials: '#A78BFA',
-  bets: '#4FC3F7',
+  bets: '#1E88E5',
   profiles: '#A78BFA',
   success: '#10b981',
   tradingBankroll: '#EC4899',
   tradingToday: '#FACC15',
   tradingBuilder: '#22C55E',
-  tradingTrades: '#4FC3F7',
+  tradingTrades: '#1E88E5',
   tradingJournal: '#A78BFA',
 };
 

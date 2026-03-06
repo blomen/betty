@@ -165,8 +165,9 @@ class Bet(Base):
     odds = Column(Float, nullable=False)        # 2.10
     point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
 
-    # Stake
+    # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
     stake = Column(Float, nullable=False)       # 100.00
+    currency = Column(String, default="SEK")    # "SEK" or "USD" — determines stake/payout units
 
     # Bonus tracking
     is_bonus = Column(Boolean, default=False)

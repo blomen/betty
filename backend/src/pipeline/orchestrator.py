@@ -613,6 +613,13 @@ class ExtractionPipeline:
                     )
                     results["polymarket"] = poly_results
 
+                    # Update polymarket_events counter in metrics
+                    if self.metrics:
+                        self.metrics.set_polymarket_stats(
+                            events=poly_results.get("events_processed", 0),
+                            odds=poly_results.get("odds_processed", 0),
+                        )
+
                     poly_elapsed = time.time() - poly_start
                     log_progress(
                         f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s"

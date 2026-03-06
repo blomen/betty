@@ -55,13 +55,22 @@ class BankrollService:
 
     def get_stats(self) -> dict:
         """Get bankroll statistics for active profile."""
+        from ..config import get_exchange_rate
+
         profile = self.profile_repo.get_active()
         bets = self.bet_repo.get_settled(profile.id)
 
-        real_staked = sum(b.stake for b in bets if not b.is_bonus)
-        total_staked = sum(b.stake for b in bets)  # For display only
-        bet_profit = sum(b.profit for b in bets if not b.is_bonus)
-        freebet_profit = sum(b.profit for b in bets if b.is_bonus)
+        def to_sek(amount: float, bet) -> float:
+            """Convert bet amount to SEK using provider exchange rate."""
+            currency = getattr(bet, "currency", None) or "SEK"
+            if currency == "SEK":
+                return amount
+            return amount * get_exchange_rate(bet.provider_id)
+
+        real_staked = sum(to_sek(b.stake, b) for b in bets if not b.is_bonus)
+        total_staked = sum(to_sek(b.stake, b) for b in bets)  # For display only
+        bet_profit = sum(to_sek(b.profit, b) for b in bets if not b.is_bonus)
+        freebet_profit = sum(to_sek(b.profit, b) for b in bets if b.is_bonus)
         win_count = len([b for b in bets if b.result == "won"])
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])

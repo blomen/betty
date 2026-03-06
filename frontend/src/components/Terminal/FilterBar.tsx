@@ -17,7 +17,7 @@ const ACCENT_COLORS: Record<string, string> = {
   tabValue: '#f59e0b',
   tabBonus: '#a78bfa',
   tabArb: '#22c55e',
-  tabBets: '#22d3d8',
+  tabBets: '#1E88E5',
   tabExtract: '#60a5fa',
 };
 

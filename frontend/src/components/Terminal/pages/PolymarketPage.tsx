@@ -105,8 +105,8 @@ export function PolymarketPage() {
 
   // Two-step bet: step 1 — start
   const startPlaceBet = (vb: PolymarketValueBet) => {
-    const stake = vb.final_stake;
-    if (!stake || stake <= 0) return;
+    const stakeUsdc = vb.final_stake_usdc;
+    if (!stakeUsdc || stakeUsdc <= 0) return;
     const odds = getEffectiveOdds(vb);
     setBetError(null);
     setBetSuccess(null);
@@ -117,8 +117,8 @@ export function PolymarketPage() {
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { vb, actualCents } = pendingBet;
-    const stake = vb.final_stake;
-    if (!stake || stake <= 0 || actualCents < 1) return;
+    const stakeUsdc = vb.final_stake_usdc;
+    if (!stakeUsdc || stakeUsdc <= 0 || actualCents < 1) return;
     const actualOdds = 100 / actualCents;
     setIsPlacing(true);
     setBetError(null);
@@ -130,14 +130,14 @@ export function PolymarketPage() {
         market: vb.market,
         outcome: vb.outcome,
         odds: actualOdds,
-        stake,
+        stake: stakeUsdc,  // Send USD (native to Polymarket)
         is_bonus: false,
         utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined,
         selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
       });
       const outcomeLabel = resolveOutcome(vb);
-      const stakeUsdc = vb.final_stake_usdc ?? 0;
-      setBetSuccess(`Recorded: $${stakeUsdc.toFixed(2)} on ${outcomeLabel} @ ${actualCents}¢ (Polymarket)`);
+      const confirmedStake = vb.final_stake_usdc ?? 0;
+      setBetSuccess(`Recorded: $${confirmedStake.toFixed(2)} on ${outcomeLabel} @ ${actualCents}¢ (Polymarket)`);
       setTimeout(() => setBetSuccess(null), 5000);
 
       setPlacedKeys(prev => new Set(prev).add(getPlacedKey(vb)));

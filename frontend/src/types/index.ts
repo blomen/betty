@@ -194,6 +194,7 @@ export interface Bet {
   odds: number;
   point?: number | null;
   stake: number;
+  currency: string;  // "SEK" or "USD" — determines stake/payout/profit units
   is_bonus: boolean;
   bonus_type: string | null;
   result: 'pending' | 'won' | 'lost' | 'void';

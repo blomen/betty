@@ -99,6 +99,17 @@ def _predict_result(bet, event) -> str | None:
             except (ValueError, IndexError):
                 pass
 
+    # Path 0: Market resolution (Polymarket total/spread — bypasses stale scores)
+    if market in ("total", "spread") and event.stats_json:
+        try:
+            stats = _json.loads(event.stats_json)
+            resolved_markets = stats.get("resolved_markets", {})
+            resolution = resolved_markets.get(bet.market)  # e.g., "total_226.5" → "over"
+            if resolution:
+                return "won" if bet.outcome == resolution else "lost"
+        except (ValueError, TypeError):
+            pass
+
     # Path 1: Score-based
     if event.home_score is not None and event.away_score is not None:
         return determine_bet_result(
@@ -256,6 +267,7 @@ async def list_bets(
             "outcome": b.outcome,
             "odds": b.odds,
             "stake": b.stake,
+            "currency": b.currency or "SEK",
             "is_bonus": b.is_bonus,
             "bonus_type": b.bonus_type,
             "result": b.result,

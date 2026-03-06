@@ -632,6 +632,56 @@ class PolymarketRetriever(Retriever):
                 except (json.JSONDecodeError, ValueError, TypeError):
                     pass
 
+            # Extract resolved total/spread market outcomes from outcomePrices
+            resolved_markets = {}
+            for m in item.get("markets", []):
+                q = m.get("question", "")
+                prices_raw = m.get("outcomePrices", "[]")
+                outcomes_raw = m.get("outcomes", "[]")
+                try:
+                    prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+                    prices = [float(p) for p in prices]
+                    outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+
+                    if len(prices) != 2 or not any(p >= 0.99 for p in prices):
+                        continue
+                    winner_idx = next(i for i, p in enumerate(prices) if p >= 0.99)
+                    if winner_idx >= len(outcomes):
+                        continue
+
+                    # Total market: "Team vs Team: O/U 226.5"
+                    if " O/U " in q and "1H O/U" not in q:
+                        point_match = re.search(r'O/U\s+(\d+\.?\d*)', q)
+                        if point_match:
+                            pt = float(point_match.group(1))
+                            winner_name = outcomes[winner_idx].lower().strip()
+                            if winner_name in ("over", "under"):
+                                # Format key to match bet.market (e.g., "total_226.5")
+                                pt_str = str(int(pt)) if pt == int(pt) else str(pt)
+                                resolved_markets[f"total_{pt_str}"] = winner_name
+
+                    # Spread market: "Spread: TeamName (-2.5)"
+                    elif q.startswith("Spread:") and not q.startswith("1H Spread"):
+                        point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', q)
+                        team_match = re.search(r'Spread:\s*(.+?)\s*\(', q)
+                        if point_match and team_match:
+                            favored_point = float(point_match.group(1))
+                            favored_team = team_match.group(1).strip()
+                            from ..matching import normalize_outcome
+                            favored_side = normalize_outcome(favored_team, home, away)
+                            winner_outcome = outcomes[winner_idx]
+                            winner_side = normalize_outcome(winner_outcome, home, away)
+                            if winner_side in ("home", "away") and favored_side in ("home", "away"):
+                                # Store with home-perspective point (matching DB convention)
+                                if favored_side == "home":
+                                    home_point = favored_point
+                                else:
+                                    home_point = -favored_point
+                                pt_str = str(int(home_point)) if home_point == int(home_point) else str(home_point)
+                                resolved_markets[f"spread_{pt_str}"] = winner_side
+                except (json.JSONDecodeError, ValueError, TypeError, StopIteration):
+                    pass
+
             resolved.append({
                 "polymarket_id": str(item.get("id", "")),
                 "slug": item.get("slug", ""),
@@ -645,6 +695,7 @@ class PolymarketRetriever(Retriever):
                 "away_score": live_state.get("away_score"),
                 "match_status": "finished",
                 "winner_team": winner_team,
+                "resolved_markets": resolved_markets or None,
             })
 
         logger.info(f"[{self.provider_id}] Fetched {len(resolved)} resolved events (from {len(all_raw)} closed)")

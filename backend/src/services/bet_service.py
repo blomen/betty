@@ -8,7 +8,7 @@ from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
-from ..config import get_exchange_rate
+from ..config import get_exchange_rate, get_provider_currency
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +95,16 @@ class BetService:
             return {"error": f"Bet blocked: {cooldown_reason}"}
 
         # Validate sufficient balance (unless free bet)
+        # Stake is in native currency (USD for Polymarket, SEK for others)
+        # Balance is also in native currency
+        currency = get_provider_currency(provider_id)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
-        rate = get_exchange_rate(provider_id)
-        balance_sek = current_balance * rate
-        if not is_bonus and balance_sek < stake:
+        if not is_bonus and current_balance < stake:
+            unit = "$" if currency != "SEK" else " kr"
+            fmt = f"${current_balance:.2f}" if currency != "SEK" else f"{current_balance:.0f} kr"
+            fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {
-                "error": f"Insufficient balance: {balance_sek:.0f} kr available, {stake:.0f} kr required"
+                "error": f"Insufficient balance: {fmt} available, {fmt_req} required"
             }
 
         # Populate behavioral fields
@@ -151,6 +155,7 @@ class BetService:
             odds=odds,
             point=point,
             stake=stake,
+            currency=currency,
             is_bonus=is_bonus,
             bonus_type=bonus_type,
             # Behavioral tracking
@@ -168,10 +173,9 @@ class BetService:
         )
 
         # Deduct stake from balance (unless free bet)
-        # Balance is stored in native currency; stake is in SEK → convert
+        # Both stake and balance are in provider's native currency — no conversion
         if not is_bonus:
-            rate = get_exchange_rate(provider_id)
-            self.profile_repo.adjust_balance(profile.id, provider_id, -stake / rate)
+            self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
 
         # Auto-advance freebet: mark as completed when freebet is used
         if is_bonus:
@@ -211,10 +215,9 @@ class BetService:
         if clv_pct is not None:
             bet.clv_pct = clv_pct
 
-        # Add payout to balance (payout is SEK → convert to native currency)
+        # Add payout to balance (payout is in bet's native currency — no conversion)
         if bet.profile_id and payout > 0:
-            rate = get_exchange_rate(bet.provider_id)
-            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout / rate)
+            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout)
 
         # Record wagering progress on settlement (not placement)
         wagering_status = None
@@ -380,16 +383,12 @@ class BetService:
             bet.payout = 0.0
 
         # Adjust balance: reverse old payout+stake, apply new payout+stake
-        # All amounts are SEK → convert to native currency for balance adjustment
+        # All amounts are in bet's native currency — no conversion needed
         if bet.profile_id:
-            # Balance delta = (new_payout - old_payout) + (old_stake - new_stake)
-            # old flow: -old_stake at placement, +old_payout at settlement
-            # new flow: -new_stake at placement, +new_payout at settlement
             # net correction = (new_payout - old_payout) - (new_stake - old_stake)
             balance_delta = (bet.payout - old_payout) - (bet.stake - old_stake)
             if balance_delta != 0:
-                rate = get_exchange_rate(bet.provider_id)
-                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta / rate)
+                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta)
 
         # Recalculate CLV if closing odds exist
         if bet.closing_odds and bet.closing_odds > 1.0:

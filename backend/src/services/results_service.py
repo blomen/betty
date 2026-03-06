@@ -206,7 +206,24 @@ class ResultsService:
                     skipped += 1
                     continue
 
-            if event.home_score is not None and event.away_score is not None:
+            # Path 0: Market resolution (Polymarket outcomePrices for total/spread)
+            # Uses the market's own resolution — no scores needed, always correct
+            if market in ("total", "spread") and event.stats_json:
+                import json as _json
+                try:
+                    stats = _json.loads(event.stats_json)
+                    resolved_markets = stats.get("resolved_markets", {})
+                    resolution = resolved_markets.get(bet.market)  # e.g., "total_226.5" → "over"
+                    if resolution:
+                        if bet.outcome == resolution:
+                            result = "won"
+                        else:
+                            result = "lost"
+                        score_str = f"market:{resolution}"
+                except (ValueError, TypeError):
+                    pass
+
+            if result is None and event.home_score is not None and event.away_score is not None:
                 # Path 1: Score-based settlement
                 if point is None and market in ("spread", "total"):
                     odds_row = self.db.query(Odds).filter(
@@ -227,7 +244,7 @@ class ResultsService:
                 )
                 score_str = f"{event.home_score}-{event.away_score}"
 
-            elif market in ("1x2", "moneyline") and event.stats_json:
+            elif result is None and market in ("1x2", "moneyline") and event.stats_json:
                 # Path 2: Winner-based settlement (from Polymarket outcomePrices)
                 import json as _json
                 try:
@@ -408,15 +425,33 @@ class ResultsService:
                     db_event.home_score = home_score
                     db_event.away_score = away_score
 
-            # Store winner from outcomePrices resolution (for scoreless settlement)
+            # Store winner and resolved markets in stats_json
             winner_team = rev.get("winner_team")
-            if winner_team:
+            resolved_markets = rev.get("resolved_markets")
+            if winner_team or resolved_markets:
                 import json as _json
                 try:
                     stats = _json.loads(db_event.stats_json) if db_event.stats_json else {}
                 except (ValueError, TypeError):
                     stats = {}
-                stats["winner"] = winner_team
+                if winner_team:
+                    stats["winner"] = winner_team
+                if resolved_markets:
+                    # Swap spread outcomes if team order is reversed
+                    if teams_swapped:
+                        swapped = {}
+                        for key, outcome in resolved_markets.items():
+                            if key.startswith("total_"):
+                                swapped[key] = outcome  # over/under unaffected by team order
+                            elif key.startswith("spread_"):
+                                # Negate point and swap home/away
+                                _, pt_str = key.split("_", 1)
+                                new_pt = -float(pt_str)
+                                new_pt_str = str(int(new_pt)) if new_pt == int(new_pt) else str(new_pt)
+                                new_outcome = "away" if outcome == "home" else "home"
+                                swapped[f"spread_{new_pt_str}"] = new_outcome
+                        resolved_markets = swapped
+                    stats["resolved_markets"] = resolved_markets
                 db_event.stats_json = _json.dumps(stats)
 
             # Always mark as finished — scores were likely already captured during extraction

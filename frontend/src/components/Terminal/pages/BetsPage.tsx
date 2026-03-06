@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, displayTeamName } from '@/utils/formatters';
+import { displayTeamName } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
@@ -43,6 +43,27 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 
 // ── Sort types ───────────────────────────────────────────────────────
 
+/** Format amount in the bet's native currency. */
+function fmtAmount(amount: number, currency: string, decimals?: number): string {
+  if (currency === 'USD') return `$${amount.toFixed(decimals ?? 2)}`;
+  return `${amount.toFixed(decimals ?? 0)} kr`;
+}
+
+/** Format profit with +/- prefix. */
+function fmtProfit(amount: number, currency: string): string {
+  const prefix = amount >= 0 ? '+' : '';
+  if (currency === 'USD') return `${prefix}$${amount.toFixed(2)}`;
+  return `${prefix}${amount.toFixed(0)} kr`;
+}
+
+/** Exchange rates to SEK for aggregation. */
+const RATE_TO_SEK: Record<string, number> = { USD: 10.50, SEK: 1 };
+
+/** Convert an amount from bet's native currency to SEK. */
+function toSEK(amount: number, currency: string): number {
+  return amount * (RATE_TO_SEK[currency] ?? 1);
+}
+
 type SortKey = 'date' | 'provider' | 'odds' | 'close' | 'clv' | 'edge' | 'stake' | 'profit' | 'prob' | 'ttk' | 'status';
 type SortDir = 'asc' | 'desc';
 
@@ -76,13 +97,13 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
 
     if (settled.length === 0) return [];
 
-    const totalProfit = settled.reduce((sum, b) => sum + b.profit, 0);
+    const totalProfit = settled.reduce((sum, b) => sum + toSEK(b.profit, b.currency), 0);
     const startBankroll = currentBankroll - totalProfit;
 
     let cumulative = startBankroll;
     const points = [{ date: new Date(settled[0].placed_at), value: startBankroll }];
     for (const bet of settled) {
-      cumulative += bet.profit;
+      cumulative += toSEK(bet.profit, bet.currency);
       points.push({ date: new Date(bet.placed_at), value: cumulative });
     }
     return points;
@@ -152,7 +173,7 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="border border-border bg-panel overflow-hidden">
+    <div className="bg-panel overflow-hidden">
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted uppercase tracking-wider font-medium">Bankroll</span>
         <div className="flex items-center gap-3">
@@ -205,7 +226,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
 
   if (data.length < 2) return null;
 
-  const LINE_COLOR = '#3b82f6';
+  const LINE_COLOR = '#1E88E5';
   const W = 600;
   const H = 200;
   const PL = 12;
@@ -268,7 +289,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="border border-border bg-panel overflow-hidden">
+    <div className="bg-panel overflow-hidden">
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
         <div className="flex items-center gap-3">
@@ -341,9 +362,10 @@ export function BetsPage() {
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
-  // Sort (for history table)
+  // Sort & search (for history table)
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
 
   // Inline editing state
   const [editingBetId, setEditingBetId] = useState<number | null>(null);
@@ -395,6 +417,19 @@ export function BetsPage() {
   const historyBets = useMemo(() => {
     let result = bets.filter(b => b.result !== 'pending');
 
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(b =>
+        (b.home_team && b.home_team.toLowerCase().includes(q)) ||
+        (b.away_team && b.away_team.toLowerCase().includes(q)) ||
+        (b.display_home && b.display_home.toLowerCase().includes(q)) ||
+        (b.display_away && b.display_away.toLowerCase().includes(q)) ||
+        b.provider.toLowerCase().includes(q) ||
+        (b.sport && b.sport.toLowerCase().includes(q)) ||
+        (b.league && b.league.toLowerCase().includes(q))
+      );
+    }
+
     if (sort) {
       result = [...result].sort((a, b) => {
         const va = getSortValue(a, sort.key);
@@ -409,7 +444,7 @@ export function BetsPage() {
     }
 
     return result;
-  }, [bets, sort]);
+  }, [bets, sort, search]);
 
   const handleSort = (key: SortKey) => {
     setSort(prev => {
@@ -490,7 +525,7 @@ export function BetsPage() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 min-w-0 overflow-hidden">
       {/* Header */}
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
         <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
@@ -512,10 +547,18 @@ export function BetsPage() {
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">ROI</div>
-              <div className={`text-lg font-semibold ${bankrollStats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                {bankrollStats.roi_pct >= 0 ? '+' : ''}{bankrollStats.roi_pct.toFixed(1)}%
-              </div>
-              <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
+              {(() => {
+                const startBankroll = currentBankroll - bankrollStats.total_profit;
+                const growthPct = startBankroll > 0 ? (bankrollStats.total_profit / startBankroll) * 100 : 0;
+                return (
+                  <>
+                    <div className={`text-lg font-semibold ${growthPct >= 0 ? 'text-success' : 'text-error'}`}>
+                      {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%
+                    </div>
+                    <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
+                  </>
+                );
+              })()}
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Profit</div>
@@ -544,11 +587,13 @@ export function BetsPage() {
       )}
 
       {/* Charts — side by side */}
-      <div className="grid grid-cols-2 gap-3">
-        {bets.length > 0 && currentBankroll > 0 && (
-          <BankrollChart bets={bets} currentBankroll={currentBankroll} />
-        )}
-        <CLVChart bets={bets} />
+      <div className="border-l-2 border-tabBets">
+        <div className="grid grid-cols-2 gap-px bg-border border border-border">
+          {bets.length > 0 && currentBankroll > 0 && (
+            <BankrollChart bets={bets} currentBankroll={currentBankroll} />
+          )}
+          <CLVChart bets={bets} />
+        </div>
       </div>
 
       {/* Active Bonuses */}
@@ -635,15 +680,26 @@ export function BetsPage() {
       )}
 
       {/* Bet History */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
+          History <span className="text-muted2">{historyBets.length}</span>
+        </h3>
+        <input
+          type="text"
+          placeholder="Search event, provider, sport..."
+          className="px-2 py-1 text-xs bg-bg border border-border text-text placeholder:text-muted2 w-64 focus:border-tabBets focus:outline-none"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
       {isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
       ) : historyBets.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets found.</div>
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          {search.trim() ? 'No matching bets.' : 'No bets found.'}
+        </div>
       ) : (
         <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
-            History <span className="text-muted2">{historyBets.length}</span>
-          </h3>
           <div className="border-l-2 border-tabBets">
           <table className="sq">
             <thead>
@@ -704,10 +760,10 @@ export function BetsPage() {
                           <span className="text-sm text-muted">-</span>
                         )}
                       </td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right text-text text-sm">{fmtAmount(bet.stake, bet.currency)}</td>
                       <td className="text-right">
                         <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
-                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
+                          {fmtProfit(bet.profit, bet.currency)}
                         </span>
                       </td>
                       <td className="text-right">

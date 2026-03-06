@@ -123,6 +123,48 @@ class ExtractionScheduler:
             self._tier_loop(tier, run_immediately, wait_for_sharp)
         )
 
+        # Auto-restart on unexpected death (e.g. unhandled BaseException)
+        def _on_tier_done(task: asyncio.Task, tier=tier):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc and tier.running:
+                logger.error(
+                    f"[Scheduler:{tier.name}] Tier task died unexpectedly: {exc}. "
+                    f"Auto-restarting in 10s..."
+                )
+                # Schedule restart in the event loop
+                loop = asyncio.get_event_loop()
+                loop.call_later(10, lambda: asyncio.ensure_future(
+                    self._restart_tier(tier)
+                ))
+
+        tier.task.add_done_callback(_on_tier_done)
+
+    async def _restart_tier(self, tier: TierState):
+        """Restart a tier that died unexpectedly."""
+        logger.info(f"[Scheduler:{tier.name}] Restarting tier...")
+        tier.task = asyncio.create_task(
+            self._tier_loop(tier, run_immediately=True, wait_for_sharp=False)
+        )
+
+        # Reuse the same done_callback pattern for restart resilience
+        def _on_restart_done(task: asyncio.Task, t=tier):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc and t.running:
+                logger.error(
+                    f"[Scheduler:{t.name}] Tier died again: {exc}. "
+                    f"Auto-restarting in 30s..."
+                )
+                loop = asyncio.get_event_loop()
+                loop.call_later(30, lambda: asyncio.ensure_future(
+                    self._restart_tier(t)
+                ))
+
+        tier.task.add_done_callback(_on_restart_done)
+
     async def _tier_loop(self, tier: TierState, run_immediately: bool, wait_for_sharp: bool = False):
         """Extraction loop for a single tier."""
         # Wait for sharp tier to populate Pinnacle data before soft tiers start.
