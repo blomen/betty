@@ -221,8 +221,10 @@ export interface Bet {
   away_score?: number | null;
   match_status?: string | null;
   match_minute?: number | null;
+  match_period?: string | number | null;
   provider_site_url?: string | null;
   boost_title?: string | null;
+  predicted_result?: string | null;
 }
 
 // Profile

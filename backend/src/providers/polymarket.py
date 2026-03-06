@@ -71,6 +71,11 @@ SERIES_TO_SPORT = {
     'nfl-2026': 'american_football',
     'ncaa-football': 'american_football',
     'ncaa-football-2026': 'american_football',
+    # Baseball
+    'mlb': 'baseball',
+    'mlb-2026': 'baseball',
+    'npb': 'baseball',
+    'kbo': 'baseball',
     # Tennis
     'atp': 'tennis',
     'wta': 'tennis',
@@ -434,6 +439,9 @@ class PolymarketRetriever(Retriever):
                 meta["event_slug"] = event_slug
                 m["provider_meta"] = meta
 
+        # Parse live score data from Polymarket's sports data feed
+        live_state = self._parse_live_state(item)
+
         return StandardEvent(
             id=event_id,
             name=title,
@@ -444,7 +452,203 @@ class PolymarketRetriever(Retriever):
             start_time=start_time,
             markets=markets,
             provider=self.provider_id,
+            live_state=live_state,
         )
+
+    def _parse_live_state(self, item: dict) -> dict:
+        """Extract live score data from Polymarket event.
+
+        Polymarket's sports data feed provides these fields on events with gameId:
+        - score: "49-67" (basketball), "7-6(7-3), 6-7(5-7), 6-3" (tennis),
+                 "000-000|1-2|Bo3" (esports)
+        - period: "FT", "HT", "1H", "2H", etc.
+        - live: true/false
+        - ended: true when game is over
+        - elapsed: minutes elapsed in current period
+        """
+        live_state = {}
+
+        score_str = item.get("score")
+        if score_str and isinstance(score_str, str):
+            live_state["score_raw"] = score_str
+            parsed = self._parse_score_string(score_str)
+            if parsed:
+                live_state["home_score"] = parsed[0]
+                live_state["away_score"] = parsed[1]
+
+        period = item.get("period")
+        if period:
+            live_state["match_period"] = period
+
+        elapsed = item.get("elapsed")
+        if elapsed:
+            try:
+                live_state["match_minute"] = int(elapsed)
+            except (ValueError, TypeError):
+                pass
+
+        if item.get("ended") is True:
+            live_state["match_status"] = "finished"
+        elif item.get("live") is True:
+            live_state["match_status"] = "started"
+
+        return live_state
+
+    @staticmethod
+    def _parse_score_string(score_str: str) -> tuple[int, int] | None:
+        """Parse score string into (home, away) integers.
+
+        Handles multiple formats:
+        - Simple: "49-67" → (49, 67)
+        - Tennis: "7-6(7-3), 6-7(5-7), 6-3" → count sets won → (2, 1)
+        - Esports BO: "000-000|2-1|Bo3" → (2, 1)  [middle segment is map/game score]
+        """
+        import re
+
+        s = score_str.strip()
+        if not s:
+            return None
+
+        # Format 1: Esports "000-000|2-1|Bo3" or "000-000|3-1|Bo5"
+        if "|" in s:
+            parts = s.split("|")
+            for part in parts:
+                # Find the segment that looks like a series score (small numbers)
+                m = re.match(r"^(\d{1,2})-(\d{1,2})$", part.strip())
+                if m and part.strip() != parts[0].strip():  # Skip the first "000-000" segment
+                    return int(m.group(1)), int(m.group(2))
+            return None
+
+        # Format 2: Tennis "7-6(7-3), 6-7(5-7), 6-3" → count sets won
+        if "," in s or "(" in s:
+            # Split by comma for individual sets
+            sets = [x.strip() for x in s.split(",")]
+            home_sets = 0
+            away_sets = 0
+            for set_score in sets:
+                # Extract main set score, ignoring tiebreak in parens
+                m = re.match(r"(\d+)-(\d+)", set_score)
+                if m:
+                    h, a = int(m.group(1)), int(m.group(2))
+                    if h > a:
+                        home_sets += 1
+                    elif a > h:
+                        away_sets += 1
+            if home_sets > 0 or away_sets > 0:
+                return home_sets, away_sets
+            return None
+
+        # Format 3: Simple "49-67"
+        parts = s.split("-")
+        if len(parts) == 2:
+            try:
+                return int(parts[0].strip()), int(parts[1].strip())
+            except ValueError:
+                pass
+
+        return None
+
+    async def fetch_resolved(self, limit: int = 3000) -> list[dict]:
+        """Fetch closed Polymarket game-bets events with scores and resolution.
+
+        Paginates through all closed game-bets events (typically 2000-3000)
+        to find settled events with final scores and winner resolution.
+
+        Returns list of dicts with:
+        - title, home_team, away_team, sport, league, slug
+        - home_score, away_score, match_status
+        - winner_team (from outcomePrices resolution)
+        """
+        PAGE_SIZE = 500
+        all_raw = []
+        offset = 0
+
+        while len(all_raw) < limit:
+            params = {
+                "closed": "true",
+                "tag_id": self.game_bets_tag_id,
+                "order": "endDate",
+                "ascending": "false",
+                "limit": PAGE_SIZE,
+                "offset": offset,
+            }
+
+            url = f"{self.base_url}/events"
+            data = await self.transport.get(url, params=params)
+            if not data:
+                break
+            all_raw.extend(data)
+            if len(data) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+
+        resolved = []
+        for item in all_raw:
+            title = item.get("title", "")
+            home, away = self._parse_teams(title)
+            if not home or not away:
+                continue
+
+            live_state = self._parse_live_state(item)
+            if live_state.get("match_status") != "finished":
+                # Only include definitively ended events
+                # Check if all markets are resolved via outcomePrices
+                has_resolved_market = False
+                for m in item.get("markets", []):
+                    prices_raw = m.get("outcomePrices", "[]")
+                    try:
+                        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+                        prices = [float(p) for p in prices]
+                        # Resolved if any price is >= 0.99 (winner)
+                        if any(p >= 0.99 for p in prices):
+                            has_resolved_market = True
+                            break
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        pass
+                if not has_resolved_market:
+                    continue
+                live_state["match_status"] = "finished"
+
+            sport, league = self._get_sport_league(item)
+
+            # Determine winner from outcomePrices on moneyline market
+            winner_team = None
+            for m in item.get("markets", []):
+                q = m.get("question", "")
+                # Skip spread/total markets — only use moneyline for winner
+                if "O/U" in q or "Spread" in q or "Over" in q or "Under" in q:
+                    continue
+                prices_raw = m.get("outcomePrices", "[]")
+                outcomes_raw = m.get("outcomes", "[]")
+                try:
+                    prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+                    prices = [float(p) for p in prices]
+                    outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+                    if any(p >= 0.99 for p in prices):
+                        winner_idx = next(i for i, p in enumerate(prices) if p >= 0.99)
+                        if winner_idx < len(outcomes):
+                            winner_team = outcomes[winner_idx]
+                        break
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+
+            resolved.append({
+                "polymarket_id": str(item.get("id", "")),
+                "slug": item.get("slug", ""),
+                "title": title,
+                "home_team": home,
+                "away_team": away,
+                "sport": sport,
+                "league": league,
+                "start_time": item.get("startTime"),
+                "home_score": live_state.get("home_score"),
+                "away_score": live_state.get("away_score"),
+                "match_status": "finished",
+                "winner_team": winner_team,
+            })
+
+        logger.info(f"[{self.provider_id}] Fetched {len(resolved)} resolved events (from {len(all_raw)} closed)")
+        return resolved
 
     def _parse_teams(self, title: str) -> tuple[str, str]:
         """Extract home and away teams from event title."""

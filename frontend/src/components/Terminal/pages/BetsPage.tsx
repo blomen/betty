@@ -587,8 +587,8 @@ export function BetsPage() {
                         'bg-tabBets/15 text-tabBets'
                       }`}>
                         {bonus.bonus_type === 'freebet' ? 'FREEBET'
-                          : bonus.status === 'trigger_needed' ? 'UNLOCK'
-                          : 'ROLLOVER'}
+                          : bonus.status === 'trigger_needed' ? 'TRIGGER'
+                          : 'WAGER'}
                       </span>
                     </td>
                     <td className="text-right">

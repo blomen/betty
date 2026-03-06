@@ -735,7 +735,10 @@ providers:
     bonus:
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 5
+      trigger_multiplier: 5       # Trigger: wager deposit×5 at trigger_odds to unlock bonus
+      trigger_odds: 1.70
+      deadline_days: 14           # 14 days to complete wager
+      wagering_multiplier: 5      # Wager: after unlock, wager bonus×5 at min_odds to withdraw
       min_odds: 1.70
 
   # --------------------------------------------------------------------------
@@ -1046,15 +1049,16 @@ boosts:
     note: "Homepage 'Topphändelser' — boosted 1x2 on promoted games. Requires language=swe session. No original_odds (API only returns boosted price)."
 
   # ═══════════════════════════════════════════════════════
-  # INTERWETTEN — visible boosts on frontpage (DOM scrape)
+  # INTERWETTEN — DISABLED: no boosts on site (2026-03-06 audit)
+  # Scraper was producing false positives from regular combo markets.
   # ═══════════════════════════════════════════════════════
   interwetten:
     type: interwetten
     url: "https://www.interwetten.se"
     primary_provider: interwetten
     shared_with: []
-    enabled: true
-    note: "Proprietary SSR — boosts visible on frontpage as ODDS BOOST with original + boosted odds."
+    enabled: false
+    note: "No boosts found on site. Scraper matched regular combo markets as false positives."
 
   # ═══════════════════════════════════════════════════════
   # COMEON GROUP — RSocket WS, sport/85-odds-boost

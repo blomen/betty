@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { ProviderName } from './ProviderName';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
@@ -20,6 +20,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const [activeCategory, setActiveCategory] = useState<BetCategory>('upcoming');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [settling, setSettling] = useState<number | null>(null);
+  // Settlement selection: pre-filled from predicted_result, editable before confirm
+  const [settleSelection, setSettleSelection] = useState<Record<number, string>>({});
   // Inline edit state
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editStake, setEditStake] = useState('');
@@ -41,6 +43,19 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   }, [filter]);
 
   useEffect(() => { fetchBets(); }, [fetchBets]);
+
+  // Pre-fill settle selections from predicted_result when bets change
+  useEffect(() => {
+    const initial: Record<number, string> = {};
+    for (const b of bets) {
+      if (b.predicted_result && !settleSelection[b.id]) {
+        initial[b.id] = b.predicted_result;
+      }
+    }
+    if (Object.keys(initial).length > 0) {
+      setSettleSelection(prev => ({ ...initial, ...prev }));
+    }
+  }, [bets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
     setSettling(bet.id);
@@ -405,34 +420,57 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       {/* Last column: Score (live), Settle (ft), or nothing (upcoming) */}
                       {activeCategory === 'ft' ? (
                         <td className="text-right" onClick={e => e.stopPropagation()}>
-                          <span className="inline-flex gap-1 items-center justify-end">
-                            {b.home_score != null && b.away_score != null && (
-                              <span className="text-[10px] text-muted mr-1">{b.home_score}-{b.away_score}</span>
-                            )}
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors disabled:opacity-50"
-                              onClick={() => handleSettle(b, 'won')}
-                              disabled={settling === b.id}
-                            >W</button>
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error hover:bg-error/30 transition-colors disabled:opacity-50"
-                              onClick={() => handleSettle(b, 'lost')}
-                              disabled={settling === b.id}
-                            >L</button>
-                            <button
-                              className="text-[10px] px-1.5 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors disabled:opacity-50"
-                              onClick={() => handleSettle(b, 'void')}
-                              disabled={settling === b.id}
-                            >V</button>
-                          </span>
+                          {(() => {
+                            const sel = settleSelection[b.id] || '';
+                            const options: Array<{ val: string; label: string; color: string; bg: string }> = [
+                              { val: 'won', label: 'W', color: 'text-success', bg: 'bg-success' },
+                              { val: 'lost', label: 'L', color: 'text-error', bg: 'bg-error' },
+                              { val: 'void', label: 'V', color: 'text-muted', bg: 'bg-muted' },
+                            ];
+                            return (
+                              <span className="inline-flex gap-0.5 items-center justify-end">
+                                {b.home_score != null && b.away_score != null && (
+                                  <span className="text-[10px] text-muted mr-1">{b.home_score}-{b.away_score}</span>
+                                )}
+                                {options.map(o => (
+                                  <button
+                                    key={o.val}
+                                    className={`text-[10px] px-1.5 py-0.5 transition-colors ${
+                                      sel === o.val
+                                        ? `${o.bg}/30 ${o.color} font-bold ring-1 ring-current`
+                                        : `${o.bg}/10 ${o.color}/50 hover:${o.bg}/20`
+                                    }`}
+                                    onClick={() => setSettleSelection(prev => ({ ...prev, [b.id]: o.val }))}
+                                  >{o.label}</button>
+                                ))}
+                                <button
+                                  className={`text-[10px] px-2 py-0.5 ml-0.5 transition-colors ${
+                                    sel
+                                      ? 'bg-accent/20 text-accent hover:bg-accent/35 font-bold'
+                                      : 'bg-border/30 text-muted cursor-not-allowed'
+                                  }`}
+                                  disabled={!sel || settling === b.id}
+                                  onClick={() => sel && handleSettle(b, sel as 'won' | 'lost' | 'void')}
+                                >{settling === b.id ? '...' : 'OK'}</button>
+                              </span>
+                            );
+                          })()}
                         </td>
                       ) : activeCategory === 'live' ? (
-                        <td className="text-right text-sm text-warning">
-                          {b.home_score != null && b.away_score != null
-                            ? `${b.home_score}-${b.away_score}`
-                            : b.match_minute != null
-                              ? `${b.match_minute}'`
-                              : 'LIVE'}
+                        <td className="text-right">
+                          <div className="flex flex-col items-end">
+                            {b.home_score != null && b.away_score != null ? (
+                              <span className="text-sm font-medium text-warning">{b.home_score}-{b.away_score}</span>
+                            ) : (
+                              <span className="text-sm text-warning">LIVE</span>
+                            )}
+                            {b.match_period != null && (
+                              <span className="text-[9px] text-muted">{b.match_period}</span>
+                            )}
+                            {b.match_period == null && b.match_minute != null && (
+                              <span className="text-[9px] text-muted">{b.match_minute}'</span>
+                            )}
+                          </div>
                         </td>
                       ) : null}
                     </tr>

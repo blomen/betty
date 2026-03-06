@@ -354,6 +354,29 @@ def store_polymarket_event(
         session.add(db_event)
         is_new_event = True
 
+    # Update live scores from Polymarket (if available)
+    if event.live_state:
+        ls = event.live_state
+        if ls.get("home_score") is not None:
+            # Only update if Polymarket has newer data (or no existing data)
+            if db_event.home_score is None or ls.get("match_status") == "finished":
+                if teams_swapped:
+                    db_event.home_score = ls.get("away_score")
+                    db_event.away_score = ls.get("home_score")
+                else:
+                    db_event.home_score = ls["home_score"]
+                    db_event.away_score = ls.get("away_score")
+        if ls.get("match_status"):
+            status = ls["match_status"]
+            if status == "started":
+                db_event.match_status = "live"
+            elif status == "finished":
+                db_event.match_status = "finished"
+        if ls.get("match_minute") is not None:
+            db_event.match_minute = ls["match_minute"]
+        if ls.get("match_period") is not None:
+            db_event.match_period = ls["match_period"]
+
     # Use canonical event's home/away for outcome normalization
     # This ensures consistent home/away mapping when Polymarket lists teams in different order
     canonical_home = db_event.home_team

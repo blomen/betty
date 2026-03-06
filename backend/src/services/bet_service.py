@@ -125,6 +125,23 @@ class BetService:
                 if fair and fair > 1.0:
                     fair_odds_at_placement = round(fair, 4)
 
+        # For Polymarket bets, save the event_slug from odds.provider_meta
+        # so we can look up the Gamma event for settlement even after odds are cleaned up
+        confirmation_id = None
+        if provider_id == "polymarket" and event_id:
+            odds_row = (
+                self.db.query(Odds)
+                .filter(Odds.event_id == event_id, Odds.provider_id == "polymarket")
+                .first()
+            )
+            if odds_row and odds_row.provider_meta:
+                import json as _json
+                try:
+                    meta = _json.loads(odds_row.provider_meta)
+                    confirmation_id = meta.get("event_slug")
+                except (ValueError, TypeError):
+                    pass
+
         bet = self.bet_repo.create(
             profile_id=profile.id,
             event_id=event_id,
@@ -147,6 +164,7 @@ class BetService:
             fair_odds_at_placement=fair_odds_at_placement,
             boost_event=boost_event,
             boost_title=boost_title,
+            confirmation_id=confirmation_id,
         )
 
         # Deduct stake from balance (unless free bet)

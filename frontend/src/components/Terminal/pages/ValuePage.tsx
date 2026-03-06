@@ -158,7 +158,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         for (const p of exposureRes.providers) {
           if (p.wagering && p.wagering.remaining > 0) {
             // Priority = locked capital at this provider
-            // Completing rollover here unlocks more bankroll → higher stakes → faster wagering everywhere
+            // Completing wager here unlocks more bankroll → higher stakes → faster wagering everywhere
             m.set(p.provider_id, p.balance_sek ?? 0);
           }
         }

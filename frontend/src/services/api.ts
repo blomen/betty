@@ -528,11 +528,11 @@ export const api = {
     boost_event?: string;
     boost_title?: string;
   }): Promise<{ success: boolean; bet_id: number }> {
-    return fetchJson('/bets', {
+    return fetchWithRetry('/bets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
-    });
+    }, 0, 10000);
   },
 
   async createBatchBets(legs: {
@@ -562,11 +562,11 @@ export const api = {
       odds?: number;
     }[];
   }> {
-    return fetchJson('/bets/batch', {
+    return fetchWithRetry('/bets/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ legs }),
-    });
+    }, 0, 10000);
   },
 
   async closeStartedBets(): Promise<{
@@ -579,6 +579,7 @@ export const api = {
 
   async autoSettleBets(): Promise<{
     success: boolean;
+    polymarket_scores?: { matched: number; updated: number; skipped: number };
     checked: number;
     settled: number;
     skipped: number;

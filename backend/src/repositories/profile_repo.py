@@ -215,8 +215,8 @@ class ProfileRepo:
                     # Freebet trigger — don't auto-advance, user must activate
                     pass
             else:
-                # Rollover complete — withdrawal restriction lifted
-                # For bonusdeposit: bonus was already credited at UNLOCK (trigger_needed → in_progress)
+                # Wager complete — withdrawal restriction lifted
+                # For bonusdeposit: bonus was already credited at trigger completion (trigger_needed → in_progress)
                 # so no additional balance adjustment needed here.
                 record.bonus_status = "completed"
 
@@ -229,6 +229,7 @@ class ProfileRepo:
         bonus_amount: float,
         wagering_multiplier: float = 10.0,
         min_odds: float = 1.80,
+        deadline_days: int | None = None,
     ) -> dict:
         """Start tracking bonus wagering for a provider."""
         record = self.db.query(ProfileProviderBonus).filter(
@@ -238,7 +239,7 @@ class ProfileRepo:
 
         wagering_requirement = bonus_amount * wagering_multiplier
         now = datetime.utcnow()
-        expires = now + timedelta(days=BONUS_WAGERING_DAYS)
+        expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
 
         if record:
             record.bonus_status = "in_progress"
@@ -278,10 +279,11 @@ class ProfileRepo:
         trigger_min_odds: float = 1.50,
         main_wagering_multiplier: float = 12.0,
         main_min_odds: float = 1.80,
+        deadline_days: int | None = None,
     ) -> dict:
-        """Start two-phase bonus: trigger bet first, then main wagering.
+        """Start two-phase bonus: trigger first, then main wagering.
 
-        Phase 1 (trigger_needed): wager deposit×1 at trigger_odds to unlock bonus.
+        Phase 1 (trigger_needed): wager deposit×multiplier at trigger_odds to unlock bonus.
         Phase 2 (in_progress): bonus added to balance, wager bonus×multiplier at main_min_odds.
         """
         record = self.db.query(ProfileProviderBonus).filter(
@@ -290,7 +292,7 @@ class ProfileRepo:
         ).first()
 
         now = datetime.utcnow()
-        expires = now + timedelta(days=BONUS_WAGERING_DAYS)
+        expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
 
         kwargs = dict(
             bonus_status="trigger_needed",
@@ -368,40 +370,40 @@ class ProfileRepo:
         provider_id: str,
         bonus_amount: float,
         min_odds: float = 1.80,
+        trigger_wagering: float | None = None,
+        deadline_days: int | None = None,
     ) -> dict:
-        """Start freebet tracking — user needs to place a qualifying trigger bet."""
+        """Start freebet tracking — user needs to wager trigger amount to unlock."""
         record = self.db.query(ProfileProviderBonus).filter(
             ProfileProviderBonus.profile_id == profile_id,
             ProfileProviderBonus.provider_id == provider_id
         ).first()
 
+        wagering_req = trigger_wagering or bonus_amount
         now = datetime.utcnow()
-        expires = now + timedelta(days=BONUS_WAGERING_DAYS)
+        expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
+
+        kwargs = dict(
+            bonus_status="trigger_needed",
+            bonus_type="freebet",
+            bonus_amount=bonus_amount,
+            wagering_multiplier=1.0,
+            wagering_requirement=wagering_req,
+            wagered_amount=0.0,
+            min_odds=min_odds,
+            claimed_at=now,
+            expires_at=expires,
+            updated_at=now,
+        )
 
         if record:
-            record.bonus_status = "trigger_needed"
-            record.bonus_type = "freebet"
-            record.bonus_amount = bonus_amount
-            record.wagering_multiplier = 1.0
-            record.wagering_requirement = bonus_amount  # trigger bet = bonus amount
-            record.wagered_amount = 0.0
-            record.min_odds = min_odds
-            record.claimed_at = now
-            record.expires_at = expires
-            record.updated_at = now
+            for k, v in kwargs.items():
+                setattr(record, k, v)
         else:
             record = ProfileProviderBonus(
                 profile_id=profile_id,
                 provider_id=provider_id,
-                bonus_status="trigger_needed",
-                bonus_type="freebet",
-                bonus_amount=bonus_amount,
-                wagering_multiplier=1.0,
-                wagering_requirement=bonus_amount,
-                wagered_amount=0.0,
-                min_odds=min_odds,
-                claimed_at=now,
-                expires_at=expires,
+                **kwargs,
             )
             self.db.add(record)
 

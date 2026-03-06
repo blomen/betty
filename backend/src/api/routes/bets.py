@@ -41,6 +41,60 @@ def _boost_away(bet, sp) -> str | None:
     return None
 
 
+def _predict_result(bet, event) -> str | None:
+    """Predict bet result from event scores or winner data."""
+    from ...services.results_service import determine_bet_result
+    import json as _json
+
+    if not event or event.match_status != "finished":
+        return None
+
+    # Normalize market: "total_226.5" → "total", extract embedded point
+    market = bet.market or ""
+    point = bet.point
+    if "_" in market:
+        parts = market.split("_", 1)
+        market = parts[0]
+        if point is None:
+            try:
+                point = float(parts[1])
+            except (ValueError, IndexError):
+                pass
+
+    # Path 1: Score-based
+    if event.home_score is not None and event.away_score is not None:
+        return determine_bet_result(
+            event.home_score, event.away_score,
+            market, bet.outcome, point,
+        )
+
+    # Path 2: Winner-based (from Polymarket outcomePrices)
+    if bet.market in ("1x2", "moneyline") and event.stats_json:
+        try:
+            stats = _json.loads(event.stats_json)
+            winner = stats.get("winner")
+            if winner:
+                from ...matching.matcher import get_team_match_score
+                home_match = get_team_match_score(winner, event.home_team)
+                away_match = get_team_match_score(winner, event.away_team)
+                if home_match > away_match and home_match >= 75:
+                    actual_winner = "home"
+                elif away_match > home_match and away_match >= 75:
+                    actual_winner = "away"
+                else:
+                    return None
+                if bet.outcome == actual_winner:
+                    return "won"
+                elif bet.market == "moneyline" and actual_winner == "draw":
+                    return "void"
+                else:
+                    return "lost"
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
 def _get_service(db: Session = Depends(get_db)) -> BetService:
     return BetService(db)
 
@@ -193,6 +247,9 @@ async def list_bets(
             "home_score": ev.home_score if ev else None,
             "away_score": ev.away_score if ev else None,
             "match_status": ev.match_status if ev else None,
+            "match_minute": ev.match_minute if ev else None,
+            "match_period": ev.match_period if ev else None,
+            "predicted_result": _predict_result(b, ev) if ev else None,
             "provider_site_url": site_urls.get(b.provider_id),
             "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
         })
@@ -245,8 +302,38 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
 
 @router.post("/auto-settle")
 async def auto_settle_bets(db: Session = Depends(get_db)):
-    """Disabled — Pinnacle scores are unreliable (mid-game/pre-OT snapshots)."""
-    return {"success": False, "message": "Auto-settle disabled — use manual settlement via Settle tab"}
+    """Auto-settle pending bets using Polymarket scores.
+
+    Flow:
+    1. Fetch resolved events from Polymarket API (definitive scores)
+    2. Match to canonical events and update scores
+    3. Settle all pending bets on finished events with scores
+    """
+    from ...services.results_service import ResultsService
+    from ...factory import ExtractorFactory
+
+    service = ResultsService(db)
+
+    # Phase 1: Fetch resolved Polymarket events and update scores
+    poly_result = {"matched": 0, "updated": 0, "skipped": 0}
+    try:
+        factory = ExtractorFactory.get_instance()
+        extractor = factory.get_extractor("polymarket")
+        async with extractor as source:
+            resolved = await source.fetch_resolved()
+        if resolved:
+            poly_result = service.update_scores_from_polymarket(resolved)
+    except Exception as e:
+        logger.warning(f"[auto-settle] Polymarket fetch failed: {e}")
+
+    # Phase 2: Settle all pending bets on finished events
+    settle_result = service.auto_settle(source="auto_polymarket")
+
+    return {
+        "success": True,
+        "polymarket_scores": poly_result,
+        **settle_result,
+    }
 
 
 @router.post("/batch")

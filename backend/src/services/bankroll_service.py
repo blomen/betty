@@ -362,27 +362,34 @@ class BankrollService:
         if bonus_type == 'bonusdeposit' and bonus_amount > 0:
             wagering_multiplier = bonus_config.get('wagering_multiplier', 10.0)
             bonus_min_odds = bonus_config.get('min_odds', 1.80)
+            deadline_days = bonus_config.get('deadline_days')
             if trigger_odds:
-                # Two-phase: start in trigger_needed with deposit×1 at trigger_odds
+                # Two-phase: start in trigger_needed, wager deposit×trigger_multiplier at trigger_odds
+                trigger_multiplier = bonus_config.get('trigger_multiplier', 1)
                 bonus_info = self.profile_repo.start_bonus_trigger(
                     active_profile.id, provider_id, bonus_amount,
-                    trigger_wagering=deposit_amount,
+                    trigger_wagering=deposit_amount * trigger_multiplier,
                     trigger_min_odds=trigger_odds,
                     main_wagering_multiplier=wagering_multiplier,
                     main_min_odds=bonus_min_odds,
+                    deadline_days=deadline_days,
                 )
             else:
                 bonus_info = self.profile_repo.start_bonus_wagering(
                     active_profile.id, provider_id, bonus_amount,
                     wagering_multiplier, min_odds=bonus_min_odds,
+                    deadline_days=deadline_days,
                 )
         elif bonus_type == 'freebet' and is_available and bonus_limit > 0:
             # Freebet: start trigger tracking (no bonus money added to balance)
             bonus_min_odds = bonus_config.get('min_odds', 1.80)
+            trigger_multiplier = bonus_config.get('trigger_multiplier', 1)
             bonus_info = self.profile_repo.start_freebet_tracking(
                 active_profile.id, provider_id,
                 bonus_amount=bonus_limit,
                 min_odds=bonus_min_odds,
+                trigger_wagering=deposit_amount * trigger_multiplier,
+                deadline_days=bonus_config.get('deadline_days'),
             )
 
         return {
@@ -410,7 +417,7 @@ class BankrollService:
         amt = int(bonus_amount)
         if status == "trigger_needed":
             if bonus_type == "bonusdeposit":
-                return f"Wager at {min_odds}+ odds to unlock {amt}kr bonus"
+                return f"Trigger at {min_odds}+ odds to unlock {amt}kr bonus"
             return f"Place {amt}kr trigger bet at {min_odds}+ odds"
         elif status == "freebet_available":
             return f"Use {amt}kr freebet"
