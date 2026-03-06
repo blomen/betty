@@ -41,12 +41,50 @@ def _boost_away(bet, sp) -> str | None:
     return None
 
 
+def _get_bo_format(event) -> int:
+    """Get best-of format from stats_json, or sport default (3)."""
+    if event.stats_json:
+        import json as _json
+        try:
+            stats = _json.loads(event.stats_json)
+            bo = stats.get("bo")
+            if bo:
+                return bo
+        except (ValueError, TypeError):
+            pass
+    return 3
+
+
 def _predict_result(bet, event) -> str | None:
-    """Predict bet result from event scores or winner data."""
+    """Predict bet result from event scores or winner data.
+
+    For BO series sports (esports/tennis), can predict moneyline result
+    when the series is clinched (e.g., 2-0 in BO3) even before match is finished.
+    """
     from ...services.results_service import determine_bet_result
     import json as _json
 
-    if not event or event.match_status != "finished":
+    if not event:
+        return None
+
+    # For BO series (esports/tennis): predict when series is clinched
+    if event.match_status == "live" and event.sport in ("esports", "tennis"):
+        if event.home_score is not None and event.away_score is not None:
+            bo = _get_bo_format(event)
+            wins_needed = (bo + 1) // 2  # BO3→2, BO5→3
+            if event.home_score >= wins_needed or event.away_score >= wins_needed:
+                # Series clinched — can determine moneyline result
+                # (spread/total may still change with remaining maps/sets)
+                market = bet.market or ""
+                if "_" in market:
+                    market = market.split("_", 1)[0]
+                if market in ("1x2", "moneyline"):
+                    return determine_bet_result(
+                        event.home_score, event.away_score,
+                        market, bet.outcome, bet.point,
+                    )
+
+    if event.match_status != "finished":
         return None
 
     # Normalize market: "total_226.5" → "total", extract embedded point

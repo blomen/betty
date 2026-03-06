@@ -33,6 +33,11 @@ def determine_bet_result(
 ) -> Optional[str]:
     """Determine bet outcome from match score.
 
+    Score semantics vary by sport:
+    - Football/basketball/ice_hockey/baseball: goals/points/runs
+    - Tennis: sets won
+    - Esports: maps won
+
     Returns: "won", "lost", "void", or None if cannot determine.
     """
     if market in ("1x2", "moneyline"):
@@ -105,21 +110,49 @@ class ResultsService:
         self.db = db
         self.bet_service = BetService(db)
 
-    def auto_settle(self, source: str = "auto") -> dict:
-        """Auto-settle all eligible pending bets on finished events.
+    @staticmethod
+    def _get_bo_format(event) -> int:
+        """Get best-of format from stats_json, or sport default (3)."""
+        if event.stats_json:
+            import json as _json
+            try:
+                stats = _json.loads(event.stats_json)
+                bo = stats.get("bo")
+                if bo:
+                    return bo
+            except (ValueError, TypeError):
+                pass
+        return 3
 
-        Two settlement paths:
+    @staticmethod
+    def _is_series_clinched(event) -> bool:
+        """Check if a BO series is clinched (one side has enough wins)."""
+        if event.sport not in ("esports", "tennis"):
+            return False
+        if event.home_score is None or event.away_score is None:
+            return False
+        bo = ResultsService._get_bo_format(event)
+        wins_needed = (bo + 1) // 2
+        return event.home_score >= wins_needed or event.away_score >= wins_needed
+
+    def auto_settle(self, source: str = "auto") -> dict:
+        """Auto-settle all eligible pending bets on finished or clinched events.
+
+        Three settlement paths:
         1. Score-based: events with home_score/away_score → determine_bet_result()
         2. Winner-based: moneyline bets on events with winner stored in stats_json
            (from Polymarket outcomePrices resolution — no scores needed)
+        3. BO-clinched: esports/tennis moneyline bets where series is decided
+           (e.g., 2-0 in BO3) — settled even before match_status="finished"
 
         Args:
             source: Settlement source label ("auto", "auto_pinnacle", "auto_polymarket")
 
         Returns: {checked, settled, skipped, results: [...]}
         """
-        # Find pending Polymarket bets on finished events
+        # Find pending Polymarket bets on finished events OR live BO-series events
         # Only auto-settle Polymarket bets — other providers are settled manually
+        from sqlalchemy import or_
         pending_bets = (
             self.db.query(Bet)
             .join(Event, Event.id == Bet.event_id)
@@ -127,7 +160,11 @@ class ResultsService:
                 Bet.result == "pending",
                 Bet.event_id.isnot(None),
                 Bet.provider_id == "polymarket",
-                Event.match_status == "finished",
+                or_(
+                    Event.match_status == "finished",
+                    # Also include live esports/tennis for BO-clinch check
+                    (Event.match_status == "live") & (Event.sport.in_(["esports", "tennis"])),
+                ),
             )
             .all()
         )
@@ -162,6 +199,12 @@ class ResultsService:
                         point = float(parts[1])
                     except (ValueError, IndexError):
                         pass
+
+            # For live BO events, only settle moneyline when series is clinched
+            if event.match_status == "live":
+                if not self._is_series_clinched(event) or market not in ("1x2", "moneyline"):
+                    skipped += 1
+                    continue
 
             if event.home_score is not None and event.away_score is not None:
                 # Path 1: Score-based settlement

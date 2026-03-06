@@ -6,6 +6,7 @@ Functions for storing events and odds in the database.
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from ..core import StandardEvent
@@ -376,6 +377,17 @@ def store_polymarket_event(
             db_event.match_minute = ls["match_minute"]
         if ls.get("match_period") is not None:
             db_event.match_period = ls["match_period"]
+
+        # Store score_raw and BO format from Polymarket in stats_json
+        score_raw = ls.get("score_raw")
+        if score_raw:
+            existing = json.loads(db_event.stats_json) if db_event.stats_json else {}
+            existing["score_raw"] = score_raw
+            # Parse BO format from esports score_raw: "000-000|2-1|Bo3"
+            bo_match = re.search(r"Bo(\d+)", score_raw)
+            if bo_match:
+                existing["bo"] = int(bo_match.group(1))
+            db_event.stats_json = json.dumps(existing)
 
     # Use canonical event's home/away for outcome normalization
     # This ensures consistent home/away mapping when Polymarket lists teams in different order
@@ -775,6 +787,26 @@ def store_provider_event(
         stats = ls.get("stats")
         if stats:
             db_event.stats_json = json.dumps(stats)
+
+            # Tennis: derive home_score/away_score from setsWon
+            if event.sport == "tennis":
+                home_sets = stats.get("home", {}).get("setsWon")
+                away_sets = stats.get("away", {}).get("setsWon")
+                if home_sets is not None and away_sets is not None:
+                    db_event.home_score = home_sets
+                    db_event.away_score = away_sets
+
+        # Esports: parse BO format from match_period ("1/3" → bo=3)
+        if event.sport == "esports" and ls.get("match_period"):
+            period_str = str(ls["match_period"])
+            if "/" in period_str:
+                try:
+                    total = int(period_str.split("/")[1])
+                    existing = json.loads(db_event.stats_json) if db_event.stats_json else {}
+                    existing["bo"] = total
+                    db_event.stats_json = json.dumps(existing)
+                except (ValueError, IndexError):
+                    pass
 
     # Extract home/away odds from event markets for inversion detection
     # Only use 1x2/moneyline — spread odds have inverted favorite semantics
