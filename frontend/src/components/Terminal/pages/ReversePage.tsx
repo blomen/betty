@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
@@ -22,6 +22,10 @@ export function ReversePage() {
   const [isPlacing, setIsPlacing] = useState(false);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
+  const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
+  const [editingOdds, setEditingOdds] = useState<string | null>(null);
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
 
   // Two-step placement: tracks which row is awaiting confirm
   const [pendingBet, setPendingBet] = useState<{
@@ -115,20 +119,25 @@ export function ReversePage() {
     return outcome;
   };
 
+  const getOddsKey = (opp: Opportunity) => `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
+
   // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity) => {
-    const stake = opp.final_stake;
+    const key = getOddsKey(opp);
+    const stake = stakeOverride[key] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
+    const odds = oddsOverride[key] ?? opp.odds1;
     setBetError(null);
     setBetSuccess(null);
-    setPendingBet({ oppId: opp.id, opp, actualOdds: opp.odds1, navUrl: null, windowName: 'bbq_pinnacle' });
+    setPendingBet({ oppId: opp.id, opp, actualOdds: odds, navUrl: null, windowName: 'bbq_pinnacle' });
   };
 
   // Step 2: Confirm bet with actual odds
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { opp, actualOdds } = pendingBet;
-    const stake = opp.final_stake;
+    const key = getOddsKey(opp);
+    const stake = stakeOverride[key] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
@@ -249,15 +258,22 @@ export function ReversePage() {
           <tbody>
             {sorted.map((opp, idx) => {
               const isSelected = selectedRow === idx;
-              const hasStake = opp.final_stake != null && opp.final_stake > 0;
               const isSkipped = !!opp.skip_reason;
+              const oppKey = getOddsKey(opp);
+              const effOdds = oddsOverride[oppKey] ?? opp.odds1;
+              const effStake = stakeOverride[oppKey] ?? opp.final_stake;
+              const hasStake = effStake != null && effStake > 0;
+              const isOddsOver = oppKey in oddsOverride;
+              const isStakeOver = oppKey in stakeOverride;
+              const dynEdge = opp.fair_odds && opp.fair_odds > 1
+                ? (effOdds / opp.fair_odds - 1) * 100
+                : opp.edge_pct ?? 0;
 
               return (
-                <>
+                <Fragment key={opp.id}>
                   <tr
-                    key={opp.id}
                     className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
-                    onClick={() => { if (!isSkipped) { setSelectedRow(isSelected ? null : idx); setPendingBet(null); } }}
+                    onClick={() => { if (!isSkipped) { setSelectedRow(isSelected ? null : idx); setPendingBet(null); setEditingOdds(null); setEditingStake(null); } }}
                   >
                     <td>
                       <div className="flex items-center gap-2 min-w-0 group/copy">
@@ -276,7 +292,26 @@ export function ReversePage() {
                       </div>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcome(opp)}</td>
-                    <td className="text-right text-text text-sm font-medium">{opp.odds1.toFixed(2)}</td>
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingOdds === oppKey ? (
+                        <input
+                          type="number" step="0.01" autoFocus
+                          defaultValue={effOdds.toFixed(2)}
+                          className="w-16 bg-bg border border-tabReverse/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabReverse"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setOddsOverride(prev => ({ ...prev, [oppKey]: val })); setEditingOdds(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingOdds(oppKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabReverse/50 transition-colors ${isOddsOver ? 'text-tabReverse font-medium border-tabReverse/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust odds"
+                        >
+                          {effOdds.toFixed(2)}
+                        </span>
+                      )}
+                      {isOddsOver && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[oppKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                    </td>
                     <td className="text-right text-muted text-sm">{opp.fair_odds?.toFixed(2) || '-'}</td>
                     <td className="text-right text-muted text-sm">
                       {opp.fair_odds && opp.fair_odds > 1 ? `${(100 / opp.fair_odds).toFixed(0)}%` : '-'}
@@ -284,84 +319,47 @@ export function ReversePage() {
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium">
-                      {hasStake ? (
-                        <span className="text-text">{opp.final_stake!.toFixed(0)} kr</span>
-                      ) : '-'}
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingStake === oppKey ? (
+                        <input
+                          type="number" step="1" autoFocus
+                          defaultValue={effStake?.toFixed(0) ?? '0'}
+                          className="w-16 bg-bg border border-tabReverse/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabReverse"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [oppKey]: val })); setEditingStake(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingStake(oppKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabReverse/50 transition-colors ${isStakeOver ? 'text-tabReverse font-medium border-tabReverse/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust stake"
+                        >
+                          {hasStake ? `${effStake!.toFixed(0)} kr` : '-'}
+                        </span>
+                      )}
+                      {isStakeOver && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[oppKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                     </td>
-                    <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(opp.edge_pct ?? 0) > 0 ? '+' : ''}{opp.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${dynEdge > 0 ? 'text-success' : 'text-error'}`}>{dynEdge > 0 ? '+' : ''}{dynEdge.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (
                     <tr key={`${opp.id}-expanded`}>
                       <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Kelly: </span>
-                            <span className="text-text">{opp.kelly_fraction != null ? `${(opp.kelly_fraction * 100).toFixed(1)}%` : '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                            <span className="text-text">{opp.market}</span>
-                          </div>
-                          {hasStake && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                              <span className="text-text">{(opp.final_stake! * opp.odds1).toFixed(0)} kr</span>
-                              <span className="text-tabReverse text-xs ml-1">(+{(opp.final_stake! * opp.odds1 - opp.final_stake!).toFixed(0)})</span>
-                            </div>
-                          )}
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Place on: </span>
-                            <span className="text-text">Pinnacle</span>
-                          </div>
-                        </div>
                         <div className="px-3 py-2 bg-panel flex items-center gap-2">
                           {pendingBet?.oppId === opp.id ? (
                             <>
-                              <span className="text-muted text-xs">Odds:</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                autoFocus
-                                value={pendingBet.actualOdds}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val)) {
-                                    setPendingBet(prev => prev ? { ...prev, actualOdds: val } : null);
-                                  }
-                                }}
-                                className="w-20 bg-bg border border-tabReverse/50 text-text text-xs px-2 py-1.5 text-right focus:outline-none focus:border-tabReverse"
-                                onKeyDown={(e) => { if (e.key === 'Enter') confirmPlaceBet(); if (e.key === 'Escape') setPendingBet(null); }}
-                              />
-                              <button
-                                onClick={confirmPlaceBet}
-                                disabled={isPlacing || pendingBet.actualOdds < 1.01}
-                                className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                              >
-                                {isPlacing ? '...' : 'Confirm'}
-                              </button>
-                              <button
-                                onClick={() => setPendingBet(null)}
-                                className="px-2 py-1.5 text-xs text-muted hover:text-text"
-                              >
-                                Cancel
-                              </button>
+                              <span className="text-muted text-xs">@ {pendingBet.actualOdds.toFixed(2)}</span>
+                              <button onClick={confirmPlaceBet} disabled={isPlacing || pendingBet.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
+                              <button onClick={() => setPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
                             </>
                           ) : (
-                            <button
-                              onClick={() => startPlaceBet(opp)}
-                              disabled={!hasStake || isPlacing}
-                              className="px-4 py-1.5 text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap bg-tabReverse"
-                            >
-                              {isPlacing ? '...' : 'Place Bet'}
-                            </button>
+                            <button onClick={() => startPlaceBet(opp)} disabled={!hasStake || isPlacing} className="px-4 py-1.5 text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap bg-tabReverse">{isPlacing ? '...' : 'Place Bet'}</button>
                           )}
                         </div>
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>

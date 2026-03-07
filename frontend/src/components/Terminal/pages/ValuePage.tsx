@@ -64,6 +64,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [boostSelectedBetProvider, setBoostSelectedBetProvider] = useState<Record<string, number>>({});
   const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
   const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
+  const [boostStakeOverride, setBoostStakeOverride] = useState<Record<string, number>>({});
+  const [boostEditingStake, setBoostEditingStake] = useState<string | null>(null);
   const [boostPendingBet, setBoostPendingBet] = useState<{
     groupKey: string;
     special: SpecialItem;
@@ -347,7 +351,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
     if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
-    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null);
+    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null); setBoostEditingOdds(null); setBoostEditingStake(null);
     const s = group.rep;
     // Use LLM edge if available, otherwise boost edge
     const edgeForStake = s.llm_edge_pct ?? s.edge_pct;
@@ -359,9 +363,9 @@ export function ValuePage({ providers }: ValuePageProps) {
   };
 
   const startBoostPlaceBet = (special: SpecialItem, providerId: string, groupKey: string) => {
-    if (!boostStakePreview || !special.boosted_odds) return;
-    let stake = boostStakePreview.recommended_stake;
-    if (special.max_stake != null && stake > special.max_stake) stake = special.max_stake;
+    if (!special.boosted_odds) return;
+    const overriddenStake = boostStakeOverride[groupKey];
+    let stake = overriddenStake ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0));
     if (stake <= 0) return;
     const odds = boostOddsOverride[groupKey] ?? special.boosted_odds;
     setBetError(null); setBetSuccess(null);
@@ -401,10 +405,13 @@ export function ValuePage({ providers }: ValuePageProps) {
   const handleSelectGroup = (idx: number) => {
     setSelectedGroup(selectedGroup === idx ? null : idx);
     setPendingBet(null);
+    setEditingOdds(null);
+    setEditingStake(null);
   };
 
   const handlePlaceBetClick = (opp: Opportunity) => {
-    const stake = opp.final_stake;
+    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
+    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
 
     if (opp.bonus_status === 'freebet_available') {
@@ -435,7 +442,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { opp, actualOdds, useFreebet } = pendingBet;
-    const stake = opp.final_stake;
+    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
+    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
@@ -579,6 +587,15 @@ export function ValuePage({ providers }: ValuePageProps) {
               const isExpanded = boostExpandedIdx === idx;
               const providerCount = group.providers.length;
 
+              const boostEffOdds = boostOddsOverride[group.key] ?? s.boosted_odds ?? 0;
+              const boostEffStake = boostStakeOverride[group.key] ?? s.recommended_stake ?? 0;
+              const isBoostOddsOverridden = group.key in boostOddsOverride;
+              const isBoostStakeOverridden = group.key in boostStakeOverride;
+              const boostFairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
+              const boostDynEdge = boostFairOdds != null && boostFairOdds > 1
+                ? (boostEffOdds / boostFairOdds - 1) * 100
+                : s.llm_edge_pct ?? s.edge_pct ?? s.boost_pct ?? null;
+
               return (
                 <Fragment key={group.key}>
                   <tr className={`cursor-pointer group bg-tabValue/[0.03] hover:bg-tabValue/[0.07] ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
@@ -611,17 +628,27 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </span>
                     </td>
-                    <td className="text-right text-sm">
-                      {s.original_odds != null && s.boosted_odds != null ? (
-                        <>
-                          <span className="text-muted2">{s.original_odds.toFixed(2)}</span>
-                          <span className="text-muted2 mx-0.5">&rarr;</span>
-                          <span className="text-success font-medium">{s.boosted_odds.toFixed(2)}</span>
-                          {s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
-                        </>
+                    <td className="text-right text-sm" onClick={(e) => e.stopPropagation()}>
+                      {s.original_odds != null && <><span className="text-muted2">{s.original_odds.toFixed(2)}</span><span className="text-muted2 mx-0.5">&rarr;</span></>}
+                      {boostEditingOdds === group.key ? (
+                        <input
+                          type="number" step="0.01" autoFocus
+                          defaultValue={boostEffOdds.toFixed(2)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingOdds(null); }}
+                        />
                       ) : (
-                        <span className="text-text font-medium">{s.boosted_odds?.toFixed(2) ?? '-'}</span>
+                        <span
+                          onClick={() => setBoostEditingOdds(group.key)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-success font-medium border-transparent'}`}
+                          title="Click to adjust odds"
+                        >
+                          {boostEffOdds.toFixed(2)}
+                        </span>
                       )}
+                      {isBoostOddsOverridden && <button onClick={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                      {!isBoostOddsOverridden && s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
                     </td>
                     <td className="text-right text-muted text-sm">{s.llm_fair_odds != null ? s.llm_fair_odds.toFixed(2) : '-'}</td>
                     <td className="text-right text-muted text-sm">
@@ -630,51 +657,103 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium">
-                      {(() => { const st = s.recommended_stake ?? 0; return st > 0 ? <span className="text-text">{Math.round(st)} kr</span> : <span className="text-muted2">-</span>; })()}
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {boostEditingStake === group.key ? (
+                        <input
+                          type="number" step="1" autoFocus
+                          defaultValue={boostEffStake.toFixed(0)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setBoostStakeOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingStake(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingStake(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setBoostEditingStake(group.key)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust stake"
+                        >
+                          {boostEffStake > 0 ? `${Math.round(boostEffStake)} kr` : '-'}
+                        </span>
+                      )}
+                      {isBoostStakeOverridden && <button onClick={() => { setBoostStakeOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingStake(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                     </td>
                     <td className="text-right font-semibold text-sm">
-                      {s.llm_edge_pct != null ? (
+                      {boostDynEdge != null ? (
                         <span className="text-text">
-                          {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
-                        </span>
-                      ) : (s.edge_pct ?? s.boost_pct) != null ? (
-                        <span className="text-text">
-                          {(s.edge_pct ?? s.boost_pct)! > 0 ? '+' : ''}{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
+                          {boostDynEdge > 0 ? '+' : ''}{boostDynEdge.toFixed(1)}%
                         </span>
                       ) : <span className="text-muted2">-</span>}
                     </td>
                   </tr>
-                  {isExpanded && (
+                  {isExpanded && (() => {
+                    const bSelIdx = boostSelectedBetProvider[group.key] ?? 0;
+                    const bSelProvider = group.providers[bSelIdx] || group.providers[0];
+                    const bIsPending = boostPendingBet?.groupKey === group.key;
+                    const bEffStake = boostStakeOverride[group.key] ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, s.max_stake ?? Infinity) : (s.recommended_stake ?? 0));
+
+                    // Find recommended provider
+                    let bRecommended: string | null = null;
+                    if (wageringPriority.size > 0 && group.providers.length > 1) {
+                      let maxRem = 0;
+                      for (const pid of group.providers) {
+                        const rem = wageringPriority.get(pid) ?? 0;
+                        if (rem > maxRem) { maxRem = rem; bRecommended = pid; }
+                      }
+                    }
+                    const bGetDot = (pid: string) => bRecommended === pid ? 'bg-tabValue' : (balanceMap.get(pid) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40';
+
+                    return (
                     <tr key={`${group.key}-exp`}>
                       <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <BoostExpandedRow
-                          special={s}
-                          groupKey={group.key}
-                          providers={group.providers}
-                          stakePreview={boostStakePreview}
-                          isLoadingPreview={isLoadingBoostPreview}
-                          isPlacing={isPlacing}
-                          pendingBet={boostPendingBet?.groupKey === group.key ? boostPendingBet : null}
-                          selectedProviderIdx={boostSelectedBetProvider[group.key] ?? 0}
-                          onSelectProvider={(i) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: i }))}
-                          onStartPlaceBet={(pid) => startBoostPlaceBet(s, pid, group.key)}
-                          onConfirmBet={confirmBoostPlaceBet}
-                          onCancelPending={() => setBoostPendingBet(null)}
-                          onUpdatePendingOdds={(val) => setBoostPendingBet(prev => prev ? { ...prev, actualOdds: val } : null)}
-                          oddsOverride={boostOddsOverride[group.key] ?? null}
-                          editingOdds={boostEditingOdds === group.key}
-                          onEditOdds={() => setBoostEditingOdds(group.key)}
-                          onSetOdds={(val) => { setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
-                          onResetOdds={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }}
-                          onCancelEdit={() => setBoostEditingOdds(null)}
-                          betError={betError}
-                          balanceMap={balanceMap}
-                          wageringPriority={wageringPriority}
-                        />
+                        {isLoadingBoostPreview ? <div className="px-3 py-2 bg-panel text-muted text-sm">Loading...</div> : (
+                        <div className="px-3 py-2 bg-panel">
+                          {s.llm_reasoning && (
+                            <div className="text-muted2 text-[10px] leading-relaxed mb-2">
+                              <span className="uppercase tracking-wider">{s.llm_confidence || 'low'}: </span>
+                              {s.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
+                                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
+                            {(boostStakePreview?.skip_reason) ? (
+                              <span className="text-muted text-xs bg-border px-2 py-1">{boostStakePreview.skip_reason}</span>
+                            ) : bIsPending ? (
+                              <>
+                                <button onClick={confirmBoostPlaceBet} disabled={isPlacing || boostPendingBet!.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
+                                <span className="text-muted text-xs">@ {boostPendingBet!.actualOdds.toFixed(2)}</span>
+                                <button onClick={() => setBoostPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
+                              </>
+                            ) : (
+                              <>
+                                <div className="relative">
+                                  <select
+                                    value={bSelIdx}
+                                    onChange={(e) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: parseInt(e.target.value) }))}
+                                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer min-w-[120px]"
+                                  >
+                                    {group.providers.map((pid, i) => (
+                                      <option key={pid} value={i}>{formatProviderName(pid)}{bEffStake > 0 ? ` ${bEffStake.toFixed(0)} kr` : ''}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <button
+                                  onClick={() => startBoostPlaceBet(s, bSelProvider, group.key)}
+                                  disabled={bEffStake <= 0 || isPlacing}
+                                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                                >
+                                  {isPlacing ? '...' : 'Place Bet'}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        )}
                       </td>
                     </tr>
-                  )}
+                    );
+                  })()}
                 </Fragment>
               );
             })}
@@ -745,9 +824,18 @@ export function ValuePage({ providers }: ValuePageProps) {
             {sortedGroups.map((group, idx) => {
               const { rep, opps, providers: groupProviders } = group;
               const isSelected = selectedGroup === idx;
-              const hasStake = rep.final_stake != null && rep.final_stake > 0;
               const isSkipped = opps.every(o => !!o.skip_reason);
               const providerCount = groupProviders.length;
+
+              const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
+              const effectiveOdds = oddsOverride[groupOddsKey] ?? rep.odds1;
+              const effectiveStake = stakeOverride[groupOddsKey] ?? rep.final_stake;
+              const hasStake = effectiveStake != null && effectiveStake > 0;
+              const isOddsOverridden = groupOddsKey in oddsOverride;
+              const isStakeOverridden = groupOddsKey in stakeOverride;
+              const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
+                ? (effectiveOdds / rep.fair_odds - 1) * 100
+                : rep.edge_pct ?? 0;
 
               return (
                 <Fragment key={group.key}>
@@ -787,7 +875,26 @@ export function ValuePage({ providers }: ValuePageProps) {
                       </span>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcomeName(rep)}</td>
-                    <td className="text-right text-text text-sm font-medium">{rep.odds1.toFixed(2)}</td>
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingOdds === groupOddsKey ? (
+                        <input
+                          type="number" step="0.01" autoFocus
+                          defaultValue={effectiveOdds.toFixed(2)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setOddsOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingOdds(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingOdds(groupOddsKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust odds"
+                        >
+                          {effectiveOdds.toFixed(2)}
+                        </span>
+                      )}
+                      {isOddsOverridden && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                    </td>
                     <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
                     <td className="text-right text-muted text-sm">
                       {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
@@ -795,111 +902,40 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium">
-                      {hasStake ? (
-                        <>
-                          <span className="text-text">{rep.final_stake!.toFixed(0)} kr</span>
-                          {rep.bonus_status === 'trigger_needed' && (
-                            <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>
-                          )}
-                          {rep.bonus_status === 'freebet_available' && (
-                            <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>
-                          )}
-                        </>
-                      ) : '-'}
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingStake === groupOddsKey ? (
+                        <input
+                          type="number" step="1" autoFocus
+                          defaultValue={effectiveStake?.toFixed(0) ?? '0'}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingStake(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingStake(groupOddsKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust stake"
+                        >
+                          {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
+                        </span>
+                      )}
+                      {isStakeOverridden && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                      {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
+                      {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
                     </td>
-                    <td className={`text-right font-semibold text-sm ${(rep.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(rep.edge_pct ?? 0) > 0 ? '+' : ''}{rep.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (() => {
-                    const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
-                    const isPendingConfirm = pendingBet?.groupKey === group.key;
-                    const effectiveOdds = isPendingConfirm ? pendingBet!.actualOdds : (oddsOverride[groupOddsKey] ?? rep.odds1);
-                    const oddsChanged = isPendingConfirm ? effectiveOdds !== rep.odds1 : groupOddsKey in oddsOverride;
                     return (
                     <tr key={`${group.key}-expanded`}>
-                      <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Kelly: </span>
-                            <span className="text-text">{(() => {
-                              if (rep.fair_odds != null && rep.fair_odds > 1 && effectiveOdds > 1) {
-                                const p = 1 / rep.fair_odds;
-                                const k = (p * effectiveOdds - 1) / (effectiveOdds - 1);
-                                return `${(Math.max(0, k) * 100).toFixed(1)}%`;
-                              }
-                              return rep.kelly_fraction != null ? `${(rep.kelly_fraction * 100).toFixed(1)}%` : '-';
-                            })()}</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-muted2 uppercase tracking-wider">Odds: </span>
-                            {editingOdds === groupOddsKey ? (
-                              <input
-                                type="number"
-                                step="0.01"
-                                autoFocus
-                                defaultValue={effectiveOdds.toFixed(2)}
-                                className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                                onBlur={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val) && val >= 1.01) {
-                                    setOddsOverride(prev => ({ ...prev, [groupOddsKey]: val }));
-                                  }
-                                  setEditingOdds(null);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    (e.target as HTMLInputElement).blur();
-                                  } else if (e.key === 'Escape') {
-                                    setEditingOdds(null);
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <span
-                                onClick={() => setEditingOdds(groupOddsKey)}
-                                className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
-                                title="Click to adjust odds"
-                              >
-                                {effectiveOdds.toFixed(2)}
-                              </span>
-                            )}
-                            {oddsChanged && (
-                              <button
-                                onClick={() => setOddsOverride(prev => {
-                                  const next = { ...prev };
-                                  delete next[groupOddsKey];
-                                  return next;
-                                })}
-                                className="text-muted2 hover:text-text text-[10px] ml-0.5"
-                                title="Reset to original"
-                              >
-                                x
-                              </button>
-                            )}
-                          </div>
-                          {hasStake && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                              <span className="text-text">{(rep.final_stake! * effectiveOdds).toFixed(0)} kr</span>
-                              <span className="text-tabValue text-xs ml-1">(+{(rep.final_stake! * effectiveOdds - rep.final_stake!).toFixed(0)})</span>
-                            </div>
-                          )}
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                            <span className="text-text">{rep.market}</span>
-                          </div>
-                          {rep.point != null && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Line: </span>
-                              <span className="text-text">{rep.point}</span>
-                            </div>
-                          )}
-                        </div>
+                      <td colSpan={10} className="!p-0" onClick={e => e.stopPropagation()}>
                         {(() => {
                           const selIdx = selectedBetProvider[group.key] ?? 0;
                           const selOpp = opps[selIdx] || opps[0];
-                          const oppHasStake = selOpp.final_stake != null && selOpp.final_stake > 0;
+                          const effStake = stakeOverride[groupOddsKey] ?? selOpp.final_stake;
+                          const oppHasStake = effStake != null && effStake > 0;
                           const isTrigger = selOpp.bonus_status === 'trigger_needed';
                           const isFreebet = selOpp.bonus_status === 'freebet_available';
                           const skipReason = selOpp.skip_reason;
@@ -954,7 +990,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                     <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabValue' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
                                     <span className="truncate">
                                       <ProviderName name={selOpp.provider1} />
-                                      {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
+                                      {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
                                       {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                                     </span>
                                     <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -962,7 +998,8 @@ export function ValuePage({ providers }: ValuePageProps) {
                                   {providerDropdownOpen === group.key && (
                                     <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
                                       {opps.map((opp, i) => {
-                                        const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
+                                        const oppStake = stakeOverride[groupOddsKey] ?? opp.final_stake;
+                                        const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
                                         const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                                           : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                                           : opp.skip_reason ? ` (${opp.skip_reason})`
@@ -1068,209 +1105,4 @@ function resolveOutcomeName(opp: Opportunity): string {
   if (outcome === 'over') return `Over${point}`;
   if (outcome === 'under') return `Under${point}`;
   return outcome;
-}
-
-
-// --- Boost helpers ---
-
-function formatEventTime(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-    if (diffMs <= 0) return 'started';
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-    if (diffHrs < 24) { if (diffMin < 60) return `in ${diffMin}m`; const remMin = diffMin % 60; return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`; }
-    if (diffDays < 7) return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  } catch { return ''; }
-}
-
-function formatTimeRemaining(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const diffMs = date.getTime() - Date.now();
-    if (diffMs <= 0) return 'expired';
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-    if (diffMin < 60) return `${diffMin}m left`;
-    if (diffHrs < 24) { const remMin = diffMin % 60; return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`; }
-    if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`;
-    return `${diffDays}d left`;
-  } catch { return ''; }
-}
-
-function isFutureDate(isoString: string): boolean {
-  try { return new Date(isoString).getTime() > Date.now(); } catch { return false; }
-}
-
-
-// --- Boost Expanded Row ---
-
-function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, pendingBet, selectedProviderIdx, onSelectProvider, onStartPlaceBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit, betError, balanceMap, wageringPriority }: {
-  special: SpecialItem;
-  groupKey: string;
-  providers: string[];
-  stakePreview: StakePreviewResult | null;
-  isLoadingPreview: boolean;
-  isPlacing: boolean;
-  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number } | null;
-  selectedProviderIdx: number;
-  onSelectProvider: (idx: number) => void;
-  onStartPlaceBet: (providerId: string) => void;
-  onConfirmBet: () => void;
-  onCancelPending: () => void;
-  onUpdatePendingOdds: (val: number) => void;
-  oddsOverride: number | null;
-  editingOdds: boolean;
-  onEditOdds: () => void;
-  onSetOdds: (val: number) => void;
-  onResetOdds: () => void;
-  onCancelEdit: () => void;
-  betError: string | null;
-  balanceMap: Map<string, number>;
-  wageringPriority: Map<string, number>;
-}) {
-  void groupKey;
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [dropdownOpen]);
-
-  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0);
-  const effectiveOdds = oddsOverride ?? special.boosted_odds ?? 0;
-  const oddsChanged = oddsOverride != null;
-  const potentialReturn = stake * effectiveOdds;
-  const potentialProfit = potentialReturn - stake;
-
-  // Find recommended provider: the one with most wagering remaining in this group
-  let recommended: { provider: string } | null = null;
-  if (wageringPriority.size > 0 && providers.length > 1) {
-    let maxRem = 0;
-    for (const pid of providers) {
-      const rem = wageringPriority.get(pid) ?? 0;
-      if (rem > maxRem) { maxRem = rem; recommended = { provider: pid }; }
-    }
-  }
-
-  const selProvider = providers[selectedProviderIdx] || providers[0];
-
-  const getDotColor = (pid: string) => {
-    if (recommended?.provider === pid) return 'bg-tabValue';
-    if ((balanceMap.get(pid) ?? 0) > 0) return 'bg-success';
-    return 'bg-muted/40';
-  };
-
-  return (
-    <div className="px-3 py-2 bg-panel">
-      {isLoadingPreview ? (<div className="text-muted text-sm">Loading...</div>) : stakePreview ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-6 text-xs text-muted flex-wrap">
-            <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span></div>
-            <div className="flex items-center gap-1">
-              <span className="text-muted2 uppercase tracking-wider">Odds: </span>
-              {editingOdds ? (
-                <input
-                  type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
-                  className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                  onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
-                />
-              ) : (
-                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
-                  {effectiveOdds.toFixed(2)}
-                </span>
-              )}
-              {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-            </div>
-            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
-          </div>
-          {special.llm_reasoning && (
-            <div className="text-muted2 text-[10px] leading-relaxed">
-              <span className="uppercase tracking-wider">{special.llm_confidence || 'low'}: </span>
-              {special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center gap-2">
-            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
-            {stakePreview.skip_reason ? (
-              <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
-            ) : pendingBet ? (
-              <>
-                <button
-                  onClick={onConfirmBet}
-                  disabled={isPlacing || pendingBet.actualOdds < 1.01}
-                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                >
-                  {isPlacing ? '...' : 'Confirm'}
-                </button>
-                <span className="text-muted text-xs">@ {pendingBet.actualOdds.toFixed(2)}</span>
-                <button onClick={onCancelPending} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
-              </>
-            ) : (
-              <>
-                <div className="relative" ref={dropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setDropdownOpen(prev => !prev)}
-                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
-                  >
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(selProvider)}`} />
-                    <span className="truncate">
-                      <ProviderName name={selProvider} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
-                    </span>
-                    <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  </button>
-                  {dropdownOpen && (
-                    <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
-                      {providers.map((pid, i) => {
-                        return (
-                          <button
-                            key={pid}
-                            type="button"
-                            onClick={() => {
-                              onSelectProvider(i);
-                              setDropdownOpen(false);
-                            }}
-                            className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selectedProviderIdx ? 'bg-panel text-text' : 'text-muted'}`}
-                          >
-                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(pid)}`} />
-                            <span className="truncate">
-                              <ProviderName name={pid} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                <button
-                  onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
-                  disabled={stake <= 0 || isPlacing}
-                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
-                >
-                  {isPlacing ? '...' : 'Place Bet'}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      ) : (<div className="text-muted text-sm">No data</div>)}
-    </div>
-  );
 }

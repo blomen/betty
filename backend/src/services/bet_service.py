@@ -373,6 +373,12 @@ class BetService:
             bet.odds = odds
         if result is not None:
             bet.result = result
+            # Set settled_at when transitioning from pending to a final result
+            if old_result == "pending" and result in ("won", "lost", "void"):
+                bet.settled_at = datetime.utcnow()
+            # Clear settled_at when reverting back to pending
+            elif result == "pending":
+                bet.settled_at = None
 
         # Recalculate payout based on (possibly new) result and stake/odds
         if bet.result == "won":

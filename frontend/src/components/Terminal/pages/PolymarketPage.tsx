@@ -26,9 +26,11 @@ export function PolymarketPage() {
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
 
-  // Odds editing state (in expanded row only)
+  // Inline editing state (in table columns)
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
 
   // Two-step bet flow (uniform with ValuePage)
   const [pendingBet, setPendingBet] = useState<{
@@ -85,6 +87,8 @@ export function PolymarketPage() {
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
     setPendingBet(null);
+    setEditingOdds(null);
+    setEditingStake(null);
   };
 
   const getOddsKey = (vb: PolymarketValueBet) =>
@@ -100,11 +104,12 @@ export function PolymarketPage() {
   const oddsToCents = (odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0;
 
   const getMetrics = (vb: PolymarketValueBet) => {
+    const oddsKey = getOddsKey(vb);
     const effectiveOdds = getEffectiveOdds(vb);
     const priceCents = oddsToCents(effectiveOdds);
     const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
     const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
-    const stakeUsdc = vb.final_stake_usdc ?? 0;
+    const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc ?? 0;
     const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
     const payoutUsdc = shares * 1.0;
     const profitUsdc = payoutUsdc - stakeUsdc;
@@ -113,7 +118,8 @@ export function PolymarketPage() {
 
   // Two-step bet: step 1 — start
   const startPlaceBet = (vb: PolymarketValueBet) => {
-    const stakeUsdc = vb.final_stake_usdc;
+    const oddsKey = getOddsKey(vb);
+    const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc;
     if (!stakeUsdc || stakeUsdc <= 0) return;
     const odds = getEffectiveOdds(vb);
     setBetError(null);
@@ -125,7 +131,8 @@ export function PolymarketPage() {
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { vb, actualCents } = pendingBet;
-    const stakeUsdc = vb.final_stake_usdc;
+    const oddsKey = getOddsKey(vb);
+    const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc;
     if (!stakeUsdc || stakeUsdc <= 0 || actualCents < 1) return;
     const actualOdds = 100 / actualCents;
     setIsPlacing(true);
@@ -320,8 +327,25 @@ export function PolymarketPage() {
                         </div>
                       </td>
                       <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
-                      <td className={`text-right text-sm font-medium ${isOverridden ? 'text-tabPolymarket' : 'text-text'}`}>
-                        {getEffectiveOdds(vb).toFixed(2)} <span className="text-muted text-xs font-normal">({m.priceCents}¢)</span>
+                      <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                        {editingOdds === oddsKey ? (
+                          <input
+                            type="number" step="1" min="1" max="99" autoFocus
+                            defaultValue={m.priceCents}
+                            className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+                            onBlur={(e) => { const cents = parseInt(e.target.value); if (!isNaN(cents) && cents >= 1 && cents <= 99) setOddsOverride(prev => ({ ...prev, [oddsKey]: 100 / cents })); setEditingOdds(null); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingOdds(null); }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingOdds(oddsKey)}
+                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
+                            title="Click to adjust price"
+                          >
+                            {getEffectiveOdds(vb).toFixed(2)} <span className="text-muted text-xs font-normal">({m.priceCents}¢)</span>
+                          </span>
+                        )}
+                        {isOverridden && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                       </td>
                       <td className="text-right text-muted text-sm">
                         {vb.fair_odds.toFixed(2)} <span className="text-xs">({m.fairCents}¢)</span>
@@ -332,8 +356,25 @@ export function PolymarketPage() {
                       <td className="text-right">
                         {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                       </td>
-                      <td className="text-right text-sm font-medium text-text">
-                        {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
+                      <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                        {editingStake === oddsKey ? (
+                          <input
+                            type="number" step="0.01" autoFocus
+                            defaultValue={m.stakeUsdc.toFixed(2)}
+                            className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+                            onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [oddsKey]: val })); setEditingStake(null); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingStake(null); }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingStake(oddsKey)}
+                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${oddsKey in stakeOverride ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
+                            title="Click to adjust stake"
+                          >
+                            {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
+                          </span>
+                        )}
+                        {oddsKey in stakeOverride && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                       </td>
                       <td className={`text-right font-semibold text-sm ${m.edgePct > 0 ? 'text-success' : 'text-error'}`}>{m.edgePct > 0 ? '+' : ''}{m.edgePct.toFixed(1)}%</td>
                     </tr>
@@ -341,117 +382,18 @@ export function PolymarketPage() {
                     {isSelected && !isSkipped && (
                       <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
                         <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                          {/* Top row: Kelly, Odds (editable), Return, Shares, Market, Line */}
-                          <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
-                            {vb.kelly_fraction != null && (
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Kelly: </span>
-                                <span className="text-text">{(vb.kelly_fraction * 100).toFixed(1)}%</span>
-                              </div>
-                            )}
-                            <div className="flex items-center gap-1">
-                              <span className="text-muted2 uppercase tracking-wider">Price: </span>
-                              {editingOdds === oddsKey ? (
-                                <input
-                                  type="number"
-                                  step="1"
-                                  min="1"
-                                  max="99"
-                                  autoFocus
-                                  defaultValue={m.priceCents}
-                                  className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
-                                  onBlur={(e) => {
-                                    const cents = parseInt(e.target.value);
-                                    if (!isNaN(cents) && cents >= 1 && cents <= 99) {
-                                      setOddsOverride(prev => ({ ...prev, [oddsKey]: 100 / cents }));
-                                    }
-                                    setEditingOdds(null);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                    if (e.key === 'Escape') setEditingOdds(null);
-                                  }}
-                                />
-                              ) : (
-                                <span
-                                  onClick={() => setEditingOdds(oddsKey)}
-                                  className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                                  title="Click to adjust price"
-                                >
-                                  {m.priceCents}¢
-                                </span>
-                              )}
-                              {isOverridden && (
-                                <button
-                                  onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })}
-                                  className="text-muted2 hover:text-text text-[10px] ml-0.5"
-                                  title="Reset to original"
-                                >
-                                  x
-                                </button>
-                              )}
-                            </div>
-                            {hasStake && (
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                                <span className="text-text">${m.payoutUsdc.toFixed(2)}</span>
-                                <span className="text-tabPolymarket text-xs ml-1">(+${m.profitUsdc.toFixed(2)})</span>
-                              </div>
-                            )}
-                            {m.shares > 0 && (
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Shares: </span>
-                                <span className="text-text">{Math.round(m.shares)}</span>
-                              </div>
-                            )}
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                              <span className="text-text">{vb.market}</span>
-                            </div>
-                            {vb.point != null && (
-                              <div>
-                                <span className="text-muted2 uppercase tracking-wider">Line: </span>
-                                <span className="text-text">{vb.point}</span>
-                              </div>
-                            )}
-                            {vb.event_slug && (
-                              <a
-                                href={`https://polymarket.com/event/${vb.event_slug}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-tabPolymarket hover:underline text-xs ml-auto"
-                              >
-                                Polymarket &#8599;
-                              </a>
-                            )}
-                          </div>
-                          {/* Bottom row: two-step bet flow (uniform with ValuePage) */}
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
+                            {vb.event_slug && (
+                              <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-tabPolymarket hover:underline text-xs mr-auto">Polymarket &#8599;</a>
+                            )}
                             {isPending ? (
                               <>
                                 <span className="text-muted text-xs">{m.priceCents}¢</span>
-                                <button
-                                  onClick={confirmPlaceBet}
-                                  disabled={isPlacing || pendingBet!.actualCents < 1}
-                                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                                >
-                                  {isPlacing ? '...' : 'Confirm'}
-                                </button>
-                                <button
-                                  onClick={() => setPendingBet(null)}
-                                  className="px-2 py-1.5 text-xs text-muted hover:text-text"
-                                >
-                                  Cancel
-                                </button>
+                                <button onClick={confirmPlaceBet} disabled={isPlacing || pendingBet!.actualCents < 1} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
+                                <button onClick={() => setPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
                               </>
                             ) : (
-                              <button
-                                onClick={() => startPlaceBet(vb)}
-                                disabled={!hasStake || isPlacing}
-                                className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                              >
-                                {isPlacing ? '...' : 'Place Bet'}
-                              </button>
+                              <button onClick={() => startPlaceBet(vb)} disabled={!hasStake || isPlacing} className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Place Bet'}</button>
                             )}
                           </div>
                         </td>
