@@ -164,6 +164,9 @@ export function ReversePage() {
           <TabIcon name="reverse" color={TAB_COLORS.reverse} size={16} />
           Reverse
         </h2>
+        {activeTab === 'reverse' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabReverse" />
+        )}
       </div>
 
       {/* Sub-tab selector */}
@@ -208,7 +211,6 @@ export function ReversePage() {
       )}
 
       <FilterBar>
-        <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabReverse" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 

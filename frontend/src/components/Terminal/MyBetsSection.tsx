@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { ProviderName } from './ProviderName';
+import { SearchInput } from './FilterBar';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
@@ -253,22 +254,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <span className="ml-1 text-muted">({cat.count})</span>
           </button>
         ))}
-        <div className="ml-auto relative">
-          <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <circle cx="11" cy="11" r="8" />
-            <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
-          </svg>
-          <input
-            type="text"
-            placeholder="Search bet..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="pl-7 pr-2 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-40 focus:outline-none"
-            style={{ '--focus-border': `${color}80` } as React.CSSProperties}
-          />
-          {search && (
-            <button onClick={() => setSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]">x</button>
-          )}
+        <div className="ml-auto">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search bet..." accentColor={colorKey} />
         </div>
       </div>
 

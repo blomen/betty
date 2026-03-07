@@ -487,6 +487,12 @@ export function ValuePage({ providers }: ValuePageProps) {
           <TabIcon name="value" color={TAB_COLORS.value} size={16} />
           Soft
         </h2>
+        {activeTab === 'value' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="tabValue" />
+        )}
+        {activeTab === 'boosts' && (
+          <SearchInput value={boostSearch} onChange={setBoostSearch} placeholder="Search boost, provider..." accentColor="tabValue" />
+        )}
       </div>
 
       {/* Sub-tab selector */}
@@ -536,7 +542,6 @@ export function ValuePage({ providers }: ValuePageProps) {
         {boostFilters && boostFilters.providers.length > 0 && (
           <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderWithPlatform} accentColor="tabValue" />
         )}
-        <SearchInput value={boostSearch} onChange={setBoostSearch} placeholder="Search boost, provider..." accentColor="tabValue" />
         <FreshnessIndicator tiers={[['boosts', freshness.boosts]]} />
       </FilterBar>
 
@@ -697,7 +702,6 @@ export function ValuePage({ providers }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
-        <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="tabValue" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 

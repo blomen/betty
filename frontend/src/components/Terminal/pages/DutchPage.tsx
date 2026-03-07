@@ -299,6 +299,9 @@ export function DutchPage({ providers }: DutchPageProps) {
           <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
           Dutch
         </h2>
+        {activeTab === 'dutch' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
+        )}
       </div>
 
       {/* Sub-tab selector */}
@@ -354,7 +357,6 @@ export function DutchPage({ providers }: DutchPageProps) {
             accentColor="success"
           />
         )}
-        <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 

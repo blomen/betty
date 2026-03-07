@@ -210,6 +210,9 @@ export function PolymarketPage() {
           <TabIcon name="polymarket" color={TAB_COLORS.polymarket} size={16} />
           Polymarket
         </h2>
+        {activeTab === 'value' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabBonus" />
+        )}
       </div>
 
       {/* Tab Selector */}
@@ -255,7 +258,6 @@ export function PolymarketPage() {
         )}
 
         <FilterBar>
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabBonus" />
           <FreshnessIndicator tiers={[['poly', freshness.poly], ['sharp', freshness.sharp]]} />
         </FilterBar>
 

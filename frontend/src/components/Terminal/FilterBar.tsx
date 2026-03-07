@@ -468,7 +468,7 @@ export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
   );
 }
 
-// ── Search input ─────────────────────────────────────────────────────
+// ── Expandable search icon ───────────────────────────────────────────
 
 interface SearchInputProps {
   value: string;
@@ -477,36 +477,77 @@ interface SearchInputProps {
   accentColor?: string;
 }
 
+/**
+ * Magnifying glass icon that expands into a search input on click.
+ * Place in the page header's top-right corner.
+ */
 export function SearchInput({
   value,
   onChange,
   placeholder = 'Search...',
   accentColor = 'tabValue',
 }: SearchInputProps) {
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const hex = getAccent(accentColor);
 
+  const isActive = open || !!value;
+
+  // Focus input when opening
+  useEffect(() => {
+    if (open && inputRef.current) inputRef.current.focus();
+  }, [open]);
+
+  // Close on outside click (only if empty)
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node) && !value) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open, value]);
+
+  if (!isActive) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="p-1 text-muted2 hover:text-text transition-colors"
+        title="Search"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <circle cx="11" cy="11" r="8" />
+          <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+        </svg>
+      </button>
+    );
+  }
+
   return (
-    <div className="relative ml-auto">
+    <div className="relative" ref={containerRef}>
       <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <circle cx="11" cy="11" r="8" />
         <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
       </svg>
       <input
+        ref={inputRef}
         type="text"
         placeholder={placeholder}
         value={value}
         onChange={e => onChange(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { onChange(''); setOpen(false); } }}
         style={{ '--focus-border': `${hex}80` } as React.CSSProperties}
-        className="pl-7 pr-2 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-48 focus:outline-none focus:border-[var(--focus-border)]"
+        className="pl-7 pr-6 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-48 focus:outline-none focus:border-[var(--focus-border)]"
       />
-      {value && (
-        <button
-          onClick={() => onChange('')}
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]"
-        >
-          x
-        </button>
-      )}
+      <button
+        onClick={() => { onChange(''); setOpen(false); }}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]"
+      >
+        x
+      </button>
     </div>
   );
 }
