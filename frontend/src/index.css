@@ -41,8 +41,8 @@ html, body, #root {
 
 body {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, ui-monospace, monospace;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.4;
   font-weight: 400;
   letter-spacing: 0;
   background-color: var(--bg);
@@ -113,7 +113,7 @@ table.sq {
 table.sq th,
 table.sq td {
   border: 1px solid var(--border);
-  padding: 8px 12px;
+  padding: 5px 8px;
   text-align: left;
   vertical-align: middle;
 }
@@ -121,7 +121,7 @@ table.sq td {
 table.sq th {
   background-color: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -130,7 +130,7 @@ table.sq th {
 table.sq td {
   background-color: var(--bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 table.sq tr:hover td {

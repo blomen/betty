@@ -4,7 +4,7 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeam
 import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet, Bet } from '@/types';
@@ -39,6 +39,7 @@ export function PolymarketPage() {
   // Track placed market+outcome combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -165,14 +166,27 @@ export function PolymarketPage() {
   };
 
   // Remove started/imminent events and placed bets
-  const activeValueBets = useMemo(() =>
-    valueBets.filter(vb => {
+  const activeValueBets = useMemo(() => {
+    let result = valueBets.filter(vb => {
       const ttk = getTTKFromNow(vb.start_time);
       if (ttk !== null && ttk <= 1 / 60) return false;
       if (placedKeys.has(getPlacedKey(vb))) return false;
       return true;
-    }),
-  [valueBets, placedKeys]);
+    });
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(vb =>
+        (vb.home_team?.toLowerCase().includes(q)) ||
+        (vb.away_team?.toLowerCase().includes(q)) ||
+        (vb.display_home?.toLowerCase().includes(q)) ||
+        (vb.display_away?.toLowerCase().includes(q)) ||
+        (vb.sport?.toLowerCase().includes(q)) ||
+        (vb.league?.toLowerCase().includes(q)) ||
+        (vb.outcome?.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [valueBets, placedKeys, search]);
 
   type PolySortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
@@ -189,7 +203,7 @@ export function PolymarketPage() {
   // ──────────────────── Render ────────────────────
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -241,6 +255,7 @@ export function PolymarketPage() {
         )}
 
         <FilterBar>
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabBonus" />
           <FreshnessIndicator tiers={[['poly', freshness.poly], ['sharp', freshness.sharp]]} />
         </FilterBar>
 
@@ -253,7 +268,7 @@ export function PolymarketPage() {
           <table className="sq">
             <thead>
               <tr>
-                <th>Event</th>
+                <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Outcome</th>
                 <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
                 <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />

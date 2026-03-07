@@ -19,6 +19,8 @@ const ACCENT_COLORS: Record<string, string> = {
   tabArb: '#22c55e',
   tabBets: '#1E88E5',
   tabExtract: '#60a5fa',
+  success: '#22c55e',
+  tabReverse: '#EF5350',
 };
 
 function getAccent(token: string): string {
@@ -465,6 +467,50 @@ export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
     </span>
   );
 }
+
+// ── Search input ─────────────────────────────────────────────────────
+
+interface SearchInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  accentColor?: string;
+}
+
+export function SearchInput({
+  value,
+  onChange,
+  placeholder = 'Search...',
+  accentColor = 'tabValue',
+}: SearchInputProps) {
+  const hex = getAccent(accentColor);
+
+  return (
+    <div className="relative ml-auto">
+      <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <circle cx="11" cy="11" r="8" />
+        <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+      </svg>
+      <input
+        type="text"
+        placeholder={placeholder}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        style={{ '--focus-border': `${hex}80` } as React.CSSProperties}
+        className="pl-7 pr-2 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-48 focus:outline-none focus:border-[var(--focus-border)]"
+      />
+      {value && (
+        <button
+          onClick={() => onChange('')}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]"
+        >
+          x
+        </button>
+      )}
+    </div>
+  );
+}
+
 
 // ── Filter bar container ─────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -58,6 +58,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
 
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [boostSearch, setBoostSearch] = useState('');
   const [betError, setBetError] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -210,6 +212,18 @@ export function ValuePage({ providers }: ValuePageProps) {
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
     }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(o =>
+        (o.home_team?.toLowerCase().includes(q)) ||
+        (o.away_team?.toLowerCase().includes(q)) ||
+        (o.display_home?.toLowerCase().includes(q)) ||
+        (o.display_away?.toLowerCase().includes(q)) ||
+        (o.provider1?.toLowerCase().includes(q)) ||
+        (o.sport?.toLowerCase().includes(q)) ||
+        (o.league?.toLowerCase().includes(q))
+      );
+    }
 
     const map = new Map<string, Opportunity[]>();
     for (const opp of result) {
@@ -242,7 +256,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, placedKeys, wageringPriority]);
+  }, [opportunities, selectedProviders, placedKeys, wageringPriority, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -287,11 +301,22 @@ export function ValuePage({ providers }: ValuePageProps) {
   }, [boostNonExpired, boostPlacedKeys]);
 
   const boostActiveGroups = useMemo(() => {
-    if (boostSelectedProviders.size === 0) return boostGrouped;
-    return boostGrouped.filter(g =>
-      g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
-    );
-  }, [boostGrouped, boostSelectedProviders]);
+    let result = boostGrouped;
+    if (boostSelectedProviders.size > 0) {
+      result = result.filter(g =>
+        g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
+      );
+    }
+    if (boostSearch.trim()) {
+      const q = boostSearch.trim().toLowerCase();
+      result = result.filter(g =>
+        g.rep.title.toLowerCase().includes(q) ||
+        (g.rep.event && g.rep.event.toLowerCase().includes(q)) ||
+        g.providers.some(p => p.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [boostGrouped, boostSelectedProviders, boostSearch]);
 
   type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
@@ -455,7 +480,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -511,6 +536,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         {boostFilters && boostFilters.providers.length > 0 && (
           <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderWithPlatform} accentColor="tabValue" />
         )}
+        <SearchInput value={boostSearch} onChange={setBoostSearch} placeholder="Search boost, provider..." accentColor="tabValue" />
         <FreshnessIndicator tiers={[['boosts', freshness.boosts]]} />
       </FilterBar>
 
@@ -671,6 +697,7 @@ export function ValuePage({ providers }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
+        <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="tabValue" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
@@ -690,7 +717,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         <table className="sq">
           <thead>
             <tr>
-              <th>Event</th>
+              <th style={{ width: '35%' }}>Event</th>
               <th className="text-right">Providers</th>
               <th className="text-right">Outcome</th>
               <MultiSortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />

@@ -118,7 +118,7 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
             key={tab.name}
             onClick={() => onTabChange(tab.name)}
             className={`
-              flex items-center gap-2 px-4 py-2.5 text-sm font-mono
+              flex items-center gap-1.5 px-3 py-2 text-xs font-mono
               transition-colors duration-150 outline-none border-b-2 -mb-px
               ${isActive
                 ? 'text-text'

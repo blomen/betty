@@ -43,17 +43,23 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 
 // ── Sort types ───────────────────────────────────────────────────────
 
-/** Format amount in the bet's native currency. */
+/** Format amount — SEK primary, USD in parentheses for Polymarket bets. */
 function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD') return `$${amount.toFixed(decimals ?? 2)}`;
+  if (currency === 'USD') {
+    const sek = amount * RATE_TO_SEK.USD;
+    return `${sek.toFixed(decimals ?? 0)} kr ($${amount.toFixed(2)})`;
+  }
   return `${amount.toFixed(decimals ?? 0)} kr`;
 }
 
-/** Format profit with +/- prefix. */
+/** Format profit with +/- prefix — SEK primary, USD in parentheses. */
 function fmtProfit(amount: number, currency: string): string {
-  const prefix = amount >= 0 ? '+' : '';
-  if (currency === 'USD') return `${prefix}$${amount.toFixed(2)}`;
-  return `${prefix}${amount.toFixed(0)} kr`;
+  const prefix = amount >= 0 ? '+' : '-';
+  if (currency === 'USD') {
+    const sek = Math.abs(amount) * RATE_TO_SEK.USD;
+    return `${prefix}${sek.toFixed(0)} kr (${prefix}$${Math.abs(amount).toFixed(2)})`;
+  }
+  return `${prefix}${Math.abs(amount).toFixed(0)} kr`;
 }
 
 /** Exchange rates to SEK for aggregation. */

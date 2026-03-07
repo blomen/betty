@@ -135,7 +135,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         {!isProfileActive && (
           <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
         )}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-3">
           <Suspense fallback={<div className="p-4 text-muted text-sm">Loading...</div>}>
             {isProfileActive ? (
               <ProfilePage onRefresh={onRefresh} />

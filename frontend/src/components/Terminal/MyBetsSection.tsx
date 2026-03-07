@@ -7,9 +7,14 @@ import type { Bet } from '@/types';
 
 type BetCategory = 'upcoming' | 'live' | 'ft';
 
-/** Format amount in the bet's native currency. */
+const USD_TO_SEK = 10.50;
+
+/** Format amount — SEK primary, USD in parentheses for Polymarket bets. */
 function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD') return `$${amount.toFixed(decimals ?? 2)}`;
+  if (currency === 'USD') {
+    const sek = amount * USD_TO_SEK;
+    return `${sek.toFixed(decimals ?? 0)} kr ($${amount.toFixed(2)})`;
+  }
   return `${amount.toFixed(decimals ?? 0)} kr`;
 }
 
@@ -33,6 +38,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const [editStake, setEditStake] = useState('');
   const [editOdds, setEditOdds] = useState('');
   const [editResult, setEditResult] = useState('');
+  const [search, setSearch] = useState('');
 
   const color = TAB_COLORS[colorKey] ?? '#64748B';
 
@@ -173,7 +179,22 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     { id: 'ft', label: 'Settle', count: categorized.ft.length },
   ];
 
-  const activeBets = categorized[activeCategory];
+  const activeBets = useMemo(() => {
+    let result = categorized[activeCategory];
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(b =>
+        (b.home_team?.toLowerCase().includes(q)) ||
+        (b.away_team?.toLowerCase().includes(q)) ||
+        (b.display_home?.toLowerCase().includes(q)) ||
+        (b.display_away?.toLowerCase().includes(q)) ||
+        b.provider.toLowerCase().includes(q) ||
+        (b.sport?.toLowerCase().includes(q)) ||
+        (b.league?.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [categorized, activeCategory, search]);
 
   // ── Raise: add initial stake again at current odds ──
   const handleRaise = async (bet: Bet) => {
@@ -215,8 +236,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
 
   return (
     <div className="space-y-3">
-      {/* Category tabs */}
-      <div className="flex gap-1 border-b border-border">
+      {/* Category tabs + search */}
+      <div className="flex items-center gap-1 border-b border-border">
         {categories.map(cat => (
           <button
             key={cat.id}
@@ -232,6 +253,23 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <span className="ml-1 text-muted">({cat.count})</span>
           </button>
         ))}
+        <div className="ml-auto relative">
+          <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <circle cx="11" cy="11" r="8" />
+            <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search bet..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-7 pr-2 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-40 focus:outline-none"
+            style={{ '--focus-border': `${color}80` } as React.CSSProperties}
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]">x</button>
+          )}
+        </div>
       </div>
 
       {/* Bets table */}
@@ -245,7 +283,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <thead>
               <tr>
                 {activeCategory === 'upcoming' && <th className="text-left">TTK</th>}
-                <th>Event</th>
+                <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Outcome</th>
                 <th className="text-right">Provider</th>
                 <th className="text-right">Odds</th>

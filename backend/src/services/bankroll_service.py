@@ -382,6 +382,7 @@ class BankrollService:
                     main_wagering_multiplier=wagering_multiplier,
                     main_min_odds=bonus_min_odds,
                     deadline_days=deadline_days,
+                    deposit_amount=deposit_amount,
                 )
             else:
                 bonus_info = self.profile_repo.start_bonus_wagering(

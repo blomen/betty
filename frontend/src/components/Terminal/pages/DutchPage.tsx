@@ -5,7 +5,7 @@ import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider, Bet } from '@/types';
@@ -60,6 +60,7 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -127,8 +128,20 @@ export function DutchPage({ providers }: DutchPageProps) {
         (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))
       );
     }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(d =>
+        (d.home_team?.toLowerCase().includes(q)) ||
+        (d.away_team?.toLowerCase().includes(q)) ||
+        (d.display_home?.toLowerCase().includes(q)) ||
+        (d.display_away?.toLowerCase().includes(q)) ||
+        (d.sport?.toLowerCase().includes(q)) ||
+        (d.league?.toLowerCase().includes(q)) ||
+        (d.legs || []).some(leg => leg.provider.toLowerCase().includes(q))
+      );
+    }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, selectedProviders]);
+  }, [opportunities, selectedProviders, search]);
 
   type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
@@ -280,7 +293,7 @@ export function DutchPage({ providers }: DutchPageProps) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
@@ -341,6 +354,7 @@ export function DutchPage({ providers }: DutchPageProps) {
             accentColor="success"
           />
         )}
+        <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
@@ -359,7 +373,7 @@ export function DutchPage({ providers }: DutchPageProps) {
           <table className="sq">
             <thead>
               <tr>
-                <th>Event</th>
+                <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Providers</th>
                 <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
                 <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />

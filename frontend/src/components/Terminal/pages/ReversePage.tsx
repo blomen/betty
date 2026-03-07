@@ -4,7 +4,7 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeam
 import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
-import { FilterBar, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity, Bet } from '@/types';
@@ -35,6 +35,7 @@ export function ReversePage() {
   // Track placed market+outcome+point combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
 
   // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
   useEffect(() => {
@@ -66,10 +67,22 @@ export function ReversePage() {
   useRefreshOnExtraction(fetchData);
 
   const filtered = useMemo(() => {
-    return opportunities
+    let result = opportunities
       .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
       .filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
-  }, [opportunities, placedKeys]);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(o =>
+        (o.home_team?.toLowerCase().includes(q)) ||
+        (o.away_team?.toLowerCase().includes(q)) ||
+        (o.display_home?.toLowerCase().includes(q)) ||
+        (o.display_away?.toLowerCase().includes(q)) ||
+        (o.sport?.toLowerCase().includes(q)) ||
+        (o.league?.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [opportunities, placedKeys, search]);
 
   type ReverseSortCol = 'odds' | 'consensus' | 'prob' | 'ttk' | 'stake' | 'edge';
   const reverseSortExtractors = useMemo(() => ({
@@ -144,7 +157,7 @@ export function ReversePage() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -195,6 +208,7 @@ export function ReversePage() {
       )}
 
       <FilterBar>
+        <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabReverse" />
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
@@ -212,7 +226,7 @@ export function ReversePage() {
         <table className="sq">
           <thead>
             <tr>
-              <th>Event</th>
+              <th style={{ width: '35%' }}>Event</th>
               <th className="text-right">Outcome</th>
               <MultiSortableHeader column="odds" label="Pin Odds" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
               <MultiSortableHeader column="consensus" label="Consensus" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
