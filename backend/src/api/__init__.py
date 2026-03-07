@@ -86,9 +86,8 @@ def _startup_purge():
                     SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
                 )
             """),
-            ("live status", """
-                UPDATE events SET match_status = NULL, match_minute = NULL,
-                    match_period = NULL, stats_json = NULL
+            ("live tracking reset", """
+                UPDATE events SET match_minute = NULL, match_period = NULL
                 WHERE id IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
             """),
             ("non-sharp odds", f"""

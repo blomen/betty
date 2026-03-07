@@ -357,11 +357,12 @@ class OpportunityRepo:
             ).all()
         ]
         if past_event_ids:
+            # Safety: query ALL bets (not just past_event_ids) to ensure
+            # we never delete an event referenced by any bet
             event_ids_with_bets = set(
                 row[0] for row in self.db.query(Bet.event_id).filter(
-                    Bet.event_id.in_(past_event_ids)
-                ).all()
-                if row[0]
+                    Bet.event_id.isnot(None)
+                ).distinct().all()
             )
             deletable_ids = [
                 eid for eid in past_event_ids if eid not in event_ids_with_bets
