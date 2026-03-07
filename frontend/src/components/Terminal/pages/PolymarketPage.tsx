@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, FreshnessIndicator, SearchInput } from '../FilterBar';
@@ -72,8 +72,15 @@ export function PolymarketPage() {
   }, []);
 
   useEffect(() => { fetchValueData(); }, [fetchValueData]);
-
   useRefreshOnExtraction(fetchValueData);
+
+  const tiersProgress = useTiersProgress();
+  const anyExtracting = tiersProgress?.any_running ?? false;
+  useEffect(() => {
+    if (!anyExtracting) return;
+    const id = setInterval(fetchValueData, 30_000);
+    return () => clearInterval(id);
+  }, [anyExtracting, fetchValueData]);
 
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);

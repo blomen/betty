@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
-import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, FreshnessIndicator, SearchInput } from '../FilterBar';
@@ -65,6 +65,14 @@ export function ReversePage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
+
+  const tiersProgress = useTiersProgress();
+  const anyExtracting = tiersProgress?.any_running ?? false;
+  useEffect(() => {
+    if (!anyExtracting) return;
+    const id = setInterval(fetchData, 30_000);
+    return () => clearInterval(id);
+  }, [anyExtracting, fetchData]);
 
   const filtered = useMemo(() => {
     let result = opportunities

@@ -20,6 +20,7 @@ const TradingBuilderPage = lazy(() => import('./pages/TradingBuilderPage').then(
 const TradingTradesPage = lazy(() => import('./pages/TradingTradesPage').then(m => ({ default: m.TradingTradesPage })));
 const TradingJournalPage = lazy(() => import('./pages/TradingJournalPage').then(m => ({ default: m.TradingJournalPage })));
 import { api } from '@/services/api';
+import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
 
 interface TerminalWindowProps {
   context: BettingContext;
@@ -135,6 +136,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         {!isProfileActive && (
           <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
         )}
+        <ConnectionErrorBar />
+        <ErrorNotificationBar />
         <div className="flex-1 overflow-y-auto p-3">
           <Suspense fallback={<div className="p-4 text-muted text-sm">Loading...</div>}>
             {isProfileActive ? (

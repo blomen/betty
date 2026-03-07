@@ -128,8 +128,26 @@ async def lifespan(app: FastAPI):
     _startup_time = time.time()
     init_db()
 
+    # Guard: if another backend is already serving, skip the purge.
+    # A duplicate lifespan would wipe all extracted data via _startup_purge().
+    import socket as _sock
+    _dup = False
+    _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    try:
+        _s.connect(("127.0.0.1", 8000))
+        _dup = True
+        logger.warning(
+            "Port 8000 already serving — skipping startup purge to protect existing data. "
+            "This instance will likely fail to bind."
+        )
+    except (ConnectionRefusedError, OSError):
+        pass  # Port not in use — safe to purge
+    finally:
+        _s.close()
+
     # Purge stale extracted data — fresh re-extraction on every startup
-    _startup_purge()
+    if not _dup:
+        _startup_purge()
 
     # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
     import logging.handlers

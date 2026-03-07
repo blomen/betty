@@ -3,7 +3,7 @@ import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -175,6 +175,15 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
+
+  // Periodic refetch while extraction is running (catches bets appearing mid-extraction)
+  const tiersProgress = useTiersProgress();
+  const anyExtracting = tiersProgress?.any_running ?? false;
+  useEffect(() => {
+    if (!anyExtracting) return;
+    const id = setInterval(fetchData, 30_000);
+    return () => clearInterval(id);
+  }, [anyExtracting, fetchData]);
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
