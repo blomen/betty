@@ -769,7 +769,7 @@ providers:
     domain: coolbet.com
     retriever_type: coolbet
     site_url: https://www.coolbet.com
-    provider_timeout: 420              # Camoufox headless startup ~30s + 9 sports ~120s + margin for slow runs
+    provider_timeout: 600              # Camoufox startup ~30s + 9 sports ~120s + page recovery overhead + margin
     sport_timeout: 240                 # Football has heavy pagination (50+ categories)
     supported_sports:
       - football
