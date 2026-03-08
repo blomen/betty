@@ -16,6 +16,7 @@ Providers using Altenar:
 """
 
 from typing import Dict, Any, List, Optional
+import asyncio
 import logging
 from datetime import datetime
 
@@ -485,8 +486,166 @@ class AltenarRetriever(Retriever):
 
             logger.debug(f"[{self.provider_id}] Parsed {len(events)} {sport} events")
 
+            # Pass 2: Enrich events missing spread/total via GetEventDetails
+            # Football on Altenar has no spread markets at all (platform limitation)
+            if events and sport != 'football':
+                enriched = await self._enrich_missing_spreads(events, sport_id)
+                if enriched:
+                    logger.info(f"[{self.provider_id}] Enriched {enriched} spread/total markets for {sport}")
+
             return events
 
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
+
+    MAX_ENRICH_EVENTS = 200
+
+    async def _enrich_missing_spreads(self, events: List[StandardEvent], sport_id: int) -> int:
+        """Fetch spread/total from GetEventDetails for events missing them.
+
+        The bulk GetUpcoming endpoint often omits spread markets (73% missing for football).
+        GetEventDetails per-event endpoint returns full market data including spread/total.
+        Uses batched parallel requests with semaphore to respect rate limits.
+        """
+        # Filter to events that have 1x2/ML but no spread
+        todo = [ev for ev in events if not any(m['type'] == 'spread' for m in ev.markets)]
+        if not todo:
+            return 0
+
+        if len(todo) > self.MAX_ENRICH_EVENTS:
+            todo = todo[:self.MAX_ENRICH_EVENTS]
+
+        logger.debug(f"[{self.provider_id}] Enriching {len(todo)} events missing spread via GetEventDetails")
+
+        enriched = 0
+        sem = asyncio.Semaphore(20)
+        BATCH_SIZE = 50
+
+        async def _fetch_event_detail(ev: StandardEvent):
+            async with sem:
+                try:
+                    url = f"{self.api_base}/widget/GetEventDetails"
+                    params = {
+                        'culture': 'en-GB',
+                        'timezoneOffset': '0',
+                        'integration': self.integration,
+                        'deviceType': '1',
+                        'numFormat': 'en-GB',
+                        'eventId': ev.id,
+                    }
+                    data = await self.transport.get(url, params=params)
+                    if not data or not isinstance(data, dict):
+                        return None
+                    return (ev, data)
+                except Exception:
+                    return None
+
+        # Process in batches
+        for i in range(0, len(todo), BATCH_SIZE):
+            batch = todo[i:i + BATCH_SIZE]
+            results = await asyncio.gather(
+                *[_fetch_event_detail(ev) for ev in batch],
+                return_exceptions=True,
+            )
+            for r in results:
+                if r is None or isinstance(r, Exception):
+                    continue
+                ev, detail = r
+                new_markets = self._extract_spread_total_from_detail(detail, ev)
+                if new_markets:
+                    ev.markets.extend(new_markets)
+                    enriched += len(new_markets)
+
+        return enriched
+
+    def _extract_spread_total_from_detail(
+        self, detail: Dict[str, Any], event: StandardEvent
+    ) -> List[Dict]:
+        """Extract spread/total markets from GetEventDetails response.
+
+        Reuses existing MARKET_TYPE_MAPPING and _standardize_outcome() logic.
+        Only returns spread/total markets not already present on the event.
+        """
+        markets_data = detail.get('markets', [])
+        odds_data = detail.get('odds', [])
+        competitors = detail.get('competitors', [])
+
+        if not markets_data or not odds_data:
+            return []
+
+        # Build indexes
+        odd_idx = self._build_id_index(odds_data)
+
+        # Get raw team names from competitors for outcome matching
+        raw_home, raw_away = '', ''
+        events_data = detail.get('events', [])
+        if events_data and competitors:
+            ev_data = events_data[0] if events_data else {}
+            comp_idx = self._build_id_index(competitors)
+            for cid in ev_data.get('competitorIds', []):
+                comp = comp_idx.get(cid)
+                if comp:
+                    if not raw_home:
+                        raw_home = comp.get('name', '')
+                    else:
+                        raw_away = comp.get('name', '')
+
+        # Existing market type+point combos to avoid duplicates
+        existing_keys = set()
+        for m in event.markets:
+            key = m['type']
+            for o in m.get('outcomes', []):
+                if 'point' in o:
+                    key = f"{m['type']}_{o['point']}"
+            existing_keys.add(key)
+
+        new_markets = []
+        for market in markets_data:
+            market_type_id = market.get('typeId')
+            market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
+
+            if market_type not in ('spread', 'total'):
+                continue
+
+            # Extract point value
+            market_point = None
+            if market_type in ('spread', 'total'):
+                sv = market.get('sv')
+                if sv:
+                    try:
+                        market_point = float(sv)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Check for duplicate
+            dup_key = market_type
+            if market_point is not None:
+                dup_key = f"{market_type}_{market_point}"
+            if dup_key in existing_keys:
+                continue
+
+            # Parse outcomes
+            odd_ids = market.get('oddIds', [])
+            outcomes = []
+            for idx, odd_id in enumerate(odd_ids):
+                odd = odd_idx.get(odd_id)
+                if not odd:
+                    continue
+                raw_outcome = odd.get('name', '')
+                standardized = self._standardize_outcome(
+                    raw_outcome, market_type, raw_home, raw_away, outcome_index=idx
+                )
+                outcome_dict = {
+                    'name': standardized,
+                    'odds': odd.get('price', 0.0),
+                }
+                if market_point is not None:
+                    outcome_dict['point'] = market_point
+                outcomes.append(outcome_dict)
+
+            if outcomes:
+                new_markets.append({'type': market_type, 'outcomes': outcomes})
+                existing_keys.add(dup_key)
+
+        return new_markets

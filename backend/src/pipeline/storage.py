@@ -116,11 +116,10 @@ def detect_and_fix_inversion(
     if sharp_odds_cache is not None and event_id in sharp_odds_cache:
         sharp = sharp_odds_cache[event_id]
     else:
-        # Get sharp odds (Pinnacle only) - use case-insensitive match for provider ID
-        from sqlalchemy import func
+        # Get sharp odds (Pinnacle only) - exact match uses index
         sharp_rows = session.query(Odds).filter(
             Odds.event_id == event_id,
-            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.provider_id == 'pinnacle',
             Odds.outcome.in_(['home', 'away']),
             Odds.market.in_(['1x2', 'moneyline']),
         ).all()
@@ -1031,6 +1030,9 @@ class OddsBatchProcessor:
 
         Includes retry logic for SQLite "database is locked" errors that occur
         during concurrent extraction (multiple providers flushing simultaneously).
+
+        Uses short sleeps (50-200ms) to avoid blocking the async event loop —
+        SQLite locks typically clear within milliseconds.
         """
         if not self._pending:
             return
@@ -1038,17 +1040,17 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms, 400ms
                     logger.warning(
                         f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {wait:.1f}s..."
+                        f"retrying in {wait * 1000:.0f}ms..."
                     )
                     self.session.rollback()
                     time.sleep(wait)

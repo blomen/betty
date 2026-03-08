@@ -172,7 +172,7 @@ export interface BankrollStats {
   wins: number;
   losses: number;
   voids: number;
-  total_staked: number;
+  total_deposited: number;
   total_profit: number;
   bet_profit: number;
   freebet_profit: number;

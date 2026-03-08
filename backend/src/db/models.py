@@ -273,6 +273,7 @@ class Profile(Base):
     preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
     bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
+    total_deposited = Column(Float, default=0.0)     # Cumulative real money deposited (for ROI calc)
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile

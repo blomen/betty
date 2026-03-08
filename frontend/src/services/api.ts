@@ -532,7 +532,9 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
-    }, 0, 10000);
+    }, 2, 30000);
+    // 2 retries + 30s timeout: backend retries SQLite locks internally (up to ~5s),
+    // and duplicate-bet check prevents double-placing on frontend retry.
   },
 
   async createBatchBets(legs: {
@@ -566,7 +568,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ legs }),
-    }, 0, 10000);
+    }, 2, 30000);
   },
 
   async closeStartedBets(): Promise<{

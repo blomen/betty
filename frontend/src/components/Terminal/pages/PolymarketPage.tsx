@@ -312,7 +312,11 @@ export function PolymarketPage() {
                     >
                       <td>
                         <div className="flex items-center gap-2 min-w-0 group/copy">
-                          <span className="text-text text-sm truncate">{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</span>
+                          {vb.event_slug ? (
+                            <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors" onClick={e => e.stopPropagation()}>{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</a>
+                          ) : (
+                            <span className="text-text text-sm truncate">{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</span>
+                          )}
                           <button
                             title="Copy event"
                             className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
@@ -383,14 +387,11 @@ export function PolymarketPage() {
                       <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
                         <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
                           <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                            {vb.event_slug && (
-                              <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-tabPolymarket hover:underline text-xs mr-auto">Polymarket &#8599;</a>
-                            )}
                             {isPending ? (
                               <>
-                                <span className="text-muted text-xs">{m.priceCents}¢</span>
                                 <button onClick={confirmPlaceBet} disabled={isPlacing || pendingBet!.actualCents < 1} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
                                 <button onClick={() => setPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
+                                <span className="text-muted text-xs">{m.priceCents}¢</span>
                               </>
                             ) : (
                               <button onClick={() => startPlaceBet(vb)} disabled={!hasStake || isPlacing} className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Place Bet'}</button>

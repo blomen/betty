@@ -238,7 +238,7 @@ class OpportunityScanner:
                 home_team=event.home_team if event else None,
                 away_team=event.away_team if event else None,
                 sport=event.sport if event else None,
-                start_time=event.start_time.isoformat() if event and event.start_time else None,
+                start_time=(event.start_time.isoformat() + "Z") if event and event.start_time else None,
             )
             enriched_bets.append(enriched)
 
@@ -722,7 +722,7 @@ class OpportunityScanner:
             away_team=event.away_team,
             sport=event.sport,
             league=event.league,
-            start_time=event.start_time.isoformat() if event.start_time else None,
+            start_time=(event.start_time.isoformat() + "Z") if event.start_time else None,
         )
 
     def _get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:

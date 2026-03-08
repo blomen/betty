@@ -1,15 +1,17 @@
 """Bets API routes."""
 
 import logging
+import time
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from ...services import BetService
 from ...repositories import BetRepo, ProfileRepo
 from ...db.models import Odds, Event, SpecialOdds
 from ...analysis.devig import get_fair_odds_for_outcome
-from ..deps import get_db
+from ..deps import get_db, get_db_writer
 from ..schemas import BetCreate, BetUpdate, BetEdit, BatchBetCreate
 from .providers import load_provider_site_urls
 
@@ -311,32 +313,62 @@ async def list_bets(
     }
 
 
+# Retry config for SQLite write lock contention during bet placement.
+# Extraction bulk-inserts hold write locks for seconds at a time — without retry,
+# bet commits fail silently and the bet is lost.
+_BET_COMMIT_MAX_RETRIES = 4
+_BET_COMMIT_BACKOFF_BASE = 0.3  # seconds (0.3, 0.6, 1.2, 2.4)
+
+
 @router.post("")
-async def create_bet(bet: BetCreate, service: BetService = Depends(_get_service)):
-    """Record a placed bet for active profile."""
-    result = service.create_bet(
-        event_id=bet.event_id,
-        provider_id=bet.provider_id,
-        market=bet.market,
-        outcome=bet.outcome,
-        odds=bet.odds,
-        stake=bet.stake,
-        point=bet.point,
-        is_bonus=bet.is_bonus,
-        bonus_type=bet.bonus_type,
-        utility_score=bet.utility_score,
-        selection_probability=bet.selection_probability,
-        stake_noise_applied=bet.stake_noise_applied,
-        fair_odds_at_placement=bet.fair_odds_at_placement,
-        boost_event=bet.boost_event,
-        boost_title=bet.boost_title,
-    )
+async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
+    """Record a placed bet for active profile.
 
-    if "error" in result:
-        status_code = 404 if "not found" in result["error"] else 400
-        raise HTTPException(status_code, result["error"])
+    Uses get_db_writer (no auto-commit) with manual commit + retry.
+    On SQLite lock contention, rolls back and re-executes the full service
+    method since rollback expunges pending objects.
+    """
+    for attempt in range(_BET_COMMIT_MAX_RETRIES):
+        service = BetService(db)
+        result = service.create_bet(
+            event_id=bet.event_id,
+            provider_id=bet.provider_id,
+            market=bet.market,
+            outcome=bet.outcome,
+            odds=bet.odds,
+            stake=bet.stake,
+            point=bet.point,
+            is_bonus=bet.is_bonus,
+            bonus_type=bet.bonus_type,
+            utility_score=bet.utility_score,
+            selection_probability=bet.selection_probability,
+            stake_noise_applied=bet.stake_noise_applied,
+            fair_odds_at_placement=bet.fair_odds_at_placement,
+            boost_event=bet.boost_event,
+            boost_title=bet.boost_title,
+        )
 
-    return result
+        if "error" in result:
+            status_code = 404 if "not found" in result["error"] else 400
+            raise HTTPException(status_code, result["error"])
+
+        try:
+            db.commit()
+            return result
+        except OperationalError as e:
+            if "database is locked" in str(e) and attempt < _BET_COMMIT_MAX_RETRIES - 1:
+                wait = _BET_COMMIT_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"[Bets] Commit blocked by SQLite lock (attempt {attempt + 1}/"
+                    f"{_BET_COMMIT_MAX_RETRIES}), retrying in {wait:.1f}s"
+                )
+                db.rollback()
+                time.sleep(wait)
+            else:
+                logger.error(f"[Bets] Commit failed after {attempt + 1} attempts: {e}")
+                raise
+
+    raise HTTPException(503, "Database busy — please try again")
 
 
 @router.post("/close-started")
@@ -387,11 +419,11 @@ async def auto_settle_bets(db: Session = Depends(get_db)):
 
 
 @router.post("/batch")
-async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(_get_service)):
+async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_writer)):
     """
     Place multiple legs at once (dutch bet).
     Each leg is placed independently — if one fails, already-placed legs remain.
-    Returns results per leg so the frontend knows which succeeded.
+    Commits per-leg with retry to minimize lock contention impact.
     """
     if not data.legs:
         raise HTTPException(400, "No legs provided")
@@ -401,39 +433,74 @@ async def create_batch_bets(data: BatchBetCreate, service: BetService = Depends(
     total_staked = 0.0
 
     for i, leg in enumerate(data.legs):
-        result = service.create_bet(
-            event_id=leg.event_id,
-            provider_id=leg.provider_id,
-            market=leg.market,
-            outcome=leg.outcome,
-            odds=leg.odds,
-            stake=leg.stake,
-            point=leg.point,
-            is_bonus=leg.is_bonus,
-            bonus_type=leg.bonus_type,
-            utility_score=leg.utility_score,
-            selection_probability=leg.selection_probability,
-        )
+        leg_placed = False
+        for attempt in range(_BET_COMMIT_MAX_RETRIES):
+            service = BetService(db)
+            result = service.create_bet(
+                event_id=leg.event_id,
+                provider_id=leg.provider_id,
+                market=leg.market,
+                outcome=leg.outcome,
+                odds=leg.odds,
+                stake=leg.stake,
+                point=leg.point,
+                is_bonus=leg.is_bonus,
+                bonus_type=leg.bonus_type,
+                utility_score=leg.utility_score,
+                selection_probability=leg.selection_probability,
+            )
 
-        if "error" in result:
+            if "error" in result:
+                results.append({
+                    "leg_index": i,
+                    "provider_id": leg.provider_id,
+                    "outcome": leg.outcome,
+                    "success": False,
+                    "error": result["error"],
+                })
+                leg_placed = True  # Not placed, but handled
+                break
+
+            try:
+                db.commit()
+                placed_count += 1
+                total_staked += leg.stake
+                results.append({
+                    "leg_index": i,
+                    "provider_id": leg.provider_id,
+                    "outcome": leg.outcome,
+                    "success": True,
+                    "bet_id": result["bet_id"],
+                    "stake": leg.stake,
+                    "odds": leg.odds,
+                })
+                leg_placed = True
+                break
+            except OperationalError as e:
+                if "database is locked" in str(e) and attempt < _BET_COMMIT_MAX_RETRIES - 1:
+                    wait = _BET_COMMIT_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning(f"[Bets:batch] Leg {i} commit blocked (attempt {attempt + 1})")
+                    db.rollback()
+                    time.sleep(wait)
+                else:
+                    results.append({
+                        "leg_index": i,
+                        "provider_id": leg.provider_id,
+                        "outcome": leg.outcome,
+                        "success": False,
+                        "error": "Database busy",
+                    })
+                    db.rollback()
+                    leg_placed = True
+                    break
+
+        if not leg_placed:
             results.append({
                 "leg_index": i,
                 "provider_id": leg.provider_id,
                 "outcome": leg.outcome,
                 "success": False,
-                "error": result["error"],
-            })
-        else:
-            placed_count += 1
-            total_staked += leg.stake
-            results.append({
-                "leg_index": i,
-                "provider_id": leg.provider_id,
-                "outcome": leg.outcome,
-                "success": True,
-                "bet_id": result["bet_id"],
-                "stake": leg.stake,
-                "odds": leg.odds,
+                "error": "Database busy after retries",
             })
 
     return {

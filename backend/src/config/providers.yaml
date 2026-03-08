@@ -213,6 +213,7 @@ providers:
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
+    sport_timeout: 120                   # Football has ~200 leagues × 2 API calls each; 60s default times out under load
 
   # --------------------------------------------------------------------------
   # Polymarket (prediction market — event matching only)
@@ -614,7 +615,7 @@ providers:
     retriever_type: custom
     site_url: https://www.comeon.com
     provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: bonusdeposit
       amount: 500
@@ -643,7 +644,7 @@ providers:
     retriever_type: custom
     site_url: https://www.hajper.com
     provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: bonusdeposit
       amount: 500
@@ -670,7 +671,7 @@ providers:
     retriever_type: custom
     site_url: https://www.lyllocasino.com
     provider_timeout: 900              # 12 sports × ~45s each (date scrolling)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: freebet
       amount: 100

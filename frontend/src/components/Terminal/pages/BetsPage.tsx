@@ -553,18 +553,12 @@ export function BetsPage() {
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">ROI</div>
-              {(() => {
-                const startBankroll = currentBankroll - bankrollStats.total_profit;
-                const growthPct = startBankroll > 0 ? (bankrollStats.total_profit / startBankroll) * 100 : 0;
-                return (
-                  <>
-                    <div className={`text-lg font-semibold ${growthPct >= 0 ? 'text-success' : 'text-error'}`}>
-                      {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%
-                    </div>
-                    <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
-                  </>
-                );
-              })()}
+              <div className={`text-lg font-semibold ${bankrollStats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                {bankrollStats.roi_pct >= 0 ? '+' : ''}{bankrollStats.roi_pct.toFixed(1)}%
+              </div>
+              {bankrollStats.total_deposited > 0 && (
+                <div className="text-[10px] text-muted">{bankrollStats.total_deposited.toFixed(0)} kr deposited</div>
+              )}
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Profit</div>

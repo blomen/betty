@@ -198,13 +198,11 @@ class ExtractionPipeline:
 
         This eliminates thousands of per-event DB round-trips across 30+ soft providers.
         """
-        from sqlalchemy import func
-
         # 1. Pre-warm spread/total points cache
         point_rows = self.session.query(
             Odds.event_id, Odds.market, Odds.outcome, Odds.point
         ).filter(
-            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.provider_id == 'pinnacle',
             Odds.market.in_(['spread', 'total']),
             Odds.point.isnot(None),
         ).all()
@@ -222,7 +220,7 @@ class ExtractionPipeline:
         sharp_rows = self.session.query(
             Odds.event_id, Odds.outcome, Odds.odds
         ).filter(
-            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.provider_id == 'pinnacle',
             Odds.outcome.in_(['home', 'away']),
             Odds.market.in_(['1x2', 'moneyline']),
         ).all()

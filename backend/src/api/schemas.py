@@ -151,6 +151,7 @@ class ProfileUpdate(BaseModel):
     preferred_counterparts: Optional[list[str]] = None
     bonus_enabled: Optional[bool] = None
     bonus_deposit: Optional[float] = None
+    total_deposited: Optional[float] = None
     color: Optional[str] = None
 
 
