@@ -4,7 +4,7 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeam
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, FreshnessIndicator, SearchInput } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet, Bet } from '@/types';
@@ -42,6 +42,7 @@ export function PolymarketPage() {
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
   const [search, setSearch] = useState('');
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -179,6 +180,22 @@ export function PolymarketPage() {
     return vb.outcome ?? '?';
   };
 
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    for (const vb of valueBets) {
+      if (vb.league) set.add(vb.league);
+    }
+    return Array.from(set).sort();
+  }, [valueBets]);
+
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
+      return next;
+    });
+  };
+
   // Remove started/imminent events and placed bets
   const activeValueBets = useMemo(() => {
     let result = valueBets.filter(vb => {
@@ -187,6 +204,9 @@ export function PolymarketPage() {
       if (placedKeys.has(getPlacedKey(vb))) return false;
       return true;
     });
+    if (selectedLeagues.size > 0) {
+      result = result.filter(vb => vb.league != null && selectedLeagues.has(vb.league));
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       result = result.filter(vb =>
@@ -200,7 +220,7 @@ export function PolymarketPage() {
       );
     }
     return result;
-  }, [valueBets, placedKeys, search]);
+  }, [valueBets, placedKeys, selectedLeagues, search]);
 
   type PolySortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
@@ -272,6 +292,16 @@ export function PolymarketPage() {
         )}
 
         <FilterBar>
+          {availableLeagues.length > 0 && (
+            <MultiSelectDropdown
+              label="League"
+              options={availableLeagues}
+              selected={selectedLeagues}
+              onToggle={toggleLeague}
+              onClear={() => setSelectedLeagues(new Set())}
+              accentColor="tabPolymarket"
+            />
+          )}
           <FreshnessIndicator tiers={[['poly', freshness.poly], ['sharp', freshness.sharp]]} />
         </FilterBar>
 

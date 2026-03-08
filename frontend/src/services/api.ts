@@ -501,6 +501,18 @@ export const api = {
     return fetchJson(`/opportunities?${params}`);
   },
 
+  async getDutchWorkflow(
+    providers: string[],
+    majorOnly: boolean,
+    limit: number = 50,
+  ): Promise<{ opportunities: unknown[]; count: number; anchor_providers: string[] }> {
+    const params = new URLSearchParams();
+    params.set('providers', providers.join(','));
+    params.set('major_only', String(majorOnly));
+    params.set('limit', String(limit));
+    return fetchJson(`/opportunities/dutch-workflow?${params}`);
+  },
+
   // ============ Bets ============
   async getBets(
     status?: 'pending' | 'won' | 'lost' | 'void',

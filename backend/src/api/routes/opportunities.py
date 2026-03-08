@@ -71,6 +71,24 @@ async def match_bonus_bet(
     return result
 
 
+@router.get("/dutch-workflow")
+async def dutch_workflow(
+    providers: str,
+    major_only: bool = False,
+    limit: int = 50,
+    service: OpportunityService = Depends(_get_service),
+):
+    """Live-scan dutch opportunities for specific anchor providers."""
+    provider_list = [p.strip() for p in providers.split(",") if p.strip()]
+    if not provider_list:
+        raise HTTPException(400, "At least one provider required")
+    return service.scan_dutch_workflow(
+        anchor_providers=provider_list,
+        major_only=major_only,
+        limit=min(limit, 100),
+    )
+
+
 @router.get("/bonus/scan")
 async def scan_bonus_opportunities(
     anchor_provider: str,

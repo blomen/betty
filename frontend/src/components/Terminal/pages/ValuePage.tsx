@@ -58,6 +58,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
 
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [boostSearch, setBoostSearch] = useState('');
   const [betError, setBetError] = useState<string | null>(null);
@@ -202,6 +203,14 @@ export function ValuePage({ providers }: ValuePageProps) {
     return Array.from(set).sort();
   }, [providers, opportunities]);
 
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    for (const opp of opportunities) {
+      if (opp.league) set.add(opp.league);
+    }
+    return Array.from(set).sort();
+  }, [opportunities]);
+
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -224,6 +233,9 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
+    }
+    if (selectedLeagues.size > 0) {
+      result = result.filter(o => o.league != null && selectedLeagues.has(o.league));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -269,7 +281,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, placedKeys, wageringPriority, search]);
+  }, [opportunities, selectedProviders, selectedLeagues, placedKeys, wageringPriority, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -291,6 +303,14 @@ export function ValuePage({ providers }: ValuePageProps) {
     setSelectedProviders(prev => {
       const next = new Set(prev);
       if (next.has(p)) next.delete(p); else next.add(p);
+      return next;
+    });
+  };
+
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
       return next;
     });
   };
@@ -787,6 +807,16 @@ export function ValuePage({ providers }: ValuePageProps) {
             onToggle={toggleProvider}
             onClear={() => setSelectedProviders(new Set())}
             format={formatProviderWithPlatform}
+            accentColor="tabValue"
+          />
+        )}
+        {availableLeagues.length > 0 && (
+          <MultiSelectDropdown
+            label="League"
+            options={availableLeagues}
+            selected={selectedLeagues}
+            onToggle={toggleLeague}
+            onClear={() => setSelectedLeagues(new Set())}
             accentColor="tabValue"
           />
         )}

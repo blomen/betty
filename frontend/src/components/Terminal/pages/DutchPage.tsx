@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
@@ -36,6 +36,7 @@ interface DutchOpp {
   profit_pct: number | null;
   edge_pct: number | null;
   sport?: string;
+  league?: string;
   home_team?: string;
   away_team?: string;
   display_home?: string | null;
@@ -60,11 +61,23 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+
+  // Workflow panel state
+  const [workflowProviders, setWorkflowProviders] = useState<Set<string>>(new Set());
+  const [workflowStake, setWorkflowStake] = useState<string>('');
+  const [workflowMajorOnly, setWorkflowMajorOnly] = useState(false);
+  const [workflowResults, setWorkflowResults] = useState<DutchOpp[] | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
+
+  // Anchor stake override: key = oppId, value = { legIdx, stake }
+  const [anchorStake, setAnchorStake] = useState<Record<number, { legIdx: number; stake: number }>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null); // "oppId|legIdx"
 
   // Place bet state
   const [isPlacing, setIsPlacing] = useState(false);
@@ -105,6 +118,39 @@ export function DutchPage({ providers }: DutchPageProps) {
     return () => clearInterval(id);
   }, [anyExtracting, fetchData]);
 
+  const handleScan = useCallback(async () => {
+    if (workflowProviders.size === 0) return;
+    setIsScanning(true);
+    setSelectedOpp(null);
+    setOddsOverride({});
+    setAnchorStake({});
+    setPlacedLegs({});
+    try {
+      const res = await api.getDutchWorkflow(
+        Array.from(workflowProviders),
+        workflowMajorOnly,
+        MAX_ROWS,
+      );
+      const opps = (res.opportunities ?? []) as DutchOpp[];
+      // Auto-apply anchor stake to the first leg matching a workflow provider
+      const stakeVal = parseFloat(workflowStake);
+      if (!isNaN(stakeVal) && stakeVal > 0) {
+        const anchors: Record<number, { legIdx: number; stake: number }> = {};
+        for (const opp of opps) {
+          const legs = opp.legs || [];
+          const idx = legs.findIndex(l => workflowProviders.has(l.provider));
+          if (idx >= 0) anchors[opp.id] = { legIdx: idx, stake: stakeVal };
+        }
+        setAnchorStake(anchors);
+      }
+      setWorkflowResults(opps);
+    } catch (err) {
+      console.error('Workflow scan failed:', err);
+    } finally {
+      setIsScanning(false);
+    }
+  }, [workflowProviders, workflowMajorOnly, workflowStake]);
+
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
     for (const p of providers) {
@@ -118,6 +164,15 @@ export function DutchPage({ providers }: DutchPageProps) {
     return Array.from(set).sort();
   }, [providers, opportunities]);
 
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    const opps = workflowResults ?? opportunities;
+    for (const opp of opps) {
+      if (opp.league) set.add(opp.league);
+    }
+    return Array.from(set).sort();
+  }, [opportunities, workflowResults]);
+
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -128,13 +183,16 @@ export function DutchPage({ providers }: DutchPageProps) {
     providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
   const filtered = useMemo(() => {
-    let result = opportunities;
+    let result = workflowResults ?? opportunities;
     // Remove started/imminent events
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
     if (selectedProviders.size > 0) {
       result = result.filter(d =>
         (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))
       );
+    }
+    if (selectedLeagues.size > 0) {
+      result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -149,7 +207,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, selectedProviders, search]);
+  }, [opportunities, workflowResults, selectedProviders, selectedLeagues, search]);
 
   type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
@@ -169,14 +227,46 @@ export function DutchPage({ providers }: DutchPageProps) {
     });
   };
 
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
+      return next;
+    });
+  };
+
   const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
     const key = `${oppId}|${legIdx}`;
     return oddsOverride[key] ?? originalOdds;
   };
 
+  // Compute effective total stake and per-leg stakes when an anchor is set
+  const getEffectiveStakes = (opp: DutchOpp): { totalStake: number; legStakes: number[] } => {
+    const legs = opp.legs || [];
+    const anchor = anchorStake[opp.id];
+    const baseTotalStake = opp.total_stake || 0;
+
+    if (anchor && legs[anchor.legIdx]) {
+      const anchorLeg = legs[anchor.legIdx];
+      const anchorPct = anchorLeg.stake_pct;
+      if (anchorPct > 0) {
+        const newTotal = anchor.stake / (anchorPct / 100);
+        return {
+          totalStake: newTotal,
+          legStakes: legs.map(leg => newTotal * leg.stake_pct / 100),
+        };
+      }
+    }
+
+    return {
+      totalStake: baseTotalStake,
+      legStakes: legs.map(leg => leg.stake ?? (baseTotalStake > 0 ? baseTotalStake * leg.stake_pct / 100 : 0)),
+    };
+  };
+
   const handlePlaceLeg = async (opp: DutchOpp, leg: DutchLeg, legIdx: number) => {
-    const totalStake = opp.total_stake || 0;
-    const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+    const { legStakes } = getEffectiveStakes(opp);
+    const legStake = legStakes[legIdx];
     if (legStake <= 0) return;
 
     const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
@@ -223,12 +313,12 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const handlePlaceAll = async (opp: DutchOpp) => {
     const legs = opp.legs || [];
-    const totalStake = opp.total_stake || 0;
-    if (legs.length === 0 || totalStake <= 0) return;
+    const { totalStake: effTotal, legStakes } = getEffectiveStakes(opp);
+    if (legs.length === 0 || effTotal <= 0) return;
 
     // Build legs array for batch API
     const batchLegs = legs.map((leg, legIdx) => {
-      const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+      const legStake = legStakes[legIdx];
       const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
       return {
         event_id: opp.event_id,
@@ -359,30 +449,106 @@ export function DutchPage({ providers }: DutchPageProps) {
         </div>
       )}
 
-      <FilterBar>
-        {availableProviders.length > 0 && (
-          <MultiSelectDropdown
-            label="Provider"
-            options={availableProviders}
-            selected={selectedProviders}
-            onToggle={toggleProvider}
-            onClear={() => setSelectedProviders(new Set())}
-            format={formatProviderWithPlatform}
-            accentColor="success"
+      {/* Workflow panel */}
+      <div className="flex items-center gap-3 px-3 py-2 bg-panel border border-border text-xs">
+        <MultiSelectDropdown
+          label="Anchor"
+          options={availableProviders}
+          selected={workflowProviders}
+          onToggle={(p) => setWorkflowProviders(prev => {
+            const next = new Set(prev);
+            if (next.has(p)) next.delete(p); else next.add(p);
+            return next;
+          })}
+          onClear={() => setWorkflowProviders(new Set())}
+          format={formatProviderWithPlatform}
+          accentColor="success"
+        />
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            placeholder="Stake"
+            value={workflowStake}
+            onChange={e => setWorkflowStake(e.target.value)}
+            className="w-20 bg-bg border border-border text-text text-xs px-2 py-1 text-right focus:outline-none focus:border-success"
           />
+          <span className="text-muted2">kr</span>
+        </div>
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={workflowMajorOnly}
+            onChange={e => setWorkflowMajorOnly(e.target.checked)}
+            className="accent-success"
+          />
+          <span className="text-muted">Limited</span>
+        </label>
+        <button
+          onClick={handleScan}
+          disabled={workflowProviders.size === 0 || isScanning}
+          className="px-3 py-1 bg-success text-bg text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+        >
+          {isScanning ? 'Scanning...' : 'Scan'}
+        </button>
+        {workflowResults && (
+          <button
+            onClick={() => { setWorkflowResults(null); setAnchorStake({}); setOddsOverride({}); setPlacedLegs({}); }}
+            className="text-muted2 hover:text-text text-[10px]"
+            title="Clear workflow results"
+          >
+            clear
+          </button>
         )}
-        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
-      </FilterBar>
+        <div className="ml-auto flex items-center gap-3">
+          {workflowResults && (
+            <span className="text-muted2">{sortedDutch.length} results</span>
+          )}
+          <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+        </div>
+      </div>
 
-      {isLoading && opportunities.length === 0 ? (
+      {/* Additional filters when viewing results */}
+      {(workflowResults ? sortedDutch.length > 0 : opportunities.length > 0) && (
+        <FilterBar>
+          {!workflowResults && availableProviders.length > 0 && (
+            <MultiSelectDropdown
+              label="Provider"
+              options={availableProviders}
+              selected={selectedProviders}
+              onToggle={toggleProvider}
+              onClear={() => setSelectedProviders(new Set())}
+              format={formatProviderWithPlatform}
+              accentColor="success"
+            />
+          )}
+          {availableLeagues.length > 0 && (
+            <MultiSelectDropdown
+              label="League"
+              options={availableLeagues}
+              selected={selectedLeagues}
+              onToggle={toggleLeague}
+              onClear={() => setSelectedLeagues(new Set())}
+              accentColor="success"
+            />
+          )}
+        </FilterBar>
+      )}
+
+      {isScanning ? (
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          Scanning for dutch opportunities...
+        </div>
+      ) : isLoading && opportunities.length === 0 && !workflowResults ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
       ) : sortedDutch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {opportunities.length === 0
-            ? 'No dutch opportunities found. Run extraction first.'
-            : 'No matches for current filters.'}
+          {workflowResults
+            ? 'No dutch opportunities found for selected providers.'
+            : opportunities.length === 0
+              ? 'No dutch opportunities found. Select anchor providers and scan, or run extraction first.'
+              : 'No matches for current filters.'}
         </div>
       ) : (
         <div className="border-l-2 border-success">
@@ -406,9 +572,8 @@ export function DutchPage({ providers }: DutchPageProps) {
                 const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
 
                 return (
-                  <>
+                  <Fragment key={opp.id}>
                     <tr
-                      key={opp.id}
                       className={`cursor-pointer ${isSelected ? 'expanded' : ''}`}
                       onClick={() => setSelectedOpp(isSelected ? null : idx)}
                     >
@@ -453,7 +618,10 @@ export function DutchPage({ providers }: DutchPageProps) {
                       </td>
                     </tr>
 
-                    {isSelected && (
+                    {isSelected && (() => {
+                      const { totalStake: effTotalStake, legStakes: effLegStakes } = getEffectiveStakes(opp);
+                      const hasAnchor = opp.id in anchorStake;
+                      return (
                       <tr key={`${opp.id}-expanded`}>
                         <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
                           <table className="sq">
@@ -472,11 +640,14 @@ export function DutchPage({ providers }: DutchPageProps) {
                             <tbody>
                               {legs.map((leg, legIdx) => {
                                 const oddsKey = `${opp.id}|${legIdx}`;
+                                const stakeKey = `${opp.id}|${legIdx}`;
                                 const effectiveOdds = getEffectiveOdds(opp.id, legIdx, leg.odds);
                                 const oddsChanged = oddsKey in oddsOverride;
-                                const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+                                const legStake = effLegStakes[legIdx];
                                 const legReturn = legStake * effectiveOdds;
-                                const isEditingThis = editingOdds === oddsKey;
+                                const isEditingThisOdds = editingOdds === oddsKey;
+                                const isEditingThisStake = editingStake === stakeKey;
+                                const isAnchorLeg = hasAnchor && anchorStake[opp.id].legIdx === legIdx;
                                 const isPlacingThis = isPlacing && placingLeg === oddsKey;
 
                                 return (
@@ -489,7 +660,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                     <td className="text-right"><ProviderName name={leg.provider} /></td>
                                     <td className="text-right font-medium">
                                       <div className="flex items-center justify-end gap-1">
-                                        {isEditingThis ? (
+                                        {isEditingThisOdds ? (
                                           <input
                                             type="number"
                                             step="0.01"
@@ -533,8 +704,47 @@ export function DutchPage({ providers }: DutchPageProps) {
                                       {leg.edge_pct > 0 ? '+' : ''}{leg.edge_pct.toFixed(1)}%
                                     </td>
                                     <td className="text-right">
-                                      {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
-                                      {legStake > 0 && <span className="text-muted2 text-[10px] ml-1">({leg.stake_pct.toFixed(0)}%)</span>}
+                                      <div className="flex items-center justify-end gap-1">
+                                        {isEditingThisStake ? (
+                                          <input
+                                            type="number"
+                                            step="1"
+                                            autoFocus
+                                            defaultValue={legStake > 0 ? legStake.toFixed(0) : ''}
+                                            placeholder="Stake"
+                                            className="w-20 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
+                                            onBlur={(e) => {
+                                              const val = parseFloat(e.target.value);
+                                              if (!isNaN(val) && val > 0) {
+                                                setAnchorStake(prev => ({ ...prev, [opp.id]: { legIdx, stake: val } }));
+                                              }
+                                              setEditingStake(null);
+                                            }}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                              else if (e.key === 'Escape') setEditingStake(null);
+                                            }}
+                                          />
+                                        ) : (
+                                          <span
+                                            onClick={() => setEditingStake(stakeKey)}
+                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isAnchorLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
+                                            title="Click to set anchor stake"
+                                          >
+                                            {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
+                                          </span>
+                                        )}
+                                        {isAnchorLeg && (
+                                          <button
+                                            onClick={() => setAnchorStake(prev => { const next = { ...prev }; delete next[opp.id]; return next; })}
+                                            className="text-muted2 hover:text-text text-[10px]"
+                                            title="Reset to default stake"
+                                          >
+                                            x
+                                          </button>
+                                        )}
+                                      </div>
+                                      {legStake > 0 && <span className="text-muted2 text-[10px]">({leg.stake_pct.toFixed(0)}%)</span>}
                                     </td>
                                     <td className="text-right">{legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}</td>
                                     <td className="text-right">
@@ -555,18 +765,21 @@ export function DutchPage({ providers }: DutchPageProps) {
                               })}
                             </tbody>
                           </table>
-                          {totalStake > 0 && (
+                          {effTotalStake > 0 && (
                             <div className="px-3 py-2 border-t border-border bg-panel flex items-center justify-between text-xs text-muted">
                               <div className="flex items-center gap-6">
                                 <div>
                                   <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
-                                  <span className="text-text font-medium">{totalStake.toFixed(0)} kr</span>
+                                  <span className={`font-medium ${hasAnchor ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
+                                  {hasAnchor && totalStake > 0 && (
+                                    <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
+                                  )}
                                 </div>
                                 {gp !== 0 && (
                                   <div>
                                     <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
                                     <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
-                                      {gp > 0 ? '+' : ''}{(totalStake * gp / 100).toFixed(0)} kr
+                                      {gp > 0 ? '+' : ''}{(effTotalStake * gp / 100).toFixed(0)} kr
                                     </span>
                                   </div>
                                 )}
@@ -591,8 +804,9 @@ export function DutchPage({ providers }: DutchPageProps) {
                           )}
                         </td>
                       </tr>
-                    )}
-                  </>
+                      );
+                    })()}
+                  </Fragment>
                 );
               })}
             </tbody>

@@ -408,6 +408,47 @@ class OpportunityScanner:
         )
         return opportunities
 
+    def scan_dutch_for_provider(self, provider_id: str) -> list[DutchOpportunity]:
+        """
+        Find dutch opportunities where provider_id is forced as one of the legs.
+
+        Unlike scan_dutch(), this does NOT require +EV — returns all dutch including
+        negative edge. Used by the dutch workflow for balance draining.
+
+        Args:
+            provider_id: Provider to force into the dutch (e.g. 'betinia')
+
+        Returns:
+            List of DutchOpportunity sorted by combined_edge_pct (highest first)
+        """
+        opportunities = []
+
+        events = self._get_events_with_provider(provider_id)
+
+        for event in events:
+            odds_grouped = self.group_odds(event)
+
+            for market, odds_by_outcome in odds_grouped.items():
+                dutch = self._find_dutch_in_market(
+                    event=event,
+                    market=market,
+                    odds_by_outcome=odds_by_outcome,
+                    all_markets=odds_grouped,
+                    anchor_provider=provider_id,
+                )
+                if dutch is None:
+                    continue
+                # Only include if the provider actually appears in a leg
+                if any(leg["provider"] == provider_id for leg in dutch.legs):
+                    opportunities.append(dutch)
+
+        opportunities.sort(key=lambda x: x.combined_edge_pct, reverse=True)
+
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} dutch-workflow opportunities for {provider_id}"
+        )
+        return opportunities
+
     def scan_reverse_value(self, min_edge_pct: float = 3.0) -> list[ValueBet]:
         """
         Find reverse value bets: Pinnacle odds beating soft book consensus.
@@ -549,13 +590,17 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
+        anchor_provider: str | None = None,
     ) -> Optional[DutchOpportunity]:
         """
         Find a dutch opportunity in a single market.
 
         Cross-book dutch: uses best odds per outcome from ANY provider (soft or
         Pinnacle raw). Edge is always computed vs Pinnacle de-vigged fair odds.
-        Requires at least one soft +EV leg (otherwise no edge exists).
+
+        When anchor_provider is None: requires at least one soft +EV leg.
+        When anchor_provider is set: forces that provider's odds even if below
+        fair (negative edge), and relaxes the +EV requirement.
         """
         # Count outcomes per provider for market type mismatch detection
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
@@ -645,6 +690,11 @@ class OpportunityScanner:
                 best_odds = best_soft_odds
                 best_provider = best_soft_provider
                 is_sharp = False
+            elif anchor_provider and best_soft_provider:
+                # Anchor mode: use best soft even below fair (negative edge)
+                best_odds = best_soft_odds
+                best_provider = best_soft_provider
+                is_sharp = False
             else:
                 # No soft book beats fair odds — use fair odds (0% edge coverage)
                 best_odds = fair_odds
@@ -670,8 +720,8 @@ class OpportunityScanner:
         if len(all_outcomes) < 2:
             return None
 
-        # Require at least one soft +EV leg
-        if not any(
+        # Require at least one soft +EV leg (unless anchor mode)
+        if not anchor_provider and not any(
             data["edge_pct"] > 0 and not data["is_sharp"]
             for data in best_per_outcome.values()
         ):

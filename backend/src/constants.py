@@ -90,6 +90,27 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
 # Only extract sports where Pinnacle provides sharp lines AND soft providers
 # have head-to-head match coverage for value comparison.
 # Excluded: golf, cycling, motorsports (outright/winner markets only — no soft match coverage)
+# Major leagues per sport — used by dutch workflow "limited" toggle
+# When limited at a provider, only play major leagues where limits are higher
+MAJOR_LEAGUES: dict[str, list[str]] = {
+    "football": [
+        "England - Premier League", "Spain - La Liga", "Germany - Bundesliga",
+        "Italy - Serie A", "France - Ligue 1", "England - Championship",
+        "USA - Major League Soccer", "Brazil - Serie A",
+        "FIFA - World Cup", "FIFA - World Cup Qualifiers Europe",
+        "UEFA Champions League", "UEFA Europa League",
+    ],
+    "basketball": ["NBA", "NCAA"],
+    "ice_hockey": ["NHL"],
+    "baseball": ["MLB", "MLB - Pre Season"],
+    "mma": ["UFC"],
+    "boxing": ["Boxing Matches"],
+}
+
+MAJOR_LEAGUES_FLAT: frozenset[str] = frozenset(
+    league for leagues in MAJOR_LEAGUES.values() for league in leagues
+)
+
 ALLOWED_SPORTS = frozenset({
     'football',
     'basketball',

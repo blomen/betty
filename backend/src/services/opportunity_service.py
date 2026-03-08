@@ -7,7 +7,7 @@ from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
-from ..constants import PROVIDER_CANONICAL
+from ..constants import PROVIDER_CANONICAL, MAJOR_LEAGUES_FLAT
 from ..db.models import Provider, Odds
 
 logger = logging.getLogger(__name__)
@@ -253,6 +253,99 @@ class OpportunityService:
             "anchor_provider": anchor_provider,
             "total_bankroll": round(total_bankroll, 2),
             "anchor_balance": round(anchor_balance, 2),
+        }
+
+    def scan_dutch_workflow(
+        self,
+        anchor_providers: list[str],
+        major_only: bool = False,
+        limit: int = 50,
+    ) -> dict:
+        """Live-scan dutch opportunities forcing anchor providers into legs.
+
+        Scans the odds DB for each anchor provider and returns dutch
+        opportunities sorted by edge (including negative edge).
+        """
+        scanner = OpportunityScanner(self.db)
+
+        # Scan for each anchor provider
+        seen: dict[str, dict] = {}  # key = "event_id|market" -> best opp dict
+        for provider_id in anchor_providers:
+            canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
+            opps = scanner.scan_dutch_for_provider(canonical)
+            for opp in opps:
+                key = f"{opp.event_id}|{opp.market}"
+                # Replace provider in legs from canonical → requested alias
+                legs = []
+                for leg in opp.legs:
+                    if leg["provider"] == canonical and canonical != provider_id:
+                        legs.append({**leg, "provider": provider_id})
+                    else:
+                        legs.append(leg)
+
+                entry = {
+                    "event_id": opp.event_id,
+                    "market": opp.market,
+                    "sport": opp.sport,
+                    "league": opp.league,
+                    "home_team": opp.home_team,
+                    "away_team": opp.away_team,
+                    "starts_at": opp.start_time,
+                    "combined_edge_pct": opp.combined_edge_pct,
+                    "guaranteed_profit_pct": opp.guaranteed_profit_pct,
+                    "legs": legs,
+                }
+
+                # Keep best edge per event+market
+                if key not in seen or entry["combined_edge_pct"] > seen[key]["combined_edge_pct"]:
+                    seen[key] = entry
+
+        results = list(seen.values())
+
+        # Filter to major leagues if requested
+        if major_only:
+            results = [r for r in results if r.get("league") in MAJOR_LEAGUES_FLAT]
+
+        # Sort by edge desc
+        results.sort(key=lambda x: x["combined_edge_pct"], reverse=True)
+
+        # Format for API response (DutchOpp-compatible)
+        formatted = []
+        for i, r in enumerate(results[:limit]):
+            # Extract point from market key
+            point_value = None
+            clean_market = r["market"]
+            if "_" in r["market"] and r["market"].split("_")[-1].replace(".", "").replace("-", "").isdigit():
+                parts = r["market"].rsplit("_", 1)
+                if len(parts) == 2:
+                    try:
+                        point_value = float(parts[-1])
+                        clean_market = parts[0]
+                    except ValueError:
+                        pass
+
+            formatted.append({
+                "id": i + 1,
+                "type": "dutch",
+                "event_id": r["event_id"],
+                "market": clean_market,
+                "point": point_value,
+                "profit_pct": r["guaranteed_profit_pct"],
+                "edge_pct": r["combined_edge_pct"],
+                "guaranteed_profit_pct": r["guaranteed_profit_pct"],
+                "sport": r["sport"],
+                "league": r["league"],
+                "home_team": r["home_team"],
+                "away_team": r["away_team"],
+                "starts_at": r["starts_at"],
+                "legs": r["legs"],
+                "total_stake": 0,  # Frontend sets via anchor stake
+            })
+
+        return {
+            "opportunities": formatted,
+            "count": len(results),
+            "anchor_providers": anchor_providers,
         }
 
     def _add_stake_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator, bonus_cache: dict | None = None):
