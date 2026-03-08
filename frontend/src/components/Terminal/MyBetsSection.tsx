@@ -8,13 +8,10 @@ import type { Bet } from '@/types';
 
 type BetCategory = 'upcoming' | 'live' | 'ft';
 
-const USD_TO_SEK = 10.50;
-
-/** Format amount — SEK primary, USD in parentheses for Polymarket bets. */
+/** Format amount in its native currency ($ for USD/USDC, kr for SEK). */
 function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD') {
-    const sek = amount * USD_TO_SEK;
-    return `${sek.toFixed(decimals ?? 0)} kr ($${amount.toFixed(2)})`;
+  if (currency === 'USD' || currency === 'USDC') {
+    return `$${amount.toFixed(decimals ?? 2)}`;
   }
   return `${amount.toFixed(decimals ?? 0)} kr`;
 }
@@ -83,7 +80,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
 
   const startInlineEdit = (bet: Bet, field: 'odds' | 'stake') => {
     setInlineEdit({ id: bet.id, field });
-    setInlineValue(field === 'odds' ? bet.odds.toFixed(2) : bet.stake.toFixed(0));
+    const isUsd = bet.currency === 'USD' || bet.currency === 'USDC';
+    setInlineValue(field === 'odds' ? bet.odds.toFixed(2) : bet.stake.toFixed(isUsd ? 2 : 0));
   };
 
   const cancelInlineEdit = () => {

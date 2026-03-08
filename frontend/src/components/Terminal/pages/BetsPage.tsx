@@ -43,27 +43,25 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 
 // ── Sort types ───────────────────────────────────────────────────────
 
-/** Format amount — SEK primary, USD in parentheses for Polymarket bets. */
+/** Format amount in its native currency ($ for USD/USDC, kr for SEK). */
 function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD') {
-    const sek = amount * RATE_TO_SEK.USD;
-    return `${sek.toFixed(decimals ?? 0)} kr ($${amount.toFixed(2)})`;
+  if (currency === 'USD' || currency === 'USDC') {
+    return `$${amount.toFixed(decimals ?? 2)}`;
   }
   return `${amount.toFixed(decimals ?? 0)} kr`;
 }
 
-/** Format profit with +/- prefix — SEK primary, USD in parentheses. */
+/** Format profit with +/- prefix in native currency. */
 function fmtProfit(amount: number, currency: string): string {
   const prefix = amount >= 0 ? '+' : '-';
-  if (currency === 'USD') {
-    const sek = Math.abs(amount) * RATE_TO_SEK.USD;
-    return `${prefix}${sek.toFixed(0)} kr (${prefix}$${Math.abs(amount).toFixed(2)})`;
+  if (currency === 'USD' || currency === 'USDC') {
+    return `${prefix}$${Math.abs(amount).toFixed(2)}`;
   }
   return `${prefix}${Math.abs(amount).toFixed(0)} kr`;
 }
 
 /** Exchange rates to SEK for aggregation. */
-const RATE_TO_SEK: Record<string, number> = { USD: 10.50, SEK: 1 };
+const RATE_TO_SEK: Record<string, number> = { USD: 10.50, USDC: 10.50, SEK: 1 };
 
 /** Convert an amount from bet's native currency to SEK. */
 function toSEK(amount: number, currency: string): number {
