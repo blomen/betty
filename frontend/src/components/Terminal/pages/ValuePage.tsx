@@ -1096,13 +1096,19 @@ export function ValuePage({ providers }: ValuePageProps) {
 }
 
 
+function marketLabel(market: string): string {
+  if (market === 'moneyline') return 'ML';
+  return market.toUpperCase();
+}
+
 function resolveOutcomeName(opp: Opportunity): string {
   const outcome = opp.outcome1;
   const point = opp.point != null ? ` ${opp.point}` : '';
-  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${point}`;
-  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${point}`;
-  if (outcome === 'draw') return 'Draw';
-  if (outcome === 'over') return `Over${point}`;
-  if (outcome === 'under') return `Under${point}`;
-  return outcome;
+  const tag = ` [${marketLabel(opp.market)}]`;
+  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${point}${tag}`;
+  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${point}${tag}`;
+  if (outcome === 'draw') return `Draw${tag}`;
+  if (outcome === 'over') return `Over${point}${tag}`;
+  if (outcome === 'under') return `Under${point}${tag}`;
+  return `${outcome}${tag}`;
 }

@@ -290,14 +290,20 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
+  const marketLabel = (market: string): string => {
+    if (market === 'moneyline') return 'ML';
+    return market.toUpperCase();
+  };
+
   const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${p}`;
-    if (outcome === 'under') return `Under${p}`;
-    return outcome;
+    const tag = ` [${marketLabel(opp.market)}]`;
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}${tag}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}${tag}`;
+    if (outcome === 'draw') return `Draw${tag}`;
+    if (outcome === 'over') return `Over${p}${tag}`;
+    if (outcome === 'under') return `Under${p}${tag}`;
+    return `${outcome}${tag}`;
   };
 
   return (
