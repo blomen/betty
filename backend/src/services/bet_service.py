@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
+from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus, SpecialOdds
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
 from ..config import get_exchange_rate, get_provider_currency
@@ -147,6 +147,20 @@ class BetService:
                 except (ValueError, TypeError):
                     pass
 
+        # Resolve start_time: Event.start_time for regular bets, specials for boosts
+        start_time = None
+        if event_id:
+            ev = self.db.query(Event).filter(Event.id == event_id).first()
+            if ev and ev.start_time:
+                start_time = ev.start_time
+        if start_time is None and bet_type == "boost" and outcome:
+            sp = self.db.query(SpecialOdds).filter(SpecialOdds.title == outcome).first()
+            if sp and sp.event_time:
+                try:
+                    start_time = datetime.fromisoformat(sp.event_time.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    pass
+
         bet = self.bet_repo.create(
             profile_id=profile.id,
             event_id=event_id,
@@ -159,6 +173,7 @@ class BetService:
             currency=currency,
             is_bonus=is_bonus,
             bonus_type=bonus_type,
+            start_time=start_time,
             # Behavioral tracking
             hour_of_day=now.hour,
             day_of_week=now.weekday(),

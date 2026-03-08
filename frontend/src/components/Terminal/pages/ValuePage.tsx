@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
-import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
@@ -223,10 +223,10 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const grouped = useMemo(() => {
     let result = opportunities;
-    // Remove started/imminent events (less than 1 min to kickoff)
+    // Remove started/imminent events and events > 7 days out
     result = result.filter(o => {
       const ttk = getTTKFromNow(o.starts_at);
-      return ttk === null || ttk > 1 / 60;
+      return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS);
     });
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
@@ -318,7 +318,13 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
-    if (s.event_time) { try { if (new Date(s.event_time).getTime() <= Date.now()) return false; } catch { /* keep */ } }
+    if (s.event_time) {
+      try {
+        const diff = new Date(s.event_time).getTime() - Date.now();
+        if (diff <= 0) return false;                          // Already started
+        if (diff > MAX_TTK_HOURS * 3600000) return false;    // > 7 days out
+      } catch { /* keep */ }
+    }
     if (!s.expires_at) return true;
     try { return new Date(s.expires_at).getTime() > Date.now(); } catch { return true; }
   }), [specials]);

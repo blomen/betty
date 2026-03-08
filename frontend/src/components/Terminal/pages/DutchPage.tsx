@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName } from '@/utils/formatters';
+import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -142,7 +142,7 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const filtered = useMemo(() => {
     let result = opportunities;
-    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
+    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedProviders.size > 0) {
       result = result.filter(d =>
         (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))

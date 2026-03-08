@@ -19,9 +19,10 @@ import json
 import re
 import time
 from dataclasses import dataclass, asdict, replace, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # Provider name normalization map
 PROVIDER_ALIASES: dict[str, str] = {
@@ -692,6 +693,52 @@ async def _scrape_altenar_boosts(
     return boosts
 
 
+def _parse_gecko_time(time_info: str) -> Optional[str]:
+    """Parse Gecko V2 timeInfo into ISO datetime string.
+
+    Formats: "HH:MM", "Ikväll", "Imorgon", "YYYY-MM-DD...", or empty.
+    Times are in CET/CEST, converted to UTC.
+    """
+    if not time_info or not time_info.strip():
+        return None
+
+    time_info = time_info.strip()
+    cet = ZoneInfo("Europe/Stockholm")
+    now_cet = datetime.now(cet)
+
+    if time_info in ("Ikväll", "Ikvall"):
+        # "Tonight" — use today 23:59 CET
+        dt = now_cet.replace(hour=23, minute=59, second=0, microsecond=0)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    if time_info in ("Imorgon",):
+        # "Tomorrow" — use tomorrow 23:59 CET
+        dt = (now_cet + timedelta(days=1)).replace(hour=23, minute=59, second=0, microsecond=0)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    # "HH:MM" — today at that time CET
+    hm_match = re.match(r'^(\d{2}):(\d{2})$', time_info)
+    if hm_match:
+        h, m = int(hm_match.group(1)), int(hm_match.group(2))
+        dt = now_cet.replace(hour=h, minute=m, second=0, microsecond=0)
+        # If time already passed today, assume tomorrow
+        if dt <= now_cet:
+            dt += timedelta(days=1)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    # "YYYY-MM-DD..." — full date string
+    if re.match(r'^\d{4}-\d{2}-\d{2}', time_info):
+        try:
+            dt = datetime.fromisoformat(time_info)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=cet)
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            pass
+
+    return None
+
+
 async def _scrape_gecko_boosts(
     context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
 ) -> list[Special]:
@@ -906,7 +953,7 @@ async def _scrape_gecko_boosts(
                 league=league,
                 category="boost",
                 expires_at=None,
-                event_time=None,
+                event_time=_parse_gecko_time(card.get('timeInfo', '')),
                 source=provider_id,
                 scraped_at=now_iso,
                 url=boost_url,

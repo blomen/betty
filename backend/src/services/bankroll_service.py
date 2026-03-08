@@ -68,8 +68,11 @@ class BankrollService:
             return amount * get_exchange_rate(bet.provider_id)
 
         total_deposited = profile.total_deposited or 0.0
+        total_withdrawn = profile.total_withdrawn or 0.0
+        net_deposited = total_deposited - total_withdrawn
         bet_profit = sum(to_sek(b.profit, b) for b in bets if not b.is_bonus)
         freebet_profit = sum(to_sek(b.profit, b) for b in bets if b.is_bonus)
+        total_staked = sum(to_sek(b.stake, b) for b in bets)
         win_count = len([b for b in bets if b.result == "won"])
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])
@@ -102,11 +105,14 @@ class BankrollService:
             "losses": loss_count,
             "voids": void_count,
             "total_deposited": round(total_deposited, 2),
+            "total_withdrawn": round(total_withdrawn, 2),
+            "net_deposited": round(net_deposited, 2),
+            "total_staked": round(total_staked, 2),
             "total_profit": round(combined_profit, 2),
             "bet_profit": round(bet_profit, 2),
             "freebet_profit": round(freebet_profit, 2),
             "bonus_profit": round(bonus_profit, 2),
-            "roi_pct": round(combined_profit / total_deposited * 100, 2) if total_deposited > 0 else 0,
+            "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
             "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
             "avg_clv": avg_clv,
             "clv_positive_pct": clv_positive_pct,

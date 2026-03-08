@@ -431,6 +431,8 @@ class ExtractionScheduler:
                 specials_dicts = filter_expired([asdict(s) for s in specials])
                 specials_dicts = deduplicate_specials(specials_dicts)
                 specials_dicts = enrich_specials_with_ev(specials_dicts, session)
+                # Re-filter after event matching (matched events may now show as expired)
+                specials_dicts = filter_expired(specials_dicts, db=session)
 
                 # LLM probability research (async — Brave Search + Claude Haiku)
                 from src.analysis.llm_enrichment import enrich_specials_with_llm

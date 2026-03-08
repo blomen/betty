@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
 import { useExtractionFreshness, useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -181,7 +181,7 @@ export function DrainPage({ providers }: DrainPageProps) {
 
   const filtered = useMemo(() => {
     let result = workflowResults ?? [];
-    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
+    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedLeagues.size > 0) {
       result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
     }

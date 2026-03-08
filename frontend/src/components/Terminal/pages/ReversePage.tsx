@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -97,7 +97,7 @@ export function ReversePage() {
 
   const filtered = useMemo(() => {
     let result = opportunities
-      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || ttk > 1 / 60; })
+      .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); })
       .filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
     if (selectedLeagues.size > 0) {
       result = result.filter(o => o.league != null && selectedLeagues.has(o.league));

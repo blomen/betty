@@ -67,8 +67,8 @@ export function StatsPage() {
               <td className="text-text text-2xl font-semibold">{stats.total_bets}</td>
               <td className={`text-right text-2xl font-semibold ${stats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
                 {stats.roi_pct >= 0 ? '+' : ''}{stats.roi_pct.toFixed(1)}%
-                {stats.total_deposited > 0 && (
-                  <div className="text-muted text-sm font-normal">{stats.total_deposited.toFixed(0)} kr deposited</div>
+                {stats.total_staked > 0 && (
+                  <div className="text-muted text-sm font-normal">{stats.total_staked.toFixed(0)} kr staked</div>
                 )}
               </td>
               <td className={`text-right text-2xl font-semibold ${stats.total_profit >= 0 ? 'text-success' : 'text-error'}`}>

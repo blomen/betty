@@ -93,7 +93,7 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
 
 // ── Charts ───────────────────────────────────────────────────────────
 
-function BankrollChart({ bets, currentBankroll, totalDeposited }: { bets: Bet[]; currentBankroll: number; totalDeposited?: number }) {
+function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; currentBankroll: number; totalStaked?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
@@ -171,7 +171,7 @@ function BankrollChart({ bets, currentBankroll, totalDeposited }: { bets: Bet[];
   }
 
   const profit = lastVal - firstVal;
-  const roiBase = totalDeposited && totalDeposited > 0 ? totalDeposited : firstVal;
+  const roiBase = totalStaked && totalStaked > 0 ? totalStaked : firstVal;
   const profitPct = ((profit / roiBase) * 100).toFixed(1);
 
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
@@ -555,8 +555,8 @@ export function BetsPage() {
               <div className={`text-lg font-semibold ${bankrollStats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
                 {bankrollStats.roi_pct >= 0 ? '+' : ''}{bankrollStats.roi_pct.toFixed(1)}%
               </div>
-              {bankrollStats.total_deposited > 0 && (
-                <div className="text-[10px] text-muted">{bankrollStats.total_deposited.toFixed(0)} kr deposited</div>
+              {bankrollStats.total_staked > 0 && (
+                <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
               )}
             </div>
             <div className="bg-panel2 px-3 py-2.5">
@@ -589,7 +589,7 @@ export function BetsPage() {
       <div className="border-l-2 border-tabBets">
         <div className="grid grid-cols-2 gap-px bg-border border border-border">
           {bets.length > 0 && currentBankroll > 0 && (
-            <BankrollChart bets={bets} currentBankroll={currentBankroll} totalDeposited={bankrollStats?.total_deposited} />
+            <BankrollChart bets={bets} currentBankroll={currentBankroll} totalStaked={bankrollStats?.total_staked} />
           )}
           <CLVChart bets={bets} />
         </div>

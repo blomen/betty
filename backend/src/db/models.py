@@ -182,6 +182,7 @@ class Bet(Base):
     placed_at = Column(DateTime, default=_utcnow)
     settled_at = Column(DateTime)
     settlement_source = Column(String, nullable=True)  # "manual", "auto_tsdb"
+    start_time = Column(DateTime, nullable=True)        # Event start time (persisted at placement)
 
     # === BEHAVIORAL TRACKING (for risk management) ===
     # Timing patterns
@@ -275,6 +276,7 @@ class Profile(Base):
     bonus_enabled = Column(Boolean, default=True)
     bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
     total_deposited = Column(Float, default=0.0)     # Cumulative real money deposited (for ROI calc)
+    total_withdrawn = Column(Float, default=0.0)     # Cumulative real money withdrawn (for ROI calc)
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile

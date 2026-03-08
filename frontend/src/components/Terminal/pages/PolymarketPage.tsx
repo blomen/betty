@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -173,12 +173,13 @@ export function PolymarketPage() {
 
   const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
-    if (vb.outcome === 'home') return `${displayTeamName(vb.home_team, vb.display_home)}${point}`;
-    if (vb.outcome === 'away') return `${displayTeamName(vb.away_team, vb.display_away)}${point}`;
-    if (vb.outcome === 'draw') return 'Draw';
-    if (vb.outcome === 'over') return `Over${point}`;
-    if (vb.outcome === 'under') return `Under${point}`;
-    return vb.outcome ?? '?';
+    const tag = vb.market ? ` [${vb.market === 'moneyline' ? 'ML' : vb.market.toUpperCase()}]` : '';
+    if (vb.outcome === 'home') return `${displayTeamName(vb.home_team, vb.display_home)}${point}${tag}`;
+    if (vb.outcome === 'away') return `${displayTeamName(vb.away_team, vb.display_away)}${point}${tag}`;
+    if (vb.outcome === 'draw') return `Draw${tag}`;
+    if (vb.outcome === 'over') return `Over${point}${tag}`;
+    if (vb.outcome === 'under') return `Under${point}${tag}`;
+    return `${vb.outcome ?? '?'}${tag}`;
   };
 
   const availableLeagues = useMemo(() => {
@@ -201,7 +202,7 @@ export function PolymarketPage() {
   const activeValueBets = useMemo(() => {
     let result = valueBets.filter(vb => {
       const ttk = getTTKFromNow(vb.start_time);
-      if (ttk !== null && ttk <= 1 / 60) return false;
+      if (ttk !== null && (ttk <= 1 / 60 || ttk > MAX_TTK_HOURS)) return false;
       if (placedKeys.has(getPlacedKey(vb))) return false;
       return true;
     });

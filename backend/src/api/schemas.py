@@ -154,6 +154,7 @@ class ProfileUpdate(BaseModel):
     bonus_enabled: Optional[bool] = None
     bonus_deposit: Optional[float] = None
     total_deposited: Optional[float] = None
+    total_withdrawn: Optional[float] = None
     color: Optional[str] = None
 
 
