@@ -304,6 +304,7 @@ async def list_bets(
             "predicted_result": _predict_result(b, ev) if ev else None,
             "provider_site_url": site_urls.get(b.provider_id),
             "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
+            "bet_type": b.bet_type,
         })
 
     return {
@@ -346,6 +347,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             fair_odds_at_placement=bet.fair_odds_at_placement,
             boost_event=bet.boost_event,
             boost_title=bet.boost_title,
+            bet_type=bet.bet_type,
         )
 
         if "error" in result:
@@ -448,6 +450,7 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
                 bonus_type=leg.bonus_type,
                 utility_score=leg.utility_score,
                 selection_probability=leg.selection_probability,
+                bet_type=leg.bet_type,
             )
 
             if "error" in result:

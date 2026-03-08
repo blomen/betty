@@ -9,7 +9,7 @@ import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { PolymarketValueBet, Bet } from '@/types';
 
-const polyBetFilter = (b: Bet) => b.provider === 'polymarket';
+const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
 
 type PolyTab = 'value' | 'mybets';
 
@@ -150,6 +150,7 @@ export function PolymarketPage() {
         is_bonus: false,
         utility_score: vb.edge_pct != null ? vb.edge_pct / 100 : undefined,
         selection_probability: vb.fair_odds > 1 ? 1 / vb.fair_odds : undefined,
+        bet_type: 'polymarket',
       });
       const outcomeLabel = resolveOutcome(vb);
       const confirmedStake = vb.final_stake_usdc ?? 0;

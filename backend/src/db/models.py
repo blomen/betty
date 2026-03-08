@@ -164,6 +164,7 @@ class Bet(Base):
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
     point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
+    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost"
 
     # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
     stake = Column(Float, nullable=False)       # 100.00

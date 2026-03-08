@@ -17,7 +17,8 @@ import type { Opportunity, Provider, Bet, ProviderExposure } from '@/types';
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
 const softBetFilter = (b: Bet) =>
-  b.provider !== 'pinnacle' && b.provider !== 'polymarket';
+  b.bet_type === 'value' || b.bet_type === 'boost' ||
+  (b.bet_type == null && b.provider !== 'pinnacle' && b.provider !== 'polymarket');
 
 interface GroupedOpp {
   key: string;
@@ -409,6 +410,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         fair_odds_at_placement: special.llm_fair_odds ?? undefined,
         boost_event: special.event ?? undefined,
         boost_title: special.llm_title ?? special.title,
+        bet_type: 'boost',
       });
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -485,6 +487,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         bonus_type: useFreebet ? 'freebet' : undefined,
         utility_score: placedEdge,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
+        bet_type: 'value',
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';

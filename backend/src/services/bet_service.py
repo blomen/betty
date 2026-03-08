@@ -62,6 +62,7 @@ class BetService:
         fair_odds_at_placement: float | None = None,
         boost_event: str | None = None,
         boost_title: str | None = None,
+        bet_type: str | None = None,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -170,6 +171,7 @@ class BetService:
             boost_event=boost_event,
             boost_title=boost_title,
             confirmation_id=confirmation_id,
+            bet_type=bet_type,
         )
 
         # Deduct stake from balance (unless free bet)

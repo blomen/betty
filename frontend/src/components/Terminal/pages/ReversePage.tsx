@@ -11,7 +11,7 @@ import type { Opportunity, Bet } from '@/types';
 
 type ReverseTab = 'reverse' | 'mybets';
 
-const reverseBetFilter = (b: Bet) => b.provider === 'pinnacle';
+const reverseBetFilter = (b: Bet) => b.bet_type === 'reverse' || (b.bet_type == null && b.provider === 'pinnacle');
 
 export function ReversePage() {
   const freshness = useExtractionFreshness();
@@ -179,6 +179,7 @@ export function ReversePage() {
         point: opp.point,
         utility_score: opp.edge_pct != null ? opp.edge_pct / 100 : undefined,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
+        bet_type: 'reverse',
       });
 
       const outcomeLabel = resolveOutcome(opp);

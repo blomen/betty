@@ -93,7 +93,7 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
 
 // ── Charts ───────────────────────────────────────────────────────────
 
-function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll: number }) {
+function BankrollChart({ bets, currentBankroll, totalDeposited }: { bets: Bet[]; currentBankroll: number; totalDeposited?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
@@ -171,7 +171,8 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   }
 
   const profit = lastVal - firstVal;
-  const profitPct = ((profit / firstVal) * 100).toFixed(1);
+  const roiBase = totalDeposited && totalDeposited > 0 ? totalDeposited : firstVal;
+  const profitPct = ((profit / roiBase) * 100).toFixed(1);
 
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
@@ -588,7 +589,7 @@ export function BetsPage() {
       <div className="border-l-2 border-tabBets">
         <div className="grid grid-cols-2 gap-px bg-border border border-border">
           {bets.length > 0 && currentBankroll > 0 && (
-            <BankrollChart bets={bets} currentBankroll={currentBankroll} />
+            <BankrollChart bets={bets} currentBankroll={currentBankroll} totalDeposited={bankrollStats?.total_deposited} />
           )}
           <CLVChart bets={bets} />
         </div>

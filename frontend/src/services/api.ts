@@ -510,6 +510,7 @@ export const api = {
     params.set('providers', providers.join(','));
     params.set('major_only', String(majorOnly));
     params.set('limit', String(limit));
+    params.set('_t', String(Date.now())); // Cache-bust: live scan, never cache
     return fetchJson(`/opportunities/dutch-workflow?${params}`);
   },
 
@@ -539,6 +540,7 @@ export const api = {
     fair_odds_at_placement?: number;
     boost_event?: string;
     boost_title?: string;
+    bet_type?: string;
   }): Promise<{ success: boolean; bet_id: number }> {
     return fetchWithRetry('/bets', {
       method: 'POST',
@@ -560,6 +562,7 @@ export const api = {
     is_bonus?: boolean;
     utility_score?: number;
     selection_probability?: number;
+    bet_type?: string;
   }[]): Promise<{
     success: boolean;
     placed_count: number;

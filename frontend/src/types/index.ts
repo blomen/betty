@@ -226,6 +226,7 @@ export interface Bet {
   provider_site_url?: string | null;
   boost_title?: string | null;
   predicted_result?: string | null;
+  bet_type?: string | null;  // "value", "dutch", "reverse", "polymarket", "boost"
 }
 
 // Profile
@@ -480,6 +481,7 @@ export interface BetPlacementData {
   stake: number;
   is_bonus?: boolean;
   bonus_type?: string;
+  bet_type?: string;
 }
 
 // Polymarket Matched Events

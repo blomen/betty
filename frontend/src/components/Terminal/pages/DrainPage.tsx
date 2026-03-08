@@ -1,20 +1,12 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness, useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
-import { MyBetsSection } from '../MyBetsSection';
-import { TabIcon, TAB_COLORS } from '../TabBar';
-import { DrainPage } from './DrainPage';
-import type { Provider, Bet } from '@/types';
-
-type DutchTab = 'dutch' | 'drain' | 'mybets';
-
-const dutchBetFilter = (b: Bet) => b.bet_type === 'dutch';
-const drainBetFilter = (b: Bet) => b.bet_type === 'drain';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import type { Provider } from '@/types';
 
 interface DutchLeg {
   outcome: string;
@@ -49,21 +41,56 @@ interface DutchOpp {
   legs?: DutchLeg[];
 }
 
-interface DutchPageProps {
+interface DrainPageProps {
   providers: Provider[];
 }
 
 const MAX_ROWS = 50;
+const DRAIN_SETTINGS_KEY = 'drain-settings';
 
-export function DutchPage({ providers }: DutchPageProps) {
+function loadDrainSettings(): { providers: string[]; stake: string; limitedOnly: boolean } | null {
+  try {
+    const raw = localStorage.getItem(DRAIN_SETTINGS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function saveDrainSettings(providers: Set<string>, stake: string, limitedOnly: boolean) {
+  if (providers.size === 0 && !stake) {
+    localStorage.removeItem(DRAIN_SETTINGS_KEY);
+  } else {
+    localStorage.setItem(DRAIN_SETTINGS_KEY, JSON.stringify({
+      providers: Array.from(providers), stake, limitedOnly,
+    }));
+  }
+}
+
+export function DrainPage({ providers }: DrainPageProps) {
   const freshness = useExtractionFreshness();
-  const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
-  const [opportunities, setOpportunities] = useState<DutchOpp[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
-  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+
+  // Workflow panel state — initialized from localStorage
+  const saved = useRef(loadDrainSettings());
+  const [workflowProviders, setWorkflowProviders] = useState<Set<string>>(
+    () => new Set(saved.current?.providers ?? [])
+  );
+  const [workflowStake, setWorkflowStake] = useState<string>(
+    () => saved.current?.stake ?? ''
+  );
+  const [workflowMajorOnly, setWorkflowMajorOnly] = useState(
+    () => saved.current?.limitedOnly ?? false
+  );
+  const [workflowResults, setWorkflowResults] = useState<DutchOpp[] | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+
+  // Persist settings to localStorage on change
+  useEffect(() => {
+    saveDrainSettings(workflowProviders, workflowStake, workflowMajorOnly);
+  }, [workflowProviders, workflowStake, workflowMajorOnly]);
+
+  // League filter
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -79,57 +106,69 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
-  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [drainBetsCount, setDrainBetsCount] = useState<number | null>(null);
 
-  useEffect(() => {
-    api.getBets('pending', 500).then(({ bets }) => {
-      setMyBetsCount(bets.filter(dutchBetFilter).length);
-      setDrainBetsCount(bets.filter(drainBetFilter).length);
-    }).catch(() => {});
-  }, []);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const handleScan = useCallback(async () => {
+    if (workflowProviders.size === 0) return;
+    setIsScanning(true);
+    setSelectedOpp(null);
+    setOddsOverride({});
+    setAnchorStake({});
+    setPlacedLegs({});
     try {
-      const dutchRes = await api.getOpportunities('dutch', true);
-      const all = dutchRes.opportunities as unknown as DutchOpp[];
-      setOpportunities(all);
+      const res = await api.getDutchWorkflow(
+        Array.from(workflowProviders),
+        workflowMajorOnly,
+        MAX_ROWS,
+      );
+      const opps = (res.opportunities ?? []) as DutchOpp[];
+      // Auto-apply anchor stake to the first leg matching a workflow provider
+      const stakeVal = parseFloat(workflowStake);
+      if (!isNaN(stakeVal) && stakeVal > 0) {
+        const anchors: Record<number, { legIdx: number; stake: number }> = {};
+        for (const opp of opps) {
+          const legs = opp.legs || [];
+          const idx = legs.findIndex(l => workflowProviders.has(l.provider));
+          if (idx >= 0) anchors[opp.id] = { legIdx: idx, stake: stakeVal };
+        }
+        setAnchorStake(anchors);
+      }
+      setWorkflowResults(opps);
     } catch (err) {
-      console.error('Failed to fetch dutch opportunities:', err);
+      console.error('Workflow scan failed:', err);
     } finally {
-      setIsLoading(false);
+      setIsScanning(false);
     }
-  }, []);
+  }, [workflowProviders, workflowMajorOnly, workflowStake]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
-  useRefreshOnExtraction(fetchData);
-
-  const tiersProgress = useTiersProgress();
-  const anyExtracting = tiersProgress?.any_running ?? false;
+  // Auto-scan on mount if settings are saved
+  const didAutoScan = useRef(false);
   useEffect(() => {
-    if (!anyExtracting) return;
-    const id = setInterval(fetchData, 30_000);
-    return () => clearInterval(id);
-  }, [anyExtracting, fetchData]);
+    if (!didAutoScan.current && workflowProviders.size > 0) {
+      didAutoScan.current = true;
+      handleScan();
+    }
+  }, [handleScan, workflowProviders.size]);
+
+  // Re-scan when soft extraction completes
+  useRefreshOnExtraction(() => {
+    if (workflowProviders.size > 0) handleScan();
+  });
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
-    for (const opp of opportunities) {
-      for (const leg of opp.legs || []) {
-        if (!leg.is_sharp) set.add(leg.provider);
-      }
+    for (const p of providers) {
+      if (p.is_enabled) set.add(p.id);
     }
     return Array.from(set).sort();
-  }, [opportunities]);
+  }, [providers]);
 
   const availableLeagues = useMemo(() => {
     const set = new Set<string>();
-    for (const opp of opportunities) {
+    for (const opp of workflowResults ?? []) {
       if (opp.league) set.add(opp.league);
     }
     return Array.from(set).sort();
-  }, [opportunities]);
+  }, [workflowResults]);
 
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
@@ -141,13 +180,8 @@ export function DutchPage({ providers }: DutchPageProps) {
     providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
   const filtered = useMemo(() => {
-    let result = opportunities;
+    let result = workflowResults ?? [];
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
-    if (selectedProviders.size > 0) {
-      result = result.filter(d =>
-        (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))
-      );
-    }
     if (selectedLeagues.size > 0) {
       result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
     }
@@ -164,25 +198,17 @@ export function DutchPage({ providers }: DutchPageProps) {
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, selectedProviders, selectedLeagues, search]);
+  }, [workflowResults, selectedLeagues, search]);
 
-  type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
-  const dutchSortExtractors = useMemo(() => ({
+  type DrainSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
+  const drainSortExtractors = useMemo(() => ({
     edge:   (d: DutchOpp) => d.edge_pct ?? 0,
     stake:  (d: DutchOpp) => d.total_stake ?? 0,
     profit: (d: DutchOpp) => d.guaranteed_profit_pct ?? d.profit_pct ?? 0,
     ttk:    (d: DutchOpp) => getTTKFromNow(d.starts_at) ?? 99999,
   }), []);
-  const { sorted: sortedDutch, sort: dutchSort, toggle: toggleDutchSort } =
-    useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' });
-
-  const toggleProvider = (p: string) => {
-    setSelectedProviders(prev => {
-      const next = new Set(prev);
-      if (next.has(p)) next.delete(p); else next.add(p);
-      return next;
-    });
-  };
+  const { sorted, sort: drainSort, toggle: toggleDrainSort } =
+    useTableSort<DutchOpp, DrainSortCol>(filtered, drainSortExtractors, { column: 'edge', direction: 'desc' });
 
   const toggleLeague = (l: string) => {
     setSelectedLeagues(prev => {
@@ -244,7 +270,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
-        bet_type: 'dutch',
+        bet_type: 'drain',
       });
       setPlacedLegs(prev => {
         const existing = prev[opp.id] || new Set<number>();
@@ -256,7 +282,6 @@ export function DutchPage({ providers }: DutchPageProps) {
       const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point);
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
-      fetchData();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bet';
       setBetError(msg);
@@ -286,7 +311,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
-        bet_type: 'dutch',
+        bet_type: 'drain',
       };
     }).filter(l => l.stake > 0);
 
@@ -324,7 +349,6 @@ export function DutchPage({ providers }: DutchPageProps) {
       }
 
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 8000);
-      fetchData();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bets';
       setBetError(msg);
@@ -353,47 +377,6 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
-          Dutch
-        </h2>
-        {activeTab === 'dutch' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
-        )}
-      </div>
-
-      {/* Sub-tab selector */}
-      <div className="flex gap-1 border-b border-border">
-        {([
-          { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
-          { id: 'drain' as DutchTab, label: 'Drain', count: drainBetsCount },
-          { id: 'mybets' as DutchTab, label: 'My Bets', count: myBetsCount },
-        ]).map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
-              activeTab === tab.id
-                ? 'border-success text-success'
-                : 'border-transparent text-muted hover:text-text'
-            }`}
-          >
-            {tab.label}
-            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'drain' && (
-        <DrainPage providers={providers} />
-      )}
-
-      {activeTab === 'mybets' && (
-        <MyBetsSection filter={dutchBetFilter} colorKey="dutch" />
-      )}
-
-      {activeTab === 'dutch' && <>
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
@@ -408,43 +391,89 @@ export function DutchPage({ providers }: DutchPageProps) {
         </div>
       )}
 
-      {/* Filters */}
-      {opportunities.length > 0 && (
-        <FilterBar>
+      {/* Workflow panel */}
+      <div className="flex items-center gap-3 px-3 py-2 bg-panel border border-border text-xs">
+        <MultiSelectDropdown
+          label="Anchor"
+          options={availableProviders}
+          selected={workflowProviders}
+          onToggle={(p) => setWorkflowProviders(prev => {
+            const next = new Set(prev);
+            if (next.has(p)) next.delete(p); else next.add(p);
+            return next;
+          })}
+          onClear={() => setWorkflowProviders(new Set())}
+          format={formatProviderWithPlatform}
+          accentColor="success"
+        />
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            placeholder="Stake"
+            value={workflowStake}
+            onChange={e => setWorkflowStake(e.target.value)}
+            className="w-20 bg-bg border border-border text-text text-xs px-2 py-1 text-right focus:outline-none focus:border-success"
+          />
+          <span className="text-muted2">kr</span>
+        </div>
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={workflowMajorOnly}
+            onChange={e => setWorkflowMajorOnly(e.target.checked)}
+            className="accent-success"
+          />
+          <span className="text-muted">Limited</span>
+        </label>
+        <button
+          onClick={handleScan}
+          disabled={workflowProviders.size === 0 || isScanning}
+          className="px-3 py-1 bg-success text-bg text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+        >
+          {isScanning ? 'Scanning...' : 'Scan'}
+        </button>
+        {workflowResults && (
+          <button
+            onClick={() => { setWorkflowResults(null); setAnchorStake({}); setOddsOverride({}); setPlacedLegs({}); }}
+            className="text-muted2 hover:text-text text-[10px]"
+            title="Clear workflow results"
+          >
+            clear
+          </button>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {workflowResults && (
+            <span className="text-muted2">{sorted.length} results</span>
+          )}
           <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
-          {availableProviders.length > 0 && (
-            <MultiSelectDropdown
-              label="Provider"
-              options={availableProviders}
-              selected={selectedProviders}
-              onToggle={toggleProvider}
-              onClear={() => setSelectedProviders(new Set())}
-              format={formatProviderWithPlatform}
-              accentColor="success"
-            />
-          )}
-          {availableLeagues.length > 0 && (
-            <MultiSelectDropdown
-              label="League"
-              options={availableLeagues}
-              selected={selectedLeagues}
-              onToggle={toggleLeague}
-              onClear={() => setSelectedLeagues(new Set())}
-              accentColor="success"
-            />
-          )}
+        </div>
+      </div>
+
+      {/* League filter */}
+      {workflowResults && availableLeagues.length > 0 && (
+        <FilterBar>
+          <MultiSelectDropdown
+            label="League"
+            options={availableLeagues}
+            selected={selectedLeagues}
+            onToggle={toggleLeague}
+            onClear={() => setSelectedLeagues(new Set())}
+            accentColor="success"
+          />
         </FilterBar>
       )}
 
-      {isLoading && opportunities.length === 0 ? (
+      {isScanning ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          Loading...
+          Scanning for drain opportunities...
         </div>
-      ) : sortedDutch.length === 0 ? (
+      ) : !workflowResults ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {opportunities.length === 0
-            ? 'No dutch opportunities found. Run extraction first.'
-            : 'No matches for current filters.'}
+          Select anchor providers and scan to find drain opportunities.
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          No drain opportunities found for selected providers.
         </div>
       ) : (
         <div className="border-l-2 border-success">
@@ -453,18 +482,18 @@ export function DutchPage({ providers }: DutchPageProps) {
               <tr>
                 <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Providers</th>
-                <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="stake" label="Stake" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="profit" label="Profit" sort={dutchSort} onToggle={toggleDutchSort} />
+                <SortableHeader column="ttk" label="TTK" sort={drainSort} onToggle={toggleDrainSort} />
+                <SortableHeader column="edge" label="Edge" sort={drainSort} onToggle={toggleDrainSort} />
+                <SortableHeader column="stake" label="Stake" sort={drainSort} onToggle={toggleDrainSort} />
+                <SortableHeader column="profit" label="Profit" sort={drainSort} onToggle={toggleDrainSort} />
               </tr>
             </thead>
             <tbody>
-              {sortedDutch.map((opp, idx) => {
+              {sorted.map((opp, idx) => {
                 const isSelected = selectedOpp === idx;
                 const gp = opp.guaranteed_profit_pct ?? opp.profit_pct ?? 0;
                 const legs = opp.legs || [];
-                const totalStake = opp.total_stake || 0;
+                const { totalStake: effTotal } = getEffectiveStakes(opp);
                 const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
 
                 return (
@@ -507,7 +536,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                         {opp.edge_pct != null ? `${opp.edge_pct >= 0 ? '+' : ''}${opp.edge_pct.toFixed(1)}%` : '-'}
                       </td>
                       <td className="text-right text-text text-sm font-medium">
-                        {totalStake > 0 ? `${totalStake.toFixed(0)} kr` : '-'}
+                        {effTotal > 0 ? `${effTotal.toFixed(0)} kr` : '-'}
                       </td>
                       <td className={`text-right font-semibold text-sm ${gp >= 0 ? 'text-success' : 'text-error'}`}>
                         {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
@@ -667,8 +696,8 @@ export function DutchPage({ providers }: DutchPageProps) {
                                 <div>
                                   <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
                                   <span className={`font-medium ${hasAnchor ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
-                                  {hasAnchor && totalStake > 0 && (
-                                    <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
+                                  {hasAnchor && (opp.total_stake ?? 0) > 0 && (
+                                    <span className="text-muted2 text-[10px] ml-1">(was {(opp.total_stake ?? 0).toFixed(0)})</span>
                                   )}
                                 </div>
                                 {gp !== 0 && (
@@ -708,7 +737,6 @@ export function DutchPage({ providers }: DutchPageProps) {
           </table>
         </div>
       )}
-      </>}
     </div>
   );
 }
