@@ -225,11 +225,16 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
     browser_configs = [c for c in boost_configs if c["type"] not in api_types]
 
     # Run API-based scrapers first (fast, no browser)
+    last_altenar = False
     for cfg in api_configs:
         provider_id = cfg["primary_provider"]
         boost_url = cfg["url"]
         shared = cfg["shared_with"]
         t0 = time.monotonic()
+
+        # Delay between consecutive Altenar scrapers to avoid rate limiting
+        if cfg["type"] == "altenar" and last_altenar:
+            await asyncio.sleep(3)
 
         if verbose:
             print(f"  [{cfg['name']}] {provider_id}: {boost_url or cfg.get('integration','')} (type={cfg['type']})")
@@ -268,6 +273,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
             ))
             if verbose:
                 print(f"  {provider_id} failed: {e}")
+        last_altenar = cfg["type"] == "altenar"
 
     # Run browser-based scrapers (Gecko V2 etc.)
     if browser_configs:
