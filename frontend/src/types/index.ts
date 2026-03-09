@@ -632,6 +632,37 @@ export interface PolyMyBetsResponse {
   stats: PolyMyBetsStats;
 }
 
+// Polymarket Rewards
+export interface PolyRewardHedge {
+  provider: string;
+  odds: number;
+}
+
+export interface PolymarketRewardMarket {
+  event_id: string;
+  home_team: string;
+  away_team: string;
+  display_home?: string | null;
+  display_away?: string | null;
+  sport: string;
+  league: string | null;
+  start_time: string | null;
+  rewards_daily_rate: number;  // 0.0 — not available from API
+  rewards_max_spread: number;  // Max cents from midpoint to earn rewards
+  rewards_min_size: number;    // Min shares for eligibility
+  competitive: number;         // 0-1 float (lower = less competition = more rewards)
+  poly_prices: Record<string, number>;
+  pinnacle_fair_odds: Record<string, number>;
+  best_hedge_odds: Record<string, PolyRewardHedge>;
+  event_slug: string | null;
+  polymarket_url: string | null;
+}
+
+export interface PolymarketRewardsResponse {
+  rewards: PolymarketRewardMarket[];
+  count: number;
+}
+
 // Bonus Arbitrage Types (True Arb with Hedges)
 export interface BonusArbLeg {
   outcome: string;

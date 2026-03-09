@@ -295,7 +295,7 @@ async def list_bets(
             "display_away": ev.display_away if ev else None,
             "sport": ev.sport if ev else (sp.sport if sp and sp.sport != "unknown" else None),
             "league": ev.league if ev else (sp.league if sp else None),
-            "start_time": (b.start_time.isoformat() + "Z") if b.start_time else ((ev.start_time.isoformat() + "Z") if ev and ev.start_time else (sp.event_time if sp else None)),
+            "start_time": (b.start_time.isoformat() + "Z") if b.start_time else ((ev.start_time.isoformat() + "Z") if ev and ev.start_time else None),
             "home_score": ev.home_score if ev else None,
             "away_score": ev.away_score if ev else None,
             "match_status": ev.match_status if ev else None,
@@ -348,6 +348,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
             boost_event=bet.boost_event,
             boost_title=bet.boost_title,
             bet_type=bet.bet_type,
+            start_time_str=bet.start_time,
         )
 
         if "error" in result:

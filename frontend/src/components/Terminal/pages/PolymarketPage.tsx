@@ -7,11 +7,11 @@ import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { PolymarketValueBet, Bet } from '@/types';
+import type { PolymarketValueBet, PolymarketRewardMarket, Bet } from '@/types';
 
 const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
 
-type PolyTab = 'value' | 'mybets';
+type PolyTab = 'value' | 'rewards' | 'mybets';
 
 export function PolymarketPage() {
   const freshness = useExtractionFreshness();
@@ -43,6 +43,13 @@ export function PolymarketPage() {
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
+
+  // Rewards state
+  const [rewards, setRewards] = useState<PolymarketRewardMarket[]>([]);
+  const [rewardsLoading, setRewardsLoading] = useState(false);
+  const [rewardsFetched, setRewardsFetched] = useState(false);
+  const [rewardsSearch, setRewardsSearch] = useState('');
+  const [selectedRewardSports, setSelectedRewardSports] = useState<Set<string>>(new Set());
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -236,6 +243,84 @@ export function PolymarketPage() {
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
     useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
 
+  // ──────────────────── Rewards ────────────────────
+
+  const fetchRewards = useCallback(async () => {
+    setRewardsLoading(true);
+    try {
+      const res = await api.getPolymarketRewards(0, undefined, 100);
+      setRewards(res.rewards);
+      setRewardsFetched(true);
+    } catch (err) {
+      console.error('Failed to fetch rewards:', err);
+    } finally {
+      setRewardsLoading(false);
+    }
+  }, []);
+
+  // Lazy-load rewards on first tab click
+  useEffect(() => {
+    if (activeTab === 'rewards' && !rewardsFetched) {
+      fetchRewards();
+    }
+  }, [activeTab, rewardsFetched, fetchRewards]);
+
+  const availableRewardSports = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rewards) {
+      if (r.sport) set.add(r.sport);
+    }
+    return Array.from(set).sort();
+  }, [rewards]);
+
+  const toggleRewardSport = (s: string) => {
+    setSelectedRewardSports(prev => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s); else next.add(s);
+      return next;
+    });
+  };
+
+  const filteredRewards = useMemo(() => {
+    let result = rewards.filter(r => {
+      const ttk = getTTKFromNow(r.start_time);
+      if (ttk !== null && ttk <= 0) return false;
+      return true;
+    });
+    if (selectedRewardSports.size > 0) {
+      result = result.filter(r => selectedRewardSports.has(r.sport));
+    }
+    if (rewardsSearch.trim()) {
+      const q = rewardsSearch.trim().toLowerCase();
+      result = result.filter(r =>
+        (r.home_team?.toLowerCase().includes(q)) ||
+        (r.away_team?.toLowerCase().includes(q)) ||
+        (r.display_home?.toLowerCase().includes(q)) ||
+        (r.display_away?.toLowerCase().includes(q)) ||
+        (r.sport?.toLowerCase().includes(q)) ||
+        (r.league?.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [rewards, selectedRewardSports, rewardsSearch]);
+
+  type RewardSortCol = 'comp' | 'spread' | 'min' | 'ttk';
+  const rewardSortExtractors = useMemo(() => ({
+    comp:   (r: PolymarketRewardMarket) => r.competitive,
+    spread: (r: PolymarketRewardMarket) => r.rewards_max_spread,
+    min:    (r: PolymarketRewardMarket) => r.rewards_min_size,
+    ttk:    (r: PolymarketRewardMarket) => getTTKFromNow(r.start_time) ?? 99999,
+  }), []);
+  const { sorted: sortedRewards, sort: rewardSort, toggle: toggleRewardSort } =
+    useTableSort<PolymarketRewardMarket, RewardSortCol>(filteredRewards, rewardSortExtractors, { column: 'comp', direction: 'asc' });
+
+  const compBadge = (comp: number) => {
+    // 0-1 scale: lower = less competition = better for rewards
+    if (comp < 0.3) return <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success">{(comp * 100).toFixed(0)}%</span>;
+    if (comp < 0.7) return <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning">{(comp * 100).toFixed(0)}%</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error">{(comp * 100).toFixed(0)}%</span>;
+  };
+
   // ──────────────────── Render ────────────────────
 
   return (
@@ -247,7 +332,10 @@ export function PolymarketPage() {
           Polymarket
         </h2>
         {activeTab === 'value' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabBonus" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabPolymarket" />
+        )}
+        {activeTab === 'rewards' && (
+          <SearchInput value={rewardsSearch} onChange={setRewardsSearch} placeholder="Search rewards..." accentColor="tabPolymarket" />
         )}
       </div>
 
@@ -255,6 +343,7 @@ export function PolymarketPage() {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
+          { id: 'rewards' as PolyTab, label: 'Rewards', count: rewardsFetched ? sortedRewards.length : null },
           { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
@@ -276,6 +365,110 @@ export function PolymarketPage() {
       {activeTab === 'mybets' && (
         <MyBetsSection filter={polyBetFilter} colorKey="polymarket" />
       )}
+
+      {/* ═══════════════ REWARDS TAB ═══════════════ */}
+      {activeTab === 'rewards' && <>
+        <FilterBar>
+          {availableRewardSports.length > 1 && (
+            <MultiSelectDropdown
+              label="Sport"
+              options={availableRewardSports}
+              selected={selectedRewardSports}
+              onToggle={toggleRewardSport}
+              onClear={() => setSelectedRewardSports(new Set())}
+              accentColor="tabPolymarket"
+            />
+          )}
+          <button
+            onClick={fetchRewards}
+            disabled={rewardsLoading}
+            className="px-2 py-1 text-xs text-muted hover:text-text border border-border hover:border-tabPolymarket/50 transition-colors disabled:opacity-50"
+          >
+            {rewardsLoading ? '...' : '↻'}
+          </button>
+        </FilterBar>
+
+        {rewardsLoading && rewards.length === 0 ? (
+          <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading rewards...</div>
+        ) : sortedRewards.length === 0 ? (
+          <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No Polymarket reward markets matched to Pinnacle.</div>
+        ) : (
+          <div className="border-l-2 border-tabPolymarket">
+          <table className="sq">
+            <thead>
+              <tr>
+                <th style={{ width: '30%' }}>Event</th>
+                <SortableHeader column="comp" label="Comp" sort={rewardSort} onToggle={toggleRewardSort} />
+                <SortableHeader column="spread" label="Spread" sort={rewardSort} onToggle={toggleRewardSort} />
+                <SortableHeader column="min" label="Min$" sort={rewardSort} onToggle={toggleRewardSort} />
+                <th className="text-right">Poly Prices</th>
+                <th className="text-right">Best Hedge</th>
+                <SortableHeader column="ttk" label="TTK" sort={rewardSort} onToggle={toggleRewardSort} />
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRewards.map(r => {
+                const outcomes = Object.keys(r.poly_prices).length > 0 ? Object.keys(r.poly_prices) : Object.keys(r.pinnacle_fair_odds);
+                return (
+                  <tr key={r.event_id}>
+                    <td>
+                      <div className="flex items-center gap-2 min-w-0">
+                        {r.event_slug ? (
+                          <a href={r.polymarket_url ?? `https://polymarket.com/event/${r.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors">
+                            {displayTeamName(r.home_team, r.display_home)} vs {displayTeamName(r.away_team, r.display_away)}
+                          </a>
+                        ) : (
+                          <span className="text-text text-sm truncate">{displayTeamName(r.home_team, r.display_home)} vs {displayTeamName(r.away_team, r.display_away)}</span>
+                        )}
+                      </div>
+                      <div className="text-muted2 text-[11px]">
+                        {r.sport}{r.league ? ` · ${r.league}` : ''}{' · '}{formatDateTime(r.start_time)}
+                      </div>
+                    </td>
+                    <td className="text-right">{compBadge(r.competitive)}</td>
+                    <td className="text-right text-sm text-muted">{r.rewards_max_spread}¢</td>
+                    <td className="text-right text-sm text-muted">{r.rewards_min_size}</td>
+                    <td className="text-right text-sm">
+                      <div className="flex flex-col items-end gap-0.5">
+                        {outcomes.map(o => {
+                          const price = r.poly_prices[o];
+                          return price != null ? (
+                            <span key={o} className="text-muted">
+                              <span className="text-muted2 text-[10px]">{o === 'home' ? 'H' : o === 'away' ? 'A' : 'D'}</span>{' '}
+                              {Math.round(price * 100)}¢
+                            </span>
+                          ) : null;
+                        })}
+                      </div>
+                    </td>
+                    <td className="text-right text-sm">
+                      <div className="flex flex-col items-end gap-0.5">
+                        {outcomes.map(o => {
+                          const hedge = r.best_hedge_odds[o];
+                          const fair = r.pinnacle_fair_odds[o];
+                          return (
+                            <span key={o} className="text-muted">
+                              {hedge ? (
+                                <><span className="text-text">{hedge.odds.toFixed(2)}</span> <span className="text-muted2 text-[10px]">{hedge.provider}</span></>
+                              ) : fair ? (
+                                <span className="text-muted2">{fair.toFixed(2)} <span className="text-[10px]">pin</span></span>
+                              ) : '-'}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td className="text-right">
+                      {(() => { const ttk = getTTKFromNow(r.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        )}
+      </>}
 
       {/* ═══════════════ VALUE BETS TAB ═══════════════ */}
       {activeTab === 'value' && <>

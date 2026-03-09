@@ -721,9 +721,8 @@ def _parse_gecko_time(time_info: str) -> Optional[str]:
     if hm_match:
         h, m = int(hm_match.group(1)), int(hm_match.group(2))
         dt = now_cet.replace(hour=h, minute=m, second=0, microsecond=0)
-        # If time already passed today, assume tomorrow
-        if dt <= now_cet:
-            dt += timedelta(days=1)
+        # Don't bump to tomorrow — if time passed, it's today's event (in progress).
+        # filter_expired() downstream handles removing started events.
         return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     # "YYYY-MM-DD..." — full date string

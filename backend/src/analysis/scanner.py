@@ -685,18 +685,36 @@ class OpportunityScanner:
                     best_soft_odds = po["odds"]
                     best_soft_provider = po["provider"]
 
-            # Use soft book if it beats fair odds; otherwise fall back to fair odds (0% edge)
+            # Use soft book if it beats fair odds; otherwise fall back to Pinnacle fair (0% edge)
             if best_soft_provider and best_soft_odds > fair_odds:
                 best_odds = best_soft_odds
                 best_provider = best_soft_provider
                 is_sharp = False
             elif anchor_provider and best_soft_provider:
-                # Anchor mode: use best soft even below fair (negative edge)
-                best_odds = best_soft_odds
-                best_provider = best_soft_provider
-                is_sharp = False
+                # Anchor mode: only keep -EV soft if it IS the anchor provider
+                # (needed for balance draining). Non-anchor -EV legs use Pinnacle fair.
+                anchor_odds = None
+                for po in provider_odds_list:
+                    if po["provider"] == anchor_provider:
+                        anchor_odds = po["odds"]
+                        break
+                if anchor_odds and best_soft_provider == anchor_provider:
+                    # Anchor IS the best soft for this outcome — keep it
+                    best_odds = best_soft_odds
+                    best_provider = best_soft_provider
+                    is_sharp = False
+                elif anchor_odds:
+                    # Anchor has odds but isn't the best — force anchor for draining
+                    best_odds = anchor_odds
+                    best_provider = anchor_provider
+                    is_sharp = False
+                else:
+                    # Anchor has no odds for this outcome — use Pinnacle fair (0% edge)
+                    best_odds = fair_odds
+                    best_provider = "pinnacle"
+                    is_sharp = True
             else:
-                # No soft book beats fair odds — use fair odds (0% edge coverage)
+                # No soft book beats fair odds — use Pinnacle fair (0% edge)
                 best_odds = fair_odds
                 best_provider = "pinnacle"
                 is_sharp = True

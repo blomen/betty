@@ -426,7 +426,15 @@ class PolymarketRetriever(Retriever):
         for s, _ in spread_by_point.values():
             markets.append(s)
 
-        for t, _ in total_candidates:
+        # Deduplicate total markets per point — same event can have multiple
+        # O/U markets at the same line (e.g. one active, one dead 50/50).
+        # Keep highest-volume per point to avoid stale prices overwriting real ones.
+        total_by_point: dict[float, tuple] = {}
+        for t, vol in total_candidates:
+            pt = t["outcomes"][0]["point"] if t["outcomes"] else 0
+            if pt not in total_by_point or vol > total_by_point[pt][1]:
+                total_by_point[pt] = (t, vol)
+        for t, _ in total_by_point.values():
             markets.append(t)
 
         if not markets:

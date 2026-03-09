@@ -252,8 +252,8 @@ async function fetchWithRetry<T>(
 }
 
 // Legacy fetchJson for backward compatibility (uses retry internally)
-async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  return fetchWithRetry<T>(endpoint, options);
+async function fetchJson<T>(endpoint: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
+  return fetchWithRetry<T>(endpoint, options, DEFAULT_RETRIES, timeoutMs ?? DEFAULT_TIMEOUT_MS);
 }
 
 // ============ Extraction Progress Types ============
@@ -541,6 +541,7 @@ export const api = {
     boost_event?: string;
     boost_title?: string;
     bet_type?: string;
+    start_time?: string;
   }): Promise<{ success: boolean; bet_id: number }> {
     return fetchWithRetry('/bets', {
       method: 'POST',
@@ -638,6 +639,18 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/value?${params}`);
+  },
+
+  async getPolymarketRewards(
+    minDailyRate = 0,
+    sport?: string,
+    limit = 100
+  ): Promise<import('@/types').PolymarketRewardsResponse> {
+    const params = new URLSearchParams();
+    if (minDailyRate > 0) params.set('min_daily_rate', minDailyRate.toString());
+    if (sport) params.set('sport', sport);
+    params.set('limit', limit.toString());
+    return fetchJson(`/polymarket/rewards?${params}`, undefined, 60_000);
   },
 
   async getPolymarketMyBets(status?: string, limit = 100): Promise<import('@/types').PolyMyBetsResponse> {

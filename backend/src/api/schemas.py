@@ -88,6 +88,7 @@ class BetCreate(BaseModel):
     boost_event: Optional[str] = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
     boost_title: Optional[str] = None  # For boosts: LLM-simplified title at placement
     bet_type: Optional[str] = None  # "value", "dutch", "reverse", "polymarket", "boost"
+    start_time: Optional[str] = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
 
 
 class BatchBetLeg(BaseModel):

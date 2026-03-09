@@ -335,6 +335,21 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
+  const shortOutcome = (outcome: string, opp: DutchOpp): string => {
+    if (outcome === 'home') {
+      const name = displayTeamName(opp.home_team, opp.display_home) || '1';
+      return name.split(' ')[0].slice(0, 10);
+    }
+    if (outcome === 'away') {
+      const name = displayTeamName(opp.away_team, opp.display_away) || '2';
+      return name.split(' ')[0].slice(0, 10);
+    }
+    if (outcome === 'draw') return 'X';
+    if (outcome === 'over') return 'O';
+    if (outcome === 'under') return 'U';
+    return outcome;
+  };
+
   const marketLabel = (market: string): string => {
     if (market === 'moneyline') return 'ML';
     return market.toUpperCase();
@@ -494,9 +509,18 @@ export function DutchPage({ providers }: DutchPageProps) {
                       <td className="text-right text-muted text-sm">
                         <span className="inline-flex items-center gap-1.5 justify-end">
                           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
-                          {uniqueProviders.length <= 3
-                            ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
-                            : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
+                          {legs.length <= 3
+                            ? legs.map((leg, i) => (
+                              <span key={i}>
+                                {i > 0 && ' · '}
+                                {leg.is_sharp
+                                  ? <span className="text-muted2">PIN</span>
+                                  : <ProviderName name={leg.provider} />
+                                }
+                                <span className="text-muted2">:{shortOutcome(leg.outcome, opp)}</span>
+                              </span>
+                            ))
+                            : <><ProviderName name={legs.filter(l => !l.is_sharp)[0]?.provider || 'pinnacle'} /> <span className="text-muted2">+{legs.length - 1}</span></>
                           }
                         </span>
                       </td>

@@ -417,6 +417,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         boost_event: special.event ?? undefined,
         boost_title: special.llm_title ?? special.title,
         bet_type: 'boost',
+        start_time: special.event_time ?? undefined,
       });
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);

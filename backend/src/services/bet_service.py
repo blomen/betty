@@ -63,6 +63,7 @@ class BetService:
         boost_event: str | None = None,
         boost_title: str | None = None,
         bet_type: str | None = None,
+        start_time_str: str | None = None,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -147,12 +148,17 @@ class BetService:
                 except (ValueError, TypeError):
                     pass
 
-        # Resolve start_time: Event.start_time for regular bets, specials for boosts
+        # Resolve start_time: Event table > frontend-provided > specials fallback
         start_time = None
         if event_id:
             ev = self.db.query(Event).filter(Event.id == event_id).first()
             if ev and ev.start_time:
                 start_time = ev.start_time
+        if start_time is None and start_time_str:
+            try:
+                start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
         if start_time is None and bet_type == "boost" and outcome:
             sp = self.db.query(SpecialOdds).filter(SpecialOdds.title == outcome).first()
             if sp and sp.event_time:
