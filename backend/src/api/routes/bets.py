@@ -409,8 +409,10 @@ async def auto_settle_bets(db: Session = Depends(get_db)):
         try:
             factory = ExtractorFactory.get_instance()
             extractor = factory.get_extractor("polymarket")
-            async with extractor as source:
-                resolved = await source.fetch_resolved()
+            # Don't use `async with` — shared cached instance, closing kills
+            # the transport for the sharp tier running every minute.
+            await extractor.transport._ensure_session()
+            resolved = await extractor.fetch_resolved()
             fetch_error = None
             break
         except Exception as e:

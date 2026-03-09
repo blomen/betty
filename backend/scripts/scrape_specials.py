@@ -800,6 +800,35 @@ async def _scrape_gecko_boosts(
                 await asyncio.sleep(3)
                 break
 
+        # Wait for boost content to render inside the SPA.
+        # The OBG Angular SPA loads the root sports page first, then internally
+        # navigates to the boost tab. Fixed sleeps are unreliable — poll for the
+        # "Förut" text node which only appears once boost cards render.
+        for attempt in range(15):  # up to 15s
+            has_content = await target_frame.evaluate(r"""() => {
+                function checkForut(root) {
+                    if (!root) return false;
+                    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                    while (walker.nextNode()) {
+                        if (walker.currentNode.textContent.trim() === 'Förut') return true;
+                    }
+                    const elements = root.querySelectorAll('*');
+                    for (const el of elements) {
+                        if (el.shadowRoot && checkForut(el.shadowRoot)) return true;
+                    }
+                    return false;
+                }
+                return checkForut(document);
+            }""")
+            if has_content:
+                if verbose:
+                    print(f"    [{provider_id}] Boost content detected after {attempt + 1}s")
+                break
+            await asyncio.sleep(1)
+        else:
+            if verbose:
+                print(f"    [{provider_id}] Boost content not detected after 15s — may have 0 boosts")
+
         # Scroll incrementally to trigger lazy loading of all boost cards
         for i in range(12):
             await target_frame.evaluate(f"window.scrollTo(0, {(i + 1) * 500})")
@@ -899,8 +928,15 @@ async def _scrape_gecko_boosts(
             return cards;
         }""")
 
-        if verbose:
-            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM")
+        if verbose or len(raw_cards) == 0:
+            # Debug: dump frame info and line count when 0 cards
+            frame_info = f"frame={'iframe' if target_frame != page else 'main'}"
+            line_count = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).length; }")
+            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM ({frame_info}, {line_count} text lines)")
+            if len(raw_cards) == 0 and line_count > 0:
+                # Dump first 30 lines to see what the page actually contains
+                sample = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).slice(0, 50); }")
+                print(f"    [{provider_id}] First 50 lines: {sample}")
 
         # Convert raw cards to Special objects
         for card in raw_cards:
@@ -966,8 +1002,6 @@ async def _scrape_gecko_boosts(
             traceback.print_exc()
     finally:
         await page.close()
-
-    return boosts
 
     if verbose:
         with_orig = sum(1 for b in boosts if b.original_odds is not None)

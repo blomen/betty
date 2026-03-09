@@ -2,6 +2,7 @@ from typing import List, Any, Optional
 from datetime import datetime, timezone, timedelta
 import logging
 import json
+import re
 from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)

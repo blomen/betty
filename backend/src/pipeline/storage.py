@@ -442,6 +442,13 @@ def store_polymarket_event(
             if outcome_norm not in ('home', 'away', 'draw', 'over', 'under'):
                 continue
 
+            # When Polymarket lists teams in opposite order from canonical event,
+            # the spread parser's "home"/"away" labels are relative to PM's team
+            # order. Swap them to align with canonical. Don't negate spread points
+            # — they're assigned by team name from the question text, not position.
+            if teams_swapped and outcome_norm in ("home", "away"):
+                outcome_norm = "away" if outcome_norm == "home" else "home"
+
             # Swap home/away if needed (currently disabled — see comment above)
             if should_swap_outcomes:
                 if outcome_norm == "home":

@@ -12,6 +12,7 @@ All tiers run on startup, then repeat at their configured interval.
 import asyncio
 import logging
 import time
+import yaml
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
@@ -249,67 +250,34 @@ class ExtractionScheduler:
 
     # ── Convenience: start/stop all tiers ──────────────────────────────
 
+    def _load_extraction_tiers(self) -> dict:
+        """Load extraction tier config from providers.yaml."""
+        from ..paths import get_config_path
+        config_path = get_config_path("providers.yaml")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        return config.get("extraction_tiers", {})
+
     async def start_all(self):
-        """Start all extraction tiers with default config.
+        """Start all extraction tiers from providers.yaml config.
 
-        Tier config:
-        - sharp: Pinnacle + Polymarket every 1 min (immediate)
-        - api_soft: Kambi (8) + Altenar (6) + Gecko V2 (4) + Vbet every 60 min (immediate)
-        - browser_soft: Spectate + ComeOn + Snabbare + 10Bet + Interwetten + Coolbet + Tipwin every 120 min (immediate)
-        - boosts: Oddsboost scraping every 120 min (immediate)
+        Reads extraction_tiers from providers.yaml — the single source of truth
+        for which providers run in each tier and at what interval.
         """
-        # Sharp tier — reference odds + live score capture
-        await self.start_tier(
-            name="sharp",
-            providers=["polymarket", "pinnacle"],
-            interval_seconds=60,  # 1 min — fast polling for live scores + FT detection
-            run_immediately=True,
-        )
+        tiers = self._load_extraction_tiers()
 
-        # API soft tier — fast REST/WS extractors
-        # wait_for_sharp: don't start until Pinnacle data is in DB
-        await self.start_tier(
-            name="api_soft",
-            providers=[
-                # Kambi API (7) — expekt removed: sportsbook dead
-                "unibet", "leovegas", "betmgm",
-                "speedybet", "x3000", "goldenbull", "1x2",
-                # Altenar API (6)
-                "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",
-                # Gecko V2 (4) — API interception, not pure REST, but fast
-                "betsson", "nordicbet", "spelklubben", "bethard",
-                # BetConstruct (1) — WebSocket API
-                "vbet",
-            ],
-            interval_seconds=3600,  # 60 min
-            run_immediately=True,
-            wait_for_sharp=True,
-        )
+        for tier_name, tier_config in tiers.items():
+            providers = tier_config.get("providers", [])
+            interval_minutes = tier_config.get("interval_minutes", 60)
+            wait_for_sharp = tier_name != "sharp"
 
-        # Browser soft tier — heavy browser-based extractors
-        # wait_for_sharp: don't start until Pinnacle data is in DB
-        await self.start_tier(
-            name="browser_soft",
-            providers=[
-                # Spectate (2)
-                "mrgreen", "888sport",
-                # ComeOn Group (3)
-                "comeon", "hajper", "lyllo",
-                # Snabbare (1)
-                "snabbare",
-                # 10Bet (1)
-                "10bet",
-                # Interwetten (1)
-                "interwetten",
-                # Coolbet (1)
-                "coolbet",
-                # Tipwin (1)
-                "tipwin",
-            ],
-            interval_seconds=7200,  # 120 min
-            run_immediately=True,
-            wait_for_sharp=True,
-        )
+            await self.start_tier(
+                name=tier_name,
+                providers=providers,
+                interval_seconds=interval_minutes * 60,
+                run_immediately=True,
+                wait_for_sharp=wait_for_sharp,
+            )
 
         # Boosts tier — oddsboost scraping (standalone, no pipeline lock needed)
         await self.start_boosts_tier()
@@ -899,8 +867,11 @@ class ExtractionScheduler:
                 try:
                     factory = ExtractorFactory.get_instance()
                     extractor = factory.get_extractor("polymarket")
-                    async with extractor as source:
-                        resolved = await source.fetch_resolved()
+                    # Don't use `async with` — the extractor is a shared cached
+                    # instance. Closing it here kills the transport for the sharp
+                    # tier that runs every minute.
+                    await extractor.transport._ensure_session()
+                    resolved = await extractor.fetch_resolved()
                     break
                 except Exception as e:
                     last_err = e

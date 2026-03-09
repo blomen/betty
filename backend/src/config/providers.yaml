@@ -852,9 +852,9 @@ extraction_tiers:
     providers:
       # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group — keep all 3 (too different: 1.7-83% identity)
+      # ComeOn Group — 3-27% odds identity, each needs separate extraction
       - comeon
-      - hajper
+      # - hajper  # DISABLED: 31-62 events, 1 value bet, 534-771s browser time — not worth it
       - lyllo
       # Snabbare (1)
       - snabbare
@@ -864,8 +864,8 @@ extraction_tiers:
       - interwetten
       # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
       - coolbet
-      # Tipwin (1)
-      - tipwin
+      # Tipwin (1) - DISABLED: 15-30 events (inconsistent), 0 value bets ever, intermittent failures
+      # - tipwin
     interval_minutes: 60
 
 # ============================================================================
@@ -900,8 +900,8 @@ active:
   - interwetten
   # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
   - coolbet
-  # Tipwin (1) - browser-based SPA
-  - tipwin
+  # Tipwin (1) - DISABLED: 0 value bets, inconsistent event count, not worth browser time
+  # - tipwin
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
@@ -913,9 +913,9 @@ active:
   - bethard
   # Snabbare (1)
   - snabbare
-  # ComeOn Group (3)
+  # ComeOn Group (2) — hajper disabled (1 value bet, 534-771s browser time)
   - comeon
-  - hajper
+  # - hajper
   - lyllo
 
 
