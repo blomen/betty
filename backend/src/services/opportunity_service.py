@@ -9,6 +9,7 @@ from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
 from ..constants import PROVIDER_CANONICAL, MAJOR_LEAGUES_FLAT
 from ..db.models import Event, Provider, Odds
+from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,23 @@ class OpportunityService:
                 self._add_reverse_value_recommendation(result, opp, stake_calculator)
 
             results.append(result)
+
+        # Compute provider allocation scores (daily caps + wagering priority)
+        if type == 'value' and profile and results:
+            try:
+                allocator = ProviderAllocator(self.db, profile.id)
+                allocator.preload_daily_bets()
+                allocator.preload_wagering()
+                allocator.preload_balances()
+                for result in results:
+                    alloc = allocator.score_provider(result["provider1"])
+                    result["allocation_score"] = alloc.score
+                    result["allocation_reason"] = alloc.reason
+                    result["daily_bets_group"] = alloc.daily_bets_group
+                    result["daily_cap"] = alloc.daily_cap
+                    result["is_daily_capped"] = alloc.is_capped
+            except Exception as e:
+                logger.warning(f"Allocation scoring failed: {e}")
 
         return {"opportunities": results, "count": len(results)}
 

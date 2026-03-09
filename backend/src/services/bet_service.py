@@ -215,13 +215,27 @@ class BetService:
         # Check current wagering status (but don't record — wagering counts on settlement)
         wagering_status = self.profile_repo.get_bonus_status(profile.id, provider_id)
 
-        return {
+        result_dict = {
             "success": True,
             "bet_id": bet.id,
             "profile_id": profile.id,
             "risk_score": risk_score,
             "bonus_wagering": wagering_status if wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
+
+        # Advisory: warn if daily cap exceeded for this platform group
+        try:
+            from ..risk.allocator import ProviderAllocator
+            allocator = ProviderAllocator(self.db, profile.id)
+            allocator.preload_daily_bets()
+            group_bets = allocator._count_group_bets(provider_id)
+            cap = allocator._daily_cap
+            if group_bets >= cap:
+                result_dict["daily_cap_warning"] = f"Daily cap reached ({group_bets}/{cap} bets today in this platform group)"
+        except Exception:
+            pass
+
+        return result_dict
 
     def settle_bet(self, bet_id: int, result: str, payout: float) -> dict:
         """Settle a bet with result and CLV tracking."""

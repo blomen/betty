@@ -747,6 +747,9 @@ class RiskConfig(Base):
     cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
 
+    # Provider allocation
+    daily_bet_cap = Column(Integer, default=4)  # Max bets per day per platform group
+
     # Updated timestamp
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 

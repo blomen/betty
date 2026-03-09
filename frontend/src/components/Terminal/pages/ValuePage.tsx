@@ -12,7 +12,7 @@ import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from 
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider, Bet, ProviderExposure } from '@/types';
+import type { Opportunity, Provider, Bet } from '@/types';
 
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
@@ -115,8 +115,6 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
   const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
 
-  // Wagering priority: provider_id → remaining wagering amount (higher = play first)
-  const [wageringPriority, setWageringPriority] = useState<Map<string, number>>(new Map());
   const [bankrollTotal, setBankrollTotal] = useState<number>(0);
 
   // Track placed event+provider combos for immediate removal from list
@@ -126,10 +124,9 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [res, boostRes, exposureRes, bankrollRes, betsRes] = await Promise.all([
+      const [res, boostRes, bankrollRes, betsRes] = await Promise.all([
         api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
         api.getSpecials({}).catch(() => null),
-        api.getBankrollExposure().catch(() => null),
         api.getBankroll().catch(() => null),
         api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
       ]);
@@ -161,17 +158,6 @@ export function ValuePage({ providers }: ValuePageProps) {
         if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
       }
       if (bankrollRes?.total != null) setBankrollTotal(bankrollRes.total);
-      if (exposureRes?.providers) {
-        const m = new Map<string, number>();
-        for (const p of exposureRes.providers) {
-          if (p.wagering && p.wagering.remaining > 0) {
-            // Priority = locked capital at this provider
-            // Completing wager here unlocks more bankroll → higher stakes → faster wagering everywhere
-            m.set(p.provider_id, p.balance_sek ?? 0);
-          }
-        }
-        setWageringPriority(m);
-      }
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {
@@ -262,10 +248,8 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     const groups: GroupedOpp[] = [];
     for (const [key, opps] of map) {
-      // Sort providers within group: highest wagering remaining first
-      if (wageringPriority.size > 0) {
-        opps.sort((a, b) => (wageringPriority.get(b.provider1) ?? -1) - (wageringPriority.get(a.provider1) ?? -1));
-      }
+      // Sort providers within group: highest allocation score first
+      opps.sort((a, b) => ((b as any).allocation_score ?? -1) - ((a as any).allocation_score ?? -1));
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     // Bonus-first when user actively filters to those providers
@@ -284,7 +268,7 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, selectedLeagues, placedKeys, wageringPriority, search]);
+  }, [opportunities, selectedProviders, selectedLeagues, placedKeys, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -723,17 +707,6 @@ export function ValuePage({ providers }: ValuePageProps) {
                     const bIsPending = boostPendingBet?.groupKey === group.key;
                     const bEffStake = boostStakeOverride[group.key] ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, s.max_stake ?? Infinity) : (s.recommended_stake ?? 0));
 
-                    // Find recommended provider
-                    let bRecommended: string | null = null;
-                    if (wageringPriority.size > 0 && group.providers.length > 1) {
-                      let maxRem = 0;
-                      for (const pid of group.providers) {
-                        const rem = wageringPriority.get(pid) ?? 0;
-                        if (rem > maxRem) { maxRem = rem; bRecommended = pid; }
-                      }
-                    }
-                    const bGetDot = (pid: string) => bRecommended === pid ? 'bg-tabValue' : (balanceMap.get(pid) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40';
-
                     return (
                     <tr key={`${group.key}-exp`}>
                       <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
@@ -905,7 +878,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                     </td>
                     <td className="text-right text-sm min-w-0">
                       <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${opps.every((o: any) => o.is_daily_capped) ? 'bg-error' : (rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount <= 3 ? (
                           <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
                         ) : (
@@ -991,15 +964,13 @@ export function ValuePage({ providers }: ValuePageProps) {
                             : 'Place Bet';
                           const isPending = pendingBet?.groupKey === group.key;
 
-                          // Find recommended provider: the one with most wagering remaining in this group
-                          let recommended: { provider: string } | null = null;
-                          if (wageringPriority.size > 0 && opps.length > 1) {
-                            let maxRem = 0;
-                            for (const opp of opps) {
-                              const rem = wageringPriority.get(opp.provider1) ?? 0;
-                              if (rem > maxRem) { maxRem = rem; recommended = { provider: opp.provider1 }; }
-                            }
-                          }
+                          // Dot color based on allocation score
+                          const getDotClass = (opp: any) => {
+                            if (opp.is_daily_capped) return 'bg-error';
+                            if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
+                            if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
+                            return 'bg-muted/40';
+                          };
 
                           return (
                           <div className="px-3 py-2 bg-panel">
@@ -1029,12 +1000,17 @@ export function ValuePage({ providers }: ValuePageProps) {
                                     onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
                                     className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                                   >
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabValue' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
                                     <span className="truncate">
                                       <ProviderName name={selOpp.provider1} />
                                       {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                                      {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                                      {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                                     </span>
+                                    {(selOpp as any).daily_bets_group != null && (selOpp as any).daily_cap != null && (
+                                      <span className={`text-[9px] flex-shrink-0 ${(selOpp as any).is_daily_capped ? 'text-error' : 'text-muted2'}`}>
+                                        {(selOpp as any).daily_bets_group}/{(selOpp as any).daily_cap}
+                                      </span>
+                                    )}
                                     <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                   </button>
                                   {providerDropdownOpen === group.key && (
@@ -1042,11 +1018,12 @@ export function ValuePage({ providers }: ValuePageProps) {
                                       {opps.map((opp, i) => {
                                         const oppStake = stakeOverride[groupOddsKey] ?? opp.final_stake;
                                         const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
-                                        const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                                        const tag = (opp as any).is_daily_capped ? ' [CAP]'
+                                          : opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                                           : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                                           : opp.skip_reason ? ` (${opp.skip_reason})`
                                           : '';
-                                        const hasBal = (balanceMap.get(opp.provider1) ?? 0) > 0;
+                                        const dailyInfo = (opp as any).daily_bets_group != null ? ` ${(opp as any).daily_bets_group}/${(opp as any).daily_cap}` : '';
                                         return (
                                           <button
                                             key={opp.id}
@@ -1057,10 +1034,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                                             }}
                                             className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                                           >
-                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === opp.provider1 ? 'bg-tabValue' : hasBal ? 'bg-success' : 'bg-muted/40'}`} />
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
                                             <span className="truncate">
                                               <ProviderName name={opp.provider1} />{s}{tag}
                                             </span>
+                                            {dailyInfo && <span className={`text-[9px] ml-auto flex-shrink-0 ${(opp as any).is_daily_capped ? 'text-error' : 'text-muted2'}`}>{dailyInfo}</span>}
                                           </button>
                                         );
                                       })}
