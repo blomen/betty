@@ -13,6 +13,22 @@ from ..db.models import Provider, Odds
 logger = logging.getLogger(__name__)
 
 
+def _get_dutch_legs(outcomes) -> list:
+    """Extract legs list from outcomes JSON (handles legacy list and new dict format)."""
+    if isinstance(outcomes, list):
+        return outcomes
+    if isinstance(outcomes, dict):
+        return outcomes.get("legs", [])
+    return []
+
+
+def _get_arb_data(outcomes) -> tuple:
+    """Extract arb data from outcomes JSON. Returns (arb_profit_pct, arb_legs)."""
+    if isinstance(outcomes, dict):
+        return outcomes.get("arb_profit_pct"), outcomes.get("arb_legs")
+    return None, None
+
+
 class OpportunityService:
     """Business logic for opportunities: listing, stake calculation, hedging."""
 
@@ -294,6 +310,8 @@ class OpportunityService:
                     "combined_edge_pct": opp.combined_edge_pct,
                     "guaranteed_profit_pct": opp.guaranteed_profit_pct,
                     "legs": legs,
+                    "arb_profit_pct": opp.arb_profit_pct,
+                    "arb_legs": opp.arb_legs,
                 }
 
                 # Keep best edge per event+market
@@ -340,6 +358,8 @@ class OpportunityService:
                 "starts_at": r["starts_at"],
                 "legs": r["legs"],
                 "total_stake": 0,  # Frontend sets via anchor stake
+                "arb_profit_pct": r.get("arb_profit_pct"),
+                "arb_legs": r.get("arb_legs"),
             })
 
         return {
@@ -429,6 +449,8 @@ class OpportunityService:
     def _add_dutch_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
         """Add dutch stake recommendation fields to an opportunity result dict."""
         try:
+            legs_data = _get_dutch_legs(opp.outcomes)
+            arb_profit_pct, arb_legs = _get_arb_data(opp.outcomes)
             guaranteed_profit_pct = opp.profit_pct or 0
             total_stake = 0.0
 
@@ -436,7 +458,7 @@ class OpportunityService:
             # (bonusdeposit triggers play normally, no stake override needed)
             trigger_provider = None
             trigger_amount = 0.0
-            for leg in (opp.outcomes or []):
+            for leg in legs_data:
                 pid = leg.get("provider_id") or leg.get("provider", "")
                 if pid:
                     bs = self.profile_repo.get_bonus_status(profile.id, pid)
@@ -449,12 +471,12 @@ class OpportunityService:
                         trigger_amount = bs.get("bonus_amount", 0)
                         break
 
-            if trigger_provider and trigger_amount > 0 and opp.outcomes:
+            if trigger_provider and trigger_amount > 0 and legs_data:
                 # Scale total dutch stake so the trigger provider's leg equals trigger_amount
-                total_inv = sum(1.0 / leg["odds"] for leg in opp.outcomes)
+                total_inv = sum(1.0 / leg["odds"] for leg in legs_data)
                 # Find the trigger leg's inverse-odds weight
                 trigger_leg_inv = 0.0
-                for leg in opp.outcomes:
+                for leg in legs_data:
                     pid = leg.get("provider_id") or leg.get("provider", "")
                     if pid == trigger_provider:
                         trigger_leg_inv += 1.0 / leg["odds"]
@@ -466,7 +488,7 @@ class OpportunityService:
                 total_stake = stake_calculator.bankroll * stake_calculator.single_bet_cap_pct
             else:
                 # Partial coverage: use Kelly on the best EV leg's edge
-                ev_legs = [l for l in (opp.outcomes or []) if l.get("edge_pct", 0) > 0]
+                ev_legs = [l for l in legs_data if l.get("edge_pct", 0) > 0]
                 if ev_legs:
                     best_edge = max(l["edge_pct"] for l in ev_legs) / 100.0
                     best_odds = next(l["odds"] for l in ev_legs if l["edge_pct"] == max(l["edge_pct"] for l in ev_legs))
@@ -479,9 +501,9 @@ class OpportunityService:
 
             # Split into per-leg stakes using dutch formula
             legs_with_stakes = []
-            if opp.outcomes and total_stake > 0:
-                total_inv = sum(1.0 / leg["odds"] for leg in opp.outcomes)
-                for leg in opp.outcomes:
+            if legs_data and total_stake > 0:
+                total_inv = sum(1.0 / leg["odds"] for leg in legs_data)
+                for leg in legs_data:
                     leg_stake = round(total_stake * (1.0 / leg["odds"]) / total_inv, 2)
                     leg_return = round(leg_stake * leg["odds"], 2)
                     legs_with_stakes.append({
@@ -492,14 +514,18 @@ class OpportunityService:
 
             result["guaranteed_profit_pct"] = guaranteed_profit_pct
             result["total_stake"] = round(total_stake, 2)
-            result["legs"] = legs_with_stakes or opp.outcomes or []
+            result["legs"] = legs_with_stakes or legs_data
             result["trigger_provider"] = trigger_provider
+            result["arb_profit_pct"] = arb_profit_pct
+            result["arb_legs"] = arb_legs
         except Exception as e:
             logger.debug(f"Dutch stake calculation failed for opp {opp.id}: {e}")
             result["guaranteed_profit_pct"] = opp.profit_pct or 0
             result["total_stake"] = 0
-            result["legs"] = opp.outcomes or []
+            result["legs"] = _get_dutch_legs(opp.outcomes)
             result["trigger_provider"] = None
+            result["arb_profit_pct"] = None
+            result["arb_legs"] = None
 
     def _add_reverse_value_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
         """Add stake recommendation for reverse value bets (Pinnacle vs consensus)."""

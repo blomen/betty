@@ -134,6 +134,8 @@ class OpportunityRepo:
         combined_edge_pct: float,
         guaranteed_profit_pct: float,
         point: float | None = None,
+        arb_profit_pct: float | None = None,
+        arb_legs: list[dict] | None = None,
     ) -> bool:
         """Upsert a dutch opportunity. Returns True if new."""
         # Primary leg = highest edge, secondary = second highest
@@ -149,7 +151,7 @@ class OpportunityRepo:
 
         now = datetime.now(timezone.utc)
 
-        outcomes_json = [
+        legs_list = [
             {
                 "outcome": leg["outcome"],
                 "provider": leg["provider"],
@@ -161,6 +163,11 @@ class OpportunityRepo:
             }
             for leg in sorted_legs
         ]
+        outcomes_json = {
+            "legs": legs_list,
+            "arb_profit_pct": arb_profit_pct,
+            "arb_legs": arb_legs,
+        }
 
         if existing:
             existing.is_active = True

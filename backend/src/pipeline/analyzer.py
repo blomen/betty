@@ -456,6 +456,8 @@ class OpportunityAnalyzer:
                 combined_edge_pct=opp.combined_edge_pct,
                 guaranteed_profit_pct=opp.guaranteed_profit_pct,
                 point=point_value,
+                arb_profit_pct=opp.arb_profit_pct,
+                arb_legs=opp.arb_legs,
             )
             if is_new:
                 result["dutch_new"] = 1
@@ -479,6 +481,8 @@ class OpportunityAnalyzer:
                         combined_edge_pct=opp.combined_edge_pct,
                         guaranteed_profit_pct=opp.guaranteed_profit_pct,
                         point=point_value,
+                        arb_profit_pct=opp.arb_profit_pct,
+                        arb_legs=opp.arb_legs,
                     )
                     if is_new:
                         result["dutch_new"] += 1

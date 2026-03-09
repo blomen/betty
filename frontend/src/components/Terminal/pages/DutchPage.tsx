@@ -47,6 +47,8 @@ interface DutchOpp {
   guaranteed_profit_pct?: number;
   total_stake?: number;
   legs?: DutchLeg[];
+  arb_profit_pct?: number | null;
+  arb_legs?: DutchLeg[] | null;
 }
 
 interface DutchPageProps {
@@ -335,21 +337,6 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
-  const shortOutcome = (outcome: string, opp: DutchOpp): string => {
-    if (outcome === 'home') {
-      const name = displayTeamName(opp.home_team, opp.display_home) || '1';
-      return name.split(' ')[0].slice(0, 10);
-    }
-    if (outcome === 'away') {
-      const name = displayTeamName(opp.away_team, opp.display_away) || '2';
-      return name.split(' ')[0].slice(0, 10);
-    }
-    if (outcome === 'draw') return 'X';
-    if (outcome === 'over') return 'O';
-    if (outcome === 'under') return 'U';
-    return outcome;
-  };
-
   const marketLabel = (market: string): string => {
     if (market === 'moneyline') return 'ML';
     return market.toUpperCase();
@@ -382,7 +369,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
-          { id: 'drain' as DutchTab, label: 'Drain', count: drainBetsCount },
+          { id: 'drain' as DutchTab, label: 'Anchor', count: drainBetsCount },
           { id: 'mybets' as DutchTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
@@ -500,6 +487,9 @@ export function DutchPage({ providers }: DutchPageProps) {
                           </button>
                         </div>
                         <div className="text-muted2 text-[11px]">
+                          {opp.arb_profit_pct != null && opp.arb_profit_pct > 0 && (
+                            <span className="text-[9px] font-bold px-1 py-0.5 bg-success/20 text-success mr-1.5">ARB +{opp.arb_profit_pct.toFixed(1)}%</span>
+                          )}
                           {opp.sport}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
                           {opp.point != null ? ` · ${opp.point}` : ''}
@@ -509,18 +499,9 @@ export function DutchPage({ providers }: DutchPageProps) {
                       <td className="text-right text-muted text-sm">
                         <span className="inline-flex items-center gap-1.5 justify-end">
                           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
-                          {legs.length <= 3
-                            ? legs.map((leg, i) => (
-                              <span key={i}>
-                                {i > 0 && ' · '}
-                                {leg.is_sharp
-                                  ? <span className="text-muted2">PIN</span>
-                                  : <ProviderName name={leg.provider} />
-                                }
-                                <span className="text-muted2">:{shortOutcome(leg.outcome, opp)}</span>
-                              </span>
-                            ))
-                            : <><ProviderName name={legs.filter(l => !l.is_sharp)[0]?.provider || 'pinnacle'} /> <span className="text-muted2">+{legs.length - 1}</span></>
+                          {uniqueProviders.length <= 3
+                            ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
+                            : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
                           }
                         </span>
                       </td>

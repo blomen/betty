@@ -73,6 +73,10 @@ class DutchOpportunity:
     combined_edge_pct: float       # Weighted average edge across legs
     guaranteed_profit_pct: float   # >0 = guaranteed profit regardless of outcome
 
+    # Arb detection: true arb using only real bettable soft odds
+    arb_profit_pct: Optional[float] = None  # >0 = true executable arb (all soft legs)
+    arb_legs: Optional[list[dict]] = None   # All-soft version of legs (when arb_profit_pct > 0)
+
     # Event context
     home_team: Optional[str] = None
     away_team: Optional[str] = None
@@ -648,6 +652,7 @@ class OpportunityScanner:
 
         # For each outcome: find best odds (soft OR Pinnacle raw) and compute edge vs fair
         best_per_outcome = {}  # {outcome: {provider, odds, edge_pct, fair_odds, is_sharp}}
+        soft_per_outcome = {}  # {outcome: {provider, odds, fair_odds}} — best soft for arb check
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             fair_result = self._get_fair_odds(
@@ -685,6 +690,14 @@ class OpportunityScanner:
                     best_soft_odds = po["odds"]
                     best_soft_provider = po["provider"]
 
+            # Save best soft for arb check (even if below fair)
+            if best_soft_provider and best_soft_odds > 1:
+                soft_per_outcome[outcome] = {
+                    "provider": best_soft_provider,
+                    "odds": best_soft_odds,
+                    "fair_odds": round(fair_odds, 3),
+                }
+
             # Use soft book if it beats fair odds; otherwise fall back to Pinnacle fair (0% edge)
             if best_soft_provider and best_soft_odds > fair_odds:
                 best_odds = best_soft_odds
@@ -693,23 +706,13 @@ class OpportunityScanner:
             elif anchor_provider and best_soft_provider:
                 # Anchor mode: only keep -EV soft if it IS the anchor provider
                 # (needed for balance draining). Non-anchor -EV legs use Pinnacle fair.
-                anchor_odds = None
-                for po in provider_odds_list:
-                    if po["provider"] == anchor_provider:
-                        anchor_odds = po["odds"]
-                        break
-                if anchor_odds and best_soft_provider == anchor_provider:
-                    # Anchor IS the best soft for this outcome — keep it
+                if best_soft_provider == anchor_provider:
+                    # Anchor IS the best soft for this outcome — keep it (even -EV)
                     best_odds = best_soft_odds
                     best_provider = best_soft_provider
                     is_sharp = False
-                elif anchor_odds:
-                    # Anchor has odds but isn't the best — force anchor for draining
-                    best_odds = anchor_odds
-                    best_provider = anchor_provider
-                    is_sharp = False
                 else:
-                    # Anchor has no odds for this outcome — use Pinnacle fair (0% edge)
+                    # Non-anchor soft below fair — use Pinnacle fair (0% edge)
                     best_odds = fair_odds
                     best_provider = "pinnacle"
                     is_sharp = True
@@ -780,12 +783,42 @@ class OpportunityScanner:
             for leg in legs
         ) if total_stake_pct > 0 else 0
 
+        # Arb check: can we cover all outcomes using only real bettable soft odds?
+        arb_profit_pct = None
+        arb_legs = None
+        if all(out in soft_per_outcome for out in all_outcomes):
+            soft_providers = set(soft_per_outcome[out]["provider"] for out in all_outcomes)
+            if len(soft_providers) >= 2:
+                arb_sum = sum(1.0 / soft_per_outcome[out]["odds"] for out in all_outcomes)
+                if arb_sum > 0:
+                    arb_profit = round((1.0 / arb_sum - 1) * 100, 2)
+                    if arb_profit > 0:
+                        arb_profit_pct = arb_profit
+                        # Build arb legs with proper stake percentages
+                        arb_legs = []
+                        for out in all_outcomes:
+                            sdata = soft_per_outcome[out]
+                            arb_edge = round((sdata["odds"] / sdata["fair_odds"] - 1) * 100, 2)
+                            arb_stake_pct = round((1.0 / sdata["odds"]) / arb_sum * 100, 2)
+                            arb_legs.append({
+                                "outcome": out,
+                                "provider": sdata["provider"],
+                                "odds": sdata["odds"],
+                                "edge_pct": arb_edge,
+                                "fair_odds": sdata["fair_odds"],
+                                "stake_pct": arb_stake_pct,
+                                "is_sharp": False,
+                            })
+                        arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
+
         return DutchOpportunity(
             event_id=event.id,
             market=market,
             legs=legs,
             combined_edge_pct=round(combined_edge, 2),
             guaranteed_profit_pct=guaranteed_profit_pct,
+            arb_profit_pct=arb_profit_pct,
+            arb_legs=arb_legs,
             home_team=event.home_team,
             away_team=event.away_team,
             sport=event.sport,
