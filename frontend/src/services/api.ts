@@ -505,11 +505,15 @@ export const api = {
     providers: string[],
     majorOnly: boolean,
     limit: number = 50,
+    counterpartProviders?: string[],
   ): Promise<{ opportunities: unknown[]; count: number; anchor_providers: string[] }> {
     const params = new URLSearchParams();
     params.set('providers', providers.join(','));
     params.set('major_only', String(majorOnly));
     params.set('limit', String(limit));
+    if (counterpartProviders && counterpartProviders.length > 0) {
+      params.set('counterpart_providers', counterpartProviders.join(','));
+    }
     params.set('_t', String(Date.now())); // Cache-bust: live scan, never cache
     return fetchJson(`/opportunities/dutch-workflow?${params}`);
   },

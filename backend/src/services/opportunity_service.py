@@ -284,20 +284,29 @@ class OpportunityService:
         self,
         anchor_providers: list[str],
         major_only: bool = False,
+        counterpart_providers: list[str] | None = None,
         limit: int = 50,
     ) -> dict:
         """Live-scan dutch opportunities forcing anchor providers into legs.
 
         Scans the odds DB for each anchor provider and returns dutch
         opportunities sorted by edge (including negative edge).
+        Optionally restricts counterpart (non-anchor) legs to specific providers.
         """
         scanner = OpportunityScanner(self.db)
+
+        # Resolve counterpart canonical IDs
+        counterpart_canonical = None
+        if counterpart_providers:
+            counterpart_canonical = list({
+                PROVIDER_CANONICAL.get(p, p) for p in counterpart_providers
+            })
 
         # Scan for each anchor provider
         seen: dict[str, dict] = {}  # key = "event_id|market" -> best opp dict
         for provider_id in anchor_providers:
             canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
-            opps = scanner.scan_dutch_for_provider(canonical)
+            opps = scanner.scan_dutch_for_provider(canonical, counterpart_providers=counterpart_canonical)
             for opp in opps:
                 key = f"{opp.event_id}|{opp.market}"
                 # Replace provider in legs from canonical → requested alias

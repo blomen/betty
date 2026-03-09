@@ -5,7 +5,7 @@ import { ProviderName } from '../ProviderName';
 import { useExtractionFreshness, useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
 import type { Provider } from '@/types';
 
 interface DutchLeg {
@@ -50,19 +50,20 @@ interface DrainPageProps {
 const MAX_ROWS = 50;
 const DRAIN_SETTINGS_KEY = 'drain-settings';
 
-function loadDrainSettings(): { providers: string[]; stake: string; limitedOnly: boolean } | null {
+function loadDrainSettings(): { providers: string[]; stake: string; limitedOnly: boolean; counterparts?: string[] } | null {
   try {
     const raw = localStorage.getItem(DRAIN_SETTINGS_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
-function saveDrainSettings(providers: Set<string>, stake: string, limitedOnly: boolean) {
+function saveDrainSettings(providers: Set<string>, stake: string, limitedOnly: boolean, counterparts: Set<string>) {
   if (providers.size === 0 && !stake) {
     localStorage.removeItem(DRAIN_SETTINGS_KEY);
   } else {
     localStorage.setItem(DRAIN_SETTINGS_KEY, JSON.stringify({
       providers: Array.from(providers), stake, limitedOnly,
+      counterparts: Array.from(counterparts),
     }));
   }
 }
@@ -70,7 +71,7 @@ function saveDrainSettings(providers: Set<string>, stake: string, limitedOnly: b
 export function DrainPage({ providers }: DrainPageProps) {
   const freshness = useExtractionFreshness();
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
+  const [search] = useState('');
 
   // Workflow panel state — initialized from localStorage
   const saved = useRef(loadDrainSettings());
@@ -85,14 +86,15 @@ export function DrainPage({ providers }: DrainPageProps) {
   );
   const [workflowResults, setWorkflowResults] = useState<DutchOpp[] | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  // Counterpart providers — restrict which providers can be used as opposing legs
+  const [counterpartProviders, setCounterpartProviders] = useState<Set<string>>(
+    () => new Set(saved.current?.counterparts ?? [])
+  );
 
   // Persist settings to localStorage on change
   useEffect(() => {
-    saveDrainSettings(workflowProviders, workflowStake, workflowMajorOnly);
-  }, [workflowProviders, workflowStake, workflowMajorOnly]);
-
-  // League filter
-  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
+    saveDrainSettings(workflowProviders, workflowStake, workflowMajorOnly, counterpartProviders);
+  }, [workflowProviders, workflowStake, workflowMajorOnly, counterpartProviders]);
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -121,6 +123,7 @@ export function DrainPage({ providers }: DrainPageProps) {
         Array.from(workflowProviders),
         workflowMajorOnly,
         MAX_ROWS,
+        counterpartProviders.size > 0 ? Array.from(counterpartProviders) : undefined,
       );
       const opps = (res.opportunities ?? []) as DutchOpp[];
       // Auto-apply anchor stake to the first leg matching a workflow provider
@@ -140,7 +143,7 @@ export function DrainPage({ providers }: DrainPageProps) {
     } finally {
       setIsScanning(false);
     }
-  }, [workflowProviders, workflowMajorOnly, workflowStake]);
+  }, [workflowProviders, workflowMajorOnly, workflowStake, counterpartProviders]);
 
   // Auto-scan on mount if settings are saved
   const didAutoScan = useRef(false);
@@ -164,14 +167,6 @@ export function DrainPage({ providers }: DrainPageProps) {
     return Array.from(set).sort();
   }, [providers]);
 
-  const availableLeagues = useMemo(() => {
-    const set = new Set<string>();
-    for (const opp of workflowResults ?? []) {
-      if (opp.league) set.add(opp.league);
-    }
-    return Array.from(set).sort();
-  }, [workflowResults]);
-
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -184,9 +179,6 @@ export function DrainPage({ providers }: DrainPageProps) {
   const filtered = useMemo(() => {
     let result = workflowResults ?? [];
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
-    if (selectedLeagues.size > 0) {
-      result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
-    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       result = result.filter(d =>
@@ -200,7 +192,7 @@ export function DrainPage({ providers }: DrainPageProps) {
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [workflowResults, selectedLeagues, search]);
+  }, [workflowResults, search]);
 
   type DrainSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const drainSortExtractors = useMemo(() => ({
@@ -211,14 +203,6 @@ export function DrainPage({ providers }: DrainPageProps) {
   }), []);
   const { sorted, sort: drainSort, toggle: toggleDrainSort } =
     useTableSort<DutchOpp, DrainSortCol>(filtered, drainSortExtractors, { column: 'edge', direction: 'desc' });
-
-  const toggleLeague = (l: string) => {
-    setSelectedLeagues(prev => {
-      const next = new Set(prev);
-      if (next.has(l)) next.delete(l); else next.add(l);
-      return next;
-    });
-  };
 
   const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
     const key = `${oppId}|${legIdx}`;
@@ -408,6 +392,19 @@ export function DrainPage({ providers }: DrainPageProps) {
           format={formatProviderWithPlatform}
           accentColor="success"
         />
+        <MultiSelectDropdown
+          label="Counter"
+          options={availableProviders}
+          selected={counterpartProviders}
+          onToggle={(p) => setCounterpartProviders(prev => {
+            const next = new Set(prev);
+            if (next.has(p)) next.delete(p); else next.add(p);
+            return next;
+          })}
+          onClear={() => setCounterpartProviders(new Set())}
+          format={formatProviderWithPlatform}
+          accentColor="success"
+        />
         <div className="flex items-center gap-1">
           <input
             type="number"
@@ -450,20 +447,6 @@ export function DrainPage({ providers }: DrainPageProps) {
           <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
         </div>
       </div>
-
-      {/* League filter */}
-      {workflowResults && availableLeagues.length > 0 && (
-        <FilterBar>
-          <MultiSelectDropdown
-            label="League"
-            options={availableLeagues}
-            selected={selectedLeagues}
-            onToggle={toggleLeague}
-            onClear={() => setSelectedLeagues(new Set())}
-            accentColor="success"
-          />
-        </FilterBar>
-      )}
 
       {isScanning ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">

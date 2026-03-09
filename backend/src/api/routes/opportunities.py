@@ -75,6 +75,7 @@ async def match_bonus_bet(
 async def dutch_workflow(
     providers: str,
     major_only: bool = False,
+    counterpart_providers: Optional[str] = None,
     limit: int = 50,
     service: OpportunityService = Depends(_get_service),
 ):
@@ -82,9 +83,14 @@ async def dutch_workflow(
     provider_list = [p.strip() for p in providers.split(",") if p.strip()]
     if not provider_list:
         raise HTTPException(400, "At least one provider required")
+    counterpart_list = (
+        [p.strip() for p in counterpart_providers.split(",") if p.strip()]
+        if counterpart_providers else None
+    )
     return service.scan_dutch_workflow(
         anchor_providers=provider_list,
         major_only=major_only,
+        counterpart_providers=counterpart_list,
         limit=min(limit, 100),
     )
 

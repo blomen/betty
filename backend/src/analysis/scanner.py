@@ -412,7 +412,11 @@ class OpportunityScanner:
         )
         return opportunities
 
-    def scan_dutch_for_provider(self, provider_id: str) -> list[DutchOpportunity]:
+    def scan_dutch_for_provider(
+        self,
+        provider_id: str,
+        counterpart_providers: list[str] | None = None,
+    ) -> list[DutchOpportunity]:
         """
         Find dutch opportunities where provider_id is forced as one of the legs.
 
@@ -421,6 +425,7 @@ class OpportunityScanner:
 
         Args:
             provider_id: Provider to force into the dutch (e.g. 'betinia')
+            counterpart_providers: If set, only allow these providers for non-anchor legs
 
         Returns:
             List of DutchOpportunity sorted by combined_edge_pct (highest first)
@@ -439,6 +444,7 @@ class OpportunityScanner:
                     odds_by_outcome=odds_by_outcome,
                     all_markets=odds_grouped,
                     anchor_provider=provider_id,
+                    counterpart_providers=counterpart_providers,
                 )
                 if dutch is None:
                     continue
@@ -595,6 +601,7 @@ class OpportunityScanner:
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
         anchor_provider: str | None = None,
+        counterpart_providers: list[str] | None = None,
     ) -> Optional[DutchOpportunity]:
         """
         Find a dutch opportunity in a single market.
@@ -605,6 +612,8 @@ class OpportunityScanner:
         When anchor_provider is None: requires at least one soft +EV leg.
         When anchor_provider is set: forces that provider's odds even if below
         fair (negative edge), and relaxes the +EV requirement.
+        When counterpart_providers is set: only considers those providers for
+        non-anchor legs (restricts which books can be counterparts).
         """
         # Count outcomes per provider for market type mismatch detection
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
@@ -677,6 +686,10 @@ class OpportunityScanner:
             for po in provider_odds_list:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue
+                # Counterpart filter: non-anchor providers must be in counterpart list
+                if counterpart_providers and po["provider"] != anchor_provider:
+                    if po["provider"] not in counterpart_providers:
+                        continue
                 # Market type mismatch check
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and soft_count != sharp_outcome_count:

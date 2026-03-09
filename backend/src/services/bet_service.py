@@ -423,6 +423,22 @@ class BetService:
         if bet.closing_odds and bet.closing_odds > 1.0:
             bet.clv_pct = round((bet.odds / bet.closing_odds - 1) * 100, 2)
 
+        # Record wagering progress when transitioning to a settled result
+        wagering_status = None
+        if bet.profile_id and bet.result in ("won", "lost", "void"):
+            if old_result == "pending":
+                # New settlement — record full stake
+                wagering_status = self.profile_repo.record_wagering(
+                    bet.profile_id, bet.provider_id, bet.stake, bet.odds
+                )
+            elif old_result in ("won", "lost", "void") and stake is not None and stake != old_stake:
+                # Stake correction on already-settled bet — record the delta
+                delta = bet.stake - old_stake
+                if delta > 0:
+                    wagering_status = self.profile_repo.record_wagering(
+                        bet.profile_id, bet.provider_id, delta, bet.odds
+                    )
+
         self.db.commit()
 
         logger.info(
@@ -440,4 +456,5 @@ class BetService:
             "payout": bet.payout,
             "profit": bet.profit,
             "balance_adjustment": (bet.payout - old_payout) - (bet.stake - old_stake),
+            "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
