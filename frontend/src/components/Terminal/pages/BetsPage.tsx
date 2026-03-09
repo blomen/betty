@@ -378,6 +378,10 @@ export function BetsPage() {
   const [editOdds, setEditOdds] = useState<string>('');
   const [editResult, setEditResult] = useState<string>('');
 
+  // Cashout state
+  const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
+  const [cashoutAmount, setCashoutAmount] = useState<string>('');
+
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -526,6 +530,29 @@ export function BetsPage() {
       fetchStats();
     } catch (err) {
       console.error('Edit bet failed:', err);
+    }
+  };
+
+  const startCashout = (bet: Bet) => {
+    setCashoutBetId(bet.id);
+    setCashoutAmount('');
+  };
+
+  const cancelCashout = () => {
+    setCashoutBetId(null);
+    setCashoutAmount('');
+  };
+
+  const confirmCashout = async (betId: number) => {
+    const amount = parseFloat(cashoutAmount);
+    if (isNaN(amount) || amount < 0) return;
+    try {
+      await api.editBet(betId, { result: 'void', payout: amount });
+      cancelCashout();
+      fetchBets();
+      fetchStats();
+    } catch (err) {
+      console.error('Cashout failed:', err);
     }
   };
 
@@ -717,6 +744,7 @@ export function BetsPage() {
               {historyBets.map((bet) => {
                 const isExpanded = expandedIdx === bet.id;
                 const isEditing = editingBetId === bet.id;
+                const isCashingOut = cashoutBetId === bet.id;
                 const ttk = getTTK(bet);
                 const tier = getTTKTier(ttk);
                 return (
@@ -807,13 +835,47 @@ export function BetsPage() {
                                   <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
                                 </div>
                               )}
-                              {!isEditing && (
-                                <button
-                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
-                                  onClick={() => startEditing(bet)}
-                                >Edit</button>
+                              {!isEditing && !isCashingOut && (
+                                <div className="flex items-center gap-1.5 ml-auto">
+                                  {bet.result === 'pending' && (
+                                    <button
+                                      className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                      onClick={() => startCashout(bet)}
+                                    >Cashout</button>
+                                  )}
+                                  <button
+                                    className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors"
+                                    onClick={() => startEditing(bet)}
+                                  >Edit</button>
+                                </div>
                               )}
                             </div>
+                            {isCashingOut && (
+                              <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Cashout Amount:</span>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    className="w-24 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={cashoutAmount}
+                                    onChange={e => setCashoutAmount(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') confirmCashout(bet.id); if (e.key === 'Escape') cancelCashout(); }}
+                                    placeholder={fmtAmount(bet.stake, bet.currency)}
+                                    autoFocus
+                                  />
+                                  <span className="text-muted2">{bet.currency === 'USD' || bet.currency === 'USDC' ? '$' : 'kr'}</span>
+                                </div>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => confirmCashout(bet.id)}
+                                >Confirm</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                                  onClick={cancelCashout}
+                                >Cancel</button>
+                              </div>
+                            )}
                             {isEditing && (
                               <div className="flex items-center gap-3 text-xs">
                                 <div className="flex items-center gap-1">

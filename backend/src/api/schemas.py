@@ -122,6 +122,7 @@ class BetEdit(BaseModel):
     stake: Optional[float] = None
     odds: Optional[float] = None
     result: Optional[str] = None  # "won", "lost", "void", "pending"
+    payout: Optional[float] = None  # Override payout (e.g. cashout amount)
 
 
 

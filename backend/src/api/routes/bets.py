@@ -556,6 +556,7 @@ async def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_ge
         stake=data.stake,
         odds=data.odds,
         result=data.result,
+        payout=data.payout,
     )
 
     if "error" in result:

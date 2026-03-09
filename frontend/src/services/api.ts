@@ -623,7 +623,7 @@ export const api = {
 
   async editBet(
     betId: number,
-    data: { stake?: number; odds?: number; result?: string }
+    data: { stake?: number; odds?: number; result?: string; payout?: number }
   ): Promise<{ success: boolean; stake: number; odds: number; result: string; payout: number; profit: number; balance_adjustment: number }> {
     return fetchJson(`/bets/${betId}`, {
       method: 'PATCH',

@@ -37,6 +37,9 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
   const [inlineEdit, setInlineEdit] = useState<{ id: number; field: 'odds' | 'stake' } | null>(null);
   const [inlineValue, setInlineValue] = useState('');
   const [search, setSearch] = useState('');
+  // Cashout state
+  const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
+  const [cashoutAmount, setCashoutAmount] = useState('');
 
   const color = TAB_COLORS[colorKey] ?? '#64748B';
 
@@ -242,6 +245,29 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
       fetchBets();
     } catch (err) {
       console.error('Raise failed:', err);
+    }
+  };
+
+  const startCashout = (bet: Bet) => {
+    setCashoutBetId(bet.id);
+    setCashoutAmount('');
+  };
+
+  const cancelCashout = () => {
+    setCashoutBetId(null);
+    setCashoutAmount('');
+  };
+
+  const confirmCashout = async (betId: number) => {
+    const amount = parseFloat(cashoutAmount);
+    if (isNaN(amount) || amount < 0) return;
+    try {
+      await api.editBet(betId, { result: 'void', payout: amount });
+      cancelCashout();
+      setExpandedId(null);
+      fetchBets();
+    } catch (err) {
+      console.error('Cashout failed:', err);
     }
   };
 
@@ -576,14 +602,49 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
                         </td>
                       ) : null}
                     </tr>
-                    {isExpanded && b.market === 'boost' && b.outcome && (
+                    {isExpanded && (
                       <tr key={`${b.id}-x`}>
                         <td colSpan={colCount} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <div className="px-3 py-2 bg-panel">
-                            <div className="text-xs text-muted2">
-                              <span className="uppercase tracking-wider text-muted">Condition: </span>
-                              <span className="text-text">{b.outcome}</span>
-                            </div>
+                          <div className="px-3 py-2 bg-panel space-y-2">
+                            {b.market === 'boost' && b.outcome && (
+                              <div className="text-xs text-muted2">
+                                <span className="uppercase tracking-wider text-muted">Condition: </span>
+                                <span className="text-text">{b.outcome}</span>
+                              </div>
+                            )}
+                            {cashoutBetId === b.id ? (
+                              <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Cashout Amount:</span>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    className="w-24 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={cashoutAmount}
+                                    onChange={e => setCashoutAmount(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') confirmCashout(b.id); if (e.key === 'Escape') cancelCashout(); }}
+                                    placeholder={fmtAmount(b.stake, b.currency)}
+                                    autoFocus
+                                  />
+                                  <span className="text-muted2">{b.currency === 'USD' || b.currency === 'USDC' ? '$' : 'kr'}</span>
+                                </div>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => confirmCashout(b.id)}
+                                >Confirm</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                                  onClick={cancelCashout}
+                                >Cancel</button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 text-xs">
+                                <button
+                                  className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => startCashout(b)}
+                                >Cashout</button>
+                              </div>
+                            )}
                           </div>
                         </td>
                       </tr>

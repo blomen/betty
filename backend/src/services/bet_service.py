@@ -389,6 +389,7 @@ class BetService:
         stake: float | None = None,
         odds: float | None = None,
         result: str | None = None,
+        payout: float | None = None,
     ) -> dict:
         """Edit a settled bet to correct stake/odds/result.
 
@@ -424,6 +425,10 @@ class BetService:
             bet.payout = bet.stake
         elif bet.result == "lost":
             bet.payout = 0.0
+
+        # Override payout if explicitly provided (e.g. cashout)
+        if payout is not None:
+            bet.payout = payout
 
         # Adjust balance: reverse old payout+stake, apply new payout+stake
         # All amounts are in bet's native currency — no conversion needed
