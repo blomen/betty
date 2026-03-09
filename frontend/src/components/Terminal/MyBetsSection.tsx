@@ -21,9 +21,11 @@ interface MyBetsSectionProps {
   filter: (bet: Bet) => boolean;
   /** Color key from TAB_COLORS (e.g. 'value', 'success', 'reverse') */
   colorKey: string;
+  /** If true, run auto-settle before fetching bets (Polymarket only) */
+  autoSettle?: boolean;
 }
 
-export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
+export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionProps) {
   const [bets, setBets] = useState<Bet[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState<BetCategory>('upcoming');
@@ -41,6 +43,17 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const fetchBets = useCallback(async () => {
     setLoading(true);
     try {
+      // Auto-settle Polymarket bets before fetching (settles finished bets server-side)
+      if (autoSettle) {
+        try {
+          const settleRes = await api.autoSettleBets();
+          if (settleRes.settled > 0) {
+            console.info(`[MyBets] Auto-settled ${settleRes.settled} Polymarket bets`);
+          }
+        } catch (err) {
+          console.warn('[MyBets] Auto-settle failed:', err);
+        }
+      }
       const res = await api.getBets('pending', 500);
       setBets(res.bets.filter(filter));
     } catch (err) {
@@ -48,7 +61,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, autoSettle]);
 
   useEffect(() => { fetchBets(); }, [fetchBets]);
 

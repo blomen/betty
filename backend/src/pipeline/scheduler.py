@@ -53,6 +53,9 @@ class ExtractionScheduler:
         scheduler.stop_all()
     """
 
+    # Tier is considered stale if it hasn't run within this multiple of its interval.
+    WATCHDOG_STALE_MULTIPLIER = 3
+
     def __init__(self, pipeline=None):
         self._pipeline = pipeline
         self._tiers: dict[str, TierState] = {}
@@ -60,6 +63,7 @@ class ExtractionScheduler:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._settlement_task: Optional[asyncio.Task] = None
         self._trading_reset_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
         # Per-tier locks allow different tiers to run concurrently while
         # preventing the same tier from overlapping with itself.
         # Each tier creates its own pipeline instance with isolated DB session + caches.
@@ -249,7 +253,7 @@ class ExtractionScheduler:
         """Start all extraction tiers with default config.
 
         Tier config:
-        - sharp: Pinnacle + Polymarket every 3 min (immediate)
+        - sharp: Pinnacle + Polymarket every 1 min (immediate)
         - api_soft: Kambi (8) + Altenar (6) + Gecko V2 (4) + Vbet every 60 min (immediate)
         - browser_soft: Spectate + ComeOn + Snabbare + 10Bet + Interwetten + Coolbet + Tipwin every 120 min (immediate)
         - boosts: Oddsboost scraping every 120 min (immediate)
@@ -319,6 +323,67 @@ class ExtractionScheduler:
         # Trading daily/weekly auto-reset (checks every 60s, acts at market boundaries)
         await self.start_trading_reset_tier()
 
+        # Tier health watchdog — logs CRITICAL when any tier stops running
+        self._start_watchdog()
+
+    def _start_watchdog(self):
+        """Start background watchdog that monitors tier liveness."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            return
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+    async def _watchdog_loop(self):
+        """Periodically check that all tiers are running and not stale.
+
+        Logs CRITICAL if a tier's task has died without auto-restart,
+        or if a tier hasn't completed a run within WATCHDOG_STALE_MULTIPLIER
+        times its configured interval.
+        """
+        # Wait for initial startup
+        await asyncio.sleep(30)
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                for name, tier in self._tiers.items():
+                    # Check if the asyncio task is still alive
+                    if tier.running and (tier.task is None or tier.task.done()):
+                        exc = tier.task.exception() if tier.task and not tier.task.cancelled() else None
+                        logger.critical(
+                            f"[Watchdog] Tier '{name}' task is DEAD "
+                            f"(running={tier.running}, task_done={tier.task.done() if tier.task else 'None'}, "
+                            f"exception={exc}). Forcing restart..."
+                        )
+                        await self._restart_tier(tier)
+                        continue
+
+                    # Check if the tier is overdue (hasn't run within expected window)
+                    if tier.running and tier.last_run:
+                        stale_threshold = tier.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
+                        elapsed = (now - tier.last_run).total_seconds()
+                        if elapsed > stale_threshold:
+                            logger.critical(
+                                f"[Watchdog] Tier '{name}' is STALE — "
+                                f"last run {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
+                                f"run_count={tier.run_count}"
+                            )
+
+                    # Check if a tier that should be running hasn't started yet
+                    if tier.running and tier.run_count == 0:
+                        # Allow startup grace period (2x interval or 120s, whichever is larger)
+                        grace = max(tier.interval_seconds * 2, 120)
+                        # No good way to know start time, just warn
+                        logger.warning(
+                            f"[Watchdog] Tier '{name}' is running but has 0 completed runs"
+                        )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[Watchdog] Error: {e}", exc_info=True)
+
+            await asyncio.sleep(60)  # Check every 60 seconds
+
     def stop_all(self):
         """Stop all running tiers."""
         for name in list(self._tiers.keys()):
@@ -340,6 +405,10 @@ class ExtractionScheduler:
         if self._trading_reset_task and not self._trading_reset_task.done():
             self._trading_reset_task.cancel()
             self._trading_reset_task = None
+        # Also stop watchdog
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
@@ -762,13 +831,17 @@ class ExtractionScheduler:
 
         while True:
             try:
-                logger.info("[Scheduler:settlement] Starting auto-settlement")
-                stats = self._run_settlement()
-                logger.info(
-                    f"[Scheduler:settlement] Done: "
-                    f"{stats.get('settled', 0)}/{stats.get('checked', 0)} bets settled "
-                    f"({stats.get('skipped', 0)} skipped)"
-                )
+                # Step 1: CLV snapshots (sync)
+                self._run_settlement()
+
+                # Step 2: Polymarket auto-settle (async — fetches resolved events)
+                poly_stats = await self._run_polymarket_settlement()
+                settled = poly_stats.get("settled", 0)
+                if settled > 0:
+                    logger.info(
+                        f"[Scheduler:settlement] Cycle complete: "
+                        f"{settled} Polymarket bets auto-settled"
+                    )
             except asyncio.CancelledError:
                 logger.info("[Scheduler:settlement] Loop cancelled")
                 break
@@ -781,13 +854,13 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Snapshot closing odds for CLV (auto-settle disabled — Pinnacle scores unreliable)."""
+        """Snapshot closing odds for CLV + auto-settle Polymarket bets."""
         from src.services.bet_service import BetService
         from src.db.models import get_session
 
         session = get_session()
         try:
-            # CLV snapshots only — auto-settle disabled (scores can be mid-game/pre-OT)
+            # CLV snapshots (Pinnacle auto-settle still disabled — scores unreliable)
             bet_service = BetService(session)
             clv_stats = bet_service.snapshot_closing_odds()
             session.commit()
@@ -802,6 +875,70 @@ class ExtractionScheduler:
         except Exception:
             session.rollback()
             raise
+        finally:
+            session.close()
+
+    async def _run_polymarket_settlement(self) -> dict:
+        """Fetch Polymarket resolved events and auto-settle pending bets.
+
+        Runs as a separate async step because fetch_resolved() is async.
+        Independent from CLV snapshots — uses Polymarket's own resolution data.
+        """
+        from src.services.results_service import ResultsService
+        from src.factory import ExtractorFactory
+        from src.db.models import get_session
+
+        session = get_session()
+        try:
+            service = ResultsService(session)
+
+            # Phase 1: Fetch resolved events from Polymarket API (with retry)
+            resolved = []
+            last_err = None
+            for attempt in range(3):
+                try:
+                    factory = ExtractorFactory.get_instance()
+                    extractor = factory.get_extractor("polymarket")
+                    async with extractor as source:
+                        resolved = await source.fetch_resolved()
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        wait = 5 * (attempt + 1)
+                        logger.warning(
+                            f"[Scheduler:settlement] Polymarket fetch attempt "
+                            f"{attempt + 1}/3 failed: {e}, retrying in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+
+            if not resolved and last_err:
+                logger.warning(f"[Scheduler:settlement] Polymarket fetch failed after 3 attempts: {last_err}")
+                return {"checked": 0, "settled": 0, "skipped": 0, "fetch_error": str(last_err)}
+
+            # Phase 2: Update event scores from Polymarket resolution data
+            poly_result = {"matched": 0, "updated": 0, "skipped": 0}
+            if resolved:
+                try:
+                    poly_result = service.update_scores_from_polymarket(resolved)
+                except Exception as e:
+                    logger.warning(f"[Scheduler:settlement] Polymarket score update failed: {e}")
+                    session.rollback()
+
+            # Phase 3: Auto-settle all eligible Polymarket bets
+            settle_result = service.auto_settle(source="auto_polymarket")
+
+            if settle_result.get("settled", 0) > 0:
+                logger.info(
+                    f"[Scheduler:settlement] Polymarket auto-settled "
+                    f"{settle_result['settled']}/{settle_result['checked']} bets"
+                )
+
+            return settle_result
+        except Exception as e:
+            logger.error(f"[Scheduler:settlement] Polymarket settlement failed: {e}")
+            session.rollback()
+            return {"checked": 0, "settled": 0, "skipped": 0, "error": str(e)}
         finally:
             session.close()
 
@@ -864,21 +1001,34 @@ class ExtractionScheduler:
         return sharp.providers if sharp else None
 
     def get_status(self) -> dict:
-        """Get scheduler status for all tiers."""
+        """Get scheduler status for all tiers, including health info."""
+        now = datetime.now(timezone.utc)
         tiers = {}
         for name, tier in self._tiers.items():
             next_run = None
+            seconds_since_last_run = None
+            is_overdue = False
+
             if tier.running and tier.last_run:
                 next_run_dt = tier.last_run + timedelta(seconds=tier.interval_seconds)
                 next_run = next_run_dt.isoformat()
+                seconds_since_last_run = (now - tier.last_run).total_seconds()
+                is_overdue = seconds_since_last_run > (
+                    tier.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
+                )
+
+            task_alive = tier.task is not None and not tier.task.done() if tier.task else False
 
             tiers[name] = {
                 "running": tier.running,
+                "task_alive": task_alive,
                 "providers": tier.providers,
                 "interval_seconds": tier.interval_seconds,
                 "last_run": tier.last_run.isoformat() if tier.last_run else None,
                 "run_count": tier.run_count,
                 "next_run": next_run,
+                "seconds_since_last_run": round(seconds_since_last_run) if seconds_since_last_run is not None else None,
+                "is_overdue": is_overdue,
             }
 
         return {

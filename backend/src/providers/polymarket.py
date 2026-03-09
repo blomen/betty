@@ -1,4 +1,5 @@
 from typing import List, Any, Optional
+from datetime import datetime, timezone, timedelta
 import logging
 import json
 from ..core import Retriever, StandardEvent
@@ -256,6 +257,42 @@ class PolymarketRetriever(Retriever):
             offset += page_limit
             page += 1
 
+        # Phase 1b: Catch-up — also fetch recently closed events (last 48h)
+        # Prevents data loss when extraction gaps occur (e.g., scheduler downtime).
+        # Polymarket events close immediately on game resolution, so any extraction
+        # gap means permanently missed events unless we catch up here.
+        seen_ids = {item.get("id") for item in all_raw}
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        closed_offset = 0
+        closed_count = 0
+        while True:
+            closed_params = {
+                "active": "true",
+                "closed": "true",
+                "tag_id": self.game_bets_tag_id,
+                "end_date_min": cutoff,
+                "order": "endDate",
+                "ascending": "false",
+                "limit": page_limit,
+                "offset": closed_offset,
+            }
+            url = f"{self.base_url}/events"
+            closed_data = await self.transport.get(url, params=closed_params)
+            if not closed_data:
+                break
+            for item in closed_data:
+                if item.get("id") not in seen_ids:
+                    all_raw.append(item)
+                    seen_ids.add(item.get("id"))
+                    closed_count += 1
+            if len(closed_data) < page_limit:
+                break
+            closed_offset += page_limit
+        if closed_count:
+            logger.info(
+                f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events"
+            )
+
         # Phase 2: Collect CLOB token IDs from markets that pass basic filters
         # Pre-filtering avoids fetching prices for markets we'll discard anyway
         if self.use_clob_prices and all_raw:
@@ -440,12 +477,16 @@ class PolymarketRetriever(Retriever):
         if not markets:
             return None  # Skip events without valid markets
 
-        # Inject event_slug into provider_meta for all markets
-        if event_slug:
-            for m in markets:
-                meta = m.get("provider_meta", {})
+        # Inject event_slug + Polymarket display names into provider_meta for all markets
+        for m in markets:
+            meta = m.get("provider_meta", {})
+            if event_slug:
                 meta["event_slug"] = event_slug
-                m["provider_meta"] = meta
+            if home:
+                meta["poly_home"] = home
+            if away:
+                meta["poly_away"] = away
+            m["provider_meta"] = meta
 
         # Parse live score data from Polymarket's sports data feed
         live_state = self._parse_live_state(item)
@@ -818,6 +859,8 @@ class PolymarketRetriever(Retriever):
 
         if "basketball" in tags or "nba" in tags:
             return "basketball"
+        elif "baseball" in tags or "mlb" in tags:
+            return "baseball"
         elif "football" in tags or "soccer" in tags:
             return "football"
         elif "nfl" in tags:

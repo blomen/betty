@@ -177,139 +177,176 @@ class ResultsService:
         skipped = 0
         settlement_results = []
 
+        errors = 0
         for bet in pending_bets:
             checked += 1
 
-            event = self.db.query(Event).filter(Event.id == bet.event_id).first()
-            if not event:
-                skipped += 1
-                continue
-
-            result = None
-            score_str = "n/a"
-
-            # Normalize market: "total_226.5" → "total", extract embedded point
-            market = bet.market or ""
-            point = bet.point
-            if "_" in market:
-                parts = market.split("_", 1)
-                market = parts[0]
-                if point is None:
-                    try:
-                        point = float(parts[1])
-                    except (ValueError, IndexError):
-                        pass
-
-            # For live BO events, only settle moneyline when series is clinched
-            if event.match_status == "live":
-                if not self._is_series_clinched(event) or market not in ("1x2", "moneyline"):
+            try:
+                event = self.db.query(Event).filter(Event.id == bet.event_id).first()
+                if not event:
                     skipped += 1
+                    logger.debug(f"[ResultsService] Bet #{bet.id}: event not found, skipping")
                     continue
 
-            # Path 0: Market resolution (Polymarket outcomePrices for total/spread)
-            # Uses the market's own resolution — no scores needed, always correct
-            if market in ("total", "spread") and event.stats_json:
-                import json as _json
-                try:
-                    stats = _json.loads(event.stats_json)
-                    resolved_markets = stats.get("resolved_markets", {})
-                    resolution = resolved_markets.get(bet.market)  # e.g., "total_226.5" → "over"
-                    if resolution:
-                        if bet.outcome == resolution:
-                            result = "won"
-                        else:
-                            result = "lost"
-                        score_str = f"market:{resolution}"
-                except (ValueError, TypeError):
-                    pass
+                result = None
+                score_str = "n/a"
 
-            if result is None and event.home_score is not None and event.away_score is not None:
-                # Path 1: Score-based settlement
-                if point is None and market in ("spread", "total"):
-                    odds_row = self.db.query(Odds).filter(
-                        Odds.event_id == bet.event_id,
-                        Odds.provider_id == bet.provider_id,
-                        Odds.market == bet.market,
-                        Odds.outcome == bet.outcome,
-                    ).first()
-                    if odds_row and odds_row.point is not None:
-                        point = odds_row.point
-                    else:
+                # Normalize market: "total_226.5" → "total", extract embedded point
+                market = bet.market or ""
+                point = bet.point
+                if "_" in market:
+                    parts = market.split("_", 1)
+                    market = parts[0]
+                    if point is None:
+                        try:
+                            point = float(parts[1])
+                        except (ValueError, IndexError):
+                            pass
+
+                # For live BO events, only settle moneyline when series is clinched
+                if event.match_status == "live":
+                    if not self._is_series_clinched(event) or market not in ("1x2", "moneyline"):
                         skipped += 1
                         continue
 
-                result = determine_bet_result(
-                    event.home_score, event.away_score,
-                    market, bet.outcome, point,
-                )
-                score_str = f"{event.home_score}-{event.away_score}"
+                # Path 0: Market resolution (Polymarket outcomePrices for total/spread)
+                # Uses the market's own resolution — no scores needed, always correct
+                if market in ("total", "spread") and event.stats_json:
+                    import json as _json
+                    try:
+                        stats = _json.loads(event.stats_json)
+                        resolved_markets = stats.get("resolved_markets", {})
+                        resolution = resolved_markets.get(bet.market)  # e.g., "total_226.5" → "over"
+                        if resolution:
+                            if bet.outcome == resolution:
+                                result = "won"
+                            else:
+                                result = "lost"
+                            score_str = f"market:{resolution}"
+                    except (ValueError, TypeError):
+                        pass
 
-            elif result is None and market in ("1x2", "moneyline") and event.stats_json:
-                # Path 2: Winner-based settlement (from Polymarket outcomePrices)
-                import json as _json
-                try:
-                    stats = _json.loads(event.stats_json)
-                    winner = stats.get("winner")
-                    if winner:
-                        from ..matching.matcher import get_team_match_score
-                        home_match = get_team_match_score(winner, event.home_team)
-                        away_match = get_team_match_score(winner, event.away_team)
-                        if home_match > away_match and home_match >= 75:
-                            actual_winner = "home"
-                        elif away_match > home_match and away_match >= 75:
-                            actual_winner = "away"
+                if result is None and event.home_score is not None and event.away_score is not None:
+                    # Path 1: Score-based settlement
+                    if point is None and market in ("spread", "total"):
+                        odds_row = self.db.query(Odds).filter(
+                            Odds.event_id == bet.event_id,
+                            Odds.provider_id == bet.provider_id,
+                            Odds.market == bet.market,
+                            Odds.outcome == bet.outcome,
+                        ).first()
+                        if odds_row and odds_row.point is not None:
+                            point = odds_row.point
                         else:
                             skipped += 1
+                            logger.debug(
+                                f"[ResultsService] Bet #{bet.id}: spread/total missing point, "
+                                f"skipping ({event.home_team} vs {event.away_team})"
+                            )
                             continue
 
-                        if bet.outcome == actual_winner:
-                            result = "won"
-                        elif bet.market == "moneyline" and actual_winner == "draw":
-                            result = "void"
-                        else:
-                            result = "lost"
-                        score_str = f"winner:{winner}"
-                except (ValueError, TypeError):
-                    pass
+                    result = determine_bet_result(
+                        event.home_score, event.away_score,
+                        market, bet.outcome, point,
+                    )
+                    score_str = f"{event.home_score}-{event.away_score}"
 
-            if result is None:
-                skipped += 1
-                continue
+                elif result is None and market in ("1x2", "moneyline") and event.stats_json:
+                    # Path 2: Winner-based settlement (from Polymarket outcomePrices)
+                    import json as _json
+                    try:
+                        stats = _json.loads(event.stats_json)
+                        winner = stats.get("winner")
+                        if winner:
+                            from ..matching.matcher import get_team_match_score
+                            home_match = get_team_match_score(winner, event.home_team)
+                            away_match = get_team_match_score(winner, event.away_team)
+                            if home_match > away_match and home_match >= 75:
+                                actual_winner = "home"
+                            elif away_match > home_match and away_match >= 75:
+                                actual_winner = "away"
+                            else:
+                                skipped += 1
+                                logger.warning(
+                                    f"[ResultsService] Bet #{bet.id}: winner '{winner}' fuzzy match "
+                                    f"too low (h={home_match}, a={away_match}) — "
+                                    f"{event.home_team} vs {event.away_team}, needs manual settle"
+                                )
+                                continue
 
-            # Calculate payout
-            if result == "won":
-                payout = bet.stake * bet.odds
-            elif result == "void":
-                payout = bet.stake
-            else:
-                payout = 0.0
+                            if bet.outcome == actual_winner:
+                                result = "won"
+                            elif bet.market == "moneyline" and actual_winner == "draw":
+                                result = "void"
+                            else:
+                                result = "lost"
+                            score_str = f"winner:{winner}"
+                    except (ValueError, TypeError):
+                        pass
 
-            settle_result = self.bet_service.settle_bet(bet.id, result, payout)
+                if result is None:
+                    skipped += 1
+                    logger.debug(
+                        f"[ResultsService] Bet #{bet.id}: could not determine result, "
+                        f"market={bet.market}, status={event.match_status}, "
+                        f"scores={event.home_score}-{event.away_score} — "
+                        f"{event.home_team} vs {event.away_team}"
+                    )
+                    continue
 
-            if settle_result.get("success"):
-                bet.settlement_source = source
-                settled += 1
-                settlement_results.append({
-                    "bet_id": bet.id,
-                    "event": f"{event.home_team} vs {event.away_team}",
-                    "result": result,
-                    "payout": round(payout, 2),
-                    "score": score_str,
-                })
-                logger.info(
-                    f"[ResultsService] Auto-settled bet #{bet.id}: "
-                    f"{result} ({score_str}) — {event.home_team} vs {event.away_team}"
+                # Calculate payout
+                if result == "won":
+                    payout = bet.stake * bet.odds
+                elif result == "void":
+                    payout = bet.stake
+                else:
+                    payout = 0.0
+
+                settle_result = self.bet_service.settle_bet(bet.id, result, payout)
+
+                if settle_result.get("success"):
+                    bet.settlement_source = source
+                    settled += 1
+                    settlement_results.append({
+                        "bet_id": bet.id,
+                        "event": f"{event.home_team} vs {event.away_team}",
+                        "result": result,
+                        "payout": round(payout, 2),
+                        "score": score_str,
+                    })
+                    logger.info(
+                        f"[ResultsService] Auto-settled bet #{bet.id}: "
+                        f"{result} ({score_str}) — {event.home_team} vs {event.away_team} "
+                        f"[payout={payout:.2f}]"
+                    )
+                else:
+                    errors += 1
+                    logger.warning(
+                        f"[ResultsService] settle_bet failed for #{bet.id}: "
+                        f"{settle_result.get('error', 'unknown')}"
+                    )
+
+            except Exception as e:
+                errors += 1
+                logger.error(
+                    f"[ResultsService] Error settling bet #{bet.id}: {e}",
+                    exc_info=True,
                 )
+                # Don't break — continue settling other bets
 
         if settled > 0:
             self.db.commit()
 
-        logger.info(f"[ResultsService] Auto-settled {settled}/{checked} bets ({skipped} skipped)")
+        logger.info(
+            f"[ResultsService] Auto-settled {settled}/{checked} bets "
+            f"({skipped} skipped, {errors} errors)"
+        )
 
         return {
             "checked": checked,
             "settled": settled,
             "skipped": skipped,
+            "errors": errors,
             "results": settlement_results,
         }
 

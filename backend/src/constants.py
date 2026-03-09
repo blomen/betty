@@ -23,16 +23,16 @@ EXCLUDED_FROM_SCANS = frozenset()
 # Used for consensus calculations where we need independent pricing sources.
 PLATFORM_MAP: dict[str, str] = {
     # Kambi — 100% identical odds across all brands
-    'unibet': 'kambi', 'leovegas': 'kambi', 'betmgm': 'kambi',
+    'unibet': 'kambi', 'leovegas': 'kambi', 'expekt': 'kambi', 'betmgm': 'kambi',
     'speedybet': 'kambi', 'x3000': 'kambi', 'goldenbull': 'kambi', '1x2': 'kambi',
-    # Altenar — 99.7% identical
+    # Altenar — main group ~99.7% identical; dbet ~70% identical (separate extraction)
     'dbet': 'altenar', 'betinia': 'altenar', 'lodur': 'altenar',
     'campobet': 'altenar', 'swiper': 'altenar', 'quickcasino': 'altenar',
     # Gecko V2 — ~40% identical (some variance between brands)
     'betsson': 'gecko', 'nordicbet': 'gecko', 'bethard': 'gecko', 'spelklubben': 'gecko',
     # Spectate — 100% identical
     'mrgreen': 'spectate', '888sport': 'spectate',
-    # ComeOn Group — ~68% identical
+    # ComeOn Group — 3-27% identical (separate extraction needed)
     'comeon': 'comeon', 'hajper': 'comeon', 'lyllo': 'comeon',
     # Standalone platforms (each is its own independent source)
     'vbet': 'vbet', 'interwetten': 'interwetten', '10bet': '10bet',
@@ -49,7 +49,7 @@ PLATFORM_MAP: dict[str, str] = {
 PLATFORM_GROUPS: dict[str, dict] = {
     "kambi": {
         "canonical": "unibet",
-        "members": ["unibet", "leovegas", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+        "members": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
     },
     "spectate": {
         "canonical": "888sport",

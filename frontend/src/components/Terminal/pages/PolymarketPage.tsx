@@ -11,6 +11,32 @@ import type { PolymarketValueBet, PolymarketRewardMarket, Bet } from '@/types';
 
 const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
 
+/** Count Polymarket bets that need manual settlement (auto-settle couldn't handle them). */
+function countManualSettleBets(bets: Bet[]): number {
+  const now = Date.now();
+  const SPORT_DURATION: Record<string, number> = {
+    football: 2.5 * 3600000, basketball: 3 * 3600000, ice_hockey: 3 * 3600000,
+    tennis: 4 * 3600000, esports: 4 * 3600000, handball: 2.5 * 3600000, mma: 3 * 3600000,
+  };
+  const DEFAULT_DURATION = 3 * 3600000;
+
+  return bets.filter(polyBetFilter).filter(b => {
+    // Only count bets on finished events that auto-settle couldn't determine
+    const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
+    if (!startMs || startMs > now) return false;  // Upcoming — not settleable yet
+
+    const isFinished = b.match_status === 'finished' ||
+      (b.match_status !== 'live' && now > startMs + (SPORT_DURATION[b.sport ?? ''] ?? DEFAULT_DURATION));
+
+    if (!isFinished) return false;  // Still playing — not settleable yet
+
+    // If auto-settle can determine result, it will handle it — don't count
+    if (b.predicted_result) return false;
+
+    return true;  // Finished but no predicted result → needs manual settle
+  }).length;
+}
+
 type PolyTab = 'value' | 'rewards' | 'mybets';
 
 export function PolymarketPage() {
@@ -56,6 +82,12 @@ export function PolymarketPage() {
   const fetchValueData = useCallback(async () => {
     setIsLoading(true);
     try {
+      // Auto-settle finished Polymarket bets first, then fetch fresh data
+      try {
+        const settleRes = await api.autoSettleBets();
+        if (settleRes.settled > 0) console.info(`[Poly] Auto-settled ${settleRes.settled} bets`);
+      } catch { /* non-critical — continue loading */ }
+
       const [valueRes, betsRes] = await Promise.all([
         api.getPolymarketValue(3, undefined, 50),
         api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
@@ -72,7 +104,8 @@ export function PolymarketPage() {
         for (const k of keys) merged.add(k);
         return merged;
       });
-      setMyBetsCount(betsRes.bets.filter(polyBetFilter).length);
+      // Count only bets needing manual settlement (auto-settle handles the rest)
+      setMyBetsCount(countManualSettleBets(betsRes.bets));
       setValueBets(valueRes.value_bets);
     } catch (err) {
       console.error('Failed to fetch Polymarket data:', err);
@@ -178,11 +211,17 @@ export function PolymarketPage() {
     }
   };
 
+  // Prefer Polymarket's own team names (e.g., "Bulls") over canonical display names ("Chicago Bulls")
+  const polyName = (vb: PolymarketValueBet | PolymarketRewardMarket, side: 'home' | 'away') =>
+    side === 'home'
+      ? displayTeamName(vb.home_team, vb.poly_home ?? vb.display_home)
+      : displayTeamName(vb.away_team, vb.poly_away ?? vb.display_away);
+
   const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
     const tag = vb.market ? ` [${vb.market === 'moneyline' ? 'ML' : vb.market.toUpperCase()}]` : '';
-    if (vb.outcome === 'home') return `${displayTeamName(vb.home_team, vb.display_home)}${point}${tag}`;
-    if (vb.outcome === 'away') return `${displayTeamName(vb.away_team, vb.display_away)}${point}${tag}`;
+    if (vb.outcome === 'home') return `${polyName(vb, 'home')}${point}${tag}`;
+    if (vb.outcome === 'away') return `${polyName(vb, 'away')}${point}${tag}`;
     if (vb.outcome === 'draw') return `Draw${tag}`;
     if (vb.outcome === 'over') return `Over${point}${tag}`;
     if (vb.outcome === 'under') return `Under${point}${tag}`;
@@ -223,6 +262,8 @@ export function PolymarketPage() {
         (vb.away_team?.toLowerCase().includes(q)) ||
         (vb.display_home?.toLowerCase().includes(q)) ||
         (vb.display_away?.toLowerCase().includes(q)) ||
+        (vb.poly_home?.toLowerCase().includes(q)) ||
+        (vb.poly_away?.toLowerCase().includes(q)) ||
         (vb.sport?.toLowerCase().includes(q)) ||
         (vb.league?.toLowerCase().includes(q)) ||
         (vb.outcome?.toLowerCase().includes(q))
@@ -297,6 +338,8 @@ export function PolymarketPage() {
         (r.away_team?.toLowerCase().includes(q)) ||
         (r.display_home?.toLowerCase().includes(q)) ||
         (r.display_away?.toLowerCase().includes(q)) ||
+        (r.poly_home?.toLowerCase().includes(q)) ||
+        (r.poly_away?.toLowerCase().includes(q)) ||
         (r.sport?.toLowerCase().includes(q)) ||
         (r.league?.toLowerCase().includes(q))
       );
@@ -363,7 +406,7 @@ export function PolymarketPage() {
 
       {/* ═══════════════ MY BETS TAB ═══════════════ */}
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" />
+        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" autoSettle />
       )}
 
       {/* ═══════════════ REWARDS TAB ═══════════════ */}
@@ -415,10 +458,10 @@ export function PolymarketPage() {
                       <div className="flex items-center gap-2 min-w-0">
                         {r.event_slug ? (
                           <a href={r.polymarket_url ?? `https://polymarket.com/event/${r.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors">
-                            {displayTeamName(r.home_team, r.display_home)} vs {displayTeamName(r.away_team, r.display_away)}
+                            {polyName(r, 'home')} vs {polyName(r, 'away')}
                           </a>
                         ) : (
-                          <span className="text-text text-sm truncate">{displayTeamName(r.home_team, r.display_home)} vs {displayTeamName(r.away_team, r.display_away)}</span>
+                          <span className="text-text text-sm truncate">{polyName(r, 'home')} vs {polyName(r, 'away')}</span>
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
@@ -538,14 +581,14 @@ export function PolymarketPage() {
                       <td>
                         <div className="flex items-center gap-2 min-w-0 group/copy">
                           {vb.event_slug ? (
-                            <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors" onClick={e => e.stopPropagation()}>{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</a>
+                            <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors" onClick={e => e.stopPropagation()}>{polyName(vb, 'home')} vs {polyName(vb, 'away')}</a>
                           ) : (
-                            <span className="text-text text-sm truncate">{displayTeamName(vb.home_team, vb.display_home)} vs {displayTeamName(vb.away_team, vb.display_away)}</span>
+                            <span className="text-text text-sm truncate">{polyName(vb, 'home')} vs {polyName(vb, 'away')}</span>
                           )}
                           <button
                             title="Copy event"
                             className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(vb.home_team, vb.display_home)); }}
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(polyName(vb, 'home')); }}
                           >
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                           </button>

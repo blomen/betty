@@ -23,6 +23,7 @@ import logging
 from datetime import datetime
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
+from ..core.exceptions import RetryableError
 from ..matching.normalizer import normalize_team_name
 from .mixins import RSocketMixin
 
@@ -144,13 +145,24 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
         all_events = []
+        sports_attempted = 0
+        sports_with_events = 0
         for sport_key in sports_to_extract:
             try:
+                sports_attempted += 1
                 sport_events = await self._extract_single_sport(sport_key, limit)
                 logger.debug(f"[{self.provider_id}] {sport_key}: {len(sport_events)} events")
+                if sport_events:
+                    sports_with_events += 1
                 all_events.extend(sport_events)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Failed to extract {sport_key}: {e}")
+
+        if not all_events and sports_attempted >= 3:
+            raise RetryableError(
+                f"0 events from {sports_attempted} sports — possible WS/page failure",
+                provider_id=self.provider_id,
+            )
 
         return all_events
 
@@ -222,7 +234,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 page = self.transport.page
 
             # Setup WS interception — persists across SPA navigations
+            ws_connected = False
+
             def on_websocket(ws):
+                nonlocal ws_connected
+                ws_connected = True
+
                 def on_frame_received(payload):
                     if isinstance(payload, bytes):
                         decoded = self._decode_rsocket_frame(payload)
@@ -251,6 +268,17 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             # Football has 60+ leagues → larger payload → needs more time
             ws_wait = 5000 if sport_normalized == 'football' else 3000
             await page.wait_for_timeout(ws_wait)
+
+            # Verify WS actually connected and delivered data
+            if not ws_connected:
+                logger.warning(
+                    f"[{self.provider_id}] WebSocket never connected for {sport_normalized} — "
+                    f"SPA may not have loaded sporting content"
+                )
+            elif not ws_messages:
+                logger.warning(
+                    f"[{self.provider_id}] WebSocket connected but 0 frames decoded for {sport_normalized}"
+                )
 
             # Step 1: Collect today's events from initial WS messages
             self._collect_ws_events(ws_messages, all_events_data)
@@ -333,7 +361,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                         logger.warning(f"[{self.provider_id}] Still 0 events for {sport_normalized} after retry")
                         return []
                 else:
-                    logger.debug(f"[{self.provider_id}] No events and no date buttons for {sport_normalized}, skipping")
+                    logger.warning(f"[{self.provider_id}] No events and no date buttons for {sport_normalized}, skipping")
                     return []
 
             if date_labels:

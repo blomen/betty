@@ -42,6 +42,8 @@ interface DutchOpp {
   away_team?: string;
   display_home?: string | null;
   display_away?: string | null;
+  prov_home?: string | null;
+  prov_away?: string | null;
   starts_at?: string;
   detected_at?: string;
   guaranteed_profit_pct?: number;
@@ -160,6 +162,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         (d.away_team?.toLowerCase().includes(q)) ||
         (d.display_home?.toLowerCase().includes(q)) ||
         (d.display_away?.toLowerCase().includes(q)) ||
+        (d.prov_home?.toLowerCase().includes(q)) ||
+        (d.prov_away?.toLowerCase().includes(q)) ||
         (d.sport?.toLowerCase().includes(q)) ||
         (d.league?.toLowerCase().includes(q)) ||
         (d.legs || []).some(leg => leg.provider.toLowerCase().includes(q))
@@ -345,8 +349,8 @@ export function DutchPage({ providers }: DutchPageProps) {
   const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
     const tag = ` [${marketLabel(opp.market)}]`;
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}${tag}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}${tag}`;
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)}${p}${tag}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}${p}${tag}`;
     if (outcome === 'draw') return `Draw${tag}`;
     if (outcome === 'over') return `Over${p}${tag}`;
     if (outcome === 'under') return `Under${p}${tag}`;
@@ -477,11 +481,11 @@ export function DutchPage({ providers }: DutchPageProps) {
                     >
                       <td>
                         <div className="flex items-center gap-2 min-w-0 group/copy">
-                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</span>
+                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)} vs {displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}</span>
                           <button
                             title="Copy event"
                             className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home)); }}
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)); }}
                           >
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                           </button>

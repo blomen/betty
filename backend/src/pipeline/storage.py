@@ -850,6 +850,18 @@ def store_provider_event(
         # Used by placement system to resolve canonical events to provider-specific IDs
         market_meta = market.get('provider_meta', {})
 
+        # Inject provider's own team names into provider_meta.
+        # If should_swap, the provider's home is the canonical away and vice versa.
+        # Store in canonical order so frontend always gets (canonical_home_name, canonical_away_name).
+        if should_swap:
+            _prov_home = event.away_team   # provider's away = canonical home
+            _prov_away = event.home_team   # provider's home = canonical away
+        else:
+            _prov_home = event.home_team
+            _prov_away = event.away_team
+        if _prov_home or _prov_away:
+            market_meta = {**(market_meta or {}), "prov_home": _prov_home, "prov_away": _prov_away}
+
         for outcome in outcomes:
             outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
             odds_value = outcome.get('odds', 0)

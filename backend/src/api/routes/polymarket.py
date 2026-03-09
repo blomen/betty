@@ -64,10 +64,12 @@ async def get_polymarket_value(
         events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events_list}
 
-    # Batch-load provider_meta + updated_at from Odds for event_slug (needed for deep links)
+    # Batch-load provider_meta + updated_at from Odds for event_slug + poly names
     # Key: (event_id, market, outcome) → provider_meta dict
     odds_meta_map: dict[tuple, dict] = {}
     odds_updated_map: dict[tuple, str] = {}
+    # Per-event Polymarket display names (from provider_meta)
+    poly_names_map: dict[str, tuple[str | None, str | None]] = {}
     if event_ids:
         poly_odds = (
             db.query(Odds)
@@ -76,10 +78,14 @@ async def get_polymarket_value(
         )
         for o in poly_odds:
             key = (o.event_id, o.market, o.outcome)
-            if o.provider_meta and "event_slug" in (o.provider_meta if isinstance(o.provider_meta, dict) else {}):
+            meta = o.provider_meta if isinstance(o.provider_meta, dict) else {}
+            if meta.get("event_slug"):
                 odds_meta_map[key] = o.provider_meta
             if o.updated_at:
                 odds_updated_map[key] = o.updated_at.isoformat()
+            # Extract Polymarket's own team names (same for all odds of an event)
+            if o.event_id not in poly_names_map and (meta.get("poly_home") or meta.get("poly_away")):
+                poly_names_map[o.event_id] = (meta.get("poly_home"), meta.get("poly_away"))
 
     # Enrich with event context
     results = []
@@ -113,6 +119,9 @@ async def get_polymarket_value(
             "away_team": event.away_team,
             "display_home": event.display_home,
             "display_away": event.display_away,
+            # Polymarket's own team names (may differ from canonical display names)
+            "poly_home": poly_names_map.get(vb.event_id, (None, None))[0],
+            "poly_away": poly_names_map.get(vb.event_id, (None, None))[1],
             "sport": event.sport,
             "league": event.league,
             "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
@@ -727,6 +736,8 @@ async def get_polymarket_rewards(
             "away_team": matched_event.away_team,
             "display_home": matched_event.display_home,
             "display_away": matched_event.display_away,
+            "poly_home": home,
+            "poly_away": away,
             "sport": matched_event.sport,
             "league": matched_event.league or league,
             "start_time": (matched_event.start_time.isoformat() + "Z") if matched_event.start_time else start_time_str,

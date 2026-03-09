@@ -34,6 +34,7 @@ from datetime import datetime
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
 from ..core.transport import BrowserTransport
+from ..core.exceptions import RetryableError
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,24 @@ class TipwinRetriever(BrowserRetriever):
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
 
+            # Verify initial page captured API responses
+            if not api_responses:
+                logger.warning(
+                    f"[{self.provider_id}] No API responses captured from initial page load — "
+                    f"response interception may have missed the first response"
+                )
+                # Give the page one more chance to fire API calls
+                await asyncio.sleep(2)
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                    pending_tasks.clear()
+                if not api_responses:
+                    page.remove_listener('response', intercept_response)
+                    raise RetryableError(
+                        "No API responses captured after initial page load",
+                        provider_id=self.provider_id,
+                    )
+
             # Get total pages from the items-format response
             total_pages = 0
             for resp in api_responses:
@@ -356,8 +375,16 @@ class TipwinRetriever(BrowserRetriever):
             sport_summary = ", ".join(f"{k}: {len(v)}" for k, v in sorted(events_by_sport.items()))
             logger.info(f"[{self.provider_id}] Total: {total} events ({sport_summary})")
 
+            if not events_by_sport:
+                raise RetryableError(
+                    f"Captured {len(api_responses)} API responses but parsed 0 events",
+                    provider_id=self.provider_id,
+                )
+
             return events_by_sport
 
+        except RetryableError:
+            raise  # Let orchestrator retry
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error extracting all sports: {e}", exc_info=True)
             return {}

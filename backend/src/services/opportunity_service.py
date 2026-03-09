@@ -8,7 +8,7 @@ from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
 from ..constants import PROVIDER_CANONICAL, MAJOR_LEAGUES_FLAT
-from ..db.models import Provider, Odds
+from ..db.models import Event, Provider, Odds
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,16 @@ class OpportunityService:
 
             # Attach provider_meta from pre-fetched cache
             meta_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
-            result["provider_meta"] = meta_cache.get(meta_key)
+            meta = meta_cache.get(meta_key)
+            result["provider_meta"] = meta
+
+            # Expose provider's own team names (for copy-paste between app and sportsbook)
+            if isinstance(meta, dict):
+                result["prov_home"] = meta.get("prov_home")
+                result["prov_away"] = meta.get("prov_away")
+            else:
+                result["prov_home"] = None
+                result["prov_away"] = None
 
             # Add stake recommendations for value bets
             if type == 'value' and stake_calculator and profile and opp.odds1 and opp.odds2:
@@ -327,6 +336,39 @@ class OpportunityService:
         # Sort by edge desc
         results.sort(key=lambda x: x["combined_edge_pct"], reverse=True)
 
+        # Batch-load display names and provider team names for all events
+        event_ids = list({r["event_id"] for r in results[:limit]})
+        events_map: dict[str, Event] = {}
+        prov_names_map: dict[tuple[str, str], tuple[str | None, str | None]] = {}  # (event_id, provider_id) → names
+        if event_ids:
+            events_list = self.db.query(Event).filter(Event.id.in_(event_ids)).all()
+            events_map = {e.id: e for e in events_list}
+
+            # Collect all (event_id, provider_id) pairs from legs
+            leg_pairs = set()
+            for r in results[:limit]:
+                for leg in r.get("legs", []):
+                    canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+                    leg_pairs.add((r["event_id"], canonical))
+
+            if leg_pairs:
+                leg_event_ids = list({p[0] for p in leg_pairs})
+                leg_provider_ids = list({p[1] for p in leg_pairs})
+                odds_rows = (
+                    self.db.query(Odds.event_id, Odds.provider_id, Odds.provider_meta)
+                    .filter(
+                        Odds.event_id.in_(leg_event_ids),
+                        Odds.provider_id.in_(leg_provider_ids),
+                        Odds.provider_meta.isnot(None),
+                    )
+                    .all()
+                )
+                for eid, pid, meta in odds_rows:
+                    if isinstance(meta, dict) and (meta.get("prov_home") or meta.get("prov_away")):
+                        key = (eid, pid)
+                        if key not in prov_names_map:
+                            prov_names_map[key] = (meta.get("prov_home"), meta.get("prov_away"))
+
         # Format for API response (DutchOpp-compatible)
         formatted = []
         for i, r in enumerate(results[:limit]):
@@ -342,6 +384,18 @@ class OpportunityService:
                     except ValueError:
                         pass
 
+            ev = events_map.get(r["event_id"])
+
+            # Pick provider names from the first non-sharp leg (the anchor)
+            prov_home, prov_away = None, None
+            for leg in r.get("legs", []):
+                if not leg.get("is_sharp"):
+                    canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+                    names = prov_names_map.get((r["event_id"], canonical))
+                    if names:
+                        prov_home, prov_away = names
+                    break
+
             formatted.append({
                 "id": i + 1,
                 "type": "dutch",
@@ -355,6 +409,10 @@ class OpportunityService:
                 "league": r["league"],
                 "home_team": r["home_team"],
                 "away_team": r["away_team"],
+                "display_home": ev.display_home if ev else None,
+                "display_away": ev.display_away if ev else None,
+                "prov_home": prov_home,
+                "prov_away": prov_away,
                 "starts_at": r["starts_at"],
                 "legs": r["legs"],
                 "total_stake": 0,  # Frontend sets via anchor stake

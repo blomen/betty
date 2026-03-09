@@ -44,6 +44,8 @@ export interface Opportunity {
   away_team?: string;
   display_home?: string | null;
   display_away?: string | null;
+  prov_home?: string | null;   // Provider's own team name (e.g., "Malmö FF" vs canonical "malmo")
+  prov_away?: string | null;
   starts_at?: string;
   // Stake recommendations (for value bets)
   suggested_stake?: number | null;
@@ -543,6 +545,8 @@ export interface PolymarketValueBet {
   away_team: string;
   display_home?: string | null;
   display_away?: string | null;
+  poly_home?: string | null;   // Polymarket's own team name (e.g., "Bulls" vs canonical "Chicago Bulls")
+  poly_away?: string | null;
   sport: string;
   league: string | null;
   start_time: string | null;
@@ -644,6 +648,8 @@ export interface PolymarketRewardMarket {
   away_team: string;
   display_home?: string | null;
   display_away?: string | null;
+  poly_home?: string | null;
+  poly_away?: string | null;
   sport: string;
   league: string | null;
   start_time: string | null;

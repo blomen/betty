@@ -913,15 +913,13 @@ class OpportunityScanner:
         """
         Fix providers that store 2 Asian handicap outcomes at the same spread point.
 
-        Kambi (and similar) stores alternate handicap lines where each outcome has
-        its own point value. This means at spread_-1.5 we can find both:
-          - home (Solary -1.5, correct)
-          - away (Galions -1.5, from a SEPARATE betOffer — NOT Galions +1.5)
+        Some providers (Gecko, Altenar, VBet) store both home and away at the same
+        point (e.g., home@-6.5 + away@-6.5). Pinnacle stores them at opposite points
+        (home@-6.5, away@+6.5).
 
-        Pinnacle's convention: 1 outcome per point side (home at -X, away at +X).
-        Use Pinnacle's structure as ground truth: at each spread point, only keep
-        the outcome type(s) that Pinnacle has. This is deterministic and avoids
-        the fragile prob_sum heuristic that misses borderline cases.
+        This relocates the misplaced outcome to the complement point so it can be
+        compared against the correct Pinnacle side. Without relocation, these outcomes
+        are lost and spread value detection produces 0 results.
 
         This mutates the grouped dict in-place.
         """
@@ -947,27 +945,40 @@ class OpportunityScanner:
                         if entry["provider"] in SHARP_PROVIDERS:
                             pinnacle_outcomes.add(outcome_type)
 
-            # If Pinnacle has exactly one outcome type, remove the other from soft providers.
-            # Pinnacle always stores home@negative, away@positive — one per side.
+            # If Pinnacle has exactly one outcome type, relocate the other to complement point.
+            # Pinnacle convention: home@negative, away@positive — one per side.
             if len(pinnacle_outcomes) == 1:
                 keep_outcome = pinnacle_outcomes.pop()
-                remove_outcome = "away" if keep_outcome == "home" else "home"
+                relocate_outcome = "away" if keep_outcome == "home" else "home"
 
-                original_count = len(odds_by_outcome.get(remove_outcome, []))
-                odds_by_outcome[remove_outcome] = [
-                    e for e in odds_by_outcome.get(remove_outcome, [])
-                    if e["provider"] in SHARP_PROVIDERS
+                # Collect soft entries to relocate
+                soft_entries = [
+                    e for e in odds_by_outcome.get(relocate_outcome, [])
+                    if e["provider"] not in SHARP_PROVIDERS
                 ]
-                removed_count = original_count - len(odds_by_outcome[remove_outcome])
 
-                # Clean up empty outcome key
-                if not odds_by_outcome[remove_outcome]:
-                    del odds_by_outcome[remove_outcome]
+                if soft_entries:
+                    # Remove soft entries from current point
+                    odds_by_outcome[relocate_outcome] = [
+                        e for e in odds_by_outcome.get(relocate_outcome, [])
+                        if e["provider"] in SHARP_PROVIDERS
+                    ]
+                    if not odds_by_outcome[relocate_outcome]:
+                        del odds_by_outcome[relocate_outcome]
 
-                if removed_count > 0:
+                    # Relocate to complement point (negate the point value)
+                    complement_key = f"spread_{-point:g}"
+                    if complement_key not in grouped:
+                        grouped[complement_key] = defaultdict(list)
+
+                    # Update point value in relocated entries
+                    for entry in soft_entries:
+                        entry["point"] = -point
+                    grouped[complement_key][relocate_outcome].extend(soft_entries)
+
                     logger.debug(
-                        f"Fixed Asian spread at {market_key}: removed {removed_count} "
-                        f"soft '{remove_outcome}' entries (Pinnacle only has '{keep_outcome}')"
+                        f"Relocated {len(soft_entries)} soft '{relocate_outcome}' entries "
+                        f"from {market_key} to {complement_key}"
                     )
 
     def _count_outcomes_per_provider(
@@ -1103,10 +1114,13 @@ class OpportunityScanner:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
-                # Skip for Polymarket entirely — prediction markets can have single-outcome
-                # listings (only underdog listed) or low prob sums due to pricing dynamics
+                # Skip for Polymarket — prediction markets can have single-outcome listings
+                # Skip for spread markets — after Asian spread fix, each point has only 1
+                # outcome per provider (prob_sum ~0.5), which is expected. The complement
+                # lookup already reconstructs the full Pinnacle market for proper de-vigging.
+                is_spread_market = market.startswith("spread")
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
-                    if po["provider"] != "polymarket":
+                    if po["provider"] != "polymarket" and not is_spread_market:
                         continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
