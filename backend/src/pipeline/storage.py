@@ -393,53 +393,14 @@ def store_polymarket_event(
     canonical_home = db_event.home_team
     canonical_away = db_event.away_team
 
-    # Extract home/away odds from Polymarket outcomes for inversion detection
-    # CRITICAL: Only use winner-market (1x2/moneyline) odds for inversion check.
-    # Spread/total odds have different semantics (home spread=-0.5 doesn't indicate favorite)
-    # and would overwrite moneyline odds due to last-write-wins in this loop.
-    poly_home_odds, poly_away_odds = None, None
-    for market in event.markets:
-        market_type = normalize_market(market.get("question", "") or market.get("type", ""))
-        if market_type in ('1x2', 'moneyline'):
-            for outcome in market.get("outcomes", []):
-                norm = normalize_outcome(
-                    outcome.get("name", ""),
-                    home_team,  # Use Polymarket's team order for normalization
-                    away_team
-                )
-                if norm == "home":
-                    poly_home_odds = outcome.get("odds")
-                elif norm == "away":
-                    poly_away_odds = outcome.get("odds")
-
-    # Track odds inversion (separate from team order swap)
-    odds_inverted = False
-
-    # Check for odds-based inversion against sharp source (Pinnacle)
-    if matched_id and poly_home_odds and poly_away_odds:
-        # Convert to canonical order if teams were swapped
-        if teams_swapped:
-            canonical_home_odds = poly_away_odds
-            canonical_away_odds = poly_home_odds
-        else:
-            canonical_home_odds = poly_home_odds
-            canonical_away_odds = poly_away_odds
-
-        inversion_result = detect_and_fix_inversion(
-            session, matched_id, "polymarket", canonical_home_odds, canonical_away_odds,
-            sharp_odds_cache=sharp_odds_cache,
-        )
-        if inversion_result:
-            odds_inverted = True
-            logger.debug(
-                f"[polymarket] Detected inverted odds for {matched_id}: "
-                f"canonical H={canonical_home_odds:.2f}/A={canonical_away_odds:.2f}"
-            )
-
-    # Determine if we need to swap during storage
-    # For Polymarket, team order is already handled by using canonical teams in normalization
-    # So we ONLY need to swap if odds are inverted vs sharp (Pinnacle)
-    should_swap_outcomes = odds_inverted
+    # Skip inversion detection for Polymarket entirely.
+    # Polymarket's parser matches team names explicitly in question text
+    # (e.g., "Will Alanyaspor win?"), so team inversions are impossible.
+    # Any favorite disagreement vs Pinnacle is a legitimate price difference,
+    # not a data swap. The old inversion detector falsely swapped odds when
+    # Polymarket and Pinnacle disagreed on who's favored (e.g., ALA 50¢ vs GEN 22¢
+    # on Polymarket, but Pinnacle had GEN as favorite).
+    should_swap_outcomes = False
 
     # Store odds
     odds_processed = 0
@@ -481,10 +442,7 @@ def store_polymarket_event(
             if outcome_norm not in ('home', 'away', 'draw', 'over', 'under'):
                 continue
 
-            # Swap home/away based on XOR of team swap and odds inversion
-            # - teams_swapped only: swap (team order different from canonical)
-            # - odds_inverted only: swap (odds favor wrong team)
-            # - both: don't swap (they cancel out)
+            # Swap home/away if needed (currently disabled — see comment above)
             if should_swap_outcomes:
                 if outcome_norm == "home":
                     outcome_norm = "away"
