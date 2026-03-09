@@ -1082,11 +1082,23 @@ class PolymarketRetriever(Retriever):
             favored_norm = normalize_outcome(favored_team, home, away)
 
             clob_ids = self._parse_clob_token_ids(data)
+            # Determine the other team's normalized label
+            other_norm = "away" if favored_norm == "home" else "home"
             result_outcomes = []
             for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
-                norm = normalize_outcome(name, home, away)
+                # "Yes" = favored team covers the spread, "No" = other team.
+                # Do NOT use normalize_outcome on "Yes"/"No" — the keyword fast
+                # path always maps Yes→home which is wrong when the question
+                # names the away team.
+                name_lower = name.strip().lower()
+                if name_lower == "yes":
+                    norm = favored_norm
+                elif name_lower == "no":
+                    norm = other_norm
+                else:
+                    norm = normalize_outcome(name, home, away)
                 if norm not in ('home', 'away'):
                     continue
                 # Favored team gets the point from the question, other gets opposite

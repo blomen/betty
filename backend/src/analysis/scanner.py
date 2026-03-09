@@ -526,7 +526,7 @@ class OpportunityScanner:
         ):
             try:
                 point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
+                complement_key = f"spread_{-point}"
                 complement_data = all_markets.get(complement_key, {})
                 for out, providers in complement_data.items():
                     if out not in pinnacle_market:
@@ -626,7 +626,7 @@ class OpportunityScanner:
         ):
             try:
                 point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
+                complement_key = f"spread_{-point}"
                 complement_data = all_markets.get(complement_key, {})
                 for out, providers in complement_data.items():
                     if out not in pinnacle_market:
@@ -925,6 +925,30 @@ class OpportunityScanner:
         """
         spread_keys = [k for k in grouped if k.startswith("spread_")]
 
+        # First pass: remove 3-way European handicap providers.
+        # European handicap has home/draw/away at integer points — fundamentally
+        # different from 2-way Asian handicap (Pinnacle). Comparing them produces
+        # false edges because the draw outcome absorbs probability.
+        for market_key in spread_keys:
+            odds_by_outcome = grouped[market_key]
+            if "draw" in odds_by_outcome:
+                # Identify providers that have a draw (= 3-way European)
+                european_providers = {
+                    e["provider"] for e in odds_by_outcome["draw"]
+                }
+                # Remove all outcomes from these providers at this point
+                for outcome_type in list(odds_by_outcome.keys()):
+                    odds_by_outcome[outcome_type] = [
+                        e for e in odds_by_outcome[outcome_type]
+                        if e["provider"] not in european_providers
+                    ]
+                    if not odds_by_outcome[outcome_type]:
+                        del odds_by_outcome[outcome_type]
+                logger.debug(
+                    f"Removed 3-way European handicap providers {european_providers} "
+                    f"from {market_key}"
+                )
+
         for market_key in spread_keys:
             try:
                 point = float(market_key.split("_", 1)[1])
@@ -967,7 +991,7 @@ class OpportunityScanner:
                         del odds_by_outcome[relocate_outcome]
 
                     # Relocate to complement point (negate the point value)
-                    complement_key = f"spread_{-point:g}"
+                    complement_key = f"spread_{-point}"
                     if complement_key not in grouped:
                         grouped[complement_key] = defaultdict(list)
 
@@ -1036,7 +1060,7 @@ class OpportunityScanner:
         ):
             try:
                 point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
+                complement_key = f"spread_{-point}"
                 complement_data = all_markets.get(complement_key, {})
                 for out, providers in complement_data.items():
                     if out not in pinnacle_market:
@@ -1193,7 +1217,7 @@ class OpportunityScanner:
         ):
             try:
                 point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
+                complement_key = f"spread_{-point}"
                 complement_data = all_markets.get(complement_key, {})
                 for out, providers in complement_data.items():
                     if out not in pinnacle_market:
