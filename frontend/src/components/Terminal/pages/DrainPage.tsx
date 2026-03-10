@@ -194,15 +194,22 @@ export function DrainPage({ providers }: DrainPageProps) {
     return result.slice(0, MAX_ROWS);
   }, [workflowResults, search]);
 
-  type DrainSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
+  type DrainSortCol = 'stake' | 'profit' | 'ttk';
   const drainSortExtractors = useMemo(() => ({
-    edge:   (d: DutchOpp) => d.edge_pct ?? 0,
-    stake:  (d: DutchOpp) => d.total_stake ?? 0,
+    stake:  (d: DutchOpp) => {
+      const anchor = anchorStake[d.id];
+      if (anchor) {
+        const legs = d.legs || [];
+        const anchorPct = legs[anchor.legIdx]?.stake_pct ?? 0;
+        if (anchorPct > 0) return anchor.stake / (anchorPct / 100);
+      }
+      return d.total_stake ?? 0;
+    },
     profit: (d: DutchOpp) => d.guaranteed_profit_pct ?? d.profit_pct ?? 0,
     ttk:    (d: DutchOpp) => getTTKFromNow(d.starts_at) ?? 99999,
-  }), []);
+  }), [anchorStake]);
   const { sorted, sort: drainSort, toggle: toggleDrainSort } =
-    useTableSort<DutchOpp, DrainSortCol>(filtered, drainSortExtractors, { column: 'edge', direction: 'desc' });
+    useTableSort<DutchOpp, DrainSortCol>(filtered, drainSortExtractors, { column: 'profit', direction: 'desc' });
 
   const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
     const key = `${oppId}|${legIdx}`;
@@ -347,6 +354,11 @@ export function DrainPage({ providers }: DrainPageProps) {
 
   const marketLabel = (market: string): string => {
     if (market === 'moneyline') return 'ML';
+    const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
+    if (mapMatch) {
+      const prefix = mapMatch[1] === 'total' ? 'T ' : '';
+      return `${prefix}Map ${mapMatch[2]}`;
+    }
     return market.toUpperCase();
   };
 
@@ -468,7 +480,6 @@ export function DrainPage({ providers }: DrainPageProps) {
                 <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Providers</th>
                 <SortableHeader column="ttk" label="TTK" sort={drainSort} onToggle={toggleDrainSort} />
-                <SortableHeader column="edge" label="Edge" sort={drainSort} onToggle={toggleDrainSort} />
                 <SortableHeader column="stake" label="Stake" sort={drainSort} onToggle={toggleDrainSort} />
                 <SortableHeader column="profit" label="Profit" sort={drainSort} onToggle={toggleDrainSort} />
               </tr>
@@ -520,9 +531,6 @@ export function DrainPage({ providers }: DrainPageProps) {
                       <td className="text-right">
                         {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                       </td>
-                      <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
-                        {opp.edge_pct != null ? `${opp.edge_pct >= 0 ? '+' : ''}${opp.edge_pct.toFixed(1)}%` : '-'}
-                      </td>
                       <td className="text-right text-text text-sm font-medium">
                         {effTotal > 0 ? `${effTotal.toFixed(0)} kr` : '-'}
                       </td>
@@ -536,7 +544,7 @@ export function DrainPage({ providers }: DrainPageProps) {
                       const hasAnchor = opp.id in anchorStake;
                       return (
                       <tr key={`${opp.id}-expanded`}>
-                        <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+                        <td colSpan={5} className="!p-0" onClick={e => e.stopPropagation()}>
                           <table className="sq">
                             <thead>
                               <tr>

@@ -3,9 +3,16 @@
 # Market types to extract (all others skipped)
 ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})
 
+# Esports map-level markets — used for map winner value scanning
+# (Pinnacle period 1-5 + Polymarket child_moneyline/map_handicap)
+MAP_MARKETS = frozenset({
+    'moneyline_m1', 'moneyline_m2', 'moneyline_m3', 'moneyline_m4', 'moneyline_m5',
+    'total_m1', 'total_m2', 'total_m3', 'total_m4', 'total_m5',
+})
+
 # Extended markets stored for Pinnacle only — used by boost EV enrichment
 # and combo decomposition, NOT by the value scanner.
-ENRICHMENT_MARKETS = ALLOWED_MARKETS | frozenset({
+ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS | frozenset({
     'team_total',       # Team over/under (Pinnacle API type)
     '1x2_1h',           # First-half 1x2 (period=1)
     'moneyline_1h',     # First-half moneyline (period=1)
@@ -14,6 +21,11 @@ ENRICHMENT_MARKETS = ALLOWED_MARKETS | frozenset({
 
 # Sharp/reference providers for fair odds
 SHARP_PROVIDERS = frozenset({'pinnacle'})
+
+# Providers that store the extended market set (enrichment + map markets).
+# Pinnacle: sharp baseline for all markets.
+# Polymarket: needs map markets for value comparison vs Pinnacle.
+EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({'polymarket'})
 
 # Providers excluded from opportunity scans (not used for betting)
 EXCLUDED_FROM_SCANS = frozenset()

@@ -441,11 +441,28 @@ class PolymarketRetriever(Retriever):
                         f"skipped {len(ml_candidates)-1} lower-volume moneyline markets"
                     )
 
+        # Collect esports map winner markets (child_moneyline → moneyline_m{N})
+        # Keep highest-volume per map number
+        map_winner_by_num: dict[int, tuple] = {}
+        for m_data in item.get("markets", []):
+            mw = self._parse_map_winner_market(m_data, home, away)
+            if mw:
+                vol = float(m_data.get("volume", 0) or 0)
+                # Extract map number from type (moneyline_m1 → 1)
+                map_num = int(mw["type"].split("_m")[1])
+                if map_num not in map_winner_by_num or vol > map_winner_by_num[map_num][1]:
+                    map_winner_by_num[map_num] = (mw, vol)
+        for mw, _ in map_winner_by_num.values():
+            markets.append(mw)
+
         # Collect spread/total markets (both football and non-football)
+        # Also collect esports map_handicap as spread
         spread_candidates = []
         total_candidates = []
         for m_data in item.get("markets", []):
             s = self._parse_spread_market(m_data, home, away)
+            if not s:
+                s = self._parse_map_handicap_market(m_data, home, away)
             if s:
                 spread_candidates.append((s, float(m_data.get("volume", 0) or 0)))
             t = self._parse_total_market(m_data)
@@ -1204,6 +1221,153 @@ class PolymarketRetriever(Retriever):
                 return None
 
             return {"type": "total", "outcomes": result_outcomes}
+        except Exception:
+            return None
+
+    # Map number extraction from question text for child_moneyline
+    _MAP_PATTERNS = {
+        "map 1": 1, "map 2": 2, "map 3": 3, "map 4": 4, "map 5": 5,
+        "game 1": 1, "game 2": 2, "game 3": 3, "game 4": 4, "game 5": 5,
+    }
+
+    def _parse_map_winner_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+        """Parse an esports map/game winner market (child_moneyline).
+
+        Detection: sportsMarketType == 'child_moneyline' or question contains
+        'Map N Winner' / 'Game N Winner' patterns.
+        Returns moneyline_m{N} market type.
+        """
+        try:
+            smt = data.get("sportsMarketType", "")
+            if smt != "child_moneyline":
+                return None
+
+            question = data.get("question", "")
+            question_lower = question.lower()
+
+            # Determine map number from question
+            map_num = None
+            for pattern, num in self._MAP_PATTERNS.items():
+                if pattern in question_lower:
+                    map_num = num
+                    break
+            if not map_num:
+                return None
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Parse outcome prices
+            prices_raw = data.get("outcomePrices", "[]")
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+            prices = [float(p) for p in prices]
+
+            outcomes_raw = data.get("outcomes", [])
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            # Skip dead/illiquid markets
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            clob_ids = self._parse_clob_token_ids(data)
+            from ..matching import normalize_outcome
+            formatted_outcomes = []
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
+                if p <= 0.02:
+                    continue
+                norm = normalize_outcome(name, home, away)
+                if norm not in ('home', 'away'):
+                    continue
+                token_id = clob_ids[i] if i < len(clob_ids) else None
+                price = self._get_clob_price(token_id, p) if token_id else p
+                formatted_outcomes.append({
+                    "name": norm,
+                    "odds": self._price_to_odds(price),
+                })
+
+            if len(formatted_outcomes) != 2:
+                return None
+
+            return {"type": f"moneyline_m{map_num}", "outcomes": formatted_outcomes}
+        except Exception:
+            return None
+
+    def _parse_map_handicap_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+        """Parse an esports map handicap market.
+
+        Detection: sportsMarketType == 'map_handicap'.
+        Format: "Map Handicap: TeamA (-1.5) vs TeamB (+1.5)"
+        or "Game Handicap: AL (-1.5) vs Weibo Gaming (+1.5)"
+        Outcomes are team names (not Yes/No).
+        Maps to 'spread' market type (same as Pinnacle period 0 spread).
+        """
+        import re
+        try:
+            smt = data.get("sportsMarketType", "")
+            if smt != "map_handicap":
+                return None
+
+            question = data.get("question", "")
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Extract the first point value (favored team's handicap)
+            point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', question)
+            if not point_match:
+                return None
+            favored_point = float(point_match.group(1))
+
+            # Parse outcomes and prices — outcomes are full team names
+            outcomes_raw = data.get("outcomes", "[]")
+            prices_raw = data.get("outcomePrices", "[]")
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            prices = [float(p) for p in prices]
+
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            # Normalize outcome team names to home/away
+            from ..matching import normalize_outcome
+            clob_ids = self._parse_clob_token_ids(data)
+            result_outcomes = []
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
+                if p <= 0.02:
+                    continue
+                norm = normalize_outcome(name, home, away)
+                if norm not in ('home', 'away'):
+                    continue
+                # First outcome in question gets favored_point, second gets opposite
+                # Determine from position: outcome[0] = favored team (listed first in question)
+                point = favored_point if i == 0 else -favored_point
+                token_id = clob_ids[i] if i < len(clob_ids) else None
+                price = self._get_clob_price(token_id, p) if token_id else p
+                result_outcomes.append({
+                    "name": norm,
+                    "odds": self._price_to_odds(price),
+                    "point": point,
+                })
+
+            if len(result_outcomes) != 2:
+                return None
+
+            return {"type": "spread", "outcomes": result_outcomes}
         except Exception:
             return None
 

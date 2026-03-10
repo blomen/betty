@@ -717,10 +717,9 @@ class OpportunityScanner:
                 best_provider = best_soft_provider
                 is_sharp = False
             elif anchor_provider and best_soft_provider:
-                # Anchor mode: only keep -EV soft if it IS the anchor provider
-                # (needed for balance draining). Non-anchor -EV legs use Pinnacle fair.
-                if best_soft_provider == anchor_provider:
-                    # Anchor IS the best soft for this outcome — keep it (even -EV)
+                # Anchor mode: keep -EV soft if it IS the anchor provider OR
+                # if counterpart providers are set (force the pair, don't fall back to Pinnacle)
+                if best_soft_provider == anchor_provider or counterpart_providers:
                     best_odds = best_soft_odds
                     best_provider = best_soft_provider
                     is_sharp = False

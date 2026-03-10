@@ -17,7 +17,7 @@ from ..matching import (
     normalize_outcome,
 )
 from ..matching.normalizer import generate_canonical_id
-from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, PROVIDER_CANONICAL
+from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EXTENDED_MARKET_PROVIDERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +419,7 @@ def store_polymarket_event(
 
         # Only store allowed markets. Pinnacle gets enrichment markets too
         # (team_total, 1h lines) for boost EV enrichment — scanner ignores them.
-        allowed = ENRICHMENT_MARKETS if event.provider in SHARP_PROVIDERS else ALLOWED_MARKETS
+        allowed = ENRICHMENT_MARKETS if event.provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
 
@@ -857,7 +857,7 @@ def store_provider_event(
 
     for market in event.markets:
         market_type = normalize_market(market.get('type', ''))
-        allowed = ENRICHMENT_MARKETS if provider in SHARP_PROVIDERS else ALLOWED_MARKETS
+        allowed = ENRICHMENT_MARKETS if provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
 

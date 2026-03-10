@@ -313,12 +313,14 @@ class OpportunityService:
         """
         scanner = OpportunityScanner(self.db)
 
-        # Resolve counterpart canonical IDs
+        # Resolve counterpart canonical IDs and build reverse map
         counterpart_canonical = None
+        counterpart_alias_map: dict[str, str] = {}  # canonical → requested alias
         if counterpart_providers:
-            counterpart_canonical = list({
-                PROVIDER_CANONICAL.get(p, p) for p in counterpart_providers
-            })
+            for cp in counterpart_providers:
+                canon = PROVIDER_CANONICAL.get(cp, cp)
+                counterpart_alias_map[canon] = cp
+            counterpart_canonical = list(counterpart_alias_map.keys())
 
         # Scan for each anchor provider
         seen: dict[str, dict] = {}  # key = "event_id|market" -> best opp dict
@@ -332,6 +334,8 @@ class OpportunityService:
                 for leg in opp.legs:
                     if leg["provider"] == canonical and canonical != provider_id:
                         legs.append({**leg, "provider": provider_id})
+                    elif leg["provider"] in counterpart_alias_map:
+                        legs.append({**leg, "provider": counterpart_alias_map[leg["provider"]]})
                     else:
                         legs.append(leg)
 

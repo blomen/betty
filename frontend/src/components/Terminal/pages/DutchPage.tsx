@@ -343,6 +343,11 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const marketLabel = (market: string): string => {
     if (market === 'moneyline') return 'ML';
+    const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
+    if (mapMatch) {
+      const prefix = mapMatch[1] === 'total' ? 'T ' : '';
+      return `${prefix}Map ${mapMatch[2]}`;
+    }
     return market.toUpperCase();
   };
 

@@ -219,7 +219,16 @@ export function PolymarketPage() {
 
   const resolveOutcome = (vb: PolymarketValueBet): string => {
     const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
-    const tag = vb.market ? ` [${vb.market === 'moneyline' ? 'ML' : vb.market.toUpperCase()}]` : '';
+    const formatMkt = (m: string) => {
+      if (m === 'moneyline') return 'ML';
+      const mapMatch = m.match(/^(moneyline|total)_m(\d)$/);
+      if (mapMatch) {
+        const prefix = mapMatch[1] === 'total' ? 'T ' : '';
+        return `${prefix}Map ${mapMatch[2]}`;
+      }
+      return m.toUpperCase();
+    };
+    const tag = vb.market ? ` [${formatMkt(vb.market)}]` : '';
     if (vb.outcome === 'home') return `${polyName(vb, 'home')}${point}${tag}`;
     if (vb.outcome === 'away') return `${polyName(vb, 'away')}${point}${tag}`;
     if (vb.outcome === 'draw') return `Draw${tag}`;
@@ -595,7 +604,7 @@ export function PolymarketPage() {
                           {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
                         </div>
                         <div className="text-muted2 text-[11px]">
-                          {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
+                          {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' && !vb.market.startsWith('moneyline_m') ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
                         </div>
                       </td>
                       <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>

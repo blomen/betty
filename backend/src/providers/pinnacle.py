@@ -343,7 +343,7 @@ class PinnacleRetriever(Retriever):
             raw_markets = markets_by_matchup.get(matchup_id, [])
 
             # Parse all market types
-            parsed_markets = self._parse_markets(raw_markets)
+            parsed_markets = self._parse_markets(raw_markets, sport=sport)
 
             # For started matchups: return event even without markets (for score tracking)
             if not parsed_markets and matchup_status != "started":
@@ -379,7 +379,10 @@ class PinnacleRetriever(Retriever):
     # Logged once per extraction to discover new types
     _logged_unknown_types: set = set()
 
-    def _parse_markets(self, raw_markets: List[dict]) -> List[dict]:
+    # Esports map periods: period 1 = map 1, period 2 = map 2, etc.
+    _ESPORTS_MAP_PERIODS = {1, 2, 3, 4, 5}
+
+    def _parse_markets(self, raw_markets: List[dict], sport: str = "") -> List[dict]:
         """
         Parse markets from Pinnacle API response.
 
@@ -388,8 +391,11 @@ class PinnacleRetriever(Retriever):
         period 0 doesn't have them (minor leagues).
         Enrichment markets (team_total, 1st-half moneyline/total): also extracted
         for boost EV enrichment — the value scanner ignores them.
+        Esports map markets (period 1-5): moneyline/total per map, used for
+        map-level value scanning against Polymarket.
         """
         parsed = []
+        is_esports = sport == "esports"
 
         # Pre-scan: which core market types does period 0 have?
         # Used to avoid period-6 spread/total overwriting OT-included odds.
@@ -467,8 +473,19 @@ class PinnacleRetriever(Retriever):
                         else:
                             parsed.extend(self._parse_total(prices, market_meta))
 
-            # ── Period 1 (first half) — enrichment only ──
-            elif period == 1:
+            # ── Esports map periods (1-5) — map-level value scanning ──
+            elif is_esports and period in self._ESPORTS_MAP_PERIODS:
+                if market_type == "moneyline":
+                    parsed.extend(self._parse_moneyline(
+                        prices, market_meta, market_type_override=f"moneyline_m{period}"
+                    ))
+                elif market_type == "total" and not market.get("isAlternate", False):
+                    parsed.extend(self._parse_total(
+                        prices, market_meta, market_type_override=f"total_m{period}"
+                    ))
+
+            # ── Period 1 (first half) — non-esports enrichment only ──
+            elif period == 1 and not is_esports:
                 if market_type == "moneyline":
                     parsed.extend(self._parse_moneyline(
                         prices, market_meta, market_type_override="1x2_1h"

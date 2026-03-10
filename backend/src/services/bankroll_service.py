@@ -143,7 +143,11 @@ class BankrollService:
             total_balance_sek += balance_sek
 
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
-            pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
+            # Convert non-SEK stakes (e.g. Polymarket USDC) to SEK
+            pending_exposure = sum(
+                (b.stake * rate if getattr(b, 'currency', 'SEK') != 'SEK' else b.stake)
+                for b in pending_bets if not b.is_bonus
+            )
 
             # Wagering progress for this provider
             bonus = bonus_map.get(provider.id)

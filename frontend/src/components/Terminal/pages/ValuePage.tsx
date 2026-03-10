@@ -1118,6 +1118,12 @@ export function ValuePage({ providers }: ValuePageProps) {
 
 function marketLabel(market: string): string {
   if (market === 'moneyline') return 'ML';
+  // Esports map markets: moneyline_m1 → "M1", total_m2 → "T M2"
+  const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
+  if (mapMatch) {
+    const prefix = mapMatch[1] === 'total' ? 'T ' : '';
+    return `${prefix}Map ${mapMatch[2]}`;
+  }
   return market.toUpperCase();
 }
 
