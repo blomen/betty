@@ -201,7 +201,15 @@ class ExtractionScheduler:
                 # Different tiers run concurrently with isolated pipeline instances
                 if tier.name not in self._tier_locks:
                     self._tier_locks[tier.name] = asyncio.Lock()
-                async with self._tier_locks[tier.name]:
+
+                lock = self._tier_locks[tier.name]
+                if lock.locked():
+                    logger.warning(f"[Scheduler:{tier.name}] Tier lock is held! Clearing stale lock...")
+                    # Force-create a new lock to avoid deadlock from cancelled tasks
+                    self._tier_locks[tier.name] = asyncio.Lock()
+                    lock = self._tier_locks[tier.name]
+
+                async with lock:
                     results = await self._run_with_state_updates(tier.providers, tier_name=tier.name)
 
                 tier.last_run = datetime.now(timezone.utc)
@@ -227,12 +235,12 @@ class ExtractionScheduler:
                 logger.info(f"[Scheduler:{tier.name}] Loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"[Scheduler:{tier.name}] Error: {e}", exc_info=True)
+                logger.error(f"[Scheduler:{tier.name}] Error in tier loop: {e}", exc_info=True)
                 self._clear_extraction_state()
                 # Wait before retry on error
                 await asyncio.sleep(60)
 
-        logger.info(f"[Scheduler:{tier.name}] Loop stopped")
+        logger.info(f"[Scheduler:{tier.name}] Loop stopped (running={tier.running})")
 
     def stop_tier(self, name: str):
         """Stop a specific tier."""
@@ -1058,10 +1066,10 @@ class ExtractionScheduler:
 
         _results = None
         try:
-            # Start metrics polling task
+            # Start metrics polling task — pass tier_pipeline so it reads correct metrics
             stop_event = asyncio.Event()
             polling_task = asyncio.create_task(
-                self._poll_metrics_loop(stop_event, tier_name=tier_name, tier_providers=providers)
+                self._poll_metrics_loop(stop_event, tier_name=tier_name, tier_providers=providers, pipeline=tier_pipeline)
             )
 
             try:
@@ -1155,6 +1163,7 @@ class ExtractionScheduler:
         stop_event: asyncio.Event,
         tier_name: str = "default",
         tier_providers: list[str] | None = None,
+        pipeline=None,
     ):
         """Poll metrics and update extraction state (both global and per-tier).
 
@@ -1165,14 +1174,17 @@ class ExtractionScheduler:
         from src.api.state import update_extraction_state, update_tier_state
         from src.db.models import Event, Odds, get_session
 
+        # Use provided pipeline (per-tier) or fall back to scheduler's pipeline
+        target_pipeline = pipeline or self.pipeline
+
         db = get_session()
         try:
             while not stop_event.is_set():
-                if not self.pipeline.metrics:
+                if not target_pipeline.metrics:
                     await asyncio.sleep(0.5)
                     continue
 
-                current_run = self.pipeline.metrics.get_current_run()
+                current_run = target_pipeline.metrics.get_current_run()
                 if not current_run:
                     await asyncio.sleep(0.5)
                     continue
