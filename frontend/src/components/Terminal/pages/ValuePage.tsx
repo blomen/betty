@@ -504,8 +504,8 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const resolveOutcome = (outcome: string, opp: Opportunity, point?: number | null): string => {
     const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)}${p}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}${p}`;
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${p}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${p}`;
     if (outcome === 'draw') return 'Draw';
     if (outcome === 'over') return `Over${p}`;
     if (outcome === 'under') return `Under${p}`;
@@ -860,11 +860,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                   >
                     <td>
                       <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.prov_home ?? rep.display_home)} vs {displayTeamName(rep.away_team, rep.prov_away ?? rep.display_away)}</span>
+                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)} vs {displayTeamName(rep.away_team, rep.display_away ?? rep.prov_away)}</span>
                         <button
                           title="Copy event"
                           className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.prov_home ?? rep.display_home)); }}
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)); }}
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                         </button>
@@ -873,7 +873,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {rep.sport}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
+                        {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">
@@ -1082,7 +1082,7 @@ export function ValuePage({ providers }: ValuePageProps) {
               <tbody>
                 <tr>
                   <td className="text-muted">Match</td>
-                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.prov_home ?? freebetPopup.opp.display_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.prov_away ?? freebetPopup.opp.display_away)}</td>
+                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.display_home ?? freebetPopup.opp.prov_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.display_away ?? freebetPopup.opp.prov_away)}</td>
                 </tr>
                 <tr>
                   <td className="text-muted">Stake</td>
@@ -1125,8 +1125,8 @@ function resolveOutcomeName(opp: Opportunity): string {
   const outcome = opp.outcome1;
   const point = opp.point != null ? ` ${opp.point}` : '';
   const tag = ` [${marketLabel(opp.market)}]`;
-  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)}${point}${tag}`;
-  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}${point}${tag}`;
+  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${point}${tag}`;
+  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${point}${tag}`;
   if (outcome === 'draw') return `Draw${tag}`;
   if (outcome === 'over') return `Over${point}${tag}`;
   if (outcome === 'under') return `Under${point}${tag}`;

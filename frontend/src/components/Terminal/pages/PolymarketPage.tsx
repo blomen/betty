@@ -595,7 +595,7 @@ export function PolymarketPage() {
                           {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
                         </div>
                         <div className="text-muted2 text-[11px]">
-                          {vb.sport}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' ? ` · ${vb.market}` : ''}{vb.league ? ` · ${vb.league}` : ''}{' · '}{formatDateTime(vb.start_time)}
+                          {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
                         </div>
                       </td>
                       <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>

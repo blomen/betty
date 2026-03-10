@@ -139,8 +139,8 @@ export function ReversePage() {
     const outcome = opp.outcome1;
     const point = opp.point != null ? ` ${opp.point}` : '';
     const tag = ` [${marketLabel(opp.market)}]`;
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)}${point}${tag}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}${point}${tag}`;
+    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${point}${tag}`;
+    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${point}${tag}`;
     if (outcome === 'draw') return `Draw${tag}`;
     if (outcome === 'over') return `Over${point}${tag}`;
     if (outcome === 'under') return `Under${point}${tag}`;
@@ -316,18 +316,18 @@ export function ReversePage() {
                   >
                     <td>
                       <div className="flex items-center gap-2 min-w-0 group/copy">
-                        <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)} vs {displayTeamName(opp.away_team, opp.prov_away ?? opp.display_away)}</span>
+                        <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)} vs {displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}</span>
                         <button
                           title="Copy event"
                           className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.prov_home ?? opp.display_home)); }}
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)); }}
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                         </button>
                         {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{opp.skip_reason}</span>}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {opp.sport}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatDateTime(opp.starts_at)}
+                        {opp.sport}{opp.league ? ` · ${opp.league}` : ''}{opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''} · {formatDateTime(opp.starts_at)}
                       </div>
                     </td>
                     <td className="text-right text-text text-sm">{resolveOutcome(opp)}</td>
