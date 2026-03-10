@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..db.models import Event, Odds, Opportunity, Bet
 
@@ -106,6 +107,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -182,6 +184,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -252,6 +255,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -305,6 +309,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(

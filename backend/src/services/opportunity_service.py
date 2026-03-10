@@ -7,7 +7,7 @@ from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
-from ..constants import PROVIDER_CANONICAL, MAJOR_LEAGUES_FLAT
+from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT
 from ..db.models import Event, Provider, Odds
 from ..risk.allocator import ProviderAllocator
 
@@ -51,9 +51,17 @@ class OpportunityService:
         limit: int = 2000,
     ) -> dict:
         """List active opportunities with stake recommendations for value bets."""
-        provider_ids = (
-            [p.strip() for p in providers.split(',')] if providers else None
-        )
+        provider_ids = None
+        if providers:
+            raw_ids = [p.strip() for p in providers.split(',')]
+            # Expand to include canonical providers so dutch/reverse stored
+            # under canonical names are matched when filtering by member alias
+            expanded = set(raw_ids)
+            for pid in raw_ids:
+                canon = PROVIDER_CANONICAL.get(pid)
+                if canon:
+                    expanded.add(canon)
+            provider_ids = list(expanded)
 
         rows = self.opp_repo.find_active(
             type=type,

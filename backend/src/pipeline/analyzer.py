@@ -109,7 +109,7 @@ class OpportunityAnalyzer:
 
         results = {
             "value": {"found": 0, "new": 0, "fanned": 0},
-            "dutch": {"found": 0, "new": 0, "fanned": 0},
+            "dutch": {"found": 0, "new": 0},
             "reverse": {"found": 0, "new": 0},
             "reverse_value": {"found": 0, "new": 0},
             "events_analyzed": len(events),
@@ -132,7 +132,6 @@ class OpportunityAnalyzer:
                 dutch_count = self._detect_dutch(event, market, odds_by_outcome, odds_grouped)
                 results["dutch"]["found"] += dutch_count["dutch_found"]
                 results["dutch"]["new"] += dutch_count["dutch_new"]
-                results["dutch"]["fanned"] += dutch_count.get("dutch_fanned", 0)
                 results["reverse"]["found"] += dutch_count["reverse_found"]
                 results["reverse"]["new"] += dutch_count["reverse_new"]
 
@@ -394,7 +393,7 @@ class OpportunityAnalyzer:
         Returns:
             {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
         """
-        result = {"dutch_found": 0, "dutch_new": 0, "dutch_fanned": 0, "reverse_found": 0, "reverse_new": 0}
+        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0}
 
         opp = self.scanner._find_dutch_in_market(
             event=event,
@@ -421,54 +420,41 @@ class OpportunityAnalyzer:
 
         result["dutch_found"] = 1
 
-        # Fan out dutch opportunities: for each soft leg, expand to all platform members
-        # Build list of fan-out provider combinations for the soft legs
-        soft_leg_indices = [i for i, leg in enumerate(opp.legs) if leg.get("edge_pct", 0) > 0]
+        # ── Post-validation: reject if platform dedup failed ──
+        # Safety net: ensure no two soft legs share the same canonical platform.
+        # The scanner's _resolve_platform_conflicts should prevent this, but
+        # this guard catches any edge cases or regressions.
+        soft_legs = [leg for leg in opp.legs if not leg.get("is_sharp", False)]
+        seen_canonicals: set[str] = set()
+        has_platform_violation = False
+        for leg in soft_legs:
+            canon = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+            if canon in seen_canonicals:
+                has_platform_violation = True
+                logger.warning(
+                    f"[Analyzer] Platform violation detected! {event.id} {market}: "
+                    f"multiple soft legs on canonical '{canon}' — skipping dutch"
+                )
+                break
+            seen_canonicals.add(canon)
 
-        # Collect all platform member sets for soft legs
-        fan_out_sets = {}
-        for i in soft_leg_indices:
-            leg_provider = opp.legs[i]["provider"]
-            fan_out_sets[i] = CANONICAL_MEMBERS.get(leg_provider, [leg_provider])
+        if has_platform_violation:
+            return result
 
-        if not soft_leg_indices or all(len(fan_out_sets[i]) <= 1 for i in soft_leg_indices):
-            # No fan-out needed — single provider per leg
-            is_new = self.opp_repo.upsert_dutch(
-                event_id=event.id,
-                market=clean_market,
-                legs=opp.legs,
-                combined_edge_pct=opp.combined_edge_pct,
-                guaranteed_profit_pct=opp.guaranteed_profit_pct,
-                point=point_value,
-                arb_profit_pct=opp.arb_profit_pct,
-                arb_legs=opp.arb_legs,
-            )
-            if is_new:
-                result["dutch_new"] = 1
-        else:
-            # Fan out: create one dutch opportunity per member provider combination
-            # For simplicity, fan out the first soft leg (most common case: one soft + pinnacle)
-            for idx in soft_leg_indices:
-                result["dutch_fanned"] += len(fan_out_sets[idx]) - 1
-                for member in fan_out_sets[idx]:
-                    fanned_legs = []
-                    for i, leg in enumerate(opp.legs):
-                        if i == idx:
-                            fanned_legs.append({**leg, "provider": member})
-                        else:
-                            fanned_legs.append(leg)
-
-                    is_new = self.opp_repo.upsert_dutch(
-                        event_id=event.id,
-                        market=clean_market,
-                        legs=fanned_legs,
-                        combined_edge_pct=opp.combined_edge_pct,
-                        guaranteed_profit_pct=opp.guaranteed_profit_pct,
-                        point=point_value,
-                        arb_profit_pct=opp.arb_profit_pct,
-                        arb_legs=opp.arb_legs,
-                    )
-                    if is_new:
-                        result["dutch_new"] += 1
+        # Store once with canonical providers (no fan-out needed for dutch —
+        # there's only one row per event+market, so fan-out to platform members
+        # would overwrite the same row N times with only the last write persisting).
+        is_new = self.opp_repo.upsert_dutch(
+            event_id=event.id,
+            market=clean_market,
+            legs=opp.legs,
+            combined_edge_pct=opp.combined_edge_pct,
+            guaranteed_profit_pct=opp.guaranteed_profit_pct,
+            point=point_value,
+            arb_profit_pct=opp.arb_profit_pct,
+            arb_legs=opp.arb_legs,
+        )
+        if is_new:
+            result["dutch_new"] = 1
 
         return result
