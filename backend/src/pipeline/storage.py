@@ -22,6 +22,15 @@ from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EX
 logger = logging.getLogger(__name__)
 
 
+def _extract_date_str(start_time) -> str:
+    """Extract YYYYMMDD date string from start_time (str or datetime)."""
+    if isinstance(start_time, str):
+        return start_time.split('T')[0].replace('-', '')
+    elif hasattr(start_time, 'strftime'):
+        return start_time.strftime('%Y%m%d')
+    return "00000000"
+
+
 def _parse_display_names(event_name: str) -> tuple[str | None, str | None]:
     """Parse original cased team names from event.name (e.g. 'León vs Necaxa')."""
     if not event_name:
@@ -184,7 +193,6 @@ def store_polymarket_event(
     fuzzy_threshold: int = 90,
     min_individual_score: int = 80,
     odds_batch: "OddsBatchProcessor" = None,
-    pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
     date_index: dict = None,
 ) -> tuple[bool, int, int]:
@@ -220,10 +228,7 @@ def store_polymarket_event(
     default_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
 
     # Diagnostic logging for matching
-    if isinstance(event.start_time, datetime):
-        date_str = event.start_time.strftime("%Y%m%d")
-    else:
-        date_str = str(event.start_time)[:10].replace('-', '') if event.start_time else "00000000"
+    date_str = _extract_date_str(event.start_time)
 
     logger.debug(
         f"[polymarket] Matching '{home_team} vs {away_team}' sport={kambi_sport} "
@@ -520,12 +525,7 @@ def _resolve_event_id(
         return default_id, False
 
     # 2. Fuzzy match against memory cache
-    if isinstance(event.start_time, str):
-        event_date = event.start_time.split('T')[0].replace('-', '')
-    elif hasattr(event.start_time, 'strftime'):
-        event_date = event.start_time.strftime('%Y%m%d')
-    else:
-        event_date = "00000000"
+    event_date = _extract_date_str(event.start_time)
 
     # Use date index for O(1) candidate lookup instead of O(N) scan
     if date_index is not None:
@@ -682,7 +682,6 @@ def store_provider_event(
     prefix_filter_length: int = 3,
     odds_batch: "OddsBatchProcessor" = None,
     require_match: bool = False,
-    pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
     max_asymmetry_diff: int = 25,
     min_for_asymmetry_check: int = 80,
@@ -736,12 +735,7 @@ def store_provider_event(
         is_new_event = True
 
         # Add to cache for subsequent providers to match against
-        if isinstance(event.start_time, str):
-            date_str = event.start_time.split('T')[0].replace('-', '')
-        elif hasattr(event.start_time, 'strftime'):
-            date_str = event.start_time.strftime('%Y%m%d')
-        else:
-            date_str = "00000000"
+        date_str = _extract_date_str(event.start_time)
 
         _update_event_cache(
             event_cache, date_index or {},
@@ -1028,8 +1022,12 @@ class OddsBatchProcessor:
         Includes retry logic for SQLite "database is locked" errors that occur
         during concurrent extraction (multiple providers flushing simultaneously).
 
-        Uses short sleeps (50-200ms) to avoid blocking the async event loop —
-        SQLite locks typically clear within milliseconds.
+        Note: Uses synchronous time.sleep() for retry backoff because this method
+        is called from synchronous contexts (__exit__, add()). The sleeps are
+        very short (50-200ms) and SQLite locks typically clear within milliseconds.
+        Making this async would require converting OddsBatchProcessor, its callers
+        in storage.py, and all context-manager usage sites — not worth the churn
+        for sub-second retry waits.
         """
         if not self._pending:
             return

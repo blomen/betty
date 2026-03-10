@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -130,27 +131,8 @@ export function ReversePage() {
   const { sorted, sort: reverseSort, toggle: toggleReverseSort } =
     useMultiSort<Opportunity, ReverseSortCol>(filtered, reverseSortExtractors, { column: 'edge', direction: 'desc' });
 
-  const marketLabel = (market: string): string => {
-    if (market === 'moneyline') return 'ML';
-    const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
-    if (mapMatch) {
-      const prefix = mapMatch[1] === 'total' ? 'T ' : '';
-      return `${prefix}Map ${mapMatch[2]}`;
-    }
-    return market.toUpperCase();
-  };
-
-  const resolveOutcome = (opp: Opportunity): string => {
-    const outcome = opp.outcome1;
-    const point = opp.point != null ? ` ${opp.point}` : '';
-    const tag = ` [${marketLabel(opp.market)}]`;
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${point}${tag}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${point}${tag}`;
-    if (outcome === 'draw') return `Draw${tag}`;
-    if (outcome === 'over') return `Over${point}${tag}`;
-    if (outcome === 'under') return `Under${point}${tag}`;
-    return `${outcome}${tag}`;
-  };
+  const resolveOutcome = (opp: Opportunity): string =>
+    resolveOutcomeBase(opp.outcome1, opp, opp.point, true);
 
   const getOddsKey = (opp: Opportunity) => `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
 

@@ -347,22 +347,22 @@ class OpportunityRepo:
         ).delete(synchronize_session=False)
 
         # 3. Delete opportunities for past events (but keep live/finished for settlement)
-        past_event_subq = self.db.query(Event.id).filter(
-            Event.start_time < now,
-            or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
-        ).subquery()
-        stats["past_events"] = self.db.query(Opportunity).filter(
-            Opportunity.event_id.in_(self.db.query(past_event_subq))
-        ).delete(synchronize_session=False)
-
-        # 4. Delete past events + their odds (cascade)
-        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
+        #    Also reuse this set for step 4 (event deletion) to avoid a duplicate query
         past_event_ids = [
             e.id for e in self.db.query(Event.id).filter(
                 Event.start_time < now,
                 or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
             ).all()
         ]
+        if past_event_ids:
+            for i in range(0, len(past_event_ids), 500):
+                batch = past_event_ids[i:i + 500]
+                stats["past_events"] += self.db.query(Opportunity).filter(
+                    Opportunity.event_id.in_(batch)
+                ).delete(synchronize_session=False)
+
+        # 4. Delete past events + their odds (cascade)
+        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
         if past_event_ids:
             # Safety: query ALL bets (not just past_event_ids) to ensure
             # we never delete an event referenced by any bet
@@ -377,12 +377,9 @@ class OpportunityRepo:
             if deletable_ids:
                 for i in range(0, len(deletable_ids), 500):
                     batch = deletable_ids[i:i + 500]
-                    past_events = self.db.query(Event).filter(
+                    stats["past_events_deleted"] += self.db.query(Event).filter(
                         Event.id.in_(batch)
-                    ).all()
-                    for event in past_events:
-                        self.db.delete(event)
-                        stats["past_events_deleted"] += 1
+                    ).delete(synchronize_session='fetch')
 
         # 5. Deactivate remaining (will be refreshed during detection)
         stats["deactivated"] = self.db.query(Opportunity).filter(

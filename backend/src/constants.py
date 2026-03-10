@@ -10,8 +10,8 @@ MAP_MARKETS = frozenset({
     'total_m1', 'total_m2', 'total_m3', 'total_m4', 'total_m5',
 })
 
-# Extended markets stored for Pinnacle only — used by boost EV enrichment
-# and combo decomposition, NOT by the value scanner.
+# Extended markets stored for Pinnacle only — used by boost EV enrichment,
+# NOT by the value scanner.
 ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS | frozenset({
     'team_total',       # Team over/under (Pinnacle API type)
     '1x2_1h',           # First-half 1x2 (period=1)
@@ -26,9 +26,6 @@ SHARP_PROVIDERS = frozenset({'pinnacle'})
 # Pinnacle: sharp baseline for all markets.
 # Polymarket: needs map markets for value comparison vs Pinnacle.
 EXTENDED_MARKET_PROVIDERS = SHARP_PROVIDERS | frozenset({'polymarket'})
-
-# Providers excluded from opportunity scans (not used for betting)
-EXCLUDED_FROM_SCANS = frozenset()
 
 # Platform map: provider_id -> platform name
 # Providers on the same platform share the same odds engine (not independent).

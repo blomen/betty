@@ -88,8 +88,14 @@ class AltenarRetriever(Retriever):
         410: 'spread',         # Handicap incl. OT+penalties (ice hockey)
     }
 
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
+    def __init__(self, config: Dict[str, Any], transport=None, circuit_breaker=None, rate_limit_config=None):
+        if transport is None:
+            from ..core import HttpTransport
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
+        super().__init__(config, transport)
 
         # Altenar API base
         self.api_base = config.get("api_base", "https://sb2frontend-altenar2.biahosted.com/api")
@@ -101,13 +107,6 @@ class AltenarRetriever(Retriever):
     def _build_id_index(items: List[Dict]) -> Dict[int, Dict]:
         """Build O(1) lookup index from list of dicts with 'id' field."""
         return {item['id']: item for item in items if 'id' in item}
-
-    def _find_by_id(self, items: List[Dict], target_id: int) -> Optional[Dict]:
-        """Find item in list by ID (O(n) fallback for non-indexed lists)."""
-        for item in items:
-            if item.get('id') == target_id:
-                return item
-        return None
 
     def _standardize_outcome(
         self,

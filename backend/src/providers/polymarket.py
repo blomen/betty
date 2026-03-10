@@ -125,7 +125,13 @@ class PolymarketRetriever(Retriever):
     # Analysis shows: $0 = 92% untraded, $1-100 = 41% untraded, $100+ = 20% untraded
     MIN_VOLUME = 100
 
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
+        if transport is None:
+            from ..core import HttpTransport
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.clob_url = config.get("clob_url", "https://clob.polymarket.com")
@@ -570,8 +576,6 @@ class PolymarketRetriever(Retriever):
         - Tennis: "7-6(7-3), 6-7(5-7), 6-3" → count sets won → (2, 1)
         - Esports BO: "000-000|2-1|Bo3" → (2, 1)  [middle segment is map/game score]
         """
-        import re
-
         s = score_str.strip()
         if not s:
             return None
@@ -770,7 +774,6 @@ class PolymarketRetriever(Retriever):
 
     def _parse_teams(self, title: str) -> tuple[str, str]:
         """Extract home and away teams from event title."""
-        import re
         clean_title = title
 
         # Strip common suffixes
@@ -910,8 +913,6 @@ class PolymarketRetriever(Retriever):
     def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
         """Parse a single market (moneyline only - skips totals/spreads)."""
         try:
-            import re
-
             # Skip non-moneyline markets based on question text
             question = data.get("question", "")
             question_lower = question.lower()
@@ -1051,7 +1052,6 @@ class PolymarketRetriever(Retriever):
         Detection: question starts with "Spread:" but NOT "1H Spread".
         Example: "Spread: Pistons (-2.5)" → spread market with point=-2.5 for Pistons.
         """
-        import re
         try:
             question = data.get("question", "")
 
@@ -1145,7 +1145,6 @@ class PolymarketRetriever(Retriever):
         Detection: question contains " O/U " but NOT "1H O/U" and NOT player props.
         Example: "Knicks vs. Pistons: O/U 222.5" → total market with point=222.5.
         """
-        import re
         try:
             question = data.get("question", "")
 
@@ -1308,7 +1307,6 @@ class PolymarketRetriever(Retriever):
         Outcomes are team names (not Yes/No).
         Maps to 'spread' market type (same as Pinnacle period 0 spread).
         """
-        import re
         try:
             smt = data.get("sportsMarketType", "")
             if smt != "map_handicap":

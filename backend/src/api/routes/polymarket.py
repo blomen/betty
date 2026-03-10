@@ -1,5 +1,6 @@
 """Polymarket API routes: matched events, value bets, stats, mybets, rewards."""
 
+import json
 import logging
 import re
 import time
@@ -688,7 +689,7 @@ async def get_polymarket_rewards(
             question = (m.get("question") or "").lower()
             if outcome_prices:
                 try:
-                    prices = outcome_prices if isinstance(outcome_prices, list) else eval(outcome_prices)
+                    prices = outcome_prices if isinstance(outcome_prices, list) else json.loads(outcome_prices)
                     group_slug = (m.get("groupItemTitle") or "").lower()
                     if group_slug:
                         # Grouped event (football 1x2): each sub-market = one outcome

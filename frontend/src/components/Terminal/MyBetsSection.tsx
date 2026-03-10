@@ -1,20 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase, fmtAmount, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { ProviderName } from './ProviderName';
 import { SearchInput } from './FilterBar';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
 type BetCategory = 'upcoming' | 'live' | 'ft';
-
-/** Format amount in its native currency ($ for USD/USDC, kr for SEK). */
-function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD' || currency === 'USDC') {
-    return `$${amount.toFixed(decimals ?? 2)}`;
-  }
-  return `${amount.toFixed(decimals ?? 0)} kr`;
-}
 
 interface MyBetsSectionProps {
   /** Filter function to select only bets relevant to this page */
@@ -148,18 +141,6 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
     const live: Bet[] = [];
     const ft: Bet[] = [];
 
-    // Typical sport durations (ms) — used when Pinnacle hasn't set match_status
-    const SPORT_DURATION: Record<string, number> = {
-      football: 2.5 * 3600000,
-      basketball: 3 * 3600000,
-      ice_hockey: 3 * 3600000,
-      tennis: 4 * 3600000,
-      esports: 4 * 3600000,
-      handball: 2.5 * 3600000,
-      mma: 3 * 3600000,
-    };
-    const DEFAULT_DURATION = 3 * 3600000;
-
     for (const b of bets) {
       const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
 
@@ -271,16 +252,8 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
     }
   };
 
-  const resolveOutcome = (b: Bet): string => {
-    const outcome = b.outcome ?? '';
-    const point = b.point != null ? ` ${b.point}` : '';
-    if (outcome === 'home') return displayTeamName(b.home_team, b.display_home);
-    if (outcome === 'away') return displayTeamName(b.away_team, b.display_away);
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${point}`;
-    if (outcome === 'under') return `Under${point}`;
-    return outcome;
-  };
+  const resolveOutcome = (b: Bet): string =>
+    resolveOutcomeBase(b.outcome ?? '', b, b.point);
 
   const eventLabel = (b: Bet): string => {
     if (b.home_team && b.away_team) return `${displayTeamName(b.home_team, b.display_home)} vs ${displayTeamName(b.away_team, b.display_away)}`;

@@ -126,7 +126,11 @@ class ExtractorFactory:
                 rate_limit_config=rate_limit_config
             )
         elif retriever_type == "polymarket":
-            retriever = PolymarketRetriever(config)
+            retriever = PolymarketRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         elif retriever_type == "spectate":
             # Spectate providers (888sport, MrGreen) - headless mode works
             from .core import BrowserTransport
@@ -146,7 +150,11 @@ class ExtractorFactory:
             transport = BrowserTransport(headless=False, circuit_breaker=self._circuit_breaker)
             retriever = SnabbareRetriever(config, transport=transport)
         elif retriever_type == "pinnacle":
-            retriever = PinnacleRetriever(config)
+            retriever = PinnacleRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         elif retriever_type == "tenbet":
             # 10Bet - Playtech/Mojito SPA, DOM scraping with ta-* selectors
             # Headless works (no anti-bot protection) and is much faster
@@ -156,7 +164,11 @@ class ExtractorFactory:
             retriever = TenBetRetriever(config, transport=transport)
         elif retriever_type == "altenar":
             # Altenar platform - REST API extraction (no browser needed)
-            retriever = AltenarRetriever(config)
+            retriever = AltenarRetriever(
+                config,
+                circuit_breaker=self._circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         elif retriever_type == "betconstruct":
             # BetConstruct/Swarm WebSocket - direct API (no browser needed)
             retriever = VbetRetriever(config)

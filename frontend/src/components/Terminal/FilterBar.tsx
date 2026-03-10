@@ -417,14 +417,14 @@ interface FreshnessIndicatorProps {
 /**
  * Shows extraction age per tier in HH:MM format with color coding.
  * Shows "extracting" for tiers currently running.
- * Auto-refreshes every second.
+ * Auto-refreshes every 30 seconds.
  */
 export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
   const [, setTick] = useState(0);
   const tiersProgress = useTiersProgress();
 
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 1_000);
+    const id = setInterval(() => setTick(t => t + 1), 30_000);
     return () => clearInterval(id);
   }, []);
 

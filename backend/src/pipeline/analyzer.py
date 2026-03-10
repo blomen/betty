@@ -24,12 +24,24 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..db.models import Profile
-from ..repositories import EventRepo, OpportunityRepo
+from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
 from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_market_point(market: str) -> tuple[str, float | None]:
+    """Parse market key into (clean_market, point_value). E.g., 'spread_-1.5' -> ('spread', -1.5)."""
+    if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
+        parts = market.rsplit("_", 1)
+        if len(parts) == 2:
+            try:
+                return parts[0], float(parts[1])
+            except ValueError:
+                pass
+    return market, None
 
 
 class OpportunityAnalyzer:
@@ -54,7 +66,6 @@ class OpportunityAnalyzer:
         """
         self.session = session
         self.scanner = OpportunityScanner(session)
-        self.event_repo = EventRepo(session)
         self.opp_repo = OpportunityRepo(session)
 
         # Get thresholds from active profile or use defaults
@@ -93,8 +104,8 @@ class OpportunityAnalyzer:
         # Clean up stale opportunities before detection
         cleanup_stats = self.opp_repo.cleanup_stale()
 
-        # Get events with odds from 2+ providers
-        events = self.event_repo.get_multi_provider_events(min_providers=2)
+        # Pre-load events once — shared across all scan types (value, dutch, reverse)
+        events = self.scanner.get_multi_provider_events(min_providers=2)
 
         results = {
             "value": {"found": 0, "new": 0, "fanned": 0},
@@ -260,16 +271,7 @@ class OpportunityAnalyzer:
             )
 
             # Extract point value from market key if present
-            point_value = None
-            clean_market = market
-            if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
-                parts = market.rsplit("_", 1)
-                if len(parts) == 2:
-                    try:
-                        point_value = float(parts[-1])
-                        clean_market = parts[0]
-                    except ValueError:
-                        pass
+            clean_market, point_value = _parse_market_point(market)
 
             # Fan out to all platform members (e.g., unibet → all 8 Kambi brands)
             fan_providers = CANONICAL_MEMBERS.get(vb.provider, [vb.provider])
@@ -344,16 +346,7 @@ class OpportunityAnalyzer:
             result["found"] += 1
 
             # Extract point value from market key if present
-            point_value = None
-            clean_market = market
-            if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
-                parts = market.rsplit("_", 1)
-                if len(parts) == 2:
-                    try:
-                        point_value = float(parts[-1])
-                        clean_market = parts[0]
-                    except ValueError:
-                        pass
+            clean_market, point_value = _parse_market_point(market)
 
             outcomes_json = [
                 {
@@ -418,16 +411,7 @@ class OpportunityAnalyzer:
             return result
 
         # Extract point from market key
-        point_value = None
-        clean_market = market
-        if "_" in market and market.split("_")[-1].replace(".", "").replace("-", "").isdigit():
-            parts = market.rsplit("_", 1)
-            if len(parts) == 2:
-                try:
-                    point_value = float(parts[-1])
-                    clean_market = parts[0]
-                except ValueError:
-                    pass
+        clean_market, point_value = _parse_market_point(market)
 
         providers_str = ", ".join(f"{leg['provider']}({leg['outcome']})" for leg in opp.legs)
         logger.debug(

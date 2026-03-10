@@ -683,34 +683,3 @@ class OpportunityService:
             result[orig_key] = meta_index.get(key)
 
         return result
-
-    def _lookup_provider_meta(
-        self,
-        event_id: str,
-        provider_id: str,
-        market: str,
-        outcome: str,
-        point: float | None,
-    ) -> dict | None:
-        """Look up provider_meta from the Odds table for browser navigation.
-
-        Handles platform consolidation: if provider_id is non-canonical (e.g. 'expekt'),
-        the Odds row is stored under the canonical provider ('unibet').
-        """
-        try:
-            canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
-            q = self.db.query(Odds.provider_meta).filter(
-                Odds.event_id == event_id,
-                Odds.provider_id == canonical,
-                Odds.market == market,
-                Odds.outcome == outcome,
-            )
-            if point is not None:
-                q = q.filter(Odds.point == point)
-            else:
-                q = q.filter(Odds.point.is_(None))
-
-            row = q.first()
-            return row[0] if row and row[0] else None
-        except Exception:
-            return None

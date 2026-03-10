@@ -8,7 +8,6 @@ Also provides deduplicate_specials(), filter_expired(), store_specials_to_db().
 """
 
 import logging
-import re
 from datetime import datetime, timezone
 
 from rapidfuzz import fuzz
@@ -18,20 +17,6 @@ from ..db.models import Event, SpecialOdds
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
-
-
-def _fix_encoding(text: str) -> str:
-    """Fix double-encoded UTF-8 (e.g., 'mÃ¥lgÃ¶rare' → 'målgörare')."""
-    for encoding in ("latin-1", "cp1252"):
-        try:
-            fixed = text.encode(encoding).decode("utf-8")
-            high_orig = sum(1 for c in text if ord(c) > 127)
-            high_fixed = sum(1 for c in fixed if ord(c) > 127)
-            if high_fixed < high_orig:
-                return fixed
-        except (UnicodeDecodeError, UnicodeEncodeError):
-            continue
-    return text
 
 
 def deduplicate_specials(specials: list[dict]) -> list[dict]:

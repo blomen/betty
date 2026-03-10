@@ -1,6 +1,5 @@
 import type {
   Opportunity,
-  EventDetail,
   ProvidersResponse,
   BankrollInfo,
   BankrollStats,
@@ -43,6 +42,7 @@ export interface SpecialItem {
   // Boost edge (boosted/original)
   edge_pct: number | null;
   is_positive_ev: boolean | null;
+  fair_odds: number | null;
   // LLM enrichment
   llm_title: string | null;
   llm_probability: number | null;
@@ -474,10 +474,6 @@ export const api = {
     return fetchJson(`/events?${params}`);
   },
 
-  async getEvent(eventId: string): Promise<EventDetail> {
-    return fetchJson<EventDetail>(`/events/${eventId}`);
-  },
-
   // ============ Opportunities ============
   async getOpportunities(
     type?: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value',
@@ -591,14 +587,6 @@ export const api = {
     }, 2, 30000);
   },
 
-  async closeStartedBets(): Promise<{
-    success: boolean;
-    processed: number;
-    updated: number;
-  }> {
-    return fetchJson('/bets/close-started', { method: 'POST' });
-  },
-
   async autoSettleBets(): Promise<{
     success: boolean;
     polymarket_scores?: { matched: number; updated: number; skipped: number };
@@ -608,17 +596,6 @@ export const api = {
     results: Array<{ bet_id: number; result: string; payout: number; score: string }>;
   }> {
     return fetchJson('/bets/auto-settle', { method: 'POST' });
-  },
-
-  async settleBet(
-    betId: number,
-    data: { result: 'won' | 'lost' | 'void'; payout: number }
-  ): Promise<{ success: boolean; profit: number }> {
-    return fetchJson(`/bets/${betId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
   },
 
   async editBet(
@@ -655,13 +632,6 @@ export const api = {
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/rewards?${params}`, undefined, 60_000);
-  },
-
-  async getPolymarketMyBets(status?: string, limit = 100): Promise<import('@/types').PolyMyBetsResponse> {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    params.set('limit', limit.toString());
-    return fetchJson(`/polymarket/mybets?${params}`);
   },
 
   // ============ Risk Management ============

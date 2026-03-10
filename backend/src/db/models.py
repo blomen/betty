@@ -115,7 +115,7 @@ class Odds(Base):
     market = Column(String, nullable=False)     # "1x2", "moneyline"
     outcome = Column(String, nullable=False)    # "home", "away", "draw"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
-    point = Column(Float, nullable=True)        # Reserved for future use
+    point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
     provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
 

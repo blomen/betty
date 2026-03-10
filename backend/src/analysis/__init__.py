@@ -1,11 +1,9 @@
 # Analysis package - value, bonus detection
-from .value import find_value, find_best_value, scan_for_value, get_fair_odds, ValueBet
-from .bonus import find_best_hedge, calculate_free_bet_value, BonusMatch
+from .value import find_value, ValueBet
+from .bonus import find_best_hedge, BonusMatch
 from .devig import (
     calculate_margin,
     devig_multiplicative,
-    devig_additive,
-    devig_power,
     get_fair_odds_for_outcome,
 )
 from .scanner import OpportunityScanner, BonusOpportunity

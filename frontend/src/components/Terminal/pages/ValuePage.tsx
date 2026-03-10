@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
@@ -32,13 +33,6 @@ interface GroupedSpecial {
   rep: SpecialItem;
   providers: string[];
 }
-
-// LLM confidence colors
-const LLM_CONFIDENCE_COLOR: Record<string, string> = {
-  high: 'text-success',
-  medium: 'text-sky-400',
-  low: 'text-warning',
-};
 
 interface ValuePageProps {
   providers: Provider[];
@@ -114,8 +108,6 @@ export function ValuePage({ providers }: ValuePageProps) {
     stake: number;
   } | null>(null);
   const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
-
-  const [bankrollTotal, setBankrollTotal] = useState<number>(0);
 
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
@@ -502,16 +494,6 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
-  const resolveOutcome = (outcome: string, opp: Opportunity, point?: number | null): string => {
-    const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${p}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${p}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${p}`;
-    if (outcome === 'under') return `Under${p}`;
-    return outcome;
-  };
-
   return (
     <div className="space-y-2">
       {/* Header */}
@@ -889,7 +871,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </span>
                     </td>
-                    <td className="text-right text-text text-sm">{resolveOutcomeName(rep)}</td>
+                    <td className="text-right text-text text-sm">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
                     <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
                       {editingOdds === groupOddsKey ? (
                         <input
@@ -1116,25 +1098,3 @@ export function ValuePage({ providers }: ValuePageProps) {
 }
 
 
-function marketLabel(market: string): string {
-  if (market === 'moneyline') return 'ML';
-  // Esports map markets: moneyline_m1 → "M1", total_m2 → "T M2"
-  const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
-  if (mapMatch) {
-    const prefix = mapMatch[1] === 'total' ? 'T ' : '';
-    return `${prefix}Map ${mapMatch[2]}`;
-  }
-  return market.toUpperCase();
-}
-
-function resolveOutcomeName(opp: Opportunity): string {
-  const outcome = opp.outcome1;
-  const point = opp.point != null ? ` ${opp.point}` : '';
-  const tag = ` [${marketLabel(opp.market)}]`;
-  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${point}${tag}`;
-  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${point}${tag}`;
-  if (outcome === 'draw') return `Draw${tag}`;
-  if (outcome === 'over') return `Over${point}${tag}`;
-  if (outcome === 'under') return `Under${point}${tag}`;
-  return `${outcome}${tag}`;
-}

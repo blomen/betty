@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
 import { displayTeamName } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
@@ -42,23 +43,6 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 };
 
 // ── Sort types ───────────────────────────────────────────────────────
-
-/** Format amount in its native currency ($ for USD/USDC, kr for SEK). */
-function fmtAmount(amount: number, currency: string, decimals?: number): string {
-  if (currency === 'USD' || currency === 'USDC') {
-    return `$${amount.toFixed(decimals ?? 2)}`;
-  }
-  return `${amount.toFixed(decimals ?? 0)} kr`;
-}
-
-/** Format profit with +/- prefix in native currency. */
-function fmtProfit(amount: number, currency: string): string {
-  const prefix = amount >= 0 ? '+' : '-';
-  if (currency === 'USD' || currency === 'USDC') {
-    return `${prefix}$${Math.abs(amount).toFixed(2)}`;
-  }
-  return `${prefix}${Math.abs(amount).toFixed(0)} kr`;
-}
 
 /** Exchange rates to SEK for aggregation. */
 const RATE_TO_SEK: Record<string, number> = { USD: 10.50, USDC: 10.50, SEK: 1 };
@@ -482,16 +466,8 @@ export function BetsPage() {
     }
   };
 
-  const resolveOutcome = (bet: Bet): string => {
-    const outcome = bet.outcome || '-';
-    const point = bet.point != null ? ` ${bet.point}` : '';
-    if (outcome === 'home') return `${displayTeamName(bet.home_team, bet.display_home)}${point}`;
-    if (outcome === 'away') return `${displayTeamName(bet.away_team, bet.display_away)}${point}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${point}`;
-    if (outcome === 'under') return `Under${point}`;
-    return outcome;
-  };
+  const resolveOutcome = (bet: Bet): string =>
+    resolveOutcomeBase(bet.outcome || '-', bet, bet.point);
 
   const startEditing = (bet: Bet) => {
     setEditingBetId(bet.id);

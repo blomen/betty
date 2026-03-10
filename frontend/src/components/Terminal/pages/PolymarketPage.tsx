@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
@@ -14,11 +15,6 @@ const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == 
 /** Count Polymarket bets that need manual settlement (auto-settle couldn't handle them). */
 function countManualSettleBets(bets: Bet[]): number {
   const now = Date.now();
-  const SPORT_DURATION: Record<string, number> = {
-    football: 2.5 * 3600000, basketball: 3 * 3600000, ice_hockey: 3 * 3600000,
-    tennis: 4 * 3600000, esports: 4 * 3600000, handball: 2.5 * 3600000, mma: 3 * 3600000,
-  };
-  const DEFAULT_DURATION = 3 * 3600000;
 
   return bets.filter(polyBetFilter).filter(b => {
     // Only count bets on finished events that auto-settle couldn't determine
@@ -217,25 +213,12 @@ export function PolymarketPage() {
       ? displayTeamName(vb.home_team, vb.poly_home ?? vb.display_home)
       : displayTeamName(vb.away_team, vb.poly_away ?? vb.display_away);
 
-  const resolveOutcome = (vb: PolymarketValueBet): string => {
-    const point = 'point' in vb && vb.point != null ? ` ${vb.point}` : '';
-    const formatMkt = (m: string) => {
-      if (m === 'moneyline') return 'ML';
-      const mapMatch = m.match(/^(moneyline|total)_m(\d)$/);
-      if (mapMatch) {
-        const prefix = mapMatch[1] === 'total' ? 'T ' : '';
-        return `${prefix}Map ${mapMatch[2]}`;
-      }
-      return m.toUpperCase();
-    };
-    const tag = vb.market ? ` [${formatMkt(vb.market)}]` : '';
-    if (vb.outcome === 'home') return `${polyName(vb, 'home')}${point}${tag}`;
-    if (vb.outcome === 'away') return `${polyName(vb, 'away')}${point}${tag}`;
-    if (vb.outcome === 'draw') return `Draw${tag}`;
-    if (vb.outcome === 'over') return `Over${point}${tag}`;
-    if (vb.outcome === 'under') return `Under${point}${tag}`;
-    return `${vb.outcome ?? '?'}${tag}`;
-  };
+  const resolveOutcome = (vb: PolymarketValueBet): string =>
+    resolveOutcomeBase(vb.outcome ?? '?', {
+      ...vb,
+      display_home: vb.poly_home ?? vb.display_home,
+      display_away: vb.poly_away ?? vb.display_away,
+    }, 'point' in vb ? vb.point : null, true);
 
   const availableLeagues = useMemo(() => {
     const set = new Set<string>();

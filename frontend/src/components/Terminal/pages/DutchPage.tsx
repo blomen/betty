@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -259,7 +260,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         return { ...prev, [opp.id]: next };
       });
 
-      const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point);
+      const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point, true);
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       fetchData();
@@ -339,27 +340,6 @@ export function DutchPage({ providers }: DutchPageProps) {
       setIsPlacing(false);
       setPlacingLeg(null);
     }
-  };
-
-  const marketLabel = (market: string): string => {
-    if (market === 'moneyline') return 'ML';
-    const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
-    if (mapMatch) {
-      const prefix = mapMatch[1] === 'total' ? 'T ' : '';
-      return `${prefix}Map ${mapMatch[2]}`;
-    }
-    return market.toUpperCase();
-  };
-
-  const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
-    const p = point != null ? ` ${point}` : '';
-    const tag = ` [${marketLabel(opp.market)}]`;
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)}${p}${tag}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}${p}${tag}`;
-    if (outcome === 'draw') return `Draw${tag}`;
-    if (outcome === 'over') return `Over${p}${tag}`;
-    if (outcome === 'under') return `Under${p}${tag}`;
-    return `${outcome}${tag}`;
   };
 
   return (
@@ -565,7 +545,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                   <tr key={legIdx}>
                                     <td>
                                       <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
-                                      {resolveOutcome(leg.outcome, opp, opp.point)}
+                                      {resolveOutcome(leg.outcome, opp, opp.point, true)}
                                       {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
                                     </td>
                                     <td className="text-right"><ProviderName name={leg.provider} /></td>
