@@ -121,7 +121,7 @@ export function PolymarketPage() {
   const anyExtracting = tiersProgress?.any_running ?? false;
   useEffect(() => {
     if (!anyExtracting) return;
-    const id = setInterval(fetchValueData, 30_000);
+    const id = setInterval(fetchValueData, 60_000);
     return () => clearInterval(id);
   }, [anyExtracting, fetchValueData]);
 

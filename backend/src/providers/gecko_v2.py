@@ -160,6 +160,8 @@ class GeckoV2Retriever(BrowserRetriever):
         # API base URL (may differ from site_url, e.g., bethard uses d-cf.bethardplayground.net)
         self._api_base: Optional[str] = None
         self._last_run_id: Optional[str] = None
+        # Fail-fast: if session init fails once per run, skip remaining sports
+        self._session_init_failed: bool = False
 
     async def _ensure_session(self) -> bool:
         """
@@ -285,21 +287,31 @@ class GeckoV2Retriever(BrowserRetriever):
             self._api_headers = None
             self._api_base = None
             self._session_ready = False
+            self._session_init_failed = False  # Reset fail-fast flag for new run
             logger.debug(f"[{self.provider_id}] New run {run_id[:12]}... — clearing cached session")
         self._last_run_id = run_id
 
+        # Fail-fast: if session init already failed this run, skip immediately
+        if self._session_init_failed:
+            raise RetryableError(
+                "Session init already failed this run — skipping remaining sports",
+                provider_id=self.provider_id,
+            )
+
         try:
-            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=45)
+            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=75)
         except asyncio.TimeoutError:
-            logger.error(f"[{self.provider_id}] Session init timed out after 45s")
+            logger.error(f"[{self.provider_id}] Session init timed out after 75s")
             self._api_headers = None
             self._api_base = None
             self._session_ready = False
+            self._session_init_failed = True  # Prevent retries for remaining sports
             raise RetryableError(
                 "Session init timed out after 45s",
                 provider_id=self.provider_id,
             )
         if not session_ok:
+            self._session_init_failed = True  # Prevent retries for remaining sports
             raise RetryableError(
                 "Session init failed — no API headers captured",
                 provider_id=self.provider_id,

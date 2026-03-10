@@ -173,7 +173,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   const anyExtracting = tiersProgress?.any_running ?? false;
   useEffect(() => {
     if (!anyExtracting) return;
-    const id = setInterval(fetchData, 30_000);
+    const id = setInterval(fetchData, 60_000);
     return () => clearInterval(id);
   }, [anyExtracting, fetchData]);
 

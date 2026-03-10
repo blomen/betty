@@ -384,10 +384,21 @@ class PinnacleRetriever(Retriever):
         Parse markets from Pinnacle API response.
 
         Core markets (moneyline/spread/total): period 0, main lines only.
+        Period 6 (regulation time): ice hockey 1x2, plus spread/total when
+        period 0 doesn't have them (minor leagues).
         Enrichment markets (team_total, 1st-half moneyline/total): also extracted
         for boost EV enrichment — the value scanner ignores them.
         """
         parsed = []
+
+        # Pre-scan: which core market types does period 0 have?
+        # Used to avoid period-6 spread/total overwriting OT-included odds.
+        p0_types: set = set()
+        for market in raw_markets:
+            if (market.get("status") == "open" and market.get("period", 0) == 0
+                    and market.get("type") in self._CORE_TYPES
+                    and not market.get("isAlternate", False)):
+                p0_types.add(market["type"])
 
         for market in raw_markets:
             # Only process open markets
@@ -408,7 +419,7 @@ class PinnacleRetriever(Retriever):
                 "line_id": str(market.get("lineId", "")),
             }
 
-            # ── Period 0 (full game) ──
+            # ── Period 0 (full game / OT-included) ──
             if period == 0:
                 if market_type in self._CORE_TYPES:
                     # Skip alternate lines (only main lines for spread/total)
@@ -434,6 +445,27 @@ class PinnacleRetriever(Retriever):
                             f"[pinnacle] Unknown market type '{market_type}' "
                             f"period={period} prices={len(prices)}"
                         )
+
+            # ── Period 6 (regulation time) — ice hockey ──
+            # Ice hockey period=0 is OT-included (2-way moneyline);
+            # period=6 is regulation time (3-way moneyline with draw).
+            # Moneyline: always extract — auto-classifies as 1x2 (draw present).
+            # Spread/total: only extract if period=0 doesn't have them, to avoid
+            # overwriting OT-included odds with regulation-time odds.
+            elif period == 6:
+                if market_type in self._CORE_TYPES:
+                    if market_type in ("spread", "total") and market.get("isAlternate", False):
+                        continue
+
+                    if market_type == "moneyline":
+                        # Always extract — has draw, so auto-classifies as 1x2
+                        parsed.extend(self._parse_moneyline(prices, market_meta))
+                    elif market_type in ("spread", "total") and market_type not in p0_types:
+                        # Only fill in when period=0 doesn't offer this market type
+                        if market_type == "spread":
+                            parsed.extend(self._parse_spread(prices, market_meta))
+                        else:
+                            parsed.extend(self._parse_total(prices, market_meta))
 
             # ── Period 1 (first half) — enrichment only ──
             elif period == 1:

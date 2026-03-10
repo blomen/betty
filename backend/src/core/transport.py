@@ -115,9 +115,13 @@ class HttpTransport(Transport):
         if headers:
             req_headers.update(headers)
 
+        # Per-request timeout — prevents hanging connections without competing with sport timeout
+        # (sport timeout handles the overall deadline; this just catches stuck TCP connections)
+        req_timeout = aiohttp.ClientTimeout(total=90)
+
         # Retry loop for 429 handling
         for attempt in range(max_retries + 1):
-            async with self.session.get(url, params=params, headers=req_headers) as response:
+            async with self.session.get(url, params=params, headers=req_headers, timeout=req_timeout) as response:
                 # Handle 429 rate limit with exponential backoff
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
@@ -196,8 +200,10 @@ class HttpTransport(Transport):
         if headers:
             req_headers.update(headers)
 
+        req_timeout = aiohttp.ClientTimeout(total=90)
+
         for attempt in range(max_retries + 1):
-            async with self.session.post(url, data=data, json=json, headers=req_headers) as response:
+            async with self.session.post(url, data=data, json=json, headers=req_headers, timeout=req_timeout) as response:
                 if response.status == 429:
                     retry_after = response.headers.get('Retry-After', str(default_wait))
                     try:

@@ -107,7 +107,7 @@ export function ConnectionErrorBar() {
     }
 
     check();
-    const id = setInterval(check, 10_000);
+    const id = setInterval(check, 30_000);
     return () => { mounted = false; clearInterval(id); };
   }, []);
 

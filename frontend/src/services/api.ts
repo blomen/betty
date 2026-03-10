@@ -87,9 +87,9 @@ export interface StakePreviewResult {
 const API_BASE = '/api';
 
 // Configuration for fetch with retry
-const DEFAULT_TIMEOUT_MS = 30000; // 30 seconds
-const DEFAULT_RETRIES = 3;
-const INITIAL_BACKOFF_MS = 1000; // 1 second
+const DEFAULT_TIMEOUT_MS = 45000; // 45 seconds — generous for slow PCs under extraction load
+const DEFAULT_RETRIES = 1;        // 1 retry only — avoid retry storms when backend is busy
+const INITIAL_BACKOFF_MS = 2000;  // 2 seconds — give backend breathing room
 
 // Structured error classes
 export class ApiError extends Error {

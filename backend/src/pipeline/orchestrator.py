@@ -1407,12 +1407,15 @@ class ExtractionPipeline:
             raise
 
         finally:
-            # Cleanup
+            # Cleanup with timeout — Playwright browsers can hang on close
             if hasattr(extractor, 'close'):
-                if asyncio.iscoroutinefunction(extractor.close):
-                    await extractor.close()
-                else:
-                    extractor.close()
+                try:
+                    if asyncio.iscoroutinefunction(extractor.close):
+                        await asyncio.wait_for(extractor.close(), timeout=10)
+                    else:
+                        extractor.close()
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.warning(f"[{provider_id}] Extractor cleanup failed: {e}")
 
     def _count_matched_events(self) -> int:
         """

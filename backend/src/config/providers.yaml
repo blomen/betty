@@ -8,7 +8,7 @@ orchestrator:
   # Type-aware scheduling allows higher total concurrent providers by mixing types
   max_concurrent_providers: 10         # Increased - mixing allows higher total
   max_concurrent_sports_per_provider: 4 # Max sports per provider
-  max_browser_instances: 6             # Global browser limit (5 gecko + spectate/comeon)
+  max_browser_instances: 3             # Global browser limit (reduced from 6 — slow PC can't handle 7 concurrent browsers)
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -60,9 +60,9 @@ orchestrator:
       max_concurrent: 1                # Browser-based SPA
       shared_resource: browser
 
-  # Timeouts (seconds)
-  provider_timeout: 300                # Per-provider timeout
-  sport_timeout: 60                    # Per-sport timeout
+  # Timeouts (seconds) — generous defaults so slow PCs always finish
+  provider_timeout: 900                # Per-provider timeout (was 300 — too tight under load)
+  sport_timeout: 120                   # Per-sport timeout (was 60 — API providers need headroom)
 
   # Performance
   batch_commit_size: 100               # Events per DB commit
@@ -70,11 +70,11 @@ orchestrator:
   # Enhancement configurations (all optional, defaults shown)
   retry:
     enabled: true
-    max_retries: 3
+    max_retries: 2                     # Reduced from 3 — fewer retries on slow PC
     initial_backoff_seconds: 2.0
-    max_backoff_seconds: 60.0
+    max_backoff_seconds: 30.0          # Reduced from 60 — don't waste time waiting
     exponential_base: 2.0
-    retry_on_timeout: true
+    retry_on_timeout: false            # Don't retry timeouts — on slow PC retrying just burns more time
 
   circuit_breaker:
     enabled: true
@@ -133,7 +133,7 @@ orchestrator:
 kambi_defaults: &kambi_defaults
   retriever_type: kambi
   base_url: https://eu1.offering-api.kambicdn.com/offering/v2018
-  sport_timeout: 120                     # Football needs >60s on large Kambi brands (unibet)
+  sport_timeout: 240                     # Football needs >120s under load (unibet timed out at 154s)
   params:
     market: SE
     lang: sv_SE
@@ -213,7 +213,7 @@ providers:
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
-    sport_timeout: 120                   # Football has ~200 leagues × 2 API calls each; 60s default times out under load
+    sport_timeout: 240                   # Football has ~200 leagues × 2 API calls each; needs headroom under load
 
   # --------------------------------------------------------------------------
   # Polymarket (prediction market — event matching only)
@@ -556,8 +556,8 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
-    provider_timeout: 700              # DOM scraping needs time for many competitions
-    sport_timeout: 360                 # Ice hockey needs ~270s with 20 comps + margin
+    provider_timeout: 1200             # DOM scraping — needs headroom for slow PC
+    sport_timeout: 600                 # Football has 60+ leagues, 360s too tight under load
     supported_sports:
       - football
       - basketball
