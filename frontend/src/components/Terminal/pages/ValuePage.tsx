@@ -116,7 +116,7 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [res, boostRes, bankrollRes, betsRes] = await Promise.all([
+      const [res, boostRes, , betsRes] = await Promise.all([
         api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
         api.getSpecials({}).catch(() => null),
         api.getBankroll().catch(() => null),
@@ -149,7 +149,6 @@ export function ValuePage({ providers }: ValuePageProps) {
         setSpecials(boostRes.specials || []);
         if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
       }
-      if (bankrollRes?.total != null) setBankrollTotal(bankrollRes.total);
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {

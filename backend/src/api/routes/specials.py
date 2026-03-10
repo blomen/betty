@@ -52,6 +52,7 @@ def _row_to_dict(row: SpecialOdds) -> dict:
         # Boost edge (boosted/original) — fallback to boost_pct for old data
         "edge_pct": row.edge_pct if row.edge_pct is not None else row.boost_pct,
         "is_positive_ev": row.is_positive_ev,
+        "fair_odds": row.fair_odds,
         # LLM enrichment
         "llm_title": getattr(row, "llm_title", None) or "",
         "llm_probability": row.llm_probability,

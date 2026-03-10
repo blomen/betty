@@ -13,6 +13,9 @@ export function useBankroll(refreshInterval = 30000) {
     losses: 0,
     voids: 0,
     total_deposited: 0,
+    total_withdrawn: 0,
+    net_deposited: 0,
+    total_staked: 0,
     total_profit: 0,
     bet_profit: 0,
     freebet_profit: 0,
@@ -27,6 +30,8 @@ export function useBankroll(refreshInterval = 30000) {
     total_balance: 0,
     total_pending: 0,
     total_available: 0,
+    total_free: 0,
+    total_locked: 0,
     providers: [],
   });
   const [isLoading, setIsLoading] = useState(true);
