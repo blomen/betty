@@ -387,58 +387,15 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
 
 @router.post("/auto-settle")
 async def auto_settle_bets(db: Session = Depends(get_db)):
-    """Auto-settle pending Polymarket bets using definitive resolution data.
+    """Disabled — Polymarket bets must be settled manually.
 
-    Flow:
-    1. Fetch resolved events from Polymarket API (with retry)
-    2. Match to canonical events and update scores/winner/market resolutions
-    3. Settle all pending Polymarket bets on finished events
+    Auto-settlement caused balance drift because it credited theoretical payouts
+    (stake * odds) without accounting for Polymarket fees or resolution timing.
+    Use POST /bets/{id}/settle for manual settlement instead.
     """
-    import asyncio
-    from ...services.results_service import ResultsService
-    from ...factory import ExtractorFactory
-
-    service = ResultsService(db)
-
-    # Phase 1: Fetch resolved Polymarket events (retry up to 3 times)
-    poly_result = {"matched": 0, "updated": 0, "skipped": 0}
-    resolved = []
-    fetch_error = None
-
-    for attempt in range(3):
-        try:
-            factory = ExtractorFactory.get_instance()
-            extractor = factory.get_extractor("polymarket")
-            # Don't use `async with` — shared cached instance, closing kills
-            # the transport for the sharp tier running every minute.
-            await extractor.transport._ensure_session()
-            resolved = await extractor.fetch_resolved()
-            fetch_error = None
-            break
-        except Exception as e:
-            fetch_error = str(e)
-            if attempt < 2:
-                logger.warning(f"[auto-settle] Polymarket fetch attempt {attempt + 1}/3 failed: {e}")
-                await asyncio.sleep(3 * (attempt + 1))
-
-    if fetch_error and not resolved:
-        logger.warning(f"[auto-settle] Polymarket fetch failed after retries: {fetch_error}")
-
-    # Phase 2: Update event scores from resolution data
-    if resolved:
-        try:
-            poly_result = service.update_scores_from_polymarket(resolved)
-        except Exception as e:
-            logger.warning(f"[auto-settle] Score update failed: {e}")
-
-    # Phase 3: Settle all pending Polymarket bets on finished events
-    settle_result = service.auto_settle(source="auto_polymarket")
-
     return {
-        "success": True,
-        "polymarket_scores": poly_result,
-        "fetch_error": fetch_error,
-        **settle_result,
+        "success": False,
+        "error": "Auto-settlement disabled. Settle Polymarket bets manually via POST /bets/{id}/settle.",
     }
 
 

@@ -807,17 +807,10 @@ class ExtractionScheduler:
 
         while True:
             try:
-                # Step 1: CLV snapshots (sync)
+                # CLV snapshots only — Polymarket auto-settle disabled
+                # (balance drifts from reality due to fee/resolution mismatches;
+                #  user settles bets manually via the UI)
                 self._run_settlement()
-
-                # Step 2: Polymarket auto-settle (async — fetches resolved events)
-                poly_stats = await self._run_polymarket_settlement()
-                settled = poly_stats.get("settled", 0)
-                if settled > 0:
-                    logger.info(
-                        f"[Scheduler:settlement] Cycle complete: "
-                        f"{settled} Polymarket bets auto-settled"
-                    )
             except asyncio.CancelledError:
                 logger.info("[Scheduler:settlement] Loop cancelled")
                 break
@@ -851,73 +844,6 @@ class ExtractionScheduler:
         except Exception:
             session.rollback()
             raise
-        finally:
-            session.close()
-
-    async def _run_polymarket_settlement(self) -> dict:
-        """Fetch Polymarket resolved events and auto-settle pending bets.
-
-        Runs as a separate async step because fetch_resolved() is async.
-        Independent from CLV snapshots — uses Polymarket's own resolution data.
-        """
-        from src.services.results_service import ResultsService
-        from src.factory import ExtractorFactory
-        from src.db.models import get_session
-
-        session = get_session()
-        try:
-            service = ResultsService(session)
-
-            # Phase 1: Fetch resolved events from Polymarket API (with retry)
-            resolved = []
-            last_err = None
-            for attempt in range(3):
-                try:
-                    factory = ExtractorFactory.get_instance()
-                    extractor = factory.get_extractor("polymarket")
-                    # Don't use `async with` — the extractor is a shared cached
-                    # instance. Closing it here kills the transport for the sharp
-                    # tier that runs every minute.
-                    await extractor.transport._ensure_session()
-                    resolved = await extractor.fetch_resolved()
-                    break
-                except Exception as e:
-                    last_err = e
-                    if attempt < 2:
-                        wait = 5 * (attempt + 1)
-                        logger.warning(
-                            f"[Scheduler:settlement] Polymarket fetch attempt "
-                            f"{attempt + 1}/3 failed: {e}, retrying in {wait}s"
-                        )
-                        await asyncio.sleep(wait)
-
-            if not resolved and last_err:
-                logger.warning(f"[Scheduler:settlement] Polymarket fetch failed after 3 attempts: {last_err}")
-                return {"checked": 0, "settled": 0, "skipped": 0, "fetch_error": str(last_err)}
-
-            # Phase 2: Update event scores from Polymarket resolution data
-            poly_result = {"matched": 0, "updated": 0, "skipped": 0}
-            if resolved:
-                try:
-                    poly_result = service.update_scores_from_polymarket(resolved)
-                except Exception as e:
-                    logger.warning(f"[Scheduler:settlement] Polymarket score update failed: {e}")
-                    session.rollback()
-
-            # Phase 3: Auto-settle all eligible Polymarket bets
-            settle_result = service.auto_settle(source="auto_polymarket")
-
-            if settle_result.get("settled", 0) > 0:
-                logger.info(
-                    f"[Scheduler:settlement] Polymarket auto-settled "
-                    f"{settle_result['settled']}/{settle_result['checked']} bets"
-                )
-
-            return settle_result
-        except Exception as e:
-            logger.error(f"[Scheduler:settlement] Polymarket settlement failed: {e}")
-            session.rollback()
-            return {"checked": 0, "settled": 0, "skipped": 0, "error": str(e)}
         finally:
             session.close()
 
