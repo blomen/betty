@@ -9,13 +9,11 @@ import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import { DutchAnchorPage } from './DrainPage';
 import type { Provider, Bet } from '@/types';
 
-type DutchTab = 'dutch' | 'anchor' | 'mybets';
+type DutchTab = 'dutch' | 'mybets';
 
 const dutchBetFilter = (b: Bet) => b.bet_type === 'dutch';
-const anchorBetFilter = (b: Bet) => b.bet_type === 'dutch';
 
 interface DutchLeg {
   outcome: string;
@@ -74,8 +72,8 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
 
-  // Anchor stake override: key = oppId, value = { legIdx, stake }
-  const [anchorStake, setAnchorStake] = useState<Record<number, { legIdx: number; stake: number }>>({});
+  // Stake override: key = "oppId|legIdx", value = edited stake
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
   const [editingStake, setEditingStake] = useState<string | null>(null);
 
   // Place bet state
@@ -85,12 +83,10 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [betError, setBetError] = useState<string | null>(null);
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [anchorBetsCount, setAnchorBetsCount] = useState<number | null>(null);
 
   useEffect(() => {
     api.getBets('pending', 500).then(({ bets }) => {
       setMyBetsCount(bets.filter(dutchBetFilter).length);
-      setAnchorBetsCount(bets.filter(anchorBetFilter).length);
     }).catch(() => {});
   }, []);
 
@@ -122,7 +118,7 @@ export function DutchPage({ providers }: DutchPageProps) {
     const set = new Set<string>();
     for (const opp of opportunities) {
       for (const leg of opp.legs || []) {
-        if (!leg.is_sharp) set.add(leg.provider);
+        set.add(leg.provider);
       }
     }
     return Array.from(set).sort();
@@ -149,9 +145,14 @@ export function DutchPage({ providers }: DutchPageProps) {
     let result = opportunities;
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedProviders.size > 0) {
-      result = result.filter(d =>
-        (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))
-      );
+      result = result.filter(d => {
+        const legs = d.legs || [];
+        // Every leg's provider must be in the selected set
+        if (!legs.every(leg => selectedProviders.has(leg.provider))) return false;
+        // When few providers selected, hide opps with more legs than selected providers
+        if (selectedProviders.size < 3 && legs.length > selectedProviders.size) return false;
+        return true;
+      });
     }
     if (selectedLeagues.size > 0) {
       result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
@@ -204,26 +205,37 @@ export function DutchPage({ providers }: DutchPageProps) {
     return oddsOverride[key] ?? originalOdds;
   };
 
-  const getEffectiveStakes = (opp: DutchOpp): { totalStake: number; legStakes: number[] } => {
+  const getEffectiveStakes = (opp: DutchOpp): { totalStake: number; legStakes: number[]; editedLegIdx: number | null } => {
     const legs = opp.legs || [];
-    const anchor = anchorStake[opp.id];
     const baseTotalStake = opp.total_stake || 0;
 
-    if (anchor && legs[anchor.legIdx]) {
-      const anchorLeg = legs[anchor.legIdx];
-      const anchorPct = anchorLeg.stake_pct;
-      if (anchorPct > 0) {
-        const newTotal = anchor.stake / (anchorPct / 100);
-        return {
-          totalStake: newTotal,
-          legStakes: legs.map(leg => newTotal * leg.stake_pct / 100),
-        };
+    // Find if any leg has a stake override for this opp
+    let editedLegIdx: number | null = null;
+    let editedStake = 0;
+    for (const k of Object.keys(stakeOverride)) {
+      if (k.startsWith(`${opp.id}|`)) {
+        editedLegIdx = parseInt(k.split('|')[1], 10);
+        editedStake = stakeOverride[k];
+        break;
       }
+    }
+
+    if (editedLegIdx !== null && legs[editedLegIdx]) {
+      const editedOdds = getEffectiveOdds(opp.id, editedLegIdx, legs[editedLegIdx].odds);
+      const payout = editedStake * editedOdds;
+      const legStakes = legs.map((leg, i) => {
+        if (i === editedLegIdx) return editedStake;
+        const odds = getEffectiveOdds(opp.id, i, leg.odds);
+        return odds > 0 ? payout / odds : 0;
+      });
+      const totalStake = legStakes.reduce((a, b) => a + b, 0);
+      return { totalStake, legStakes, editedLegIdx };
     }
 
     return {
       totalStake: baseTotalStake,
       legStakes: legs.map(leg => leg.stake ?? (baseTotalStake > 0 ? baseTotalStake * leg.stake_pct / 100 : 0)),
+      editedLegIdx: null,
     };
   };
 
@@ -358,7 +370,6 @@ export function DutchPage({ providers }: DutchPageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
-          { id: 'anchor' as DutchTab, label: 'Anchor', count: anchorBetsCount },
           { id: 'mybets' as DutchTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
@@ -375,10 +386,6 @@ export function DutchPage({ providers }: DutchPageProps) {
           </button>
         ))}
       </div>
-
-      {activeTab === 'anchor' && (
-        <DutchAnchorPage providers={providers} />
-      )}
 
       {activeTab === 'mybets' && (
         <MyBetsSection filter={dutchBetFilter} colorKey="dutch" />
@@ -508,7 +515,7 @@ export function DutchPage({ providers }: DutchPageProps) {
 
                     {isSelected && (() => {
                       const { totalStake: effTotalStake, legStakes: effLegStakes } = getEffectiveStakes(opp);
-                      const hasAnchor = opp.id in anchorStake;
+                      const hasStakeEdit = Object.keys(stakeOverride).some(k => k.startsWith(opp.id + '|'));
                       return (
                       <tr key={`${opp.id}-expanded`}>
                         <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
@@ -535,7 +542,7 @@ export function DutchPage({ providers }: DutchPageProps) {
                                 const legReturn = legStake * effectiveOdds;
                                 const isEditingThisOdds = editingOdds === oddsKey;
                                 const isEditingThisStake = editingStake === stakeKey;
-                                const isAnchorLeg = hasAnchor && anchorStake[opp.id].legIdx === legIdx;
+                                const isEditedLeg = stakeKey in stakeOverride;
                                 const isPlacingThis = isPlacing && placingLeg === oddsKey;
 
                                 return (
@@ -604,7 +611,15 @@ export function DutchPage({ providers }: DutchPageProps) {
                                             onBlur={(e) => {
                                               const val = parseFloat(e.target.value);
                                               if (!isNaN(val) && val > 0) {
-                                                setAnchorStake(prev => ({ ...prev, [opp.id]: { legIdx, stake: val } }));
+                                                // Clear other overrides for this opp, set new one
+                                                setStakeOverride(prev => {
+                                                  const next: Record<string, number> = {};
+                                                  for (const [k, v] of Object.entries(prev)) {
+                                                    if (!k.startsWith(`${opp.id}|`)) next[k] = v;
+                                                  }
+                                                  next[stakeKey] = val;
+                                                  return next;
+                                                });
                                               }
                                               setEditingStake(null);
                                             }}
@@ -616,15 +631,15 @@ export function DutchPage({ providers }: DutchPageProps) {
                                         ) : (
                                           <span
                                             onClick={() => setEditingStake(stakeKey)}
-                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isAnchorLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
-                                            title="Click to set anchor stake"
+                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isEditedLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
+                                            title="Click to set stake"
                                           >
                                             {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
                                           </span>
                                         )}
-                                        {isAnchorLeg && (
+                                        {isEditedLeg && (
                                           <button
-                                            onClick={() => setAnchorStake(prev => { const next = { ...prev }; delete next[opp.id]; return next; })}
+                                            onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[stakeKey]; return next; })}
                                             className="text-muted2 hover:text-text text-[10px]"
                                             title="Reset to default stake"
                                           >
@@ -658,8 +673,8 @@ export function DutchPage({ providers }: DutchPageProps) {
                               <div className="flex items-center gap-6">
                                 <div>
                                   <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
-                                  <span className={`font-medium ${hasAnchor ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
-                                  {hasAnchor && totalStake > 0 && (
+                                  <span className={`font-medium ${hasStakeEdit ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
+                                  {hasStakeEdit && totalStake > 0 && (
                                     <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
                                   )}
                                 </div>
