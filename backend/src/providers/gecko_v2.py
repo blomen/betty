@@ -538,7 +538,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
         # Parse markets
         event_markets = markets_by_event.get(event_id, [])
-        markets = self._parse_markets(event_markets, selections_by_market)
+        markets = self._parse_markets(event_markets, selections_by_market, sport)
         if not markets:
             return None
 
@@ -554,10 +554,16 @@ class GeckoV2Retriever(BrowserRetriever):
             league=league,
         )
 
+    # Ice hockey: regulation-only templates to skip (OT-inclusive variants preferred)
+    # Pinnacle uses OT-inclusive totals/spreads, so soft providers must match.
+    # TGOU = total excl OT (TGOUOT is OT-inclusive), MHCPNOT = spread excl OT
+    _ICE_HOCKEY_REGULATION_ONLY = {"TGOU", "MHCPNOT"}
+
     def _parse_markets(
         self,
         markets_raw: List[Dict],
         selections_by_market: Dict[str, List[Dict]],
+        sport: str = "",
     ) -> List[Dict]:
         """Parse markets and their selections."""
         markets = []
@@ -567,6 +573,11 @@ class GeckoV2Retriever(BrowserRetriever):
             template_id = market.get('marketTemplateId', '')
             market_type = self.MARKET_TEMPLATE_MAP.get(template_id)
             if not market_type:
+                continue
+
+            # Ice hockey: skip regulation-only total/spread when OT-inclusive exists
+            # Pinnacle sharp odds include OT, so we must compare like-for-like.
+            if sport == "ice_hockey" and template_id in self._ICE_HOCKEY_REGULATION_ONLY:
                 continue
 
             # Skip half-time / period-specific markets by label

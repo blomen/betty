@@ -312,6 +312,12 @@ class AltenarRetriever(Retriever):
                 # Map market type — skip unsupported markets early
                 market_type_id = market.get('typeId')
                 market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
+
+                # Ice hockey: skip regulation-only total (typeId 18) — OT-inclusive
+                # variant (412) preferred. Pinnacle sharp odds include OT.
+                if sport == 'ice_hockey' and market_type_id == 18:
+                    continue
+
                 if not market_type:
                     # Fallback: match by market name keywords (catches unmapped
                     # sport-specific typeIds like football Asian Handicap)
@@ -491,7 +497,7 @@ class AltenarRetriever(Retriever):
             # Pass 2: Enrich events missing spread/total via GetEventDetails
             # Football on Altenar has no spread markets at all (platform limitation)
             if events and sport != 'football':
-                enriched = await self._enrich_missing_spreads(events, sport_id)
+                enriched = await self._enrich_missing_spreads(events, sport_id, sport)
                 if enriched:
                     logger.info(f"[{self.provider_id}] Enriched {enriched} spread/total markets for {sport}")
 
@@ -503,7 +509,7 @@ class AltenarRetriever(Retriever):
 
     MAX_ENRICH_EVENTS = 200
 
-    async def _enrich_missing_spreads(self, events: List[StandardEvent], sport_id: int) -> int:
+    async def _enrich_missing_spreads(self, events: List[StandardEvent], sport_id: int, sport: str = "") -> int:
         """Fetch spread/total from GetEventDetails for events missing them.
 
         The bulk GetUpcoming endpoint often omits spread markets (73% missing for football).
@@ -554,7 +560,7 @@ class AltenarRetriever(Retriever):
                 if r is None or isinstance(r, Exception):
                     continue
                 ev, detail = r
-                new_markets = self._extract_spread_total_from_detail(detail, ev)
+                new_markets = self._extract_spread_total_from_detail(detail, ev, sport)
                 if new_markets:
                     ev.markets.extend(new_markets)
                     enriched += len(new_markets)
@@ -562,7 +568,7 @@ class AltenarRetriever(Retriever):
         return enriched
 
     def _extract_spread_total_from_detail(
-        self, detail: Dict[str, Any], event: StandardEvent
+        self, detail: Dict[str, Any], event: StandardEvent, sport: str = ""
     ) -> List[Dict]:
         """Extract spread/total markets from GetEventDetails response.
 
@@ -608,6 +614,10 @@ class AltenarRetriever(Retriever):
             market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
 
             if market_type not in ('spread', 'total'):
+                continue
+
+            # Ice hockey: skip regulation-only markets (same filter as Pass 1)
+            if sport == 'ice_hockey' and market_type_id in (18, 16):
                 continue
 
             # Extract point value
