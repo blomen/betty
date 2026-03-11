@@ -84,6 +84,25 @@ export interface StakePreviewResult {
   min_odds_applied: number;
 }
 
+// ============ Settings Types ============
+
+export interface ExtractionProvider {
+  provider_id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface ExtractionPlatform {
+  platform_id: string;
+  platform_name: string;
+  tier: string;
+  providers: ExtractionProvider[];
+}
+
+export interface ExtractionSettingsResponse {
+  platforms: ExtractionPlatform[];
+}
+
 const API_BASE = '/api';
 
 // Configuration for fetch with retry
@@ -502,7 +521,16 @@ export const api = {
     majorOnly: boolean,
     limit: number = 50,
     counterpartProviders?: string[],
-  ): Promise<{ opportunities: unknown[]; count: number; anchor_providers: string[] }> {
+  ): Promise<{
+    opportunities: unknown[];
+    count: number;
+    anchor_providers: string[];
+    anchor_wagering?: Record<string, {
+      status: string; wagered: number; requirement: number; remaining: number;
+      progress_pct: number; min_odds: number; bonus_amount: number;
+      bonus_type: string | null; days_remaining: number | null;
+    }>;
+  }> {
     const params = new URLSearchParams();
     params.set('providers', providers.join(','));
     params.set('major_only', String(majorOnly));
@@ -925,6 +953,28 @@ export const api = {
     if (filters?.account_id) params.set('account_id', filters.account_id.toString());
     if (filters?.instrument) params.set('instrument', filters.instrument);
     return `${API_BASE}/trading/export/csv?${params}`;
+  },
+
+  // ============ Settings ============
+
+  async getExtractionSettings(): Promise<ExtractionSettingsResponse> {
+    return fetchJson('/settings/extraction', { cache: 'no-store' });
+  },
+
+  async toggleExtractionProvider(providerId: string, enabled: boolean): Promise<{ success: boolean }> {
+    return fetchJson('/settings/extraction/provider', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, enabled }),
+    });
+  },
+
+  async toggleExtractionBatch(providerIds: string[], enabled: boolean): Promise<{ success: boolean }> {
+    return fetchJson('/settings/extraction/batch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_ids: providerIds, enabled }),
+    });
   },
 
 };

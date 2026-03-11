@@ -611,16 +611,37 @@ async def start_tier(tier_name: str):
         raise HTTPException(400, f"Unknown tier: {tier_name}. Use: sharp, api_soft, browser_soft")
 
     config = tier_configs[tier_name]
+
+    # Filter out providers disabled in settings for active profile
+    from ...db.models import Profile, ProviderExtractionSetting, get_session
+    session = get_session()
+    try:
+        profile = session.query(Profile).filter(
+            Profile.is_active == True  # noqa: E712
+        ).first()
+        disabled = set()
+        if profile:
+            disabled = {
+                s.provider_id
+                for s in session.query(ProviderExtractionSetting).filter(
+                    ProviderExtractionSetting.profile_id == profile.id,
+                    ProviderExtractionSetting.enabled == False,  # noqa: E712
+                ).all()
+            }
+    finally:
+        session.close()
+    providers = [p for p in config["providers"] if p not in disabled]
+
     await scheduler.start_tier(
         name=tier_name,
-        providers=config["providers"],
+        providers=providers,
         interval_seconds=config["interval_seconds"],
     )
 
     return {
         "status": "started",
         "tier": tier_name,
-        "providers": config["providers"],
+        "providers": providers,
         "interval_seconds": config["interval_seconds"],
     }
 

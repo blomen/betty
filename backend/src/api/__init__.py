@@ -40,6 +40,7 @@ from .routes import (
     risk_router,
     specials_router,
     trading_router,
+    settings_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,7 @@ app.include_router(polymarket_router)
 app.include_router(risk_router)
 app.include_router(specials_router)
 app.include_router(trading_router)
+app.include_router(settings_router)
 
 
 # WebSocket endpoint for extraction progress (legacy path)

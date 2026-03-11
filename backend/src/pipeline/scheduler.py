@@ -266,16 +266,40 @@ class ExtractionScheduler:
             config = yaml.safe_load(f)
         return config.get("extraction_tiers", {})
 
+    def _get_disabled_providers(self) -> set:
+        """Get providers disabled by user in settings for the active profile."""
+        from ..db.models import Profile, ProviderExtractionSetting, get_session
+        session = get_session()
+        try:
+            profile = session.query(Profile).filter(
+                Profile.is_active == True  # noqa: E712
+            ).first()
+            if not profile:
+                return set()
+            return {
+                s.provider_id
+                for s in session.query(ProviderExtractionSetting).filter(
+                    ProviderExtractionSetting.profile_id == profile.id,
+                    ProviderExtractionSetting.enabled == False,  # noqa: E712
+                ).all()
+            }
+        finally:
+            session.close()
+
     async def start_all(self):
         """Start all extraction tiers from providers.yaml config.
 
         Reads extraction_tiers from providers.yaml — the single source of truth
         for which providers run in each tier and at what interval.
+        Filters out providers disabled in settings.
         """
         tiers = self._load_extraction_tiers()
+        disabled = self._get_disabled_providers()
+        if disabled:
+            logger.info(f"[Scheduler] Disabled providers (from settings): {disabled}")
 
         for tier_name, tier_config in tiers.items():
-            providers = tier_config.get("providers", [])
+            providers = [p for p in tier_config.get("providers", []) if p not in disabled]
             interval_minutes = tier_config.get("interval_minutes", 60)
             wait_for_sharp = tier_name != "sharp"
 

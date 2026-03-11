@@ -44,6 +44,7 @@ export const TAB_COLORS: Record<string, string> = {
   specials: '#A78BFA',
   bets: '#1E88E5',
   profiles: '#A78BFA',
+  settings: '#9AA0A6',
   success: '#10b981',
   tradingBankroll: '#EC4899',
   tradingToday: '#FACC15',

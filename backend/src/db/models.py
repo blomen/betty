@@ -748,7 +748,7 @@ class RiskConfig(Base):
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
 
     # Provider allocation
-    daily_bet_cap = Column(Integer, default=4)  # Max bets per day per platform group
+    daily_bet_cap = Column(Integer, default=0)  # 0 = no cap; >0 = max bets per day per platform group
 
     # Updated timestamp
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
@@ -928,6 +928,20 @@ class TradeReview(Base):
     trade = relationship("Trade", back_populates="review")
 
 
+class ProviderExtractionSetting(Base):
+    """Per-profile override for whether a provider is included in extraction.
+
+    If a row exists with enabled=False, the provider is excluded for that profile.
+    If no row exists, the provider is enabled by default (YAML active list).
+    """
+    __tablename__ = "provider_extraction_settings"
+
+    profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)
+    provider_id = Column(String, primary_key=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 # ============ Database Functions ============
 
 # Singleton engine with connection pooling
@@ -980,6 +994,18 @@ def _run_migrations(engine):
     with engine.connect() as conn:
         raw = conn.connection.connection  # Get raw sqlite3 connection
         cursor = raw.cursor()
+
+        # Migrate provider_extraction_settings: add profile_id (global → per-profile)
+        try:
+            cursor.execute("SELECT profile_id FROM provider_extraction_settings LIMIT 1")
+        except sqlite3.OperationalError:
+            # Old table without profile_id — drop and let create_all rebuild
+            try:
+                cursor.execute("DROP TABLE IF EXISTS provider_extraction_settings")
+                raw.commit()
+                Base.metadata.tables["provider_extraction_settings"].create(engine)
+            except sqlite3.OperationalError:
+                pass
         # Add min_odds to profile_provider_bonuses if missing
         try:
             cursor.execute("SELECT min_odds FROM profile_provider_bonuses LIMIT 1")
