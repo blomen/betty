@@ -928,6 +928,111 @@ class TradeReview(Base):
     trade = relationship("Trade", back_populates="review")
 
 
+class MarketSession(Base):
+    """Computed AMT session data for a symbol/date."""
+    __tablename__ = "market_sessions"
+
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False)  # "2026-03-11"
+    symbol = Column(String, nullable=False)  # "NQ"
+
+    # Volume profile levels
+    poc = Column(Float, nullable=True)
+    vah = Column(Float, nullable=True)
+    val = Column(Float, nullable=True)
+
+    # VWAP bands
+    vwap = Column(Float, nullable=True)
+    vwap_1sd_upper = Column(Float, nullable=True)
+    vwap_1sd_lower = Column(Float, nullable=True)
+    vwap_2sd_upper = Column(Float, nullable=True)
+    vwap_2sd_lower = Column(Float, nullable=True)
+    vwap_3sd_upper = Column(Float, nullable=True)
+    vwap_3sd_lower = Column(Float, nullable=True)
+
+    # Initial balance
+    ib_high = Column(Float, nullable=True)
+    ib_low = Column(Float, nullable=True)
+    ib_range = Column(Float, nullable=True)
+
+    # Overnight range
+    overnight_high = Column(Float, nullable=True)
+    overnight_low = Column(Float, nullable=True)
+
+    # Delta
+    total_delta = Column(Integer, nullable=True)
+    delta_divergence = Column(Boolean, default=False)
+
+    # Classifications
+    market_type = Column(String, nullable=True)  # "balanced", "trending_up", "trending_down"
+    opening_type = Column(String, nullable=True)  # "OD", "OTD", "ORR", "OA"
+    poor_high = Column(Boolean, default=False)
+    poor_low = Column(Boolean, default=False)
+
+    # Full session analysis JSON
+    session_json = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Relationships
+    signals = relationship("TradingSignal", back_populates="session")
+
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),
+    )
+
+
+class TradingSignal(Base):
+    """Scanner-generated trading signal with quality score."""
+    __tablename__ = "trading_signals"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("market_sessions.id"), nullable=False)
+
+    # Setup info
+    setup_type = Column(String, nullable=False)  # "reversal_vwap_2sd", etc.
+    setup_name = Column(String, nullable=True)
+    category = Column(String, nullable=True)  # "fabio", "flow_horse"
+    direction = Column(String, nullable=True)  # "long", "short"
+
+    # Scoring
+    score = Column(Float, nullable=False)  # 0-100 composite score
+    conditions = Column(JSON, nullable=True)  # [{name, score, weight, is_auto}, ...]
+
+    # Context at signal time
+    price_at_signal = Column(Float, nullable=True)
+    suggested_entry = Column(Float, nullable=True)
+    suggested_stop = Column(Float, nullable=True)
+    suggested_target = Column(Float, nullable=True)
+
+    # Key levels at signal time
+    vwap = Column(Float, nullable=True)
+    poc = Column(Float, nullable=True)
+    vah = Column(Float, nullable=True)
+    val = Column(Float, nullable=True)
+    ib_high = Column(Float, nullable=True)
+    ib_low = Column(Float, nullable=True)
+    cumulative_delta = Column(Integer, nullable=True)
+
+    # Lifecycle
+    is_active = Column(Boolean, default=True)
+    triggered_at = Column(DateTime, default=_utcnow)
+    expired_at = Column(DateTime, nullable=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+
+    # Relationships
+    session = relationship("MarketSession", back_populates="signals")
+    trade = relationship("Trade")
+
+    __table_args__ = (
+        Index("ix_trading_signals_active", "is_active", "triggered_at"),
+        Index("ix_trading_signals_setup", "setup_type"),
+    )
+
+
 class ProviderExtractionSetting(Base):
     """Per-profile override for whether a provider is included in extraction.
 

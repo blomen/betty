@@ -16,11 +16,9 @@ const SPORTS_TABS: Tab[] = [
 ];
 
 const STOCKS_TABS: Tab[] = [
+  { name: 'tradingScanner',  label: 'Scanner',  color: '#06B6D4' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
-  { name: 'tradingToday',    label: 'Today',    color: '#FACC15' },
-  { name: 'tradingBuilder',  label: 'Builder',  color: '#22C55E' },
-  { name: 'tradingTrades',   label: 'Trades',   color: '#1E88E5' },
-  { name: 'tradingJournal',  label: 'Journal',  color: '#A78BFA' },
+  { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
 
 export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
@@ -30,7 +28,7 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
   sports: 'value',
-  stocks: 'tradingBankroll',
+  stocks: 'tradingScanner',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
@@ -46,11 +44,9 @@ export const TAB_COLORS: Record<string, string> = {
   profiles: '#A78BFA',
   settings: '#9AA0A6',
   success: '#10b981',
+  tradingScanner: '#06B6D4',
   tradingBankroll: '#EC4899',
-  tradingToday: '#FACC15',
-  tradingBuilder: '#22C55E',
-  tradingTrades: '#1E88E5',
-  tradingJournal: '#A78BFA',
+  tradingStats: '#1E88E5',
 };
 
 export function TabIcon({ name, color, size = 16 }: { name: string; color: string; size?: number }) {

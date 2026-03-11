@@ -39,6 +39,7 @@ export default {
         tabTradingBuilder: '#22C55E',
         tabTradingTrades: '#4FC3F7',
         tabTradingJournal: '#A78BFA',
+        tabTradingScanner: '#06B6D4',
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', 'Consolas', 'ui-monospace', 'monospace'],

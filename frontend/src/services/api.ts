@@ -97,6 +97,7 @@ export interface ExtractionPlatform {
   platform_name: string;
   tier: string;
   providers: ExtractionProvider[];
+  sites: string[];
 }
 
 export interface ExtractionSettingsResponse {
@@ -953,6 +954,42 @@ export const api = {
     if (filters?.account_id) params.set('account_id', filters.account_id.toString());
     if (filters?.instrument) params.set('instrument', filters.instrument);
     return `${API_BASE}/trading/export/csv?${params}`;
+  },
+
+  // ============ Market Data / Scanner ============
+
+  async getMarketSession(): Promise<import('@/types/market').MarketSession> {
+    return fetchJson('/trading/market/session');
+  },
+
+  async getMarketSessionByDate(date: string): Promise<import('@/types/market').MarketSession> {
+    return fetchJson(`/trading/market/session/${date}`);
+  },
+
+  async getMarketSignals(): Promise<{ signals: import('@/types/market').TradingSignal[] }> {
+    return fetchJson('/trading/market/signals');
+  },
+
+  async triggerMarketScan(threshold?: number): Promise<{ signals: import('@/types/market').TradingSignal[]; count: number }> {
+    const params = threshold ? `?threshold=${threshold}` : '';
+    return fetchJson(`/trading/market/scan${params}`, { method: 'POST' });
+  },
+
+  async triggerMarketCompute(date?: string): Promise<import('@/types/market').MarketSession> {
+    const params = date ? `?date=${date}` : '';
+    return fetchJson(`/trading/market/compute${params}`, { method: 'POST' });
+  },
+
+  async getMarketHistory(limit = 30): Promise<{ sessions: import('@/types/market').MarketSessionSummary[] }> {
+    return fetchJson(`/trading/market/history?limit=${limit}`);
+  },
+
+  async getMacroSnapshot(): Promise<import('@/types/market').MacroSnapshot> {
+    return fetchJson('/trading/market/macro');
+  },
+
+  async getConfirmations(): Promise<import('@/types/market').ConfirmationState> {
+    return fetchJson('/trading/market/confirmations');
   },
 
   // ============ Settings ============

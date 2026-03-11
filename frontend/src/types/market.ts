@@ -1,0 +1,137 @@
+/** Market data and scanner types. */
+
+export interface MarketSession {
+  date: string;
+  symbol: string;
+
+  // Volume profile
+  poc?: number;
+  vah?: number;
+  val?: number;
+
+  // VWAP bands
+  vwap?: number;
+  vwap_1sd_upper?: number;
+  vwap_1sd_lower?: number;
+  vwap_2sd_upper?: number;
+  vwap_2sd_lower?: number;
+  vwap_3sd_upper?: number;
+  vwap_3sd_lower?: number;
+
+  // Initial balance
+  ib_high?: number;
+  ib_low?: number;
+  ib_range?: number;
+
+  // Overnight
+  overnight_high?: number;
+  overnight_low?: number;
+
+  // Previous day
+  prev_poc?: number;
+  prev_vah?: number;
+  prev_val?: number;
+
+  // Delta
+  total_delta?: number;
+  delta_divergence?: boolean;
+  cumulative_delta_last?: number;
+
+  // TPO profile
+  tpo_poc?: number;
+  tpo_vah?: number;
+  tpo_val?: number;
+  distribution_type?: string;
+
+  // Macro
+  macro?: MacroSnapshot;
+
+  // Classifications
+  market_type?: string;
+  opening_type?: string;
+  poor_high?: boolean;
+  poor_low?: boolean;
+  single_prints?: [number, number][];
+
+  // Current state
+  last_price?: number;
+  price_vs_va?: string;
+  price_vs_vwap?: string;
+  price_vs_ib?: string;
+
+  // Meta
+  status?: string;
+  message?: string;
+}
+
+export interface ScanCondition {
+  name: string;
+  score: number;
+  weight: number;
+  is_auto: boolean;
+  detail?: string;
+}
+
+export interface TradingSignal {
+  id: number;
+  setup_type: string;
+  setup_name: string;
+  category: string;
+  direction: 'long' | 'short';
+  score: number;
+  conditions: ScanCondition[];
+  price_at_signal?: number;
+  suggested_entry?: number;
+  suggested_stop?: number;
+  suggested_target?: number;
+  vwap?: number;
+  poc?: number;
+  triggered_at?: string;
+  trade_id?: number;
+}
+
+export interface MacroSnapshot {
+  vix?: number;
+  vix_change_pct?: number;
+  dxy?: number;
+  dxy_change_pct?: number;
+  us10y?: number;
+  us10y_change_bps?: number;
+  us2y?: number;
+  yield_curve_spread?: number;
+  regime: string;
+  regime_score: number;
+  fetched_at?: string;
+}
+
+export interface MarketSessionSummary {
+  date: string;
+  symbol: string;
+  poc?: number;
+  vah?: number;
+  val?: number;
+  vwap?: number;
+  ib_high?: number;
+  ib_low?: number;
+  market_type?: string;
+  opening_type?: string;
+  total_delta?: number;
+}
+
+export interface ConfirmationCard {
+  checked: boolean;
+  regime?: string;
+  vix?: number | null;
+  structure?: string;
+  deviation_sd?: number | null;
+  price_vs_va?: string;
+  delta?: number | null;
+  divergence?: boolean;
+}
+
+export interface ConfirmationState {
+  macro: ConfirmationCard;
+  span: ConfirmationCard;
+  fair_value: ConfirmationCard;
+  orderflow: ConfirmationCard;
+}

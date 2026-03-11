@@ -53,3 +53,13 @@ def get_setups() -> dict[str, dict]:
 def get_routine_config() -> dict[str, Any]:
     """Daily routine checklist config."""
     return _load().get("daily_routine", {})
+
+
+def get_market_data_config() -> dict[str, Any]:
+    """Market data provider config."""
+    return _load().get("market_data", {})
+
+
+def get_scanner_config() -> dict[str, Any]:
+    """Scanner/scoring config."""
+    return _load().get("scanner", {})
