@@ -353,6 +353,9 @@ class AltenarRetriever(Retriever):
                             raw_away,
                             outcome_index=idx
                         )
+                        # Debug: log outcome mapping for moneyline to catch inversions
+                        if market_type == 'moneyline' and standardized_outcome in ('home', 'away'):
+                            logger.debug(f"[{self.provider_id}] ML outcome: raw='{raw_outcome}' → {standardized_outcome} | home='{raw_home}' away='{raw_away}' idx={idx} odds={odd.get('price')}")
 
                         outcome_dict = {
                             'name': standardized_outcome,

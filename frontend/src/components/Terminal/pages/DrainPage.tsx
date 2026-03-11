@@ -44,40 +44,40 @@ interface DutchOpp {
   arb_legs?: DutchLeg[] | null;
 }
 
-interface DrainPageProps {
+interface DutchAnchorPageProps {
   providers: Provider[];
 }
 
 const MAX_ROWS = 50;
-const DRAIN_SETTINGS_KEY = 'drain-settings';
+const DUTCH_ANCHOR_SETTINGS_KEY = 'dutch-anchor-settings';
 
-function loadDrainSettings(): { providers: string[]; stake: string; limitedOnly: boolean; counterparts?: string[] } | null {
+function loadDutchAnchorSettings(): { providers: string[]; stake: string; limitedOnly: boolean; counterparts?: string[] } | null {
   try {
-    const raw = localStorage.getItem(DRAIN_SETTINGS_KEY);
+    const raw = localStorage.getItem(DUTCH_ANCHOR_SETTINGS_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
-function saveDrainSettings(providers: Set<string>, stake: string, limitedOnly: boolean, counterparts: Set<string>) {
+function saveDutchAnchorSettings(providers: Set<string>, stake: string, limitedOnly: boolean, counterparts: Set<string>) {
   if (providers.size === 0 && !stake) {
-    localStorage.removeItem(DRAIN_SETTINGS_KEY);
+    localStorage.removeItem(DUTCH_ANCHOR_SETTINGS_KEY);
   } else {
-    localStorage.setItem(DRAIN_SETTINGS_KEY, JSON.stringify({
+    localStorage.setItem(DUTCH_ANCHOR_SETTINGS_KEY, JSON.stringify({
       providers: Array.from(providers), stake, limitedOnly,
       counterparts: Array.from(counterparts),
     }));
   }
 }
 
-export function DrainPage({ providers }: DrainPageProps) {
+export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
   const freshness = useExtractionFreshness();
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [search] = useState('');
 
   // Workflow panel state — initialized from localStorage
-  const saved = useRef(loadDrainSettings());
+  const saved = useRef(loadDutchAnchorSettings());
   const [workflowProviders, setWorkflowProviders] = useState<Set<string>>(
-    () => new Set(saved.current?.providers ?? [])
+    () => new Set(saved.current?.providers?.slice(0, 1) ?? [])
   );
   const [workflowStake, setWorkflowStake] = useState<string>(
     () => saved.current?.stake ?? ''
@@ -86,6 +86,11 @@ export function DrainPage({ providers }: DrainPageProps) {
     () => saved.current?.limitedOnly ?? false
   );
   const [workflowResults, setWorkflowResults] = useState<DutchOpp[] | null>(null);
+  const [anchorWagering, setAnchorWagering] = useState<Record<string, {
+    status: string; wagered: number; requirement: number; remaining: number;
+    progress_pct: number; min_odds: number; bonus_amount: number;
+    bonus_type: string | null; days_remaining: number | null;
+  }>>({});
   const [isScanning, setIsScanning] = useState(false);
   // Counterpart providers — restrict which providers can be used as opposing legs
   const [counterpartProviders, setCounterpartProviders] = useState<Set<string>>(
@@ -94,7 +99,7 @@ export function DrainPage({ providers }: DrainPageProps) {
 
   // Persist settings to localStorage on change
   useEffect(() => {
-    saveDrainSettings(workflowProviders, workflowStake, workflowMajorOnly, counterpartProviders);
+    saveDutchAnchorSettings(workflowProviders, workflowStake, workflowMajorOnly, counterpartProviders);
   }, [workflowProviders, workflowStake, workflowMajorOnly, counterpartProviders]);
 
   // Odds override: key = "oppId|legIdx", value = new odds
@@ -127,6 +132,7 @@ export function DrainPage({ providers }: DrainPageProps) {
         counterpartProviders.size > 0 ? Array.from(counterpartProviders) : undefined,
       );
       const opps = (res.opportunities ?? []) as DutchOpp[];
+      setAnchorWagering(res.anchor_wagering ?? {});
       // Auto-apply anchor stake to the first leg matching a workflow provider
       const stakeVal = parseFloat(workflowStake);
       if (!isNaN(stakeVal) && stakeVal > 0) {
@@ -195,8 +201,8 @@ export function DrainPage({ providers }: DrainPageProps) {
     return result.slice(0, MAX_ROWS);
   }, [workflowResults, search]);
 
-  type DrainSortCol = 'stake' | 'profit' | 'ttk';
-  const drainSortExtractors = useMemo(() => ({
+  type AnchorSortCol = 'stake' | 'profit' | 'ttk';
+  const anchorSortExtractors = useMemo(() => ({
     stake:  (d: DutchOpp) => {
       const anchor = anchorStake[d.id];
       if (anchor) {
@@ -209,8 +215,8 @@ export function DrainPage({ providers }: DrainPageProps) {
     profit: (d: DutchOpp) => d.guaranteed_profit_pct ?? d.profit_pct ?? 0,
     ttk:    (d: DutchOpp) => getTTKFromNow(d.starts_at) ?? 99999,
   }), [anchorStake]);
-  const { sorted, sort: drainSort, toggle: toggleDrainSort } =
-    useTableSort<DutchOpp, DrainSortCol>(filtered, drainSortExtractors, { column: 'profit', direction: 'desc' });
+  const { sorted, sort: anchorSort, toggle: toggleAnchorSort } =
+    useTableSort<DutchOpp, AnchorSortCol>(filtered, anchorSortExtractors, { column: 'profit', direction: 'desc' });
 
   const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
     const key = `${oppId}|${legIdx}`;
@@ -264,7 +270,7 @@ export function DrainPage({ providers }: DrainPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
-        bet_type: 'drain',
+        bet_type: 'dutch',
       });
       setPlacedLegs(prev => {
         const existing = prev[opp.id] || new Set<number>();
@@ -305,7 +311,7 @@ export function DrainPage({ providers }: DrainPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
-        bet_type: 'drain',
+        bet_type: 'dutch',
       };
     }).filter(l => l.stake > 0);
 
@@ -375,11 +381,9 @@ export function DrainPage({ providers }: DrainPageProps) {
           label="Anchor"
           options={availableProviders}
           selected={workflowProviders}
-          onToggle={(p) => setWorkflowProviders(prev => {
-            const next = new Set(prev);
-            if (next.has(p)) next.delete(p); else next.add(p);
-            return next;
-          })}
+          onToggle={(p) => setWorkflowProviders(prev =>
+            prev.has(p) ? new Set() : new Set([p])
+          )}
           onClear={() => setWorkflowProviders(new Set())}
           format={formatProviderWithPlatform}
           accentColor="success"
@@ -440,17 +444,49 @@ export function DrainPage({ providers }: DrainPageProps) {
         </div>
       </div>
 
+      {/* Anchor wagering progress */}
+      {Object.keys(anchorWagering).length > 0 && (
+        <div className="flex flex-wrap gap-3 px-3 py-2 bg-panel border border-border text-xs">
+          {Object.entries(anchorWagering).map(([pid, w]) => (
+            <div key={pid} className="flex items-center gap-2">
+              <span className="font-medium text-text">{formatProviderName(pid)}</span>
+              <div className="flex items-center gap-1.5">
+                <div className="w-24 h-1.5 bg-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-success rounded-full transition-all"
+                    style={{ width: `${Math.min(100, w.progress_pct)}%` }}
+                  />
+                </div>
+                <span className="text-muted">{w.progress_pct.toFixed(0)}%</span>
+              </div>
+              <span className="text-muted2">
+                {w.remaining.toFixed(0)} kr left
+                {w.requirement > 0 && ` of ${w.requirement.toFixed(0)}`}
+              </span>
+              {w.min_odds > 0 && (
+                <span className="text-muted2">min {w.min_odds.toFixed(2)}</span>
+              )}
+              {w.days_remaining != null && (
+                <span className={`${w.days_remaining <= 7 ? 'text-error' : 'text-muted2'}`}>
+                  {w.days_remaining}d left
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {isScanning ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          Scanning for drain opportunities...
+          Scanning for dutch opportunities...
         </div>
       ) : !workflowResults ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          Select anchor providers and scan to find drain opportunities.
+          Select anchor provider and scan to find dutch opportunities.
         </div>
       ) : sorted.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          No drain opportunities found for selected providers.
+          No dutch opportunities found for selected provider.
         </div>
       ) : (
         <div className="border-l-2 border-success">
@@ -459,9 +495,9 @@ export function DrainPage({ providers }: DrainPageProps) {
               <tr>
                 <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Providers</th>
-                <SortableHeader column="ttk" label="TTK" sort={drainSort} onToggle={toggleDrainSort} />
-                <SortableHeader column="stake" label="Stake" sort={drainSort} onToggle={toggleDrainSort} />
-                <SortableHeader column="profit" label="Profit" sort={drainSort} onToggle={toggleDrainSort} />
+                <SortableHeader column="ttk" label="TTK" sort={anchorSort} onToggle={toggleAnchorSort} />
+                <SortableHeader column="stake" label="Stake" sort={anchorSort} onToggle={toggleAnchorSort} />
+                <SortableHeader column="profit" label="Profit" sort={anchorSort} onToggle={toggleAnchorSort} />
               </tr>
             </thead>
             <tbody>
@@ -490,9 +526,6 @@ export function DrainPage({ providers }: DrainPageProps) {
                           </button>
                         </div>
                         <div className="text-muted2 text-[11px]">
-                          {opp.arb_profit_pct != null && opp.arb_profit_pct > 0 && (
-                            <span className="text-[9px] font-bold px-1 py-0.5 bg-success/20 text-success mr-1.5">ARB +{opp.arb_profit_pct.toFixed(1)}%</span>
-                          )}
                           {opp.sport}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
                           {opp.point != null ? ` · ${opp.point}` : ''}

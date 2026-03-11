@@ -1,7 +1,7 @@
 export { Card } from './Card';
 export { ValuePage } from './ValuePage';
 export { DutchPage } from './DutchPage';
-export { DrainPage } from './DrainPage';
+export { DutchAnchorPage } from './DrainPage';
 export { ReversePage } from './ReversePage';
 export { PolymarketPage } from './PolymarketPage';
 export { BetsPage } from './BetsPage';
@@ -9,7 +9,3 @@ export { BankrollPage } from './BankrollPage';
 export { ProfilePage } from './ProfilePage';
 export { WelcomePage } from './WelcomePage';
 export { TradingBankrollPage } from './TradingBankrollPage';
-export { TradingTodayPage } from './TradingTodayPage';
-export { TradingBuilderPage } from './TradingBuilderPage';
-export { TradingTradesPage } from './TradingTradesPage';
-export { TradingJournalPage } from './TradingJournalPage';

@@ -147,12 +147,12 @@ def detect_and_fix_inversion(
     if new_fav == sharp_fav:
         return False  # Same favorite, no inversion
 
-    # Only trigger if SHARP shows a clear favorite (ratio > 1.3)
+    # Only trigger if SHARP shows a clear favorite (ratio > 1.15)
     # This catches cases where Pinnacle shows clear favorite but provider shows opposite
     # e.g., Pinnacle home=7.38/away=1.11 (away fav) vs Polymarket home=1.94/away=2.06 (home fav)
-    # Lower threshold (1.3) catches more edge cases like Pinnacle 1.63/2.29 (ratio 1.4)
+    # Threshold 1.15 catches cases like Pinnacle 1.81/2.23 (ratio 1.23) where team order is wrong
     sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
-    if sharp_ratio < 1.3:
+    if sharp_ratio < 1.15:
         return False  # Sharp odds are close, could be legitimate difference
 
     # Log at DEBUG level (silent in normal operation)

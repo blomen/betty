@@ -80,6 +80,15 @@ def get_extraction_settings(db: Session = Depends(get_db)):
         ).all()
     }
 
+    # Build map of all sites per retriever_type (from full providers config)
+    all_sites_by_platform: dict[str, list[str]] = {}
+    for pid, pconfig in providers_config.items():
+        if not isinstance(pconfig, dict):
+            continue
+        rtype = pconfig.get("retriever_type", "unknown")
+        name = pconfig.get("name", pid)
+        all_sites_by_platform.setdefault(rtype, []).append(name)
+
     # Collect all providers from all tiers, group by platform (retriever_type)
     platforms: dict = {}
     for tier_name, tier_config in extraction_tiers.items():
@@ -106,6 +115,7 @@ def get_extraction_settings(db: Session = Depends(get_db)):
                 "platform_name": PLATFORM_NAMES.get(platform_id, platform_id),
                 "tier": p["tier"],
                 "providers": p["providers"],
+                "sites": all_sites_by_platform.get(platform_id, []),
             })
     for platform_id, p in platforms.items():
         if platform_id not in seen:
@@ -114,6 +124,7 @@ def get_extraction_settings(db: Session = Depends(get_db)):
                 "platform_name": PLATFORM_NAMES.get(platform_id, platform_id),
                 "tier": p["tier"],
                 "providers": p["providers"],
+                "sites": all_sites_by_platform.get(platform_id, []),
             })
 
     return {"platforms": result}

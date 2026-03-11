@@ -188,14 +188,14 @@ export function MultiSelectDropdown({
                   >
                     {/* Checkbox */}
                     <span
-                      className={`w-3.5 h-3.5 border flex items-center justify-center shrink-0 transition-all duration-150 ${
-                        isActive ? 'border-transparent' : 'border-muted/40'
+                      className={`w-[18px] h-[18px] rounded-[4px] border-2 flex items-center justify-center shrink-0 transition-all duration-150 ${
+                        isActive ? 'border-transparent' : 'border-muted/40 hover:border-muted/60'
                       }`}
                       style={isActive ? { background: hex, borderColor: hex } : undefined}
                     >
                       {isActive && (
-                        <svg className="w-2.5 h-2.5 text-bg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                          <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
                       )}
                     </span>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/services/api';
 import type { ExtractionSettingsResponse, ExtractionPlatform } from '@/services/api';
+import { TabIcon, TAB_COLORS } from '../TabBar';
 
 const TIER_BADGES: Record<string, { label: string; cls: string }> = {
   sharp: { label: 'SHARP', cls: 'text-yellow-400 bg-yellow-400/10' },
@@ -9,6 +10,8 @@ const TIER_BADGES: Record<string, { label: string; cls: string }> = {
 };
 
 /* ── Checkbox ─────────────────────────────────────────────── */
+
+const SETTINGS_ACCENT = TAB_COLORS.settings; // #9AA0A6
 
 function Checkbox({
   checked,
@@ -21,6 +24,7 @@ function Checkbox({
   disabled?: boolean;
   onChange: () => void;
 }) {
+  const active = checked || indeterminate;
   return (
     <button
       onClick={(e) => { e.stopPropagation(); onChange(); }}
@@ -28,10 +32,9 @@ function Checkbox({
       className={`w-[18px] h-[18px] rounded-[4px] flex-shrink-0 flex items-center justify-center border-2 transition-all duration-150 ${
         disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
       } ${
-        checked || indeterminate
-          ? 'bg-success border-success'
-          : 'border-muted/40 hover:border-muted/60'
+        !active ? 'border-muted/40 hover:border-muted/60' : 'border-transparent'
       }`}
+      style={active ? { background: SETTINGS_ACCENT, borderColor: SETTINGS_ACCENT } : undefined}
     >
       {checked && !indeterminate && (
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
@@ -70,14 +73,19 @@ function PlatformSection({
   const tierInfo = TIER_BADGES[platform.tier];
   const isToggling = providers.some(p => toggling.has(p.provider_id));
 
+  // Sites not already shown as toggleable providers
+  const sites = platform.sites ?? [];
+  const providerNames = new Set(providers.map(p => p.name));
+  const extraSites = sites.filter(s => !providerNames.has(s));
+
   return (
-    <div className="border border-border/40 rounded-lg overflow-hidden">
+    <div className="border border-border/30 overflow-hidden">
       {/* Platform header */}
       <div
-        className={`flex items-center gap-3 px-3 py-2.5 ${
-          isSingle ? '' : 'cursor-pointer hover:bg-panel2/30'
+        className={`flex items-center gap-3 px-3 py-2 bg-panel ${
+          !isSingle || extraSites.length > 0 ? 'cursor-pointer hover:bg-panel2/30' : ''
         }`}
-        onClick={() => !isSingle && setExpanded(!expanded)}
+        onClick={() => (!isSingle || extraSites.length > 0) && setExpanded(!expanded)}
       >
         <Checkbox
           checked={allEnabled}
@@ -103,10 +111,13 @@ function PlatformSection({
             {tierInfo.label}
           </span>
         )}
+        {extraSites.length > 0 && (
+          <span className="text-[11px] text-muted2">{sites.length} {sites.length === 1 ? 'site' : 'sites'}</span>
+        )}
         <span className="ml-auto text-xs text-muted font-mono tabular-nums">
           {enabledCount}/{providers.length}
         </span>
-        {!isSingle && (
+        {(!isSingle || extraSites.length > 0) && (
           <svg
             width="14" height="14" viewBox="0 0 24 24" fill="none"
             stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
@@ -117,13 +128,13 @@ function PlatformSection({
         )}
       </div>
 
-      {/* Provider rows */}
-      {!isSingle && expanded && (
+      {/* Provider rows + extra sites */}
+      {expanded && (!isSingle || extraSites.length > 0) && (
         <div className="border-t border-border/20">
-          {providers.map(provider => (
+          {!isSingle && providers.map(provider => (
             <div
               key={provider.provider_id}
-              className="flex items-center gap-3 pl-9 pr-3 py-1.5 hover:bg-panel/30"
+              className="flex items-center gap-3 pl-9 pr-3 py-1.5 hover:bg-panel2/20"
             >
               <Checkbox
                 checked={provider.enabled}
@@ -135,20 +146,16 @@ function PlatformSection({
               </span>
             </div>
           ))}
+          {extraSites.length > 0 && (
+            <div className="px-9 py-1.5 text-[11px] text-muted2">
+              {extraSites.join(', ')}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
-
-/* ── Settings Gear Icon ───────────────────────────────────── */
-
-const GearIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9AA0A6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"/>
-    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-  </svg>
-);
 
 /* ── Main Page ────────────────────────────────────────────── */
 
@@ -216,34 +223,42 @@ export function SettingsPage() {
     }
   };
 
+  const settingsColor = TAB_COLORS.settings;
+
   if (isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-2">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <GearIcon />
+          <TabIcon name="settings" color={settingsColor} size={16} />
           Settings
         </h2>
-        <div className="text-muted text-sm">Loading...</div>
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          Loading...
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-        <GearIcon />
+        <TabIcon name="settings" color={settingsColor} size={16} />
         Settings
       </h2>
 
-      <div className="flex gap-1">
-        <button className="px-3 py-1 text-xs font-semibold rounded bg-panel2 text-text border border-border">
+      {/* Sub-tab selector */}
+      <div className="flex gap-1 border-b border-border">
+        <button
+          className="px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] border-[#9AA0A6] text-text"
+        >
           Extraction
         </button>
       </div>
 
       {error && (
-        <div className="text-error text-sm bg-error/10 border border-error/30 px-3 py-2 rounded">
-          {error}
+        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
 
@@ -251,7 +266,7 @@ export function SettingsPage() {
         Toggle platforms and individual sites for extraction. Disabled providers are skipped on the next run.
       </p>
 
-      <div className="space-y-2">
+      <div className="border-l-2 border-[#9AA0A6] space-y-2 pl-0">
         {settings?.platforms.map(platform => (
           <PlatformSection
             key={platform.platform_id}

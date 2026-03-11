@@ -987,11 +987,6 @@ export function ValuePage({ providers }: ValuePageProps) {
                                       {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
                                       {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                                     </span>
-                                    {(selOpp as any).daily_bets_group != null && (selOpp as any).daily_cap != null && (
-                                      <span className={`text-[9px] flex-shrink-0 ${(selOpp as any).is_daily_capped ? 'text-error' : 'text-muted2'}`}>
-                                        {(selOpp as any).daily_bets_group}/{(selOpp as any).daily_cap}
-                                      </span>
-                                    )}
                                     <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                   </button>
                                   {providerDropdownOpen === group.key && (
@@ -1004,7 +999,6 @@ export function ValuePage({ providers }: ValuePageProps) {
                                           : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                                           : opp.skip_reason ? ` (${opp.skip_reason})`
                                           : '';
-                                        const dailyInfo = (opp as any).daily_bets_group != null ? ` ${(opp as any).daily_bets_group}/${(opp as any).daily_cap}` : '';
                                         return (
                                           <button
                                             key={opp.id}
@@ -1019,7 +1013,6 @@ export function ValuePage({ providers }: ValuePageProps) {
                                             <span className="truncate">
                                               <ProviderName name={opp.provider1} />{s}{tag}
                                             </span>
-                                            {dailyInfo && <span className={`text-[9px] ml-auto flex-shrink-0 ${(opp as any).is_daily_capped ? 'text-error' : 'text-muted2'}`}>{dailyInfo}</span>}
                                           </button>
                                         );
                                       })}

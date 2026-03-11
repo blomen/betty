@@ -459,10 +459,30 @@ class OpportunityService:
                 "arb_legs": r.get("arb_legs"),
             })
 
+        # Include wagering info for anchor providers
+        anchor_wagering = {}
+        profile = self.profile_repo.get_active()
+        if profile:
+            for pid in anchor_providers:
+                bonus = self.profile_repo.get_bonus_status(profile.id, pid)
+                if bonus and bonus.get("status") in ("in_progress", "trigger_needed", "freebet_available"):
+                    anchor_wagering[pid] = {
+                        "status": bonus["status"],
+                        "wagered": bonus.get("wagered_amount", 0),
+                        "requirement": bonus.get("wagering_requirement", 0),
+                        "remaining": max(0, (bonus.get("wagering_requirement", 0) or 0) - (bonus.get("wagered_amount", 0) or 0)),
+                        "progress_pct": bonus.get("progress_pct", 0),
+                        "min_odds": bonus.get("min_odds", 0),
+                        "bonus_amount": bonus.get("bonus_amount", 0),
+                        "bonus_type": bonus.get("bonus_type"),
+                        "days_remaining": bonus.get("days_remaining"),
+                    }
+
         return {
             "opportunities": formatted,
             "count": len(results),
             "anchor_providers": anchor_providers,
+            "anchor_wagering": anchor_wagering,
         }
 
     def _add_stake_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator, bonus_cache: dict | None = None):

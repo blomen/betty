@@ -18,7 +18,7 @@ LIMIT_PLATFORM_OVERRIDES: dict[str, str] = {
     "10bet": "altenar",
 }
 
-DEFAULT_DAILY_CAP = 4
+DEFAULT_DAILY_CAP = 0  # 0 = no cap
 
 
 @dataclass
@@ -127,7 +127,7 @@ class ProviderAllocator:
         """Compute allocation score for a provider (0-100, higher = bet here)."""
         group_bets = self._count_group_bets(provider_id)
         cap = self._daily_cap
-        is_capped = group_bets >= cap
+        is_capped = cap > 0 and group_bets >= cap
 
         # --- Wagering score (0-40) ---
         wager_info = self._wagering.get(provider_id, {})
@@ -135,8 +135,11 @@ class ProviderAllocator:
         wagering_score = min(40, remaining / 300)
 
         # --- Daily room score (0-30) ---
-        room = max(0, cap - group_bets)
-        daily_room_score = 30 * room / cap if cap > 0 else 0
+        if cap > 0:
+            room = max(0, cap - group_bets)
+            daily_room_score = 30 * room / cap
+        else:
+            daily_room_score = 30  # No cap = full room score
 
         # --- Balance score (0-20) ---
         balance = self._balances.get(provider_id, 0)
@@ -161,6 +164,9 @@ class ProviderAllocator:
         if is_capped:
             total = -1
             reason = f"Daily cap reached ({group_bets}/{cap})"
+        elif cap == 0:
+            # No cap - never block
+            pass
 
         return AllocationResult(
             provider_id=provider_id,
@@ -192,6 +198,9 @@ class ProviderAllocator:
         if balance <= 0:
             parts.append("No balance")
 
-        parts.append(f"{group_bets}/{cap} today")
+        if cap > 0:
+            parts.append(f"{group_bets}/{cap} today")
+        else:
+            parts.append(f"{group_bets} today")
 
         return " · ".join(parts)

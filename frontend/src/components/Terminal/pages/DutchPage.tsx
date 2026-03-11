@@ -9,13 +9,13 @@ import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import { DrainPage } from './DrainPage';
+import { DutchAnchorPage } from './DrainPage';
 import type { Provider, Bet } from '@/types';
 
-type DutchTab = 'dutch' | 'drain' | 'mybets';
+type DutchTab = 'dutch' | 'anchor' | 'mybets';
 
 const dutchBetFilter = (b: Bet) => b.bet_type === 'dutch';
-const drainBetFilter = (b: Bet) => b.bet_type === 'drain';
+const anchorBetFilter = (b: Bet) => b.bet_type === 'dutch';
 
 interface DutchLeg {
   outcome: string;
@@ -85,12 +85,12 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [betError, setBetError] = useState<string | null>(null);
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [drainBetsCount, setDrainBetsCount] = useState<number | null>(null);
+  const [anchorBetsCount, setAnchorBetsCount] = useState<number | null>(null);
 
   useEffect(() => {
     api.getBets('pending', 500).then(({ bets }) => {
       setMyBetsCount(bets.filter(dutchBetFilter).length);
-      setDrainBetsCount(bets.filter(drainBetFilter).length);
+      setAnchorBetsCount(bets.filter(anchorBetFilter).length);
     }).catch(() => {});
   }, []);
 
@@ -358,7 +358,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'dutch' as DutchTab, label: 'Dutch Bets', count: sortedDutch.length },
-          { id: 'drain' as DutchTab, label: 'Anchor', count: drainBetsCount },
+          { id: 'anchor' as DutchTab, label: 'Anchor', count: anchorBetsCount },
           { id: 'mybets' as DutchTab, label: 'My Bets', count: myBetsCount },
         ]).map(tab => (
           <button
@@ -376,8 +376,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         ))}
       </div>
 
-      {activeTab === 'drain' && (
-        <DrainPage providers={providers} />
+      {activeTab === 'anchor' && (
+        <DutchAnchorPage providers={providers} />
       )}
 
       {activeTab === 'mybets' && (
@@ -476,9 +476,6 @@ export function DutchPage({ providers }: DutchPageProps) {
                           </button>
                         </div>
                         <div className="text-muted2 text-[11px]">
-                          {opp.arb_profit_pct != null && opp.arb_profit_pct > 0 && (
-                            <span className="text-[9px] font-bold px-1 py-0.5 bg-success/20 text-success mr-1.5">ARB +{opp.arb_profit_pct.toFixed(1)}%</span>
-                          )}
                           {opp.sport}
                           {opp.league ? ` · ${opp.league}` : ''}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
