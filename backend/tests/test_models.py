@@ -68,3 +68,31 @@ def test_candle_snapshot_insert(db_session):
     result = db_session.query(CandleSnapshot).first()
     assert len(result.candles) == 1
     assert result.candles[0]["delta"] == 380
+
+
+def test_opportunity_ml_columns(db_session):
+    from src.db.models import Opportunity
+    opp = Opportunity(
+        type="value",
+        event_id="evt-1",
+        market="1x2",
+        provider1_id="betsson",
+        odds1=2.10,
+        outcome1="home",
+        edge_pct=7.5,
+        prob_sum=1.02,
+        odds_ratio=1.05,
+        odds_age_minutes=15.0,
+        sharp_age_minutes=5.0,
+        time_to_start_minutes=120.0,
+        provider_count=8,
+        provider_odds_rank=2,
+        market_consensus_spread=0.03,
+        pinnacle_overround=0.025,
+    )
+    db_session.add(opp)
+    db_session.commit()
+    result = db_session.query(Opportunity).first()
+    assert result.prob_sum == 1.02
+    assert result.provider_count == 8
+    assert result.closing_line_value is None

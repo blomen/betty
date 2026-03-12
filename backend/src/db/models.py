@@ -491,6 +491,18 @@ class Opportunity(Base):
     detected_at = Column(DateTime, default=_utcnow)
     expires_at = Column(DateTime, nullable=True)
 
+    # ML feature columns (populated at scan time, used for training)
+    prob_sum = Column(Float, nullable=True)
+    odds_ratio = Column(Float, nullable=True)
+    odds_age_minutes = Column(Float, nullable=True)
+    sharp_age_minutes = Column(Float, nullable=True)
+    time_to_start_minutes = Column(Float, nullable=True)
+    provider_count = Column(Integer, nullable=True)
+    provider_odds_rank = Column(Integer, nullable=True)
+    market_consensus_spread = Column(Float, nullable=True)
+    pinnacle_overround = Column(Float, nullable=True)
+    closing_line_value = Column(Float, nullable=True)
+
     # Relationships
     event = relationship("Event")
     provider1 = relationship("Provider", foreign_keys=[provider1_id])
