@@ -25,7 +25,7 @@ from .devig import (
     get_fair_odds_for_outcome,
     compute_consensus_fair_odds,
 )
-from ..constants import SHARP_PROVIDERS, PLATFORM_MAP, PROVIDER_CANONICAL
+from ..constants import SHARP_PROVIDERS, PLATFORM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -841,8 +841,14 @@ class OpportunityScanner:
 
     @staticmethod
     def _canonical(provider: str) -> str:
-        """Return the canonical platform for a provider (or itself if standalone)."""
-        return PROVIDER_CANONICAL.get(provider, provider)
+        """Return the canonical platform for a provider (or itself if standalone).
+
+        Uses PLATFORM_MAP (underlying odds engine) for conflict detection,
+        NOT PROVIDER_CANONICAL (extraction consolidation groups).
+        e.g. dbet and betinia are both 'altenar' even though dbet is extracted
+        separately — dutching across them is pointless.
+        """
+        return PLATFORM_MAP.get(provider, provider)
 
     def _resolve_platform_conflicts(
         self,

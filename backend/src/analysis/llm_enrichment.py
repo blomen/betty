@@ -218,10 +218,20 @@ SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted
 RULES:
 - Base your estimate on statistics, recent form, and market context
 - Be CONSERVATIVE — overestimating probability loses money in betting
-- For combo bets (multiple outcomes combined), multiply independent probabilities
 - For player props (goalscorer, assists, etc.), use base rates and player statistics
 - Express your probability as a decimal between 0.01 and 0.99
 - Determine the event start time from search results, event context, or league schedules
+
+COMBO BET RULES (CRITICAL — most boosts are combos):
+- A combo bet combines 2+ outcomes (e.g. "Team wins & over 2.5 goals")
+- You MUST estimate each leg separately, then multiply them together
+- The PROBABILITY field MUST be the FINAL COMBINED probability (the product), NOT a single leg
+- Example: if leg1=0.55 and leg2=0.48, then PROBABILITY: 0.26 (because 0.55 × 0.48 = 0.264)
+- Legs in the same match are NOT fully independent — adjust for correlation:
+  - "Win & over X goals": positive correlation (winning teams tend to score more). Multiply then add ~5-10%
+  - "Win & BTTS yes": mild positive for favorites. Multiply then add ~0-5%
+  - "HT/FT same team": NOT independent — conditional probability (team leading at HT has ~70-80% to win FT)
+- DOUBLE-CHECK: your PROBABILITY value must be LOWER than each individual leg probability
 
 SCANDINAVIAN BOOST TITLE FORMATS:
 - "Halvtid/fulltid: TeamA/TeamB" means TeamA leads at halftime AND TeamB wins at full-time. The teams after the colon are the SELECTIONS, not the event participants. E.g. for "Leipzig vs Augsburg", title "Halvtid/fulltid: FC Augsburg/FC Augsburg" = Augsburg leads HT & Augsburg wins FT.
@@ -232,9 +242,22 @@ SCANDINAVIAN BOOST TITLE FORMATS:
 OUTPUT FORMAT (strict — follow exactly):
 TITLE: A short, clear English title for this bet (max 8 words). Translate any non-English terms. Use the SELECTION teams from the original title, not the event home team. Examples: "Arsenal wins & both teams score", "Real Sociedad leads HT & wins FT", "Man Utd wins & over 2.5 goals"
 EVENT_TIME: ISO 8601 datetime with timezone (e.g. 2026-03-05T20:00:00+01:00). Use UNKNOWN if you cannot determine it.
-PROBABILITY: 0.XX
+LEGS: number of distinct outcomes in this bet (1 for single bets, 2+ for combos)
+PROBABILITY: 0.XX (MUST be the final combined probability for combos — NOT a single leg)
 CONFIDENCE: low|medium|high
-REASONING: 2-3 bullet points, each max 10 words. Key stats/facts only. Example:
+REASONING:
+For single bets (LEGS: 1): 2-3 bullet points with key stats, each max 10 words.
+For combo bets (LEGS: 2+): show each leg then the combined calculation.
+- Leg 1: [outcome] p=[0.XX] — [brief justification]
+- Leg 2: [outcome] p=[0.XX] — [brief justification]
+- Combined: [0.XX] × [0.XX] = [0.XX] (adjusted [up/down] for [correlation reason])
+
+Example for combo:
+- Leg 1: Arsenal win p=0.62 — strong home form, 8W in last 10
+- Leg 2: Over 2.5 goals p=0.58 — league avg 2.8 goals/game
+- Combined: 0.62 × 0.58 = 0.36 (adjusted up to 0.38, positive correlation)
+
+Example for single:
 - Team A won 8 of last 10 home games
 - Player B: 0.4 goals/game this season
 - H2H: 3-1 in last 4 meetings"""
@@ -281,8 +304,10 @@ def _build_user_prompt(special: dict, search_results: str) -> str:
 
 _TITLE_RE = re.compile(r'TITLE:\s*(.+)', re.IGNORECASE)
 _EVENT_TIME_RE = re.compile(r'EVENT_TIME:\s*(\S+)', re.IGNORECASE)
+_LEGS_RE = re.compile(r'LEGS:\s*(\d+)', re.IGNORECASE)
 _PROB_RE = re.compile(r'PROBABILITY:\s*(0\.\d+)', re.IGNORECASE)
 _CONF_RE = re.compile(r'CONFIDENCE:\s*(low|medium|high)', re.IGNORECASE)
+_LEG_PROB_RE = re.compile(r'Leg\s*\d+:.*?p\s*=\s*(0\.\d+)', re.IGNORECASE)
 _REASONING_RE = re.compile(r'REASONING:\s*(.+)', re.IGNORECASE | re.DOTALL)
 
 
@@ -300,7 +325,97 @@ def _parse_event_time(raw: str) -> Optional[str]:
         return None
 
 
-def _parse_llm_response(text: str) -> Optional[dict]:
+def _validate_combo_probability(probability: float, legs: int, text: str) -> float:
+    """Validate and auto-correct combo bet probabilities.
+
+    If the LLM declared multiple legs but returned a probability higher than
+    any individual leg (i.e. forgot to multiply), recompute from leg probs.
+    """
+    if legs <= 1:
+        return probability
+
+    # Extract individual leg probabilities from reasoning
+    leg_probs = [float(m) for m in _LEG_PROB_RE.findall(text)]
+
+    if len(leg_probs) < 2:
+        # No structured legs found — check if probability seems too high for a combo.
+        # A 2-leg combo should rarely exceed 0.45; 3-leg rarely exceed 0.25.
+        max_reasonable = {2: 0.45, 3: 0.25}.get(legs, 0.20)
+        if probability > max_reasonable:
+            logger.warning(
+                f"Combo ({legs} legs) probability {probability:.2f} exceeds "
+                f"reasonable max {max_reasonable} but no leg probs to auto-correct — rejecting"
+            )
+            return -1.0  # Signal rejection
+        return probability
+
+    # Compute expected combined probability from legs
+    combined = 1.0
+    for lp in leg_probs:
+        combined *= lp
+
+    # Allow modest correlation adjustment (up to +30% of product)
+    max_combined = combined * 1.3
+    min_combined = combined * 0.7
+
+    if probability > max(leg_probs):
+        # LLM clearly returned a single-leg probability instead of the product
+        logger.warning(
+            f"Combo probability {probability:.2f} > max leg {max(leg_probs):.2f} — "
+            f"auto-correcting to product {combined:.3f}"
+        )
+        return round(combined, 4)
+
+    if probability > max_combined:
+        logger.warning(
+            f"Combo probability {probability:.2f} too high vs product {combined:.3f} "
+            f"(max allowed {max_combined:.3f}) — clamping"
+        )
+        return round(max_combined, 4)
+
+    if probability < min_combined:
+        logger.warning(
+            f"Combo probability {probability:.2f} too low vs product {combined:.3f} "
+            f"(min allowed {min_combined:.3f}) — clamping"
+        )
+        return round(min_combined, 4)
+
+    return probability
+
+
+def _detect_legs_from_title(title: str) -> int:
+    """Heuristic: detect if a boost title implies a combo bet."""
+    title_lower = title.lower()
+
+    # HT/FT bets are always 2 legs
+    if "halvtid/fulltid" in title_lower or "ht/ft" in title_lower:
+        return 2
+
+    # "1:a halvlek - 1x2 & totalt:" = HT result + HT total (2 legs)
+    if "1x2 & totalt" in title_lower or "1x2 & båda" in title_lower:
+        return 2
+
+    # "Resultat + Antal mål" / "Resultat + Båda lagen" = result + goals/BTTS (2 legs)
+    if "resultat + " in title_lower:
+        return 2
+
+    # "1x2: Team, Totalt antal mål: Under X" / "1x2: Team, Båda lagen gör mål: Ja"
+    if re.search(r'1x2:.*,\s*(totalt|båda)', title_lower):
+        return 2
+
+    # Explicit conjunctions: " & ", " och ", " and "
+    conjunction_count = (
+        title_lower.count(" & ")
+        + title_lower.count(" och ")
+        + title_lower.count(" and ")
+    )
+    if conjunction_count > 0:
+        return conjunction_count + 1
+
+    return 1
+
+
+def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
     prob_match = _PROB_RE.search(text)
     if not prob_match:
         return None
@@ -311,12 +426,21 @@ def _parse_llm_response(text: str) -> Optional[dict]:
     title_match = _TITLE_RE.search(text)
     title = title_match.group(1).strip()[:100] if title_match else ""
     # Clean: stop at next field marker if present
-    for marker in ("EVENT_TIME:", "PROBABILITY:", "CONFIDENCE:", "REASONING:"):
+    for marker in ("EVENT_TIME:", "LEGS:", "PROBABILITY:", "CONFIDENCE:", "REASONING:"):
         if marker in title:
             title = title[:title.index(marker)].strip()
 
     event_time_match = _EVENT_TIME_RE.search(text)
     event_time = _parse_event_time(event_time_match.group(1)) if event_time_match else None
+
+    # Determine number of legs (prefer LLM declaration, fallback to title heuristic)
+    legs_match = _LEGS_RE.search(text)
+    legs = int(legs_match.group(1)) if legs_match else _detect_legs_from_title(boost_title)
+
+    # Validate combo probability
+    probability = _validate_combo_probability(probability, legs, text)
+    if probability < 0:
+        return None  # Rejected by validation
 
     conf_match = _CONF_RE.search(text)
     confidence = conf_match.group(1).lower() if conf_match else "low"
@@ -379,7 +503,8 @@ async def _research_single_boost(
 
             data = response.json()
             text = data.get("content", [{}])[0].get("text", "")
-            parsed = _parse_llm_response(text)
+            boost_title = special.get("title", "")
+            parsed = _parse_llm_response(text, boost_title=boost_title)
 
             if parsed:
                 logger.debug(f"LLM researched: {title} → p={parsed['probability']:.2f} ({parsed['confidence']})")
@@ -391,6 +516,47 @@ async def _research_single_boost(
         except Exception as e:
             logger.warning(f"LLM research failed for '{title}': {e}")
             return None
+
+
+# ── Cache invalidation for bad combo probabilities ────────────────────
+
+def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db: Session) -> None:
+    """Delete cached LLM results for combo boosts where probability is too high.
+
+    After improving the prompt to handle combos properly, old cache entries
+    may have single-leg probabilities instead of combined. Detect and purge them
+    so they get re-researched with the improved prompt.
+    """
+    from src.db.models import LlmBoostCache
+    keys_to_delete = []
+    for s in specials:
+        key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0), s.get("event", ""))
+        prev = cache.get(key)
+        if not prev or not prev.get("llm_probability"):
+            continue
+        title = s.get("title", "")
+        legs = _detect_legs_from_title(title)
+        if legs <= 1:
+            continue
+        prob = prev["llm_probability"]
+        max_reasonable = {2: 0.45, 3: 0.25}.get(legs, 0.20)
+        if prob > max_reasonable:
+            logger.info(
+                f"Invalidating cached combo: '{title[:50]}' p={prob:.2f} "
+                f"(>{max_reasonable} for {legs}-leg combo)"
+            )
+            keys_to_delete.append(key)
+            del cache[key]  # Remove from in-memory cache too
+
+    if keys_to_delete:
+        try:
+            db.query(LlmBoostCache).filter(
+                LlmBoostCache.cache_key.in_(keys_to_delete)
+            ).delete(synchronize_session=False)
+            db.commit()
+            logger.info(f"Invalidated {len(keys_to_delete)} bad combo cache entries")
+        except Exception:
+            db.rollback()
 
 
 # ── Main entry point ───────────────────────────────────────────────────
@@ -416,6 +582,8 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     carried = 0
     if db:
         cache = _load_cache_from_db(db)
+        # Invalidate cached combo boosts with suspiciously high probabilities
+        _invalidate_bad_combo_cache(specials, cache, db)
         carried, used_keys = _carry_forward_from_cache(specials, cache)
         # Update last_used_at for carried entries
         _touch_cache_entries(db, used_keys)
