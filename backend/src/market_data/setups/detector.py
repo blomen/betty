@@ -22,6 +22,26 @@ class SetupCandidate:
     base_score: float = 65.0  # Default until historical win rate available
     detected_at: datetime | None = None
 
+    @property
+    def rr_tp1(self) -> float | None:
+        if not self.stop_price or not self.target_1 or not self.entry_price:
+            return None
+        risk = abs(self.entry_price - self.stop_price)
+        if risk == 0:
+            return None
+        reward = abs(self.target_1 - self.entry_price)
+        return round(reward / risk, 2)
+
+    @property
+    def rr_tp2(self) -> float | None:
+        if not self.stop_price or not self.target_2 or not self.entry_price:
+            return None
+        risk = abs(self.entry_price - self.stop_price)
+        if risk == 0:
+            return None
+        reward = abs(self.target_2 - self.entry_price)
+        return round(reward / risk, 2)
+
 
 @dataclass
 class DetectorContext:
