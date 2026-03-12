@@ -314,6 +314,9 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
                 ) : (
                   <th className="text-right">Edge</th>
                 )}
+                {activeCategory === 'ft' && <th className="text-right">Close</th>}
+                {activeCategory === 'ft' && <th className="text-right">CLV</th>}
+                {activeCategory === 'ft' && <th className="text-right">Prob</th>}
                 <th className="text-right">Stake</th>
                 <th className="text-right">Return</th>
                 {activeCategory === 'live' ? (
@@ -326,7 +329,7 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
             <tbody>
               {activeBets.map(b => {
                 const isExpanded = expandedId === b.id;
-                const colCount = activeCategory === 'upcoming' ? 9 : activeCategory === 'ft' || activeCategory === 'live' ? 9 : 8;
+                const colCount = activeCategory === 'upcoming' ? 9 : activeCategory === 'ft' ? 12 : activeCategory === 'live' ? 9 : 8;
                 const isEditingOdds = inlineEdit?.id === b.id && inlineEdit.field === 'odds';
                 const dynOdds = getEditOdds(b);
                 const dynStake = getEditStake(b);
@@ -460,16 +463,9 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
                           const displayEdge = dynEdge ?? ftEdgePct;
                           return (
                             <td className="text-right">
-                              <div className="flex flex-col items-end">
-                                <span className={`text-sm font-medium ${displayEdge != null && displayEdge >= 0 ? 'text-success' : 'text-error'}`}>
-                                  {displayEdge != null ? `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '-'}
-                                </span>
-                                {b.clv_pct != null && (
-                                  <span className={`text-[9px] ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                                    CLV {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
-                                  </span>
-                                )}
-                              </div>
+                              <span className={`text-sm font-medium ${displayEdge != null && displayEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                                {displayEdge != null ? `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '-'}
+                              </span>
                             </td>
                           );
                         }
@@ -481,6 +477,33 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
                           </td>
                         );
                       })()}
+
+                      {/* Close / CLV / Prob — Settle tab only */}
+                      {activeCategory === 'ft' && (
+                        <td className="text-right">
+                          {b.closing_odds != null ? (
+                            <span className={`text-sm ${b.closing_odds < b.odds ? 'text-success' : b.closing_odds > b.odds ? 'text-error' : 'text-text'}`}>
+                              {b.closing_odds.toFixed(2)}
+                            </span>
+                          ) : <span className="text-sm text-muted">-</span>}
+                        </td>
+                      )}
+                      {activeCategory === 'ft' && (
+                        <td className="text-right">
+                          {b.clv_pct != null ? (
+                            <span className={`text-sm font-medium ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                              {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
+                            </span>
+                          ) : <span className="text-sm text-muted">-</span>}
+                        </td>
+                      )}
+                      {activeCategory === 'ft' && (
+                        <td className="text-right">
+                          {b.selection_probability != null ? (
+                            <span className="text-sm text-text">{(b.selection_probability * 100).toFixed(0)}%</span>
+                          ) : <span className="text-sm text-muted">-</span>}
+                        </td>
+                      )}
 
                       {/* Stake column — click to edit inline */}
                       <td className="text-right" onClick={e => e.stopPropagation()}>
