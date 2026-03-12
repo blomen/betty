@@ -262,14 +262,20 @@ export function ValuePage({ providers }: ValuePageProps) {
   }, [opportunities, selectedProviders, selectedLeagues, placedKeys, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
+  const getGroupOddsKey = (opp: Opportunity) =>
+    `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
   const valueSortExtractors = useMemo(() => ({
-    odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
+    odds:  (g: GroupedOpp) => oddsOverride[getGroupOddsKey(g.rep)] ?? g.rep.odds1 ?? 0,
     fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
     prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
-    stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
-    edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
+    stake: (g: GroupedOpp) => stakeOverride[getGroupOddsKey(g.rep)] ?? g.rep.final_stake ?? 0,
+    edge:  (g: GroupedOpp) => {
+      const ov = oddsOverride[getGroupOddsKey(g.rep)];
+      if (ov && g.rep.fair_odds) return (ov / g.rep.fair_odds - 1) * 100;
+      return g.rep.edge_pct ?? 0;
+    },
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
-  }), []);
+  }), [oddsOverride, stakeOverride]);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
     useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
 
@@ -429,10 +435,8 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
-  const getEffectiveOdds = (opp: Opportunity) => {
-    const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
-    return oddsOverride[groupKey] ?? opp.odds1;
-  };
+  const getEffectiveOdds = (opp: Opportunity) =>
+    oddsOverride[getGroupOddsKey(opp)] ?? opp.odds1;
 
   // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity, useFreebet: boolean) => {
