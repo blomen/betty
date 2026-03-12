@@ -308,6 +308,8 @@ _LEGS_RE = re.compile(r'LEGS:\s*(\d+)', re.IGNORECASE)
 _PROB_RE = re.compile(r'PROBABILITY:\s*(0\.\d+)', re.IGNORECASE)
 _CONF_RE = re.compile(r'CONFIDENCE:\s*(low|medium|high)', re.IGNORECASE)
 _LEG_PROB_RE = re.compile(r'Leg\s*\d+:.*?p\s*=\s*(0\.\d+)', re.IGNORECASE)
+# Fallback: catch free-form multiplication patterns like "~0.65 × 0.70" or "0.55 * 0.48"
+_MULT_PROB_RE = re.compile(r'~?(0\.\d+)\s*[×x\*]\s*~?(0\.\d+)', re.IGNORECASE)
 _REASONING_RE = re.compile(r'REASONING:\s*(.+)', re.IGNORECASE | re.DOTALL)
 
 
@@ -336,6 +338,12 @@ def _validate_combo_probability(probability: float, legs: int, text: str) -> flo
 
     # Extract individual leg probabilities from reasoning
     leg_probs = [float(m) for m in _LEG_PROB_RE.findall(text)]
+
+    # Fallback: extract from free-form multiplication patterns (e.g. "~0.65 × 0.70")
+    if len(leg_probs) < 2:
+        mult_match = _MULT_PROB_RE.search(text)
+        if mult_match:
+            leg_probs = [float(mult_match.group(1)), float(mult_match.group(2))]
 
     if len(leg_probs) < 2:
         # No structured legs found — check if probability seems too high for a combo.
@@ -433,9 +441,14 @@ def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
     event_time_match = _EVENT_TIME_RE.search(text)
     event_time = _parse_event_time(event_time_match.group(1)) if event_time_match else None
 
-    # Determine number of legs (prefer LLM declaration, fallback to title heuristic)
-    legs_match = _LEGS_RE.search(text)
-    legs = int(legs_match.group(1)) if legs_match else _detect_legs_from_title(boost_title)
+    # Determine number of legs — title heuristic takes precedence over LLM declaration
+    # because the LLM often says LEGS: 1 for combo bets (treating them as single outcomes)
+    title_legs = _detect_legs_from_title(boost_title)
+    if title_legs > 1:
+        legs = title_legs
+    else:
+        legs_match = _LEGS_RE.search(text)
+        legs = int(legs_match.group(1)) if legs_match else 1
 
     # Validate combo probability
     probability = _validate_combo_probability(probability, legs, text)
