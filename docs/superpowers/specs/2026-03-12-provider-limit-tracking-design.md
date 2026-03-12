@@ -6,11 +6,33 @@ When bookmakers limit a betting account (reduced stakes, market restrictions, ac
 
 ## Solution
 
-A new `profile_provider_limits` table that records limits per profile+provider, with an auto-snapshotted summary of betting stats at the moment the limit is detected. Manual entry via the Stats page UI.
+Two layers of limit tracking:
+
+1. **Global provider limit risk** — fields on the `Provider` model indicating how aggressively a provider is known to limit (e.g., interwetten = "instant", altenar brands = "high"). Informs betting strategy across all profiles.
+2. **Per-profile limit records** — a new `profile_provider_limits` table recording actual limits imposed on specific accounts, with an auto-snapshotted summary of betting stats at detection time. Manual entry via the Stats page UI.
 
 ## Data Model
 
-### `LimitType` enum
+### Global: `Provider` model additions
+
+Two new columns on the existing `Provider` table:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `limit_risk` | String (LimitRisk) | `low`, `medium`, `high`, `instant` — how aggressively this provider limits winners |
+| `limit_notes` | Text, nullable | Free-form context (e.g., "Altenar limits after ~20 value bets", "Limited from first bet") |
+
+```python
+class LimitRisk(str, Enum):
+    LOW = "low"           # Rarely limits (e.g., Pinnacle)
+    MEDIUM = "medium"     # Limits after sustained winning
+    HIGH = "high"         # Limits quickly (e.g., Altenar brands)
+    INSTANT = "instant"   # Known to limit from start (e.g., Interwetten)
+```
+
+Default: `low`. Set once globally — applies to all profiles. Editable via the Stats page provider table or a settings endpoint.
+
+### Per-profile: `LimitType` enum
 
 ```python
 class LimitType(str, Enum):
@@ -66,6 +88,16 @@ Auto-captured from the `bets` table for the given profile+provider at recording 
 
 ## API
 
+### Global limit risk
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `PATCH` | `/api/providers/{provider_id}/limit-risk` | Set limit_risk and limit_notes on a provider |
+
+Request body: `{ "limit_risk": "high", "limit_notes": "Altenar limits after ~20 value bets" }`
+
+### Per-profile limits
+
 All endpoints scoped to the active profile.
 
 | Method | Path | Purpose |
@@ -120,12 +152,14 @@ Standard CRUD repository in `repositories/limit_repo.py`.
 
 A new table section on the Stats page showing per-provider betting stats for the active profile, with limit actions:
 
-| Provider | Bets | Stake | Profit | ROI% | Avg CLV | Status |
-|----------|------|-------|--------|------|---------|--------|
-| unibet   | 47   | 12.5k | +1.8k | 14.6% | 3.2% | [Mark Limited] |
-| betsson  | 23   | 8.2k  | +420  | 5.1% | 1.8% | Limited (3/5) |
+| Provider | Risk | Bets | Stake | Profit | ROI% | Avg CLV | Status |
+|----------|------|------|-------|--------|------|---------|--------|
+| unibet   | low  | 47   | 12.5k | +1.8k | 14.6% | 3.2% | [Mark Limited] |
+| interwetten | instant | 5 | 1.2k | +80 | 6.7% | 1.1% | Limited (3/5) |
+| betsson  | medium | 23 | 8.2k | +420  | 5.1% | 1.8% | [Mark Limited] |
 
 - Styled with `tabStats` (cyan) accent, `sq` compact table class
+- **Risk column** shows global `limit_risk` with color coding (low=green, medium=yellow, high=orange, instant=red). Clickable to change.
 - "Mark Limited" button opens inline form: limit type dropdown, severity 1-5, optional notes text field
 - Already-limited providers show level badge, clickable to edit or remove
 
@@ -141,7 +175,8 @@ Per-provider stats computed from existing `GET /api/bets` data (grouped client-s
 - `backend/src/api/routes/limits.py` — Thin route handlers
 
 ### Modified files
-- `backend/src/db/models.py` — Add `LimitType` enum + `ProfileProviderLimit` model (new table, `create_all` handles it)
+- `backend/src/db/models.py` — Add `LimitRisk` + `LimitType` enums, `limit_risk`/`limit_notes` columns on Provider, `ProfileProviderLimit` model (new table, `create_all` handles it; new Provider columns need migration)
 - `backend/src/api/routes/__init__.py` — Register limits router
+- `backend/src/api/routes/providers.py` — Add PATCH endpoint for limit_risk
 - `frontend/src/components/Terminal/pages/StatsPage.tsx` — Add provider stats section with limit actions
 - `frontend/src/services/api.ts` — Add limit API methods
