@@ -11,6 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-03-12-trading-system-design.md`
 
 **Implementation Notes:**
+- `_utcnow` helper already exists in `models.py` (defined as `lambda: datetime.now(timezone.utc)`)
 - Use **relative imports** within `market_data/` (e.g., `from .levels import ...`, `from .detector import ...`) to match existing codebase style
 - Use **relative imports** in `repositories/` (e.g., `from ..db.models import ...`)
 - Gate 1 auto-data (VIX, DXY, yields) comes from existing `/api/trading/market/macro` endpoint (`macro_provider.py`)
@@ -473,7 +474,7 @@ git commit -m "feat: add Databento live stream client with tick buffer"
 ```python
 """Databento REST historical data fetch utilities."""
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -746,7 +747,7 @@ def compute_signals(
             delta=0, delta_aligned=False, delta_divergence=False,
             delta_unwind=False, cvd=0, cvd_trend="flat",
             vsa_absorption=False, tick_vol_accelerating=False,
-            trapped_traders=False,
+            trapped_traders=False, passive_active_ratio=0.0,
         )
 
     recent = candles[-lookback:] if len(candles) >= lookback else candles
@@ -1065,7 +1066,7 @@ def compute_session_levels(
     """Compute PDH/PDL, Tokyo/London H/L, IB from 1-minute bars.
 
     All session boundaries in US/Eastern time:
-    - Tokyo: 20:00 - 00:00 ET (prior evening)
+    - Tokyo: 20:00 - 02:00 ET (prior evening into early morning)
     - London: 03:00 - 08:30 ET
     - IB: 09:30 - 10:30 ET (first 60 min of RTH)
     - PDH/PDL: prior calendar day's RTH range
