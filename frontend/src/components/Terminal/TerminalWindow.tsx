@@ -16,7 +16,7 @@ const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.B
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const TradingBankrollPage = lazy(() => import('./pages/TradingBankrollPage').then(m => ({ default: m.TradingBankrollPage })));
-const TradingScannerPage = lazy(() => import('./pages/TradingScannerPage').then(m => ({ default: m.TradingScannerPage })));
+const TradingIntradayPage = lazy(() => import('./pages/TradingIntradayPage').then(m => ({ default: m.TradingIntradayPage })));
 const TradingStatsPage = lazy(() => import('./pages/TradingStatsPage').then(m => ({ default: m.TradingStatsPage })));
 import { api } from '@/services/api';
 import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
@@ -108,8 +108,8 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <ProfilePage onRefresh={onRefresh} />;
       case 'settings':
         return <SettingsPage />;
-      case 'tradingScanner':
-        return <TradingScannerPage />;
+      case 'tradingIntraday':
+        return <TradingIntradayPage />;
       case 'tradingBankroll':
         return <TradingBankrollPage />;
       case 'tradingStats':

@@ -16,7 +16,7 @@ const SPORTS_TABS: Tab[] = [
 ];
 
 const STOCKS_TABS: Tab[] = [
-  { name: 'tradingScanner',  label: 'Scanner',  color: '#06B6D4' },
+  { name: 'tradingIntraday', label: 'Intraday', color: '#06B6D4' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
@@ -28,7 +28,7 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
   sports: 'value',
-  stocks: 'tradingScanner',
+  stocks: 'tradingIntraday',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
@@ -44,7 +44,7 @@ export const TAB_COLORS: Record<string, string> = {
   profiles: '#A78BFA',
   settings: '#9AA0A6',
   success: '#10b981',
-  tradingScanner: '#06B6D4',
+  tradingIntraday: '#06B6D4',
   tradingBankroll: '#EC4899',
   tradingStats: '#1E88E5',
 };

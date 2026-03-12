@@ -5,7 +5,7 @@ import type { MarketSession, TradingSignal, ConfirmationState } from '@/types/ma
 
 type ConfirmationKey = 'macro' | 'span' | 'fair_value' | 'orderflow';
 
-export function TradingScannerPage() {
+export function TradingIntradayPage() {
   const [session, setSession] = useState<MarketSession | null>(null);
   const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [confirmations, setConfirmations] = useState<ConfirmationState | null>(null);
@@ -117,8 +117,8 @@ export function TradingScannerPage() {
     <div className="space-y-3 max-w-5xl">
       {/* A. FilterBar */}
       <div className="flex items-center gap-3 flex-wrap border-b border-border pb-2">
-        <TabIcon name="tradingScanner" color={TAB_COLORS.tradingScanner} size={18} />
-        <span className="text-sm font-semibold text-text">Scanner</span>
+        <TabIcon name="tradingIntraday" color={TAB_COLORS.tradingIntraday} size={18} />
+        <span className="text-sm font-semibold text-text">Intraday</span>
         <div className="flex-1" />
         <button
           onClick={handleCompute}
