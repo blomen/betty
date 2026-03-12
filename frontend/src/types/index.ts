@@ -633,3 +633,34 @@ export interface RiskAwareStake {
   reason: string;
   skip_reason: string | null;
 }
+
+// Provider Limits
+export interface ProviderLimit {
+  id: number;
+  profile_id: number;
+  provider_id: string;
+  provider_name: string;
+  limit_type: 'stake_limited' | 'market_restricted' | 'odds_restricted' | 'fully_banned';
+  limit_level: number;  // 1-5
+  detected_at: string | null;
+  notes: string | null;
+  betting_snapshot: BettingSnapshot | null;
+  created_at: string | null;
+}
+
+export interface BettingSnapshot {
+  total_bets: number;
+  total_stake: number;
+  total_profit: number;
+  win_rate: number | null;
+  roi_pct: number | null;
+  avg_clv_pct: number | null;
+  avg_odds: number | null;
+  account_age_days: number | null;
+  first_bet_date: string | null;
+  last_bet_date: string | null;
+  sport_breakdown: Record<string, number>;
+  bet_type_breakdown: Record<string, number>;
+  market_breakdown: Record<string, number>;
+  bonus_bets: number;
+}

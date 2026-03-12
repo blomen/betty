@@ -16,6 +16,8 @@ import type {
   OpportunityInput,
   SelectOpportunityResponse,
   RiskAwareStake,
+  ProviderLimit,
+  BettingSnapshot,
 } from '@/types';
 
 // ============ Oddsboost Types ============
@@ -1004,6 +1006,51 @@ export const api = {
       body: JSON.stringify(data),
     });
     return res.json();
+  },
+
+  // ============ Limits ============
+  async getLimits(providerId?: string): Promise<ProviderLimit[]> {
+    const params = providerId ? `?provider_id=${providerId}` : '';
+    return fetchJson<ProviderLimit[]>(`/limits${params}`);
+  },
+
+  async createLimit(data: {
+    provider_id: string;
+    limit_type: string;
+    limit_level: number;
+    notes?: string;
+  }): Promise<{ success: boolean; id: number; betting_snapshot: BettingSnapshot }> {
+    return fetchJson('/limits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async updateLimit(id: number, data: {
+    limit_level?: number;
+    notes?: string;
+  }): Promise<{ success: boolean }> {
+    return fetchJson(`/limits/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async deleteLimit(id: number): Promise<{ success: boolean }> {
+    return fetchJson(`/limits/${id}`, { method: 'DELETE' });
+  },
+
+  async updateProviderLimitRisk(providerId: string, data: {
+    limit_risk: string;
+    limit_notes?: string;
+  }): Promise<{ success: boolean }> {
+    return fetchJson(`/providers/${providerId}/limit-risk`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
   },
 
   // ============ Settings ============
