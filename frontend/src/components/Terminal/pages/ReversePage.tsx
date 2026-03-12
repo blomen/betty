@@ -7,14 +7,16 @@ import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
+import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Bet } from '@/types';
+import type { Opportunity, Bet, Provider } from '@/types';
 
-type ReverseTab = 'reverse' | 'mybets';
+type ReverseTab = 'reverse' | 'mybets' | 'manual';
 
 const reverseBetFilter = (b: Bet) => b.bet_type === 'reverse' || (b.bet_type == null && b.provider === 'pinnacle');
+const reverseProviderFilter = (p: Provider) => p.id === 'pinnacle';
 
-export function ReversePage() {
+export function ReversePage({ providers }: { providers: Provider[] }) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
@@ -207,6 +209,7 @@ export function ReversePage() {
         {([
           { id: 'reverse' as ReverseTab, label: 'Reverse Bets', count: sorted.length },
           { id: 'mybets' as ReverseTab, label: 'My Bets', count: myBetsCount },
+          { id: 'manual' as ReverseTab, label: 'Manual', count: null },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -226,6 +229,11 @@ export function ReversePage() {
       {/* MyBets tab */}
       {activeTab === 'mybets' && (
         <MyBetsSection filter={reverseBetFilter} colorKey="reverse" />
+      )}
+
+      {/* Manual tab */}
+      {activeTab === 'manual' && (
+        <ManualBetForm providers={providers} providerFilter={reverseProviderFilter} accentColor="tabReverse" betType="reverse" onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
       )}
 
       {activeTab === 'reverse' && <>

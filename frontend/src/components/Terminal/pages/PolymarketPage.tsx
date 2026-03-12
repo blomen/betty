@@ -7,8 +7,9 @@ import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
+import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { PolymarketValueBet, PolymarketRewardMarket, Bet } from '@/types';
+import type { PolymarketValueBet, PolymarketRewardMarket, Bet, Provider } from '@/types';
 
 const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
 
@@ -33,9 +34,11 @@ function countManualSettleBets(bets: Bet[]): number {
   }).length;
 }
 
-type PolyTab = 'value' | 'rewards' | 'mybets';
+type PolyTab = 'value' | 'rewards' | 'mybets' | 'manual';
 
-export function PolymarketPage() {
+const polyProviderFilter = (p: Provider) => p.id === 'polymarket';
+
+export function PolymarketPage({ providers }: { providers: Provider[] }) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
 
@@ -380,6 +383,7 @@ export function PolymarketPage() {
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
           { id: 'rewards' as PolyTab, label: 'Rewards', count: rewardsFetched ? sortedRewards.length : null },
           { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsCount },
+          { id: 'manual' as PolyTab, label: 'Manual', count: null },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -399,6 +403,11 @@ export function PolymarketPage() {
       {/* ═══════════════ MY BETS TAB ═══════════════ */}
       {activeTab === 'mybets' && (
         <MyBetsSection filter={polyBetFilter} colorKey="polymarket" autoSettle />
+      )}
+
+      {/* ═══════════════ MANUAL TAB ═══════════════ */}
+      {activeTab === 'manual' && (
+        <ManualBetForm providers={providers} providerFilter={polyProviderFilter} accentColor="tabPolymarket" betType="polymarket" onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
       )}
 
       {/* ═══════════════ REWARDS TAB ═══════════════ */}

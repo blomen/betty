@@ -145,10 +145,10 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
       const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
 
       if (!startMs || startMs > now) {
-        // Boost bets with no start_time: if placed >24h ago, move to Settle
-        if (!startMs && b.bet_type === 'boost' && b.placed_at) {
+        // Bets with no start_time: use placed_at + 3h as proxy for "game finished"
+        if (!startMs && b.placed_at) {
           const placedMs = new Date(b.placed_at).getTime();
-          if (now - placedMs > 24 * 3600000) {
+          if (now - placedMs > 3 * 3600000) {
             ft.push(b);
             continue;
           }

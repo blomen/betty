@@ -2327,7 +2327,7 @@ git commit -m "feat(ml): wire COT fetcher output to cot_data table"
 - Modify: `backend/src/ml/migrations.py`
 - Create: `backend/tests/test_extraction_features.py`
 
-Add `ExtractionFeature` and `ProviderValueLog` ORM models + migration DDL for M10.
+Add `ExtractionFeature`, `ProviderValueLog`, and `PinnacleCoverageLog` ORM models + migration DDL for M10.
 
 - [ ] **Step 1: Write tests**
 
@@ -2345,6 +2345,11 @@ def test_extraction_features_table_exists(db_session):
 def test_provider_value_log_table_exists(db_session):
     inspector = inspect(db_session.bind)
     assert "provider_value_log" in inspector.get_table_names()
+
+
+def test_pinnacle_coverage_log_table_exists(db_session):
+    inspector = inspect(db_session.bind)
+    assert "pinnacle_coverage_log" in inspector.get_table_names()
 
 
 def test_extraction_features_insert(db_session):
@@ -2386,6 +2391,39 @@ def test_provider_value_log_insert(db_session):
     result = db_session.query(ProviderValueLog).first()
     assert result.provider_id == "betsson"
     assert result.value_bets_from_provider is None  # Filled after scan
+
+
+def test_pinnacle_coverage_log_insert(db_session):
+    from src.db.models import PinnacleCoverageLog
+    row = PinnacleCoverageLog(
+        run_id="run-abc-123",
+        provider_id="betsson",
+        sport="football",
+        pinnacle_events=120,
+        pinnacle_ml_events=120,
+        pinnacle_spread_events=95,
+        pinnacle_total_events=110,
+        provider_matched_events=78,
+        provider_ml_events=78,
+        provider_spread_events=45,
+        provider_total_events=60,
+        event_coverage_pct=65.0,
+        ml_coverage_pct=65.0,
+        spread_coverage_pct=47.4,
+        total_coverage_pct=54.5,
+        missing_events=42,
+        missing_spread=50,
+        missing_total=50,
+    )
+    db_session.add(row)
+    db_session.commit()
+    result = db_session.query(PinnacleCoverageLog).first()
+    assert result.provider_id == "betsson"
+    assert result.sport == "football"
+    assert result.pinnacle_events == 120
+    assert result.provider_matched_events == 78
+    assert result.event_coverage_pct == 65.0
+    assert result.missing_events == 42
 
 
 def test_extraction_features_outcome_resolution(db_session):
@@ -2489,6 +2527,45 @@ class ProviderValueLog(Base):
     __table_args__ = (
         Index("idx_provider_value_run", "run_id", "provider_id"),
     )
+
+
+class PinnacleCoverageLog(Base):
+    """Per-provider per-sport Pinnacle coverage delta. Logged every extraction run.
+
+    Tracks what Pinnacle has vs what each soft provider matches — the core metric
+    for extraction quality. Mirrors extraction_report._build_pinnacle_delta() but
+    persists to DB for ML analysis.
+    """
+    __tablename__ = "pinnacle_coverage_log"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)          # FK to extraction_runs.id
+    provider_id = Column(String, nullable=False)      # soft provider being compared
+    sport = Column(String, nullable=False)
+    # Pinnacle baseline
+    pinnacle_events = Column(Integer, nullable=False)
+    pinnacle_ml_events = Column(Integer, default=0)
+    pinnacle_spread_events = Column(Integer, default=0)
+    pinnacle_total_events = Column(Integer, default=0)
+    # Provider coverage
+    provider_matched_events = Column(Integer, default=0)
+    provider_ml_events = Column(Integer, default=0)
+    provider_spread_events = Column(Integer, default=0)
+    provider_total_events = Column(Integer, default=0)
+    # Computed deltas
+    event_coverage_pct = Column(Float, nullable=True)
+    ml_coverage_pct = Column(Float, nullable=True)
+    spread_coverage_pct = Column(Float, nullable=True)
+    total_coverage_pct = Column(Float, nullable=True)
+    missing_events = Column(Integer, nullable=True)
+    missing_spread = Column(Integer, nullable=True)
+    missing_total = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_pinnacle_coverage_run", "run_id"),
+        Index("idx_pinnacle_coverage_provider", "provider_id", "sport"),
+    )
 ```
 
 - [ ] **Step 4: Add migrations for new tables**
@@ -2552,14 +2629,46 @@ def _create_provider_value_log(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX idx_provider_value_run ON provider_value_log(run_id, provider_id)")
+
+
+def _create_pinnacle_coverage_log(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "pinnacle_coverage_log"):
+        return
+    conn.execute("""
+        CREATE TABLE pinnacle_coverage_log (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            pinnacle_events INTEGER NOT NULL,
+            pinnacle_ml_events INTEGER DEFAULT 0,
+            pinnacle_spread_events INTEGER DEFAULT 0,
+            pinnacle_total_events INTEGER DEFAULT 0,
+            provider_matched_events INTEGER DEFAULT 0,
+            provider_ml_events INTEGER DEFAULT 0,
+            provider_spread_events INTEGER DEFAULT 0,
+            provider_total_events INTEGER DEFAULT 0,
+            event_coverage_pct REAL,
+            ml_coverage_pct REAL,
+            spread_coverage_pct REAL,
+            total_coverage_pct REAL,
+            missing_events INTEGER,
+            missing_spread INTEGER,
+            missing_total INTEGER,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_pinnacle_coverage_run ON pinnacle_coverage_log(run_id)")
+    conn.execute("CREATE INDEX idx_pinnacle_coverage_provider ON pinnacle_coverage_log(provider_id, sport)")
 ```
 
-And add both calls to `run_migrations()`:
+And add all three calls to `run_migrations()`:
 ```python
 def run_migrations(conn: sqlite3.Connection) -> None:
     # ... existing calls ...
     _create_extraction_features(conn)
     _create_provider_value_log(conn)
+    _create_pinnacle_coverage_log(conn)
     conn.commit()
 ```
 
@@ -2572,7 +2681,7 @@ Expected: All PASS
 
 ```bash
 git add backend/src/db/models.py backend/src/ml/migrations.py backend/tests/test_extraction_features.py
-git commit -m "feat(ml): add extraction feature and provider value log models for M10"
+git commit -m "feat(ml): add extraction feature, provider value log, and pinnacle coverage log models for M10"
 ```
 
 ---
@@ -2799,18 +2908,308 @@ git commit -m "feat(ml): implement extraction feature extractor for M10 pipeline
 
 ---
 
+### Task 15b: Pinnacle Coverage Logger
+
+**Files:**
+- Create: `backend/src/ml/features/pinnacle_coverage.py`
+- Create: `backend/tests/test_pinnacle_coverage.py`
+
+Persists the Pinnacle coverage delta that `extraction_report._build_pinnacle_delta()` already computes. Reuses the same query patterns but writes to `pinnacle_coverage_log` instead of printing text. This is the foundational M10d data — runs every extraction, from Day 1.
+
+- [ ] **Step 1: Write tests**
+
+```python
+# backend/tests/test_pinnacle_coverage.py
+"""Test Pinnacle coverage delta logging for M10d."""
+
+
+def test_compute_coverage_delta():
+    from src.ml.features.pinnacle_coverage import compute_coverage_delta
+
+    result = compute_coverage_delta(
+        pinnacle_events=100,
+        pinnacle_ml=100,
+        pinnacle_spread=80,
+        pinnacle_total=90,
+        provider_matched=65,
+        provider_ml=65,
+        provider_spread=30,
+        provider_total=45,
+    )
+
+    assert result["event_coverage_pct"] == 65.0
+    assert result["ml_coverage_pct"] == 65.0
+    assert result["spread_coverage_pct"] == 37.5  # 30/80
+    assert result["total_coverage_pct"] == 50.0   # 45/90
+    assert result["missing_events"] == 35
+    assert result["missing_spread"] == 50
+    assert result["missing_total"] == 45
+
+
+def test_compute_coverage_delta_zero_pinnacle():
+    from src.ml.features.pinnacle_coverage import compute_coverage_delta
+
+    result = compute_coverage_delta(
+        pinnacle_events=0,
+        pinnacle_ml=0,
+        pinnacle_spread=0,
+        pinnacle_total=0,
+        provider_matched=0,
+        provider_ml=0,
+        provider_spread=0,
+        provider_total=0,
+    )
+
+    assert result["event_coverage_pct"] == 0.0
+    assert result["missing_events"] == 0
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && python -m pytest tests/test_pinnacle_coverage.py -v`
+Expected: FAIL — module not found
+
+- [ ] **Step 3: Implement pinnacle coverage logger**
+
+```python
+# backend/src/ml/features/pinnacle_coverage.py
+"""Log Pinnacle coverage delta per provider per sport (M10d).
+
+Reuses the same queries as extraction_report._build_pinnacle_delta()
+but persists results to pinnacle_coverage_log for ML analysis.
+
+Called after every extraction run — this is Day 1 data collection.
+"""
+import logging
+from sqlalchemy import func, distinct
+
+logger = logging.getLogger(__name__)
+
+
+def compute_coverage_delta(
+    pinnacle_events: int,
+    pinnacle_ml: int,
+    pinnacle_spread: int,
+    pinnacle_total: int,
+    provider_matched: int,
+    provider_ml: int,
+    provider_spread: int,
+    provider_total: int,
+) -> dict:
+    """Compute coverage percentages and deltas."""
+    return {
+        "event_coverage_pct": round(100 * provider_matched / pinnacle_events, 1) if pinnacle_events > 0 else 0.0,
+        "ml_coverage_pct": round(100 * provider_ml / pinnacle_ml, 1) if pinnacle_ml > 0 else 0.0,
+        "spread_coverage_pct": round(100 * provider_spread / pinnacle_spread, 1) if pinnacle_spread > 0 else 0.0,
+        "total_coverage_pct": round(100 * provider_total / pinnacle_total, 1) if pinnacle_total > 0 else 0.0,
+        "missing_events": pinnacle_events - provider_matched,
+        "missing_spread": pinnacle_spread - provider_spread,
+        "missing_total": pinnacle_total - provider_total,
+    }
+
+
+def log_coverage(session, run_id: str) -> int:
+    """Log Pinnacle coverage delta for all soft providers, per sport.
+
+    Queries the current Odds/Event tables (same as extraction_report)
+    and writes one row per (provider, sport) to pinnacle_coverage_log.
+
+    Returns: number of rows written.
+    """
+    from src.db.models import Odds, Event, PinnacleCoverageLog
+
+    # Get Pinnacle baseline per sport
+    pin_sport_events = {}
+    pin_rows = (
+        session.query(Event.sport, func.count(distinct(Odds.event_id)))
+        .join(Event, Odds.event_id == Event.id)
+        .filter(Odds.provider_id == "pinnacle")
+        .group_by(Event.sport)
+        .all()
+    )
+    for sport, cnt in pin_rows:
+        pin_sport_events[sport] = cnt
+
+    if not pin_sport_events:
+        return 0
+
+    # Get Pinnacle market breakdown per sport
+    pin_sport_markets = {}  # {sport: {ml: N, spread: N, total: N}}
+    pin_market_rows = (
+        session.query(Event.sport, Odds.market, func.count(distinct(Odds.event_id)))
+        .join(Event, Odds.event_id == Event.id)
+        .filter(Odds.provider_id == "pinnacle")
+        .group_by(Event.sport, Odds.market)
+        .all()
+    )
+    for sport, market, cnt in pin_market_rows:
+        if sport not in pin_sport_markets:
+            pin_sport_markets[sport] = {"ml": 0, "spread": 0, "total": 0}
+        mtype = "ml" if market in ("1x2", "moneyline") else market
+        if mtype in pin_sport_markets[sport]:
+            pin_sport_markets[sport][mtype] += cnt
+
+    # Get Pinnacle event IDs per sport
+    pin_event_ids_by_sport = {}
+    for sport in pin_sport_events:
+        ids = set(
+            r[0] for r in session.query(distinct(Odds.event_id))
+            .join(Event, Odds.event_id == Event.id)
+            .filter(Odds.provider_id == "pinnacle", Event.sport == sport)
+            .all()
+        )
+        pin_event_ids_by_sport[sport] = ids
+
+    # Get all soft providers (non-pinnacle, non-polymarket)
+    soft_providers = [
+        r[0] for r in session.query(distinct(Odds.provider_id))
+        .filter(Odds.provider_id.notin_(["pinnacle", "polymarket"]))
+        .all()
+    ]
+
+    rows_written = 0
+    for provider_id in soft_providers:
+        for sport, pin_ids in pin_event_ids_by_sport.items():
+            pin_total = len(pin_ids)
+            if pin_total == 0:
+                continue
+
+            # Events this provider matched for this sport
+            matched_ids = set(
+                r[0] for r in session.query(distinct(Odds.event_id))
+                .filter(
+                    Odds.provider_id == provider_id,
+                    Odds.event_id.in_(pin_ids),
+                )
+                .all()
+            )
+            matched = len(matched_ids)
+
+            if matched == 0:
+                # Still log the zero — shows this provider has no coverage for this sport
+                row = PinnacleCoverageLog(
+                    run_id=run_id,
+                    provider_id=provider_id,
+                    sport=sport,
+                    pinnacle_events=pin_total,
+                    pinnacle_ml_events=pin_sport_markets.get(sport, {}).get("ml", 0),
+                    pinnacle_spread_events=pin_sport_markets.get(sport, {}).get("spread", 0),
+                    pinnacle_total_events=pin_sport_markets.get(sport, {}).get("total", 0),
+                    provider_matched_events=0,
+                    event_coverage_pct=0.0,
+                    ml_coverage_pct=0.0,
+                    spread_coverage_pct=0.0,
+                    total_coverage_pct=0.0,
+                    missing_events=pin_total,
+                    missing_spread=pin_sport_markets.get(sport, {}).get("spread", 0),
+                    missing_total=pin_sport_markets.get(sport, {}).get("total", 0),
+                )
+                session.add(row)
+                rows_written += 1
+                continue
+
+            shared_ids = list(matched_ids)
+            pin_markets = pin_sport_markets.get(sport, {"ml": 0, "spread": 0, "total": 0})
+
+            # Provider market counts on shared events
+            def _count_market(pid, market_filter, event_ids):
+                return session.query(func.count(distinct(Odds.event_id))).filter(
+                    Odds.provider_id == pid,
+                    market_filter,
+                    Odds.event_id.in_(event_ids),
+                ).scalar() or 0
+
+            p_ml = _count_market(provider_id, Odds.market.in_(["1x2", "moneyline"]), shared_ids)
+            p_spr = _count_market(provider_id, Odds.market == "spread", shared_ids)
+            p_tot = _count_market(provider_id, Odds.market == "total", shared_ids)
+
+            # Pinnacle market counts on shared events (for apples-to-apples comparison)
+            pin_ml_shared = _count_market("pinnacle", Odds.market.in_(["1x2", "moneyline"]), shared_ids)
+            pin_spr_shared = _count_market("pinnacle", Odds.market == "spread", shared_ids)
+            pin_tot_shared = _count_market("pinnacle", Odds.market == "total", shared_ids)
+
+            # Use shared-event Pinnacle counts for missing_spread/missing_total
+            # (matches extraction_report._build_pinnacle_delta() semantics)
+            delta = compute_coverage_delta(
+                pinnacle_events=pin_total,
+                pinnacle_ml=pin_ml_shared,
+                pinnacle_spread=pin_spr_shared,
+                pinnacle_total=pin_tot_shared,
+                provider_matched=matched,
+                provider_ml=p_ml,
+                provider_spread=p_spr,
+                provider_total=p_tot,
+            )
+
+            row = PinnacleCoverageLog(
+                run_id=run_id,
+                provider_id=provider_id,
+                sport=sport,
+                # Full sport-level Pinnacle baseline
+                pinnacle_events=pin_total,
+                pinnacle_ml_events=pin_markets["ml"],
+                pinnacle_spread_events=pin_markets["spread"],
+                pinnacle_total_events=pin_markets["total"],
+                # Provider coverage on shared events
+                provider_matched_events=matched,
+                provider_ml_events=p_ml,
+                provider_spread_events=p_spr,
+                provider_total_events=p_tot,
+                **delta,
+            )
+            session.add(row)
+            rows_written += 1
+
+    session.flush()
+    logger.info(f"Logged {rows_written} pinnacle coverage rows for run {run_id}")
+    return rows_written
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && python -m pytest tests/test_pinnacle_coverage.py -v`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/ml/features/pinnacle_coverage.py backend/tests/test_pinnacle_coverage.py
+git commit -m "feat(ml): add Pinnacle coverage delta logger for M10d"
+```
+
+---
+
 ### Task 16: Hook Extraction Features Into Orchestrator
 
 **Files:**
 - Modify: `backend/src/pipeline/orchestrator.py`
 - Modify: `backend/src/pipeline/metrics.py`
 
-After each extraction run completes and metrics are persisted, log extraction features.
-After value scan completes, attribute value bets back to providers.
+After each extraction run completes and metrics are persisted:
+1. Log Pinnacle coverage delta (M10d — most important, runs from Day 1)
+2. Log extraction features (M10a-c)
+3. After value scan completes, attribute value bets back to providers
 
-- [ ] **Step 1: Add extraction feature logging to orchestrator**
+- [ ] **Step 1: Add Pinnacle coverage logging to orchestrator**
 
-In `backend/src/pipeline/orchestrator.py`, find where `metrics.persist_to_db()` is called (after extraction completes). Add after it:
+In `backend/src/pipeline/orchestrator.py`, find where `metrics.persist_to_db()` is called (after extraction completes). Add **before** extraction features:
+
+```python
+        # Log Pinnacle coverage delta (M10d — always, from Day 1)
+        # Only after soft providers extracted — sharp-only runs have no soft data to compare
+        if trigger != "sharp":
+            try:
+                from src.ml.features.pinnacle_coverage import log_coverage
+                coverage_rows = log_coverage(session, run_id)
+                logger.info(f"Logged {coverage_rows} Pinnacle coverage rows")
+                session.commit()
+            except Exception as e:
+                logger.debug(f"Pinnacle coverage logging skipped: {e}")
+```
+
+- [ ] **Step 2: Add extraction feature logging to orchestrator**
+
+Add after the Pinnacle coverage logging:
 
 ```python
         # Log ML extraction features (best-effort)
@@ -2863,7 +3262,7 @@ In `backend/src/pipeline/orchestrator.py`, find where `metrics.persist_to_db()` 
 2. Map to actual variable names in that scope
 3. Access `self.circuit_breaker` and `self.scheduler` as available
 
-- [ ] **Step 2: Add value attribution hook after scan**
+- [ ] **Step 3: Add value attribution hook after scan**
 
 After value scanning completes (in the route or service that triggers scanning after extraction), add:
 
@@ -2899,17 +3298,29 @@ After value scanning completes (in the route or service that triggers scanning a
             logger.debug(f"ML value attribution skipped: {e}")
 ```
 
-- [ ] **Step 3: Verify extraction still works**
+- [ ] **Step 4: Verify extraction still works**
 
 Run an extraction and confirm it completes without errors:
 `cd backend && python -m src.app extract pinnacle`
-Expected: Extraction completes. Check DB for new rows in `extraction_features`.
+Expected: Extraction completes. Check DB for new rows in `extraction_features` and `pinnacle_coverage_log`.
 
-- [ ] **Step 4: Commit**
+Verify coverage data:
+```bash
+cd backend && python -c "
+import sqlite3
+conn = sqlite3.connect('data/bankrollbbq.db')
+cursor = conn.execute('SELECT provider_id, sport, pinnacle_events, provider_matched_events, event_coverage_pct FROM pinnacle_coverage_log LIMIT 10')
+for row in cursor:
+    print(row)
+conn.close()
+"
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add backend/src/pipeline/orchestrator.py
-git commit -m "feat(ml): hook extraction feature logging into orchestrator for M10"
+git commit -m "feat(ml): hook Pinnacle coverage + extraction feature logging into orchestrator"
 ```
 
 ---
@@ -2951,7 +3362,7 @@ conn.close()
 "
 ```
 
-Expected: All 7 new tables visible (`ml_features`, `candle_snapshots`, `economic_events`, `news_impact`, `options_flow`, `cot_data`, `ml_model_registry`) plus the existing tables.
+Expected: All 10 new tables visible (`ml_features`, `candle_snapshots`, `economic_events`, `news_impact`, `options_flow`, `cot_data`, `ml_model_registry`, `extraction_features`, `provider_value_log`, `pinnacle_coverage_log`) plus the existing tables.
 
 - [ ] **Step 4: Verify opportunity columns added**
 
@@ -3050,6 +3461,22 @@ def test_trading_feature_e2e(db_session):
     assert len(data) == 1
     assert data[0].features["setup_type"] == "spring"
     assert data[0].outcome == 2.5
+
+
+def test_pinnacle_coverage_compute():
+    """Verify coverage delta computation."""
+    from src.ml.features.pinnacle_coverage import compute_coverage_delta
+
+    delta = compute_coverage_delta(
+        pinnacle_events=200, pinnacle_ml=200, pinnacle_spread=150, pinnacle_total=180,
+        provider_matched=130, provider_ml=130, provider_spread=60, provider_total=90,
+    )
+    assert delta["event_coverage_pct"] == 65.0
+    assert delta["spread_coverage_pct"] == 40.0
+    assert delta["total_coverage_pct"] == 50.0
+    assert delta["missing_events"] == 70
+    assert delta["missing_spread"] == 90
+    assert delta["missing_total"] == 90
 ```
 
 - [ ] **Step 2: Run integration tests**
@@ -3074,13 +3501,14 @@ git commit -m "test(ml): add end-to-end integration tests for feature pipeline"
 ## Summary
 
 **What this plan delivers:**
-- 9 new SQLite tables (ml_features, candle_snapshots, economic_events, news_impact, options_flow, cot_data, ml_model_registry, extraction_features, provider_value_log)
+- 10 new SQLite tables (ml_features, candle_snapshots, economic_events, news_impact, options_flow, cot_data, ml_model_registry, extraction_features, provider_value_log, pinnacle_coverage_log)
 - 10 new columns on the opportunities table
 - Idempotent migration script safe to run on existing DB
 - Feature store with log/resolve/query operations
 - Betting feature extractor (M1 Edge Quality vector)
 - Trading feature extractor (M5 Setup Score vector)
 - Candle snapshot extractor (M6 temporal pattern data)
+- Pinnacle coverage delta logger (M10d — per-provider per-sport coverage vs Pinnacle, from Day 1)
 - Extraction feature extractor (M10 pipeline optimization — per-run context + per-provider value attribution)
 - Economic calendar fetcher
 - Options flow / macro data fetcher

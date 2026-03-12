@@ -46,9 +46,9 @@ The following modules already exist and are integration points (not new code):
 - `market_data/cot.py` — COT data fetcher (exists, needs wiring to storage)
 
 The following modules DO NOT exist and must be built:
-- Everything under `backend/src/ml/` — the entire ML layer
+- Everything under `backend/src/ml/` — the entire ML layer (including `pinnacle_coverage.py` for M10d coverage logging)
 - `data/economic_calendar.py` — economic event fetcher
-- Migration scripts for new tables and columns
+- Migration scripts for new tables and columns (including `pinnacle_coverage_log`)
 
 ## Data Collection Phase (Start Immediately)
 
@@ -791,11 +791,13 @@ Each session has different baseline expectations for the features. Model 5 can l
 
 **Question:** "How should we extract to maximize the number and quality of value bets while minimizing time and resources?"
 
-**Architecture:** Multi-component — XGBoost for yield prediction and priority scoring, statistical models for timing optimization
+**Core principle:** The whole point is to gather all the data from Pinnacle (sharp source) and then match that data with all the other platforms/sites. M10's foundation is **Pinnacle coverage tracking** — what Pinnacle has vs what each soft provider returns, and the delta between them. Every sub-model builds on this coverage data.
+
+**Architecture:** Multi-component — XGBoost for yield prediction and priority scoring, statistical models for timing optimization. All sub-models consume the `pinnacle_coverage_log` as their primary input.
 
 **Min training data:** 50 extraction runs with linked value bet outcomes
 
-**Existing data (already captured):** The extraction pipeline logs extensive metrics in `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` tables — per-provider duration, events/odds counts, match rates, market breakdown, retries, rate limits, circuit breaker state. M10 connects this extraction data to downstream value bet outcomes.
+**Existing data (already captured):** The extraction pipeline logs extensive metrics in `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` tables — per-provider duration, events/odds counts, match rates, market breakdown, retries, rate limits, circuit breaker state. The extraction report already computes Pinnacle coverage delta per-provider and per-sport (in `_build_pinnacle_delta()`), but only as printed text — not persisted. M10 persists this data and connects it to downstream value bet outcomes.
 
 **Sub-models:**
 
@@ -894,11 +896,31 @@ Resource cost:
 3. **Tier intervals:** "browser_soft every 90min produces 95% of the value of every 60min at half the resource cost"
 4. **Adaptive scheduling:** Increase frequency pre-match (T-4h to T-1h), decrease for overnight
 
-#### M10d: Match Rate Optimizer
+#### M10d: Pinnacle Coverage Tracker & Match Rate Optimizer
 
-**Question:** "Why do some events fail to match against Pinnacle, and can we fix it?"
+**Question:** "What does Pinnacle have, what does each provider match, and how do we close the gap?"
 
-**Features (per unmatched event):**
+This is the foundational sub-model. The whole extraction pipeline exists to gather Pinnacle's data and match it against soft providers. M10d persistently logs the coverage delta — every run, every provider, every sport — so we can track trends, identify gaps, and optimize matching.
+
+**Pinnacle coverage log (persisted per run):**
+
+Per-provider per-sport per-run, we log:
+- What Pinnacle has: event count, market breakdown (1x2/ml, spread, total)
+- What the provider matched: event count, market breakdown
+- The delta: missing events, missing markets, coverage %
+- This mirrors what `extraction_report._build_pinnacle_delta()` already computes, but persists it to `pinnacle_coverage_log` for ML analysis
+
+**Features (aggregate, for coverage trend analysis):**
+- `pinnacle_events_by_sport` — Pinnacle's baseline per sport this run
+- `provider_coverage_pct` — % of Pinnacle events matched by this provider
+- `provider_coverage_pct_trend_5_runs` — is coverage improving or degrading?
+- `coverage_pct_by_market` — per market type (ml, spread, total) coverage
+- `spread_coverage_gap` — Pinnacle spread events minus provider spread events (key gap)
+- `total_coverage_gap` — same for totals
+- `events_exclusively_unmatched` — events NO soft provider matched (Pinnacle-only)
+- `new_pinnacle_events_since_last_run` — Pinnacle coverage growth rate
+
+**Features (per unmatched event, for match improvement):**
 - `provider_id` — which provider produced this event?
 - `sport`, `league` — which sport/league?
 - `home_team_raw`, `away_team_raw` — raw team names before normalization
@@ -910,13 +932,57 @@ Resource cost:
 - `league_in_sports_yaml` — is this league configured with aliases?
 - `events_in_same_league_matched` — do sibling events match? (if yes, this is a team name issue)
 
-**Target:** Binary — would this event match if we had the right alias in `sports.yaml`? (labeled by manual review of top unmatched events)
+**Target (coverage optimization):** Maximize `total_provider_coverage_pct` — the % of Pinnacle events matched by at least one soft provider. Secondary target: maximize `market_coverage_pct` — % of Pinnacle market-event pairs covered by at least one soft provider.
+
+**Target (match rate):** Binary — would this event match if we had the right alias in `sports.yaml`? (labeled by manual review of top unmatched events)
 
 **Usage:**
-1. **sports.yaml auto-suggestions:** "Adding alias 'R Madrid' → 'Real Madrid CF' would match 15 more events/run"
-2. **Provider-specific normalization:** "10bet uses 'Man Utd' while Pinnacle uses 'Manchester United' — add mapping"
-3. **Match threshold tuning:** "Lowering threshold from 85→82 for tennis gains 20 events with 0% false positives"
-4. **Unmatched event dashboard:** Surface top-10 unmatched events per run with suggested fixes
+1. **Coverage dashboard:** Per-provider per-sport coverage % + trend (improving/degrading)
+2. **Gap prioritization:** "Football spread coverage is 45% — highest-value gap to close"
+3. **sports.yaml auto-suggestions:** "Adding alias 'R Madrid' → 'Real Madrid CF' would match 15 more events/run"
+4. **Provider-specific normalization:** "10bet uses 'Man Utd' while Pinnacle uses 'Manchester United' — add mapping"
+5. **Match threshold tuning:** "Lowering threshold from 85→82 for tennis gains 20 events with 0% false positives"
+6. **Unmatched event dashboard:** Surface top-10 unmatched events per run with suggested fixes
+7. **Cross-provider coverage analysis:** "Pinnacle has 850 events. Best single provider covers 65%. All providers combined cover 82%. 18% gap = 153 events no soft provider matches."
+
+### New Data: Pinnacle Coverage Log
+
+Persists the coverage delta that `extraction_report._build_pinnacle_delta()` already computes. Logged after every extraction run at per-provider per-sport granularity:
+
+```sql
+CREATE TABLE pinnacle_coverage_log (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL,                     -- FK to extraction_runs.id
+    provider_id TEXT NOT NULL,                -- soft provider being compared
+    sport TEXT NOT NULL,                      -- sport being compared
+    -- Pinnacle baseline (what Pinnacle has for this sport this run)
+    pinnacle_events INTEGER NOT NULL,         -- Pinnacle event count for this sport
+    pinnacle_ml_events INTEGER DEFAULT 0,     -- Pinnacle events with 1x2/moneyline odds
+    pinnacle_spread_events INTEGER DEFAULT 0, -- Pinnacle events with spread odds
+    pinnacle_total_events INTEGER DEFAULT 0,  -- Pinnacle events with total odds
+    -- Provider coverage (what this provider matched)
+    provider_matched_events INTEGER DEFAULT 0,-- events this provider matched against Pinnacle
+    provider_ml_events INTEGER DEFAULT 0,     -- matched events with 1x2/moneyline odds
+    provider_spread_events INTEGER DEFAULT 0, -- matched events with spread odds
+    provider_total_events INTEGER DEFAULT 0,  -- matched events with total odds
+    -- Computed deltas
+    event_coverage_pct REAL,                  -- provider_matched / pinnacle_events * 100
+    ml_coverage_pct REAL,                     -- provider_ml / pinnacle_ml * 100
+    spread_coverage_pct REAL,                 -- provider_spread / pinnacle_spread * 100
+    total_coverage_pct REAL,                  -- provider_total / pinnacle_total * 100
+    missing_events INTEGER,                   -- pinnacle_events - provider_matched (full sport level)
+    missing_spread INTEGER,                   -- pinnacle_spread_shared - provider_spread (on shared events only)
+    missing_total INTEGER,                    -- pinnacle_total_shared - provider_total (on shared events only)
+    created_at DATETIME DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_pinnacle_coverage_run ON pinnacle_coverage_log(run_id);
+CREATE INDEX idx_pinnacle_coverage_provider ON pinnacle_coverage_log(provider_id, sport);
+```
+
+**Aggregate view** (computed at query time, not stored):
+- **Total Pinnacle coverage:** % of Pinnacle events matched by *at least one* soft provider
+- **Per-provider ranking:** which providers contribute most unique coverage
+- **Market gap analysis:** spread/total coverage % across all providers — identifies the biggest gaps
 
 ### New Data: Extraction Feature Log
 
@@ -1077,6 +1143,7 @@ backend/src/ml/
 │   ├── trading_features.py      # Extract features for M5-M8
 │   ├── candle_features.py       # Extract candle snapshots for M6
 │   ├── extraction_features.py   # Extract features for M10 (extraction optimization)
+│   ├── pinnacle_coverage.py     # Log Pinnacle coverage delta per provider/sport (M10d)
 │   ├── macro_features.py        # Fetch and store macro data for M9
 │   └── store.py                 # Write/read ml_features table
 ├── models/
@@ -1138,12 +1205,15 @@ backend/src/ml/
 - Serve macro snapshot to frontend via existing `/api/trading/market/macro` endpoint
 
 ### Extraction Pipeline (`pipeline/orchestrator.py` + `pipeline/scheduler.py`)
-- After each extraction run completes, call `extraction_features.extract()` → write to `extraction_features`
-- After value scan completes, attribute value bets back to providers → write to `provider_value_log`
+- **After each extraction run completes:**
+  1. Call `pinnacle_coverage.log_coverage()` → write per-provider per-sport delta to `pinnacle_coverage_log` (always, from Day 1)
+  2. Call `extraction_features.extract()` → write to `extraction_features`
+  3. After value scan completes, attribute value bets back to providers → write to `provider_value_log`
+- **Pinnacle coverage logging** reuses the same queries as `extraction_report._build_pinnacle_delta()` but persists results to SQLite instead of printing
 - If M10a trained: predict yield before starting extraction → skip predicted-empty runs
 - If M10b trained: reorder providers within tier by value score → extract highest-value first
 - If M10c trained: adjust per-provider/sport timeouts dynamically before each run
-- If M10d trained: surface unmatched event analysis → suggest `sports.yaml` alias additions
+- If M10d trained: surface coverage trends + unmatched event analysis → suggest `sports.yaml` alias additions, flag coverage regressions
 - **Scheduler integration:** M10c outputs feed into `providers.yaml` config override (runtime, not file edit)
 
 ---
