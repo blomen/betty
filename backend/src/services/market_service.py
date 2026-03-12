@@ -1,5 +1,6 @@
 """Market service - orchestrates data fetch, AMT analysis, and scanning."""
 
+import json
 import logging
 import os
 from datetime import datetime, date, timedelta, timezone
@@ -7,10 +8,17 @@ from datetime import datetime, date, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..config.trading_loader import get_market_data_config, get_scanner_config, get_setups
+from ..db.models import TradingSignal
 from ..market_data.amt import build_session_analysis, SessionAnalysis
 from ..market_data.base import MarketDataProvider
+from ..market_data.levels import compute_session_levels, compute_volume_profile, compute_vwap_bands, VolumeProfile, VWAPBands, SessionLevels
 from ..market_data.macro_provider import fetch_macro_snapshot
+from ..market_data.metrics import compute_rotation_factor, compute_aspr, compute_aspr_percentile, detect_value_migration
+from ..market_data.orderflow import build_candle_flow, compute_signals
 from ..market_data.scanner import MarketScanner
+from ..market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
+from ..market_data.setups.detector import DetectorContext, run_all_detectors
+from ..market_data.tpo import compute_tpo_profile
 from ..repositories.market_repo import MarketRepo
 
 logger = logging.getLogger(__name__)
@@ -120,6 +128,40 @@ class MarketService:
 
         # Persist to DB
         session_data = analysis.to_dict()
+
+        # --- New: Session levels from 1-min bars ---
+        bars_1m = [
+            {"ts": b.timestamp, "high": b.high, "low": b.low}
+            for b in bars
+        ]
+        session_date = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        session_levels = compute_session_levels(bars_1m, session_date)
+
+        # --- New: Aggregate to 30-min bars for TPO and metrics ---
+        bars_30m = self._aggregate_bars_30m(bars)
+
+        # TPO profile from 30-min bars
+        tpo = compute_tpo_profile(bars_30m)
+
+        # Session metrics: RF from 30-min highs/lows
+        highs_30m = [b["high"] for b in bars_30m]
+        lows_30m = [b["low"] for b in bars_30m]
+        rf = compute_rotation_factor(highs_30m, lows_30m)
+        ranges_30m = [b["high"] - b["low"] for b in bars_30m]
+        aspr = compute_aspr(ranges_30m)
+        historical = self.repo.get_historical_asprs(symbol)
+        aspr_pct = compute_aspr_percentile(aspr, historical)
+
+        # Value migration vs prior session
+        value_migration = None
+        prev_session = self.repo.get_previous_session(symbol, before_date=target_date)
+        if (prev_session and prev_session.vah and prev_session.val
+                and session_data.get("vah") and session_data.get("val")):
+            value_migration = detect_value_migration(
+                session_data["vah"], session_data["val"],
+                prev_session.vah, prev_session.val,
+            )
+
         self.repo.upsert_session(
             date=target_date,
             symbol=symbol,
@@ -145,14 +187,36 @@ class MarketService:
             poor_high=session_data.get("poor_high"),
             poor_low=session_data.get("poor_low"),
             session_json=session_data,
+            # New fields
+            pdh=session_levels.pdh,
+            pdl=session_levels.pdl,
+            tokyo_high=session_levels.tokyo_high,
+            tokyo_low=session_levels.tokyo_low,
+            london_high=session_levels.london_high,
+            london_low=session_levels.london_low,
+            rotation_factor=rf,
+            aspr=aspr,
+            aspr_percentile=aspr_pct,
+            ib_tpo_count=tpo.ib_tpo_count,
+            value_migration=value_migration,
         )
+
+        # Persist session metric for baseline history
+        self.repo.upsert_session_metric(symbol, target_date, rf, aspr)
+
+        # Persist levels as MarketLevel rows for the /levels endpoint
+        level_rows = self._session_levels_to_rows(session_levels, session_data)
+        if level_rows:
+            self.repo.upsert_levels(symbol, target_date, level_rows)
+
         self.db.commit()
 
-        logger.info("Computed session for %s %s: POC=%.2f, VA=%.2f-%.2f",
+        logger.info("Computed session for %s %s: POC=%.2f, VA=%.2f-%.2f, RF=%d, ASPR=%.2f",
                      symbol, target_date,
                      session_data.get("poc", 0),
                      session_data.get("val", 0),
-                     session_data.get("vah", 0))
+                     session_data.get("vah", 0),
+                     rf, aspr)
 
         return session_data
 
@@ -275,8 +339,166 @@ class MarketService:
                 "suggested_target": sig.suggested_target,
             })
 
+        # --- New: Setup detector-based signal generation ---
+        try:
+            detector_signals = self._run_setup_detectors(session_row, sj, symbol)
+            results.extend(detector_signals)
+        except Exception as e:
+            logger.warning("Setup detectors failed (non-fatal): %s", e)
+
         self.db.commit()
         logger.info("Scan produced %d signals above threshold %.0f", len(results), threshold)
+        return results
+
+    def _run_setup_detectors(
+        self, session_row, sj: dict, symbol: str
+    ) -> list[dict]:
+        """Run the level-based setup detectors and return scored signals."""
+        config = get_market_data_config()
+        sessions_cfg = config.get("sessions", {})
+
+        # Determine session time window for recent ticks
+        today = date.today()
+        dt = datetime.combine(today, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+        session_start = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+
+        recent_ticks = self.repo.get_trades(symbol, start=session_start, end=now)
+        tick_dicts = [
+            {"ts": t.ts, "price": t.price, "size": t.size, "side": t.side}
+            for t in recent_ticks
+        ]
+
+        # Build candle flow
+        candles = build_candle_flow(tick_dicts, period_seconds=60)
+
+        # Get context gates
+        ctx_model = self.repo.get_context(symbol)
+        direction = "long"
+        if ctx_model and ctx_model.macro_bias == "bear":
+            direction = "short"
+        elif ctx_model and ctx_model.macro_bias == "bull":
+            direction = "long"
+
+        orderflow = compute_signals(candles, direction)
+
+        # Build volume profile and VWAP from session data
+        vp = VolumeProfile(
+            poc=sj.get("poc", 0) or 0,
+            vah=sj.get("vah", 0) or 0,
+            val=sj.get("val", 0) or 0,
+            levels=[],
+            single_prints=[],
+        )
+        vwap_bands = compute_vwap_bands(tick_dicts) if tick_dicts else None
+
+        # Build session levels from stored values
+        sl = SessionLevels(
+            pdh=session_row.pdh,
+            pdl=session_row.pdl,
+            tokyo_high=session_row.tokyo_high,
+            tokyo_low=session_row.tokyo_low,
+            london_high=session_row.london_high,
+            london_low=session_row.london_low,
+            ib_high=sj.get("ib_high"),
+            ib_low=sj.get("ib_low"),
+        )
+
+        # Build TPO stub from session row data
+        from ..market_data.tpo import TPOProfile
+        tpo = TPOProfile(
+            letters={}, poc=sj.get("poc", 0) or 0,
+            vah=sj.get("vah", 0) or 0, val=sj.get("val", 0) or 0,
+            single_prints=[], ledges=[],
+            poor_high=sj.get("poor_high", False),
+            poor_low=sj.get("poor_low", False),
+            ib_tpo_count=session_row.ib_tpo_count or 0,
+        )
+
+        # Build detector context
+        detector_ctx = DetectorContext(
+            vp=vp,
+            vwap=vwap_bands,
+            session_levels=sl,
+            tpo=tpo,
+            orderflow=orderflow,
+            last_price=tick_dicts[-1]["price"] if tick_dicts else 0,
+            macro_bias=ctx_model.macro_bias if ctx_model else None,
+            structure=ctx_model.structure if ctx_model else None,
+            day_type=ctx_model.day_type if ctx_model else None,
+        )
+
+        # Run all detectors
+        raw_candidates = run_all_detectors(detector_ctx)
+
+        # Score and filter
+        scored = []
+        for c in raw_candidates:
+            fits = day_type_fits_setup(detector_ctx.day_type, c.setup_type)
+            macro_ok = (
+                (c.direction == "long" and detector_ctx.macro_bias != "bear") or
+                (c.direction == "short" and detector_ctx.macro_bias != "bull")
+            )
+            final_score = score_candidate(
+                c, orderflow, fits, macro_ok,
+                session_row.rotation_factor, session_row.aspr_percentile,
+            )
+            if final_score >= 70:
+                c.base_score = final_score
+                scored.append(c)
+
+        # R:R filter
+        scored = filter_by_rr(scored, min_rr=1.5)
+
+        # Store as TradingSignal rows
+        results = []
+        for c in scored:
+            signal = TradingSignal(
+                session_id=session_row.id,
+                setup_type=c.setup_type,
+                setup_name=c.setup_name,
+                setup_category=c.setup_type,
+                score=c.base_score,
+                direction=c.direction,
+                price_at_signal=detector_ctx.last_price,
+                suggested_entry=c.entry_price,
+                suggested_stop=c.stop_price,
+                suggested_target=c.target_1,
+                suggested_target_2=c.target_2,
+                suggested_target_3=c.target_3,
+                level_touched=c.level_touched,
+                rr_tp1=c.rr_tp1,
+                rr_tp2=c.rr_tp2,
+                conditions=json.dumps({"orderflow": orderflow.__dict__}, default=str),
+                vwap=sj.get("vwap"),
+                poc=sj.get("poc"),
+                vah=sj.get("vah"),
+                val=sj.get("val"),
+                ib_high=sj.get("ib_high"),
+                ib_low=sj.get("ib_low"),
+            )
+            self.db.add(signal)
+            self.db.flush()
+            results.append({
+                "id": signal.id,
+                "setup_type": c.setup_type,
+                "setup_name": c.setup_name,
+                "category": c.setup_type,
+                "direction": c.direction,
+                "score": c.base_score,
+                "price_at_signal": detector_ctx.last_price,
+                "suggested_entry": c.entry_price,
+                "suggested_stop": c.stop_price,
+                "suggested_target": c.target_1,
+                "suggested_target_2": c.target_2,
+                "suggested_target_3": c.target_3,
+                "level_touched": c.level_touched,
+                "rr_tp1": c.rr_tp1,
+                "rr_tp2": c.rr_tp2,
+            })
+
+        logger.info("Setup detectors produced %d signals (from %d candidates)",
+                     len(results), len(raw_candidates))
         return results
 
     def get_current_session(self, symbol: str | None = None) -> dict | None:
@@ -394,3 +616,69 @@ class MarketService:
             }
             for s in sessions
         ]
+
+    # ---- Helper methods for compute_session ----
+
+    @staticmethod
+    def _aggregate_bars_30m(bars) -> list[dict]:
+        """Aggregate 1-min BarData objects into 30-min OHLCV dicts."""
+        if not bars:
+            return []
+        result = []
+        chunk = []
+        for b in bars:
+            chunk.append(b)
+            if len(chunk) == 30:
+                result.append({
+                    "high": max(c.high for c in chunk),
+                    "low": min(c.low for c in chunk),
+                    "open": chunk[0].open,
+                    "close": chunk[-1].close,
+                    "volume": sum(c.volume for c in chunk),
+                })
+                chunk = []
+        # Handle remaining bars
+        if chunk:
+            result.append({
+                "high": max(c.high for c in chunk),
+                "low": min(c.low for c in chunk),
+                "open": chunk[0].open,
+                "close": chunk[-1].close,
+                "volume": sum(c.volume for c in chunk),
+            })
+        return result
+
+    @staticmethod
+    def _session_levels_to_rows(levels: SessionLevels, session_data: dict) -> list[dict]:
+        """Convert SessionLevels + session data into MarketLevel row dicts."""
+        rows = []
+
+        def _add(level_type, price, direction=None, session_name=None):
+            if price is not None:
+                rows.append({
+                    "level_type": level_type,
+                    "price_low": price,
+                    "price_high": price,
+                    "direction": direction,
+                    "session": session_name,
+                    "is_filled": False,
+                })
+
+        _add("pdh", levels.pdh, "resistance", "prior_day")
+        _add("pdl", levels.pdl, "support", "prior_day")
+        _add("tokyo_high", levels.tokyo_high, "resistance", "tokyo")
+        _add("tokyo_low", levels.tokyo_low, "support", "tokyo")
+        _add("london_high", levels.london_high, "resistance", "london")
+        _add("london_low", levels.london_low, "support", "london")
+        _add("ib_high", levels.ib_high or session_data.get("ib_high"), "resistance", "ib")
+        _add("ib_low", levels.ib_low or session_data.get("ib_low"), "support", "ib")
+        _add("weekly_high", levels.weekly_high, "resistance", "weekly")
+        _add("weekly_low", levels.weekly_low, "support", "weekly")
+        _add("monthly_high", levels.monthly_high, "resistance", "monthly")
+        _add("monthly_low", levels.monthly_low, "support", "monthly")
+        _add("poc", session_data.get("poc"), None, "rth")
+        _add("vah", session_data.get("vah"), "resistance", "rth")
+        _add("val", session_data.get("val"), "support", "rth")
+        _add("vwap", session_data.get("vwap"), None, "rth")
+
+        return rows

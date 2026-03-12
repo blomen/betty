@@ -135,6 +135,29 @@ async def market_stream(symbol: str = "NQ"):
     return EventSourceResponse(event_generator())
 
 
+@router.get("/levels")
+async def get_levels(
+    symbol: str = "NQ",
+    date: str = None,
+    svc: MarketService = Depends(_svc),
+):
+    """Get all structural levels (PDH/PDL, Tokyo/London, IB, VP, VWAP, etc.) for a session."""
+    from datetime import datetime, timezone
+    target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    levels = svc.repo.get_levels(symbol, target_date)
+    return [
+        {
+            "level_type": l.level_type,
+            "price_low": l.price_low,
+            "price_high": l.price_high,
+            "direction": l.direction,
+            "session": l.session,
+            "is_filled": l.is_filled,
+        }
+        for l in levels
+    ]
+
+
 @router.get("/context")
 async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
     ctx = svc.repo.get_context(symbol)

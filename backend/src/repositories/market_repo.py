@@ -36,6 +36,13 @@ class MarketRepo:
         self.db.flush()
         return session
 
+    def get_previous_session(self, symbol: str, before_date: str | None = None) -> MarketSession | None:
+        """Get the most recent session before a given date (or the latest overall)."""
+        q = self.db.query(MarketSession).filter(MarketSession.symbol == symbol)
+        if before_date:
+            q = q.filter(MarketSession.date < before_date)
+        return q.order_by(MarketSession.date.desc()).first()
+
     def list_sessions(self, symbol: str, limit: int = 30) -> list[MarketSession]:
         return (
             self.db.query(MarketSession)
