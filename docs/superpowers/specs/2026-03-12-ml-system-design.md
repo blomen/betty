@@ -23,6 +23,10 @@ Machine learning layer for both sports betting and futures trading. Both domains
 │                      │                                    │
 ├──────────────────────┴──────────────────────────────────┤
 │              M8: Adaptive Kelly Sizing (cross-domain)    │
+├─────────────────────────────────────────────────────────┤
+│           M10: Extraction Pipeline Optimizer              │
+│  (scheduling, provider priority, timeout tuning,          │
+│   yield prediction, match rate optimization)              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -783,12 +787,212 @@ Each session has different baseline expectations for the features. Model 5 can l
 
 ---
 
+### Model 10: Extraction Pipeline Optimizer (Sports Betting)
+
+**Question:** "How should we extract to maximize the number and quality of value bets while minimizing time and resources?"
+
+**Architecture:** Multi-component — XGBoost for yield prediction and priority scoring, statistical models for timing optimization
+
+**Min training data:** 50 extraction runs with linked value bet outcomes
+
+**Existing data (already captured):** The extraction pipeline logs extensive metrics in `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` tables — per-provider duration, events/odds counts, match rates, market breakdown, retries, rate limits, circuit breaker state. M10 connects this extraction data to downstream value bet outcomes.
+
+**Sub-models:**
+
+#### M10a: Extraction Yield Predictor
+
+**Question:** "Given current conditions, how many value bets will this extraction run produce?"
+
+**Features (from existing metrics tables + new context):**
+
+Timing context:
+- `hour_of_day` — odds update patterns vary (overnight = stale, pre-match surge = fresh)
+- `day_of_week` — weekend = more football, less tennis
+- `minutes_since_last_sharp_extraction` — how stale is the Pinnacle baseline?
+- `minutes_since_last_soft_extraction` — per tier (api_soft, browser_soft)
+- `events_starting_next_2h` — more imminent events = more provider activity
+- `events_starting_next_6h` — medium-term event load
+
+Extraction health (from `provider_run_metrics`):
+- `providers_succeeded_last_run` — how many providers completed successfully?
+- `providers_failed_last_run` — extraction degradation signal
+- `avg_match_rate_last_run` — overall Pinnacle matching quality
+- `total_events_last_run` — baseline extraction volume
+- `total_odds_last_run` — odds coverage depth
+- `circuit_breakers_open_count` — how many providers are currently blocked?
+
+Historical yield (from `opportunities` table):
+- `value_bets_found_last_run` — most recent yield
+- `value_bets_avg_last_5_runs` — trend baseline
+- `avg_edge_pct_last_run` — quality of found bets
+- `unique_providers_with_value_last_run` — concentration vs diversity
+
+Sports mix:
+- `football_events_available` — per sport, how many events are live for extraction
+- `basketball_events_available`, `tennis_events_available`, etc.
+- `major_league_pct` — proportion of events in top leagues (higher = more liquid)
+
+**Target:** Number of value bets found in this extraction run (regression) or "high yield" binary (>median)
+
+**Usage:** Skip extraction runs predicted to produce <2 value bets (save resources). Trigger extra runs when yield prediction is high.
+
+#### M10b: Provider Priority Scorer
+
+**Question:** "Which providers should we extract first / allocate more resources to?"
+
+**Features (per provider, from `provider_run_metrics` history):**
+
+Provider performance:
+- `avg_events_per_run` — typical yield
+- `avg_duration_seconds` — extraction speed
+- `events_per_second` — efficiency ratio
+- `avg_match_rate` — Pinnacle matching quality
+- `avg_spread_count`, `avg_total_count` — market depth (spread/total = more value opportunities)
+- `failure_rate_last_10_runs` — reliability
+- `rate_limit_count_last_10_runs` — rate limit frequency
+- `circuit_breaker_trips_last_30_days` — chronic instability
+
+Downstream value:
+- `value_bets_attributed_to_provider` — how many value bets came from this provider's odds?
+- `avg_edge_pct_from_provider` — quality of edges this provider produces
+- `avg_clv_from_provider` — do this provider's bets have real CLV? (best signal)
+- `unique_events_exclusive_to_provider` — events only this provider covers (irreplaceable)
+
+Resource cost:
+- `is_browser_provider` — browser = expensive, API = cheap
+- `avg_memory_mb` — browser resource footprint (if measurable)
+- `platform_group` — kambi/altenar/gecko/etc (siblings share odds, diminishing returns)
+- `platform_siblings_active` — how many siblings already extracted this cycle?
+
+**Target:** Provider value score = `(value_bets_attributed × avg_clv) / duration_seconds` — optimizes for value-per-second-of-extraction
+
+**Usage:**
+1. **Within-tier ordering:** Extract highest-value providers first (matters when tier has time budget)
+2. **Browser slot allocation:** With only 3 browser slots, assign to highest-value browser providers
+3. **Dynamic inclusion/exclusion:** If a provider's value score drops to ~0 for 10+ runs, suggest removing from active rotation
+4. **Platform deduplication intelligence:** "Betsson produces 85% of Kambi-platform value bets — consider extracting only Betsson + one other for diversity"
+
+#### M10c: Dynamic Timeout & Interval Tuner
+
+**Question:** "What's the optimal timeout and extraction interval for each provider/sport?"
+
+**Features:**
+- `duration_p50`, `duration_p90`, `duration_p99` — per provider, per sport
+- `duration_trend_last_10_runs` — getting slower or faster?
+- `timeout_hit_count_last_10_runs` — how often does current timeout cut off extraction?
+- `events_lost_to_timeout` — estimated events missed due to premature timeout
+- `events_gained_last_10pct_duration` — what % of events come in the final 10% of extraction time?
+- `interval_since_last_run` — how long since this tier ran?
+- `odds_staleness_at_scan_time` — how old were the odds when scanner found value bets?
+- `clv_vs_odds_age` — do stale odds produce lower CLV? (key question)
+
+**Target:** Optimal timeout = minimize `(resource_cost - value_of_additional_events)`. Optimal interval = minimize odds staleness while respecting resource constraints.
+
+**Usage:**
+1. **Per-provider timeouts:** Replace hardcoded 120s/240s with learned P95 + buffer
+2. **Per-sport timeouts:** "Football needs 180s at 10bet but only 30s at unibet"
+3. **Tier intervals:** "browser_soft every 90min produces 95% of the value of every 60min at half the resource cost"
+4. **Adaptive scheduling:** Increase frequency pre-match (T-4h to T-1h), decrease for overnight
+
+#### M10d: Match Rate Optimizer
+
+**Question:** "Why do some events fail to match against Pinnacle, and can we fix it?"
+
+**Features (per unmatched event):**
+- `provider_id` — which provider produced this event?
+- `sport`, `league` — which sport/league?
+- `home_team_raw`, `away_team_raw` — raw team names before normalization
+- `event_date` — when is the event?
+- `closest_pinnacle_match_score` — highest fuzzy match score achieved (just below threshold?)
+- `closest_pinnacle_candidate` — what was the best candidate event?
+- `team_name_length` — short names are harder to match
+- `has_special_characters` — accented characters, non-Latin scripts
+- `league_in_sports_yaml` — is this league configured with aliases?
+- `events_in_same_league_matched` — do sibling events match? (if yes, this is a team name issue)
+
+**Target:** Binary — would this event match if we had the right alias in `sports.yaml`? (labeled by manual review of top unmatched events)
+
+**Usage:**
+1. **sports.yaml auto-suggestions:** "Adding alias 'R Madrid' → 'Real Madrid CF' would match 15 more events/run"
+2. **Provider-specific normalization:** "10bet uses 'Man Utd' while Pinnacle uses 'Manchester United' — add mapping"
+3. **Match threshold tuning:** "Lowering threshold from 85→82 for tennis gains 20 events with 0% false positives"
+4. **Unmatched event dashboard:** Surface top-10 unmatched events per run with suggested fixes
+
+### New Data: Extraction Feature Log
+
+To connect extraction metrics to value bet outcomes, add an `extraction_features` table:
+
+```sql
+CREATE TABLE extraction_features (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL,                     -- FK to extraction_runs.id
+    trigger TEXT NOT NULL,                    -- 'sharp', 'api_soft', 'browser_soft'
+    -- Timing context
+    hour_of_day INTEGER,
+    day_of_week INTEGER,
+    minutes_since_last_sharp REAL,
+    minutes_since_last_soft REAL,
+    events_starting_next_2h INTEGER,
+    events_starting_next_6h INTEGER,
+    -- Health snapshot
+    providers_attempted INTEGER,
+    providers_succeeded INTEGER,
+    providers_failed INTEGER,
+    circuit_breakers_open INTEGER,
+    -- Volume snapshot
+    total_events INTEGER,
+    total_odds INTEGER,
+    avg_match_rate REAL,
+    -- Outcome (filled after scan completes)
+    value_bets_found INTEGER,
+    avg_edge_pct REAL,
+    dutch_opportunities_found INTEGER,
+    reverse_opportunities_found INTEGER,
+    total_opportunity_value REAL,             -- Sum of (edge_pct × recommended_stake) across all bets
+    -- Resolved later
+    bets_placed_from_run INTEGER,
+    avg_clv_from_run REAL,                   -- Average CLV of bets placed from this run's opportunities
+    created_at DATETIME DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_extraction_features_run ON extraction_features(run_id);
+```
+
+#### `provider_value_log`
+Per-provider attribution — connects provider extraction to value bet production:
+
+```sql
+CREATE TABLE provider_value_log (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    -- Extraction metrics (snapshot from provider_run_metrics)
+    events_extracted INTEGER,
+    odds_extracted INTEGER,
+    duration_seconds REAL,
+    match_rate REAL,
+    spread_count INTEGER,
+    total_count INTEGER,
+    -- Value attribution (filled after scan)
+    value_bets_from_provider INTEGER,         -- How many value bets used this provider's odds
+    avg_edge_from_provider REAL,
+    exclusive_events INTEGER,                 -- Events only this provider covers
+    -- Resolved later
+    clv_avg_from_provider REAL,              -- Average CLV of bets from this provider
+    created_at DATETIME DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_provider_value_run ON provider_value_log(run_id, provider_id);
+```
+
+---
+
 ## Progressive Unlock Timeline
 
 | Data Milestone | Models Unlocked | Impact |
 |---|---|---|
-| Day 1 | None — collecting features | Feature store populating with every scan/signal |
+| Day 1 | None — collecting features | Feature store populating with every scan/signal/extraction |
+| 50 extraction runs | M10a (yield prediction), M10d (match rate) | Skip low-yield extractions, fix unmatched events |
 | 50 trades / 200 bets | M1 (edge quality), M4 (boost calibration) | Filter bad edges, calibrate LLM boosts |
+| 100 extraction runs | M10b (provider priority), M10c (timeout tuning) | Optimal provider ordering, dynamic timeouts/intervals |
 | 100 sessions | M7 (day type classifier) | Auto-suggest day type (replaces manual Gate 3) |
 | 200 trades / 500 bets | M2 (limit prediction), M3 (devig selector), M5 (setup scorer) | Learned scoring weights, provider lifetime estimates, optimal devig |
 | 50 news events | M9 (news impact patterns) | Pre/post-news scoring adjustments |
@@ -872,6 +1076,7 @@ backend/src/ml/
 │   ├── betting_features.py      # Extract features for M1-M4
 │   ├── trading_features.py      # Extract features for M5-M8
 │   ├── candle_features.py       # Extract candle snapshots for M6
+│   ├── extraction_features.py   # Extract features for M10 (extraction optimization)
 │   ├── macro_features.py        # Fetch and store macro data for M9
 │   └── store.py                 # Write/read ml_features table
 ├── models/
@@ -883,7 +1088,8 @@ backend/src/ml/
 │   ├── temporal_patterns.py     # M6
 │   ├── gate_classifier.py       # M7
 │   ├── adaptive_kelly.py        # M8
-│   └── macro_engine.py          # M9
+│   ├── macro_engine.py          # M9
+│   └── extraction_optimizer.py  # M10
 ├── training/
 │   ├── train_all.py             # Weekly training orchestrator
 │   ├── evaluate.py              # Walk-forward evaluation
@@ -930,6 +1136,15 @@ backend/src/ml/
 - Weekly fetch: COT data → existing `cot.py` + store
 - Post-news: capture price responses → `news_impact` table
 - Serve macro snapshot to frontend via existing `/api/trading/market/macro` endpoint
+
+### Extraction Pipeline (`pipeline/orchestrator.py` + `pipeline/scheduler.py`)
+- After each extraction run completes, call `extraction_features.extract()` → write to `extraction_features`
+- After value scan completes, attribute value bets back to providers → write to `provider_value_log`
+- If M10a trained: predict yield before starting extraction → skip predicted-empty runs
+- If M10b trained: reorder providers within tier by value score → extract highest-value first
+- If M10c trained: adjust per-provider/sport timeouts dynamically before each run
+- If M10d trained: surface unmatched event analysis → suggest `sports.yaml` alias additions
+- **Scheduler integration:** M10c outputs feed into `providers.yaml` config override (runtime, not file edit)
 
 ---
 

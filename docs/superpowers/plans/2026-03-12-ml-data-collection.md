@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the database tables, migrations, feature store, and feature extraction hooks so every scan and trading signal logs its full continuous feature vector from day one.
+**Goal:** Build the database tables, migrations, feature store, and feature extraction hooks so every scan, trading signal, and extraction run logs its full continuous feature vector from day one.
 
-**Architecture:** New `backend/src/ml/` module with feature extraction running inline after each scan/signal. Features stored as JSON blobs in SQLite `ml_features` table. Macro data fetched on schedule into dedicated tables. Model registry table prepared for Phase 2.
+**Architecture:** New `backend/src/ml/` module with feature extraction running inline after each scan/signal/extraction. Features stored as JSON blobs in SQLite `ml_features` table. Extraction metrics linked to downstream value outcomes via `extraction_features` and `provider_value_log` tables. Macro data fetched on schedule into dedicated tables. Model registry table prepared for Phase 2.
 
 **Tech Stack:** Python 3.10+, SQLAlchemy (ORM models), SQLite, existing BankrollBBQ analysis/trading pipeline
 
@@ -27,13 +27,15 @@ backend/src/ml/
 │   ├── __init__.py
 │   ├── betting_features.py        # Extract feature vector for sports betting opportunities
 │   ├── trading_features.py        # Extract feature vector for trading signals
-│   └── candle_features.py         # Snapshot last 20 candles at signal time
+│   ├── candle_features.py         # Snapshot last 20 candles at signal time
+│   └── extraction_features.py     # Extract features for extraction pipeline (M10)
 ├── macro/
 │   ├── __init__.py
 │   ├── economic_calendar.py       # Fetch economic events from API
 │   └── options_flow.py            # Fetch VIX, DXY, yields, GEX daily
 backend/src/db/models.py           # Add ORM models: MlFeature, CandleSnapshot, EconomicEvent,
-                                   #   NewsImpact, OptionsFlow, CotData, MlModelRegistry
+                                   #   NewsImpact, OptionsFlow, CotData, MlModelRegistry,
+                                   #   ExtractionFeature, ProviderValueLog
                                    # Add columns to Opportunity
 backend/tests/
 ├── __init__.py
@@ -43,6 +45,7 @@ backend/tests/
 ├── test_betting_features.py
 ├── test_trading_features.py
 ├── test_candle_features.py
+├── test_extraction_features.py
 └── test_macro_fetchers.py
 ```
 
@@ -53,6 +56,8 @@ backend/src/db/models.py           # New ORM models + Opportunity columns
 backend/src/analysis/scanner.py    # Hook: call betting_features.extract() after scan
 backend/src/market_data/scoring.py # Hook: enrich conditions with continuous values
 backend/src/market_data/scanner.py # Hook: call trading_features.extract() + candle snapshot after signal
+backend/src/pipeline/orchestrator.py  # Hook: call extraction_features.extract() after run completes
+backend/src/pipeline/metrics.py       # Hook: attribute value bets to providers after scan
 ```
 
 ---
@@ -2313,7 +2318,603 @@ git commit -m "feat(ml): wire COT fetcher output to cot_data table"
 
 ---
 
-### Task 14: Run Migrations on Production DB
+## Chunk 4b: Extraction Pipeline Feature Logging
+
+### Task 14: Extraction Feature ORM Models
+
+**Files:**
+- Modify: `backend/src/db/models.py`
+- Modify: `backend/src/ml/migrations.py`
+- Create: `backend/tests/test_extraction_features.py`
+
+Add `ExtractionFeature` and `ProviderValueLog` ORM models + migration DDL for M10.
+
+- [ ] **Step 1: Write tests**
+
+```python
+# backend/tests/test_extraction_features.py
+"""Test extraction feature logging for M10 extraction optimizer."""
+from sqlalchemy import inspect
+
+
+def test_extraction_features_table_exists(db_session):
+    inspector = inspect(db_session.bind)
+    assert "extraction_features" in inspector.get_table_names()
+
+
+def test_provider_value_log_table_exists(db_session):
+    inspector = inspect(db_session.bind)
+    assert "provider_value_log" in inspector.get_table_names()
+
+
+def test_extraction_features_insert(db_session):
+    from src.db.models import ExtractionFeature
+    row = ExtractionFeature(
+        run_id="run-abc-123",
+        trigger="api_soft",
+        hour_of_day=14,
+        day_of_week=2,
+        minutes_since_last_sharp=5.0,
+        providers_attempted=12,
+        providers_succeeded=11,
+        providers_failed=1,
+        total_events=450,
+        total_odds=3200,
+        avg_match_rate=0.82,
+    )
+    db_session.add(row)
+    db_session.commit()
+    result = db_session.query(ExtractionFeature).first()
+    assert result.trigger == "api_soft"
+    assert result.value_bets_found is None  # Not yet filled
+
+
+def test_provider_value_log_insert(db_session):
+    from src.db.models import ProviderValueLog
+    row = ProviderValueLog(
+        run_id="run-abc-123",
+        provider_id="betsson",
+        events_extracted=85,
+        odds_extracted=650,
+        duration_seconds=42.5,
+        match_rate=0.88,
+        spread_count=30,
+        total_count=45,
+    )
+    db_session.add(row)
+    db_session.commit()
+    result = db_session.query(ProviderValueLog).first()
+    assert result.provider_id == "betsson"
+    assert result.value_bets_from_provider is None  # Filled after scan
+
+
+def test_extraction_features_outcome_resolution(db_session):
+    from src.db.models import ExtractionFeature
+    row = ExtractionFeature(
+        run_id="run-xyz",
+        trigger="browser_soft",
+        hour_of_day=10,
+        day_of_week=5,
+        providers_attempted=6,
+        providers_succeeded=5,
+        total_events=200,
+        total_odds=1500,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    # Simulate outcome resolution after scan
+    result = db_session.query(ExtractionFeature).filter_by(run_id="run-xyz").first()
+    result.value_bets_found = 47
+    result.avg_edge_pct = 8.2
+    result.dutch_opportunities_found = 12
+    db_session.commit()
+
+    updated = db_session.query(ExtractionFeature).filter_by(run_id="run-xyz").first()
+    assert updated.value_bets_found == 47
+    assert updated.avg_edge_pct == 8.2
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && python -m pytest tests/test_extraction_features.py -v`
+Expected: FAIL — models not defined
+
+- [ ] **Step 3: Add ORM models to models.py**
+
+Add to `backend/src/db/models.py` after the other ML models:
+
+```python
+class ExtractionFeature(Base):
+    """Per-extraction-run feature snapshot for M10 optimization."""
+    __tablename__ = "extraction_features"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)          # FK to extraction_runs.id
+    trigger = Column(String, nullable=False)          # 'sharp', 'api_soft', 'browser_soft'
+    # Timing context
+    hour_of_day = Column(Integer, nullable=True)
+    day_of_week = Column(Integer, nullable=True)
+    minutes_since_last_sharp = Column(Float, nullable=True)
+    minutes_since_last_soft = Column(Float, nullable=True)
+    events_starting_next_2h = Column(Integer, nullable=True)
+    events_starting_next_6h = Column(Integer, nullable=True)
+    # Health snapshot
+    providers_attempted = Column(Integer, nullable=True)
+    providers_succeeded = Column(Integer, nullable=True)
+    providers_failed = Column(Integer, nullable=True)
+    circuit_breakers_open = Column(Integer, nullable=True)
+    # Volume snapshot
+    total_events = Column(Integer, nullable=True)
+    total_odds = Column(Integer, nullable=True)
+    avg_match_rate = Column(Float, nullable=True)
+    # Outcome (filled after scan completes)
+    value_bets_found = Column(Integer, nullable=True)
+    avg_edge_pct = Column(Float, nullable=True)
+    dutch_opportunities_found = Column(Integer, nullable=True)
+    reverse_opportunities_found = Column(Integer, nullable=True)
+    total_opportunity_value = Column(Float, nullable=True)
+    # Resolved later
+    bets_placed_from_run = Column(Integer, nullable=True)
+    avg_clv_from_run = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_extraction_features_run", "run_id"),
+    )
+
+
+class ProviderValueLog(Base):
+    """Per-provider-per-run attribution — connects extraction to value outcomes."""
+    __tablename__ = "provider_value_log"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    provider_id = Column(String, nullable=False)
+    # Extraction metrics (from provider_run_metrics)
+    events_extracted = Column(Integer, nullable=True)
+    odds_extracted = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    match_rate = Column(Float, nullable=True)
+    spread_count = Column(Integer, nullable=True)
+    total_count = Column(Integer, nullable=True)
+    # Value attribution (filled after scan)
+    value_bets_from_provider = Column(Integer, nullable=True)
+    avg_edge_from_provider = Column(Float, nullable=True)
+    exclusive_events = Column(Integer, nullable=True)
+    # Resolved later
+    clv_avg_from_provider = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_provider_value_run", "run_id", "provider_id"),
+    )
+```
+
+- [ ] **Step 4: Add migrations for new tables**
+
+Add to `backend/src/ml/migrations.py` — two new `_create_*` functions:
+
+```python
+def _create_extraction_features(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "extraction_features"):
+        return
+    conn.execute("""
+        CREATE TABLE extraction_features (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            hour_of_day INTEGER,
+            day_of_week INTEGER,
+            minutes_since_last_sharp REAL,
+            minutes_since_last_soft REAL,
+            events_starting_next_2h INTEGER,
+            events_starting_next_6h INTEGER,
+            providers_attempted INTEGER,
+            providers_succeeded INTEGER,
+            providers_failed INTEGER,
+            circuit_breakers_open INTEGER,
+            total_events INTEGER,
+            total_odds INTEGER,
+            avg_match_rate REAL,
+            value_bets_found INTEGER,
+            avg_edge_pct REAL,
+            dutch_opportunities_found INTEGER,
+            reverse_opportunities_found INTEGER,
+            total_opportunity_value REAL,
+            bets_placed_from_run INTEGER,
+            avg_clv_from_run REAL,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_extraction_features_run ON extraction_features(run_id)")
+
+
+def _create_provider_value_log(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "provider_value_log"):
+        return
+    conn.execute("""
+        CREATE TABLE provider_value_log (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            events_extracted INTEGER,
+            odds_extracted INTEGER,
+            duration_seconds REAL,
+            match_rate REAL,
+            spread_count INTEGER,
+            total_count INTEGER,
+            value_bets_from_provider INTEGER,
+            avg_edge_from_provider REAL,
+            exclusive_events INTEGER,
+            clv_avg_from_provider REAL,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_provider_value_run ON provider_value_log(run_id, provider_id)")
+```
+
+And add both calls to `run_migrations()`:
+```python
+def run_migrations(conn: sqlite3.Connection) -> None:
+    # ... existing calls ...
+    _create_extraction_features(conn)
+    _create_provider_value_log(conn)
+    conn.commit()
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cd backend && python -m pytest tests/test_extraction_features.py -v`
+Expected: All PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/src/db/models.py backend/src/ml/migrations.py backend/tests/test_extraction_features.py
+git commit -m "feat(ml): add extraction feature and provider value log models for M10"
+```
+
+---
+
+### Task 15: Extraction Feature Extractor
+
+**Files:**
+- Create: `backend/src/ml/features/extraction_features.py`
+- Modify: `backend/tests/test_extraction_features.py`
+
+Extracts M10 features from the orchestrator context after each extraction run completes.
+
+- [ ] **Step 1: Add tests**
+
+Add to `backend/tests/test_extraction_features.py`:
+
+```python
+def test_extract_extraction_features():
+    from src.ml.features.extraction_features import extract_extraction_features
+    from datetime import datetime, timezone
+
+    features = extract_extraction_features(
+        run_id="run-123",
+        trigger="api_soft",
+        providers_attempted=12,
+        providers_succeeded=11,
+        providers_failed=1,
+        total_events=450,
+        total_odds=3200,
+        avg_match_rate=0.82,
+        circuit_breakers_open=0,
+        last_sharp_run_time=datetime(2026, 3, 12, 14, 25, tzinfo=timezone.utc),
+        last_soft_run_time=datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc),
+    )
+
+    assert features["run_id"] == "run-123"
+    assert features["trigger"] == "api_soft"
+    assert features["providers_attempted"] == 12
+    assert features["hour_of_day"] is not None
+    assert features["day_of_week"] is not None
+    assert "minutes_since_last_sharp" in features
+    assert "minutes_since_last_soft" in features
+
+
+def test_extract_provider_value_features():
+    from src.ml.features.extraction_features import extract_provider_value
+
+    features = extract_provider_value(
+        run_id="run-123",
+        provider_id="betsson",
+        events_extracted=85,
+        odds_extracted=650,
+        duration_seconds=42.5,
+        match_rate=0.88,
+        spread_count=30,
+        total_count=45,
+        value_bets_from_provider=8,
+        avg_edge_from_provider=7.2,
+    )
+
+    assert features["provider_id"] == "betsson"
+    assert features["events_extracted"] == 85
+    assert features["value_bets_from_provider"] == 8
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && python -m pytest tests/test_extraction_features.py::test_extract_extraction_features -v`
+Expected: FAIL — module not found
+
+- [ ] **Step 3: Implement extraction feature extractor**
+
+```python
+# backend/src/ml/features/extraction_features.py
+"""Extract features for extraction pipeline optimization (M10).
+
+Logs per-run context (timing, health, volume) and per-provider attribution
+(events, odds, value bet yield). Connects extraction decisions to downstream
+value outcomes.
+
+Integration points:
+- After orchestrator completes a run → extract_extraction_features()
+- After value scan completes → extract_provider_value() per provider
+- After bets resolve → update clv columns
+"""
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
+
+def extract_extraction_features(
+    run_id: str,
+    trigger: str,
+    providers_attempted: int,
+    providers_succeeded: int,
+    providers_failed: int,
+    total_events: int,
+    total_odds: int,
+    avg_match_rate: float,
+    circuit_breakers_open: int = 0,
+    last_sharp_run_time: datetime | None = None,
+    last_soft_run_time: datetime | None = None,
+    events_starting_next_2h: int | None = None,
+    events_starting_next_6h: int | None = None,
+) -> dict:
+    """Extract features for a completed extraction run.
+
+    Called by orchestrator after extraction completes.
+    Value bet outcomes filled in separately after scan.
+    """
+    now = datetime.now(timezone.utc)
+
+    minutes_since_sharp = None
+    if last_sharp_run_time:
+        if last_sharp_run_time.tzinfo is None:
+            last_sharp_run_time = last_sharp_run_time.replace(tzinfo=timezone.utc)
+        minutes_since_sharp = (now - last_sharp_run_time).total_seconds() / 60
+
+    minutes_since_soft = None
+    if last_soft_run_time:
+        if last_soft_run_time.tzinfo is None:
+            last_soft_run_time = last_soft_run_time.replace(tzinfo=timezone.utc)
+        minutes_since_soft = (now - last_soft_run_time).total_seconds() / 60
+
+    return {
+        "run_id": run_id,
+        "trigger": trigger,
+        "hour_of_day": now.hour,
+        "day_of_week": now.weekday(),
+        "minutes_since_last_sharp": minutes_since_sharp,
+        "minutes_since_last_soft": minutes_since_soft,
+        "events_starting_next_2h": events_starting_next_2h,
+        "events_starting_next_6h": events_starting_next_6h,
+        "providers_attempted": providers_attempted,
+        "providers_succeeded": providers_succeeded,
+        "providers_failed": providers_failed,
+        "circuit_breakers_open": circuit_breakers_open,
+        "total_events": total_events,
+        "total_odds": total_odds,
+        "avg_match_rate": avg_match_rate,
+    }
+
+
+def extract_provider_value(
+    run_id: str,
+    provider_id: str,
+    events_extracted: int,
+    odds_extracted: int,
+    duration_seconds: float,
+    match_rate: float,
+    spread_count: int = 0,
+    total_count: int = 0,
+    value_bets_from_provider: int | None = None,
+    avg_edge_from_provider: float | None = None,
+    exclusive_events: int | None = None,
+) -> dict:
+    """Extract per-provider value attribution features.
+
+    Called after value scan to connect provider extraction to value outcomes.
+    """
+    return {
+        "run_id": run_id,
+        "provider_id": provider_id,
+        "events_extracted": events_extracted,
+        "odds_extracted": odds_extracted,
+        "duration_seconds": duration_seconds,
+        "match_rate": match_rate,
+        "spread_count": spread_count,
+        "total_count": total_count,
+        "value_bets_from_provider": value_bets_from_provider,
+        "avg_edge_from_provider": avg_edge_from_provider,
+        "exclusive_events": exclusive_events,
+    }
+
+
+def log_extraction_run(session, features: dict) -> None:
+    """Store extraction features to DB."""
+    from src.db.models import ExtractionFeature
+    row = ExtractionFeature(**features)
+    session.add(row)
+    session.flush()
+    logger.debug(f"Logged extraction features for run {features.get('run_id')}")
+
+
+def log_provider_value(session, features: dict) -> None:
+    """Store provider value attribution to DB."""
+    from src.db.models import ProviderValueLog
+    row = ProviderValueLog(**features)
+    session.add(row)
+    session.flush()
+
+
+def update_extraction_outcomes(
+    session,
+    run_id: str,
+    value_bets_found: int,
+    avg_edge_pct: float | None,
+    dutch_opportunities_found: int = 0,
+    reverse_opportunities_found: int = 0,
+) -> None:
+    """Update extraction features with scan outcomes. Called after value scan."""
+    from src.db.models import ExtractionFeature
+    row = session.query(ExtractionFeature).filter_by(run_id=run_id).first()
+    if row:
+        row.value_bets_found = value_bets_found
+        row.avg_edge_pct = avg_edge_pct
+        row.dutch_opportunities_found = dutch_opportunities_found
+        row.reverse_opportunities_found = reverse_opportunities_found
+        session.flush()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && python -m pytest tests/test_extraction_features.py -v`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/ml/features/extraction_features.py backend/tests/test_extraction_features.py
+git commit -m "feat(ml): implement extraction feature extractor for M10 pipeline optimizer"
+```
+
+---
+
+### Task 16: Hook Extraction Features Into Orchestrator
+
+**Files:**
+- Modify: `backend/src/pipeline/orchestrator.py`
+- Modify: `backend/src/pipeline/metrics.py`
+
+After each extraction run completes and metrics are persisted, log extraction features.
+After value scan completes, attribute value bets back to providers.
+
+- [ ] **Step 1: Add extraction feature logging to orchestrator**
+
+In `backend/src/pipeline/orchestrator.py`, find where `metrics.persist_to_db()` is called (after extraction completes). Add after it:
+
+```python
+        # Log ML extraction features (best-effort)
+        try:
+            from src.ml.features.extraction_features import (
+                extract_extraction_features, log_extraction_run,
+                extract_provider_value, log_provider_value,
+            )
+
+            # Run-level features
+            run_features = extract_extraction_features(
+                run_id=run_id,
+                trigger=trigger,
+                providers_attempted=metrics.providers_attempted,
+                providers_succeeded=metrics.providers_succeeded,
+                providers_failed=metrics.providers_failed,
+                total_events=metrics.total_events,
+                total_odds=metrics.total_odds,
+                avg_match_rate=metrics.avg_match_rate,
+                circuit_breakers_open=sum(
+                    1 for s in self.circuit_breaker.get_all_statuses().values()
+                    if s.state == "open"
+                ),
+                last_sharp_run_time=self.scheduler.get_last_run_time("sharp") if hasattr(self, 'scheduler') else None,
+                last_soft_run_time=self.scheduler.get_last_run_time("api_soft") if hasattr(self, 'scheduler') else None,
+            )
+            log_extraction_run(session, run_features)
+
+            # Per-provider features
+            for provider_id, pm in metrics.providers.items():
+                pv_features = extract_provider_value(
+                    run_id=run_id,
+                    provider_id=provider_id,
+                    events_extracted=pm.events_processed,
+                    odds_extracted=pm.odds_processed,
+                    duration_seconds=pm.duration_seconds,
+                    match_rate=pm.events_matched / max(pm.events_processed, 1),
+                    spread_count=pm.spread_count,
+                    total_count=pm.total_count,
+                )
+                log_provider_value(session, pv_features)
+
+            session.commit()
+        except Exception as e:
+            logger.debug(f"ML extraction feature logging skipped: {e}")
+```
+
+**Important:** The exact variable names (`run_id`, `trigger`, `metrics`, `session`) depend on orchestrator scope. The implementer MUST:
+1. Read `orchestrator.py` to find where `persist_to_db()` is called
+2. Map to actual variable names in that scope
+3. Access `self.circuit_breaker` and `self.scheduler` as available
+
+- [ ] **Step 2: Add value attribution hook after scan**
+
+After value scanning completes (in the route or service that triggers scanning after extraction), add:
+
+```python
+        # Attribute value bets to providers (for M10 provider priority scoring)
+        try:
+            from src.ml.features.extraction_features import update_extraction_outcomes
+            from collections import Counter
+
+            provider_counts = Counter(vb.provider for vb in value_bets)
+            update_extraction_outcomes(
+                session=session,
+                run_id=current_run_id,
+                value_bets_found=len(value_bets),
+                avg_edge_pct=sum(vb.edge_pct for vb in value_bets) / len(value_bets) if value_bets else None,
+                dutch_opportunities_found=len(dutch_opps),
+                reverse_opportunities_found=len(reverse_opps),
+            )
+
+            # Update per-provider value counts
+            from src.db.models import ProviderValueLog
+            for provider_id, count in provider_counts.items():
+                pvl = session.query(ProviderValueLog).filter_by(
+                    run_id=current_run_id, provider_id=provider_id
+                ).first()
+                if pvl:
+                    pvl.value_bets_from_provider = count
+                    pvl.avg_edge_from_provider = (
+                        sum(vb.edge_pct for vb in value_bets if vb.provider == provider_id) / count
+                    )
+            session.commit()
+        except Exception as e:
+            logger.debug(f"ML value attribution skipped: {e}")
+```
+
+- [ ] **Step 3: Verify extraction still works**
+
+Run an extraction and confirm it completes without errors:
+`cd backend && python -m src.app extract pinnacle`
+Expected: Extraction completes. Check DB for new rows in `extraction_features`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add backend/src/pipeline/orchestrator.py
+git commit -m "feat(ml): hook extraction feature logging into orchestrator for M10"
+```
+
+---
+
+### Task 17: Run Migrations on Production DB (updated for extraction tables)
 
 **Files:** None new — runs existing migration script against the real SQLite DB.
 
@@ -2375,7 +2976,7 @@ No code changes — this step just applies the migration. But commit a note or u
 
 ## Chunk 5: Integration Verification
 
-### Task 15: End-to-End Smoke Test
+### Task 18: End-to-End Smoke Test
 
 **Files:**
 - Create: `backend/tests/test_ml_integration.py`
@@ -2473,18 +3074,19 @@ git commit -m "test(ml): add end-to-end integration tests for feature pipeline"
 ## Summary
 
 **What this plan delivers:**
-- 7 new SQLite tables (ml_features, candle_snapshots, economic_events, news_impact, options_flow, cot_data, ml_model_registry)
+- 9 new SQLite tables (ml_features, candle_snapshots, economic_events, news_impact, options_flow, cot_data, ml_model_registry, extraction_features, provider_value_log)
 - 10 new columns on the opportunities table
 - Idempotent migration script safe to run on existing DB
 - Feature store with log/resolve/query operations
 - Betting feature extractor (M1 Edge Quality vector)
 - Trading feature extractor (M5 Setup Score vector)
 - Candle snapshot extractor (M6 temporal pattern data)
+- Extraction feature extractor (M10 pipeline optimization — per-run context + per-provider value attribution)
 - Economic calendar fetcher
 - Options flow / macro data fetcher
 - COT data wiring
-- Full test suite (17+ tests)
-- Scanner integration hooks (best-effort, never blocks extraction)
+- Full test suite (20+ tests)
+- Scanner and orchestrator integration hooks (best-effort, never blocks extraction)
 
 **Deferred to Phase 2/3 (needs historical data or additional infrastructure):**
 - M1 features: `odds_movement_direction/magnitude`, `sharp_line_stability`, `provider_historical_clv_avg`, `is_platform_outlier`, `league_liquidity_proxy` — require historical tracking tables
