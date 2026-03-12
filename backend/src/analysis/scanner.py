@@ -243,7 +243,39 @@ class OpportunityScanner:
                 away_team=event.away_team if event else None,
                 sport=event.sport if event else None,
                 start_time=(event.start_time.isoformat() + "Z") if event and event.start_time else None,
+                prob_sum=vb.prob_sum,
+                pinnacle_overround=vb.pinnacle_overround,
+                odds_snapshot=vb.odds_snapshot,
             )
+            # Log ML features (best-effort, never blocks scanning)
+            try:
+                from src.ml.features.betting_features import extract_betting_features
+                from src.ml.feature_store import log_features
+                outcome_odds = {vb.outcome: vb.odds_snapshot or []}
+                ml_features = extract_betting_features(
+                    edge_pct=vb.edge_pct,
+                    provider_odds=vb.provider_odds,
+                    fair_odds=vb.fair_odds,
+                    fair_probability=vb.fair_probability,
+                    provider=vb.provider,
+                    sport=event.sport if event else "unknown",
+                    market=vb.market,
+                    event_id=vb.event_id,
+                    prob_sum=vb.prob_sum or 0,
+                    odds_by_outcome=outcome_odds,
+                    pinnacle_overround=vb.pinnacle_overround or 0,
+                    event_start_time=event.start_time if event else None,
+                    point=vb.point,
+                )
+                log_features(
+                    session=self.session,
+                    domain="betting",
+                    source_id=f"{vb.event_id}_{vb.provider}_{vb.market}_{vb.outcome}",
+                    source_type="opportunity",
+                    features=ml_features,
+                )
+            except Exception as e:
+                logger.debug(f"ML feature logging skipped: {e}")
             enriched_bets.append(enriched)
 
         # Sort by edge (highest first), then by stake
@@ -1172,6 +1204,11 @@ class OpportunityScanner:
         if len(pinnacle_market) > sharp_outcome_count:
             sharp_outcome_count = len(pinnacle_market)
 
+        # Compute Pinnacle overround for ML features
+        pinnacle_overround = (
+            sum(1.0 / o for o in pinnacle_market.values() if o > 1) - 1.0
+        ) if pinnacle_market else 0
+
         # Pre-compute probability sums per soft provider (used in completeness check)
         soft_prob_sums = defaultdict(float)
         for out, providers in odds_by_outcome.items():
@@ -1267,6 +1304,13 @@ class OpportunityScanner:
                             f"{event_id} {market} {outcome} ({po['provider']})"
                         )
                         continue
+                    # Attach ML feature data
+                    vb.prob_sum = soft_prob_sums.get(po["provider"], 0)
+                    vb.pinnacle_overround = pinnacle_overround
+                    vb.odds_snapshot = [
+                        {"provider": p["provider"], "odds": p["odds"], "updated_at": str(p.get("updated_at", ""))}
+                        for p in provider_odds_list
+                    ]
                     values.append(vb)
 
         return values

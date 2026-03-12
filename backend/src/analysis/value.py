@@ -54,6 +54,11 @@ class ValueBet:
     sport: Optional[str] = None
     start_time: Optional[str] = None
 
+    # ML feature data (populated by scanner, consumed by feature extractor)
+    prob_sum: Optional[float] = None
+    pinnacle_overround: Optional[float] = None
+    odds_snapshot: Optional[list] = None
+
     @property
     def expected_value(self) -> float:
         """Expected value per $1 bet."""
