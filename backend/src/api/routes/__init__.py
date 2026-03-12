@@ -16,6 +16,7 @@ from .specials import router as specials_router
 from .trading import router as trading_router
 from .market import router as market_router
 from .settings import router as settings_router
+from .limits import router as limits_router
 
 __all__ = [
     'providers_router',
@@ -34,4 +35,5 @@ __all__ = [
     'trading_router',
     'market_router',
     'settings_router',
+    'limits_router',
 ]

@@ -9,7 +9,7 @@ import yaml
 from ...db.models import Provider, Profile, ProfileProviderBonus
 from ...repositories import ProfileRepo
 from ..deps import get_db
-from ..schemas import ProviderCreate, ProviderUpdate
+from ..schemas import ProviderCreate, ProviderUpdate, LimitRiskUpdate
 
 
 @lru_cache(maxsize=1)
@@ -90,6 +90,8 @@ async def list_providers(db: Session = Depends(get_db)):
             "balance": balance,
             "bonus": bonus_info.get(p.id),
             "bonus_status": get_profile_bonus_status(db, p.id),
+            "limit_risk": p.limit_risk or "low",
+            "limit_notes": p.limit_notes,
         })
 
     total_balance = profile_repo.get_total_bankroll(profile.id)
@@ -207,4 +209,30 @@ async def update_bonus_status(
         "bonus_status": status,
         "old_status": old_status,
         "profile_id": active_profile.id,
+    }
+
+
+@router.patch("/{provider_id}/limit-risk")
+async def update_limit_risk(
+    provider_id: str,
+    data: LimitRiskUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set global limit risk rating for a provider."""
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+
+    # limit_risk validated by Pydantic Literal
+    provider.limit_risk = data.limit_risk
+    if data.limit_notes is not None:
+        provider.limit_notes = data.limit_notes
+    provider.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "success": True,
+        "provider_id": provider_id,
+        "limit_risk": provider.limit_risk,
+        "limit_notes": provider.limit_notes,
     }

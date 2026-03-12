@@ -264,3 +264,23 @@ class TradeReviewCreate(BaseModel):
     followed_rules: Optional[bool] = None
     what_to_improve: Optional[str] = None
     grade: Optional[int] = None
+
+
+# ============ Limit Schemas ============
+
+class LimitCreate(BaseModel):
+    provider_id: str
+    limit_type: Literal["stake_limited", "market_restricted", "odds_restricted", "fully_banned"]
+    limit_level: int  # 1-5
+    detected_at: Optional[str] = None  # ISO datetime string, defaults to now
+    notes: Optional[str] = None
+
+
+class LimitUpdate(BaseModel):
+    limit_level: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class LimitRiskUpdate(BaseModel):
+    limit_risk: Literal["low", "medium", "high", "instant"]
+    limit_notes: Optional[str] = None
