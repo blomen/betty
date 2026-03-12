@@ -1,6 +1,6 @@
 import { TabIcon } from './TabBar';
 
-export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingScanner' | 'tradingBankroll' | 'tradingStats';
+export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingIntraday' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {

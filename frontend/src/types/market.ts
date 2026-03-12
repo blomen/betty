@@ -59,6 +59,12 @@ export interface MarketSession {
   price_vs_vwap?: string;
   price_vs_ib?: string;
 
+  // Session metrics (Task 23b)
+  rotation_factor?: number;
+  aspr?: number;
+  aspr_percentile?: number;
+  value_migration?: 'up' | 'down' | 'neutral';
+
   // Meta
   status?: string;
   message?: string;
@@ -76,14 +82,19 @@ export interface TradingSignal {
   id: number;
   setup_type: string;
   setup_name: string;
+  setup_category?: string;
   category: string;
   direction: 'long' | 'short';
   score: number;
-  conditions: ScanCondition[];
+  conditions: ScanCondition[] | string;
   price_at_signal?: number;
   suggested_entry?: number;
   suggested_stop?: number;
   suggested_target?: number;
+  suggested_target_2?: number;
+  suggested_target_3?: number;
+  rr_tp1?: number;
+  level_touched?: string;
   vwap?: number;
   poc?: number;
   triggered_at?: string;
@@ -134,4 +145,28 @@ export interface ConfirmationState {
   span: ConfirmationCard;
   fair_value: ConfirmationCard;
   orderflow: ConfirmationCard;
+}
+
+export interface StreamTickEvent {
+  ts: string;
+  price: number;
+  size: number;
+  side: 'A' | 'B';
+  cvd: number;
+  delta_1m: number;
+}
+
+export interface MarketContext {
+  symbol: string;
+  gates_set: boolean;
+  macro_bias?: 'bull' | 'bear' | 'neutral';
+  risk_mode?: 'risk_on' | 'risk_off' | 'mixed';
+  cycle_phase?: 'early' | 'mid' | 'late' | 'recession';
+  structure?: 'uptrend' | 'downtrend' | 'ranging';
+  structure_hl?: number;
+  structure_lh?: number;
+  day_type?: 'trend' | 'normal' | 'normal_variation' | 'neutral' | 'composite';
+  vp_old_macro_start?: number;
+  vp_ongoing_macro_start?: number;
+  vp_leg_start?: number;
 }

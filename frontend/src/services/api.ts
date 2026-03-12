@@ -992,6 +992,20 @@ export const api = {
     return fetchJson('/trading/market/confirmations');
   },
 
+  async getMarketContext(symbol = 'NQ'): Promise<import('@/types/market').MarketContext> {
+    const res = await fetch(`${API_BASE}/trading/market/context?symbol=${symbol}`);
+    return res.json();
+  },
+
+  async updateMarketContext(data: Partial<import('@/types/market').MarketContext>, symbol = 'NQ') {
+    const res = await fetch(`${API_BASE}/trading/market/context?symbol=${symbol}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
   // ============ Settings ============
 
   async getExtractionSettings(): Promise<ExtractionSettingsResponse> {

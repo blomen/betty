@@ -1,9 +1,26 @@
 """Market data API routes — AMT session analysis and scanner signals."""
 
 from fastapi import APIRouter, Depends, Query
+from sse_starlette.sse import EventSourceResponse
+import asyncio, json
 
 from ..deps import get_db
 from ...services.market_service import MarketService
+
+# Module-level singleton for live stream
+_live_stream = None
+
+def _get_live_stream():
+    """Get or create the singleton DatabentoLiveStream."""
+    global _live_stream
+    if _live_stream is None:
+        import os
+        api_key = os.environ.get("DATABENTO_API_KEY")
+        if not api_key:
+            return None
+        from src.market_data.stream import DatabentoLiveStream
+        _live_stream = DatabentoLiveStream(api_key=api_key)
+    return _live_stream
 
 router = APIRouter(prefix="/api/trading/market", tags=["market"])
 
@@ -93,3 +110,76 @@ async def get_macro_snapshot():
         "regime_score": macro.regime_score,
         "fetched_at": macro.fetched_at,
     }
+
+
+@router.get("/stream")
+async def market_stream(symbol: str = "NQ"):
+    """SSE stream of real-time tick data, candles, and level touches."""
+    stream = _get_live_stream()
+    if not stream:
+        return {"error": "Live stream not available"}
+
+    queue = stream.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield {"event": "tick", "data": json.dumps(event)}
+                except asyncio.TimeoutError:
+                    yield {"event": "heartbeat", "data": "{}"}
+        except asyncio.CancelledError:
+            stream.unsubscribe(queue)
+
+    return EventSourceResponse(event_generator())
+
+
+@router.get("/levels")
+async def get_levels(
+    symbol: str = "NQ",
+    date: str = None,
+    svc: MarketService = Depends(_svc),
+):
+    """Get all structural levels (PDH/PDL, Tokyo/London, IB, VP, VWAP, etc.) for a session."""
+    from datetime import datetime, timezone
+    target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    levels = svc.repo.get_levels(symbol, target_date)
+    return [
+        {
+            "level_type": l.level_type,
+            "price_low": l.price_low,
+            "price_high": l.price_high,
+            "direction": l.direction,
+            "session": l.session,
+            "is_filled": l.is_filled,
+        }
+        for l in levels
+    ]
+
+
+@router.get("/context")
+async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
+    ctx = svc.repo.get_context(symbol)
+    if not ctx:
+        return {"symbol": symbol, "gates_set": False}
+    return {
+        "symbol": ctx.symbol,
+        "gates_set": True,
+        "macro_bias": ctx.macro_bias,
+        "risk_mode": ctx.risk_mode,
+        "cycle_phase": ctx.cycle_phase,
+        "structure": ctx.structure,
+        "structure_hl": ctx.structure_hl,
+        "structure_lh": ctx.structure_lh,
+        "day_type": ctx.day_type,
+        "vp_old_macro_start": ctx.vp_old_macro_start,
+        "vp_ongoing_macro_start": ctx.vp_ongoing_macro_start,
+        "vp_leg_start": ctx.vp_leg_start,
+    }
+
+
+@router.put("/context")
+async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = Depends(_svc)):
+    svc.repo.upsert_context(symbol, data)
+    return {"status": "ok", "symbol": symbol}

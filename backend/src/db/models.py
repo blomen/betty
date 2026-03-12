@@ -972,6 +972,20 @@ class MarketSession(Base):
     # Full session analysis JSON
     session_json = Column(JSON, nullable=True)
 
+    # New: session metrics
+    rotation_factor = Column(Integer, nullable=True)
+    aspr = Column(Float, nullable=True)
+    aspr_percentile = Column(Float, nullable=True)
+    ib_tpo_count = Column(Integer, nullable=True)
+    value_migration = Column(String, nullable=True)  # "up", "down", "overlapping"
+    # New: session levels
+    pdh = Column(Float, nullable=True)
+    pdl = Column(Float, nullable=True)
+    tokyo_high = Column(Float, nullable=True)
+    tokyo_low = Column(Float, nullable=True)
+    london_high = Column(Float, nullable=True)
+    london_low = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -1021,6 +1035,14 @@ class TradingSignal(Base):
     expired_at = Column(DateTime, nullable=True)
     trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
 
+    # New: multi-target + setup categorization
+    suggested_target_2 = Column(Float, nullable=True)
+    suggested_target_3 = Column(Float, nullable=True)
+    level_touched = Column(String, nullable=True)
+    setup_category = Column(String, nullable=True)  # "spring", "sfp", "poor_extreme", etc.
+    rr_tp1 = Column(Float, nullable=True)
+    rr_tp2 = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=_utcnow)
 
     # Relationships
@@ -1030,6 +1052,85 @@ class TradingSignal(Base):
     __table_args__ = (
         Index("ix_trading_signals_active", "is_active", "triggered_at"),
         Index("ix_trading_signals_setup", "setup_type"),
+    )
+
+
+class MarketTrade(Base):
+    """Raw tick data from Databento live stream."""
+    __tablename__ = "market_trades"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    ts = Column(DateTime, nullable=False)  # UTC from Databento
+    price = Column(Float, nullable=False)
+    size = Column(Integer, nullable=False)
+    side = Column(String, nullable=False)  # "B" (bid aggressor) | "A" (ask aggressor)
+
+    __table_args__ = (
+        Index("ix_market_trades_symbol_ts", "symbol", "ts"),
+    )
+
+
+class MarketLevel(Base):
+    """Computed structural level for a session."""
+    __tablename__ = "market_levels"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    date = Column(String, nullable=False)
+    level_type = Column(String, nullable=False)  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
+    session = Column(String, nullable=True)  # "tokyo", "london", "ny", null
+    price_low = Column(Float, nullable=False)
+    price_high = Column(Float, nullable=False)  # = price_low for single-price levels
+    direction = Column(String, nullable=True)  # "bullish", "bearish", null
+    is_filled = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),
+    )
+
+
+class MarketContext(Base):
+    """Manual context gate persistence (Layer A gates)."""
+    __tablename__ = "market_context"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    # Gate 1: Macro
+    macro_bias = Column(String, nullable=True)  # "bull", "bear", "neutral"
+    risk_mode = Column(String, nullable=True)   # "risk_on", "risk_off", "mixed"
+    cycle_phase = Column(String, nullable=True) # "early", "mid", "late", "recession"
+    # Gate 2: Structure
+    structure = Column(String, nullable=True)     # "uptrend", "downtrend", "ranging"
+    structure_hl = Column(Float, nullable=True)   # Last confirmed HL (long invalidation below)
+    structure_lh = Column(Float, nullable=True)   # Last confirmed LH (short invalidation above)
+    # Gate 3: Day type
+    day_type = Column(String, nullable=True)  # "trend", "normal", "normal_variation", "neutral", "composite"
+    # VP anchors (Unix timestamps)
+    vp_old_macro_start = Column(Integer, nullable=True)
+    vp_ongoing_macro_start = Column(Integer, nullable=True)
+    vp_leg_start = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", name="uq_market_context_symbol"),
+    )
+
+
+class SessionMetric(Base):
+    """Permanent session metrics history for ASPR/RF baselines."""
+    __tablename__ = "session_metrics"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    date = Column(String, nullable=False)  # YYYY-MM-DD
+    rotation_factor = Column(Integer, nullable=True)
+    aspr = Column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "date", name="uq_session_metrics_symbol_date"),
+        Index("ix_session_metrics_symbol", "symbol"),
     )
 
 
