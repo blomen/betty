@@ -79,25 +79,28 @@ def filter_by_rr(candidates: list, min_rr: float = 1.5) -> list:
     return [c for c in candidates if c.rr_tp1 and c.rr_tp1 >= min_rr]
 
 
-def kelly_position_size(
-    win_rate: float,
-    avg_rr: float,
+SETUP_RISK_PCT: dict[str, float] = {
+    "spring": 0.0075,
+    "sfp": 0.0075,
+    "poor_extreme": 0.0075,
+    "ib_break": 0.005,
+    "rule_80": 0.01,
+    "fakeout": 0.005,
+    "break_from_balance": 0.005,
+    "double_distribution": 0.005,
+    "news_directional": 0.005,
+}
+DEFAULT_RISK_PCT = 0.005
+
+
+def fixed_fractional_risk(
+    setup_type: str,
     account_balance: float,
     max_risk_pct: float = 0.02,
 ) -> float:
-    """Kelly criterion position sizing, capped at max_risk_pct of account.
+    """Fixed fractional position sizing. Returns dollar risk amount.
 
-    Returns dollar risk amount (not contracts).
+    Each setup category has a default risk %, capped at max_risk_pct.
     """
-    if win_rate <= 0 or avg_rr <= 0:
-        return 0.0
-    # Kelly fraction: f* = (bp - q) / b where b = avg_rr, p = win_rate, q = 1 - p
-    b = avg_rr
-    p = win_rate
-    q = 1 - p
-    kelly_f = (b * p - q) / b
-    # Half-Kelly for safety
-    half_kelly = kelly_f / 2
-    # Cap at max_risk_pct
-    risk_fraction = max(0, min(half_kelly, max_risk_pct))
-    return round(account_balance * risk_fraction, 2)
+    risk_pct = min(SETUP_RISK_PCT.get(setup_type, DEFAULT_RISK_PCT), max_risk_pct)
+    return round(account_balance * risk_pct, 2)
