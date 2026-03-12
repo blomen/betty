@@ -5,10 +5,10 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
-from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus
+from ..db.models import Provider, Bet, Event, ProviderRiskProfile, Odds, ProfileProviderBonus, SpecialOdds
 from ..analysis.devig import get_fair_odds_for_outcome
 from ..constants import SHARP_PROVIDERS
-from ..config import get_exchange_rate
+from ..config import get_exchange_rate, get_provider_currency
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,8 @@ class BetService:
         fair_odds_at_placement: float | None = None,
         boost_event: str | None = None,
         boost_title: str | None = None,
+        bet_type: str | None = None,
+        start_time_str: str | None = None,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -95,12 +97,16 @@ class BetService:
             return {"error": f"Bet blocked: {cooldown_reason}"}
 
         # Validate sufficient balance (unless free bet)
+        # Stake is in native currency (USD for Polymarket, SEK for others)
+        # Balance is also in native currency
+        currency = get_provider_currency(provider_id)
         current_balance = self.profile_repo.get_balance(profile.id, provider_id)
-        rate = get_exchange_rate(provider_id)
-        balance_sek = current_balance * rate
-        if not is_bonus and balance_sek < stake:
+        if not is_bonus and current_balance < stake:
+            unit = "$" if currency != "SEK" else " kr"
+            fmt = f"${current_balance:.2f}" if currency != "SEK" else f"{current_balance:.0f} kr"
+            fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {
-                "error": f"Insufficient balance: {balance_sek:.0f} kr available, {stake:.0f} kr required"
+                "error": f"Insufficient balance: {fmt} available, {fmt_req} required"
             }
 
         # Populate behavioral fields
@@ -142,6 +148,25 @@ class BetService:
                 except (ValueError, TypeError):
                     pass
 
+        # Resolve start_time: Event table > frontend-provided > specials fallback
+        start_time = None
+        if event_id:
+            ev = self.db.query(Event).filter(Event.id == event_id).first()
+            if ev and ev.start_time:
+                start_time = ev.start_time
+        if start_time is None and start_time_str:
+            try:
+                start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+        if start_time is None and bet_type == "boost" and outcome:
+            sp = self.db.query(SpecialOdds).filter(SpecialOdds.title == outcome).first()
+            if sp and sp.event_time:
+                try:
+                    start_time = datetime.fromisoformat(sp.event_time.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    pass
+
         bet = self.bet_repo.create(
             profile_id=profile.id,
             event_id=event_id,
@@ -151,8 +176,10 @@ class BetService:
             odds=odds,
             point=point,
             stake=stake,
+            currency=currency,
             is_bonus=is_bonus,
             bonus_type=bonus_type,
+            start_time=start_time,
             # Behavioral tracking
             hour_of_day=now.hour,
             day_of_week=now.weekday(),
@@ -165,13 +192,13 @@ class BetService:
             boost_event=boost_event,
             boost_title=boost_title,
             confirmation_id=confirmation_id,
+            bet_type=bet_type,
         )
 
         # Deduct stake from balance (unless free bet)
-        # Balance is stored in native currency; stake is in SEK → convert
+        # Both stake and balance are in provider's native currency — no conversion
         if not is_bonus:
-            rate = get_exchange_rate(provider_id)
-            self.profile_repo.adjust_balance(profile.id, provider_id, -stake / rate)
+            self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
 
         # Auto-advance freebet: mark as completed when freebet is used
         if is_bonus:
@@ -188,13 +215,27 @@ class BetService:
         # Check current wagering status (but don't record — wagering counts on settlement)
         wagering_status = self.profile_repo.get_bonus_status(profile.id, provider_id)
 
-        return {
+        result_dict = {
             "success": True,
             "bet_id": bet.id,
             "profile_id": profile.id,
             "risk_score": risk_score,
             "bonus_wagering": wagering_status if wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
+
+        # Advisory: warn if daily cap exceeded for this platform group
+        try:
+            from ..risk.allocator import ProviderAllocator
+            allocator = ProviderAllocator(self.db, profile.id)
+            allocator.preload_daily_bets()
+            group_bets = allocator._count_group_bets(provider_id)
+            cap = allocator._daily_cap
+            if group_bets >= cap:
+                result_dict["daily_cap_warning"] = f"Daily cap reached ({group_bets}/{cap} bets today in this platform group)"
+        except Exception:
+            pass
+
+        return result_dict
 
     def settle_bet(self, bet_id: int, result: str, payout: float) -> dict:
         """Settle a bet with result and CLV tracking."""
@@ -211,10 +252,9 @@ class BetService:
         if clv_pct is not None:
             bet.clv_pct = clv_pct
 
-        # Add payout to balance (payout is SEK → convert to native currency)
+        # Add payout to balance (payout is in bet's native currency — no conversion)
         if bet.profile_id and payout > 0:
-            rate = get_exchange_rate(bet.provider_id)
-            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout / rate)
+            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout)
 
         # Record wagering progress on settlement (not placement)
         wagering_status = None
@@ -349,6 +389,7 @@ class BetService:
         stake: float | None = None,
         odds: float | None = None,
         result: str | None = None,
+        payout: float | None = None,
     ) -> dict:
         """Edit a settled bet to correct stake/odds/result.
 
@@ -370,6 +411,12 @@ class BetService:
             bet.odds = odds
         if result is not None:
             bet.result = result
+            # Set settled_at when transitioning from pending to a final result
+            if old_result == "pending" and result in ("won", "lost", "void"):
+                bet.settled_at = datetime.utcnow()
+            # Clear settled_at when reverting back to pending
+            elif result == "pending":
+                bet.settled_at = None
 
         # Recalculate payout based on (possibly new) result and stake/odds
         if bet.result == "won":
@@ -379,21 +426,37 @@ class BetService:
         elif bet.result == "lost":
             bet.payout = 0.0
 
+        # Override payout if explicitly provided (e.g. cashout)
+        if payout is not None:
+            bet.payout = payout
+
         # Adjust balance: reverse old payout+stake, apply new payout+stake
-        # All amounts are SEK → convert to native currency for balance adjustment
+        # All amounts are in bet's native currency — no conversion needed
         if bet.profile_id:
-            # Balance delta = (new_payout - old_payout) + (old_stake - new_stake)
-            # old flow: -old_stake at placement, +old_payout at settlement
-            # new flow: -new_stake at placement, +new_payout at settlement
             # net correction = (new_payout - old_payout) - (new_stake - old_stake)
             balance_delta = (bet.payout - old_payout) - (bet.stake - old_stake)
             if balance_delta != 0:
-                rate = get_exchange_rate(bet.provider_id)
-                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta / rate)
+                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta)
 
         # Recalculate CLV if closing odds exist
         if bet.closing_odds and bet.closing_odds > 1.0:
             bet.clv_pct = round((bet.odds / bet.closing_odds - 1) * 100, 2)
+
+        # Record wagering progress when transitioning to a settled result
+        wagering_status = None
+        if bet.profile_id and bet.result in ("won", "lost", "void"):
+            if old_result == "pending":
+                # New settlement — record full stake
+                wagering_status = self.profile_repo.record_wagering(
+                    bet.profile_id, bet.provider_id, bet.stake, bet.odds
+                )
+            elif old_result in ("won", "lost", "void") and stake is not None and stake != old_stake:
+                # Stake correction on already-settled bet — record the delta
+                delta = bet.stake - old_stake
+                if delta > 0:
+                    wagering_status = self.profile_repo.record_wagering(
+                        bet.profile_id, bet.provider_id, delta, bet.odds
+                    )
 
         self.db.commit()
 
@@ -412,4 +475,5 @@ class BetService:
             "payout": bet.payout,
             "profit": bet.profit,
             "balance_adjustment": (bet.payout - old_payout) - (bet.stake - old_stake),
+            "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }

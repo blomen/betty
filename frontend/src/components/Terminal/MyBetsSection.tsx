@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase, fmtAmount, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { ProviderName } from './ProviderName';
+import { SearchInput } from './FilterBar';
 import { TAB_COLORS } from './TabBar';
 import type { Bet } from '@/types';
 
@@ -12,9 +14,11 @@ interface MyBetsSectionProps {
   filter: (bet: Bet) => boolean;
   /** Color key from TAB_COLORS (e.g. 'value', 'success', 'reverse') */
   colorKey: string;
+  /** If true, run auto-settle before fetching bets (Polymarket only) */
+  autoSettle?: boolean;
 }
 
-export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
+export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionProps) {
   const [bets, setBets] = useState<Bet[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState<BetCategory>('upcoming');
@@ -22,17 +26,30 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const [settling, setSettling] = useState<number | null>(null);
   // Settlement selection: pre-filled from predicted_result, editable before confirm
   const [settleSelection, setSettleSelection] = useState<Record<number, string>>({});
-  // Inline edit state
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editStake, setEditStake] = useState('');
-  const [editOdds, setEditOdds] = useState('');
-  const [editResult, setEditResult] = useState('');
+  // Inline cell editing (click odds/stake to edit directly in the table)
+  const [inlineEdit, setInlineEdit] = useState<{ id: number; field: 'odds' | 'stake' } | null>(null);
+  const [inlineValue, setInlineValue] = useState('');
+  const [search, setSearch] = useState('');
+  // Cashout state
+  const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
+  const [cashoutAmount, setCashoutAmount] = useState('');
 
   const color = TAB_COLORS[colorKey] ?? '#64748B';
 
   const fetchBets = useCallback(async () => {
     setLoading(true);
     try {
+      // Auto-settle Polymarket bets before fetching (settles finished bets server-side)
+      if (autoSettle) {
+        try {
+          const settleRes = await api.autoSettleBets();
+          if (settleRes.settled > 0) {
+            console.info(`[MyBets] Auto-settled ${settleRes.settled} Polymarket bets`);
+          }
+        } catch (err) {
+          console.warn('[MyBets] Auto-settle failed:', err);
+        }
+      }
       const res = await api.getBets('pending', 500);
       setBets(res.bets.filter(filter));
     } catch (err) {
@@ -40,7 +57,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, autoSettle]);
 
   useEffect(() => { fetchBets(); }, [fetchBets]);
 
@@ -62,7 +79,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     try {
       await api.editBet(bet.id, { result });
       setExpandedId(null);
-      fetchBets();
+      await fetchBets();
     } catch (err) {
       console.error('Settle failed:', err);
     } finally {
@@ -70,37 +87,52 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     }
   };
 
-  const startEditing = (bet: Bet) => {
-    setEditingId(bet.id);
-    setEditStake(bet.stake.toFixed(0));
-    setEditOdds(bet.odds.toFixed(2));
-    setEditResult(bet.result);
+  const startInlineEdit = (bet: Bet, field: 'odds' | 'stake') => {
+    setInlineEdit({ id: bet.id, field });
+    const isUsd = bet.currency === 'USD' || bet.currency === 'USDC';
+    setInlineValue(field === 'odds' ? bet.odds.toFixed(2) : bet.stake.toFixed(isUsd ? 2 : 0));
   };
 
-  const cancelEditing = () => {
-    setEditingId(null);
-    setEditStake('');
-    setEditOdds('');
-    setEditResult('');
+  const cancelInlineEdit = () => {
+    setInlineEdit(null);
+    setInlineValue('');
   };
 
-  const saveEdit = async (betId: number) => {
-    const original = bets.find(b => b.id === betId);
-    if (!original) return;
-    const changes: { stake?: number; odds?: number; result?: string } = {};
-    const newStake = parseFloat(editStake);
-    const newOdds = parseFloat(editOdds);
-    if (!isNaN(newStake) && newStake !== original.stake) changes.stake = newStake;
-    if (!isNaN(newOdds) && newOdds !== original.odds) changes.odds = newOdds;
-    if (editResult && editResult !== original.result) changes.result = editResult;
-    if (Object.keys(changes).length === 0) { cancelEditing(); return; }
+  const saveInlineEdit = async () => {
+    if (!inlineEdit) return;
+    const val = parseFloat(inlineValue);
+    if (isNaN(val) || val <= 0) { cancelInlineEdit(); return; }
+    const bet = bets.find(b => b.id === inlineEdit.id);
+    if (!bet) { cancelInlineEdit(); return; }
+    const changes: { stake?: number; odds?: number } = {};
+    if (inlineEdit.field === 'odds' && Math.abs(val - bet.odds) > 0.001) changes.odds = val;
+    if (inlineEdit.field === 'stake' && Math.abs(val - bet.stake) > 0.5) changes.stake = val;
+    if (Object.keys(changes).length === 0) { cancelInlineEdit(); return; }
     try {
-      await api.editBet(betId, changes);
-      cancelEditing();
+      await api.editBet(inlineEdit.id, changes);
+      cancelInlineEdit();
       fetchBets();
     } catch (err) {
-      console.error('Edit bet failed:', err);
+      console.error('Inline edit failed:', err);
     }
+  };
+
+  /** Get odds value — live from edit input if editing, else from bet */
+  const getEditOdds = (b: Bet) => {
+    if (inlineEdit?.id === b.id && inlineEdit.field === 'odds') {
+      const v = parseFloat(inlineValue);
+      return isNaN(v) || v <= 0 ? b.odds : v;
+    }
+    return b.odds;
+  };
+
+  /** Get stake value — live from edit input if editing, else from bet */
+  const getEditStake = (b: Bet) => {
+    if (inlineEdit?.id === b.id && inlineEdit.field === 'stake') {
+      const v = parseFloat(inlineValue);
+      return isNaN(v) || v <= 0 ? b.stake : v;
+    }
+    return b.stake;
   };
 
   const categorized = useMemo(() => {
@@ -109,22 +141,18 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const live: Bet[] = [];
     const ft: Bet[] = [];
 
-    // Typical sport durations (ms) — used when Pinnacle hasn't set match_status
-    const SPORT_DURATION: Record<string, number> = {
-      football: 2.5 * 3600000,
-      basketball: 3 * 3600000,
-      ice_hockey: 3 * 3600000,
-      tennis: 4 * 3600000,
-      esports: 4 * 3600000,
-      handball: 2.5 * 3600000,
-      mma: 3 * 3600000,
-    };
-    const DEFAULT_DURATION = 3 * 3600000;
-
     for (const b of bets) {
       const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
 
       if (!startMs || startMs > now) {
+        // Boost bets with no start_time: if placed >24h ago, move to Settle
+        if (!startMs && b.bet_type === 'boost' && b.placed_at) {
+          const placedMs = new Date(b.placed_at).getTime();
+          if (now - placedMs > 24 * 3600000) {
+            ft.push(b);
+            continue;
+          }
+        }
         upcoming.push(b);
       } else if (b.match_status === 'finished') {
         ft.push(b);
@@ -167,7 +195,22 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     { id: 'ft', label: 'Settle', count: categorized.ft.length },
   ];
 
-  const activeBets = categorized[activeCategory];
+  const activeBets = useMemo(() => {
+    let result = categorized[activeCategory];
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(b =>
+        (b.home_team?.toLowerCase().includes(q)) ||
+        (b.away_team?.toLowerCase().includes(q)) ||
+        (b.display_home?.toLowerCase().includes(q)) ||
+        (b.display_away?.toLowerCase().includes(q)) ||
+        b.provider.toLowerCase().includes(q) ||
+        (b.sport?.toLowerCase().includes(q)) ||
+        (b.league?.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [categorized, activeCategory, search]);
 
   // ── Raise: add initial stake again at current odds ──
   const handleRaise = async (bet: Bet) => {
@@ -186,16 +229,31 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     }
   };
 
-  const resolveOutcome = (b: Bet): string => {
-    const outcome = b.outcome ?? '';
-    const point = b.point != null ? ` ${b.point}` : '';
-    if (outcome === 'home') return displayTeamName(b.home_team, b.display_home);
-    if (outcome === 'away') return displayTeamName(b.away_team, b.display_away);
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${point}`;
-    if (outcome === 'under') return `Under${point}`;
-    return outcome;
+  const startCashout = (bet: Bet) => {
+    setCashoutBetId(bet.id);
+    setCashoutAmount('');
   };
+
+  const cancelCashout = () => {
+    setCashoutBetId(null);
+    setCashoutAmount('');
+  };
+
+  const confirmCashout = async (betId: number) => {
+    const amount = parseFloat(cashoutAmount);
+    if (isNaN(amount) || amount < 0) return;
+    try {
+      await api.editBet(betId, { result: 'void', payout: amount });
+      cancelCashout();
+      setExpandedId(null);
+      fetchBets();
+    } catch (err) {
+      console.error('Cashout failed:', err);
+    }
+  };
+
+  const resolveOutcome = (b: Bet): string =>
+    resolveOutcomeBase(b.outcome ?? '', b, b.point);
 
   const eventLabel = (b: Bet): string => {
     if (b.home_team && b.away_team) return `${displayTeamName(b.home_team, b.display_home)} vs ${displayTeamName(b.away_team, b.display_away)}`;
@@ -209,8 +267,8 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
 
   return (
     <div className="space-y-3">
-      {/* Category tabs */}
-      <div className="flex gap-1 border-b border-border">
+      {/* Category tabs + search */}
+      <div className="flex items-center gap-1 border-b border-border">
         {categories.map(cat => (
           <button
             key={cat.id}
@@ -226,6 +284,9 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <span className="ml-1 text-muted">({cat.count})</span>
           </button>
         ))}
+        <div className="ml-auto">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search bet..." accentColor={colorKey} />
+        </div>
       </div>
 
       {/* Bets table */}
@@ -239,7 +300,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <thead>
               <tr>
                 {activeCategory === 'upcoming' && <th className="text-left">TTK</th>}
-                <th>Event</th>
+                <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Outcome</th>
                 <th className="text-right">Provider</th>
                 <th className="text-right">Odds</th>
@@ -265,8 +326,10 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
             <tbody>
               {activeBets.map(b => {
                 const isExpanded = expandedId === b.id;
-                const isEditing = editingId === b.id;
                 const colCount = activeCategory === 'upcoming' ? 9 : activeCategory === 'ft' || activeCategory === 'live' ? 9 : 8;
+                const isEditingOdds = inlineEdit?.id === b.id && inlineEdit.field === 'odds';
+                const dynOdds = getEditOdds(b);
+                const dynStake = getEditStake(b);
                 const edgePct = b.edge_pct ?? b.placed_edge_pct ?? null;
 
                 // Live odds tracking for upcoming bets
@@ -286,7 +349,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                   <Fragment key={b.id}>
                     <tr
                       className={`cursor-pointer ${b.market === 'boost' ? 'bg-tabValue/[0.03] hover:bg-tabValue/[0.07]' : ''} ${isExpanded ? 'expanded' : ''}`}
-                      onClick={() => { if (!isEditing) setExpandedId(isExpanded ? null : b.id); }}
+                      onClick={() => { if (!inlineEdit) setExpandedId(isExpanded ? null : b.id); }}
                     >
                       {/* TTK column for upcoming */}
                       {activeCategory === 'upcoming' && (() => {
@@ -322,21 +385,33 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                       </td>
                       <td className="text-right text-muted text-sm"><ProviderName name={b.provider} /></td>
 
-                      {/* Odds column — upcoming shows current vs placed */}
-                      {activeCategory === 'upcoming' ? (
-                        <td className="text-right">
+                      {/* Odds column — click to edit inline */}
+                      <td className="text-right" onClick={e => e.stopPropagation()}>
+                        {isEditingOdds ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            className="w-16 px-1 py-0 bg-bg border border-accent/50 text-text text-sm text-right font-medium outline-none"
+                            value={inlineValue}
+                            onChange={e => setInlineValue(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveInlineEdit(); if (e.key === 'Escape') cancelInlineEdit(); }}
+                            onBlur={() => saveInlineEdit()}
+                            autoFocus
+                          />
+                        ) : (
                           <div className="flex flex-col items-end">
-                            <span className="text-sm font-medium text-text">{b.odds.toFixed(2)}</span>
-                            {b.current_odds != null && Math.abs(b.current_odds - b.odds) > 0.005 && (
+                            <span
+                              className="text-sm font-medium text-text cursor-text hover:text-accent transition-colors"
+                              onClick={() => startInlineEdit(b, 'odds')}
+                            >{b.odds.toFixed(2)}</span>
+                            {activeCategory === 'upcoming' && b.current_odds != null && Math.abs(b.current_odds - b.odds) > 0.005 && (
                               <span className={`text-[9px] ${b.current_odds > b.odds ? 'text-success' : 'text-error'}`}>
                                 now {b.current_odds.toFixed(2)}
                               </span>
                             )}
                           </div>
-                        </td>
-                      ) : (
-                        <td className="text-right text-text text-sm font-medium">{b.odds.toFixed(2)}</td>
-                      )}
+                        )}
+                      </td>
 
                       {activeCategory === 'live' ? (
                         <td className="text-right text-sm">
@@ -350,71 +425,97 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                         </td>
                       )}
 
-                      {/* Edge / CLV column — upcoming shows live edge with arrow */}
-                      {activeCategory === 'live' ? (
-                        <td className="text-right text-sm font-medium">
-                          {b.clv_pct != null ? (
-                            <span className={b.clv_pct >= 0 ? 'text-success' : 'text-error'}>{b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%</span>
-                          ) : <span className="text-muted">-</span>}
-                        </td>
-                      ) : activeCategory === 'upcoming' ? (
-                        <td className="text-right text-sm font-medium">
-                          {(() => {
-                            const displayEdge = liveEdge != null ? liveEdge : placedEdge;
-                            if (displayEdge != null) return (
-                              <span className={displayEdge >= 0 ? 'text-success' : 'text-error'}>
-                                {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
-                                {edgeDirection === 'up' && <span className="text-[9px] text-success ml-0.5">&#9650;</span>}
-                                {edgeDirection === 'down' && <span className="text-[9px] text-error ml-0.5">&#9660;</span>}
-                              </span>
-                            );
-                            return <span className="text-muted">-</span>;
-                          })()}
-                        </td>
-                      ) : activeCategory === 'ft' ? (
-                        <td className="text-right">
-                          <div className="flex flex-col items-end">
-                            <span className={`text-sm font-medium ${ftEdgePct != null && ftEdgePct >= 0 ? 'text-success' : 'text-error'}`}>
-                              {ftEdgePct != null ? `${ftEdgePct >= 0 ? '+' : ''}${ftEdgePct.toFixed(1)}%` : '-'}
-                            </span>
-                            {b.clv_pct != null && (
-                              <span className={`text-[9px] ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                                CLV {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                      ) : (
-                        <td className={`text-right text-sm font-medium ${edgePct != null && edgePct >= 0 ? 'text-success' : 'text-error'}`}>
-                          {edgePct != null ? `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%` : '-'}
-                        </td>
-                      )}
+                      {/* Edge / CLV column — dynamic when editing odds */}
+                      {(() => {
+                        // Compute dynamic edge when editing odds
+                        const effectiveFair = activeCategory === 'ft' ? ftFairOdds : fairOdds;
+                        const dynEdge = isEditingOdds && effectiveFair && effectiveFair > 1
+                          ? (dynOdds / effectiveFair - 1) * 100
+                          : null;
 
-                      {/* Stake column — upcoming shows 2x/3x buttons */}
-                      {activeCategory === 'upcoming' ? (
-                        <td className="text-right" onClick={e => e.stopPropagation()}>
+                        if (activeCategory === 'live') return (
+                          <td className="text-right text-sm font-medium">
+                            {b.clv_pct != null ? (
+                              <span className={b.clv_pct >= 0 ? 'text-success' : 'text-error'}>{b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%</span>
+                            ) : <span className="text-muted">-</span>}
+                          </td>
+                        );
+
+                        if (activeCategory === 'upcoming') {
+                          const displayEdge = dynEdge ?? (liveEdge != null ? liveEdge : placedEdge);
+                          return (
+                            <td className="text-right text-sm font-medium">
+                              {displayEdge != null ? (
+                                <span className={`${displayEdge >= 0 ? 'text-success' : 'text-error'} ${isEditingOdds ? 'transition-colors' : ''}`}>
+                                  {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
+                                  {!isEditingOdds && edgeDirection === 'up' && <span className="text-[9px] text-success ml-0.5">&#9650;</span>}
+                                  {!isEditingOdds && edgeDirection === 'down' && <span className="text-[9px] text-error ml-0.5">&#9660;</span>}
+                                </span>
+                              ) : <span className="text-muted">-</span>}
+                            </td>
+                          );
+                        }
+
+                        if (activeCategory === 'ft') {
+                          const displayEdge = dynEdge ?? ftEdgePct;
+                          return (
+                            <td className="text-right">
+                              <div className="flex flex-col items-end">
+                                <span className={`text-sm font-medium ${displayEdge != null && displayEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                                  {displayEdge != null ? `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '-'}
+                                </span>
+                                {b.clv_pct != null && (
+                                  <span className={`text-[9px] ${b.clv_pct >= 0 ? 'text-success' : 'text-error'}`}>
+                                    CLV {b.clv_pct >= 0 ? '+' : ''}{b.clv_pct.toFixed(1)}%
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        const displayEdge = dynEdge ?? edgePct;
+                        return (
+                          <td className={`text-right text-sm font-medium ${displayEdge != null && displayEdge >= 0 ? 'text-success' : 'text-error'}`}>
+                            {displayEdge != null ? `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '-'}
+                          </td>
+                        );
+                      })()}
+
+                      {/* Stake column — click to edit inline */}
+                      <td className="text-right" onClick={e => e.stopPropagation()}>
+                        {inlineEdit?.id === b.id && inlineEdit.field === 'stake' ? (
+                          <input
+                            type="number"
+                            step="1"
+                            className="w-16 px-1 py-0 bg-bg border border-accent/50 text-text text-sm text-right font-medium outline-none"
+                            value={inlineValue}
+                            onChange={e => setInlineValue(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveInlineEdit(); if (e.key === 'Escape') cancelInlineEdit(); }}
+                            onBlur={() => saveInlineEdit()}
+                            autoFocus
+                          />
+                        ) : (
                           <span className="inline-flex items-center gap-1 justify-end">
-                            <span className="text-text text-sm font-medium">{b.stake.toFixed(0)} kr</span>
+                            <span
+                              className="text-text text-sm font-medium cursor-text hover:text-accent transition-colors"
+                              onClick={() => startInlineEdit(b, 'stake')}
+                            >{fmtAmount(b.stake, b.currency)}</span>
                             {b.is_bonus && <span className="text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                            {b.current_odds != null && b.current_odds > b.odds && (
+                            {activeCategory === 'upcoming' && b.current_odds != null && b.current_odds > b.odds && (
                               <button
                                 className="text-[9px] px-1 py-0 bg-success/20 text-success hover:bg-success/35 transition-colors font-bold"
                                 onClick={() => handleRaise(b)}
-                                title={`Raise +${b.stake} kr at ${b.current_odds!.toFixed(2)} odds`}
+                                title={`Raise +${fmtAmount(b.stake, b.currency)} at ${b.current_odds!.toFixed(2)} odds`}
                               >r</button>
                             )}
                           </span>
-                        </td>
-                      ) : (
-                        <td className="text-right text-text text-sm font-medium">
-                          {b.stake.toFixed(0)} kr
-                          {b.is_bonus && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                        </td>
-                      )}
+                        )}
+                      </td>
 
-                      {/* Return column — always shown */}
+                      {/* Return column — dynamic when editing odds/stake */}
                       <td className="text-right text-sm font-medium text-text">
-                        {(b.stake * b.odds).toFixed(0)} kr
+                        {fmtAmount(dynStake * dynOdds, b.currency)}
                       </td>
 
                       {/* Last column: Score (live), Settle (ft), or nothing (upcoming) */}
@@ -445,12 +546,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                                 ))}
                                 <button
                                   className={`text-[10px] px-2 py-0.5 ml-0.5 transition-colors ${
-                                    sel
+                                    sel && settling === null
                                       ? 'bg-accent/20 text-accent hover:bg-accent/35 font-bold'
                                       : 'bg-border/30 text-muted cursor-not-allowed'
                                   }`}
-                                  disabled={!sel || settling === b.id}
-                                  onClick={() => sel && handleSettle(b, sel as 'won' | 'lost' | 'void')}
+                                  disabled={!sel || settling !== null}
+                                  onClick={() => sel && settling === null && handleSettle(b, sel as 'won' | 'lost' | 'void')}
                                 >{settling === b.id ? '...' : 'OK'}</button>
                               </span>
                             );
@@ -477,70 +578,44 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
                     {isExpanded && (
                       <tr key={`${b.id}-x`}>
                         <td colSpan={colCount} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <div className="px-3 py-2 bg-panel">
-                            {/* Boost conditions */}
+                          <div className="px-3 py-2 bg-panel space-y-2">
                             {b.market === 'boost' && b.outcome && (
-                              <div className="text-xs text-muted2 mb-1">
+                              <div className="text-xs text-muted2">
                                 <span className="uppercase tracking-wider text-muted">Condition: </span>
                                 <span className="text-text">{b.outcome}</span>
                               </div>
                             )}
-                            {/* Edit button */}
-                            {!isEditing && (
-                              <div className="flex items-center">
-                                <button
-                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
-                                  onClick={() => startEditing(b)}
-                                >Edit</button>
-                              </div>
-                            )}
-
-                            {/* Inline edit form */}
-                            {isEditing && (
+                            {cashoutBetId === b.id ? (
                               <div className="flex items-center gap-3 text-xs">
                                 <div className="flex items-center gap-1">
-                                  <span className="text-muted2 uppercase tracking-wider">Stake:</span>
+                                  <span className="text-muted2 uppercase tracking-wider">Cashout Amount:</span>
                                   <input
                                     type="number"
-                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
-                                    value={editStake}
-                                    onChange={e => setEditStake(e.target.value)}
-                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(b.id); if (e.key === 'Escape') cancelEditing(); }}
+                                    step="1"
+                                    className="w-24 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={cashoutAmount}
+                                    onChange={e => setCashoutAmount(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') confirmCashout(b.id); if (e.key === 'Escape') cancelCashout(); }}
+                                    placeholder={fmtAmount(b.stake, b.currency)}
                                     autoFocus
                                   />
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <span className="text-muted2 uppercase tracking-wider">Odds:</span>
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    className="w-20 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
-                                    value={editOdds}
-                                    onChange={e => setEditOdds(e.target.value)}
-                                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(b.id); if (e.key === 'Escape') cancelEditing(); }}
-                                  />
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <span className="text-muted2 uppercase tracking-wider">Result:</span>
-                                  <select
-                                    className="px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
-                                    value={editResult}
-                                    onChange={e => setEditResult(e.target.value)}
-                                  >
-                                    <option value="pending">pending</option>
-                                    <option value="won">won</option>
-                                    <option value="lost">lost</option>
-                                    <option value="void">void</option>
-                                  </select>
+                                  <span className="text-muted2">{b.currency === 'USD' || b.currency === 'USDC' ? '$' : 'kr'}</span>
                                 </div>
                                 <button
-                                  className="text-[10px] px-2 py-0.5 bg-success/15 text-success hover:bg-success/30 transition-colors"
-                                  onClick={() => saveEdit(b.id)}
-                                >Save</button>
+                                  className="text-[10px] px-2 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => confirmCashout(b.id)}
+                                >Confirm</button>
                                 <button
                                   className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
-                                  onClick={cancelEditing}
+                                  onClick={cancelCashout}
                                 >Cancel</button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 text-xs">
+                                <button
+                                  className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => startCashout(b)}
+                                >Cashout</button>
                               </div>
                             )}
                           </div>

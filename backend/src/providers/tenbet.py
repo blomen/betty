@@ -86,16 +86,16 @@ class TenBetRetriever(BrowserRetriever):
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
     MAX_COMPETITIONS_PER_SPORT = 60
 
-    # Per-sport caps to keep total extraction under provider_timeout (600s).
+    # Per-sport caps to keep total extraction under provider_timeout (700s).
     # Each comp needs ~4-5s (page nav + DOM render + parse) with Semaphore(4).
-    # Football: 40 comps * ~5s / 4 parallel = ~50s effective
+    # Football: 60 comps * ~5s / 4 parallel = ~75s effective
     # Other sports: capped to avoid long-tail extraction on small leagues
     SPORT_COMPETITION_CAPS: Dict[str, int] = {
-        "football": 40,
-        "basketball": 25,
-        "ice_hockey": 20,
-        "tennis": 15,
-        "handball": 15,
+        "football": 60,
+        "basketball": 35,
+        "ice_hockey": 30,
+        "tennis": 25,
+        "handball": 25,
         "mma": 10,
         "esports": 10,
     }

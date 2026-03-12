@@ -115,7 +115,7 @@ class Odds(Base):
     market = Column(String, nullable=False)     # "1x2", "moneyline"
     outcome = Column(String, nullable=False)    # "home", "away", "draw"
     odds = Column(Float, nullable=False)        # Decimal odds (e.g., 2.10)
-    point = Column(Float, nullable=True)        # Reserved for future use
+    point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
     provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
 
@@ -164,9 +164,11 @@ class Bet(Base):
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
     point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
+    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost"
 
-    # Stake
+    # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
     stake = Column(Float, nullable=False)       # 100.00
+    currency = Column(String, default="SEK")    # "SEK" or "USD" — determines stake/payout units
 
     # Bonus tracking
     is_bonus = Column(Boolean, default=False)
@@ -180,6 +182,7 @@ class Bet(Base):
     placed_at = Column(DateTime, default=_utcnow)
     settled_at = Column(DateTime)
     settlement_source = Column(String, nullable=True)  # "manual", "auto_tsdb"
+    start_time = Column(DateTime, nullable=True)        # Event start time (persisted at placement)
 
     # === BEHAVIORAL TRACKING (for risk management) ===
     # Timing patterns
@@ -272,6 +275,8 @@ class Profile(Base):
     preferred_counterparts = Column(String)          # JSON list: ["bet365", "betsson"]
     bonus_enabled = Column(Boolean, default=True)
     bonus_deposit = Column(Float, default=0.0)       # Max deposit match (0 = none)
+    total_deposited = Column(Float, default=0.0)     # Cumulative real money deposited (for ROI calc)
+    total_withdrawn = Column(Float, default=0.0)     # Cumulative real money withdrawn (for ROI calc)
 
     # Profile state
     is_active = Column(Boolean, default=False)      # Currently selected profile
@@ -324,6 +329,7 @@ class ProfileProviderBonus(Base):
     wagered_amount = Column(Float, default=0.0)         # Amount wagered so far (odds >= min_odds only)
     min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
     main_min_odds = Column(Float, nullable=True)        # Main wagering min_odds (used after trigger phase completes)
+    deposit_amount = Column(Float, nullable=True)       # Original deposit (for trigger→main phase wagering calc)
 
     # Timer tracking
     claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
@@ -741,6 +747,9 @@ class RiskConfig(Base):
     cooldown_trigger_score = Column(Float, default=0.75) # Auto-cooldown threshold
     cooldown_duration_hours = Column(Integer, default=24)  # Default cooldown length
 
+    # Provider allocation
+    daily_bet_cap = Column(Integer, default=0)  # 0 = no cap; >0 = max bets per day per platform group
+
     # Updated timestamp
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
 
@@ -919,6 +928,125 @@ class TradeReview(Base):
     trade = relationship("Trade", back_populates="review")
 
 
+class MarketSession(Base):
+    """Computed AMT session data for a symbol/date."""
+    __tablename__ = "market_sessions"
+
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False)  # "2026-03-11"
+    symbol = Column(String, nullable=False)  # "NQ"
+
+    # Volume profile levels
+    poc = Column(Float, nullable=True)
+    vah = Column(Float, nullable=True)
+    val = Column(Float, nullable=True)
+
+    # VWAP bands
+    vwap = Column(Float, nullable=True)
+    vwap_1sd_upper = Column(Float, nullable=True)
+    vwap_1sd_lower = Column(Float, nullable=True)
+    vwap_2sd_upper = Column(Float, nullable=True)
+    vwap_2sd_lower = Column(Float, nullable=True)
+    vwap_3sd_upper = Column(Float, nullable=True)
+    vwap_3sd_lower = Column(Float, nullable=True)
+
+    # Initial balance
+    ib_high = Column(Float, nullable=True)
+    ib_low = Column(Float, nullable=True)
+    ib_range = Column(Float, nullable=True)
+
+    # Overnight range
+    overnight_high = Column(Float, nullable=True)
+    overnight_low = Column(Float, nullable=True)
+
+    # Delta
+    total_delta = Column(Integer, nullable=True)
+    delta_divergence = Column(Boolean, default=False)
+
+    # Classifications
+    market_type = Column(String, nullable=True)  # "balanced", "trending_up", "trending_down"
+    opening_type = Column(String, nullable=True)  # "OD", "OTD", "ORR", "OA"
+    poor_high = Column(Boolean, default=False)
+    poor_low = Column(Boolean, default=False)
+
+    # Full session analysis JSON
+    session_json = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    # Relationships
+    signals = relationship("TradingSignal", back_populates="session")
+
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),
+    )
+
+
+class TradingSignal(Base):
+    """Scanner-generated trading signal with quality score."""
+    __tablename__ = "trading_signals"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("market_sessions.id"), nullable=False)
+
+    # Setup info
+    setup_type = Column(String, nullable=False)  # "reversal_vwap_2sd", etc.
+    setup_name = Column(String, nullable=True)
+    category = Column(String, nullable=True)  # "fabio", "flow_horse"
+    direction = Column(String, nullable=True)  # "long", "short"
+
+    # Scoring
+    score = Column(Float, nullable=False)  # 0-100 composite score
+    conditions = Column(JSON, nullable=True)  # [{name, score, weight, is_auto}, ...]
+
+    # Context at signal time
+    price_at_signal = Column(Float, nullable=True)
+    suggested_entry = Column(Float, nullable=True)
+    suggested_stop = Column(Float, nullable=True)
+    suggested_target = Column(Float, nullable=True)
+
+    # Key levels at signal time
+    vwap = Column(Float, nullable=True)
+    poc = Column(Float, nullable=True)
+    vah = Column(Float, nullable=True)
+    val = Column(Float, nullable=True)
+    ib_high = Column(Float, nullable=True)
+    ib_low = Column(Float, nullable=True)
+    cumulative_delta = Column(Integer, nullable=True)
+
+    # Lifecycle
+    is_active = Column(Boolean, default=True)
+    triggered_at = Column(DateTime, default=_utcnow)
+    expired_at = Column(DateTime, nullable=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+
+    # Relationships
+    session = relationship("MarketSession", back_populates="signals")
+    trade = relationship("Trade")
+
+    __table_args__ = (
+        Index("ix_trading_signals_active", "is_active", "triggered_at"),
+        Index("ix_trading_signals_setup", "setup_type"),
+    )
+
+
+class ProviderExtractionSetting(Base):
+    """Per-profile override for whether a provider is included in extraction.
+
+    If a row exists with enabled=False, the provider is excluded for that profile.
+    If no row exists, the provider is enabled by default (YAML active list).
+    """
+    __tablename__ = "provider_extraction_settings"
+
+    profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)
+    provider_id = Column(String, primary_key=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 # ============ Database Functions ============
 
 # Singleton engine with connection pooling
@@ -971,6 +1099,18 @@ def _run_migrations(engine):
     with engine.connect() as conn:
         raw = conn.connection.connection  # Get raw sqlite3 connection
         cursor = raw.cursor()
+
+        # Migrate provider_extraction_settings: add profile_id (global → per-profile)
+        try:
+            cursor.execute("SELECT profile_id FROM provider_extraction_settings LIMIT 1")
+        except sqlite3.OperationalError:
+            # Old table without profile_id — drop and let create_all rebuild
+            try:
+                cursor.execute("DROP TABLE IF EXISTS provider_extraction_settings")
+                raw.commit()
+                Base.metadata.tables["provider_extraction_settings"].create(engine)
+            except sqlite3.OperationalError:
+                pass
         # Add min_odds to profile_provider_bonuses if missing
         try:
             cursor.execute("SELECT min_odds FROM profile_provider_bonuses LIMIT 1")
@@ -1095,6 +1235,16 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN main_min_odds REAL")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add deposit_amount to profile_provider_bonuses (original deposit for trigger→main calc)
+        try:
+            cursor.execute("SELECT deposit_amount FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN deposit_amount REAL")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass

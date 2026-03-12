@@ -80,10 +80,7 @@ export function StatsPage() {
                   <span className="text-muted font-medium">{stats.voids} V</span>
                 </div>
               </td>
-              <td></td>
-              <td className="text-right text-sm space-y-0.5">
-                <div className="text-muted">{stats.total_staked.toFixed(0)} kr staked</div>
-              </td>
+              <td colSpan={2}></td>
             </tr>
           </tbody>
         </table>

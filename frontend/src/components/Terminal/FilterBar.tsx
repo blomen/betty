@@ -17,8 +17,10 @@ const ACCENT_COLORS: Record<string, string> = {
   tabValue: '#f59e0b',
   tabBonus: '#a78bfa',
   tabArb: '#22c55e',
-  tabBets: '#22d3d8',
+  tabBets: '#1E88E5',
   tabExtract: '#60a5fa',
+  success: '#22c55e',
+  tabReverse: '#EF5350',
 };
 
 function getAccent(token: string): string {
@@ -186,14 +188,14 @@ export function MultiSelectDropdown({
                   >
                     {/* Checkbox */}
                     <span
-                      className={`w-3.5 h-3.5 border flex items-center justify-center shrink-0 transition-all duration-150 ${
-                        isActive ? 'border-transparent' : 'border-muted/40'
+                      className={`w-[18px] h-[18px] rounded-[4px] border-2 flex items-center justify-center shrink-0 transition-all duration-150 ${
+                        isActive ? 'border-transparent' : 'border-muted/40 hover:border-muted/60'
                       }`}
                       style={isActive ? { background: hex, borderColor: hex } : undefined}
                     >
                       {isActive && (
-                        <svg className="w-2.5 h-2.5 text-bg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                          <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
                       )}
                     </span>
@@ -415,14 +417,14 @@ interface FreshnessIndicatorProps {
 /**
  * Shows extraction age per tier in HH:MM format with color coding.
  * Shows "extracting" for tiers currently running.
- * Auto-refreshes every second.
+ * Auto-refreshes every 30 seconds.
  */
 export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
   const [, setTick] = useState(0);
   const tiersProgress = useTiersProgress();
 
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 1_000);
+    const id = setInterval(() => setTick(t => t + 1), 30_000);
     return () => clearInterval(id);
   }, []);
 
@@ -465,6 +467,91 @@ export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
     </span>
   );
 }
+
+// ── Expandable search icon ───────────────────────────────────────────
+
+interface SearchInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  accentColor?: string;
+}
+
+/**
+ * Magnifying glass icon that expands into a search input on click.
+ * Place in the page header's top-right corner.
+ */
+export function SearchInput({
+  value,
+  onChange,
+  placeholder = 'Search...',
+  accentColor = 'tabValue',
+}: SearchInputProps) {
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hex = getAccent(accentColor);
+
+  const isActive = open || !!value;
+
+  // Focus input when opening
+  useEffect(() => {
+    if (open && inputRef.current) inputRef.current.focus();
+  }, [open]);
+
+  // Close on outside click (only if empty)
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node) && !value) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open, value]);
+
+  if (!isActive) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="p-1 text-muted2 hover:text-text transition-colors"
+        title="Search"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <circle cx="11" cy="11" r="8" />
+          <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+        </svg>
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <circle cx="11" cy="11" r="8" />
+        <path strokeLinecap="round" d="M21 21l-4.35-4.35" />
+      </svg>
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder={placeholder}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { onChange(''); setOpen(false); } }}
+        style={{ '--focus-border': `${hex}80` } as React.CSSProperties}
+        className="pl-7 pr-6 py-1 text-[11px] bg-bg border border-border text-text placeholder:text-muted2 w-48 focus:outline-none focus:border-[var(--focus-border)]"
+      />
+      <button
+        onClick={() => { onChange(''); setOpen(false); }}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted2 hover:text-text text-[10px]"
+      >
+        x
+      </button>
+    </div>
+  );
+}
+
 
 // ── Filter bar container ─────────────────────────────────────────────
 

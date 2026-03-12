@@ -10,25 +10,13 @@ Also provides deduplicate_specials(), filter_expired(), store_specials_to_db().
 import logging
 from datetime import datetime, timezone
 
+from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
-from ..db.models import SpecialOdds
+from ..db.models import Event, SpecialOdds
+from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
-
-
-def _fix_encoding(text: str) -> str:
-    """Fix double-encoded UTF-8 (e.g., 'mÃ¥lgÃ¶rare' → 'målgörare')."""
-    for encoding in ("latin-1", "cp1252"):
-        try:
-            fixed = text.encode(encoding).decode("utf-8")
-            high_orig = sum(1 for c in text if ord(c) > 127)
-            high_fixed = sum(1 for c in fixed if ord(c) > 127)
-            if high_fixed < high_orig:
-                return fixed
-        except (UnicodeDecodeError, UnicodeEncodeError):
-            continue
-    return text
 
 
 def deduplicate_specials(specials: list[dict]) -> list[dict]:
@@ -96,8 +84,105 @@ def deduplicate_specials(specials: list[dict]) -> list[dict]:
     return deduped
 
 
+def _parse_boost_teams(event_name: str) -> tuple[str, str] | None:
+    """Extract two team names from a boost event string like 'Arsenal vs Sunderland'."""
+    if not event_name:
+        return None
+    for sep in (" vs ", " - ", " mot "):
+        if sep in event_name:
+            parts = event_name.split(sep, 1)
+            if len(parts) == 2:
+                return parts[0].strip(), parts[1].strip()
+    return None
+
+
+def _match_boosts_to_events(specials: list[dict], db: Session) -> int:
+    """Cross-reference boost event names against Events table.
+
+    Sets matched_event_id and corrects event_time from the authoritative Event.start_time.
+    Returns count of matched boosts.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Load upcoming events (+ events from last 2 hours to catch just-started ones)
+    events = (
+        db.query(Event)
+        .filter(Event.start_time > now.replace(hour=0, minute=0, second=0))
+        .all()
+    )
+    if not events:
+        return 0
+
+    # Build lookup: normalized "home|away" -> (event_id, start_time_iso)
+    event_lookup: dict[str, tuple[str, str]] = {}
+    for ev in events:
+        if not ev.home_team or not ev.away_team or not ev.start_time:
+            continue
+        h = normalize_team_name(ev.home_team)
+        a = normalize_team_name(ev.away_team)
+        key = f"{h}|{a}"
+        start_iso = ev.start_time.isoformat() + "Z" if ev.start_time.tzinfo is None else ev.start_time.isoformat()
+        event_lookup[key] = (ev.id, start_iso)
+        # Also store reversed for swapped order
+        event_lookup[f"{a}|{h}"] = (ev.id, start_iso)
+
+    if not event_lookup:
+        return 0
+
+    # All normalized keys for fuzzy matching
+    lookup_keys = list(event_lookup.keys())
+
+    matched = 0
+    for s in specials:
+        event_name = s.get("event", "")
+        teams = _parse_boost_teams(event_name)
+        if not teams:
+            continue
+
+        h_norm = normalize_team_name(teams[0])
+        a_norm = normalize_team_name(teams[1])
+        boost_key = f"{h_norm}|{a_norm}"
+
+        # Exact match first
+        if boost_key in event_lookup:
+            ev_id, start_iso = event_lookup[boost_key]
+            s["matched_event_id"] = ev_id
+            s["event_time"] = start_iso
+            matched += 1
+            continue
+
+        # Fuzzy match
+        best_score = 0
+        best_key = None
+        for ek in lookup_keys:
+            score = fuzz.ratio(boost_key, ek)
+            if score > best_score:
+                best_score = score
+                best_key = ek
+
+        if best_score >= 80 and best_key:
+            ev_id, start_iso = event_lookup[best_key]
+            s["matched_event_id"] = ev_id
+            # Override event_time if scraper time differs by > 24h (likely wrong)
+            scraped_et = s.get("event_time")
+            if scraped_et:
+                try:
+                    et = datetime.fromisoformat(scraped_et.replace("Z", "+00:00"))
+                    ev_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+                    if abs((et - ev_dt).total_seconds()) > 86400:
+                        s["event_time"] = start_iso
+                except (ValueError, TypeError):
+                    s["event_time"] = start_iso
+            else:
+                s["event_time"] = start_iso
+            matched += 1
+
+    return matched
+
+
 def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
-    """Compute boost edge = (boosted_odds / original_odds - 1) * 100."""
+    """Compute boost edge and cross-reference boost events with Events table."""
+    # Boost edge: boosted_odds / original_odds - 1
     count = 0
     for s in specials:
         boosted = s.get("boosted_odds")
@@ -106,18 +191,43 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
             s["edge_pct"] = round((boosted / original - 1) * 100, 2)
             s["is_positive_ev"] = s["edge_pct"] > 0
             count += 1
-
     logger.info(f"Boost edge: {count}/{len(specials)} computed (boosted/original)")
+
+    # Cross-reference with Events table for accurate event_time + matched_event_id
+    matched = _match_boosts_to_events(specials, db)
+    logger.info(f"Event matching: {matched}/{len(specials)} boosts matched to events")
+
     return specials
 
 
 # ── Expiry filter ──────────────────────────────────────────────────────
 
-def filter_expired(specials: list[dict]) -> list[dict]:
-    """Remove specials whose expires_at is in the past or event has already started."""
+def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict]:
+    """Remove specials whose event has started, expires_at is past, or matched event is past."""
     now = datetime.now(timezone.utc)
+
+    # If we have DB access, check matched events for authoritative start_time
+    matched_event_times: dict[str, datetime] = {}
+    if db:
+        matched_ids = [s["matched_event_id"] for s in specials if s.get("matched_event_id")]
+        if matched_ids:
+            events = db.query(Event).filter(Event.id.in_(matched_ids)).all()
+            for ev in events:
+                if ev.start_time:
+                    st = ev.start_time
+                    if st.tzinfo is None:
+                        st = st.replace(tzinfo=timezone.utc)
+                    matched_event_times[ev.id] = st
+
     result = []
     for s in specials:
+        # Check matched event start_time (most authoritative)
+        mid = s.get("matched_event_id")
+        if mid and mid in matched_event_times:
+            if matched_event_times[mid] <= now:
+                continue
+
+        # Check scraped event_time
         event_time = s.get("event_time")
         if event_time:
             try:
@@ -129,6 +239,7 @@ def filter_expired(specials: list[dict]) -> list[dict]:
             except (ValueError, TypeError):
                 pass
 
+        # Check expires_at
         exp = s.get("expires_at")
         if not exp:
             result.append(s)
@@ -174,6 +285,8 @@ def store_specials_to_db(specials: list[dict], session: Session) -> int:
             market_label=s.get("market_label", ""),
             shared_providers=s.get("shared_providers"),
             scraped_at=s.get("scraped_at", ""),
+            # Event matching
+            matched_event_id=s.get("matched_event_id"),
             # Boost edge (simple: boosted/original)
             edge_pct=s.get("edge_pct"),
             is_positive_ev=s.get("is_positive_ev"),

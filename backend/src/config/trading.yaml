@@ -177,3 +177,22 @@ daily_routine:
     - "Opening type identified"
 
   psych_threshold: 5.0
+
+# ============ Market Data ============
+market_data:
+  provider: databento
+  api_key_env: DATABENTO_API_KEY
+  symbol: NQ.FUT
+  dataset: GLBX.MDP3
+  sessions:
+    rth_open: "09:30"
+    rth_close: "16:00"
+    globex_open: "18:00"
+    ib_duration_minutes: 60
+  cache_dir: market_cache
+
+# ============ Scanner ============
+scanner:
+  score_threshold: 70
+  scan_interval_minutes: 5
+  signal_expiry_minutes: 60

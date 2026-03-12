@@ -229,32 +229,3 @@ def get_fair_odds(
     else:
         # Single outcome, can't de-vig - use raw (not ideal)
         return (pinnacle_odds, "pinnacle(raw)")
-
-
-# Quick test
-if __name__ == "__main__":
-    # Example: Pinnacle fair odds = 2.22 (45% implied probability)
-    # Provider offers 2.40 - is this value?
-
-    fair_odds = 2.22  # From Pinnacle de-vigged
-
-    providers = [
-        {"provider": "unibet", "odds": 2.40},    # +8% edge
-        {"provider": "bet365", "odds": 2.25},    # +1% edge (below threshold)
-        {"provider": "betsson", "odds": 2.15},   # -3% edge (no value)
-    ]
-
-    print(f"Pinnacle fair odds: {fair_odds:.2f}")
-    print()
-
-    for p in providers:
-        edge = (p["odds"] / fair_odds - 1) * 100
-        print(f"{p['provider']}: {p['odds']} -> {edge:+.1f}% edge")
-
-    print()
-
-    best = find_best_value("test", "1x2", "home", fair_odds, providers, min_edge_pct=2.0)
-    if best:
-        print(f"Best value: {best.provider} @ {best.provider_odds} (+{best.edge_pct}%)")
-    else:
-        print("No value found above threshold")

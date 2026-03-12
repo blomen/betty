@@ -12,7 +12,7 @@ const EMPTY_CONTEXT: BettingContext = {
   },
 };
 
-export function useBettingContext(refreshInterval = 30000) {
+export function useBettingContext(refreshInterval = 60000) {
   const [context, setContext] = useState<BettingContext>(EMPTY_CONTEXT);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

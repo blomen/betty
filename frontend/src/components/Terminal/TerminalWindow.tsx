@@ -14,12 +14,12 @@ import {
 // Lazy: secondary/heavy pages split into separate chunks
 const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.BetsPage })));
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const TradingBankrollPage = lazy(() => import('./pages/TradingBankrollPage').then(m => ({ default: m.TradingBankrollPage })));
-const TradingTodayPage = lazy(() => import('./pages/TradingTodayPage').then(m => ({ default: m.TradingTodayPage })));
-const TradingBuilderPage = lazy(() => import('./pages/TradingBuilderPage').then(m => ({ default: m.TradingBuilderPage })));
-const TradingTradesPage = lazy(() => import('./pages/TradingTradesPage').then(m => ({ default: m.TradingTradesPage })));
-const TradingJournalPage = lazy(() => import('./pages/TradingJournalPage').then(m => ({ default: m.TradingJournalPage })));
+const TradingScannerPage = lazy(() => import('./pages/TradingScannerPage').then(m => ({ default: m.TradingScannerPage })));
+const TradingStatsPage = lazy(() => import('./pages/TradingStatsPage').then(m => ({ default: m.TradingStatsPage })));
 import { api } from '@/services/api';
+import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
 
 interface TerminalWindowProps {
   context: BettingContext;
@@ -30,6 +30,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
   const [activeTab, setActiveTab] = useState<TabName>('value');
   const [isProfileActive, setIsProfileActive] = useState(false);
+  const [isSettingsActive, setIsSettingsActive] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
 
@@ -68,16 +69,25 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
     setActiveCategory(category);
     setActiveTab(DEFAULT_TAB[category]);
     setIsProfileActive(false);
+    setIsSettingsActive(false);
   }, []);
 
   const handleTabChange = useCallback((tab: TabName) => {
     setActiveTab(tab);
     setIsProfileActive(false);
+    setIsSettingsActive(false);
   }, []);
 
   const handleProfileClick = useCallback(() => {
     setIsProfileActive(true);
+    setIsSettingsActive(false);
     setActiveTab('profiles');
+  }, []);
+
+  const handleSettingsClick = useCallback(() => {
+    setIsSettingsActive(true);
+    setIsProfileActive(false);
+    setActiveTab('settings');
   }, []);
 
   const renderPage = () => {
@@ -96,16 +106,14 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         return <BankrollPage providers={context.providers} onRefresh={onRefresh} />;
       case 'profiles':
         return <ProfilePage onRefresh={onRefresh} />;
+      case 'settings':
+        return <SettingsPage />;
+      case 'tradingScanner':
+        return <TradingScannerPage />;
       case 'tradingBankroll':
         return <TradingBankrollPage />;
-      case 'tradingToday':
-        return <TradingTodayPage />;
-      case 'tradingBuilder':
-        return <TradingBuilderPage />;
-      case 'tradingTrades':
-        return <TradingTradesPage />;
-      case 'tradingJournal':
-        return <TradingJournalPage />;
+      case 'tradingStats':
+        return <TradingStatsPage />;
       default:
         return null;
     }
@@ -122,6 +130,7 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   }
 
   const tabs = TABS_BY_CATEGORY[activeCategory] || [];
+  const isOverlay = isProfileActive || isSettingsActive;
 
   return (
     <div className="flex h-full bg-bg">
@@ -130,15 +139,19 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
         onCategoryChange={handleCategoryChange}
         onProfileClick={handleProfileClick}
         isProfileActive={isProfileActive}
+        onSettingsClick={handleSettingsClick}
+        isSettingsActive={isSettingsActive}
       />
       <div className="flex-1 flex flex-col min-w-0">
-        {!isProfileActive && (
+        {!isOverlay && (
           <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
         )}
-        <div className="flex-1 overflow-y-auto p-4">
+        <ConnectionErrorBar />
+        <ErrorNotificationBar />
+        <div className="flex-1 overflow-y-auto p-3">
           <Suspense fallback={<div className="p-4 text-muted text-sm">Loading...</div>}>
-            {isProfileActive ? (
-              <ProfilePage onRefresh={onRefresh} />
+            {isOverlay ? (
+              renderPage()
             ) : tabs.length > 0 ? (
               renderPage()
             ) : (

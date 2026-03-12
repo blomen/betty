@@ -8,7 +8,7 @@ orchestrator:
   # Type-aware scheduling allows higher total concurrent providers by mixing types
   max_concurrent_providers: 10         # Increased - mixing allows higher total
   max_concurrent_sports_per_provider: 4 # Max sports per provider
-  max_browser_instances: 6             # Global browser limit (5 gecko + spectate/comeon)
+  max_browser_instances: 3             # Global browser limit (reduced from 6 — slow PC can't handle 7 concurrent browsers)
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -60,9 +60,9 @@ orchestrator:
       max_concurrent: 1                # Browser-based SPA
       shared_resource: browser
 
-  # Timeouts (seconds)
-  provider_timeout: 300                # Per-provider timeout
-  sport_timeout: 60                    # Per-sport timeout
+  # Timeouts (seconds) — generous defaults so slow PCs always finish
+  provider_timeout: 900                # Per-provider timeout (was 300 — too tight under load)
+  sport_timeout: 120                   # Per-sport timeout (was 60 — API providers need headroom)
 
   # Performance
   batch_commit_size: 100               # Events per DB commit
@@ -70,11 +70,11 @@ orchestrator:
   # Enhancement configurations (all optional, defaults shown)
   retry:
     enabled: true
-    max_retries: 3
+    max_retries: 2                     # Reduced from 3 — fewer retries on slow PC
     initial_backoff_seconds: 2.0
-    max_backoff_seconds: 60.0
+    max_backoff_seconds: 30.0          # Reduced from 60 — don't waste time waiting
     exponential_base: 2.0
-    retry_on_timeout: true
+    retry_on_timeout: false            # Don't retry timeouts — on slow PC retrying just burns more time
 
   circuit_breaker:
     enabled: true
@@ -133,7 +133,7 @@ orchestrator:
 kambi_defaults: &kambi_defaults
   retriever_type: kambi
   base_url: https://eu1.offering-api.kambicdn.com/offering/v2018
-  sport_timeout: 120                     # Football needs >60s on large Kambi brands (unibet)
+  sport_timeout: 240                     # Football needs >120s under load (unibet timed out at 154s)
   params:
     market: SE
     lang: sv_SE
@@ -213,6 +213,7 @@ providers:
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
+    sport_timeout: 240                   # Football has ~200 leagues × 2 API calls each; needs headroom under load
 
   # --------------------------------------------------------------------------
   # Polymarket (prediction market — event matching only)
@@ -555,8 +556,8 @@ providers:
     domain: 10bet.se
     retriever_type: tenbet
     site_url: https://www.10bet.se
-    provider_timeout: 700              # DOM scraping needs time for many competitions
-    sport_timeout: 360                 # Ice hockey needs ~270s with 20 comps + margin
+    provider_timeout: 1200             # DOM scraping — needs headroom for slow PC
+    sport_timeout: 600                 # Football has 60+ leagues, 360s too tight under load
     supported_sports:
       - football
       - basketball
@@ -614,7 +615,7 @@ providers:
     retriever_type: custom
     site_url: https://www.comeon.com
     provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: bonusdeposit
       amount: 500
@@ -643,7 +644,7 @@ providers:
     retriever_type: custom
     site_url: https://www.hajper.com
     provider_timeout: 900              # 9 sports × ~45s each (date scrolling)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: bonusdeposit
       amount: 500
@@ -670,7 +671,7 @@ providers:
     retriever_type: custom
     site_url: https://www.lyllocasino.com
     provider_timeout: 900              # 12 sports × ~45s each (date scrolling)
-    sport_timeout: 120                 # ~21 dates × 2s wait + overhead
+    sport_timeout: 180                 # Pass 1 (~40s date scan) + Pass 2 (~100 events × 3s / 10 tabs)
     bonus:
       type: freebet
       amount: 100
@@ -768,7 +769,7 @@ providers:
     domain: coolbet.com
     retriever_type: coolbet
     site_url: https://www.coolbet.com
-    provider_timeout: 420              # Camoufox headless startup ~30s + 9 sports ~120s + margin for slow runs
+    provider_timeout: 600              # Camoufox startup ~30s + 9 sports ~120s + page recovery overhead + margin
     sport_timeout: 240                 # Football has heavy pagination (50+ categories)
     supported_sports:
       - football
@@ -823,9 +824,9 @@ providers:
 extraction_tiers:
   sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
-    # Runs on startup, then every 3 minutes
+    # Runs on startup, then every 1 minute
     providers: [pinnacle, polymarket]
-    interval_minutes: 3
+    interval_minutes: 1
 
   api_soft:
     # Fast REST/WS/API-interception providers — every 60 minutes
@@ -851,9 +852,9 @@ extraction_tiers:
     providers:
       # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group — keep all 3 (too different: 1.7-83% identity)
+      # ComeOn Group — 3-27% odds identity, each needs separate extraction
       - comeon
-      - hajper
+      # - hajper  # DISABLED: 31-62 events, 1 value bet, 534-771s browser time — not worth it
       - lyllo
       # Snabbare (1)
       - snabbare
@@ -863,8 +864,8 @@ extraction_tiers:
       - interwetten
       # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
       - coolbet
-      # Tipwin (1)
-      - tipwin
+      # Tipwin (1) - DISABLED: 15-30 events (inconsistent), 0 value bets ever, intermittent failures
+      # - tipwin
     interval_minutes: 60
 
 # ============================================================================
@@ -899,8 +900,8 @@ active:
   - interwetten
   # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
   - coolbet
-  # Tipwin (1) - browser-based SPA
-  - tipwin
+  # Tipwin (1) - DISABLED: 0 value bets, inconsistent event count, not worth browser time
+  # - tipwin
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
@@ -912,9 +913,9 @@ active:
   - bethard
   # Snabbare (1)
   - snabbare
-  # ComeOn Group (3)
+  # ComeOn Group (2) — hajper disabled (1 value bet, 534-771s browser time)
   - comeon
-  - hajper
+  # - hajper
   - lyllo
 
 
@@ -992,49 +993,49 @@ boosts:
     type: altenar
     integration: betiniase2
     primary_provider: betinia
-    shared_with: [campobet, swiper, lodur, dbet, quickcasino]
+    shared_with: []
     enabled: true
-    note: "Altenar primary — scrapes for all Altenar skins. ~265 boosts across football/basketball/hockey."
+    note: "Altenar — each brand has its own integration returning brand-specific boosts."
 
   campobet:
     type: altenar
     integration: campose
     primary_provider: campobet
     shared_with: []
-    enabled: false
-    note: "Disabled — rate-limited by Altenar API. Boosts shared from betinia."
+    enabled: true
+    note: "Altenar — own integration, brand-specific boosts."
 
   swiper:
     type: altenar
     integration: swiperse
     primary_provider: swiper
     shared_with: []
-    enabled: false
-    note: "Disabled — rate-limited by Altenar API. Boosts shared from betinia."
+    enabled: true
+    note: "Altenar — own integration, brand-specific boosts."
 
   lodur:
     type: altenar
     integration: lodurse
     primary_provider: lodur
     shared_with: []
-    enabled: false
-    note: "Disabled — rate-limited by Altenar API. Boosts shared from betinia."
+    enabled: true
+    note: "Altenar — own integration, brand-specific boosts."
 
   dbet:
     type: altenar
     integration: dbet
     primary_provider: dbet
     shared_with: []
-    enabled: false
-    note: "Disabled — rate-limited by Altenar API. Boosts shared from betinia."
+    enabled: true
+    note: "Altenar — own integration, brand-specific boosts."
 
   quickcasino:
     type: altenar
     integration: quickcasinose
     primary_provider: quickcasino
     shared_with: []
-    enabled: false
-    note: "Disabled — rate-limited by Altenar API. Boosts shared from betinia."
+    enabled: true
+    note: "Altenar — own integration, brand-specific boosts."
 
   # ═══════════════════════════════════════════════════════
   # OBG/GECKO V2 BOOST PAGES — same globalbonuses API as Betsson

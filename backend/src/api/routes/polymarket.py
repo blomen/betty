@@ -1,6 +1,9 @@
-"""Polymarket API routes: matched events, value bets, stats, mybets."""
+"""Polymarket API routes: matched events, value bets, stats, mybets, rewards."""
 
+import json
 import logging
+import re
+import time
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -9,7 +12,11 @@ from sqlalchemy import func
 from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
 from ...analysis.scanner import OpportunityScanner
+from ...analysis.devig import devig_multiplicative
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ...matching.normalizer import normalize_team_name, generate_canonical_id
+from ...matching.matcher import get_team_match_score
+from ...constants import SHARP_PROVIDERS
 from ...config import get_exchange_rate
 from ..deps import get_db
 
@@ -58,10 +65,12 @@ async def get_polymarket_value(
         events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
         events_map = {e.id: e for e in events_list}
 
-    # Batch-load provider_meta + updated_at from Odds for event_slug (needed for deep links)
+    # Batch-load provider_meta + updated_at from Odds for event_slug + poly names
     # Key: (event_id, market, outcome) → provider_meta dict
     odds_meta_map: dict[tuple, dict] = {}
     odds_updated_map: dict[tuple, str] = {}
+    # Per-event Polymarket display names (from provider_meta)
+    poly_names_map: dict[str, tuple[str | None, str | None]] = {}
     if event_ids:
         poly_odds = (
             db.query(Odds)
@@ -70,10 +79,14 @@ async def get_polymarket_value(
         )
         for o in poly_odds:
             key = (o.event_id, o.market, o.outcome)
-            if o.provider_meta and "event_slug" in (o.provider_meta if isinstance(o.provider_meta, dict) else {}):
+            meta = o.provider_meta if isinstance(o.provider_meta, dict) else {}
+            if meta.get("event_slug"):
                 odds_meta_map[key] = o.provider_meta
             if o.updated_at:
                 odds_updated_map[key] = o.updated_at.isoformat()
+            # Extract Polymarket's own team names (same for all odds of an event)
+            if o.event_id not in poly_names_map and (meta.get("poly_home") or meta.get("poly_away")):
+                poly_names_map[o.event_id] = (meta.get("poly_home"), meta.get("poly_away"))
 
     # Enrich with event context
     results = []
@@ -107,6 +120,9 @@ async def get_polymarket_value(
             "away_team": event.away_team,
             "display_home": event.display_home,
             "display_away": event.display_away,
+            # Polymarket's own team names (may differ from canonical display names)
+            "poly_home": poly_names_map.get(vb.event_id, (None, None))[0],
+            "poly_away": poly_names_map.get(vb.event_id, (None, None))[1],
             "sport": event.sport,
             "league": event.league,
             "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
@@ -377,6 +393,373 @@ async def get_polymarket_matched(
     return {
         "events": result,
         "count": len(result),
+    }
+
+
+# ──────────────────── Rewards ────────────────────
+
+# Import SERIES_TO_SPORT from polymarket provider for sport detection
+from ...providers.polymarket import SERIES_TO_SPORT
+
+# Simple TTL cache for Gamma API reward data
+_rewards_cache: dict = {"data": None, "ts": 0}
+_REWARDS_CACHE_TTL = 300  # 5 minutes
+
+
+def _parse_poly_teams(title: str) -> tuple[str, str]:
+    """Extract home/away teams from Polymarket event title.
+
+    Mirrors PolymarketRetriever._parse_teams() logic.
+    """
+    clean = title
+    for suffix in [" - More Markets", " - Winner", " (Game 1)", " (Game 2)", " (Game 3)"]:
+        if suffix in clean:
+            clean = clean.split(suffix)[0]
+
+    # Strip esports/tennis/MMA prefixes
+    prefixes = [
+        "Counter-Strike: ", "CS2: ", "League of Legends: ", "LoL: ",
+        "Valorant: ", "Dota 2: ", "Call of Duty: ", "CoD: ",
+        "ATP: ", "WTA: ", "Men's: ", "Women's: ",
+    ]
+    for pfx in prefixes:
+        if clean.startswith(pfx):
+            clean = clean[len(pfx):]
+            break
+
+    clean = re.sub(r'^(?:UFC|Bellator|PFL|ONE)(?:\s+[\w\'\-]+)*\s*:\s*', '', clean)
+    clean = re.sub(r'\s*\([^)]+\)\s*', '', clean)
+
+    for sep in [" vs. ", " vs ", " @ "]:
+        if sep in clean:
+            parts = clean.split(sep)
+            if len(parts) == 2:
+                home = parts[0].strip()
+                away = parts[1].strip()
+                if " - " in away:
+                    away = away.split(" - ")[0].strip()
+                return home, away
+
+    return "", ""
+
+
+def _get_poly_sport_league(item: dict) -> tuple[str, str]:
+    """Determine sport+league from Polymarket event series fields."""
+    series_list = item.get("series", [])
+    series_slug = item.get("seriesSlug", "")
+    league = series_list[0].get("title", "Unknown") if series_list else "Unknown"
+
+    sport = SERIES_TO_SPORT.get(series_slug)
+    if not sport and '-20' in series_slug:
+        base_slug = series_slug.rsplit('-20', 1)[0]
+        sport = SERIES_TO_SPORT.get(base_slug)
+    return sport or "unknown", league
+
+
+async def _fetch_gamma_reward_events() -> list[dict]:
+    """Fetch sport events from Gamma API with TTL cache.
+
+    Reward fields are directly on each market object:
+    - rewardsMaxSpread (float): max cents from midpoint to earn rewards
+    - rewardsMinSize (float): min shares for reward eligibility
+    - competitive (float 0-1): competition level (lower = less competition = more rewards/dollar)
+    Note: rewardsDailyRate is NOT available from Gamma API.
+    """
+    now = time.time()
+    if _rewards_cache["data"] is not None and (now - _rewards_cache["ts"]) < _REWARDS_CACHE_TTL:
+        return _rewards_cache["data"]
+
+    import httpx
+
+    base_url = "https://gamma-api.polymarket.com"
+    all_events: list[dict] = []
+    offset = 0
+    page_limit = 500
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            resp = await client.get(f"{base_url}/events", params={
+                "active": "true",
+                "closed": "false",
+                "tag_id": 100639,
+                "order": "startTime",
+                "ascending": "true",
+                "limit": page_limit,
+                "offset": offset,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                break
+            all_events.extend(data)
+            if len(data) < page_limit:
+                break
+            offset += page_limit
+
+    # Filter to events that have at least one market with rewardsMaxSpread > 0
+    reward_events = []
+    for ev in all_events:
+        markets = ev.get("markets", [])
+        for m in markets:
+            max_spread = float(m.get("rewardsMaxSpread", 0) or 0)
+            if max_spread > 0:
+                reward_events.append(ev)
+                break
+
+    _rewards_cache["data"] = reward_events
+    _rewards_cache["ts"] = now
+    logger.info(f"[polymarket/rewards] Fetched {len(all_events)} events, {len(reward_events)} have rewards")
+    return reward_events
+
+
+@router.get("/rewards-debug")
+def rewards_debug(db: Session = Depends(get_db)):
+    """Debug endpoint to test DB queries."""
+    pinnacle_event_ids = set(
+        row[0] for row in
+        db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
+    )
+    excluded = SHARP_PROVIDERS | {"polymarket"}
+    soft_count = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id.in_(pinnacle_event_ids),
+            ~Odds.provider_id.in_(excluded),
+        )
+        .count()
+    ) if pinnacle_event_ids else 0
+    ducks_soft = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id == "ice_hockey:ducks:blues:20260309",
+            ~Odds.provider_id.in_(excluded),
+            Odds.market.in_(["1x2", "moneyline"]),
+        )
+        .all()
+    )
+    return {
+        "pinnacle_events": len(pinnacle_event_ids),
+        "soft_odds_count": soft_count,
+        "ducks_soft": [{"provider": o.provider_id, "market": o.market, "outcome": o.outcome, "odds": o.odds} for o in ducks_soft],
+    }
+
+
+@router.get("/rewards")
+async def get_polymarket_rewards(
+    min_daily_rate: float = Query(0.0, description="Min total daily reward rate (USDC)"),
+    sport: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Get Polymarket sport events with liquidity rewards, matched to Pinnacle."""
+    # Run all DB queries FIRST (before any async await) to avoid session staleness
+    db_events = db.query(Event).all()
+    events_by_id: dict[str, Event] = {e.id: e for e in db_events}
+
+    pinnacle_event_ids = set(
+        row[0] for row in
+        db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
+    )
+
+    pinnacle_odds_rows = (
+        db.query(Odds)
+        .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
+        .all()
+    ) if pinnacle_event_ids else []
+    pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
+    for o in pinnacle_odds_rows:
+        pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
+
+    excluded = SHARP_PROVIDERS | {"polymarket"}
+    soft_odds_rows = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id.in_(pinnacle_event_ids),
+            ~Odds.provider_id.in_(excluded),
+        )
+        .all()
+    ) if pinnacle_event_ids else []
+    best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
+    for o in soft_odds_rows:
+        by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
+        current = by_market.get(o.outcome)
+        if current is None or o.odds > current[0]:
+            by_market[o.outcome] = (o.odds, o.provider_id)
+
+    # Now fetch Gamma API (async, may take 10-30s on cold cache)
+    gamma_events = await _fetch_gamma_reward_events()
+
+    results = []
+    for ev in gamma_events:
+        title = ev.get("title", "")
+        if " - More Markets" in title:
+            continue
+
+        home, away = _parse_poly_teams(title)
+        if not home or not away:
+            continue
+
+        ev_sport, league = _get_poly_sport_league(ev)
+        if ev_sport == "unknown":
+            continue
+        if sport and ev_sport != sport:
+            continue
+
+        # Parse start_time
+        start_time_raw = ev.get("startTime")
+        if isinstance(start_time_raw, (int, float)):
+            from datetime import datetime, timezone
+            ts = start_time_raw / 1000 if start_time_raw > 1e10 else start_time_raw
+            start_time_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        else:
+            start_time_str = start_time_raw
+
+        # Skip started events
+        if start_time_str:
+            try:
+                from datetime import datetime, timezone
+                st = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                if st <= datetime.now(timezone.utc):
+                    continue
+            except Exception:
+                pass
+
+        # Try to match to DB event
+        home_norm = normalize_team_name(home)
+        away_norm = normalize_team_name(away)
+
+        # Try canonical ID match first (exact)
+        matched_event: Optional[Event] = None
+        if start_time_str:
+            canonical_id = generate_canonical_id(ev_sport, home, away, start_time_str)
+            if canonical_id in events_by_id:
+                matched_event = events_by_id[canonical_id]
+            else:
+                # Try swapped teams
+                canonical_swapped = generate_canonical_id(ev_sport, away, home, start_time_str)
+                if canonical_swapped in events_by_id:
+                    matched_event = events_by_id[canonical_swapped]
+
+        # Fuzzy fallback — match against Pinnacle events only
+        if not matched_event:
+            best_score = 0
+            for eid in pinnacle_event_ids:
+                db_ev = events_by_id.get(eid)
+                if not db_ev or db_ev.sport != ev_sport:
+                    continue
+                h_score = get_team_match_score(home, db_ev.home_team)
+                a_score = get_team_match_score(away, db_ev.away_team)
+                combined = min(h_score, a_score)
+                if combined > best_score and combined >= 75:
+                    best_score = combined
+                    matched_event = db_ev
+                # Also try swapped
+                h_score2 = get_team_match_score(home, db_ev.away_team)
+                a_score2 = get_team_match_score(away, db_ev.home_team)
+                combined2 = min(h_score2, a_score2)
+                if combined2 > best_score and combined2 >= 75:
+                    best_score = combined2
+                    matched_event = db_ev
+
+        if not matched_event:
+            continue
+        if matched_event.id not in pinnacle_event_ids:
+            continue
+
+        # Extract reward info from markets (fields are directly on market object)
+        markets = ev.get("markets", [])
+        max_spread = 0.0
+        min_size = 0.0
+        competitive_val = 1.0  # default high competition
+        poly_prices: dict[str, float] = {}
+
+        for m in markets:
+            ms = float(m.get("rewardsMaxSpread", 0) or 0)
+            if ms > max_spread:
+                max_spread = ms
+            mn = float(m.get("rewardsMinSize", 0) or 0)
+            if mn > min_size:
+                min_size = mn
+            comp = m.get("competitive")
+            if comp is not None:
+                competitive_val = float(comp)
+
+            # Extract prices from outcomePrices
+            outcome_prices = m.get("outcomePrices")
+            question = (m.get("question") or "").lower()
+            if outcome_prices:
+                try:
+                    prices = outcome_prices if isinstance(outcome_prices, list) else json.loads(outcome_prices)
+                    group_slug = (m.get("groupItemTitle") or "").lower()
+                    if group_slug:
+                        # Grouped event (football 1x2): each sub-market = one outcome
+                        if "draw" in question or "draw" in group_slug:
+                            poly_prices["draw"] = float(prices[0])
+                        elif home_norm and (home_norm in question or home_norm in group_slug):
+                            poly_prices["home"] = float(prices[0])
+                        elif away_norm and (away_norm in question or away_norm in group_slug):
+                            poly_prices["away"] = float(prices[0])
+                    elif len(prices) >= 2 and len(poly_prices) == 0:
+                        # Single market (moneyline): prices[0]=home Yes, prices[1]=away Yes
+                        poly_prices["home"] = float(prices[0])
+                        poly_prices["away"] = float(prices[1])
+                except Exception:
+                    pass
+
+        # Get Pinnacle fair odds (de-vigged)
+        pinn_market_odds = pinnacle_odds_map.get(matched_event.id, {})
+        # Try 1x2 first, then moneyline
+        pinn_raw = pinn_market_odds.get("1x2") or pinn_market_odds.get("moneyline", {})
+        pinnacle_fair: dict[str, float] = {}
+        if pinn_raw:
+            outcomes = sorted(pinn_raw.keys())
+            odds_list = [pinn_raw[o] for o in outcomes]
+            if all(o > 1 for o in odds_list):
+                fair_list = devig_multiplicative(odds_list)
+                for o, f in zip(outcomes, fair_list):
+                    pinnacle_fair[o] = round(f, 3)
+
+        # Get best hedge odds (merge 1x2 + moneyline, pick best per outcome)
+        soft_market = best_soft_map.get(matched_event.id, {})
+        hedge_odds: dict[str, dict] = {}
+        for mkt_key in ("1x2", "moneyline"):
+            mkt_data = soft_market.get(mkt_key, {})
+            for outcome, (odds_val, prov) in mkt_data.items():
+                existing = hedge_odds.get(outcome)
+                if existing is None or odds_val > existing["odds"]:
+                    hedge_odds[outcome] = {"provider": prov, "odds": round(odds_val, 3)}
+
+        event_slug = ev.get("slug", "")
+
+        results.append({
+            "event_id": matched_event.id,
+            "home_team": matched_event.home_team,
+            "away_team": matched_event.away_team,
+            "display_home": matched_event.display_home,
+            "display_away": matched_event.display_away,
+            "poly_home": home,
+            "poly_away": away,
+            "sport": matched_event.sport,
+            "league": matched_event.league or league,
+            "start_time": (matched_event.start_time.isoformat() + "Z") if matched_event.start_time else start_time_str,
+            "rewards_daily_rate": 0.0,  # Not available from Gamma API
+            "rewards_max_spread": round(max_spread, 1),
+            "rewards_min_size": round(min_size, 0),
+            "competitive": round(competitive_val, 4),
+            "poly_prices": {k: round(v, 4) for k, v in poly_prices.items()},
+            "pinnacle_fair_odds": pinnacle_fair,
+            "best_hedge_odds": hedge_odds,
+            "event_slug": event_slug,
+            "polymarket_url": f"https://polymarket.com/event/{event_slug}" if event_slug else None,
+        })
+
+    # Sort by competition (lower = less competition = more rewarding)
+    results.sort(key=lambda x: x["competitive"])
+    results = results[:limit]
+
+    return {
+        "rewards": results,
+        "count": len(results),
     }
 
 

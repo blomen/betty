@@ -130,13 +130,13 @@ export function useExtractionStatus(onComplete?: () => void): ExtractionStatus {
 
         wasRunningRef.current = anyTierRunning;
 
-        // Poll faster while running (3s), slower while idle (10s)
-        const interval = anyTierRunning ? 3000 : 10000;
+        // Poll while running (10s) or idle (30s) — gentle on slow PCs
+        const interval = anyTierRunning ? 10_000 : 30_000;
         timeoutId = setTimeout(poll, interval);
       } catch {
         // Silent fail — extraction status is non-critical
         if (mounted) {
-          timeoutId = setTimeout(poll, 10000);
+          timeoutId = setTimeout(poll, 30_000);
         }
       }
     }

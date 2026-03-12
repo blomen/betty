@@ -6,23 +6,23 @@
   --bg: #111111;
   --panel: #1a1a1a;
   --panel2: #202020;
-  --border: #2c2c2c;
+  --border: #1e2636;
   --text: #E6E8EB;
   --muted: #9AA0A6;
   --muted2: #7A7F87;
   --accent: #4FC3F7;
   --accentBg: #1a1f2a;
-  --accentBorder: #2c2c2c;
+  --accentBorder: #1e2636;
   --success: #4CAF50;
   --error: #EF5350;
   --warning: #FF9800;
-  --tableBorder: #2c2c2c;
+  --tableBorder: #1e2636;
   --calloutBorder: #4CAF50;
   /* Tab colors — must match Sidebar.tsx dot colors */
   --tab-arb: #22c55e;
   --tab-value: #FF9800;
   --tab-bonus: #A78BFA;
-  --tab-bets: #4FC3F7;
+  --tab-bets: #1E88E5;
   --tab-bankroll: #EC4899;
   --tab-profiles: #7C3AED;
   --tab-polymarket: #A855F7;
@@ -41,8 +41,8 @@ html, body, #root {
 
 body {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code', Consolas, ui-monospace, monospace;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.4;
   font-weight: 400;
   letter-spacing: 0;
   background-color: var(--bg);
@@ -113,7 +113,7 @@ table.sq {
 table.sq th,
 table.sq td {
   border: 1px solid var(--border);
-  padding: 8px 12px;
+  padding: 5px 8px;
   text-align: left;
   vertical-align: middle;
 }
@@ -121,7 +121,7 @@ table.sq td {
 table.sq th {
   background-color: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -130,7 +130,7 @@ table.sq th {
 table.sq td {
   background-color: var(--bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 table.sq tr:hover td {

@@ -82,6 +82,9 @@ export function displayTeamName(normalized: string | undefined | null, display: 
 
 // ============ TTK (Time-to-Kickoff) Utilities ============
 
+/** Max TTK in hours — events further out than 7 days are filtered from active lists */
+export const MAX_TTK_HOURS = 7 * 24; // 168 hours
+
 /** Hours from now until event start. Returns null if no start time. */
 export function getTTKFromNow(startTime: string | null | undefined): number | null {
   if (!startTime) return null;

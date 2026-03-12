@@ -6,6 +6,7 @@ Functions for storing events and odds in the database.
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from ..core import StandardEvent
@@ -16,9 +17,18 @@ from ..matching import (
     normalize_outcome,
 )
 from ..matching.normalizer import generate_canonical_id
-from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, PROVIDER_CANONICAL
+from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EXTENDED_MARKET_PROVIDERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_date_str(start_time) -> str:
+    """Extract YYYYMMDD date string from start_time (str or datetime)."""
+    if isinstance(start_time, str):
+        return start_time.split('T')[0].replace('-', '')
+    elif hasattr(start_time, 'strftime'):
+        return start_time.strftime('%Y%m%d')
+    return "00000000"
 
 
 def _parse_display_names(event_name: str) -> tuple[str | None, str | None]:
@@ -115,11 +125,10 @@ def detect_and_fix_inversion(
     if sharp_odds_cache is not None and event_id in sharp_odds_cache:
         sharp = sharp_odds_cache[event_id]
     else:
-        # Get sharp odds (Pinnacle only) - use case-insensitive match for provider ID
-        from sqlalchemy import func
+        # Get sharp odds (Pinnacle only) - exact match uses index
         sharp_rows = session.query(Odds).filter(
             Odds.event_id == event_id,
-            func.lower(Odds.provider_id).like('pinnacle%'),
+            Odds.provider_id == 'pinnacle',
             Odds.outcome.in_(['home', 'away']),
             Odds.market.in_(['1x2', 'moneyline']),
         ).all()
@@ -138,12 +147,12 @@ def detect_and_fix_inversion(
     if new_fav == sharp_fav:
         return False  # Same favorite, no inversion
 
-    # Only trigger if SHARP shows a clear favorite (ratio > 1.3)
+    # Only trigger if SHARP shows a clear favorite (ratio > 1.15)
     # This catches cases where Pinnacle shows clear favorite but provider shows opposite
     # e.g., Pinnacle home=7.38/away=1.11 (away fav) vs Polymarket home=1.94/away=2.06 (home fav)
-    # Lower threshold (1.3) catches more edge cases like Pinnacle 1.63/2.29 (ratio 1.4)
+    # Threshold 1.15 catches cases like Pinnacle 1.81/2.23 (ratio 1.23) where team order is wrong
     sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
-    if sharp_ratio < 1.3:
+    if sharp_ratio < 1.15:
         return False  # Sharp odds are close, could be legitimate difference
 
     # Log at DEBUG level (silent in normal operation)
@@ -184,7 +193,6 @@ def store_polymarket_event(
     fuzzy_threshold: int = 90,
     min_individual_score: int = 80,
     odds_batch: "OddsBatchProcessor" = None,
-    pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
     date_index: dict = None,
 ) -> tuple[bool, int, int]:
@@ -220,10 +228,7 @@ def store_polymarket_event(
     default_id = generate_canonical_id(kambi_sport, home_team, away_team, event.start_time)
 
     # Diagnostic logging for matching
-    if isinstance(event.start_time, datetime):
-        date_str = event.start_time.strftime("%Y%m%d")
-    else:
-        date_str = str(event.start_time)[:10].replace('-', '') if event.start_time else "00000000"
+    date_str = _extract_date_str(event.start_time)
 
     logger.debug(
         f"[polymarket] Matching '{home_team} vs {away_team}' sport={kambi_sport} "
@@ -377,62 +382,39 @@ def store_polymarket_event(
         if ls.get("match_period") is not None:
             db_event.match_period = ls["match_period"]
 
+        # Store score_raw and BO format from Polymarket in stats_json
+        score_raw = ls.get("score_raw")
+        if score_raw:
+            existing = json.loads(db_event.stats_json) if db_event.stats_json else {}
+            existing["score_raw"] = score_raw
+            # Parse BO format from esports score_raw: "000-000|2-1|Bo3"
+            bo_match = re.search(r"Bo(\d+)", score_raw)
+            if bo_match:
+                existing["bo"] = int(bo_match.group(1))
+            db_event.stats_json = json.dumps(existing)
+
     # Use canonical event's home/away for outcome normalization
     # This ensures consistent home/away mapping when Polymarket lists teams in different order
     canonical_home = db_event.home_team
     canonical_away = db_event.away_team
 
-    # Extract home/away odds from Polymarket outcomes for inversion detection
-    # CRITICAL: Only use winner-market (1x2/moneyline) odds for inversion check.
-    # Spread/total odds have different semantics (home spread=-0.5 doesn't indicate favorite)
-    # and would overwrite moneyline odds due to last-write-wins in this loop.
-    poly_home_odds, poly_away_odds = None, None
-    for market in event.markets:
-        market_type = normalize_market(market.get("question", "") or market.get("type", ""))
-        if market_type in ('1x2', 'moneyline'):
-            for outcome in market.get("outcomes", []):
-                norm = normalize_outcome(
-                    outcome.get("name", ""),
-                    home_team,  # Use Polymarket's team order for normalization
-                    away_team
-                )
-                if norm == "home":
-                    poly_home_odds = outcome.get("odds")
-                elif norm == "away":
-                    poly_away_odds = outcome.get("odds")
-
-    # Track odds inversion (separate from team order swap)
-    odds_inverted = False
-
-    # Check for odds-based inversion against sharp source (Pinnacle)
-    if matched_id and poly_home_odds and poly_away_odds:
-        # Convert to canonical order if teams were swapped
-        if teams_swapped:
-            canonical_home_odds = poly_away_odds
-            canonical_away_odds = poly_home_odds
-        else:
-            canonical_home_odds = poly_home_odds
-            canonical_away_odds = poly_away_odds
-
-        inversion_result = detect_and_fix_inversion(
-            session, matched_id, "polymarket", canonical_home_odds, canonical_away_odds,
-            sharp_odds_cache=sharp_odds_cache,
-        )
-        if inversion_result:
-            odds_inverted = True
-            logger.debug(
-                f"[polymarket] Detected inverted odds for {matched_id}: "
-                f"canonical H={canonical_home_odds:.2f}/A={canonical_away_odds:.2f}"
-            )
-
-    # Determine if we need to swap during storage
-    # For Polymarket, team order is already handled by using canonical teams in normalization
-    # So we ONLY need to swap if odds are inverted vs sharp (Pinnacle)
-    should_swap_outcomes = odds_inverted
-
-    # Store odds
+    # Store odds — also track moneyline home/away for post-storage validation
     odds_processed = 0
     odds_new = 0
+    poly_ml_home = None
+    poly_ml_away = None
+
+    # Positional keywords: these map to home/away in normalize_outcome's fast
+    # path and are RELATIVE to Polymarket's team order (e.g., spread parser
+    # outputs "home"/"away" based on PM's team listing). When teams_swapped,
+    # these need flipping to canonical order.
+    # Team-name outcomes (e.g., "Celtics") are resolved by normalize_outcome
+    # against canonical_home/canonical_away, so they're ALREADY canonical —
+    # swapping would double-flip them.
+    POSITIONAL_KEYWORDS = frozenset({
+        'home', 'hemma', '1', 'yes', 'ja',
+        'away', 'borta', '2', 'no', 'nej',
+    })
 
     for market in event.markets:
         if not market.get("is_active", True):  # Default to active if missing
@@ -442,7 +424,7 @@ def store_polymarket_event(
 
         # Only store allowed markets. Pinnacle gets enrichment markets too
         # (team_total, 1h lines) for boost EV enrichment — scanner ignores them.
-        allowed = ENRICHMENT_MARKETS if event.provider in SHARP_PROVIDERS else ALLOWED_MARKETS
+        allowed = ENRICHMENT_MARKETS if event.provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
 
@@ -470,18 +452,21 @@ def store_polymarket_event(
             if outcome_norm not in ('home', 'away', 'draw', 'over', 'under'):
                 continue
 
-            # Swap home/away based on XOR of team swap and odds inversion
-            # - teams_swapped only: swap (team order different from canonical)
-            # - odds_inverted only: swap (odds favor wrong team)
-            # - both: don't swap (they cancel out)
-            if should_swap_outcomes:
-                if outcome_norm == "home":
-                    outcome_norm = "away"
-                elif outcome_norm == "away":
-                    outcome_norm = "home"
-                # Negate spread points when swapping home/away
-                if market_type == "spread" and point_value is not None:
-                    point_value = -point_value
+            # Only swap positional-keyword outcomes when teams are in different
+            # order. The spread parser outputs "home"/"away" relative to PM's
+            # team listing — these need flipping to canonical order.
+            # Team-name outcomes (e.g., "Celtics") are already resolved against
+            # canonical teams by normalize_outcome — swapping would invert them.
+            raw_lower = outcome_name.lower().strip()
+            if teams_swapped and raw_lower in POSITIONAL_KEYWORDS and outcome_norm in ("home", "away"):
+                outcome_norm = "away" if outcome_norm == "home" else "home"
+
+            # Track moneyline home/away for post-storage validation
+            if market_type in ('moneyline', '1x2'):
+                if outcome_norm == 'home':
+                    poly_ml_home = odds
+                elif outcome_norm == 'away':
+                    poly_ml_away = odds
 
             outcome_meta = outcome.get('provider_meta', {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
@@ -489,6 +474,22 @@ def store_polymarket_event(
                 odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
             else:
                 odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
+
+    # Safety net: compare stored Polymarket ML odds against Pinnacle.
+    # If favorites disagree with high confidence, odds are likely inverted.
+    if poly_ml_home and poly_ml_away and sharp_odds_cache is not None:
+        sharp = sharp_odds_cache.get(matched_id, {})
+        if 'home' in sharp and 'away' in sharp:
+            poly_fav = 'home' if poly_ml_home < poly_ml_away else 'away'
+            sharp_fav = 'home' if sharp['home'] < sharp['away'] else 'away'
+            sharp_ratio = max(sharp['home'], sharp['away']) / min(sharp['home'], sharp['away'])
+            if poly_fav != sharp_fav and sharp_ratio > 1.2:
+                logger.warning(
+                    f"[polymarket] INVERSION DETECTED for {matched_id}: "
+                    f"Poly H={poly_ml_home:.3f}/A={poly_ml_away:.3f} (fav={poly_fav}) "
+                    f"vs Sharp H={sharp['home']:.3f}/A={sharp['away']:.3f} (fav={sharp_fav}, ratio={sharp_ratio:.2f}). "
+                    f"teams_swapped={teams_swapped}"
+                )
 
     return is_new_event, odds_processed, odds_new
 
@@ -524,12 +525,7 @@ def _resolve_event_id(
         return default_id, False
 
     # 2. Fuzzy match against memory cache
-    if isinstance(event.start_time, str):
-        event_date = event.start_time.split('T')[0].replace('-', '')
-    elif hasattr(event.start_time, 'strftime'):
-        event_date = event.start_time.strftime('%Y%m%d')
-    else:
-        event_date = "00000000"
+    event_date = _extract_date_str(event.start_time)
 
     # Use date index for O(1) candidate lookup instead of O(N) scan
     if date_index is not None:
@@ -686,7 +682,6 @@ def store_provider_event(
     prefix_filter_length: int = 3,
     odds_batch: "OddsBatchProcessor" = None,
     require_match: bool = False,
-    pinnacle_points_cache: dict = None,
     sharp_odds_cache: dict = None,
     max_asymmetry_diff: int = 25,
     min_for_asymmetry_check: int = 80,
@@ -740,12 +735,7 @@ def store_provider_event(
         is_new_event = True
 
         # Add to cache for subsequent providers to match against
-        if isinstance(event.start_time, str):
-            date_str = event.start_time.split('T')[0].replace('-', '')
-        elif hasattr(event.start_time, 'strftime'):
-            date_str = event.start_time.strftime('%Y%m%d')
-        else:
-            date_str = "00000000"
+        date_str = _extract_date_str(event.start_time)
 
         _update_event_cache(
             event_cache, date_index or {},
@@ -775,6 +765,26 @@ def store_provider_event(
         stats = ls.get("stats")
         if stats:
             db_event.stats_json = json.dumps(stats)
+
+            # Tennis: derive home_score/away_score from setsWon
+            if event.sport == "tennis":
+                home_sets = stats.get("home", {}).get("setsWon")
+                away_sets = stats.get("away", {}).get("setsWon")
+                if home_sets is not None and away_sets is not None:
+                    db_event.home_score = home_sets
+                    db_event.away_score = away_sets
+
+        # Esports: parse BO format from match_period ("1/3" → bo=3)
+        if event.sport == "esports" and ls.get("match_period"):
+            period_str = str(ls["match_period"])
+            if "/" in period_str:
+                try:
+                    total = int(period_str.split("/")[1])
+                    existing = json.loads(db_event.stats_json) if db_event.stats_json else {}
+                    existing["bo"] = total
+                    db_event.stats_json = json.dumps(existing)
+                except (ValueError, IndexError):
+                    pass
 
     # Extract home/away odds from event markets for inversion detection
     # Only use 1x2/moneyline — spread odds have inverted favorite semantics
@@ -841,7 +851,7 @@ def store_provider_event(
 
     for market in event.markets:
         market_type = normalize_market(market.get('type', ''))
-        allowed = ENRICHMENT_MARKETS if provider in SHARP_PROVIDERS else ALLOWED_MARKETS
+        allowed = ENRICHMENT_MARKETS if provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue
 
@@ -860,6 +870,18 @@ def store_provider_event(
         # Build provider_meta from market-level + outcome-level metadata
         # Used by placement system to resolve canonical events to provider-specific IDs
         market_meta = market.get('provider_meta', {})
+
+        # Inject provider's own team names into provider_meta.
+        # If should_swap, the provider's home is the canonical away and vice versa.
+        # Store in canonical order so frontend always gets (canonical_home_name, canonical_away_name).
+        if should_swap:
+            _prov_home = event.away_team   # provider's away = canonical home
+            _prov_away = event.home_team   # provider's home = canonical away
+        else:
+            _prov_home = event.home_team
+            _prov_away = event.away_team
+        if _prov_home or _prov_away:
+            market_meta = {**(market_meta or {}), "prov_home": _prov_home, "prov_away": _prov_away}
 
         for outcome in outcomes:
             outcome_name = normalize_outcome(outcome.get('name', ''), norm_home, norm_away)
@@ -999,6 +1021,13 @@ class OddsBatchProcessor:
 
         Includes retry logic for SQLite "database is locked" errors that occur
         during concurrent extraction (multiple providers flushing simultaneously).
+
+        Note: Uses synchronous time.sleep() for retry backoff because this method
+        is called from synchronous contexts (__exit__, add()). The sleeps are
+        very short (50-200ms) and SQLite locks typically clear within milliseconds.
+        Making this async would require converting OddsBatchProcessor, its callers
+        in storage.py, and all context-manager usage sites — not worth the churn
+        for sub-second retry waits.
         """
         if not self._pending:
             return
@@ -1006,17 +1035,17 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms, 400ms
                     logger.warning(
                         f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {wait:.1f}s..."
+                        f"retrying in {wait * 1000:.0f}ms..."
                     )
                     self.session.rollback()
                     time.sleep(wait)

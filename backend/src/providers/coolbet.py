@@ -107,7 +107,16 @@ class CoolbetRetriever(BrowserRetriever):
                 await self._camoufox_page.evaluate("() => true", timeout=5000)
                 return self._camoufox_page
             except Exception:
-                logger.warning(f"[{self.provider_id}] Camoufox page died, relaunching")
+                logger.warning(f"[{self.provider_id}] Camoufox page died, recovering...")
+                # Try creating a new page from existing browser (avoids full 15s relaunch)
+                if self._camoufox_browser:
+                    try:
+                        self._camoufox_page = await self._camoufox_browser.new_page()
+                        self._session_ready = False
+                        logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
+                        return self._camoufox_page
+                    except Exception:
+                        logger.warning(f"[{self.provider_id}] Browser also dead, full relaunch")
                 await self._cleanup_camoufox()
                 self._session_ready = False
 
@@ -253,7 +262,7 @@ class CoolbetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (was 5, increased for speed)
+    CONCURRENT_CATEGORY_FETCHES = 4  # Parallel category page fetches (reduced from 8 to avoid overwhelming Camoufox)
 
     async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
         """Fetch all categories with pagination (API returns 10 per page).
@@ -297,10 +306,13 @@ class CoolbetRetriever(BrowserRetriever):
                 self._fetch_category_page(page, category_id, o)
                 for o in batch_offsets
             ]
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             batch_has_data = False
             for cats in results:
+                if isinstance(cats, Exception):
+                    logger.warning(f"[{self.provider_id}] Category fetch failed: {cats}")
+                    continue
                 if not cats:
                     continue
                 for cat in cats:
@@ -338,13 +350,13 @@ class CoolbetRetriever(BrowserRetriever):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = await page.evaluate(f"""
+                resp = await asyncio.wait_for(page.evaluate(f"""
                     (async () => {{
                         const resp = await fetch('{url}', {{credentials: 'include'}});
                         if (!resp.ok) return {{__status: resp.status, __ok: false}};
                         return await resp.json();
                     }})();
-                """)
+                """), timeout=30)
 
                 # Check for HTTP error response
                 if isinstance(resp, dict) and resp.get("__ok") is False:
@@ -394,7 +406,7 @@ class CoolbetRetriever(BrowserRetriever):
                 chunk = unique_ids[i:i + chunk_size]
                 market_arrays = [[mid] for mid in chunk]
                 body = json.dumps({"marketIds": market_arrays})
-                resp = await page.evaluate(f"""
+                resp = await asyncio.wait_for(page.evaluate(f"""
                     (async () => {{
                         const resp = await fetch('/s/sb-odds/odds/current/fo-line/', {{
                             method: 'POST',
@@ -404,7 +416,7 @@ class CoolbetRetriever(BrowserRetriever):
                         }});
                         return await resp.json();
                     }})();
-                """)
+                """), timeout=30)
                 if isinstance(resp, dict):
                     all_odds.update(resp)
             logger.debug(

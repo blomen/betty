@@ -17,6 +17,7 @@ from .calculator import RiskCalculator, RiskAssessment
 from .regularizer import UtilityRegularizer, RegularizedOpportunity
 from .selector import StochasticSelector
 from .stake_noise import StakeNoiseInjector
+from .allocator import ProviderAllocator, AllocationResult
 
 __all__ = [
     "FeatureExtractor",
@@ -27,4 +28,6 @@ __all__ = [
     "RegularizedOpportunity",
     "StochasticSelector",
     "StakeNoiseInjector",
+    "ProviderAllocator",
+    "AllocationResult",
 ]

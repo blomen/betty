@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..db.models import Event, Odds, Opportunity, Bet
 
@@ -106,6 +107,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -134,6 +136,8 @@ class OpportunityRepo:
         combined_edge_pct: float,
         guaranteed_profit_pct: float,
         point: float | None = None,
+        arb_profit_pct: float | None = None,
+        arb_legs: list[dict] | None = None,
     ) -> bool:
         """Upsert a dutch opportunity. Returns True if new."""
         # Primary leg = highest edge, secondary = second highest
@@ -149,7 +153,7 @@ class OpportunityRepo:
 
         now = datetime.now(timezone.utc)
 
-        outcomes_json = [
+        legs_list = [
             {
                 "outcome": leg["outcome"],
                 "provider": leg["provider"],
@@ -161,6 +165,11 @@ class OpportunityRepo:
             }
             for leg in sorted_legs
         ]
+        outcomes_json = {
+            "legs": legs_list,
+            "arb_profit_pct": arb_profit_pct,
+            "arb_legs": arb_legs,
+        }
 
         if existing:
             existing.is_active = True
@@ -175,6 +184,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -245,6 +255,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -298,6 +309,7 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            flag_modified(existing, "outcomes")
             return False
         else:
             opp = Opportunity(
@@ -340,16 +352,7 @@ class OpportunityRepo:
         ).delete(synchronize_session=False)
 
         # 3. Delete opportunities for past events (but keep live/finished for settlement)
-        past_event_subq = self.db.query(Event.id).filter(
-            Event.start_time < now,
-            or_(Event.match_status.is_(None), ~Event.match_status.in_(["live", "finished"])),
-        ).subquery()
-        stats["past_events"] = self.db.query(Opportunity).filter(
-            Opportunity.event_id.in_(self.db.query(past_event_subq))
-        ).delete(synchronize_session=False)
-
-        # 4. Delete past events + their odds (cascade)
-        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
+        #    Also reuse this set for step 4 (event deletion) to avoid a duplicate query
         past_event_ids = [
             e.id for e in self.db.query(Event.id).filter(
                 Event.start_time < now,
@@ -357,11 +360,21 @@ class OpportunityRepo:
             ).all()
         ]
         if past_event_ids:
+            for i in range(0, len(past_event_ids), 500):
+                batch = past_event_ids[i:i + 500]
+                stats["past_events"] += self.db.query(Opportunity).filter(
+                    Opportunity.event_id.in_(batch)
+                ).delete(synchronize_session=False)
+
+        # 4. Delete past events + their odds (cascade)
+        #    Preserve events that have bets OR are live/finished (for score tracking + settlement)
+        if past_event_ids:
+            # Safety: query ALL bets (not just past_event_ids) to ensure
+            # we never delete an event referenced by any bet
             event_ids_with_bets = set(
                 row[0] for row in self.db.query(Bet.event_id).filter(
-                    Bet.event_id.in_(past_event_ids)
-                ).all()
-                if row[0]
+                    Bet.event_id.isnot(None)
+                ).distinct().all()
             )
             deletable_ids = [
                 eid for eid in past_event_ids if eid not in event_ids_with_bets
@@ -369,12 +382,9 @@ class OpportunityRepo:
             if deletable_ids:
                 for i in range(0, len(deletable_ids), 500):
                     batch = deletable_ids[i:i + 500]
-                    past_events = self.db.query(Event).filter(
+                    stats["past_events_deleted"] += self.db.query(Event).filter(
                         Event.id.in_(batch)
-                    ).all()
-                    for event in past_events:
-                        self.db.delete(event)
-                        stats["past_events_deleted"] += 1
+                    ).delete(synchronize_session='fetch')
 
         # 5. Deactivate remaining (will be refreshed during detection)
         stats["deactivated"] = self.db.query(Opportunity).filter(

@@ -259,24 +259,3 @@ def compute_consensus_fair_odds(
     hm = n / sum(1.0 / v for v in platform_values)
 
     return (hm, n)
-
-
-# Quick test
-if __name__ == "__main__":
-    print("=== De-vig Examples ===\n")
-
-    # Pinnacle 1x2 odds with ~2.5% margin
-    pinnacle_odds = [2.10, 3.40, 3.50]
-    margin = calculate_margin(pinnacle_odds)
-    print(f"Pinnacle odds: {pinnacle_odds}")
-    print(f"Margin: {margin * 100:.1f}%")
-
-    fair_mult = devig_multiplicative(pinnacle_odds)
-    print(f"De-vigged (multiplicative): {[round(o, 2) for o in fair_mult]}")
-
-    fair_power = devig_power(pinnacle_odds)
-    print(f"De-vigged (power): {[round(o, 2) for o in fair_power]}")
-
-    # Verify fair odds sum to 100%
-    fair_sum = sum(1/o for o in fair_mult)
-    print(f"Fair implied sum: {fair_sum:.4f} (should be ~1.0)")

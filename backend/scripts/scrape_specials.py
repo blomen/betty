@@ -19,9 +19,10 @@ import json
 import re
 import time
 from dataclasses import dataclass, asdict, replace, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # Provider name normalization map
 PROVIDER_ALIASES: dict[str, str] = {
@@ -225,11 +226,16 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
     browser_configs = [c for c in boost_configs if c["type"] not in api_types]
 
     # Run API-based scrapers first (fast, no browser)
+    last_altenar = False
     for cfg in api_configs:
         provider_id = cfg["primary_provider"]
         boost_url = cfg["url"]
         shared = cfg["shared_with"]
         t0 = time.monotonic()
+
+        # Delay between consecutive Altenar scrapers to avoid rate limiting
+        if cfg["type"] == "altenar" and last_altenar:
+            await asyncio.sleep(3)
 
         if verbose:
             print(f"  [{cfg['name']}] {provider_id}: {boost_url or cfg.get('integration','')} (type={cfg['type']})")
@@ -268,6 +274,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
             ))
             if verbose:
                 print(f"  {provider_id} failed: {e}")
+        last_altenar = cfg["type"] == "altenar"
 
     # Run browser-based scrapers (Gecko V2 etc.)
     if browser_configs:
@@ -686,6 +693,51 @@ async def _scrape_altenar_boosts(
     return boosts
 
 
+def _parse_gecko_time(time_info: str) -> Optional[str]:
+    """Parse Gecko V2 timeInfo into ISO datetime string.
+
+    Formats: "HH:MM", "Ikväll", "Imorgon", "YYYY-MM-DD...", or empty.
+    Times are in CET/CEST, converted to UTC.
+    """
+    if not time_info or not time_info.strip():
+        return None
+
+    time_info = time_info.strip()
+    cet = ZoneInfo("Europe/Stockholm")
+    now_cet = datetime.now(cet)
+
+    if time_info in ("Ikväll", "Ikvall"):
+        # "Tonight" — use today 23:59 CET
+        dt = now_cet.replace(hour=23, minute=59, second=0, microsecond=0)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    if time_info in ("Imorgon",):
+        # "Tomorrow" — use tomorrow 23:59 CET
+        dt = (now_cet + timedelta(days=1)).replace(hour=23, minute=59, second=0, microsecond=0)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    # "HH:MM" — today at that time CET
+    hm_match = re.match(r'^(\d{2}):(\d{2})$', time_info)
+    if hm_match:
+        h, m = int(hm_match.group(1)), int(hm_match.group(2))
+        dt = now_cet.replace(hour=h, minute=m, second=0, microsecond=0)
+        # Don't bump to tomorrow — if time passed, it's today's event (in progress).
+        # filter_expired() downstream handles removing started events.
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    # "YYYY-MM-DD..." — full date string
+    if re.match(r'^\d{4}-\d{2}-\d{2}', time_info):
+        try:
+            dt = datetime.fromisoformat(time_info)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=cet)
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            pass
+
+    return None
+
+
 async def _scrape_gecko_boosts(
     context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
 ) -> list[Special]:
@@ -747,6 +799,35 @@ async def _scrape_gecko_boosts(
                     print(f"    [{provider_id}] Using sportsbook iframe: {f.url[:80]}")
                 await asyncio.sleep(3)
                 break
+
+        # Wait for boost content to render inside the SPA.
+        # The OBG Angular SPA loads the root sports page first, then internally
+        # navigates to the boost tab. Fixed sleeps are unreliable — poll for the
+        # "Förut" text node which only appears once boost cards render.
+        for attempt in range(15):  # up to 15s
+            has_content = await target_frame.evaluate(r"""() => {
+                function checkForut(root) {
+                    if (!root) return false;
+                    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                    while (walker.nextNode()) {
+                        if (walker.currentNode.textContent.trim() === 'Förut') return true;
+                    }
+                    const elements = root.querySelectorAll('*');
+                    for (const el of elements) {
+                        if (el.shadowRoot && checkForut(el.shadowRoot)) return true;
+                    }
+                    return false;
+                }
+                return checkForut(document);
+            }""")
+            if has_content:
+                if verbose:
+                    print(f"    [{provider_id}] Boost content detected after {attempt + 1}s")
+                break
+            await asyncio.sleep(1)
+        else:
+            if verbose:
+                print(f"    [{provider_id}] Boost content not detected after 15s — may have 0 boosts")
 
         # Scroll incrementally to trigger lazy loading of all boost cards
         for i in range(12):
@@ -847,8 +928,15 @@ async def _scrape_gecko_boosts(
             return cards;
         }""")
 
-        if verbose:
-            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM")
+        if verbose or len(raw_cards) == 0:
+            # Debug: dump frame info and line count when 0 cards
+            frame_info = f"frame={'iframe' if target_frame != page else 'main'}"
+            line_count = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).length; }")
+            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM ({frame_info}, {line_count} text lines)")
+            if len(raw_cards) == 0 and line_count > 0:
+                # Dump first 30 lines to see what the page actually contains
+                sample = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).slice(0, 50); }")
+                print(f"    [{provider_id}] First 50 lines: {sample}")
 
         # Convert raw cards to Special objects
         for card in raw_cards:
@@ -900,7 +988,7 @@ async def _scrape_gecko_boosts(
                 league=league,
                 category="boost",
                 expires_at=None,
-                event_time=None,
+                event_time=_parse_gecko_time(card.get('timeInfo', '')),
                 source=provider_id,
                 scraped_at=now_iso,
                 url=boost_url,
@@ -914,8 +1002,6 @@ async def _scrape_gecko_boosts(
             traceback.print_exc()
     finally:
         await page.close()
-
-    return boosts
 
     if verbose:
         with_orig = sum(1 for b in boosts if b.original_odds is not None)

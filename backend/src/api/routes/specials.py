@@ -52,6 +52,7 @@ def _row_to_dict(row: SpecialOdds) -> dict:
         # Boost edge (boosted/original) — fallback to boost_pct for old data
         "edge_pct": row.edge_pct if row.edge_pct is not None else row.boost_pct,
         "is_positive_ev": row.is_positive_ev,
+        "fair_odds": row.fair_odds,
         # LLM enrichment
         "llm_title": getattr(row, "llm_title", None) or "",
         "llm_probability": row.llm_probability,
@@ -68,13 +69,13 @@ def _load_from_db(db: Session) -> list[dict]:
     if not rows:
         return []
     specials = [_row_to_dict(r) for r in rows]
-    return filter_expired(specials)
+    return filter_expired(specials, db=db)
 
 
 def _load_from_json_fallback(db: Session) -> list[dict]:
     """Fallback: load from JSON, enrich with EV, return. Used when DB is empty."""
     from scripts.scrape_specials import load_specials
-    specials = filter_expired(load_specials())
+    specials = filter_expired(load_specials(), db=db)
     if specials:
         specials = enrich_specials_with_ev(specials, db)
     return specials
@@ -231,6 +232,8 @@ async def scrape_specials(db: Session = Depends(get_db)):
     active = filter_expired([asdict(s) for s in specials])
     active = deduplicate_specials(active)
     active = enrich_specials_with_ev(active, db)
+    # Re-filter after event matching (matched events may now show as expired)
+    active = filter_expired(active, db=db)
 
     # LLM probability research (async — Brave Search + Claude Haiku)
     from ...analysis.llm_enrichment import enrich_specials_with_llm

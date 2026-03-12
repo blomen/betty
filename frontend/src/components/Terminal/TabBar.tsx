@@ -12,15 +12,13 @@ const SPORTS_TABS: Tab[] = [
   { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
   { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
-  { name: 'stats',      label: 'Stats',     color: '#4FC3F7' },
+  { name: 'stats',      label: 'Stats',     color: '#1E88E5' },
 ];
 
 const STOCKS_TABS: Tab[] = [
+  { name: 'tradingScanner',  label: 'Scanner',  color: '#06B6D4' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
-  { name: 'tradingToday',    label: 'Today',    color: '#FACC15' },
-  { name: 'tradingBuilder',  label: 'Builder',  color: '#22C55E' },
-  { name: 'tradingTrades',   label: 'Trades',   color: '#4FC3F7' },
-  { name: 'tradingJournal',  label: 'Journal',  color: '#A78BFA' },
+  { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
 
 export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
@@ -30,7 +28,7 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
   sports: 'value',
-  stocks: 'tradingBankroll',
+  stocks: 'tradingScanner',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
@@ -39,17 +37,16 @@ export const TAB_COLORS: Record<string, string> = {
   dutch: '#10b981',
   reverse: '#EF5350',
   polymarket: '#A855F7',
-  stats: '#4FC3F7',
+  stats: '#1E88E5',
   bankroll: '#EC4899',
   specials: '#A78BFA',
-  bets: '#4FC3F7',
+  bets: '#1E88E5',
   profiles: '#A78BFA',
+  settings: '#9AA0A6',
   success: '#10b981',
+  tradingScanner: '#06B6D4',
   tradingBankroll: '#EC4899',
-  tradingToday: '#FACC15',
-  tradingBuilder: '#22C55E',
-  tradingTrades: '#4FC3F7',
-  tradingJournal: '#A78BFA',
+  tradingStats: '#1E88E5',
 };
 
 export function TabIcon({ name, color, size = 16 }: { name: string; color: string; size?: number }) {
@@ -118,7 +115,7 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
             key={tab.name}
             onClick={() => onTabChange(tab.name)}
             className={`
-              flex items-center gap-2 px-4 py-2.5 text-sm font-mono
+              flex items-center gap-1.5 px-3 py-2 text-xs font-mono
               transition-colors duration-150 outline-none border-b-2 -mb-px
               ${isActive
                 ? 'text-text'

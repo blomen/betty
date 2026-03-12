@@ -99,6 +99,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         376: "moneyline",   # Winner (incl. overtime and penalties)
         # Total (over/under)
         18: "total",         # Over/Under (generic — football, handball)
+        202: "total",        # Total Goals
         212: "total",        # Total (incl. overtime) — basketball
         225: "total",        # Total Points O/U — basketball
         1621: "total",       # Total Goals Over/Under (Regular Time) — ice hockey
@@ -106,6 +107,8 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
         # Spread (handicap)
         16: "spread",        # Asian Handicap (generic — football)
         187: "spread",       # Handicap — basketball
+        203: "spread",       # Handicap
+        213: "spread",       # Handicap (incl. overtime)
         1619: "spread",      # Puck Line (Regular Time) — ice hockey
         1625: "spread",      # Puck Line — ice hockey
     }
@@ -159,13 +162,15 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
     LEAGUE_SETTLE_TIME = 0.04  # min seconds to wait for WS data after SPA link click
     MAX_LEAGUE_SETTLE_TIME = 0.15  # max seconds to wait (if WS data still arriving)
 
-    # Per-sport league caps — football has 200+ leagues but most are tiny
+    # Per-sport league caps — football has 170+ leagues in DOM but most have 0-1 prematch events.
+    # After REST pre-filter ~130 remain. Higher caps don't yield more events — platform has ~30-35
+    # unique prematch football events total. Caps below match actual yields while staying under timeout.
     SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 40,
-        "basketball": 30,
-        "ice_hockey": 30,
-        "tennis": 25,
-        "handball": 25,
+        "football": 60,
+        "basketball": 40,
+        "ice_hockey": 40,
+        "tennis": 35,
+        "handball": 35,
     }
     DEFAULT_LEAGUE_CAP = 60
 
@@ -335,7 +340,7 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
             # Cap leagues per sport to stay within sport_timeout
             max_leagues = self.SPORT_LEAGUE_CAPS.get(sport, self.DEFAULT_LEAGUE_CAP)
             if len(league_links) > max_leagues:
-                logger.debug(
+                logger.info(
                     f"[{self.provider_id}] {canonical}: capping {len(league_links)} leagues "
                     f"to top {max_leagues}"
                 )
@@ -366,6 +371,25 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 f"{len(ws_messages)} msgs -> {len(events)} events "
                 f"({events_with_markets} with markets, {errors} errors)"
             )
+
+            # Pass 2: Enrich with spread/total from event detail pages
+            if events:
+                try:
+                    event_urls = await page.evaluate(self.JS_DISCOVER_EVENT_URLS)
+                    if event_urls:
+                        logger.info(f"[{self.provider_id}] Pass 2: found {len(event_urls)} event URLs in DOM")
+                        enriched_count = await self._enrich_with_detail_markets(page, events, event_urls)
+                        logger.info(f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs")
+                    else:
+                        logger.debug(f"[{self.provider_id}] No event URLs found in DOM for enrichment")
+                except Exception as e:
+                    logger.error(f"[{self.provider_id}] Pass 2 enrichment failed: {e}")
+                finally:
+                    # Navigate back to sport page so SPA state is clean for next sport
+                    try:
+                        await page.goto(sport_url, wait_until="domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
 
             return events
 
@@ -964,6 +988,225 @@ class SnabbareRetriever(BrowserRetriever, RSocketMixin):
                 return
             except Exception:
                 continue
+
+    # --- Pass 2: Event detail page enrichment for spread/total ---
+
+    MAX_DETAIL_EVENTS = 100
+
+    JS_DISCOVER_EVENT_URLS = """() => {
+        const links = {};
+        document.querySelectorAll('a[href*="/events/"]').forEach(a => {
+            const href = a.getAttribute('href');
+            const match = href.match(/\\/events\\/(\\d+)/);
+            if (match) links[match[1]] = href;
+        });
+        return links;
+    }"""
+
+    async def _enrich_with_detail_markets(
+        self, page, events: List[StandardEvent], event_urls: Dict[str, str]
+    ) -> int:
+        """Navigate to event detail pages to extract spread and total markets.
+
+        Uses sequential single-page navigation — the SPA only establishes WS
+        on the active page, so concurrent tabs don't receive WS data.
+        Returns count of markets added.
+        """
+        # Map event IDs (strip snabbare_ prefix for URL matching)
+        event_by_ws_id: Dict[str, StandardEvent] = {}
+        for ev in events:
+            ws_id = ev.id.replace('snabbare_', '')
+            event_by_ws_id[ws_id] = ev
+
+        # Filter to events missing spread or total AND having a URL
+        todo = []
+        for eid_str, ev in event_by_ws_id.items():
+            existing_types = {m['type'] for m in ev.markets}
+            if 'spread' not in existing_types or 'total' not in existing_types:
+                url = event_urls.get(eid_str)
+                if url:
+                    todo.append((ev, url))
+
+        if not todo:
+            logger.debug(f"[{self.provider_id}] No events need spread/total enrichment")
+            return 0
+
+        if len(todo) > self.MAX_DETAIL_EVENTS:
+            logger.info(
+                f"[{self.provider_id}] Capping detail enrichment from "
+                f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
+            )
+            todo = todo[:self.MAX_DETAIL_EVENTS]
+
+        logger.info(f"[{self.provider_id}] Enriching {len(todo)} events with spread/total from detail pages")
+
+        enriched = 0
+        errors = 0
+        consecutive_errors = 0
+
+        for idx, (event, href) in enumerate(todo):
+            if consecutive_errors > 10:
+                logger.warning(f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors")
+                break
+
+            try:
+                detail_ws_messages: List[list] = []
+
+                def on_ws(ws, msgs=detail_ws_messages):
+                    def on_frame(payload, m=msgs):
+                        if isinstance(payload, bytes):
+                            decoded = self._decode_rsocket_frame(payload)
+                            if decoded:
+                                m.append(decoded)
+                        elif isinstance(payload, str):
+                            try:
+                                if payload.startswith('[{') or payload.startswith('{"'):
+                                    data = json.loads(payload)
+                                    if isinstance(data, list):
+                                        m.append(data)
+                                    elif isinstance(data, dict):
+                                        m.append([data])
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                    ws.on("framereceived", on_frame)
+                page.on("websocket", on_ws)
+
+                url = f"{self.site_url}{href}" if href.startswith('/') else href
+                try:
+                    await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] Detail {event.id}: navigation failed: {e}")
+                    page.remove_listener("websocket", on_ws)
+                    errors += 1
+                    consecutive_errors += 1
+                    continue
+
+                # Adaptive wait for WS data
+                await asyncio.sleep(1.5)
+                elapsed = 1.5
+                last_count = len(detail_ws_messages)
+                while elapsed < 4.0:
+                    await asyncio.sleep(0.3)
+                    elapsed += 0.3
+                    new_count = len(detail_ws_messages)
+                    if new_count > last_count:
+                        last_count = new_count
+                    elif elapsed > 2.5:
+                        break
+
+                page.remove_listener("websocket", on_ws)
+
+                if not detail_ws_messages:
+                    consecutive_errors += 1
+                    continue
+                consecutive_errors = 0
+
+                # Parse markets and selections from WS frames
+                detail_markets: Dict[int, dict] = {}
+                detail_selections: Dict[int, dict] = {}
+                for msg_data in detail_ws_messages:
+                    if not isinstance(msg_data, list):
+                        continue
+                    for msg in msg_data:
+                        if not isinstance(msg, dict):
+                            continue
+                        payload = msg.get('payload', {})
+                        for mkt in payload.get('markets', []):
+                            mid = mkt.get('id')
+                            if mid:
+                                detail_markets[mid] = mkt
+                        for sel in payload.get('selections', []):
+                            sid = sel.get('id')
+                            if sid:
+                                detail_selections[sid] = sel
+
+                mkt_sel_map: Dict[int, List[dict]] = {}
+                for sid, sel in detail_selections.items():
+                    mid = sel.get('marketId')
+                    if mid:
+                        mkt_sel_map.setdefault(mid, []).append(sel)
+
+                # Extract home/away raw names from event name for outcome matching
+                home_raw = event.home_team.lower() if event.home_team else ''
+                away_raw = event.away_team.lower() if event.away_team else ''
+
+                # Extract only spread/total markets
+                added = []
+                for mid, mkt in detail_markets.items():
+                    mt = mkt.get('marketType', {})
+                    mt_id = mt.get('id', 0)
+                    market_type = self.MARKET_TYPE_MAP.get(mt_id)
+
+                    if market_type not in ('spread', 'total'):
+                        continue
+                    if mkt.get('isSuspended'):
+                        continue
+
+                    sels = mkt_sel_map.get(mid, [])
+                    outcomes = []
+                    for sel in sels:
+                        if sel.get('status') == 'Suspended':
+                            continue
+                        odds = sel.get('trueOdds')
+                        if not odds or float(odds) <= 1.0:
+                            continue
+
+                        outcome_type = (sel.get('outcomeType') or '').lower()
+                        sel_name = (sel.get('name') or '').lower()
+                        points = sel.get('points')
+
+                        if market_type == 'total':
+                            if points is None or points == 0.0:
+                                continue
+                            if outcome_type == 'over' or 'över' in sel_name or 'over' in sel_name:
+                                outcomes.append({'name': 'over', 'odds': float(odds), 'point': float(points)})
+                            elif outcome_type == 'under' or 'under' in sel_name:
+                                outcomes.append({'name': 'under', 'odds': float(odds), 'point': float(points)})
+
+                        elif market_type == 'spread':
+                            if points is None:
+                                continue
+                            if outcome_type == 'home':
+                                outcomes.append({'name': 'home', 'odds': float(odds), 'point': float(points)})
+                            elif outcome_type == 'away':
+                                outcomes.append({'name': 'away', 'odds': float(odds), 'point': float(points)})
+                            # Fallback: match by team name (detail pages often have empty outcomeType)
+                            elif home_raw and home_raw in sel_name:
+                                outcomes.append({'name': 'home', 'odds': float(odds), 'point': float(points)})
+                            elif away_raw and away_raw in sel_name:
+                                outcomes.append({'name': 'away', 'odds': float(odds), 'point': float(points)})
+
+                    if outcomes:
+                        added.append({'type': market_type, 'outcomes': outcomes})
+
+                if added:
+                    # Don't duplicate: check existing market types+points
+                    existing = set()
+                    for m in event.markets:
+                        key = m['type']
+                        for o in m.get('outcomes', []):
+                            if 'point' in o:
+                                key = f"{m['type']}_{o['point']}"
+                        existing.add(key)
+
+                    for m in added:
+                        key = m['type']
+                        for o in m.get('outcomes', []):
+                            if 'point' in o:
+                                key = f"{m['type']}_{o['point']}"
+                        if key not in existing:
+                            event.markets.append(m)
+                            enriched += 1
+
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Detail enrichment error for {event.id}: {e}")
+                errors += 1
+                consecutive_errors += 1
+
+        if errors > 0:
+            logger.debug(f"[{self.provider_id}] Detail enrichment had {errors} errors")
+
+        return enriched
 
     def parse(self, events_data: List[Dict], sport: str) -> List[StandardEvent]:
         """Not used - extract() is overridden."""

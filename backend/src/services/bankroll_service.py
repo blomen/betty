@@ -55,13 +55,24 @@ class BankrollService:
 
     def get_stats(self) -> dict:
         """Get bankroll statistics for active profile."""
+        from ..config import get_exchange_rate
+
         profile = self.profile_repo.get_active()
         bets = self.bet_repo.get_settled(profile.id)
 
-        real_staked = sum(b.stake for b in bets if not b.is_bonus)
-        total_staked = sum(b.stake for b in bets)  # For display only
-        bet_profit = sum(b.profit for b in bets if not b.is_bonus)
-        freebet_profit = sum(b.profit for b in bets if b.is_bonus)
+        def to_sek(amount: float, bet) -> float:
+            """Convert bet amount to SEK using provider exchange rate."""
+            currency = getattr(bet, "currency", None) or "SEK"
+            if currency == "SEK":
+                return amount
+            return amount * get_exchange_rate(bet.provider_id)
+
+        total_deposited = profile.total_deposited or 0.0
+        total_withdrawn = profile.total_withdrawn or 0.0
+        net_deposited = total_deposited - total_withdrawn
+        bet_profit = sum(to_sek(b.profit, b) for b in bets if not b.is_bonus)
+        freebet_profit = sum(to_sek(b.profit, b) for b in bets if b.is_bonus)
+        total_staked = sum(to_sek(b.stake, b) for b in bets)
         win_count = len([b for b in bets if b.result == "won"])
         loss_count = len([b for b in bets if b.result == "lost"])
         void_count = len([b for b in bets if b.result == "void"])
@@ -93,12 +104,15 @@ class BankrollService:
             "wins": win_count,
             "losses": loss_count,
             "voids": void_count,
-            "total_staked": round(real_staked, 2),
+            "total_deposited": round(total_deposited, 2),
+            "total_withdrawn": round(total_withdrawn, 2),
+            "net_deposited": round(net_deposited, 2),
+            "total_staked": round(total_staked, 2),
             "total_profit": round(combined_profit, 2),
             "bet_profit": round(bet_profit, 2),
             "freebet_profit": round(freebet_profit, 2),
             "bonus_profit": round(bonus_profit, 2),
-            "roi_pct": round(combined_profit / real_staked * 100, 2) if real_staked > 0 else 0,
+            "roi_pct": round(combined_profit / total_staked * 100, 2) if total_staked > 0 else 0,
             "win_rate": round(win_count / len(bets) * 100, 2) if len(bets) > 0 else 0,
             "avg_clv": avg_clv,
             "clv_positive_pct": clv_positive_pct,
@@ -129,7 +143,11 @@ class BankrollService:
             total_balance_sek += balance_sek
 
             pending_bets = self.bet_repo.get_pending_for_provider(provider.id, profile.id)
-            pending_exposure = sum(b.stake for b in pending_bets if not b.is_bonus)
+            # Convert non-SEK stakes (e.g. Polymarket USDC) to SEK
+            pending_exposure = sum(
+                (b.stake * rate if getattr(b, 'currency', 'SEK') != 'SEK' else b.stake)
+                for b in pending_bets if not b.is_bonus
+            )
 
             # Wagering progress for this provider
             bonus = bonus_map.get(provider.id)
@@ -347,6 +365,10 @@ class BankrollService:
         if bonus_type == 'bonusdeposit' and is_available and bonus_limit > 0:
             bonus_amount = min(deposit_amount, bonus_limit)
 
+        # Track cumulative deposits for ROI calculation
+        active_profile.total_deposited = (active_profile.total_deposited or 0.0) + deposit_amount
+        active_profile.updated_at = datetime.utcnow()
+
         old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
 
         # Two-phase bonus (trigger_odds set): only add deposit now, bonus
@@ -373,6 +395,7 @@ class BankrollService:
                     main_wagering_multiplier=wagering_multiplier,
                     main_min_odds=bonus_min_odds,
                     deadline_days=deadline_days,
+                    deposit_amount=deposit_amount,
                 )
             else:
                 bonus_info = self.profile_repo.start_bonus_wagering(

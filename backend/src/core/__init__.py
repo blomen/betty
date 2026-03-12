@@ -7,9 +7,4 @@ from .exceptions import (
     RateLimitError,
     TimeoutError,
     FatalError,
-    ConfigurationError,
-    AuthenticationError,
-    DataQualityError,
-    ExtractionError,
-    MatchingError,
 )

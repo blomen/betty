@@ -37,6 +37,13 @@ dependencies = [
 
     # Config
     "pyyaml>=6.0",
+
+    # Market data
+    "databento>=0.43.0",
+    "yfinance>=0.2.36",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]

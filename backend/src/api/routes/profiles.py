@@ -72,6 +72,8 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
         "preferred_counterparts": preferred_counterparts,
         "bonus_enabled": profile.bonus_enabled,
         "bonus_deposit": profile.bonus_deposit or 0.0,
+        "total_deposited": profile.total_deposited or 0.0,
+        "total_withdrawn": profile.total_withdrawn or 0.0,
         "is_active": profile.is_active,
         "color": profile.color or PROFILE_COLORS[0],
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
@@ -183,6 +185,10 @@ async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Dep
         profile.bonus_enabled = data.bonus_enabled
     if data.bonus_deposit is not None:
         profile.bonus_deposit = data.bonus_deposit
+    if data.total_deposited is not None:
+        profile.total_deposited = data.total_deposited
+    if data.total_withdrawn is not None:
+        profile.total_withdrawn = data.total_withdrawn
     if data.color is not None:
         profile.color = data.color
 

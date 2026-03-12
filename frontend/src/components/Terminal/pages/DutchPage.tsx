@@ -1,19 +1,19 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider, Bet } from '@/types';
 
 type DutchTab = 'dutch' | 'mybets';
 
-const dutchBetFilter = (b: Bet) =>
-  b.provider !== 'pinnacle' && b.provider !== 'polymarket' && b.market !== 'boost';
+const dutchBetFilter = (b: Bet) => b.bet_type === 'dutch';
 
 interface DutchLeg {
   outcome: string;
@@ -36,15 +36,20 @@ interface DutchOpp {
   profit_pct: number | null;
   edge_pct: number | null;
   sport?: string;
+  league?: string;
   home_team?: string;
   away_team?: string;
   display_home?: string | null;
   display_away?: string | null;
+  prov_home?: string | null;
+  prov_away?: string | null;
   starts_at?: string;
   detected_at?: string;
   guaranteed_profit_pct?: number;
   total_stake?: number;
   legs?: DutchLeg[];
+  arb_profit_pct?: number | null;
+  arb_legs?: DutchLeg[] | null;
 }
 
 interface DutchPageProps {
@@ -60,17 +65,22 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
 
+  // Stake override: key = "oppId|legIdx", value = edited stake
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
+
   // Place bet state
   const [isPlacing, setIsPlacing] = useState(false);
-  const [placingLeg, setPlacingLeg] = useState<string | null>(null); // "oppId|legIdx" or "oppId|all"
+  const [placingLeg, setPlacingLeg] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
-  // Track placed legs per opp: oppId -> Set of legIdx
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
@@ -96,18 +106,31 @@ export function DutchPage({ providers }: DutchPageProps) {
   useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
 
+  const tiersProgress = useTiersProgress();
+  const anyExtracting = tiersProgress?.any_running ?? false;
+  useEffect(() => {
+    if (!anyExtracting) return;
+    const id = setInterval(fetchData, 60_000);
+    return () => clearInterval(id);
+  }, [anyExtracting, fetchData]);
+
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
-    for (const p of providers) {
-      if (p.is_enabled) set.add(p.id);
-    }
     for (const opp of opportunities) {
       for (const leg of opp.legs || []) {
-        if (!leg.is_sharp) set.add(leg.provider);
+        set.add(leg.provider);
       }
     }
     return Array.from(set).sort();
-  }, [providers, opportunities]);
+  }, [opportunities]);
+
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    for (const opp of opportunities) {
+      if (opp.league) set.add(opp.league);
+    }
+    return Array.from(set).sort();
+  }, [opportunities]);
 
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
@@ -120,15 +143,36 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const filtered = useMemo(() => {
     let result = opportunities;
-    // Remove started/imminent events
-    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || ttk > 1 / 60; });
+    result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedProviders.size > 0) {
+      result = result.filter(d => {
+        const legs = d.legs || [];
+        // Every leg's provider must be in the selected set
+        if (!legs.every(leg => selectedProviders.has(leg.provider))) return false;
+        // When few providers selected, hide opps with more legs than selected providers
+        if (selectedProviders.size < 3 && legs.length > selectedProviders.size) return false;
+        return true;
+      });
+    }
+    if (selectedLeagues.size > 0) {
+      result = result.filter(d => d.league != null && selectedLeagues.has(d.league));
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
       result = result.filter(d =>
-        (d.legs || []).some(leg => !leg.is_sharp && selectedProviders.has(leg.provider))
+        (d.home_team?.toLowerCase().includes(q)) ||
+        (d.away_team?.toLowerCase().includes(q)) ||
+        (d.display_home?.toLowerCase().includes(q)) ||
+        (d.display_away?.toLowerCase().includes(q)) ||
+        (d.prov_home?.toLowerCase().includes(q)) ||
+        (d.prov_away?.toLowerCase().includes(q)) ||
+        (d.sport?.toLowerCase().includes(q)) ||
+        (d.league?.toLowerCase().includes(q)) ||
+        (d.legs || []).some(leg => leg.provider.toLowerCase().includes(q))
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, selectedProviders]);
+  }, [opportunities, selectedProviders, selectedLeagues, search]);
 
   type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
@@ -148,14 +192,56 @@ export function DutchPage({ providers }: DutchPageProps) {
     });
   };
 
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
+      return next;
+    });
+  };
+
   const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
     const key = `${oppId}|${legIdx}`;
     return oddsOverride[key] ?? originalOdds;
   };
 
+  const getEffectiveStakes = (opp: DutchOpp): { totalStake: number; legStakes: number[]; editedLegIdx: number | null } => {
+    const legs = opp.legs || [];
+    const baseTotalStake = opp.total_stake || 0;
+
+    // Find if any leg has a stake override for this opp
+    let editedLegIdx: number | null = null;
+    let editedStake = 0;
+    for (const k of Object.keys(stakeOverride)) {
+      if (k.startsWith(`${opp.id}|`)) {
+        editedLegIdx = parseInt(k.split('|')[1], 10);
+        editedStake = stakeOverride[k];
+        break;
+      }
+    }
+
+    if (editedLegIdx !== null && legs[editedLegIdx]) {
+      const editedOdds = getEffectiveOdds(opp.id, editedLegIdx, legs[editedLegIdx].odds);
+      const payout = editedStake * editedOdds;
+      const legStakes = legs.map((leg, i) => {
+        if (i === editedLegIdx) return editedStake;
+        const odds = getEffectiveOdds(opp.id, i, leg.odds);
+        return odds > 0 ? payout / odds : 0;
+      });
+      const totalStake = legStakes.reduce((a, b) => a + b, 0);
+      return { totalStake, legStakes, editedLegIdx };
+    }
+
+    return {
+      totalStake: baseTotalStake,
+      legStakes: legs.map(leg => leg.stake ?? (baseTotalStake > 0 ? baseTotalStake * leg.stake_pct / 100 : 0)),
+      editedLegIdx: null,
+    };
+  };
+
   const handlePlaceLeg = async (opp: DutchOpp, leg: DutchLeg, legIdx: number) => {
-    const totalStake = opp.total_stake || 0;
-    const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+    const { legStakes } = getEffectiveStakes(opp);
+    const legStake = legStakes[legIdx];
     if (legStake <= 0) return;
 
     const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
@@ -177,8 +263,8 @@ export function DutchPage({ providers }: DutchPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
+        bet_type: 'dutch',
       });
-      // Track this leg as placed
       setPlacedLegs(prev => {
         const existing = prev[opp.id] || new Set<number>();
         const next = new Set(existing);
@@ -186,7 +272,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         return { ...prev, [opp.id]: next };
       });
 
-      const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point);
+      const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point, true);
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       fetchData();
@@ -202,12 +288,11 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const handlePlaceAll = async (opp: DutchOpp) => {
     const legs = opp.legs || [];
-    const totalStake = opp.total_stake || 0;
-    if (legs.length === 0 || totalStake <= 0) return;
+    const { totalStake: effTotal, legStakes } = getEffectiveStakes(opp);
+    if (legs.length === 0 || effTotal <= 0) return;
 
-    // Build legs array for batch API
     const batchLegs = legs.map((leg, legIdx) => {
-      const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+      const legStake = legStakes[legIdx];
       const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
       return {
         event_id: opp.event_id,
@@ -220,6 +305,7 @@ export function DutchPage({ providers }: DutchPageProps) {
         is_bonus: false,
         utility_score: leg.edge_pct != null ? leg.edge_pct / 100 : undefined,
         selection_probability: leg.fair_odds > 1 ? 1 / leg.fair_odds : undefined,
+        bet_type: 'dutch',
       };
     }).filter(l => l.stake > 0);
 
@@ -233,7 +319,6 @@ export function DutchPage({ providers }: DutchPageProps) {
     try {
       const res = await api.createBatchBets(batchLegs);
 
-      // Track which legs were placed successfully
       const successIdxs = new Set<number>();
       const errors: string[] = [];
       for (const r of res.results) {
@@ -269,23 +354,16 @@ export function DutchPage({ providers }: DutchPageProps) {
     }
   };
 
-  const resolveOutcome = (outcome: string, opp: DutchOpp, point?: number | null): string => {
-    const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${p}`;
-    if (outcome === 'under') return `Under${p}`;
-    return outcome;
-  };
-
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
           Dutch
         </h2>
+        {activeTab === 'dutch' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
+        )}
       </div>
 
       {/* Sub-tab selector */}
@@ -309,7 +387,6 @@ export function DutchPage({ providers }: DutchPageProps) {
         ))}
       </div>
 
-      {/* MyBets tab */}
       {activeTab === 'mybets' && (
         <MyBetsSection filter={dutchBetFilter} colorKey="dutch" />
       )}
@@ -329,20 +406,33 @@ export function DutchPage({ providers }: DutchPageProps) {
         </div>
       )}
 
-      <FilterBar>
-        {availableProviders.length > 0 && (
-          <MultiSelectDropdown
-            label="Provider"
-            options={availableProviders}
-            selected={selectedProviders}
-            onToggle={toggleProvider}
-            onClear={() => setSelectedProviders(new Set())}
-            format={formatProviderWithPlatform}
-            accentColor="success"
-          />
-        )}
-        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
-      </FilterBar>
+      {/* Filters */}
+      {opportunities.length > 0 && (
+        <FilterBar>
+          <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
+          {availableProviders.length > 0 && (
+            <MultiSelectDropdown
+              label="Provider"
+              options={availableProviders}
+              selected={selectedProviders}
+              onToggle={toggleProvider}
+              onClear={() => setSelectedProviders(new Set())}
+              format={formatProviderWithPlatform}
+              accentColor="success"
+            />
+          )}
+          {availableLeagues.length > 0 && (
+            <MultiSelectDropdown
+              label="League"
+              options={availableLeagues}
+              selected={selectedLeagues}
+              onToggle={toggleLeague}
+              onClear={() => setSelectedLeagues(new Set())}
+              accentColor="success"
+            />
+          )}
+        </FilterBar>
+      )}
 
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
@@ -359,7 +449,7 @@ export function DutchPage({ providers }: DutchPageProps) {
           <table className="sq">
             <thead>
               <tr>
-                <th>Event</th>
+                <th style={{ width: '35%' }}>Event</th>
                 <th className="text-right">Providers</th>
                 <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
                 <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
@@ -376,25 +466,25 @@ export function DutchPage({ providers }: DutchPageProps) {
                 const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
 
                 return (
-                  <>
+                  <Fragment key={opp.id}>
                     <tr
-                      key={opp.id}
                       className={`cursor-pointer ${isSelected ? 'expanded' : ''}`}
                       onClick={() => setSelectedOpp(isSelected ? null : idx)}
                     >
                       <td>
                         <div className="flex items-center gap-2 min-w-0 group/copy">
-                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home)} vs {displayTeamName(opp.away_team, opp.display_away)}</span>
+                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)} vs {displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}</span>
                           <button
                             title="Copy event"
                             className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home)); }}
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)); }}
                           >
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                           </button>
                         </div>
                         <div className="text-muted2 text-[11px]">
                           {opp.sport}
+                          {opp.league ? ` · ${opp.league}` : ''}
                           {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
                           {opp.point != null ? ` · ${opp.point}` : ''}
                           {' · '}{formatDateTime(opp.starts_at)}
@@ -423,7 +513,10 @@ export function DutchPage({ providers }: DutchPageProps) {
                       </td>
                     </tr>
 
-                    {isSelected && (
+                    {isSelected && (() => {
+                      const { totalStake: effTotalStake, legStakes: effLegStakes } = getEffectiveStakes(opp);
+                      const hasStakeEdit = Object.keys(stakeOverride).some(k => k.startsWith(opp.id + '|'));
+                      return (
                       <tr key={`${opp.id}-expanded`}>
                         <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
                           <table className="sq">
@@ -442,24 +535,27 @@ export function DutchPage({ providers }: DutchPageProps) {
                             <tbody>
                               {legs.map((leg, legIdx) => {
                                 const oddsKey = `${opp.id}|${legIdx}`;
+                                const stakeKey = `${opp.id}|${legIdx}`;
                                 const effectiveOdds = getEffectiveOdds(opp.id, legIdx, leg.odds);
                                 const oddsChanged = oddsKey in oddsOverride;
-                                const legStake = leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0);
+                                const legStake = effLegStakes[legIdx];
                                 const legReturn = legStake * effectiveOdds;
-                                const isEditingThis = editingOdds === oddsKey;
+                                const isEditingThisOdds = editingOdds === oddsKey;
+                                const isEditingThisStake = editingStake === stakeKey;
+                                const isEditedLeg = stakeKey in stakeOverride;
                                 const isPlacingThis = isPlacing && placingLeg === oddsKey;
 
                                 return (
                                   <tr key={legIdx}>
                                     <td>
                                       <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
-                                      {resolveOutcome(leg.outcome, opp, opp.point)}
+                                      {resolveOutcome(leg.outcome, opp, opp.point, true)}
                                       {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
                                     </td>
                                     <td className="text-right"><ProviderName name={leg.provider} /></td>
                                     <td className="text-right font-medium">
                                       <div className="flex items-center justify-end gap-1">
-                                        {isEditingThis ? (
+                                        {isEditingThisOdds ? (
                                           <input
                                             type="number"
                                             step="0.01"
@@ -503,8 +599,55 @@ export function DutchPage({ providers }: DutchPageProps) {
                                       {leg.edge_pct > 0 ? '+' : ''}{leg.edge_pct.toFixed(1)}%
                                     </td>
                                     <td className="text-right">
-                                      {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
-                                      {legStake > 0 && <span className="text-muted2 text-[10px] ml-1">({leg.stake_pct.toFixed(0)}%)</span>}
+                                      <div className="flex items-center justify-end gap-1">
+                                        {isEditingThisStake ? (
+                                          <input
+                                            type="number"
+                                            step="1"
+                                            autoFocus
+                                            defaultValue={legStake > 0 ? legStake.toFixed(0) : ''}
+                                            placeholder="Stake"
+                                            className="w-20 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
+                                            onBlur={(e) => {
+                                              const val = parseFloat(e.target.value);
+                                              if (!isNaN(val) && val > 0) {
+                                                // Clear other overrides for this opp, set new one
+                                                setStakeOverride(prev => {
+                                                  const next: Record<string, number> = {};
+                                                  for (const [k, v] of Object.entries(prev)) {
+                                                    if (!k.startsWith(`${opp.id}|`)) next[k] = v;
+                                                  }
+                                                  next[stakeKey] = val;
+                                                  return next;
+                                                });
+                                              }
+                                              setEditingStake(null);
+                                            }}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                              else if (e.key === 'Escape') setEditingStake(null);
+                                            }}
+                                          />
+                                        ) : (
+                                          <span
+                                            onClick={() => setEditingStake(stakeKey)}
+                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isEditedLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
+                                            title="Click to set stake"
+                                          >
+                                            {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
+                                          </span>
+                                        )}
+                                        {isEditedLeg && (
+                                          <button
+                                            onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[stakeKey]; return next; })}
+                                            className="text-muted2 hover:text-text text-[10px]"
+                                            title="Reset to default stake"
+                                          >
+                                            x
+                                          </button>
+                                        )}
+                                      </div>
+                                      {legStake > 0 && <span className="text-muted2 text-[10px]">({leg.stake_pct.toFixed(0)}%)</span>}
                                     </td>
                                     <td className="text-right">{legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}</td>
                                     <td className="text-right">
@@ -525,23 +668,25 @@ export function DutchPage({ providers }: DutchPageProps) {
                               })}
                             </tbody>
                           </table>
-                          {totalStake > 0 && (
+                          {effTotalStake > 0 && (
                             <div className="px-3 py-2 border-t border-border bg-panel flex items-center justify-between text-xs text-muted">
                               <div className="flex items-center gap-6">
                                 <div>
                                   <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
-                                  <span className="text-text font-medium">{totalStake.toFixed(0)} kr</span>
+                                  <span className={`font-medium ${hasStakeEdit ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
+                                  {hasStakeEdit && totalStake > 0 && (
+                                    <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
+                                  )}
                                 </div>
                                 {gp !== 0 && (
                                   <div>
                                     <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
                                     <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
-                                      {gp > 0 ? '+' : ''}{(totalStake * gp / 100).toFixed(0)} kr
+                                      {gp > 0 ? '+' : ''}{(effTotalStake * gp / 100).toFixed(0)} kr
                                     </span>
                                   </div>
                                 )}
                               </div>
-                              {/* Place All button */}
                               {(() => {
                                 const allPlaced = placedLegs[opp.id]?.size === legs.length;
                                 const isPlacingAll = isPlacing && placingLeg === `${opp.id}|all`;
@@ -561,8 +706,9 @@ export function DutchPage({ providers }: DutchPageProps) {
                           )}
                         </td>
                       </tr>
-                    )}
-                  </>
+                      );
+                    })()}
+                  </Fragment>
                 );
               })}
             </tbody>

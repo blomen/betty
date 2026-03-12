@@ -9,6 +9,8 @@ Sport page shows today's events initially. Clicking date buttons (11 feb, 12 feb
 triggers new WS INITIAL_STATE messages with events for that date.
 
 Markets: 1x2 (id=1), moneyline (id=175,206), total (id=212) via WS.
+Pass 2 enrichment: navigates to individual event pages to extract spread/total
+markets from per-event WS connections.
 
 Note: League page navigation in new tabs does NOT work — the WS connection
 only delivers data to the page that initiated it. Date-based extraction on
@@ -84,8 +86,14 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
         """Map marketTypeId to standard market type."""
         return self.MARKET_TYPE_MAP.get(market_type_id, 'other')
 
-    def _build_outcome(self, selection: dict, market_type: str) -> Optional[dict]:
-        """Build normalized outcome dict from a selection."""
+    def _build_outcome(self, selection: dict, market_type: str,
+                       home_team: str = '', away_team: str = '') -> Optional[dict]:
+        """Build normalized outcome dict from a selection.
+
+        Args:
+            home_team/away_team: Optional normalized team names for matching
+                when outcomeType is empty (common on event detail pages).
+        """
         odds = selection.get('trueOdds', 0.0)
         if not odds or odds <= 1.0:
             return None
@@ -105,9 +113,9 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             points = selection.get('points')
             if points is None or points == 0.0:
                 return None
-            if outcome_type == 'over' or name.startswith('över') or name.startswith('over'):
+            if outcome_type == 'over' or 'över' in name or 'over' in name:
                 return {'name': 'over', 'odds': float(odds), 'point': float(points)}
-            if outcome_type == 'under' or name.startswith('under'):
+            if outcome_type == 'under' or 'under' in name:
                 return {'name': 'under', 'odds': float(odds), 'point': float(points)}
 
         elif market_type == 'spread':
@@ -117,6 +125,11 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
             if outcome_type == 'home':
                 return {'name': 'home', 'odds': float(odds), 'point': float(points)}
             if outcome_type == 'away':
+                return {'name': 'away', 'odds': float(odds), 'point': float(points)}
+            # Fallback: match selection name against team names (detail pages have empty outcomeType)
+            if home_team and home_team in name:
+                return {'name': 'home', 'odds': float(odds), 'point': float(points)}
+            if away_team and away_team in name:
                 return {'name': 'away', 'odds': float(odds), 'point': float(points)}
 
         return None
@@ -348,11 +361,198 @@ class HajperRetriever(BrowserRetriever, RSocketMixin):
                     events.append(event)
 
             logger.debug(f"[{self.provider_id}] Parsed {len(events)} events for {sport}")
+
+            # Pass 2: Enrich with spread/total from event detail pages
+            if events:
+                event_urls = await page.evaluate(self.JS_DISCOVER_EVENT_URLS)
+                if event_urls:
+                    enriched_count = await self._enrich_with_detail_markets(page, events, event_urls)
+                    logger.debug(f"[{self.provider_id}] Enriched {enriched_count} markets from {len(event_urls)} event URLs")
+                else:
+                    logger.debug(f"[{self.provider_id}] No event URLs found in DOM for enrichment")
+
             return events[:limit] if limit else events
 
         except Exception as e:
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
+
+    # --- Pass 2: Event detail page enrichment for spread/total ---
+
+    MAX_DETAIL_EVENTS = 100
+
+    JS_DISCOVER_EVENT_URLS = """() => {
+        const links = {};
+        document.querySelectorAll('a[href*="/events/"]').forEach(a => {
+            const href = a.getAttribute('href');
+            const match = href.match(/\\/events\\/(\\d+)/);
+            if (match) links[match[1]] = href;
+        });
+        return links;
+    }"""
+
+    async def _enrich_with_detail_markets(
+        self, page, events: List[StandardEvent], event_urls: Dict[str, str]
+    ) -> int:
+        """Navigate to event detail pages to extract spread and total markets.
+
+        Uses the main page sequentially — ComeOn Group SPA only establishes WS
+        on the active page, so concurrent tabs don't receive WS data.
+        Returns count of events enriched with additional markets.
+        """
+        event_by_id = {ev.id: ev for ev in events}
+
+        todo = []
+        for eid_str, ev in event_by_id.items():
+            existing_types = {m['type'] for m in ev.markets}
+            if 'spread' not in existing_types or 'total' not in existing_types:
+                url = event_urls.get(eid_str)
+                if url:
+                    todo.append((ev, url))
+
+        if not todo:
+            logger.debug(f"[{self.provider_id}] No events need spread/total enrichment")
+            return 0
+
+        if len(todo) > self.MAX_DETAIL_EVENTS:
+            logger.info(
+                f"[{self.provider_id}] Capping detail enrichment from "
+                f"{len(todo)} to {self.MAX_DETAIL_EVENTS} events"
+            )
+            todo = todo[:self.MAX_DETAIL_EVENTS]
+
+        logger.info(f"[{self.provider_id}] Enriching {len(todo)} events with spread/total from detail pages")
+
+        enriched = 0
+        errors = 0
+        consecutive_errors = 0
+
+        for event, href in todo:
+            if consecutive_errors > 10:
+                logger.warning(f"[{self.provider_id}] Stopping enrichment after {consecutive_errors} consecutive errors")
+                break
+
+            try:
+                detail_ws_messages: List[list] = []
+
+                def on_ws(ws, msgs=detail_ws_messages):
+                    def on_frame(payload, m=msgs):
+                        if isinstance(payload, bytes):
+                            decoded = self._decode_rsocket_frame(payload)
+                            if decoded:
+                                m.append(decoded)
+                    ws.on("framereceived", on_frame)
+                page.on("websocket", on_ws)
+
+                url = f"{self.site_url}{href}" if href.startswith('/') else href
+                try:
+                    await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] Detail {event.id}: navigation failed: {e}")
+                    page.remove_listener("websocket", on_ws)
+                    errors += 1
+                    consecutive_errors += 1
+                    continue
+
+                # Adaptive wait for WS data — listener must stay active until WS connects
+                await asyncio.sleep(1.5)
+                elapsed = 1.5
+                last_count = len(detail_ws_messages)
+                while elapsed < 4.0:
+                    await asyncio.sleep(0.3)
+                    elapsed += 0.3
+                    new_count = len(detail_ws_messages)
+                    if new_count > last_count:
+                        last_count = new_count
+                    elif elapsed > 2.5:
+                        break
+
+                page.remove_listener("websocket", on_ws)
+
+                if not detail_ws_messages:
+                    consecutive_errors += 1
+                    continue
+                consecutive_errors = 0
+
+                # Parse markets and selections from WS frames
+                detail_markets = {}
+                detail_selections = {}
+                for msg_data in detail_ws_messages:
+                    if not isinstance(msg_data, list):
+                        continue
+                    for msg in msg_data:
+                        if not isinstance(msg, dict):
+                            continue
+                        payload = msg.get('payload', {})
+                        for mkt in payload.get('markets', []):
+                            mid = mkt.get('id')
+                            if mid:
+                                detail_markets[mid] = mkt
+                        for sel in payload.get('selections', []):
+                            sid = sel.get('id')
+                            if sid:
+                                detail_selections[sid] = sel
+
+                mkt_sel_map: Dict[int, List[dict]] = {}
+                for sid, sel in detail_selections.items():
+                    mid = sel.get('marketId')
+                    if mid:
+                        mkt_sel_map.setdefault(mid, []).append(sel)
+
+                added = []
+                for mid, mkt in detail_markets.items():
+                    mt = mkt.get('marketType', {})
+                    mt_id = mt.get('id', 0)
+                    market_type = self._normalize_market_type(mt_id)
+
+                    if market_type not in ('spread', 'total'):
+                        continue
+                    if mkt.get('isSuspended'):
+                        continue
+
+                    sels = mkt_sel_map.get(mid, [])
+                    outcomes = []
+                    for sel in sels:
+                        if sel.get('status') != 'Active':
+                            continue
+                        outcome = self._build_outcome(
+                            sel, market_type,
+                            home_team=event.home_team.lower() if event.home_team else '',
+                            away_team=event.away_team.lower() if event.away_team else ''
+                        )
+                        if outcome:
+                            outcomes.append(outcome)
+
+                    if outcomes:
+                        added.append({'type': market_type, 'outcomes': outcomes})
+
+                if added:
+                    existing = set()
+                    for m in event.markets:
+                        key = m['type']
+                        for o in m.get('outcomes', []):
+                            if 'point' in o:
+                                key = f"{m['type']}_{o['point']}"
+                        existing.add(key)
+
+                    for m in added:
+                        key = m['type']
+                        for o in m.get('outcomes', []):
+                            if 'point' in o:
+                                key = f"{m['type']}_{o['point']}"
+                        if key not in existing:
+                            event.markets.append(m)
+                            enriched += 1
+
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] Detail enrichment error for {event.id}: {e}")
+                errors += 1
+                consecutive_errors += 1
+
+        if errors > 0:
+            logger.debug(f"[{self.provider_id}] Detail enrichment had {errors} errors")
+
+        return enriched
 
     def _collect_ws_events(self, ws_messages: list, all_events_data: dict) -> None:
         """Collect events from WS messages into all_events_data dict."""

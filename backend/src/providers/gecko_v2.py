@@ -35,6 +35,7 @@ import logging
 import asyncio
 from datetime import datetime
 from ..core import BrowserRetriever, StandardEvent, BrowserTransport
+from ..core.exceptions import RetryableError
 from ..matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,8 @@ class GeckoV2Retriever(BrowserRetriever):
         # API base URL (may differ from site_url, e.g., bethard uses d-cf.bethardplayground.net)
         self._api_base: Optional[str] = None
         self._last_run_id: Optional[str] = None
+        # Fail-fast: if session init fails once per run, skip remaining sports
+        self._session_init_failed: bool = False
 
     async def _ensure_session(self) -> bool:
         """
@@ -257,7 +260,10 @@ class GeckoV2Retriever(BrowserRetriever):
             page = self.transport.page
             context = page.context
             url = f"{self._api_base}/api/sb/v1/widgets/category-by-slug/sv/{slug}"
-            resp = await context.request.get(url, headers=self._api_headers)
+            resp = await asyncio.wait_for(
+                context.request.get(url, headers=self._api_headers),
+                timeout=15,
+            )
             if resp.ok:
                 data = (await resp.json()).get("data", {})
                 cat_id = data.get("id")
@@ -281,11 +287,35 @@ class GeckoV2Retriever(BrowserRetriever):
             self._api_headers = None
             self._api_base = None
             self._session_ready = False
+            self._session_init_failed = False  # Reset fail-fast flag for new run
             logger.debug(f"[{self.provider_id}] New run {run_id[:12]}... — clearing cached session")
         self._last_run_id = run_id
 
-        if not await self._ensure_session():
-            return []
+        # Fail-fast: if session init already failed this run, skip immediately
+        if self._session_init_failed:
+            raise RetryableError(
+                "Session init already failed this run — skipping remaining sports",
+                provider_id=self.provider_id,
+            )
+
+        try:
+            session_ok = await asyncio.wait_for(self._ensure_session(), timeout=75)
+        except asyncio.TimeoutError:
+            logger.error(f"[{self.provider_id}] Session init timed out after 75s")
+            self._api_headers = None
+            self._api_base = None
+            self._session_ready = False
+            self._session_init_failed = True  # Prevent retries for remaining sports
+            raise RetryableError(
+                "Session init timed out after 45s",
+                provider_id=self.provider_id,
+            )
+        if not session_ok:
+            self._session_init_failed = True  # Prevent retries for remaining sports
+            raise RetryableError(
+                "Session init failed — no API headers captured",
+                provider_id=self.provider_id,
+            )
 
         # Get category ID from hardcoded map or dynamic slug lookup
         category_id = self.SPORT_CATEGORY_IDS.get(sport)
@@ -323,7 +353,13 @@ class GeckoV2Retriever(BrowserRetriever):
             # Fetch page 1 to discover total pages
             url_p1 = f"{base_url}?{base_params}&pageNumber=1"
             try:
-                resp = await context.request.get(url_p1, headers=self._api_headers)
+                resp = await asyncio.wait_for(
+                    context.request.get(url_p1, headers=self._api_headers),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[{self.provider_id}] API page 1 request timed out after 30s")
+                return []
             except Exception as e:
                 logger.error(f"[{self.provider_id}] API request failed: {e}")
                 return []
@@ -334,9 +370,15 @@ class GeckoV2Retriever(BrowserRetriever):
                     self._api_headers = None
                     self._api_base = None
                     self._session_ready = False
-                    if await self._ensure_session():
+                    if await asyncio.wait_for(self._ensure_session(), timeout=45):
                         try:
-                            resp = await context.request.get(url_p1, headers=self._api_headers)
+                            resp = await asyncio.wait_for(
+                                context.request.get(url_p1, headers=self._api_headers),
+                                timeout=30,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"[{self.provider_id}] Retry API request timed out after 30s")
+                            return []
                         except Exception as e:
                             logger.error(f"[{self.provider_id}] Retry failed: {e}")
                             return []
@@ -373,9 +415,14 @@ class GeckoV2Retriever(BrowserRetriever):
                 async def _fetch_page(pg: int) -> Optional[Dict]:
                     url = f"{base_url}?{base_params}&pageNumber={pg}"
                     try:
-                        r = await context.request.get(url, headers=self._api_headers)
+                        r = await asyncio.wait_for(
+                            context.request.get(url, headers=self._api_headers),
+                            timeout=30,
+                        )
                         if r.ok:
                             return (await r.json()).get('data', {})
+                    except asyncio.TimeoutError:
+                        logger.debug(f"[{self.provider_id}] Page {pg} timed out after 30s")
                     except Exception as exc:
                         logger.debug(f"[{self.provider_id}] Page {pg} failed: {exc}")
                     return None
@@ -491,7 +538,7 @@ class GeckoV2Retriever(BrowserRetriever):
 
         # Parse markets
         event_markets = markets_by_event.get(event_id, [])
-        markets = self._parse_markets(event_markets, selections_by_market)
+        markets = self._parse_markets(event_markets, selections_by_market, sport)
         if not markets:
             return None
 
@@ -507,10 +554,16 @@ class GeckoV2Retriever(BrowserRetriever):
             league=league,
         )
 
+    # Ice hockey: regulation-only templates to skip (OT-inclusive variants preferred)
+    # Pinnacle uses OT-inclusive totals/spreads, so soft providers must match.
+    # TGOU = total excl OT (TGOUOT is OT-inclusive), MHCPNOT = spread excl OT
+    _ICE_HOCKEY_REGULATION_ONLY = {"TGOU", "MHCPNOT"}
+
     def _parse_markets(
         self,
         markets_raw: List[Dict],
         selections_by_market: Dict[str, List[Dict]],
+        sport: str = "",
     ) -> List[Dict]:
         """Parse markets and their selections."""
         markets = []
@@ -520,6 +573,11 @@ class GeckoV2Retriever(BrowserRetriever):
             template_id = market.get('marketTemplateId', '')
             market_type = self.MARKET_TEMPLATE_MAP.get(template_id)
             if not market_type:
+                continue
+
+            # Ice hockey: skip regulation-only total/spread when OT-inclusive exists
+            # Pinnacle sharp odds include OT, so we must compare like-for-like.
+            if sport == "ice_hockey" and template_id in self._ICE_HOCKEY_REGULATION_ONLY:
                 continue
 
             # Skip half-time / period-specific markets by label

@@ -22,12 +22,10 @@ from ..repositories import EventRepo
 from .value import find_value, ValueBet
 from ..bankroll.stake_calculator import StakeCalculator
 from .devig import (
-    calculate_margin,
-    devig_multiplicative,
     get_fair_odds_for_outcome,
     compute_consensus_fair_odds,
 )
-from ..constants import SHARP_PROVIDERS, EXCLUDED_FROM_SCANS, PLATFORM_MAP
+from ..constants import SHARP_PROVIDERS, PLATFORM_MAP, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +70,10 @@ class DutchOpportunity:
     # Combined metrics
     combined_edge_pct: float       # Weighted average edge across legs
     guaranteed_profit_pct: float   # >0 = guaranteed profit regardless of outcome
+
+    # Arb detection: true arb using only real bettable soft odds
+    arb_profit_pct: Optional[float] = None  # >0 = true executable arb (all soft legs)
+    arb_legs: Optional[list[dict]] = None   # All-soft version of legs (when arb_profit_pct > 0)
 
     # Event context
     home_team: Optional[str] = None
@@ -132,7 +134,7 @@ class OpportunityScanner:
         self.session = session
         self.event_repo = EventRepo(session)
 
-    def scan_value(self, min_edge_pct: float = 5.0) -> list[ValueBet]:
+    def scan_value(self, min_edge_pct: float = 5.0, events: list = None) -> list[ValueBet]:
         """
         Find value bets against de-vigged Pinnacle odds.
 
@@ -142,6 +144,7 @@ class OpportunityScanner:
 
         Args:
             min_edge_pct: Minimum edge percentage (default 5%)
+            events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
             List of ValueBet sorted by edge (highest first)
@@ -149,7 +152,8 @@ class OpportunityScanner:
         opportunities = []
 
         # Get events with odds from 2+ providers
-        events = self._get_multi_provider_events(min_providers=2)
+        if events is None:
+            events = self._get_multi_provider_events(min_providers=2)
 
         for event in events:
             odds_grouped = self.group_odds(event)
@@ -238,7 +242,7 @@ class OpportunityScanner:
                 home_team=event.home_team if event else None,
                 away_team=event.away_team if event else None,
                 sport=event.sport if event else None,
-                start_time=event.start_time.isoformat() if event and event.start_time else None,
+                start_time=(event.start_time.isoformat() + "Z") if event and event.start_time else None,
             )
             enriched_bets.append(enriched)
 
@@ -327,7 +331,7 @@ class OpportunityScanner:
         )
         return opportunities
 
-    def scan_dutch(self, min_edge_pct: float = 0.0) -> list[DutchOpportunity]:
+    def scan_dutch(self, min_edge_pct: float = 0.0, events: list = None) -> list[DutchOpportunity]:
         """
         Find pure dutch opportunities: ALL legs +EV at different providers.
 
@@ -336,13 +340,15 @@ class OpportunityScanner:
 
         Args:
             min_edge_pct: Minimum combined edge % to include (default 0 = all)
+            events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
             List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
         """
         opportunities = []
 
-        events = self._get_multi_provider_events(min_providers=2)
+        if events is None:
+            events = self._get_multi_provider_events(min_providers=2)
 
         for event in events:
             odds_grouped = self.group_odds(event)
@@ -367,7 +373,7 @@ class OpportunityScanner:
         )
         return opportunities
 
-    def scan_reverse(self, min_edge_pct: float = 0.0) -> list[DutchOpportunity]:
+    def scan_reverse(self, min_edge_pct: float = 0.0, events: list = None) -> list[DutchOpportunity]:
         """
         Find reverse dutch opportunities: at least one soft +EV leg, others covered.
 
@@ -377,13 +383,15 @@ class OpportunityScanner:
 
         Args:
             min_edge_pct: Minimum combined edge % to include (default 0 = all)
+            events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
             List of DutchOpportunity sorted by guaranteed_profit_pct (highest first)
         """
         opportunities = []
 
-        events = self._get_multi_provider_events(min_providers=2)
+        if events is None:
+            events = self._get_multi_provider_events(min_providers=2)
 
         for event in events:
             odds_grouped = self.group_odds(event)
@@ -408,7 +416,54 @@ class OpportunityScanner:
         )
         return opportunities
 
-    def scan_reverse_value(self, min_edge_pct: float = 3.0) -> list[ValueBet]:
+    def scan_dutch_for_provider(
+        self,
+        provider_id: str,
+        counterpart_providers: list[str] | None = None,
+    ) -> list[DutchOpportunity]:
+        """
+        Find dutch opportunities where provider_id is forced as one of the legs.
+
+        Unlike scan_dutch(), this does NOT require +EV — returns all dutch including
+        negative edge. Used by the dutch workflow for balance draining.
+
+        Args:
+            provider_id: Provider to force into the dutch (e.g. 'betinia')
+            counterpart_providers: If set, only allow these providers for non-anchor legs
+
+        Returns:
+            List of DutchOpportunity sorted by combined_edge_pct (highest first)
+        """
+        opportunities = []
+
+        events = self._get_events_with_provider(provider_id)
+
+        for event in events:
+            odds_grouped = self.group_odds(event)
+
+            for market, odds_by_outcome in odds_grouped.items():
+                dutch = self._find_dutch_in_market(
+                    event=event,
+                    market=market,
+                    odds_by_outcome=odds_by_outcome,
+                    all_markets=odds_grouped,
+                    anchor_provider=provider_id,
+                    counterpart_providers=counterpart_providers,
+                )
+                if dutch is None:
+                    continue
+                # Only include if the provider actually appears in a leg
+                if any(leg["provider"] == provider_id for leg in dutch.legs):
+                    opportunities.append(dutch)
+
+        opportunities.sort(key=lambda x: x.combined_edge_pct, reverse=True)
+
+        logger.info(
+            f"[Scanner] Found {len(opportunities)} dutch-workflow opportunities for {provider_id}"
+        )
+        return opportunities
+
+    def scan_reverse_value(self, min_edge_pct: float = 3.0, events: list = None) -> list[ValueBet]:
         """
         Find reverse value bets: Pinnacle odds beating soft book consensus.
 
@@ -421,13 +476,15 @@ class OpportunityScanner:
 
         Args:
             min_edge_pct: Minimum edge percentage (default 3%)
+            events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
             List of ValueBet (provider="pinnacle") sorted by edge
         """
         opportunities = []
 
-        events = self._get_multi_provider_events(min_providers=2)
+        if events is None:
+            events = self._get_multi_provider_events(min_providers=2)
 
         for event in events:
             odds_grouped = self.group_odds(event)
@@ -466,42 +523,17 @@ class OpportunityScanner:
         values = []
 
         # Need Pinnacle odds
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+        pinnacle_market = self._build_pinnacle_market(odds_by_outcome)
 
         # Spread complement lookup
-        if (
-            all_markets
-            and market.startswith("spread_")
-            and len(pinnacle_market) == 1
-        ):
-            try:
-                point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
-                complement_data = all_markets.get(complement_key, {})
-                for out, providers in complement_data.items():
-                    if out not in pinnacle_market:
-                        for p in providers:
-                            if p["provider"] == "pinnacle":
-                                pinnacle_market[out] = p["odds"]
-                                break
-            except (ValueError, IndexError):
-                pass
+        self._enrich_spread_complement(pinnacle_market, market, all_markets)
 
         if len(pinnacle_market) < 2:
             return []
 
         # Odds discrepancy check (same as regular value scan)
-        for outcome, provider_odds_list in odds_by_outcome.items():
-            if len(provider_odds_list) >= 3:
-                odds_values = [po["odds"] for po in provider_odds_list]
-                odds_ratio = max(odds_values) / min(odds_values)
-                if odds_ratio > MAX_ODDS_RATIO:
-                    return []
+        if self._has_odds_discrepancy(odds_by_outcome):
+            return []
 
         for outcome in pinnacle_market:
             pin_raw = pinnacle_market[outcome]
@@ -549,60 +581,46 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
+        anchor_provider: str | None = None,
+        counterpart_providers: list[str] | None = None,
     ) -> Optional[DutchOpportunity]:
         """
         Find a dutch opportunity in a single market.
 
         Cross-book dutch: uses best odds per outcome from ANY provider (soft or
         Pinnacle raw). Edge is always computed vs Pinnacle de-vigged fair odds.
-        Requires at least one soft +EV leg (otherwise no edge exists).
+
+        When anchor_provider is None: requires at least one soft +EV leg.
+        When anchor_provider is set: forces that provider's odds even if below
+        fair (negative edge), and relaxes the +EV requirement.
+        When counterpart_providers is set: only considers those providers for
+        non-anchor legs (restricts which books can be counterparts).
         """
         # Count outcomes per provider for market type mismatch detection
         provider_outcome_counts = self._count_outcomes_per_provider(odds_by_outcome)
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
         # Pre-compute Pinnacle market dict (raw odds)
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+        pinnacle_market = self._build_pinnacle_market(odds_by_outcome)
 
         # Spread complement lookup
-        if (
-            all_markets
-            and market.startswith("spread_")
-            and len(pinnacle_market) == 1
-        ):
-            try:
-                point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
-                complement_data = all_markets.get(complement_key, {})
-                for out, providers in complement_data.items():
-                    if out not in pinnacle_market:
-                        for p in providers:
-                            if p["provider"] == "pinnacle":
-                                pinnacle_market[out] = p["odds"]
-                                break
-                if len(pinnacle_market) > sharp_outcome_count:
-                    sharp_outcome_count = len(pinnacle_market)
-            except (ValueError, IndexError):
-                pass
+        self._enrich_spread_complement(pinnacle_market, market, all_markets)
+        if len(pinnacle_market) > sharp_outcome_count:
+            sharp_outcome_count = len(pinnacle_market)
 
         if sharp_outcome_count < 2:
             return None  # Need Pinnacle on 2+ outcomes for fair odds
 
         # Odds discrepancy check (likely event mismatch)
-        for outcome, provider_odds_list in odds_by_outcome.items():
-            if len(provider_odds_list) >= 3:
-                odds_values = [po["odds"] for po in provider_odds_list]
-                odds_ratio = max(odds_values) / min(odds_values)
-                if odds_ratio > MAX_ODDS_RATIO:
-                    return None  # Skip entire market
+        if self._has_odds_discrepancy(odds_by_outcome):
+            return None  # Skip entire market
 
         # For each outcome: find best odds (soft OR Pinnacle raw) and compute edge vs fair
         best_per_outcome = {}  # {outcome: {provider, odds, edge_pct, fair_odds, is_sharp}}
+        soft_per_outcome = {}  # {outcome: {provider, odds, fair_odds}} — best soft for arb check
+        # All valid soft candidates per outcome (ranked by odds desc) for conflict resolution
+        soft_candidates = {}  # {outcome: [(odds, provider), ...]}
+        fair_odds_map = {}    # {outcome: fair_odds}
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             fair_result = self._get_fair_odds(
@@ -618,15 +636,20 @@ class OpportunityScanner:
             if fair_odds <= 1:
                 continue
 
+            fair_odds_map[outcome] = fair_odds
+
             # Get Pinnacle raw odds for this outcome
             pinnacle_raw = pinnacle_market.get(outcome, 0.0)
 
-            # Find best soft provider for this outcome
-            best_soft_odds = 0.0
-            best_soft_provider = None
+            # Collect ALL valid soft providers for this outcome (sorted best-first)
+            candidates = []
             for po in provider_odds_list:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue
+                # Counterpart filter: non-anchor providers must be in counterpart list
+                if counterpart_providers and po["provider"] != anchor_provider:
+                    if po["provider"] not in counterpart_providers:
+                        continue
                 # Market type mismatch check
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and soft_count != sharp_outcome_count:
@@ -636,17 +659,44 @@ class OpportunityScanner:
                     ratio = po["odds"] / pinnacle_raw
                     if ratio > MAX_ODDS_RATIO:
                         continue
-                if po["odds"] > best_soft_odds:
-                    best_soft_odds = po["odds"]
-                    best_soft_provider = po["provider"]
+                if po["odds"] > 1:
+                    candidates.append((po["odds"], po["provider"]))
 
-            # Use soft book if it beats fair odds; otherwise fall back to fair odds (0% edge)
+            # Sort by odds descending (best first)
+            candidates.sort(reverse=True)
+            soft_candidates[outcome] = candidates
+
+            # Best soft for initial greedy selection
+            best_soft_odds = candidates[0][0] if candidates else 0.0
+            best_soft_provider = candidates[0][1] if candidates else None
+
+            # Save best soft for arb check (even if below fair)
+            if best_soft_provider and best_soft_odds > 1:
+                soft_per_outcome[outcome] = {
+                    "provider": best_soft_provider,
+                    "odds": best_soft_odds,
+                    "fair_odds": round(fair_odds, 3),
+                }
+
+            # Use soft book if it beats fair odds; otherwise fall back to Pinnacle fair (0% edge)
             if best_soft_provider and best_soft_odds > fair_odds:
                 best_odds = best_soft_odds
                 best_provider = best_soft_provider
                 is_sharp = False
+            elif anchor_provider and best_soft_provider:
+                # Anchor mode: keep -EV soft if it IS the anchor provider OR
+                # if counterpart providers are set (force the pair, don't fall back to Pinnacle)
+                if best_soft_provider == anchor_provider or counterpart_providers:
+                    best_odds = best_soft_odds
+                    best_provider = best_soft_provider
+                    is_sharp = False
+                else:
+                    # Non-anchor soft below fair — use Pinnacle fair (0% edge)
+                    best_odds = fair_odds
+                    best_provider = "pinnacle"
+                    is_sharp = True
             else:
-                # No soft book beats fair odds — use fair odds (0% edge coverage)
+                # No soft book beats fair odds — use Pinnacle fair (0% edge)
                 best_odds = fair_odds
                 best_provider = "pinnacle"
                 is_sharp = True
@@ -665,13 +715,21 @@ class OpportunityScanner:
                 "is_sharp": is_sharp,
             }
 
+        # ── Enforce max 1 soft outcome per canonical platform ──
+        # Placing multiple outcomes on the same bookmaker flags the account.
+        # Resolve conflicts: keep the higher-edge leg, demote the other to
+        # its next-best provider from a different platform (or Pinnacle).
+        self._resolve_platform_conflicts(
+            best_per_outcome, soft_candidates, fair_odds_map, anchor_provider
+        )
+
         # Need all outcomes covered
         all_outcomes = list(best_per_outcome.keys())
         if len(all_outcomes) < 2:
             return None
 
-        # Require at least one soft +EV leg
-        if not any(
+        # Require at least one soft +EV leg (unless anchor mode)
+        if not anchor_provider and not any(
             data["edge_pct"] > 0 and not data["is_sharp"]
             for data in best_per_outcome.values()
         ):
@@ -712,26 +770,173 @@ class OpportunityScanner:
             for leg in legs
         ) if total_stake_pct > 0 else 0
 
+        # Arb check: can we cover all outcomes using only real bettable soft odds?
+        # Also enforces platform uniqueness — no 2 arb legs on same canonical provider.
+        arb_profit_pct = None
+        arb_legs = None
+        if all(out in soft_per_outcome for out in all_outcomes):
+            # Resolve platform conflicts for arb legs too
+            arb_soft = {out: dict(soft_per_outcome[out]) for out in all_outcomes}
+            self._resolve_platform_conflicts_soft(arb_soft, soft_candidates, fair_odds_map)
+            # After resolution some legs may have been removed (no alt provider)
+            if all(out in arb_soft for out in all_outcomes):
+                soft_providers = set(arb_soft[out]["provider"] for out in all_outcomes)
+                if len(soft_providers) >= 2:
+                    arb_sum = sum(1.0 / arb_soft[out]["odds"] for out in all_outcomes)
+                    if arb_sum > 0:
+                        arb_profit = round((1.0 / arb_sum - 1) * 100, 2)
+                        if arb_profit > 0:
+                            arb_profit_pct = arb_profit
+                            # Build arb legs with proper stake percentages
+                            arb_legs = []
+                            for out in all_outcomes:
+                                sdata = arb_soft[out]
+                                arb_edge = round((sdata["odds"] / sdata["fair_odds"] - 1) * 100, 2)
+                                arb_stake_pct = round((1.0 / sdata["odds"]) / arb_sum * 100, 2)
+                                arb_legs.append({
+                                    "outcome": out,
+                                    "provider": sdata["provider"],
+                                    "odds": sdata["odds"],
+                                    "edge_pct": arb_edge,
+                                    "fair_odds": sdata["fair_odds"],
+                                    "stake_pct": arb_stake_pct,
+                                    "is_sharp": False,
+                                })
+                            arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
+
         return DutchOpportunity(
             event_id=event.id,
             market=market,
             legs=legs,
             combined_edge_pct=round(combined_edge, 2),
             guaranteed_profit_pct=guaranteed_profit_pct,
+            arb_profit_pct=arb_profit_pct,
+            arb_legs=arb_legs,
             home_team=event.home_team,
             away_team=event.away_team,
             sport=event.sport,
             league=event.league,
-            start_time=event.start_time.isoformat() if event.start_time else None,
+            start_time=(event.start_time.isoformat() + "Z") if event.start_time else None,
         )
 
-    def _get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:
-        """Get events with odds from N+ providers."""
+    def get_multi_provider_events(self, min_providers: int = 2) -> list[Event]:
+        """Get events with odds from N+ providers (public for pre-loading)."""
         return self.event_repo.get_multi_provider_events(min_providers)
+
+    # Keep private alias for backward compatibility
+    _get_multi_provider_events = get_multi_provider_events
 
     def _get_events_with_provider(self, provider_id: str) -> list[Event]:
         """Get events where a specific provider has odds."""
         return self.event_repo.get_events_with_provider(provider_id)
+
+    @staticmethod
+    def _canonical(provider: str) -> str:
+        """Return the canonical platform for a provider (or itself if standalone)."""
+        return PROVIDER_CANONICAL.get(provider, provider)
+
+    def _resolve_platform_conflicts(
+        self,
+        best_per_outcome: dict,
+        soft_candidates: dict,
+        fair_odds_map: dict,
+        anchor_provider: str | None,
+    ) -> None:
+        """Ensure no two soft legs share the same canonical platform.
+
+        Mutates *best_per_outcome* in place.  For each collision the leg with
+        lower edge is demoted to the next-best provider from a *different*
+        canonical platform (or Pinnacle fair if none available).
+        """
+        # Group soft outcomes by canonical platform
+        platform_outcomes: dict[str, list[str]] = defaultdict(list)
+        for outcome, data in best_per_outcome.items():
+            if data["is_sharp"]:
+                continue
+            canon = self._canonical(data["provider"])
+            platform_outcomes[canon].append(outcome)
+
+        for canon, outcomes in platform_outcomes.items():
+            if len(outcomes) < 2:
+                continue
+            # Sort by edge descending — keep the best leg, demote the rest
+            outcomes.sort(key=lambda o: best_per_outcome[o]["edge_pct"], reverse=True)
+            # Canonical platforms already claimed by kept legs
+            used_canonicals = {
+                self._canonical(d["provider"])
+                for d in best_per_outcome.values()
+                if not d["is_sharp"]
+            }
+            for loser_outcome in outcomes[1:]:
+                fair_odds = fair_odds_map[loser_outcome]
+                replaced = False
+                for alt_odds, alt_prov in soft_candidates.get(loser_outcome, []):
+                    alt_canon = self._canonical(alt_prov)
+                    if alt_canon in used_canonicals:
+                        continue
+                    # Found a provider on a different platform
+                    alt_edge = (alt_odds / fair_odds - 1) * 100
+                    if abs(alt_edge) > MAX_EDGE_PCT:
+                        continue
+                    best_per_outcome[loser_outcome] = {
+                        "provider": alt_prov,
+                        "odds": alt_odds,
+                        "edge_pct": round(alt_edge, 2),
+                        "fair_odds": round(fair_odds, 3),
+                        "is_sharp": False,
+                    }
+                    used_canonicals.add(alt_canon)
+                    replaced = True
+                    break
+                if not replaced:
+                    # No alternative soft — fall back to Pinnacle fair (0% edge)
+                    best_per_outcome[loser_outcome] = {
+                        "provider": "pinnacle",
+                        "odds": fair_odds,
+                        "edge_pct": 0.0,
+                        "fair_odds": round(fair_odds, 3),
+                        "is_sharp": True,
+                    }
+
+    def _resolve_platform_conflicts_soft(
+        self,
+        soft_map: dict,
+        soft_candidates: dict,
+        fair_odds_map: dict,
+    ) -> None:
+        """Like _resolve_platform_conflicts but for soft-only arb map.
+
+        Mutates *soft_map* in place.  Removes outcomes that can't be resolved
+        (no alternative soft on a different platform).
+        """
+        platform_outcomes: dict[str, list[str]] = defaultdict(list)
+        for outcome, data in soft_map.items():
+            canon = self._canonical(data["provider"])
+            platform_outcomes[canon].append(outcome)
+
+        for canon, outcomes in platform_outcomes.items():
+            if len(outcomes) < 2:
+                continue
+            # Keep highest-odds leg for arb
+            outcomes.sort(key=lambda o: soft_map[o]["odds"], reverse=True)
+            used_canonicals = {self._canonical(d["provider"]) for d in soft_map.values()}
+            for loser_outcome in outcomes[1:]:
+                fair_odds = fair_odds_map.get(loser_outcome, 0)
+                replaced = False
+                for alt_odds, alt_prov in soft_candidates.get(loser_outcome, []):
+                    alt_canon = self._canonical(alt_prov)
+                    if alt_canon in used_canonicals:
+                        continue
+                    soft_map[loser_outcome] = {
+                        "provider": alt_prov,
+                        "odds": alt_odds,
+                        "fair_odds": round(fair_odds, 3) if fair_odds else 0,
+                    }
+                    used_canonicals.add(alt_canon)
+                    replaced = True
+                    break
+                if not replaced:
+                    del soft_map[loser_outcome]
 
     def group_odds(
         self, event: Event, exclude_providers: set[str] = None, check_staleness: bool = True
@@ -746,7 +951,7 @@ class OpportunityScanner:
 
         Args:
             event: The event to group odds for
-            exclude_providers: Set of provider IDs to exclude (default: EXCLUDED_FROM_SCANS)
+            exclude_providers: Set of provider IDs to exclude (default: empty set)
             check_staleness: Skip odds older than MAX_ODDS_AGE_HOURS (default: True)
 
         Returns:
@@ -759,7 +964,7 @@ class OpportunityScanner:
             }
         """
         if exclude_providers is None:
-            exclude_providers = EXCLUDED_FROM_SCANS
+            exclude_providers = frozenset()
 
         grouped = defaultdict(lambda: defaultdict(list))
 
@@ -812,19 +1017,41 @@ class OpportunityScanner:
         """
         Fix providers that store 2 Asian handicap outcomes at the same spread point.
 
-        Kambi (and similar) stores alternate handicap lines where each outcome has
-        its own point value. This means at spread_-1.5 we can find both:
-          - home (Solary -1.5, correct)
-          - away (Galions -1.5, from a SEPARATE betOffer — NOT Galions +1.5)
+        Some providers (Gecko, Altenar, VBet) store both home and away at the same
+        point (e.g., home@-6.5 + away@-6.5). Pinnacle stores them at opposite points
+        (home@-6.5, away@+6.5).
 
-        Pinnacle's convention: 1 outcome per point side (home at -X, away at +X).
-        Use Pinnacle's structure as ground truth: at each spread point, only keep
-        the outcome type(s) that Pinnacle has. This is deterministic and avoids
-        the fragile prob_sum heuristic that misses borderline cases.
+        This relocates the misplaced outcome to the complement point so it can be
+        compared against the correct Pinnacle side. Without relocation, these outcomes
+        are lost and spread value detection produces 0 results.
 
         This mutates the grouped dict in-place.
         """
         spread_keys = [k for k in grouped if k.startswith("spread_")]
+
+        # First pass: remove 3-way European handicap providers.
+        # European handicap has home/draw/away at integer points — fundamentally
+        # different from 2-way Asian handicap (Pinnacle). Comparing them produces
+        # false edges because the draw outcome absorbs probability.
+        for market_key in spread_keys:
+            odds_by_outcome = grouped[market_key]
+            if "draw" in odds_by_outcome:
+                # Identify providers that have a draw (= 3-way European)
+                european_providers = {
+                    e["provider"] for e in odds_by_outcome["draw"]
+                }
+                # Remove all outcomes from these providers at this point
+                for outcome_type in list(odds_by_outcome.keys()):
+                    odds_by_outcome[outcome_type] = [
+                        e for e in odds_by_outcome[outcome_type]
+                        if e["provider"] not in european_providers
+                    ]
+                    if not odds_by_outcome[outcome_type]:
+                        del odds_by_outcome[outcome_type]
+                logger.debug(
+                    f"Removed 3-way European handicap providers {european_providers} "
+                    f"from {market_key}"
+                )
 
         for market_key in spread_keys:
             try:
@@ -846,27 +1073,40 @@ class OpportunityScanner:
                         if entry["provider"] in SHARP_PROVIDERS:
                             pinnacle_outcomes.add(outcome_type)
 
-            # If Pinnacle has exactly one outcome type, remove the other from soft providers.
-            # Pinnacle always stores home@negative, away@positive — one per side.
+            # If Pinnacle has exactly one outcome type, relocate the other to complement point.
+            # Pinnacle convention: home@negative, away@positive — one per side.
             if len(pinnacle_outcomes) == 1:
                 keep_outcome = pinnacle_outcomes.pop()
-                remove_outcome = "away" if keep_outcome == "home" else "home"
+                relocate_outcome = "away" if keep_outcome == "home" else "home"
 
-                original_count = len(odds_by_outcome.get(remove_outcome, []))
-                odds_by_outcome[remove_outcome] = [
-                    e for e in odds_by_outcome.get(remove_outcome, [])
-                    if e["provider"] in SHARP_PROVIDERS
+                # Collect soft entries to relocate
+                soft_entries = [
+                    e for e in odds_by_outcome.get(relocate_outcome, [])
+                    if e["provider"] not in SHARP_PROVIDERS
                 ]
-                removed_count = original_count - len(odds_by_outcome[remove_outcome])
 
-                # Clean up empty outcome key
-                if not odds_by_outcome[remove_outcome]:
-                    del odds_by_outcome[remove_outcome]
+                if soft_entries:
+                    # Remove soft entries from current point
+                    odds_by_outcome[relocate_outcome] = [
+                        e for e in odds_by_outcome.get(relocate_outcome, [])
+                        if e["provider"] in SHARP_PROVIDERS
+                    ]
+                    if not odds_by_outcome[relocate_outcome]:
+                        del odds_by_outcome[relocate_outcome]
 
-                if removed_count > 0:
+                    # Relocate to complement point (negate the point value)
+                    complement_key = f"spread_{-point}"
+                    if complement_key not in grouped:
+                        grouped[complement_key] = defaultdict(list)
+
+                    # Update point value in relocated entries
+                    for entry in soft_entries:
+                        entry["point"] = -point
+                    grouped[complement_key][relocate_outcome].extend(soft_entries)
+
                     logger.debug(
-                        f"Fixed Asian spread at {market_key}: removed {removed_count} "
-                        f"soft '{remove_outcome}' entries (Pinnacle only has '{keep_outcome}')"
+                        f"Relocated {len(soft_entries)} soft '{relocate_outcome}' entries "
+                        f"from {market_key} to {complement_key}"
                     )
 
     def _count_outcomes_per_provider(
@@ -906,37 +1146,16 @@ class OpportunityScanner:
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
         # Pre-compute Pinnacle market dict once for this market (used by _get_fair_odds)
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+        pinnacle_market = self._build_pinnacle_market(odds_by_outcome)
 
         # Spread complement lookup: Pinnacle stores home at +X and away at -X
         # (Asian handicap style) under different market keys. Soft providers store
         # both outcomes under the same point. Reconstruct the full 2-way Pinnacle
         # market so we can properly de-vig instead of using raw odds.
-        if (
-            all_markets
-            and market.startswith("spread_")
-            and len(pinnacle_market) == 1
-        ):
-            try:
-                point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
-                complement_data = all_markets.get(complement_key, {})
-                for out, providers in complement_data.items():
-                    if out not in pinnacle_market:
-                        for p in providers:
-                            if p["provider"] == "pinnacle":
-                                pinnacle_market[out] = p["odds"]
-                                break
-                # Update sharp count to reflect enriched market
-                if len(pinnacle_market) > sharp_outcome_count:
-                    sharp_outcome_count = len(pinnacle_market)
-            except (ValueError, IndexError):
-                pass  # Malformed market key — skip complement lookup
+        self._enrich_spread_complement(pinnacle_market, market, all_markets)
+        # Update sharp count to reflect enriched market
+        if len(pinnacle_market) > sharp_outcome_count:
+            sharp_outcome_count = len(pinnacle_market)
 
         # Pre-compute probability sums per soft provider (used in completeness check)
         soft_prob_sums = defaultdict(float)
@@ -948,16 +1167,8 @@ class OpportunityScanner:
         # Check for odds discrepancy (likely event mismatch)
         # Exclude Polymarket from ratio calc — prediction market pricing naturally
         # diverges from traditional sportsbooks, especially for underdogs
-        for outcome, provider_odds_list in odds_by_outcome.items():
-            traditional_odds = [po["odds"] for po in provider_odds_list if po["provider"] != "polymarket"]
-            if len(traditional_odds) >= 3:
-                odds_ratio = max(traditional_odds) / min(traditional_odds)
-                if odds_ratio > MAX_ODDS_RATIO:
-                    logger.debug(
-                        f"Skipping {event_id} {market}: {outcome} odds ratio {odds_ratio:.2f} "
-                        f"exceeds {MAX_ODDS_RATIO} (likely event mismatch)"
-                    )
-                    return []  # Skip entire market if any outcome has high discrepancy
+        if self._has_odds_discrepancy(odds_by_outcome, exclude_providers={"polymarket"}):
+            return []  # Skip entire market if any outcome has high discrepancy
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Get fair odds from de-vigged Pinnacle (using pre-computed market dict)
@@ -1002,10 +1213,13 @@ class OpportunityScanner:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
-                # Skip for Polymarket entirely — prediction markets can have single-outcome
-                # listings (only underdog listed) or low prob sums due to pricing dynamics
+                # Skip for Polymarket — prediction markets can have single-outcome listings
+                # Skip for spread markets — after Asian spread fix, each point has only 1
+                # outcome per provider (prob_sum ~0.5), which is expected. The complement
+                # lookup already reconstructs the full Pinnacle market for proper de-vigging.
+                is_spread_market = market.startswith("spread")
                 if soft_prob_sums.get(po["provider"], 0) < MIN_VALID_PROB_SUM:
-                    if po["provider"] != "polymarket":
+                    if po["provider"] != "polymarket" and not is_spread_market:
                         continue  # Incomplete market at soft provider
 
                 # Per-provider odds ratio vs Pinnacle raw (catches bad odds even with 1 soft provider)
@@ -1063,33 +1277,12 @@ class OpportunityScanner:
         sharp_outcome_count = provider_outcome_counts.get("pinnacle", 0)
 
         # Pre-compute Pinnacle market dict for ratio checks
-        pinnacle_market = {}
-        for out, providers in odds_by_outcome.items():
-            for p in providers:
-                if p["provider"] == "pinnacle":
-                    pinnacle_market[out] = p["odds"]
-                    break
+        pinnacle_market = self._build_pinnacle_market(odds_by_outcome)
 
         # Spread complement lookup (same as find_value_in_market)
-        if (
-            all_markets
-            and market.startswith("spread_")
-            and len(pinnacle_market) == 1
-        ):
-            try:
-                point = float(market.split("_", 1)[1])
-                complement_key = f"spread_{-point:g}"
-                complement_data = all_markets.get(complement_key, {})
-                for out, providers in complement_data.items():
-                    if out not in pinnacle_market:
-                        for p in providers:
-                            if p["provider"] == "pinnacle":
-                                pinnacle_market[out] = p["odds"]
-                                break
-                if len(pinnacle_market) > sharp_outcome_count:
-                    sharp_outcome_count = len(pinnacle_market)
-            except (ValueError, IndexError):
-                pass
+        self._enrich_spread_complement(pinnacle_market, market, all_markets)
+        if len(pinnacle_market) > sharp_outcome_count:
+            sharp_outcome_count = len(pinnacle_market)
 
         # Skip if market types don't match (different outcome counts)
         # Exception: spread markets where Pinnacle stores 1 outcome per point
@@ -1103,12 +1296,8 @@ class OpportunityScanner:
                 return []  # Don't compare 3-way vs 2-way markets
 
         # Check for odds discrepancy (likely event mismatch)
-        for outcome, provider_odds_list in odds_by_outcome.items():
-            if len(provider_odds_list) >= 3:
-                odds_values = [po["odds"] for po in provider_odds_list]
-                odds_ratio = max(odds_values) / min(odds_values)
-                if odds_ratio > MAX_ODDS_RATIO:
-                    return []  # Skip market if likely event mismatch
+        if self._has_odds_discrepancy(odds_by_outcome):
+            return []  # Skip market if likely event mismatch
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             # Find anchor provider odds for this outcome
@@ -1179,6 +1368,85 @@ class OpportunityScanner:
 
         return opportunities
 
+    def _build_pinnacle_market(self, odds_by_outcome: dict) -> dict:
+        """Build {outcome: best_odds} dict from Pinnacle odds entries."""
+        pinnacle_market = {}
+        for outcome, odds_list in odds_by_outcome.items():
+            for entry in odds_list:
+                if entry["provider"] == "pinnacle":
+                    pinnacle_market[outcome] = entry["odds"]
+                    break
+        return pinnacle_market
+
+    def _enrich_spread_complement(
+        self,
+        pinnacle_market: dict,
+        market: str,
+        all_markets: dict,
+    ) -> tuple[dict, bool]:
+        """
+        For spread markets, find the complement point to build full 2-way Pinnacle market.
+
+        Pinnacle stores Asian handicap as home@-X, away@+X under different market keys.
+        This finds the complement point and merges the missing outcome into pinnacle_market.
+
+        Args:
+            pinnacle_market: Current {outcome: odds} dict for Pinnacle (mutated in place)
+            market: Market key (e.g. "spread_-6.5")
+            all_markets: Full odds_grouped dict for this event
+
+        Returns:
+            (pinnacle_market, enriched) where enriched is True if complement was found
+        """
+        if not (all_markets and market.startswith("spread_") and len(pinnacle_market) == 1):
+            return pinnacle_market, False
+
+        try:
+            point = float(market.split("_", 1)[1])
+            complement_key = f"spread_{-point}"
+            complement_data = all_markets.get(complement_key, {})
+            for out, providers in complement_data.items():
+                if out not in pinnacle_market:
+                    for p in providers:
+                        if p["provider"] == "pinnacle":
+                            pinnacle_market[out] = p["odds"]
+                            break
+            return pinnacle_market, True
+        except (ValueError, IndexError):
+            return pinnacle_market, False
+
+    def _has_odds_discrepancy(
+        self,
+        odds_by_outcome: dict,
+        exclude_providers: set = None,
+    ) -> bool:
+        """
+        Check if any outcome has odds ratio exceeding MAX_ODDS_RATIO.
+
+        Used to detect likely event mismatches where the same outcome has
+        wildly different odds across providers.
+
+        Args:
+            odds_by_outcome: {outcome: [provider_odds_entries]}
+            exclude_providers: Provider IDs to exclude from the ratio calculation
+
+        Returns:
+            True if discrepancy found (market should be skipped)
+        """
+        for outcome, provider_odds_list in odds_by_outcome.items():
+            if exclude_providers:
+                odds_values = [
+                    po["odds"] for po in provider_odds_list
+                    if po["provider"] not in exclude_providers
+                ]
+            else:
+                odds_values = [po["odds"] for po in provider_odds_list]
+            if len(odds_values) >= 3:
+                odds_ratio = max(odds_values) / min(odds_values)
+                if odds_ratio > MAX_ODDS_RATIO:
+                    return True
+        return False
+
     def _get_fair_odds(
         self,
         outcome: str,
@@ -1202,12 +1470,7 @@ class OpportunityScanner:
         """
         # Build Pinnacle market dict if not pre-computed
         if pinnacle_market is None:
-            pinnacle_market = {}
-            for out, providers in odds_by_outcome.items():
-                for p in providers:
-                    if p["provider"] == "pinnacle":
-                        pinnacle_market[out] = p["odds"]
-                        break
+            pinnacle_market = self._build_pinnacle_market(odds_by_outcome)
 
         pinnacle_odds = pinnacle_market.get(outcome)
         if pinnacle_odds is None:

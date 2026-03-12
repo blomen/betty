@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/services/api';
-import { formatProviderName, displayTeamName } from '@/utils/formatters';
+import { displayTeamName } from '@/utils/formatters';
+import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Bet, BankrollStats, BonusProgressEntry } from '@/types';
@@ -43,6 +44,14 @@ const CLV_BADGE: Record<TTKConfidence, { text: string; cls: string }> = {
 
 // ── Sort types ───────────────────────────────────────────────────────
 
+/** Exchange rates to SEK for aggregation. */
+const RATE_TO_SEK: Record<string, number> = { USD: 10.50, USDC: 10.50, SEK: 1 };
+
+/** Convert an amount from bet's native currency to SEK. */
+function toSEK(amount: number, currency: string): number {
+  return amount * (RATE_TO_SEK[currency] ?? 1);
+}
+
 type SortKey = 'date' | 'provider' | 'odds' | 'close' | 'clv' | 'edge' | 'stake' | 'profit' | 'prob' | 'ttk' | 'status';
 type SortDir = 'asc' | 'desc';
 
@@ -68,7 +77,7 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
 
 // ── Charts ───────────────────────────────────────────────────────────
 
-function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll: number }) {
+function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; currentBankroll: number; totalStaked?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
@@ -76,13 +85,13 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
 
     if (settled.length === 0) return [];
 
-    const totalProfit = settled.reduce((sum, b) => sum + b.profit, 0);
+    const totalProfit = settled.reduce((sum, b) => sum + toSEK(b.profit, b.currency), 0);
     const startBankroll = currentBankroll - totalProfit;
 
     let cumulative = startBankroll;
     const points = [{ date: new Date(settled[0].placed_at), value: startBankroll }];
     for (const bet of settled) {
-      cumulative += bet.profit;
+      cumulative += toSEK(bet.profit, bet.currency);
       points.push({ date: new Date(bet.placed_at), value: cumulative });
     }
     return points;
@@ -146,13 +155,14 @@ function BankrollChart({ bets, currentBankroll }: { bets: Bet[]; currentBankroll
   }
 
   const profit = lastVal - firstVal;
-  const profitPct = ((profit / firstVal) * 100).toFixed(1);
+  const roiBase = totalStaked && totalStaked > 0 ? totalStaked : firstVal;
+  const profitPct = ((profit / roiBase) * 100).toFixed(1);
 
   const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="border border-border bg-panel overflow-hidden">
+    <div className="bg-panel overflow-hidden">
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted uppercase tracking-wider font-medium">Bankroll</span>
         <div className="flex items-center gap-3">
@@ -205,7 +215,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
 
   if (data.length < 2) return null;
 
-  const LINE_COLOR = '#3b82f6';
+  const LINE_COLOR = '#1E88E5';
   const W = 600;
   const H = 200;
   const PL = 12;
@@ -268,7 +278,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
 
   return (
-    <div className="border border-border bg-panel overflow-hidden">
+    <div className="bg-panel overflow-hidden">
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
         <div className="flex items-center gap-3">
@@ -341,15 +351,20 @@ export function BetsPage() {
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
-  // Sort (for history table)
+  // Sort & search (for history table)
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [search, setSearch] = useState('');
 
   // Inline editing state
   const [editingBetId, setEditingBetId] = useState<number | null>(null);
   const [editStake, setEditStake] = useState<string>('');
   const [editOdds, setEditOdds] = useState<string>('');
   const [editResult, setEditResult] = useState<string>('');
+
+  // Cashout state
+  const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
+  const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
@@ -395,6 +410,19 @@ export function BetsPage() {
   const historyBets = useMemo(() => {
     let result = bets.filter(b => b.result !== 'pending');
 
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(b =>
+        (b.home_team && b.home_team.toLowerCase().includes(q)) ||
+        (b.away_team && b.away_team.toLowerCase().includes(q)) ||
+        (b.display_home && b.display_home.toLowerCase().includes(q)) ||
+        (b.display_away && b.display_away.toLowerCase().includes(q)) ||
+        b.provider.toLowerCase().includes(q) ||
+        (b.sport && b.sport.toLowerCase().includes(q)) ||
+        (b.league && b.league.toLowerCase().includes(q))
+      );
+    }
+
     if (sort) {
       result = [...result].sort((a, b) => {
         const va = getSortValue(a, sort.key);
@@ -409,7 +437,7 @@ export function BetsPage() {
     }
 
     return result;
-  }, [bets, sort]);
+  }, [bets, sort, search]);
 
   const handleSort = (key: SortKey) => {
     setSort(prev => {
@@ -438,16 +466,8 @@ export function BetsPage() {
     }
   };
 
-  const resolveOutcome = (bet: Bet): string => {
-    const outcome = bet.outcome || '-';
-    const point = bet.point != null ? ` ${bet.point}` : '';
-    if (outcome === 'home') return `${displayTeamName(bet.home_team, bet.display_home)}${point}`;
-    if (outcome === 'away') return `${displayTeamName(bet.away_team, bet.display_away)}${point}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${point}`;
-    if (outcome === 'under') return `Under${point}`;
-    return outcome;
-  };
+  const resolveOutcome = (bet: Bet): string =>
+    resolveOutcomeBase(bet.outcome || '-', bet, bet.point);
 
   const startEditing = (bet: Bet) => {
     setEditingBetId(bet.id);
@@ -489,8 +509,31 @@ export function BetsPage() {
     }
   };
 
+  const startCashout = (bet: Bet) => {
+    setCashoutBetId(bet.id);
+    setCashoutAmount('');
+  };
+
+  const cancelCashout = () => {
+    setCashoutBetId(null);
+    setCashoutAmount('');
+  };
+
+  const confirmCashout = async (betId: number) => {
+    const amount = parseFloat(cashoutAmount);
+    if (isNaN(amount) || amount < 0) return;
+    try {
+      await api.editBet(betId, { result: 'void', payout: amount });
+      cancelCashout();
+      fetchBets();
+      fetchStats();
+    } catch (err) {
+      console.error('Cashout failed:', err);
+    }
+  };
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 min-w-0 overflow-hidden">
       {/* Header */}
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
         <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
@@ -515,7 +558,6 @@ export function BetsPage() {
               <div className={`text-lg font-semibold ${bankrollStats.roi_pct >= 0 ? 'text-success' : 'text-error'}`}>
                 {bankrollStats.roi_pct >= 0 ? '+' : ''}{bankrollStats.roi_pct.toFixed(1)}%
               </div>
-              <div className="text-[10px] text-muted">{bankrollStats.total_staked.toFixed(0)} kr staked</div>
             </div>
             <div className="bg-panel2 px-3 py-2.5">
               <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Profit</div>
@@ -544,11 +586,13 @@ export function BetsPage() {
       )}
 
       {/* Charts — side by side */}
-      <div className="grid grid-cols-2 gap-3">
-        {bets.length > 0 && currentBankroll > 0 && (
-          <BankrollChart bets={bets} currentBankroll={currentBankroll} />
-        )}
-        <CLVChart bets={bets} />
+      <div className="border-l-2 border-tabBets">
+        <div className="grid grid-cols-2 gap-px bg-border border border-border">
+          {bets.length > 0 && currentBankroll > 0 && (
+            <BankrollChart bets={bets} currentBankroll={currentBankroll} totalStaked={bankrollStats?.total_staked} />
+          )}
+          <CLVChart bets={bets} />
+        </div>
       </div>
 
       {/* Active Bonuses */}
@@ -635,15 +679,26 @@ export function BetsPage() {
       )}
 
       {/* Bet History */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
+          History <span className="text-muted2">{historyBets.length}</span>
+        </h3>
+        <input
+          type="text"
+          placeholder="Search event, provider, sport..."
+          className="px-2 py-1 text-xs bg-bg border border-border text-text placeholder:text-muted2 w-64 focus:border-tabBets focus:outline-none"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
       {isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
       ) : historyBets.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No bets found.</div>
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+          {search.trim() ? 'No matching bets.' : 'No bets found.'}
+        </div>
       ) : (
         <>
-          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
-            History <span className="text-muted2">{historyBets.length}</span>
-          </h3>
           <div className="border-l-2 border-tabBets">
           <table className="sq">
             <thead>
@@ -665,6 +720,7 @@ export function BetsPage() {
               {historyBets.map((bet) => {
                 const isExpanded = expandedIdx === bet.id;
                 const isEditing = editingBetId === bet.id;
+                const isCashingOut = cashoutBetId === bet.id;
                 const ttk = getTTK(bet);
                 const tier = getTTKTier(ttk);
                 return (
@@ -704,10 +760,10 @@ export function BetsPage() {
                           <span className="text-sm text-muted">-</span>
                         )}
                       </td>
-                      <td className="text-right text-text text-sm">{bet.stake.toFixed(0)} kr</td>
+                      <td className="text-right text-text text-sm">{fmtAmount(bet.stake, bet.currency)}</td>
                       <td className="text-right">
                         <span className={`text-sm font-medium ${bet.profit >= 0 ? 'text-success' : 'text-error'}`}>
-                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(0)} kr
+                          {fmtProfit(bet.profit, bet.currency)}
                         </span>
                       </td>
                       <td className="text-right">
@@ -755,13 +811,47 @@ export function BetsPage() {
                                   <span className={`text-[10px] px-1 py-0.5 ${badge.cls}`}>{badge.text}</span>
                                 </div>
                               )}
-                              {!isEditing && (
-                                <button
-                                  className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors ml-auto"
-                                  onClick={() => startEditing(bet)}
-                                >Edit</button>
+                              {!isEditing && !isCashingOut && (
+                                <div className="flex items-center gap-1.5 ml-auto">
+                                  {bet.result === 'pending' && (
+                                    <button
+                                      className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                      onClick={() => startCashout(bet)}
+                                    >Cashout</button>
+                                  )}
+                                  <button
+                                    className="text-[10px] px-1.5 py-0.5 bg-accent/15 text-accent hover:bg-accent/30 transition-colors"
+                                    onClick={() => startEditing(bet)}
+                                  >Edit</button>
+                                </div>
                               )}
                             </div>
+                            {isCashingOut && (
+                              <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted2 uppercase tracking-wider">Cashout Amount:</span>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    className="w-24 px-1.5 py-0.5 bg-bg border border-border text-text text-sm"
+                                    value={cashoutAmount}
+                                    onChange={e => setCashoutAmount(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') confirmCashout(bet.id); if (e.key === 'Escape') cancelCashout(); }}
+                                    placeholder={fmtAmount(bet.stake, bet.currency)}
+                                    autoFocus
+                                  />
+                                  <span className="text-muted2">{bet.currency === 'USD' || bet.currency === 'USDC' ? '$' : 'kr'}</span>
+                                </div>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-warning/15 text-warning hover:bg-warning/30 transition-colors"
+                                  onClick={() => confirmCashout(bet.id)}
+                                >Confirm</button>
+                                <button
+                                  className="text-[10px] px-2 py-0.5 bg-muted/15 text-muted hover:bg-muted/30 transition-colors"
+                                  onClick={cancelCashout}
+                                >Cancel</button>
+                              </div>
+                            )}
                             {isEditing && (
                               <div className="flex items-center gap-3 text-xs">
                                 <div className="flex items-center gap-1">

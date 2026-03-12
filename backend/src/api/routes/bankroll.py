@@ -382,3 +382,84 @@ async def reset_calculator(service: BankrollService = Depends(_get_service)):
         "success": True,
         "message": "Exposure tracking reset",
     }
+
+
+@router.post("/backfill-wagering")
+async def backfill_wagering(db: Session = Depends(get_db)):
+    """Recalculate wagered_amount for all active bonuses from settled bets.
+
+    Fixes bonuses where wagering wasn't tracked (e.g., bets settled via edit_bet).
+    Replays all settled bets in chronological order through record_wagering().
+    """
+    from ...db.models import Bet
+    import logging
+
+    logger = logging.getLogger(__name__)
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    # Get all active bonuses
+    active_bonuses = (
+        db.query(ProfileProviderBonus)
+        .filter(
+            ProfileProviderBonus.profile_id == profile.id,
+            ProfileProviderBonus.bonus_status.in_(("in_progress", "trigger_needed")),
+        )
+        .all()
+    )
+
+    results = []
+    for bonus in active_bonuses:
+        old_wagered = bonus.wagered_amount or 0.0
+        old_status = bonus.bonus_status
+
+        # Reset wagered amount to replay from scratch
+        bonus.wagered_amount = 0.0
+
+        # Get all settled bets for this provider, ordered by settlement time
+        settled_bets = (
+            db.query(Bet)
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == bonus.provider_id,
+                Bet.result.in_(("won", "lost", "void")),
+                Bet.settled_at.isnot(None),
+            )
+            .order_by(Bet.settled_at)
+            .all()
+        )
+
+        # Only count bets settled after the bonus was claimed
+        qualifying_bets = [
+            b for b in settled_bets
+            if not bonus.claimed_at or b.settled_at >= bonus.claimed_at
+        ]
+
+        # Replay each bet through record_wagering
+        for bet in qualifying_bets:
+            profile_repo.record_wagering(
+                profile.id, bonus.provider_id, bet.stake, bet.odds
+            )
+            # If bonus transitioned (trigger_needed → in_progress), stop replaying
+            # since remaining bets belong to the new phase
+            db.refresh(bonus)
+            if bonus.bonus_status != old_status:
+                # Continue replaying remaining bets into the new phase
+                old_status = bonus.bonus_status
+
+        db.refresh(bonus)
+        results.append({
+            "provider_id": bonus.provider_id,
+            "old_wagered": old_wagered,
+            "new_wagered": bonus.wagered_amount,
+            "status": bonus.bonus_status,
+            "total_bets_replayed": len(qualifying_bets),
+            "wagering_requirement": bonus.wagering_requirement,
+        })
+
+        logger.info(
+            f"[Backfill] {bonus.provider_id}: wagered {old_wagered} → {bonus.wagered_amount} "
+            f"({len(qualifying_bets)} bets replayed, status={bonus.bonus_status})"
+        )
+
+    return {"success": True, "results": results}

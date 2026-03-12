@@ -1,6 +1,5 @@
 import type {
   Opportunity,
-  EventDetail,
   ProvidersResponse,
   BankrollInfo,
   BankrollStats,
@@ -43,6 +42,7 @@ export interface SpecialItem {
   // Boost edge (boosted/original)
   edge_pct: number | null;
   is_positive_ev: boolean | null;
+  fair_odds: number | null;
   // LLM enrichment
   llm_title: string | null;
   llm_probability: number | null;
@@ -84,12 +84,32 @@ export interface StakePreviewResult {
   min_odds_applied: number;
 }
 
+// ============ Settings Types ============
+
+export interface ExtractionProvider {
+  provider_id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface ExtractionPlatform {
+  platform_id: string;
+  platform_name: string;
+  tier: string;
+  providers: ExtractionProvider[];
+  sites: string[];
+}
+
+export interface ExtractionSettingsResponse {
+  platforms: ExtractionPlatform[];
+}
+
 const API_BASE = '/api';
 
 // Configuration for fetch with retry
-const DEFAULT_TIMEOUT_MS = 30000; // 30 seconds
-const DEFAULT_RETRIES = 3;
-const INITIAL_BACKOFF_MS = 1000; // 1 second
+const DEFAULT_TIMEOUT_MS = 45000; // 45 seconds — generous for slow PCs under extraction load
+const DEFAULT_RETRIES = 1;        // 1 retry only — avoid retry storms when backend is busy
+const INITIAL_BACKOFF_MS = 2000;  // 2 seconds — give backend breathing room
 
 // Structured error classes
 export class ApiError extends Error {
@@ -252,8 +272,8 @@ async function fetchWithRetry<T>(
 }
 
 // Legacy fetchJson for backward compatibility (uses retry internally)
-async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  return fetchWithRetry<T>(endpoint, options);
+async function fetchJson<T>(endpoint: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
+  return fetchWithRetry<T>(endpoint, options, DEFAULT_RETRIES, timeoutMs ?? DEFAULT_TIMEOUT_MS);
 }
 
 // ============ Extraction Progress Types ============
@@ -474,10 +494,6 @@ export const api = {
     return fetchJson(`/events?${params}`);
   },
 
-  async getEvent(eventId: string): Promise<EventDetail> {
-    return fetchJson<EventDetail>(`/events/${eventId}`);
-  },
-
   // ============ Opportunities ============
   async getOpportunities(
     type?: 'arbitrage' | 'value' | 'bonus' | 'dutch' | 'reverse' | 'reverse_value',
@@ -499,6 +515,32 @@ export const api = {
     if (sport) params.set('sport', sport);
     if (minValue !== undefined) params.set('min_value', minValue.toString());
     return fetchJson(`/opportunities?${params}`);
+  },
+
+  async getDutchWorkflow(
+    providers: string[],
+    majorOnly: boolean,
+    limit: number = 50,
+    counterpartProviders?: string[],
+  ): Promise<{
+    opportunities: unknown[];
+    count: number;
+    anchor_providers: string[];
+    anchor_wagering?: Record<string, {
+      status: string; wagered: number; requirement: number; remaining: number;
+      progress_pct: number; min_odds: number; bonus_amount: number;
+      bonus_type: string | null; days_remaining: number | null;
+    }>;
+  }> {
+    const params = new URLSearchParams();
+    params.set('providers', providers.join(','));
+    params.set('major_only', String(majorOnly));
+    params.set('limit', String(limit));
+    if (counterpartProviders && counterpartProviders.length > 0) {
+      params.set('counterpart_providers', counterpartProviders.join(','));
+    }
+    params.set('_t', String(Date.now())); // Cache-bust: live scan, never cache
+    return fetchJson(`/opportunities/dutch-workflow?${params}`);
   },
 
   // ============ Bets ============
@@ -527,12 +569,16 @@ export const api = {
     fair_odds_at_placement?: number;
     boost_event?: string;
     boost_title?: string;
+    bet_type?: string;
+    start_time?: string;
   }): Promise<{ success: boolean; bet_id: number }> {
     return fetchWithRetry('/bets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
-    }, 0, 10000);
+    }, 2, 30000);
+    // 2 retries + 30s timeout: backend retries SQLite locks internally (up to ~5s),
+    // and duplicate-bet check prevents double-placing on frontend retry.
   },
 
   async createBatchBets(legs: {
@@ -546,6 +592,7 @@ export const api = {
     is_bonus?: boolean;
     utility_score?: number;
     selection_probability?: number;
+    bet_type?: string;
   }[]): Promise<{
     success: boolean;
     placed_count: number;
@@ -566,15 +613,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ legs }),
-    }, 0, 10000);
-  },
-
-  async closeStartedBets(): Promise<{
-    success: boolean;
-    processed: number;
-    updated: number;
-  }> {
-    return fetchJson('/bets/close-started', { method: 'POST' });
+    }, 2, 30000);
   },
 
   async autoSettleBets(): Promise<{
@@ -588,20 +627,9 @@ export const api = {
     return fetchJson('/bets/auto-settle', { method: 'POST' });
   },
 
-  async settleBet(
-    betId: number,
-    data: { result: 'won' | 'lost' | 'void'; payout: number }
-  ): Promise<{ success: boolean; profit: number }> {
-    return fetchJson(`/bets/${betId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  },
-
   async editBet(
     betId: number,
-    data: { stake?: number; odds?: number; result?: string }
+    data: { stake?: number; odds?: number; result?: string; payout?: number }
   ): Promise<{ success: boolean; stake: number; odds: number; result: string; payout: number; profit: number; balance_adjustment: number }> {
     return fetchJson(`/bets/${betId}`, {
       method: 'PATCH',
@@ -623,11 +651,16 @@ export const api = {
     return fetchJson(`/polymarket/value?${params}`);
   },
 
-  async getPolymarketMyBets(status?: string, limit = 100): Promise<import('@/types').PolyMyBetsResponse> {
+  async getPolymarketRewards(
+    minDailyRate = 0,
+    sport?: string,
+    limit = 100
+  ): Promise<import('@/types').PolymarketRewardsResponse> {
     const params = new URLSearchParams();
-    if (status) params.set('status', status);
+    if (minDailyRate > 0) params.set('min_daily_rate', minDailyRate.toString());
+    if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
-    return fetchJson(`/polymarket/mybets?${params}`);
+    return fetchJson(`/polymarket/rewards?${params}`, undefined, 60_000);
   },
 
   // ============ Risk Management ============
@@ -921,6 +954,64 @@ export const api = {
     if (filters?.account_id) params.set('account_id', filters.account_id.toString());
     if (filters?.instrument) params.set('instrument', filters.instrument);
     return `${API_BASE}/trading/export/csv?${params}`;
+  },
+
+  // ============ Market Data / Scanner ============
+
+  async getMarketSession(): Promise<import('@/types/market').MarketSession> {
+    return fetchJson('/trading/market/session');
+  },
+
+  async getMarketSessionByDate(date: string): Promise<import('@/types/market').MarketSession> {
+    return fetchJson(`/trading/market/session/${date}`);
+  },
+
+  async getMarketSignals(): Promise<{ signals: import('@/types/market').TradingSignal[] }> {
+    return fetchJson('/trading/market/signals');
+  },
+
+  async triggerMarketScan(threshold?: number): Promise<{ signals: import('@/types/market').TradingSignal[]; count: number }> {
+    const params = threshold ? `?threshold=${threshold}` : '';
+    return fetchJson(`/trading/market/scan${params}`, { method: 'POST' });
+  },
+
+  async triggerMarketCompute(date?: string): Promise<import('@/types/market').MarketSession> {
+    const params = date ? `?date=${date}` : '';
+    return fetchJson(`/trading/market/compute${params}`, { method: 'POST' });
+  },
+
+  async getMarketHistory(limit = 30): Promise<{ sessions: import('@/types/market').MarketSessionSummary[] }> {
+    return fetchJson(`/trading/market/history?limit=${limit}`);
+  },
+
+  async getMacroSnapshot(): Promise<import('@/types/market').MacroSnapshot> {
+    return fetchJson('/trading/market/macro');
+  },
+
+  async getConfirmations(): Promise<import('@/types/market').ConfirmationState> {
+    return fetchJson('/trading/market/confirmations');
+  },
+
+  // ============ Settings ============
+
+  async getExtractionSettings(): Promise<ExtractionSettingsResponse> {
+    return fetchJson('/settings/extraction', { cache: 'no-store' });
+  },
+
+  async toggleExtractionProvider(providerId: string, enabled: boolean): Promise<{ success: boolean }> {
+    return fetchJson('/settings/extraction/provider', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId, enabled }),
+    });
+  },
+
+  async toggleExtractionBatch(providerIds: string[], enabled: boolean): Promise<{ success: boolean }> {
+    return fetchJson('/settings/extraction/batch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_ids: providerIds, enabled }),
+    });
   },
 
 };

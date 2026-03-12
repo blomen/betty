@@ -1,23 +1,25 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
-import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
+import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness } from '@/hooks/useExtractionStatus';
+import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { Opportunity, Provider, Bet, ProviderExposure } from '@/types';
+import type { Opportunity, Provider, Bet } from '@/types';
 
 type ValueTab = 'value' | 'boosts' | 'mybets';
 
 const softBetFilter = (b: Bet) =>
-  b.provider !== 'pinnacle' && b.provider !== 'polymarket';
+  b.bet_type === 'value' || b.bet_type === 'boost' ||
+  (b.bet_type == null && b.provider !== 'pinnacle' && b.provider !== 'polymarket');
 
 interface GroupedOpp {
   key: string;
@@ -31,13 +33,6 @@ interface GroupedSpecial {
   rep: SpecialItem;
   providers: string[];
 }
-
-// LLM confidence colors
-const LLM_CONFIDENCE_COLOR: Record<string, string> = {
-  high: 'text-success',
-  medium: 'text-sky-400',
-  low: 'text-warning',
-};
 
 interface ValuePageProps {
   providers: Provider[];
@@ -58,10 +53,15 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
 
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
+  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [boostSearch, setBoostSearch] = useState('');
   const [betError, setBetError] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
   const [editingOdds, setEditingOdds] = useState<string | null>(null);
+  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
+  const [editingStake, setEditingStake] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
@@ -98,6 +98,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   const [boostSelectedBetProvider, setBoostSelectedBetProvider] = useState<Record<string, number>>({});
   const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
   const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
+  const [boostStakeOverride, setBoostStakeOverride] = useState<Record<string, number>>({});
+  const [boostEditingStake, setBoostEditingStake] = useState<string | null>(null);
   const [boostPendingBet, setBoostPendingBet] = useState<{
     groupKey: string;
     special: SpecialItem;
@@ -107,10 +109,6 @@ export function ValuePage({ providers }: ValuePageProps) {
   } | null>(null);
   const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
 
-  // Wagering priority: provider_id → remaining wagering amount (higher = play first)
-  const [wageringPriority, setWageringPriority] = useState<Map<string, number>>(new Map());
-  const [bankrollTotal, setBankrollTotal] = useState<number>(0);
-
   // Track placed event+provider combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
@@ -118,10 +116,9 @@ export function ValuePage({ providers }: ValuePageProps) {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [res, boostRes, exposureRes, bankrollRes, betsRes] = await Promise.all([
+      const [res, boostRes, , betsRes] = await Promise.all([
         api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
         api.getSpecials({}).catch(() => null),
-        api.getBankrollExposure().catch(() => null),
         api.getBankroll().catch(() => null),
         api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
       ]);
@@ -152,18 +149,6 @@ export function ValuePage({ providers }: ValuePageProps) {
         setSpecials(boostRes.specials || []);
         if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
       }
-      if (bankrollRes?.total != null) setBankrollTotal(bankrollRes.total);
-      if (exposureRes?.providers) {
-        const m = new Map<string, number>();
-        for (const p of exposureRes.providers) {
-          if (p.wagering && p.wagering.remaining > 0) {
-            // Priority = locked capital at this provider
-            // Completing wager here unlocks more bankroll → higher stakes → faster wagering everywhere
-            m.set(p.provider_id, p.balance_sek ?? 0);
-          }
-        }
-        setWageringPriority(m);
-      }
     } catch (err) {
       console.error('Failed to fetch value bets:', err);
     } finally {
@@ -173,6 +158,15 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useRefreshOnExtraction(fetchData);
+
+  // Periodic refetch while extraction is running (catches bets appearing mid-extraction)
+  const tiersProgress = useTiersProgress();
+  const anyExtracting = tiersProgress?.any_running ?? false;
+  useEffect(() => {
+    if (!anyExtracting) return;
+    const id = setInterval(fetchData, 60_000);
+    return () => clearInterval(id);
+  }, [anyExtracting, fetchData]);
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
@@ -187,6 +181,14 @@ export function ValuePage({ providers }: ValuePageProps) {
     return Array.from(set).sort();
   }, [providers, opportunities]);
 
+  const availableLeagues = useMemo(() => {
+    const set = new Set<string>();
+    for (const opp of opportunities) {
+      if (opp.league) set.add(opp.league);
+    }
+    return Array.from(set).sort();
+  }, [opportunities]);
+
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -198,10 +200,10 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const grouped = useMemo(() => {
     let result = opportunities;
-    // Remove started/imminent events (less than 1 min to kickoff)
+    // Remove started/imminent events and events > 7 days out
     result = result.filter(o => {
       const ttk = getTTKFromNow(o.starts_at);
-      return ttk === null || ttk > 1 / 60;
+      return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS);
     });
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
@@ -209,6 +211,23 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     if (selectedProviders.size > 0) {
       result = result.filter(o => selectedProviders.has(o.provider1));
+    }
+    if (selectedLeagues.size > 0) {
+      result = result.filter(o => o.league != null && selectedLeagues.has(o.league));
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(o =>
+        (o.home_team?.toLowerCase().includes(q)) ||
+        (o.away_team?.toLowerCase().includes(q)) ||
+        (o.display_home?.toLowerCase().includes(q)) ||
+        (o.display_away?.toLowerCase().includes(q)) ||
+        (o.prov_home?.toLowerCase().includes(q)) ||
+        (o.prov_away?.toLowerCase().includes(q)) ||
+        (o.provider1?.toLowerCase().includes(q)) ||
+        (o.sport?.toLowerCase().includes(q)) ||
+        (o.league?.toLowerCase().includes(q))
+      );
     }
 
     const map = new Map<string, Opportunity[]>();
@@ -220,10 +239,8 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
     const groups: GroupedOpp[] = [];
     for (const [key, opps] of map) {
-      // Sort providers within group: highest wagering remaining first
-      if (wageringPriority.size > 0) {
-        opps.sort((a, b) => (wageringPriority.get(b.provider1) ?? -1) - (wageringPriority.get(a.provider1) ?? -1));
-      }
+      // Sort providers within group: highest allocation score first
+      opps.sort((a, b) => ((b as any).allocation_score ?? -1) - ((a as any).allocation_score ?? -1));
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     // Bonus-first when user actively filters to those providers
@@ -242,17 +259,23 @@ export function ValuePage({ providers }: ValuePageProps) {
       });
     }
     return groups;
-  }, [opportunities, selectedProviders, placedKeys, wageringPriority]);
+  }, [opportunities, selectedProviders, selectedLeagues, placedKeys, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
+  const getGroupOddsKey = (opp: Opportunity) =>
+    `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
   const valueSortExtractors = useMemo(() => ({
-    odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
+    odds:  (g: GroupedOpp) => oddsOverride[getGroupOddsKey(g.rep)] ?? g.rep.odds1 ?? 0,
     fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
     prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
-    stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
-    edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
+    stake: (g: GroupedOpp) => stakeOverride[getGroupOddsKey(g.rep)] ?? g.rep.final_stake ?? 0,
+    edge:  (g: GroupedOpp) => {
+      const ov = oddsOverride[getGroupOddsKey(g.rep)];
+      if (ov && g.rep.fair_odds) return (ov / g.rep.fair_odds - 1) * 100;
+      return g.rep.edge_pct ?? 0;
+    },
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
-  }), []);
+  }), [oddsOverride, stakeOverride]);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
     useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
 
@@ -268,9 +291,23 @@ export function ValuePage({ providers }: ValuePageProps) {
     });
   };
 
+  const toggleLeague = (l: string) => {
+    setSelectedLeagues(prev => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l); else next.add(l);
+      return next;
+    });
+  };
+
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
-    if (s.event_time) { try { if (new Date(s.event_time).getTime() <= Date.now()) return false; } catch { /* keep */ } }
+    if (s.event_time) {
+      try {
+        const diff = new Date(s.event_time).getTime() - Date.now();
+        if (diff <= 0) return false;                          // Already started
+        if (diff > MAX_TTK_HOURS * 3600000) return false;    // > 7 days out
+      } catch { /* keep */ }
+    }
     if (!s.expires_at) return true;
     try { return new Date(s.expires_at).getTime() > Date.now(); } catch { return true; }
   }), [specials]);
@@ -287,11 +324,22 @@ export function ValuePage({ providers }: ValuePageProps) {
   }, [boostNonExpired, boostPlacedKeys]);
 
   const boostActiveGroups = useMemo(() => {
-    if (boostSelectedProviders.size === 0) return boostGrouped;
-    return boostGrouped.filter(g =>
-      g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
-    );
-  }, [boostGrouped, boostSelectedProviders]);
+    let result = boostGrouped;
+    if (boostSelectedProviders.size > 0) {
+      result = result.filter(g =>
+        g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
+      );
+    }
+    if (boostSearch.trim()) {
+      const q = boostSearch.trim().toLowerCase();
+      result = result.filter(g =>
+        g.rep.title.toLowerCase().includes(q) ||
+        (g.rep.event && g.rep.event.toLowerCase().includes(q)) ||
+        g.providers.some(p => p.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [boostGrouped, boostSelectedProviders, boostSearch]);
 
   type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
@@ -313,7 +361,7 @@ export function ValuePage({ providers }: ValuePageProps) {
 
   const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
     if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
-    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null);
+    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null); setBoostEditingOdds(null); setBoostEditingStake(null);
     const s = group.rep;
     // Use LLM edge if available, otherwise boost edge
     const edgeForStake = s.llm_edge_pct ?? s.edge_pct;
@@ -325,9 +373,9 @@ export function ValuePage({ providers }: ValuePageProps) {
   };
 
   const startBoostPlaceBet = (special: SpecialItem, providerId: string, groupKey: string) => {
-    if (!boostStakePreview || !special.boosted_odds) return;
-    let stake = boostStakePreview.recommended_stake;
-    if (special.max_stake != null && stake > special.max_stake) stake = special.max_stake;
+    if (!special.boosted_odds) return;
+    const overriddenStake = boostStakeOverride[groupKey];
+    let stake = overriddenStake ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0));
     if (stake <= 0) return;
     const odds = boostOddsOverride[groupKey] ?? special.boosted_odds;
     setBetError(null); setBetSuccess(null);
@@ -351,6 +399,8 @@ export function ValuePage({ providers }: ValuePageProps) {
         fair_odds_at_placement: special.llm_fair_odds ?? undefined,
         boost_event: special.event ?? undefined,
         boost_title: special.llm_title ?? special.title,
+        bet_type: 'boost',
+        start_time: special.event_time ?? undefined,
       });
       setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
       setTimeout(() => setBetSuccess(null), 5000);
@@ -367,10 +417,13 @@ export function ValuePage({ providers }: ValuePageProps) {
   const handleSelectGroup = (idx: number) => {
     setSelectedGroup(selectedGroup === idx ? null : idx);
     setPendingBet(null);
+    setEditingOdds(null);
+    setEditingStake(null);
   };
 
   const handlePlaceBetClick = (opp: Opportunity) => {
-    const stake = opp.final_stake;
+    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
+    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
 
     if (opp.bonus_status === 'freebet_available') {
@@ -382,10 +435,8 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
-  const getEffectiveOdds = (opp: Opportunity) => {
-    const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
-    return oddsOverride[groupKey] ?? opp.odds1;
-  };
+  const getEffectiveOdds = (opp: Opportunity) =>
+    oddsOverride[getGroupOddsKey(opp)] ?? opp.odds1;
 
   // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity, useFreebet: boolean) => {
@@ -401,7 +452,8 @@ export function ValuePage({ providers }: ValuePageProps) {
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { opp, actualOdds, useFreebet } = pendingBet;
-    const stake = opp.final_stake;
+    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
+    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
@@ -423,6 +475,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         bonus_type: useFreebet ? 'freebet' : undefined,
         utility_score: placedEdge,
         selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
+        bet_type: 'value',
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
@@ -444,24 +497,20 @@ export function ValuePage({ providers }: ValuePageProps) {
     }
   };
 
-  const resolveOutcome = (outcome: string, opp: Opportunity, point?: number | null): string => {
-    const p = point != null ? ` ${point}` : '';
-    if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${p}`;
-    if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${p}`;
-    if (outcome === 'draw') return 'Draw';
-    if (outcome === 'over') return `Over${p}`;
-    if (outcome === 'under') return `Under${p}`;
-    return outcome;
-  };
-
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="value" color={TAB_COLORS.value} size={16} />
           Soft
         </h2>
+        {activeTab === 'value' && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="tabValue" />
+        )}
+        {activeTab === 'boosts' && (
+          <SearchInput value={boostSearch} onChange={setBoostSearch} placeholder="Search boost, provider..." accentColor="tabValue" />
+        )}
       </div>
 
       {/* Sub-tab selector */}
@@ -539,6 +588,15 @@ export function ValuePage({ providers }: ValuePageProps) {
               const isExpanded = boostExpandedIdx === idx;
               const providerCount = group.providers.length;
 
+              const boostEffOdds = boostOddsOverride[group.key] ?? s.boosted_odds ?? 0;
+              const boostEffStake = boostStakeOverride[group.key] ?? s.recommended_stake ?? 0;
+              const isBoostOddsOverridden = group.key in boostOddsOverride;
+              const isBoostStakeOverridden = group.key in boostStakeOverride;
+              const boostFairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
+              const boostDynEdge = boostFairOdds != null && boostFairOdds > 1
+                ? (boostEffOdds / boostFairOdds - 1) * 100
+                : s.llm_edge_pct ?? s.edge_pct ?? s.boost_pct ?? null;
+
               return (
                 <Fragment key={group.key}>
                   <tr className={`cursor-pointer group bg-tabValue/[0.03] hover:bg-tabValue/[0.07] ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
@@ -571,17 +629,27 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </span>
                     </td>
-                    <td className="text-right text-sm">
-                      {s.original_odds != null && s.boosted_odds != null ? (
-                        <>
-                          <span className="text-muted2">{s.original_odds.toFixed(2)}</span>
-                          <span className="text-muted2 mx-0.5">&rarr;</span>
-                          <span className="text-success font-medium">{s.boosted_odds.toFixed(2)}</span>
-                          {s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
-                        </>
+                    <td className="text-right text-sm" onClick={(e) => e.stopPropagation()}>
+                      {s.original_odds != null && <><span className="text-muted2">{s.original_odds.toFixed(2)}</span><span className="text-muted2 mx-0.5">&rarr;</span></>}
+                      {boostEditingOdds === group.key ? (
+                        <input
+                          type="number" step="0.01" autoFocus
+                          defaultValue={boostEffOdds.toFixed(2)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingOdds(null); }}
+                        />
                       ) : (
-                        <span className="text-text font-medium">{s.boosted_odds?.toFixed(2) ?? '-'}</span>
+                        <span
+                          onClick={() => setBoostEditingOdds(group.key)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-success font-medium border-transparent'}`}
+                          title="Click to adjust odds"
+                        >
+                          {boostEffOdds.toFixed(2)}
+                        </span>
                       )}
+                      {isBoostOddsOverridden && <button onClick={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                      {!isBoostOddsOverridden && s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
                     </td>
                     <td className="text-right text-muted text-sm">{s.llm_fair_odds != null ? s.llm_fair_odds.toFixed(2) : '-'}</td>
                     <td className="text-right text-muted text-sm">
@@ -590,51 +658,92 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium">
-                      {(() => { const st = s.recommended_stake ?? 0; return st > 0 ? <span className="text-text">{Math.round(st)} kr</span> : <span className="text-muted2">-</span>; })()}
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {boostEditingStake === group.key ? (
+                        <input
+                          type="number" step="1" autoFocus
+                          defaultValue={boostEffStake.toFixed(0)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setBoostStakeOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingStake(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingStake(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setBoostEditingStake(group.key)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust stake"
+                        >
+                          {boostEffStake > 0 ? `${Math.round(boostEffStake)} kr` : '-'}
+                        </span>
+                      )}
+                      {isBoostStakeOverridden && <button onClick={() => { setBoostStakeOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingStake(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                     </td>
                     <td className="text-right font-semibold text-sm">
-                      {s.llm_edge_pct != null ? (
+                      {boostDynEdge != null ? (
                         <span className="text-text">
-                          {s.llm_edge_pct > 0 ? '+' : ''}{s.llm_edge_pct.toFixed(1)}%
-                        </span>
-                      ) : (s.edge_pct ?? s.boost_pct) != null ? (
-                        <span className="text-text">
-                          {(s.edge_pct ?? s.boost_pct)! > 0 ? '+' : ''}{(s.edge_pct ?? s.boost_pct)!.toFixed(0)}%
+                          {boostDynEdge > 0 ? '+' : ''}{boostDynEdge.toFixed(1)}%
                         </span>
                       ) : <span className="text-muted2">-</span>}
                     </td>
                   </tr>
-                  {isExpanded && (
+                  {isExpanded && (() => {
+                    const bSelIdx = boostSelectedBetProvider[group.key] ?? 0;
+                    const bSelProvider = group.providers[bSelIdx] || group.providers[0];
+                    const bIsPending = boostPendingBet?.groupKey === group.key;
+                    const bEffStake = boostStakeOverride[group.key] ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, s.max_stake ?? Infinity) : (s.recommended_stake ?? 0));
+
+                    return (
                     <tr key={`${group.key}-exp`}>
                       <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <BoostExpandedRow
-                          special={s}
-                          groupKey={group.key}
-                          providers={group.providers}
-                          stakePreview={boostStakePreview}
-                          isLoadingPreview={isLoadingBoostPreview}
-                          isPlacing={isPlacing}
-                          pendingBet={boostPendingBet?.groupKey === group.key ? boostPendingBet : null}
-                          selectedProviderIdx={boostSelectedBetProvider[group.key] ?? 0}
-                          onSelectProvider={(i) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: i }))}
-                          onStartPlaceBet={(pid) => startBoostPlaceBet(s, pid, group.key)}
-                          onConfirmBet={confirmBoostPlaceBet}
-                          onCancelPending={() => setBoostPendingBet(null)}
-                          onUpdatePendingOdds={(val) => setBoostPendingBet(prev => prev ? { ...prev, actualOdds: val } : null)}
-                          oddsOverride={boostOddsOverride[group.key] ?? null}
-                          editingOdds={boostEditingOdds === group.key}
-                          onEditOdds={() => setBoostEditingOdds(group.key)}
-                          onSetOdds={(val) => { setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
-                          onResetOdds={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }}
-                          onCancelEdit={() => setBoostEditingOdds(null)}
-                          betError={betError}
-                          balanceMap={balanceMap}
-                          wageringPriority={wageringPriority}
-                        />
+                        {isLoadingBoostPreview ? <div className="px-3 py-2 bg-panel text-muted text-sm">Loading...</div> : (
+                        <div className="px-3 py-2 bg-panel">
+                          {s.llm_reasoning && (
+                            <div className="text-muted2 text-[10px] leading-relaxed mb-2">
+                              <span className="uppercase tracking-wider">{s.llm_confidence || 'low'}: </span>
+                              {s.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
+                                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
+                            {(boostStakePreview?.skip_reason) ? (
+                              <span className="text-muted text-xs bg-border px-2 py-1">{boostStakePreview.skip_reason}</span>
+                            ) : bIsPending ? (
+                              <>
+                                <button onClick={confirmBoostPlaceBet} disabled={isPlacing || boostPendingBet!.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
+                                <span className="text-muted text-xs">@ {boostPendingBet!.actualOdds.toFixed(2)}</span>
+                                <button onClick={() => setBoostPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
+                              </>
+                            ) : (
+                              <>
+                                <div className="relative">
+                                  <select
+                                    value={bSelIdx}
+                                    onChange={(e) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: parseInt(e.target.value) }))}
+                                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer min-w-[120px]"
+                                  >
+                                    {group.providers.map((pid, i) => (
+                                      <option key={pid} value={i}>{formatProviderName(pid)}{bEffStake > 0 ? ` ${bEffStake.toFixed(0)} kr` : ''}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <button
+                                  onClick={() => startBoostPlaceBet(s, bSelProvider, group.key)}
+                                  disabled={bEffStake <= 0 || isPlacing}
+                                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                                >
+                                  {isPlacing ? '...' : 'Place Bet'}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        )}
                       </td>
                     </tr>
-                  )}
+                    );
+                  })()}
                 </Fragment>
               );
             })}
@@ -671,6 +780,16 @@ export function ValuePage({ providers }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
+        {availableLeagues.length > 0 && (
+          <MultiSelectDropdown
+            label="League"
+            options={availableLeagues}
+            selected={selectedLeagues}
+            onToggle={toggleLeague}
+            onClear={() => setSelectedLeagues(new Set())}
+            accentColor="tabValue"
+          />
+        )}
         <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
@@ -690,7 +809,7 @@ export function ValuePage({ providers }: ValuePageProps) {
         <table className="sq">
           <thead>
             <tr>
-              <th>Event</th>
+              <th style={{ width: '35%' }}>Event</th>
               <th className="text-right">Providers</th>
               <th className="text-right">Outcome</th>
               <MultiSortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />
@@ -705,9 +824,18 @@ export function ValuePage({ providers }: ValuePageProps) {
             {sortedGroups.map((group, idx) => {
               const { rep, opps, providers: groupProviders } = group;
               const isSelected = selectedGroup === idx;
-              const hasStake = rep.final_stake != null && rep.final_stake > 0;
               const isSkipped = opps.every(o => !!o.skip_reason);
               const providerCount = groupProviders.length;
+
+              const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
+              const effectiveOdds = oddsOverride[groupOddsKey] ?? rep.odds1;
+              const effectiveStake = stakeOverride[groupOddsKey] ?? rep.final_stake;
+              const hasStake = effectiveStake != null && effectiveStake > 0;
+              const isOddsOverridden = groupOddsKey in oddsOverride;
+              const isStakeOverridden = groupOddsKey in stakeOverride;
+              const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
+                ? (effectiveOdds / rep.fair_odds - 1) * 100
+                : rep.edge_pct ?? 0;
 
               return (
                 <Fragment key={group.key}>
@@ -717,11 +845,11 @@ export function ValuePage({ providers }: ValuePageProps) {
                   >
                     <td>
                       <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home)} vs {displayTeamName(rep.away_team, rep.display_away)}</span>
+                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)} vs {displayTeamName(rep.away_team, rep.display_away ?? rep.prov_away)}</span>
                         <button
                           title="Copy event"
                           className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home)); }}
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)); }}
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                         </button>
@@ -730,12 +858,12 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {rep.sport}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
+                        {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
                       </div>
                     </td>
                     <td className="text-right text-sm min-w-0">
                       <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${opps.every((o: any) => o.is_daily_capped) ? 'bg-error' : (rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount <= 3 ? (
                           <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
                         ) : (
@@ -746,8 +874,27 @@ export function ValuePage({ providers }: ValuePageProps) {
                         )}
                       </span>
                     </td>
-                    <td className="text-right text-text text-sm">{resolveOutcomeName(rep)}</td>
-                    <td className="text-right text-text text-sm font-medium">{rep.odds1.toFixed(2)}</td>
+                    <td className="text-right text-text text-sm">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingOdds === groupOddsKey ? (
+                        <input
+                          type="number" step="0.01" autoFocus
+                          defaultValue={effectiveOdds.toFixed(2)}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setOddsOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingOdds(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingOdds(groupOddsKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust odds"
+                        >
+                          {effectiveOdds.toFixed(2)}
+                        </span>
+                      )}
+                      {isOddsOverridden && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                    </td>
                     <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
                     <td className="text-right text-muted text-sm">
                       {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
@@ -755,111 +902,40 @@ export function ValuePage({ providers }: ValuePageProps) {
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
                     </td>
-                    <td className="text-right text-sm font-medium">
-                      {hasStake ? (
-                        <>
-                          <span className="text-text">{rep.final_stake!.toFixed(0)} kr</span>
-                          {rep.bonus_status === 'trigger_needed' && (
-                            <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>
-                          )}
-                          {rep.bonus_status === 'freebet_available' && (
-                            <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>
-                          )}
-                        </>
-                      ) : '-'}
+                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                      {editingStake === groupOddsKey ? (
+                        <input
+                          type="number" step="1" autoFocus
+                          defaultValue={effectiveStake?.toFixed(0) ?? '0'}
+                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingStake(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(null); }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingStake(groupOddsKey)}
+                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+                          title="Click to adjust stake"
+                        >
+                          {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
+                        </span>
+                      )}
+                      {isStakeOverridden && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+                      {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
+                      {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
                     </td>
-                    <td className={`text-right font-semibold text-sm ${(rep.edge_pct ?? 0) > 0 ? 'text-success' : 'text-error'}`}>{(rep.edge_pct ?? 0) > 0 ? '+' : ''}{rep.edge_pct?.toFixed(1)}%</td>
+                    <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
                   </tr>
 
                   {isSelected && !isSkipped && (() => {
-                    const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
-                    const isPendingConfirm = pendingBet?.groupKey === group.key;
-                    const effectiveOdds = isPendingConfirm ? pendingBet!.actualOdds : (oddsOverride[groupOddsKey] ?? rep.odds1);
-                    const oddsChanged = isPendingConfirm ? effectiveOdds !== rep.odds1 : groupOddsKey in oddsOverride;
                     return (
                     <tr key={`${group.key}-expanded`}>
-                      <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
-                        <div className="px-3 py-2 bg-panel border-b border-border flex items-center gap-6 text-xs text-muted">
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Kelly: </span>
-                            <span className="text-text">{(() => {
-                              if (rep.fair_odds != null && rep.fair_odds > 1 && effectiveOdds > 1) {
-                                const p = 1 / rep.fair_odds;
-                                const k = (p * effectiveOdds - 1) / (effectiveOdds - 1);
-                                return `${(Math.max(0, k) * 100).toFixed(1)}%`;
-                              }
-                              return rep.kelly_fraction != null ? `${(rep.kelly_fraction * 100).toFixed(1)}%` : '-';
-                            })()}</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-muted2 uppercase tracking-wider">Odds: </span>
-                            {editingOdds === groupOddsKey ? (
-                              <input
-                                type="number"
-                                step="0.01"
-                                autoFocus
-                                defaultValue={effectiveOdds.toFixed(2)}
-                                className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                                onBlur={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val) && val >= 1.01) {
-                                    setOddsOverride(prev => ({ ...prev, [groupOddsKey]: val }));
-                                  }
-                                  setEditingOdds(null);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    (e.target as HTMLInputElement).blur();
-                                  } else if (e.key === 'Escape') {
-                                    setEditingOdds(null);
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <span
-                                onClick={() => setEditingOdds(groupOddsKey)}
-                                className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
-                                title="Click to adjust odds"
-                              >
-                                {effectiveOdds.toFixed(2)}
-                              </span>
-                            )}
-                            {oddsChanged && (
-                              <button
-                                onClick={() => setOddsOverride(prev => {
-                                  const next = { ...prev };
-                                  delete next[groupOddsKey];
-                                  return next;
-                                })}
-                                className="text-muted2 hover:text-text text-[10px] ml-0.5"
-                                title="Reset to original"
-                              >
-                                x
-                              </button>
-                            )}
-                          </div>
-                          {hasStake && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Return: </span>
-                              <span className="text-text">{(rep.final_stake! * effectiveOdds).toFixed(0)} kr</span>
-                              <span className="text-tabValue text-xs ml-1">(+{(rep.final_stake! * effectiveOdds - rep.final_stake!).toFixed(0)})</span>
-                            </div>
-                          )}
-                          <div>
-                            <span className="text-muted2 uppercase tracking-wider">Market: </span>
-                            <span className="text-text">{rep.market}</span>
-                          </div>
-                          {rep.point != null && (
-                            <div>
-                              <span className="text-muted2 uppercase tracking-wider">Line: </span>
-                              <span className="text-text">{rep.point}</span>
-                            </div>
-                          )}
-                        </div>
+                      <td colSpan={10} className="!p-0" onClick={e => e.stopPropagation()}>
                         {(() => {
                           const selIdx = selectedBetProvider[group.key] ?? 0;
                           const selOpp = opps[selIdx] || opps[0];
-                          const oppHasStake = selOpp.final_stake != null && selOpp.final_stake > 0;
+                          const effStake = stakeOverride[groupOddsKey] ?? selOpp.final_stake;
+                          const oppHasStake = effStake != null && effStake > 0;
                           const isTrigger = selOpp.bonus_status === 'trigger_needed';
                           const isFreebet = selOpp.bonus_status === 'freebet_available';
                           const skipReason = selOpp.skip_reason;
@@ -873,15 +949,13 @@ export function ValuePage({ providers }: ValuePageProps) {
                             : 'Place Bet';
                           const isPending = pendingBet?.groupKey === group.key;
 
-                          // Find recommended provider: the one with most wagering remaining in this group
-                          let recommended: { provider: string } | null = null;
-                          if (wageringPriority.size > 0 && opps.length > 1) {
-                            let maxRem = 0;
-                            for (const opp of opps) {
-                              const rem = wageringPriority.get(opp.provider1) ?? 0;
-                              if (rem > maxRem) { maxRem = rem; recommended = { provider: opp.provider1 }; }
-                            }
-                          }
+                          // Dot color based on allocation score
+                          const getDotClass = (opp: any) => {
+                            if (opp.is_daily_capped) return 'bg-error';
+                            if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
+                            if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
+                            return 'bg-muted/40';
+                          };
 
                           return (
                           <div className="px-3 py-2 bg-panel">
@@ -911,23 +985,24 @@ export function ValuePage({ providers }: ValuePageProps) {
                                     onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
                                     className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                                   >
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === selOpp.provider1 ? 'bg-tabValue' : (balanceMap.get(selOpp.provider1) ?? 0) > 0 ? 'bg-success' : 'bg-muted/40'}`} />
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
                                     <span className="truncate">
                                       <ProviderName name={selOpp.provider1} />
-                                      {selOpp.final_stake != null && selOpp.final_stake > 0 ? ` ${selOpp.final_stake.toFixed(0)} kr` : ''}
-                                      {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                                      {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
+                                      {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                                     </span>
                                     <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                   </button>
                                   {providerDropdownOpen === group.key && (
                                     <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
                                       {opps.map((opp, i) => {
-                                        const s = opp.final_stake != null && opp.final_stake > 0 ? ` ${opp.final_stake.toFixed(0)} kr` : '';
-                                        const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                                        const oppStake = stakeOverride[groupOddsKey] ?? opp.final_stake;
+                                        const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
+                                        const tag = (opp as any).is_daily_capped ? ' [CAP]'
+                                          : opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                                           : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                                           : opp.skip_reason ? ` (${opp.skip_reason})`
                                           : '';
-                                        const hasBal = (balanceMap.get(opp.provider1) ?? 0) > 0;
                                         return (
                                           <button
                                             key={opp.id}
@@ -938,7 +1013,7 @@ export function ValuePage({ providers }: ValuePageProps) {
                                             }}
                                             className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                                           >
-                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${recommended?.provider === opp.provider1 ? 'bg-tabValue' : hasBal ? 'bg-success' : 'bg-muted/40'}`} />
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
                                             <span className="truncate">
                                               <ProviderName name={opp.provider1} />{s}{tag}
                                             </span>
@@ -985,7 +1060,7 @@ export function ValuePage({ providers }: ValuePageProps) {
               <tbody>
                 <tr>
                   <td className="text-muted">Match</td>
-                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.display_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.display_away)}</td>
+                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.display_home ?? freebetPopup.opp.prov_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.display_away ?? freebetPopup.opp.prov_away)}</td>
                 </tr>
                 <tr>
                   <td className="text-muted">Stake</td>
@@ -1019,218 +1094,3 @@ export function ValuePage({ providers }: ValuePageProps) {
 }
 
 
-function resolveOutcomeName(opp: Opportunity): string {
-  const outcome = opp.outcome1;
-  const point = opp.point != null ? ` ${opp.point}` : '';
-  if (outcome === 'home') return `${displayTeamName(opp.home_team, opp.display_home)}${point}`;
-  if (outcome === 'away') return `${displayTeamName(opp.away_team, opp.display_away)}${point}`;
-  if (outcome === 'draw') return 'Draw';
-  if (outcome === 'over') return `Over${point}`;
-  if (outcome === 'under') return `Under${point}`;
-  return outcome;
-}
-
-
-// --- Boost helpers ---
-
-function formatEventTime(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-    if (diffMs <= 0) return 'started';
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-    if (diffHrs < 24) { if (diffMin < 60) return `in ${diffMin}m`; const remMin = diffMin % 60; return remMin > 0 ? `in ${diffHrs}h ${remMin}m` : `in ${diffHrs}h`; }
-    if (diffDays < 7) return date.toLocaleDateString('sv-SE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    return date.toLocaleDateString('sv-SE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  } catch { return ''; }
-}
-
-function formatTimeRemaining(isoString: string): string {
-  try {
-    const date = new Date(isoString);
-    const diffMs = date.getTime() - Date.now();
-    if (diffMs <= 0) return 'expired';
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHrs = Math.floor(diffMin / 60);
-    const diffDays = Math.floor(diffHrs / 24);
-    if (diffMin < 60) return `${diffMin}m left`;
-    if (diffHrs < 24) { const remMin = diffMin % 60; return remMin > 0 ? `${diffHrs}h ${remMin}m` : `${diffHrs}h left`; }
-    if (diffDays < 7) return `${diffDays}d ${diffHrs % 24}h`;
-    return `${diffDays}d left`;
-  } catch { return ''; }
-}
-
-function isFutureDate(isoString: string): boolean {
-  try { return new Date(isoString).getTime() > Date.now(); } catch { return false; }
-}
-
-
-// --- Boost Expanded Row ---
-
-function BoostExpandedRow({ special, groupKey, providers, stakePreview, isLoadingPreview, isPlacing, pendingBet, selectedProviderIdx, onSelectProvider, onStartPlaceBet, onConfirmBet, onCancelPending, onUpdatePendingOdds, oddsOverride, editingOdds, onEditOdds, onSetOdds, onResetOdds, onCancelEdit, betError, balanceMap, wageringPriority }: {
-  special: SpecialItem;
-  groupKey: string;
-  providers: string[];
-  stakePreview: StakePreviewResult | null;
-  isLoadingPreview: boolean;
-  isPlacing: boolean;
-  pendingBet: { groupKey: string; special: SpecialItem; providerId: string; actualOdds: number; stake: number } | null;
-  selectedProviderIdx: number;
-  onSelectProvider: (idx: number) => void;
-  onStartPlaceBet: (providerId: string) => void;
-  onConfirmBet: () => void;
-  onCancelPending: () => void;
-  onUpdatePendingOdds: (val: number) => void;
-  oddsOverride: number | null;
-  editingOdds: boolean;
-  onEditOdds: () => void;
-  onSetOdds: (val: number) => void;
-  onResetOdds: () => void;
-  onCancelEdit: () => void;
-  betError: string | null;
-  balanceMap: Map<string, number>;
-  wageringPriority: Map<string, number>;
-}) {
-  void groupKey;
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [dropdownOpen]);
-
-  const stake = stakePreview ? Math.min(stakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0);
-  const effectiveOdds = oddsOverride ?? special.boosted_odds ?? 0;
-  const oddsChanged = oddsOverride != null;
-  const potentialReturn = stake * effectiveOdds;
-  const potentialProfit = potentialReturn - stake;
-
-  // Find recommended provider: the one with most wagering remaining in this group
-  let recommended: { provider: string } | null = null;
-  if (wageringPriority.size > 0 && providers.length > 1) {
-    let maxRem = 0;
-    for (const pid of providers) {
-      const rem = wageringPriority.get(pid) ?? 0;
-      if (rem > maxRem) { maxRem = rem; recommended = { provider: pid }; }
-    }
-  }
-
-  const selProvider = providers[selectedProviderIdx] || providers[0];
-
-  const getDotColor = (pid: string) => {
-    if (recommended?.provider === pid) return 'bg-tabValue';
-    if ((balanceMap.get(pid) ?? 0) > 0) return 'bg-success';
-    return 'bg-muted/40';
-  };
-
-  return (
-    <div className="px-3 py-2 bg-panel">
-      {isLoadingPreview ? (<div className="text-muted text-sm">Loading...</div>) : stakePreview ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-6 text-xs text-muted flex-wrap">
-            <div><span className="text-muted2 uppercase tracking-wider">Kelly: </span><span className="text-text">{(stakePreview.kelly_fraction * 100).toFixed(1)}%</span></div>
-            <div className="flex items-center gap-1">
-              <span className="text-muted2 uppercase tracking-wider">Odds: </span>
-              {editingOdds ? (
-                <input
-                  type="number" step="0.01" autoFocus defaultValue={effectiveOdds.toFixed(2)}
-                  className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                  onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) onSetOdds(val); else onCancelEdit(); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') onCancelEdit(); }}
-                />
-              ) : (
-                <span onClick={onEditOdds} className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${oddsChanged ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`} title="Click to adjust odds">
-                  {effectiveOdds.toFixed(2)}
-                </span>
-              )}
-              {oddsChanged && <button onClick={onResetOdds} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-            </div>
-            <div><span className="text-muted2 uppercase tracking-wider">Return: </span><span className="text-text">{potentialReturn.toFixed(0)} kr</span><span className="text-tabValue text-xs ml-1">(+{potentialProfit.toFixed(0)})</span></div>
-          </div>
-          {special.llm_reasoning && (
-            <div className="text-muted2 text-[10px] leading-relaxed">
-              <span className="uppercase tracking-wider">{special.llm_confidence || 'low'}: </span>
-              {special.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center gap-2">
-            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
-            {stakePreview.skip_reason ? (
-              <span className="text-muted text-xs bg-border px-2 py-1">{stakePreview.skip_reason}</span>
-            ) : pendingBet ? (
-              <>
-                <button
-                  onClick={onConfirmBet}
-                  disabled={isPlacing || pendingBet.actualOdds < 1.01}
-                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                >
-                  {isPlacing ? '...' : 'Confirm'}
-                </button>
-                <span className="text-muted text-xs">@ {pendingBet.actualOdds.toFixed(2)}</span>
-                <button onClick={onCancelPending} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
-              </>
-            ) : (
-              <>
-                <div className="relative" ref={dropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setDropdownOpen(prev => !prev)}
-                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
-                  >
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(selProvider)}`} />
-                    <span className="truncate">
-                      <ProviderName name={selProvider} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
-                    </span>
-                    <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  </button>
-                  {dropdownOpen && (
-                    <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
-                      {providers.map((pid, i) => {
-                        return (
-                          <button
-                            key={pid}
-                            type="button"
-                            onClick={() => {
-                              onSelectProvider(i);
-                              setDropdownOpen(false);
-                            }}
-                            className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selectedProviderIdx ? 'bg-panel text-text' : 'text-muted'}`}
-                          >
-                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotColor(pid)}`} />
-                            <span className="truncate">
-                              <ProviderName name={pid} /> {stake > 0 ? `${stake.toFixed(0)} kr` : ''}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                <button
-                  onClick={() => onStartPlaceBet(providers[selectedProviderIdx] || providers[0])}
-                  disabled={stake <= 0 || isPlacing}
-                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity whitespace-nowrap"
-                >
-                  {isPlacing ? '...' : 'Place Bet'}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      ) : (<div className="text-muted text-sm">No data</div>)}
-    </div>
-  );
-}

@@ -203,9 +203,7 @@ class ProfileRepo:
                 if record.bonus_type == "bonusdeposit":
                     # Two-phase bonusdeposit: trigger met → unlock bonus money
                     # Add bonus to balance and start main wagering phase
-                    # wagering_requirement during trigger = deposit (1x), so we
-                    # recover it for the (deposit+bonus)×mult formula
-                    deposit = record.wagering_requirement
+                    deposit = record.deposit_amount or record.wagering_requirement
                     self.adjust_balance(profile_id, provider_id, record.bonus_amount)
                     wager_req = (deposit + record.bonus_amount) * record.wagering_multiplier
                     if wager_req <= 0:
@@ -287,11 +285,12 @@ class ProfileRepo:
         main_wagering_multiplier: float = 12.0,
         main_min_odds: float = 1.80,
         deadline_days: int | None = None,
+        deposit_amount: float | None = None,
     ) -> dict:
         """Start two-phase bonus: trigger first, then main wagering.
 
         Phase 1 (trigger_needed): wager deposit×multiplier at trigger_odds to unlock bonus.
-        Phase 2 (in_progress): bonus added to balance, wager bonus×multiplier at main_min_odds.
+        Phase 2 (in_progress): bonus added to balance, wager (deposit+bonus)×multiplier at main_min_odds.
         """
         record = self.db.query(ProfileProviderBonus).filter(
             ProfileProviderBonus.profile_id == profile_id,
@@ -306,10 +305,11 @@ class ProfileRepo:
             bonus_type="bonusdeposit",
             bonus_amount=bonus_amount,
             wagering_multiplier=main_wagering_multiplier,
-            wagering_requirement=trigger_wagering,   # Phase 1: wager deposit×1
+            wagering_requirement=trigger_wagering,   # Phase 1: deposit × trigger_multiplier
             wagered_amount=0.0,
             min_odds=trigger_min_odds,               # Phase 1: trigger odds
             main_min_odds=main_min_odds,             # Saved for phase 2
+            deposit_amount=deposit_amount,           # Original deposit for phase 2 calc
             claimed_at=now,
             expires_at=expires,
             updated_at=now,

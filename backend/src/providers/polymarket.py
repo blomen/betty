@@ -1,6 +1,8 @@
 from typing import List, Any, Optional
+from datetime import datetime, timezone, timedelta
 import logging
 import json
+import re
 from ..core import Retriever, StandardEvent
 
 logger = logging.getLogger(__name__)
@@ -123,7 +125,13 @@ class PolymarketRetriever(Retriever):
     # Analysis shows: $0 = 92% untraded, $1-100 = 41% untraded, $100+ = 20% untraded
     MIN_VOLUME = 100
 
-    def __init__(self, config: dict, transport=None):
+    def __init__(self, config: dict, transport=None, circuit_breaker=None, rate_limit_config=None):
+        if transport is None:
+            from ..core import HttpTransport
+            transport = HttpTransport(
+                circuit_breaker=circuit_breaker,
+                rate_limit_config=rate_limit_config,
+            )
         super().__init__(config, transport)
         self.base_url = config.get("base_url", "https://gamma-api.polymarket.com")
         self.clob_url = config.get("clob_url", "https://clob.polymarket.com")
@@ -255,6 +263,42 @@ class PolymarketRetriever(Retriever):
 
             offset += page_limit
             page += 1
+
+        # Phase 1b: Catch-up — also fetch recently closed events (last 48h)
+        # Prevents data loss when extraction gaps occur (e.g., scheduler downtime).
+        # Polymarket events close immediately on game resolution, so any extraction
+        # gap means permanently missed events unless we catch up here.
+        seen_ids = {item.get("id") for item in all_raw}
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        closed_offset = 0
+        closed_count = 0
+        while True:
+            closed_params = {
+                "active": "true",
+                "closed": "true",
+                "tag_id": self.game_bets_tag_id,
+                "end_date_min": cutoff,
+                "order": "endDate",
+                "ascending": "false",
+                "limit": page_limit,
+                "offset": closed_offset,
+            }
+            url = f"{self.base_url}/events"
+            closed_data = await self.transport.get(url, params=closed_params)
+            if not closed_data:
+                break
+            for item in closed_data:
+                if item.get("id") not in seen_ids:
+                    all_raw.append(item)
+                    seen_ids.add(item.get("id"))
+                    closed_count += 1
+            if len(closed_data) < page_limit:
+                break
+            closed_offset += page_limit
+        if closed_count:
+            logger.info(
+                f"[{self.provider_id}] Catch-up: added {closed_count} recently closed events"
+            )
 
         # Phase 2: Collect CLOB token IDs from markets that pass basic filters
         # Pre-filtering avoids fetching prices for markets we'll discard anyway
@@ -403,11 +447,28 @@ class PolymarketRetriever(Retriever):
                         f"skipped {len(ml_candidates)-1} lower-volume moneyline markets"
                     )
 
+        # Collect esports map winner markets (child_moneyline → moneyline_m{N})
+        # Keep highest-volume per map number
+        map_winner_by_num: dict[int, tuple] = {}
+        for m_data in item.get("markets", []):
+            mw = self._parse_map_winner_market(m_data, home, away)
+            if mw:
+                vol = float(m_data.get("volume", 0) or 0)
+                # Extract map number from type (moneyline_m1 → 1)
+                map_num = int(mw["type"].split("_m")[1])
+                if map_num not in map_winner_by_num or vol > map_winner_by_num[map_num][1]:
+                    map_winner_by_num[map_num] = (mw, vol)
+        for mw, _ in map_winner_by_num.values():
+            markets.append(mw)
+
         # Collect spread/total markets (both football and non-football)
+        # Also collect esports map_handicap as spread
         spread_candidates = []
         total_candidates = []
         for m_data in item.get("markets", []):
             s = self._parse_spread_market(m_data, home, away)
+            if not s:
+                s = self._parse_map_handicap_market(m_data, home, away)
             if s:
                 spread_candidates.append((s, float(m_data.get("volume", 0) or 0)))
             t = self._parse_total_market(m_data)
@@ -426,18 +487,30 @@ class PolymarketRetriever(Retriever):
         for s, _ in spread_by_point.values():
             markets.append(s)
 
-        for t, _ in total_candidates:
+        # Deduplicate total markets per point — same event can have multiple
+        # O/U markets at the same line (e.g. one active, one dead 50/50).
+        # Keep highest-volume per point to avoid stale prices overwriting real ones.
+        total_by_point: dict[float, tuple] = {}
+        for t, vol in total_candidates:
+            pt = t["outcomes"][0]["point"] if t["outcomes"] else 0
+            if pt not in total_by_point or vol > total_by_point[pt][1]:
+                total_by_point[pt] = (t, vol)
+        for t, _ in total_by_point.values():
             markets.append(t)
 
         if not markets:
             return None  # Skip events without valid markets
 
-        # Inject event_slug into provider_meta for all markets
-        if event_slug:
-            for m in markets:
-                meta = m.get("provider_meta", {})
+        # Inject event_slug + Polymarket display names into provider_meta for all markets
+        for m in markets:
+            meta = m.get("provider_meta", {})
+            if event_slug:
                 meta["event_slug"] = event_slug
-                m["provider_meta"] = meta
+            if home:
+                meta["poly_home"] = home
+            if away:
+                meta["poly_away"] = away
+            m["provider_meta"] = meta
 
         # Parse live score data from Polymarket's sports data feed
         live_state = self._parse_live_state(item)
@@ -503,8 +576,6 @@ class PolymarketRetriever(Retriever):
         - Tennis: "7-6(7-3), 6-7(5-7), 6-3" → count sets won → (2, 1)
         - Esports BO: "000-000|2-1|Bo3" → (2, 1)  [middle segment is map/game score]
         """
-        import re
-
         s = score_str.strip()
         if not s:
             return None
@@ -632,6 +703,56 @@ class PolymarketRetriever(Retriever):
                 except (json.JSONDecodeError, ValueError, TypeError):
                     pass
 
+            # Extract resolved total/spread market outcomes from outcomePrices
+            resolved_markets = {}
+            for m in item.get("markets", []):
+                q = m.get("question", "")
+                prices_raw = m.get("outcomePrices", "[]")
+                outcomes_raw = m.get("outcomes", "[]")
+                try:
+                    prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+                    prices = [float(p) for p in prices]
+                    outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+
+                    if len(prices) != 2 or not any(p >= 0.99 for p in prices):
+                        continue
+                    winner_idx = next(i for i, p in enumerate(prices) if p >= 0.99)
+                    if winner_idx >= len(outcomes):
+                        continue
+
+                    # Total market: "Team vs Team: O/U 226.5"
+                    if " O/U " in q and "1H O/U" not in q:
+                        point_match = re.search(r'O/U\s+(\d+\.?\d*)', q)
+                        if point_match:
+                            pt = float(point_match.group(1))
+                            winner_name = outcomes[winner_idx].lower().strip()
+                            if winner_name in ("over", "under"):
+                                # Format key to match bet.market (e.g., "total_226.5")
+                                pt_str = str(int(pt)) if pt == int(pt) else str(pt)
+                                resolved_markets[f"total_{pt_str}"] = winner_name
+
+                    # Spread market: "Spread: TeamName (-2.5)"
+                    elif q.startswith("Spread:") and not q.startswith("1H Spread"):
+                        point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', q)
+                        team_match = re.search(r'Spread:\s*(.+?)\s*\(', q)
+                        if point_match and team_match:
+                            favored_point = float(point_match.group(1))
+                            favored_team = team_match.group(1).strip()
+                            from ..matching import normalize_outcome
+                            favored_side = normalize_outcome(favored_team, home, away)
+                            winner_outcome = outcomes[winner_idx]
+                            winner_side = normalize_outcome(winner_outcome, home, away)
+                            if winner_side in ("home", "away") and favored_side in ("home", "away"):
+                                # Store with home-perspective point (matching DB convention)
+                                if favored_side == "home":
+                                    home_point = favored_point
+                                else:
+                                    home_point = -favored_point
+                                pt_str = str(int(home_point)) if home_point == int(home_point) else str(home_point)
+                                resolved_markets[f"spread_{pt_str}"] = winner_side
+                except (json.JSONDecodeError, ValueError, TypeError, StopIteration):
+                    pass
+
             resolved.append({
                 "polymarket_id": str(item.get("id", "")),
                 "slug": item.get("slug", ""),
@@ -645,6 +766,7 @@ class PolymarketRetriever(Retriever):
                 "away_score": live_state.get("away_score"),
                 "match_status": "finished",
                 "winner_team": winner_team,
+                "resolved_markets": resolved_markets or None,
             })
 
         logger.info(f"[{self.provider_id}] Fetched {len(resolved)} resolved events (from {len(all_raw)} closed)")
@@ -652,7 +774,6 @@ class PolymarketRetriever(Retriever):
 
     def _parse_teams(self, title: str) -> tuple[str, str]:
         """Extract home and away teams from event title."""
-        import re
         clean_title = title
 
         # Strip common suffixes
@@ -759,6 +880,8 @@ class PolymarketRetriever(Retriever):
 
         if "basketball" in tags or "nba" in tags:
             return "basketball"
+        elif "baseball" in tags or "mlb" in tags:
+            return "baseball"
         elif "football" in tags or "soccer" in tags:
             return "football"
         elif "nfl" in tags:
@@ -790,8 +913,6 @@ class PolymarketRetriever(Retriever):
     def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
         """Parse a single market (moneyline only - skips totals/spreads)."""
         try:
-            import re
-
             # Skip non-moneyline markets based on question text
             question = data.get("question", "")
             question_lower = question.lower()
@@ -931,7 +1052,6 @@ class PolymarketRetriever(Retriever):
         Detection: question starts with "Spread:" but NOT "1H Spread".
         Example: "Spread: Pistons (-2.5)" → spread market with point=-2.5 for Pistons.
         """
-        import re
         try:
             question = data.get("question", "")
 
@@ -980,11 +1100,23 @@ class PolymarketRetriever(Retriever):
             favored_norm = normalize_outcome(favored_team, home, away)
 
             clob_ids = self._parse_clob_token_ids(data)
+            # Determine the other team's normalized label
+            other_norm = "away" if favored_norm == "home" else "home"
             result_outcomes = []
             for i, (name, p) in enumerate(zip(outcomes, prices)):
                 if p <= 0.02:
                     continue
-                norm = normalize_outcome(name, home, away)
+                # "Yes" = favored team covers the spread, "No" = other team.
+                # Do NOT use normalize_outcome on "Yes"/"No" — the keyword fast
+                # path always maps Yes→home which is wrong when the question
+                # names the away team.
+                name_lower = name.strip().lower()
+                if name_lower == "yes":
+                    norm = favored_norm
+                elif name_lower == "no":
+                    norm = other_norm
+                else:
+                    norm = normalize_outcome(name, home, away)
                 if norm not in ('home', 'away'):
                     continue
                 # Favored team gets the point from the question, other gets opposite
@@ -1013,7 +1145,6 @@ class PolymarketRetriever(Retriever):
         Detection: question contains " O/U " but NOT "1H O/U" and NOT player props.
         Example: "Knicks vs. Pistons: O/U 222.5" → total market with point=222.5.
         """
-        import re
         try:
             question = data.get("question", "")
 
@@ -1089,6 +1220,152 @@ class PolymarketRetriever(Retriever):
                 return None
 
             return {"type": "total", "outcomes": result_outcomes}
+        except Exception:
+            return None
+
+    # Map number extraction from question text for child_moneyline
+    _MAP_PATTERNS = {
+        "map 1": 1, "map 2": 2, "map 3": 3, "map 4": 4, "map 5": 5,
+        "game 1": 1, "game 2": 2, "game 3": 3, "game 4": 4, "game 5": 5,
+    }
+
+    def _parse_map_winner_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+        """Parse an esports map/game winner market (child_moneyline).
+
+        Detection: sportsMarketType == 'child_moneyline' or question contains
+        'Map N Winner' / 'Game N Winner' patterns.
+        Returns moneyline_m{N} market type.
+        """
+        try:
+            smt = data.get("sportsMarketType", "")
+            if smt != "child_moneyline":
+                return None
+
+            question = data.get("question", "")
+            question_lower = question.lower()
+
+            # Determine map number from question
+            map_num = None
+            for pattern, num in self._MAP_PATTERNS.items():
+                if pattern in question_lower:
+                    map_num = num
+                    break
+            if not map_num:
+                return None
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Parse outcome prices
+            prices_raw = data.get("outcomePrices", "[]")
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+            prices = [float(p) for p in prices]
+
+            outcomes_raw = data.get("outcomes", [])
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            # Skip dead/illiquid markets
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            clob_ids = self._parse_clob_token_ids(data)
+            from ..matching import normalize_outcome
+            formatted_outcomes = []
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
+                if p <= 0.02:
+                    continue
+                norm = normalize_outcome(name, home, away)
+                if norm not in ('home', 'away'):
+                    continue
+                token_id = clob_ids[i] if i < len(clob_ids) else None
+                price = self._get_clob_price(token_id, p) if token_id else p
+                formatted_outcomes.append({
+                    "name": norm,
+                    "odds": self._price_to_odds(price),
+                })
+
+            if len(formatted_outcomes) != 2:
+                return None
+
+            return {"type": f"moneyline_m{map_num}", "outcomes": formatted_outcomes}
+        except Exception:
+            return None
+
+    def _parse_map_handicap_market(self, data: dict, home: str, away: str) -> Optional[dict]:
+        """Parse an esports map handicap market.
+
+        Detection: sportsMarketType == 'map_handicap'.
+        Format: "Map Handicap: TeamA (-1.5) vs TeamB (+1.5)"
+        or "Game Handicap: AL (-1.5) vs Weibo Gaming (+1.5)"
+        Outcomes are team names (not Yes/No).
+        Maps to 'spread' market type (same as Pinnacle period 0 spread).
+        """
+        try:
+            smt = data.get("sportsMarketType", "")
+            if smt != "map_handicap":
+                return None
+
+            question = data.get("question", "")
+
+            # Volume filter
+            volume = float(data.get("volume", 0) or 0)
+            if volume < self.MIN_VOLUME:
+                return None
+
+            # Extract the first point value (favored team's handicap)
+            point_match = re.search(r'\(([+-]?\d+\.?\d*)\)', question)
+            if not point_match:
+                return None
+            favored_point = float(point_match.group(1))
+
+            # Parse outcomes and prices — outcomes are full team names
+            outcomes_raw = data.get("outcomes", "[]")
+            prices_raw = data.get("outcomePrices", "[]")
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else (prices_raw or [])
+
+            if len(outcomes) != 2 or len(prices) != 2:
+                return None
+
+            prices = [float(p) for p in prices]
+
+            if all(p == 0.5 for p in prices):
+                return None
+            if not any(0.02 < p < 0.98 for p in prices):
+                return None
+
+            # Normalize outcome team names to home/away
+            from ..matching import normalize_outcome
+            clob_ids = self._parse_clob_token_ids(data)
+            result_outcomes = []
+            for i, (name, p) in enumerate(zip(outcomes, prices)):
+                if p <= 0.02:
+                    continue
+                norm = normalize_outcome(name, home, away)
+                if norm not in ('home', 'away'):
+                    continue
+                # First outcome in question gets favored_point, second gets opposite
+                # Determine from position: outcome[0] = favored team (listed first in question)
+                point = favored_point if i == 0 else -favored_point
+                token_id = clob_ids[i] if i < len(clob_ids) else None
+                price = self._get_clob_price(token_id, p) if token_id else p
+                result_outcomes.append({
+                    "name": norm,
+                    "odds": self._price_to_odds(price),
+                    "point": point,
+                })
+
+            if len(result_outcomes) != 2:
+                return None
+
+            return {"type": "spread", "outcomes": result_outcomes}
         except Exception:
             return None
 
