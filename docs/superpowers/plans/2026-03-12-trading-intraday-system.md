@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-12-trading-system-design.md`
 
+**Implementation Notes:**
+- Use **relative imports** within `market_data/` (e.g., `from .levels import ...`, `from .detector import ...`) to match existing codebase style
+- Use **relative imports** in `repositories/` (e.g., `from ..db.models import ...`)
+- Gate 1 auto-data (VIX, DXY, yields) comes from existing `/api/trading/market/macro` endpoint (`macro_provider.py`)
+- `wolfe_wave.py`, `footprint.py`, and funding rate fetcher are **deferred to v2**
+
 ---
 
 ## File Map
@@ -35,12 +41,15 @@
 | `backend/src/market_data/setups/break_from_balance.py` | Break from Balance detector |
 | `backend/src/market_data/setups/fakeout.py` | Fakeout / Head Fake detector |
 | `backend/src/market_data/setups/news_directional.py` | News Directional detector |
+| `backend/src/market_data/scoring.py` | Scoring model + Kelly position sizing |
 | `backend/src/market_data/cot.py` | CFTC COT report weekly fetcher |
+
+> **Deferred to v2:** `wolfe_wave.py` (Wolfe Wave detector), `footprint.py` (footprint chart), funding rate fetcher.
 
 ### Backend — Modified Files
 | File | Changes |
 |---|---|
-| `backend/src/db/models.py` | Add `MarketTrade`, `MarketLevel`, `MarketContext` models; extend `MarketSession`, `TradingSignal` |
+| `backend/src/db/models.py` | Add `MarketTrade`, `MarketLevel`, `MarketContext`, `SessionMetric` models; extend `MarketSession`, `TradingSignal` |
 | `backend/src/repositories/market_repo.py` | Add methods for new tables |
 | `backend/src/services/market_service.py` | Add context gate CRUD, SSE stream generator, setup orchestration |
 | `backend/src/api/routes/market.py` | Add SSE endpoint, context endpoints, level endpoints |
@@ -140,7 +149,26 @@ class MarketContext(Base):
     )
 ```
 
-- [ ] **Step 4: Extend MarketSession with new columns**
+- [ ] **Step 4: Add SessionMetric model (ASPR/RF historical baselines)**
+
+```python
+class SessionMetric(Base):
+    """Permanent session metrics history for ASPR/RF baselines."""
+    __tablename__ = "session_metrics"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    date = Column(String, nullable=False)  # YYYY-MM-DD
+    rotation_factor = Column(Integer, nullable=True)
+    aspr = Column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "date", name="uq_session_metrics_symbol_date"),
+        Index("ix_session_metrics_symbol", "symbol"),
+    )
+```
+
+- [ ] **Step 5a: Extend MarketSession with new columns**
 
 Add these columns to the existing `MarketSession` class:
 
@@ -160,7 +188,7 @@ Add these columns to the existing `MarketSession` class:
     london_low = Column(Float, nullable=True)
 ```
 
-- [ ] **Step 5: Extend TradingSignal with new columns**
+- [ ] **Step 5b: Extend TradingSignal with new columns**
 
 Add these columns to the existing `TradingSignal` class:
 
@@ -198,7 +226,7 @@ git commit -m "feat: add MarketTrade, MarketLevel, MarketContext models + extend
 Add to `MarketRepo` class:
 
 ```python
-from src.db.models import MarketTrade, MarketLevel, MarketContext
+from src.db.models import MarketTrade, MarketLevel, MarketContext, SessionMetric
 
 # --- MarketTrade ---
 def bulk_insert_trades(self, trades: list[dict]):
@@ -258,6 +286,28 @@ def upsert_context(self, symbol: str, data: dict):
         self.db.add(ctx)
     self.db.commit()
     return ctx
+
+# --- SessionMetric ---
+def upsert_session_metric(self, symbol: str, date: str, rf: int, aspr: float):
+    """Insert or update session metric for ASPR/RF baselines."""
+    existing = self.db.query(SessionMetric).filter(
+        SessionMetric.symbol == symbol,
+        SessionMetric.date == date,
+    ).first()
+    if existing:
+        existing.rotation_factor = rf
+        existing.aspr = aspr
+    else:
+        self.db.add(SessionMetric(symbol=symbol, date=date, rotation_factor=rf, aspr=aspr))
+    self.db.commit()
+
+def get_historical_asprs(self, symbol: str, limit: int = 20) -> list[float]:
+    """Get recent ASPR values for percentile computation."""
+    rows = self.db.query(SessionMetric.aspr).filter(
+        SessionMetric.symbol == symbol,
+        SessionMetric.aspr.isnot(None),
+    ).order_by(SessionMetric.date.desc()).limit(limit).all()
+    return [r[0] for r in rows]
 ```
 
 - [ ] **Step 2: Verify import works**
@@ -318,7 +368,7 @@ class TickBuffer:
         return d
 
 
-class DabentoLiveStream:
+class DatabentoLiveStream:
     """Manages a persistent Databento live subscription."""
 
     def __init__(self, api_key: str, dataset: str = "GLBX.MDP3", symbol: str = "NQ.FUT"):
@@ -402,7 +452,7 @@ class DabentoLiveStream:
 
 - [ ] **Step 3: Verify import**
 
-Run: `cd backend && python -c "from src.market_data.stream import DabentoLiveStream; print('OK')"`
+Run: `cd backend && python -c "from src.market_data.stream import DatabentoLiveStream; print('OK')"`
 
 - [ ] **Step 4: Commit**
 
@@ -455,7 +505,7 @@ async def fetch_ohlcv_1d(
         symbols=[symbol],
         schema="ohlcv-1d",
         start=start.isoformat() if start else "2020-01-01",
-        end=end.isoformat() if end else datetime.utcnow().strftime("%Y-%m-%d"),
+        end=end.isoformat() if end else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     )
     bars = []
     for record in data:
@@ -486,7 +536,7 @@ async def fetch_ohlcv_1m(
         symbols=[symbol],
         schema="ohlcv-1m",
         start=start.isoformat() if start else "2025-01-01",
-        end=end.isoformat() if end else datetime.utcnow().strftime("%Y-%m-%d"),
+        end=end.isoformat() if end else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     )
     bars = []
     for record in data:
@@ -634,6 +684,7 @@ class OrderflowSignals:
     vsa_absorption: bool       # High volume + narrow spread
     tick_vol_accelerating: bool
     trapped_traders: bool
+    passive_active_ratio: float  # > 1.0 = more passive (limit) orders than aggressive
 
 
 def build_candle_flow(ticks: list[dict], period_seconds: int = 60) -> list[CandleFlow]:
@@ -746,6 +797,11 @@ def compute_signals(
     # Trapped traders: delta flipped after aggressive move in one direction
     trapped_traders = delta_unwind and abs(last.delta) > avg_volume * 0.3
 
+    # Passive/active ratio: total volume vs delta magnitude
+    total_vol = sum(c.volume for c in recent)
+    total_abs_delta = sum(abs(c.delta) for c in recent)
+    passive_active_ratio = (total_vol - total_abs_delta) / max(1, total_abs_delta)
+
     return OrderflowSignals(
         delta=total_delta,
         delta_aligned=delta_aligned,
@@ -756,6 +812,7 @@ def compute_signals(
         vsa_absorption=vsa_absorption,
         tick_vol_accelerating=tick_vol_accelerating,
         trapped_traders=trapped_traders,
+        passive_active_ratio=round(passive_active_ratio, 2),
     )
 ```
 
@@ -903,6 +960,10 @@ class SessionLevels:
     london_low: float | None = None
     ib_high: float | None = None
     ib_low: float | None = None
+    weekly_high: float | None = None
+    weekly_low: float | None = None
+    monthly_high: float | None = None
+    monthly_low: float | None = None
 
 
 def compute_volume_profile(
@@ -1032,11 +1093,11 @@ def compute_session_levels(
             levels.pdh = max(levels.pdh or h, h)
             levels.pdl = min(levels.pdl or l, l)
 
-        # Tokyo: 20:00-00:00 ET on prior evening
+        # Tokyo: 20:00 ET prior day to 02:00 ET current day
         if bar_date == yesterday and bar_time >= time(20, 0):
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
-        elif bar_date == today_et and bar_time < time(0, 0):
+        elif bar_date == today_et and bar_time < time(2, 0):
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
 
@@ -1050,14 +1111,98 @@ def compute_session_levels(
             levels.ib_high = max(levels.ib_high or h, h)
             levels.ib_low = min(levels.ib_low or l, l)
 
+        # Weekly H/L (current week, Mon-Fri RTH)
+        week_start = today_et - timedelta(days=today_et.weekday())
+        if week_start <= bar_date <= today_et and time(9, 30) <= bar_time < time(16, 0):
+            levels.weekly_high = max(levels.weekly_high or h, h)
+            levels.weekly_low = min(levels.weekly_low or l, l)
+
+        # Monthly H/L (current month RTH)
+        if bar_date.year == today_et.year and bar_date.month == today_et.month and time(9, 30) <= bar_time < time(16, 0):
+            levels.monthly_high = max(levels.monthly_high or h, h)
+            levels.monthly_low = min(levels.monthly_low or l, l)
+
     return levels
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Add order block and FVG detection**
+
+Append to `levels.py`:
+
+```python
+@dataclass
+class OrderBlock:
+    price_low: float
+    price_high: float
+    direction: str  # "bullish" or "bearish"
+    volume: int
+
+
+@dataclass
+class FairValueGap:
+    price_low: float
+    price_high: float
+    direction: str  # "bullish" or "bearish"
+
+
+def detect_order_blocks(bars: list[dict], min_move_pct: float = 0.003) -> list[OrderBlock]:
+    """Detect order blocks: last candle before an impulsive move."""
+    blocks = []
+    if len(bars) < 3:
+        return blocks
+
+    for i in range(1, len(bars) - 1):
+        move = bars[i + 1]["close"] - bars[i]["close"]
+        move_pct = abs(move) / bars[i]["close"] if bars[i]["close"] > 0 else 0
+
+        if move_pct >= min_move_pct:
+            # Impulsive move detected — prior candle is the order block
+            ob = bars[i]
+            direction = "bullish" if move > 0 else "bearish"
+            blocks.append(OrderBlock(
+                price_low=ob["low"],
+                price_high=ob["high"],
+                direction=direction,
+                volume=ob.get("volume", 0),
+            ))
+
+    return blocks
+
+
+def detect_fvgs(bars: list[dict]) -> list[FairValueGap]:
+    """Detect Fair Value Gaps: gap between candle N-1 and N+1 that candle N didn't fill."""
+    gaps = []
+    if len(bars) < 3:
+        return gaps
+
+    for i in range(1, len(bars) - 1):
+        prev_bar = bars[i - 1]
+        next_bar = bars[i + 1]
+
+        # Bullish FVG: prev_bar high < next_bar low (gap up)
+        if prev_bar["high"] < next_bar["low"]:
+            gaps.append(FairValueGap(
+                price_low=prev_bar["high"],
+                price_high=next_bar["low"],
+                direction="bullish",
+            ))
+
+        # Bearish FVG: prev_bar low > next_bar high (gap down)
+        if prev_bar["low"] > next_bar["high"]:
+            gaps.append(FairValueGap(
+                price_low=next_bar["high"],
+                price_high=prev_bar["low"],
+                direction="bearish",
+            ))
+
+    return gaps
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add backend/src/market_data/levels.py
-git commit -m "feat: add level engine (VP, VWAP bands, session levels, IB)"
+git commit -m "feat: add level engine (VP, VWAP, session levels, IB, order blocks, FVGs)"
 ```
 
 ---
@@ -1209,10 +1354,25 @@ Add to `backend/src/api/routes/market.py`:
 from sse_starlette.sse import EventSourceResponse
 import asyncio, json
 
+# Module-level singleton for live stream
+_live_stream = None
+
+def _get_live_stream():
+    """Get or create the singleton DatabentoLiveStream."""
+    global _live_stream
+    if _live_stream is None:
+        import os
+        api_key = os.environ.get("DATABENTO_API_KEY")
+        if not api_key:
+            return None
+        from src.market_data.stream import DatabentoLiveStream
+        _live_stream = DatabentoLiveStream(api_key=api_key)
+    return _live_stream
+
 @router.get("/stream")
 async def market_stream(symbol: str = "NQ"):
     """SSE stream of real-time tick data, candles, and level touches."""
-    from src.market_data.stream import DabentoLiveStream
+    from src.market_data.stream import DatabentoLiveStream
 
     # Get or create the singleton stream
     stream = _get_live_stream()
@@ -1537,26 +1697,574 @@ git commit -m "feat: add setup detector package with orchestrator + poor_extreme
 
 ---
 
-### Task 13–19: Remaining Setup Detectors
+### Task 13: IB Break Detector
 
-Each remaining setup detector follows the same pattern as `poor_extreme.py`. Create one file per setup:
+**Files:** Create: `backend/src/market_data/setups/ib_break.py`
 
-- [ ] **Step 1: Create `ib_break.py`** — IB Break: price exits first 60-min range with delta + tick vol confirmation
-- [ ] **Step 2: Create `spring.py`** — Spring: minor penetration below support, low volume, delta snap-back
-- [ ] **Step 3: Create `sfp.py`** — SFP: price breaks swing H/L, CLOSES back inside, delta unwind + trapped traders
-- [ ] **Step 4: Create `rule_80.py`** — 80% Rule: opens outside prior VA, trades back inside for 2 TPO periods, targets opposite VA extreme
-- [ ] **Step 5: Create `fakeout.py`** — Fakeout: convincing break reverses, delta divergence, POC/VWAP holds
-- [ ] **Step 6: Create `break_from_balance.py`** — Break from Balance: 3+ days overlapping VAs, ASPR compressed, delta sustained
-- [ ] **Step 7: Create `double_distribution.py`** — Double Distribution: 2 VP peaks, secondary weaker, rotation to primary
-- [ ] **Step 8: Create `news_directional.py`** — News: pre-scheduled release, directional candle post-spike, VSA on M1
-- [ ] **Step 9: Commit all**
+- [ ] **Step 1: Create ib_break.py**
 
-```bash
-git add backend/src/market_data/setups/
-git commit -m "feat: add all 9 setup detectors"
+```python
+"""IB Break setup: price exits first 60-min range with conviction."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_ib_break(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect Initial Balance breakout — price exits IB range with delta + tick vol."""
+    candidates = []
+    ib_h = ctx.session_levels.ib_high
+    ib_l = ctx.session_levels.ib_low
+    if not ib_h or not ib_l:
+        return []
+
+    ib_range = ib_h - ib_l
+    if ib_range <= 0:
+        return []
+
+    # Break above IB → long
+    if ctx.last_price > ib_h and ctx.macro_bias != "bear":
+        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+            candidates.append(SetupCandidate(
+                setup_type="ib_break",
+                setup_name="IB Break Long",
+                direction="long",
+                level_touched="ib_high",
+                entry_price=ctx.last_price,
+                stop_price=ib_h - ib_range * 0.25,  # SL = 25% back inside IB
+                target_1=ib_h + ib_range * 1.0,      # TP1 = 1x IB extension
+                target_2=ib_h + ib_range * 1.5,      # TP2 = 1.5x
+                target_3=ctx.session_levels.weekly_high,
+                base_score=70.0,
+            ))
+
+    # Break below IB → short
+    if ctx.last_price < ib_l and ctx.macro_bias != "bull":
+        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+            candidates.append(SetupCandidate(
+                setup_type="ib_break",
+                setup_name="IB Break Short",
+                direction="short",
+                level_touched="ib_low",
+                entry_price=ctx.last_price,
+                stop_price=ib_l + ib_range * 0.25,
+                target_1=ib_l - ib_range * 1.0,
+                target_2=ib_l - ib_range * 1.5,
+                target_3=ctx.session_levels.weekly_low,
+                base_score=70.0,
+            ))
+
+    return candidates
 ```
 
-Each detector takes `DetectorContext` and returns `list[SetupCandidate]` or empty list. All follow the spec's entry/SL/TP rules from Section 6 of the design doc.
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/ib_break.py
+git commit -m "feat: add IB Break setup detector"
+```
+
+---
+
+### Task 14: Spring Detector
+
+**Files:** Create: `backend/src/market_data/setups/spring.py`
+
+- [ ] **Step 1: Create spring.py**
+
+```python
+"""Spring / Liquidity Trap: minor penetration below support, low volume, snap-back."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_spring(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect Wyckoff spring — brief dip below support on low volume, then reversal."""
+    candidates = []
+
+    # Check support levels: VAL, PDL, session low
+    support_levels = [
+        ("val", ctx.vp.val),
+        ("pdl", ctx.session_levels.pdl),
+    ]
+
+    for level_name, level_price in support_levels:
+        if not level_price or level_price <= 0:
+            continue
+
+        # Spring = price dipped below level but currently above (snap-back)
+        penetration = level_price - ctx.last_price
+        if -level_price * 0.003 < penetration < level_price * 0.001:
+            # Price is near/just above level after dipping below
+            if ctx.last_price >= level_price * 0.998:
+                # Confirm: delta unwind (sellers exhausted) or low volume
+                if ctx.orderflow.delta_unwind or not ctx.orderflow.tick_vol_accelerating:
+                    if ctx.macro_bias != "bear":
+                        candidates.append(SetupCandidate(
+                            setup_type="spring",
+                            setup_name=f"Spring at {level_name.upper()}",
+                            direction="long",
+                            level_touched=level_name,
+                            entry_price=ctx.last_price,
+                            stop_price=level_price * 0.997,  # SL below spring low
+                            target_1=ctx.vp.poc,
+                            target_2=ctx.vp.vah,
+                            target_3=ctx.session_levels.pdh,
+                            base_score=72.0,
+                        ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/spring.py
+git commit -m "feat: add Spring/Liquidity Trap setup detector"
+```
+
+---
+
+### Task 15: SFP Detector
+
+**Files:** Create: `backend/src/market_data/setups/sfp.py`
+
+- [ ] **Step 1: Create sfp.py**
+
+```python
+"""Swing Failure Pattern: price breaks swing H/L then CLOSES back inside."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_sfp(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect SFP — price pierces a level but closes back inside (requires close confirmation)."""
+    candidates = []
+
+    # SFP at highs → short (price broke above resistance but closed back below)
+    resistance_levels = [
+        ("vah", ctx.vp.vah),
+        ("pdh", ctx.session_levels.pdh),
+        ("ib_high", ctx.session_levels.ib_high),
+    ]
+
+    for level_name, level_price in resistance_levels:
+        if not level_price or level_price <= 0:
+            continue
+        # Price is now below level (closed back) and delta shows unwind
+        if ctx.last_price < level_price and ctx.last_price > level_price * 0.997:
+            if ctx.orderflow.delta_unwind and ctx.orderflow.trapped_traders:
+                if ctx.macro_bias != "bull":
+                    candidates.append(SetupCandidate(
+                        setup_type="sfp",
+                        setup_name=f"SFP Short at {level_name.upper()}",
+                        direction="short",
+                        level_touched=level_name,
+                        entry_price=ctx.last_price,
+                        stop_price=level_price * 1.002,  # SL above the swing high
+                        target_1=ctx.vp.poc,
+                        target_2=ctx.vp.val,
+                        target_3=ctx.session_levels.pdl,
+                        base_score=75.0,
+                    ))
+
+    # SFP at lows → long
+    support_levels = [
+        ("val", ctx.vp.val),
+        ("pdl", ctx.session_levels.pdl),
+        ("ib_low", ctx.session_levels.ib_low),
+    ]
+
+    for level_name, level_price in support_levels:
+        if not level_price or level_price <= 0:
+            continue
+        if ctx.last_price > level_price and ctx.last_price < level_price * 1.003:
+            if ctx.orderflow.delta_unwind and ctx.orderflow.trapped_traders:
+                if ctx.macro_bias != "bear":
+                    candidates.append(SetupCandidate(
+                        setup_type="sfp",
+                        setup_name=f"SFP Long at {level_name.upper()}",
+                        direction="long",
+                        level_touched=level_name,
+                        entry_price=ctx.last_price,
+                        stop_price=level_price * 0.998,
+                        target_1=ctx.vp.poc,
+                        target_2=ctx.vp.vah,
+                        target_3=ctx.session_levels.pdh,
+                        base_score=75.0,
+                    ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/sfp.py
+git commit -m "feat: add SFP (Swing Failure Pattern) setup detector"
+```
+
+---
+
+### Task 16: 80% Rule Detector
+
+**Files:** Create: `backend/src/market_data/setups/rule_80.py`
+
+- [ ] **Step 1: Create rule_80.py**
+
+```python
+"""80% Rule: opens outside prior VA, trades back inside for 2+ TPO periods."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_rule_80(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect 80% Rule — price opens outside VA, re-enters, targets opposite VA extreme."""
+    candidates = []
+    vah = ctx.vp.vah
+    val = ctx.vp.val
+    poc = ctx.vp.poc
+
+    if not vah or not val or vah <= val:
+        return []
+
+    # Check TPO profile: need at least 2 letters inside VA after opening outside
+    # Use ib_tpo_count as proxy for time spent inside VA
+    if ctx.tpo.ib_tpo_count < 4:  # 2 TPO periods × ~2 price levels each
+        return []
+
+    # Opened above VA, now trading inside → target VAL (80% chance)
+    if ctx.session_levels.ib_high and ctx.session_levels.ib_high > vah:
+        if val < ctx.last_price < vah:
+            candidates.append(SetupCandidate(
+                setup_type="rule_80",
+                setup_name="80% Rule Short (opened above VA)",
+                direction="short",
+                level_touched="vah",
+                entry_price=ctx.last_price,
+                stop_price=vah * 1.002,
+                target_1=poc,
+                target_2=val,
+                target_3=ctx.session_levels.pdl,
+                base_score=78.0,  # High base: 80% historical probability
+            ))
+
+    # Opened below VA, now trading inside → target VAH
+    if ctx.session_levels.ib_low and ctx.session_levels.ib_low < val:
+        if val < ctx.last_price < vah:
+            candidates.append(SetupCandidate(
+                setup_type="rule_80",
+                setup_name="80% Rule Long (opened below VA)",
+                direction="long",
+                level_touched="val",
+                entry_price=ctx.last_price,
+                stop_price=val * 0.998,
+                target_1=poc,
+                target_2=vah,
+                target_3=ctx.session_levels.pdh,
+                base_score=78.0,
+            ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/rule_80.py
+git commit -m "feat: add 80% Rule setup detector"
+```
+
+---
+
+### Task 17: Fakeout Detector
+
+**Files:** Create: `backend/src/market_data/setups/fakeout.py`
+
+- [ ] **Step 1: Create fakeout.py**
+
+```python
+"""Fakeout / Head Fake: convincing break that reverses, POC/VWAP holds."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_fakeout(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect fakeout — apparent breakout reverses with delta divergence."""
+    candidates = []
+    poc = ctx.vp.poc
+    vwap = ctx.vwap.vwap if ctx.vwap else None
+
+    if not poc:
+        return []
+
+    # Key confirmation: delta divergence (price says breakout, delta says no)
+    if not ctx.orderflow.delta_divergence:
+        return []
+
+    # Fakeout above resistance → short
+    resistance_levels = [
+        ("vah", ctx.vp.vah),
+        ("pdh", ctx.session_levels.pdh),
+    ]
+
+    for level_name, level_price in resistance_levels:
+        if not level_price:
+            continue
+        # Price broke above then returned near level
+        if ctx.last_price <= level_price * 1.001 and ctx.last_price >= level_price * 0.997:
+            if ctx.macro_bias != "bull":
+                # Confirm POC/VWAP is holding (price above both)
+                anchor_holds = (vwap and ctx.last_price > vwap * 0.998) or ctx.last_price > poc * 0.998
+                if anchor_holds or ctx.orderflow.vsa_absorption:
+                    candidates.append(SetupCandidate(
+                        setup_type="fakeout",
+                        setup_name=f"Fakeout Short at {level_name.upper()}",
+                        direction="short",
+                        level_touched=level_name,
+                        entry_price=ctx.last_price,
+                        stop_price=level_price * 1.003,
+                        target_1=poc,
+                        target_2=ctx.vp.val,
+                        target_3=ctx.session_levels.pdl,
+                        base_score=68.0,
+                    ))
+
+    # Fakeout below support → long
+    support_levels = [
+        ("val", ctx.vp.val),
+        ("pdl", ctx.session_levels.pdl),
+    ]
+
+    for level_name, level_price in support_levels:
+        if not level_price:
+            continue
+        if ctx.last_price >= level_price * 0.999 and ctx.last_price <= level_price * 1.003:
+            if ctx.macro_bias != "bear":
+                anchor_holds = (vwap and ctx.last_price < vwap * 1.002) or ctx.last_price < poc * 1.002
+                if anchor_holds or ctx.orderflow.vsa_absorption:
+                    candidates.append(SetupCandidate(
+                        setup_type="fakeout",
+                        setup_name=f"Fakeout Long at {level_name.upper()}",
+                        direction="long",
+                        level_touched=level_name,
+                        entry_price=ctx.last_price,
+                        stop_price=level_price * 0.997,
+                        target_1=poc,
+                        target_2=ctx.vp.vah,
+                        target_3=ctx.session_levels.pdh,
+                        base_score=68.0,
+                    ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/fakeout.py
+git commit -m "feat: add Fakeout/Head Fake setup detector"
+```
+
+---
+
+### Task 18: Break from Balance + Double Distribution Detectors
+
+**Files:**
+- Create: `backend/src/market_data/setups/break_from_balance.py`
+- Create: `backend/src/market_data/setups/double_distribution.py`
+
+- [ ] **Step 1: Create break_from_balance.py**
+
+```python
+"""Break from Balance: 3+ days of overlapping VAs, ASPR compressed, then breakout."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_break_from_balance(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect Break from Balance — range compression then directional break."""
+    candidates = []
+    vah = ctx.vp.vah
+    val = ctx.vp.val
+    poc = ctx.vp.poc
+
+    if not vah or not val or vah <= val:
+        return []
+
+    va_range = vah - val
+
+    # Break above balance → long
+    if ctx.last_price > vah:
+        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+            if ctx.day_type != "neutral":  # Neutral = still balanced
+                candidates.append(SetupCandidate(
+                    setup_type="break_from_balance",
+                    setup_name="Break from Balance Long",
+                    direction="long",
+                    level_touched="vah",
+                    entry_price=ctx.last_price,
+                    stop_price=vah - va_range * 0.15,  # Tight SL just inside VA
+                    target_1=vah + va_range * 0.5,
+                    target_2=vah + va_range * 1.0,
+                    target_3=ctx.session_levels.weekly_high,
+                    base_score=72.0,
+                ))
+
+    # Break below balance → short
+    if ctx.last_price < val:
+        if ctx.orderflow.delta_aligned and ctx.orderflow.tick_vol_accelerating:
+            if ctx.day_type != "neutral":
+                candidates.append(SetupCandidate(
+                    setup_type="break_from_balance",
+                    setup_name="Break from Balance Short",
+                    direction="short",
+                    level_touched="val",
+                    entry_price=ctx.last_price,
+                    stop_price=val + va_range * 0.15,
+                    target_1=val - va_range * 0.5,
+                    target_2=val - va_range * 1.0,
+                    target_3=ctx.session_levels.weekly_low,
+                    base_score=72.0,
+                ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Create double_distribution.py**
+
+```python
+"""Double Distribution Reversal: 2 VP peaks, secondary weaker, rotation back to primary."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_double_distribution(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect Double Distribution — bimodal VP with weaker secondary peak."""
+    candidates = []
+    if not ctx.vp.levels or len(ctx.vp.levels) < 10:
+        return []
+
+    # Find two peaks in VP distribution
+    poc = ctx.vp.poc
+    poc_vol = max(l.volume for l in ctx.vp.levels)
+
+    # Look for secondary peak: > 50% of POC volume, at least 5 ticks away
+    secondary_peaks = []
+    for level in ctx.vp.levels:
+        if level.volume > poc_vol * 0.5 and abs(level.price - poc) > 5 * 0.25:
+            secondary_peaks.append(level)
+
+    if not secondary_peaks:
+        return []
+
+    # Secondary peak above POC → price should rotate down to primary
+    for sec in secondary_peaks:
+        if sec.price > poc and sec.volume < poc_vol:
+            # Price near secondary peak → expect rotation down to POC
+            if abs(ctx.last_price - sec.price) < (sec.price - poc) * 0.2:
+                if ctx.macro_bias != "bull":
+                    candidates.append(SetupCandidate(
+                        setup_type="double_distribution",
+                        setup_name="Double Distribution Short (rotate to POC)",
+                        direction="short",
+                        level_touched="secondary_vp_peak",
+                        entry_price=ctx.last_price,
+                        stop_price=sec.price * 1.002,
+                        target_1=poc,
+                        target_2=ctx.vp.val,
+                        base_score=68.0,
+                    ))
+
+        elif sec.price < poc and sec.volume < poc_vol:
+            if abs(ctx.last_price - sec.price) < (poc - sec.price) * 0.2:
+                if ctx.macro_bias != "bear":
+                    candidates.append(SetupCandidate(
+                        setup_type="double_distribution",
+                        setup_name="Double Distribution Long (rotate to POC)",
+                        direction="long",
+                        level_touched="secondary_vp_peak",
+                        entry_price=ctx.last_price,
+                        stop_price=sec.price * 0.998,
+                        target_1=poc,
+                        target_2=ctx.vp.vah,
+                        base_score=68.0,
+                    ))
+
+    return candidates
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add backend/src/market_data/setups/break_from_balance.py backend/src/market_data/setups/double_distribution.py
+git commit -m "feat: add Break from Balance + Double Distribution detectors"
+```
+
+---
+
+### Task 19: News Directional Detector
+
+**Files:** Create: `backend/src/market_data/setups/news_directional.py`
+
+- [ ] **Step 1: Create news_directional.py**
+
+```python
+"""News Directional: post-release directional candle with VSA confirmation."""
+from .detector import DetectorContext, SetupCandidate
+
+
+def detect_news_directional(ctx: DetectorContext) -> list[SetupCandidate]:
+    """Detect News Directional — directional M1 candle after scheduled release.
+
+    Note: This detector relies on tick_vol_accelerating as proxy for news spike.
+    Real news calendar integration is deferred to v2.
+    """
+    candidates = []
+
+    # News spike proxy: very high tick volume + strong delta alignment
+    if not ctx.orderflow.tick_vol_accelerating:
+        return []
+    if not ctx.orderflow.delta_aligned:
+        return []
+
+    # Must also have VSA confirmation (big candle, not absorption)
+    if ctx.orderflow.vsa_absorption:
+        return []  # Absorption = rejection, not directional
+
+    # Bullish news candle → long
+    if ctx.orderflow.delta > 0 and ctx.orderflow.cvd_trend == "rising":
+        if ctx.macro_bias != "bear":
+            candidates.append(SetupCandidate(
+                setup_type="news_directional",
+                setup_name="News Directional Long",
+                direction="long",
+                level_touched="news_spike",
+                entry_price=ctx.last_price,
+                stop_price=ctx.last_price * 0.997,  # Tight stop: 0.3%
+                target_1=ctx.vp.vah if ctx.vp.vah and ctx.vp.vah > ctx.last_price else ctx.last_price * 1.005,
+                target_2=ctx.session_levels.pdh,
+                target_3=ctx.session_levels.weekly_high,
+                base_score=65.0,  # Lower base: news is noisy
+            ))
+
+    # Bearish news candle → short
+    if ctx.orderflow.delta < 0 and ctx.orderflow.cvd_trend == "falling":
+        if ctx.macro_bias != "bull":
+            candidates.append(SetupCandidate(
+                setup_type="news_directional",
+                setup_name="News Directional Short",
+                direction="short",
+                level_touched="news_spike",
+                entry_price=ctx.last_price,
+                stop_price=ctx.last_price * 1.003,
+                target_1=ctx.vp.val if ctx.vp.val and ctx.vp.val < ctx.last_price else ctx.last_price * 0.995,
+                target_2=ctx.session_levels.pdl,
+                target_3=ctx.session_levels.weekly_low,
+                base_score=65.0,
+            ))
+
+    return candidates
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add backend/src/market_data/setups/news_directional.py
+git commit -m "feat: add News Directional setup detector"
+```
 
 ---
 
@@ -1582,6 +2290,7 @@ def score_candidate(
     macro_aligned: bool,
     rf: int | None = None,
     aspr_percentile: float | None = None,
+    timeframe_confluence: bool = False,
 ) -> float:
     """Apply adjustment factors to candidate's base score.
 
@@ -1612,11 +2321,17 @@ def score_candidate(
     # Trapped traders
     if orderflow.trapped_traders:
         score += 8
+    # Timeframe confluence (same setup visible on HTF)
+    if timeframe_confluence:
+        score += 10
     # RF/ASPR session context
     if rf is not None and aspr_percentile is not None:
         if aspr_percentile < 0.2:  # Compressed = breakout setups stronger
             if candidate.setup_type in ("ib_break", "break_from_balance"):
                 score += 5
+    # Passive/active ratio: high ratio at key level = absorption
+    if orderflow.passive_active_ratio > 2.0:
+        score += 5
 
     return max(0, min(100, score))
 
@@ -1679,11 +2394,45 @@ def rr_tp2(self) -> float | None:
     return round(reward / risk, 2)
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Add R:R filter and Kelly position sizing to scoring.py**
+
+Add to `backend/src/market_data/scoring.py`:
+
+```python
+def filter_by_rr(candidates: list, min_rr: float = 1.5) -> list:
+    """Filter candidates: only surface if TP1 R:R >= min_rr."""
+    return [c for c in candidates if c.rr_tp1 and c.rr_tp1 >= min_rr]
+
+
+def kelly_position_size(
+    win_rate: float,
+    avg_rr: float,
+    account_balance: float,
+    max_risk_pct: float = 0.02,
+) -> float:
+    """Kelly criterion position sizing, capped at max_risk_pct of account.
+
+    Returns dollar risk amount (not contracts).
+    """
+    if win_rate <= 0 or avg_rr <= 0:
+        return 0.0
+    # Kelly fraction: f* = (bp - q) / b where b = avg_rr, p = win_rate, q = 1 - p
+    b = avg_rr
+    p = win_rate
+    q = 1 - p
+    kelly_f = (b * p - q) / b
+    # Half-Kelly for safety
+    half_kelly = kelly_f / 2
+    # Cap at max_risk_pct
+    risk_fraction = max(0, min(half_kelly, max_risk_pct))
+    return round(account_balance * risk_fraction, 2)
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
-git add backend/src/market_data/setups/detector.py
-git commit -m "feat: add R:R computation to SetupCandidate"
+git add backend/src/market_data/setups/detector.py backend/src/market_data/scoring.py
+git commit -m "feat: add R:R computation, R:R filter, and Kelly position sizing"
 ```
 
 ---
@@ -1731,40 +2480,286 @@ git commit -m "refactor: rename trading Scanner tab to Intraday"
 
 ---
 
-### Task 23: Update Intraday Page with Layer A Gates + Level Panel
+### Task 23a: Layer A Gate Cards Component
 
-**Files:**
-- Modify: `frontend/src/components/Terminal/pages/TradingIntradayPage.tsx`
+**Files:** Modify: `frontend/src/components/Terminal/pages/TradingIntradayPage.tsx`
 
-- [ ] **Step 1: Add Layer A context gate cards above existing confirmation strip**
+- [ ] **Step 1: Add Layer A gate cards above existing confirmation strip**
 
-Add 3 cards (Gate 1: Macro, Gate 2: Structure, Gate 3: Day Type) that read from `getMarketContext()` and write via `updateMarketContext()`. Each card has a dropdown/select for its value. Show auto-data alongside (COT, VIX, value migration for Gate 1).
+Add before the existing confirmation cards in the page's JSX:
 
-- [ ] **Step 2: Add Session Metrics Row**
+```tsx
+// State for context gates
+const [context, setContext] = useState<MarketContext | null>(null);
 
-Below gates, show live: RF, ASPR (vs baseline), IB H/L, VWAP, POC.
+useEffect(() => {
+  api.getMarketContext().then(setContext);
+}, []);
 
-- [ ] **Step 3: Update opportunity table columns**
+const updateGate = async (field: string, value: string) => {
+  await api.updateMarketContext({ [field]: value });
+  const updated = await api.getMarketContext();
+  setContext(updated);
+};
 
-Add columns: `TP2`, `TP3`, `Level Touched`, `R:R`. Show `setup_category` as colored badge.
+// In the render, add above existing confirmation cards:
+<div className="flex gap-2 mb-3">
+  {/* Gate 1: Macro */}
+  <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
+    <div className="text-xs text-zinc-400 mb-1">Gate 1: Macro</div>
+    <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+      value={context?.macro_bias || ''}
+      onChange={e => updateGate('macro_bias', e.target.value)}>
+      <option value="">—</option>
+      <option value="bull">Bull</option>
+      <option value="bear">Bear</option>
+      <option value="neutral">Neutral</option>
+    </select>
+    <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white mt-1"
+      value={context?.risk_mode || ''}
+      onChange={e => updateGate('risk_mode', e.target.value)}>
+      <option value="">Risk Mode —</option>
+      <option value="risk_on">Risk On</option>
+      <option value="risk_off">Risk Off</option>
+      <option value="mixed">Mixed</option>
+    </select>
+  </div>
+  {/* Gate 2: Structure */}
+  <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
+    <div className="text-xs text-zinc-400 mb-1">Gate 2: Structure</div>
+    <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+      value={context?.structure || ''}
+      onChange={e => updateGate('structure', e.target.value)}>
+      <option value="">—</option>
+      <option value="uptrend">Uptrend (HH/HL)</option>
+      <option value="downtrend">Downtrend (LH/LL)</option>
+      <option value="ranging">Ranging</option>
+    </select>
+  </div>
+  {/* Gate 3: Day Type */}
+  <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
+    <div className="text-xs text-zinc-400 mb-1">Gate 3: Day Type</div>
+    <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+      value={context?.day_type || ''}
+      onChange={e => updateGate('day_type', e.target.value)}>
+      <option value="">—</option>
+      <option value="trend">Trend</option>
+      <option value="normal">Normal</option>
+      <option value="normal_variation">Normal Variation</option>
+      <option value="neutral">Neutral</option>
+      <option value="composite">Composite</option>
+    </select>
+  </div>
+</div>
+```
 
-- [ ] **Step 4: Add expanded row L2 panel**
-
-In the expanded signal row, show live delta/CVD from `useMarketStream()`. Display confirmation signal checklist (delta aligned ✓, VSA absorption ✗, etc.).
-
-- [ ] **Step 5: Add Level Map section**
-
-Below the opportunity table, add a collapsible section listing all active levels from `market_levels` table, grouped by type: VP levels / VWAP bands / Session levels / Order blocks / FVGs / Single prints. Show current price position relative to nearest levels.
-
-- [ ] **Step 6: Verify frontend compiles**
-
-Run: `cd frontend && npx tsc --noEmit`
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add frontend/src/components/Terminal/pages/TradingIntradayPage.tsx
-git commit -m "feat: add Layer A gates, session metrics, updated opportunity table, L2 panel to Intraday page"
+git commit -m "feat: add Layer A context gate cards to Intraday page"
+```
+
+---
+
+### Task 23b: Session Metrics Row
+
+**Files:** Modify: `frontend/src/components/Terminal/pages/TradingIntradayPage.tsx`
+
+- [ ] **Step 1: Add session metrics row below gate cards**
+
+```tsx
+{/* Session Metrics Row — below gates, above table */}
+{session && (
+  <div className="flex gap-3 mb-3 text-xs">
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">RF:</span>{' '}
+      <span className={session.rotation_factor > 0 ? 'text-green-400' : session.rotation_factor < 0 ? 'text-red-400' : 'text-zinc-300'}>
+        {session.rotation_factor ?? '—'}
+      </span>
+    </div>
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">ASPR:</span>{' '}
+      <span className="text-zinc-200">{session.aspr?.toFixed(2) ?? '—'}</span>
+      {session.aspr_percentile != null && (
+        <span className="text-zinc-500 ml-1">({(session.aspr_percentile * 100).toFixed(0)}%ile)</span>
+      )}
+    </div>
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">IB:</span>{' '}
+      <span className="text-zinc-200">{session.ib_high?.toFixed(2) ?? '—'} / {session.ib_low?.toFixed(2) ?? '—'}</span>
+    </div>
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">VWAP:</span>{' '}
+      <span className="text-blue-400">{session.vwap?.toFixed(2) ?? '—'}</span>
+    </div>
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">POC:</span>{' '}
+      <span className="text-yellow-400">{session.poc?.toFixed(2) ?? '—'}</span>
+    </div>
+    <div className="bg-zinc-800 px-3 py-1.5 rounded">
+      <span className="text-zinc-400">Migration:</span>{' '}
+      <span className={session.value_migration === 'up' ? 'text-green-400' : session.value_migration === 'down' ? 'text-red-400' : 'text-zinc-300'}>
+        {session.value_migration ?? '—'}
+      </span>
+    </div>
+  </div>
+)}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add frontend/src/components/Terminal/pages/TradingIntradayPage.tsx
+git commit -m "feat: add session metrics row (RF, ASPR, IB, VWAP, POC) to Intraday"
+```
+
+---
+
+### Task 23c: Updated Table Columns + L2 Panel
+
+**Files:** Modify: `frontend/src/components/Terminal/pages/TradingIntradayPage.tsx`
+
+- [ ] **Step 1: Update opportunity table columns**
+
+In the table header, add columns after existing ones:
+
+```tsx
+<th className="px-2 py-1.5 text-left">Level</th>
+<th className="px-2 py-1.5 text-right">TP2</th>
+<th className="px-2 py-1.5 text-right">TP3</th>
+<th className="px-2 py-1.5 text-right">R:R</th>
+```
+
+In each table row:
+
+```tsx
+<td className="px-2 py-1.5 text-left">
+  <span className="bg-zinc-700 px-1.5 py-0.5 rounded text-xs">{signal.level_touched}</span>
+</td>
+<td className="px-2 py-1.5 text-right text-zinc-300">{signal.suggested_target_2?.toFixed(2) ?? '—'}</td>
+<td className="px-2 py-1.5 text-right text-zinc-300">{signal.suggested_target_3?.toFixed(2) ?? '—'}</td>
+<td className="px-2 py-1.5 text-right">
+  <span className={signal.rr_tp1 >= 2 ? 'text-green-400' : signal.rr_tp1 >= 1.5 ? 'text-yellow-400' : 'text-zinc-400'}>
+    {signal.rr_tp1?.toFixed(1) ?? '—'}
+  </span>
+</td>
+```
+
+Show `setup_category` as colored badge in the Setup column:
+
+```tsx
+const SETUP_COLORS: Record<string, string> = {
+  spring: 'bg-emerald-600', sfp: 'bg-blue-600', poor_extreme: 'bg-purple-600',
+  ib_break: 'bg-orange-600', rule_80: 'bg-cyan-600', fakeout: 'bg-red-600',
+  break_from_balance: 'bg-amber-600', double_distribution: 'bg-pink-600',
+  news_directional: 'bg-indigo-600',
+};
+// In column:
+<span className={`px-1.5 py-0.5 rounded text-xs ${SETUP_COLORS[signal.setup_category] || 'bg-zinc-600'}`}>
+  {signal.setup_category}
+</span>
+```
+
+- [ ] **Step 2: Add expanded row L2 panel**
+
+In the expanded row section (when a signal row is clicked), add:
+
+```tsx
+const { lastTick, connected } = useMarketStream();
+
+// In expanded content:
+<div className="bg-zinc-900 p-3 rounded mt-2">
+  <div className="text-xs text-zinc-400 mb-2">L2 Orderflow {connected ? '🟢' : '🔴'}</div>
+  <div className="flex gap-4 text-xs">
+    <div>Delta: <span className={lastTick?.delta_1m > 0 ? 'text-green-400' : 'text-red-400'}>
+      {lastTick?.delta_1m ?? 0}</span></div>
+    <div>CVD: <span className="text-zinc-200">{lastTick?.cvd ?? 0}</span></div>
+    <div>Last: <span className="text-zinc-200">{lastTick?.price?.toFixed(2)}</span></div>
+  </div>
+  {/* Confirmation checklist from signal conditions */}
+  {signal.conditions && (() => {
+    const of = JSON.parse(signal.conditions)?.orderflow;
+    if (!of) return null;
+    return (
+      <div className="flex gap-3 mt-2 text-xs">
+        <span>{of.delta_aligned ? '✓' : '✗'} Delta</span>
+        <span>{of.vsa_absorption ? '✓' : '✗'} VSA</span>
+        <span>{of.delta_divergence ? '✓' : '✗'} Divergence</span>
+        <span>{of.tick_vol_accelerating ? '✓' : '✗'} Tick Vol</span>
+        <span>{of.trapped_traders ? '✓' : '✗'} Trapped</span>
+      </div>
+    );
+  })()}
+</div>
+```
+
+- [ ] **Step 3: Verify frontend compiles**
+
+Run: `cd frontend && npx tsc --noEmit`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add frontend/src/components/Terminal/pages/TradingIntradayPage.tsx
+git commit -m "feat: add updated table columns, setup badges, and L2 expanded panel"
+```
+
+---
+
+### Task 23d: Level Map Section
+
+**Files:** Modify: `frontend/src/components/Terminal/pages/TradingIntradayPage.tsx`
+
+- [ ] **Step 1: Add level map collapsible section below table**
+
+```tsx
+const [levels, setLevels] = useState<any[]>([]);
+const [showLevels, setShowLevels] = useState(false);
+
+const loadLevels = async () => {
+  const res = await fetch(`/api/trading/market/levels?symbol=NQ`);
+  const data = await res.json();
+  setLevels(data);
+  setShowLevels(true);
+};
+
+// After the opportunity table:
+<div className="mt-3">
+  <button onClick={loadLevels} className="text-xs text-zinc-400 hover:text-zinc-200">
+    {showLevels ? '▼' : '▶'} Level Map ({levels.length} levels)
+  </button>
+  {showLevels && levels.length > 0 && (
+    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+      {['vp', 'vwap', 'session', 'order_block', 'fvg', 'single_print'].map(type => {
+        const filtered = levels.filter(l => l.level_type.includes(type));
+        if (!filtered.length) return null;
+        return (
+          <div key={type} className="bg-zinc-800 p-2 rounded">
+            <div className="text-zinc-400 mb-1 uppercase">{type.replace('_', ' ')}</div>
+            {filtered.map((l, i) => (
+              <div key={i} className="flex justify-between">
+                <span className="text-zinc-300">{l.level_type}</span>
+                <span className="text-zinc-200">{l.price_low.toFixed(2)}{l.price_high !== l.price_low ? `-${l.price_high.toFixed(2)}` : ''}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  )}
+</div>
+```
+
+- [ ] **Step 2: Verify frontend compiles**
+
+Run: `cd frontend && npx tsc --noEmit`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add frontend/src/components/Terminal/pages/TradingIntradayPage.tsx
+git commit -m "feat: add Level Map section to Intraday page"
 ```
 
 ---
@@ -1776,23 +2771,133 @@ git commit -m "feat: add Layer A gates, session metrics, updated opportunity tab
 
 - [ ] **Step 1: Extend compute_session to use new level engine**
 
-In `MarketService.compute_session()`, after existing AMT analysis, call:
-- `compute_session_levels()` for PDH/PDL, Tokyo/London/NY H/L
-- `compute_tpo_profile()` for TPO anomalies
-- `compute_rotation_factor()` and `compute_aspr()` for session metrics
-- `detect_value_migration()` from prior session
-- Store all new values in `MarketSession` extended columns
+Add these imports and calls at the end of `MarketService.compute_session()`:
+
+```python
+from src.market_data.levels import compute_session_levels, compute_volume_profile, compute_vwap_bands
+from src.market_data.tpo import compute_tpo_profile
+from src.market_data.metrics import compute_rotation_factor, compute_aspr, compute_aspr_percentile, detect_value_migration
+
+# Inside compute_session(), after existing AMT logic:
+
+# Compute session levels from 1-min bars
+bars_1m = [{"ts": t.ts, "high": t.price + 0.25, "low": t.price - 0.25} for t in trades]  # Approximate from ticks
+session_levels = compute_session_levels(bars_1m, session_date)
+session.pdh = session_levels.pdh
+session.pdl = session_levels.pdl
+session.tokyo_high = session_levels.tokyo_high
+session.tokyo_low = session_levels.tokyo_low
+session.london_high = session_levels.london_high
+session.london_low = session_levels.london_low
+
+# TPO from 30-min bars
+tpo = compute_tpo_profile(bars_30m)
+
+# Session metrics: RF from 30-min highs/lows
+highs_30m = [b["high"] for b in bars_30m]
+lows_30m = [b["low"] for b in bars_30m]
+rf = compute_rotation_factor(highs_30m, lows_30m)
+ranges_30m = [b["high"] - b["low"] for b in bars_30m]
+aspr = compute_aspr(ranges_30m)
+historical = self.repo.get_historical_asprs(symbol)
+aspr_pct = compute_aspr_percentile(aspr, historical)
+
+session.rotation_factor = rf
+session.aspr = aspr
+session.aspr_percentile = aspr_pct
+session.ib_tpo_count = tpo.ib_tpo_count
+
+# Value migration vs prior session
+prev_session = self.repo.get_previous_session(symbol)
+if prev_session and prev_session.vah and prev_session.val:
+    session.value_migration = detect_value_migration(
+        session.vah, session.val, prev_session.vah, prev_session.val
+    )
+
+# Persist session metric for baseline history
+self.repo.upsert_session_metric(symbol, session.date, rf, aspr)
+```
 
 - [ ] **Step 2: Extend run_scan to use new setup detectors**
 
-In `MarketService.run_scan()`, build `DetectorContext` from computed session + live orderflow, call `run_all_detectors()`, score each candidate with `score_candidate()`, filter by score ≥ 70, store as `TradingSignal` with new columns populated.
+Add to `MarketService.run_scan()`:
+
+```python
+from src.market_data.setups.detector import DetectorContext, run_all_detectors
+from src.market_data.orderflow import build_candle_flow, compute_signals
+from src.market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
+
+# Inside run_scan(), after computing session:
+
+# Build orderflow signals from recent ticks
+recent_ticks = self.repo.get_trades(symbol, start=session_start, end=now)
+tick_dicts = [{"ts": t.ts, "price": t.price, "size": t.size, "side": t.side} for t in recent_ticks]
+candles = build_candle_flow(tick_dicts, period_seconds=60)
+
+# Get context gates
+ctx_model = self.repo.get_context(symbol)
+direction = "long" if (ctx_model and ctx_model.macro_bias == "bull") else "short" if (ctx_model and ctx_model.macro_bias == "bear") else "long"
+orderflow = compute_signals(candles, direction)
+
+# Build detector context
+detector_ctx = DetectorContext(
+    vp=VolumeProfile(poc=session.poc, vah=session.vah, val=session.val, levels=[], single_prints=[]),
+    vwap=compute_vwap_bands(tick_dicts) if tick_dicts else None,
+    session_levels=session_levels,
+    tpo=tpo,
+    orderflow=orderflow,
+    last_price=tick_dicts[-1]["price"] if tick_dicts else 0,
+    macro_bias=ctx_model.macro_bias if ctx_model else None,
+    structure=ctx_model.structure if ctx_model else None,
+    day_type=ctx_model.day_type if ctx_model else None,
+)
+
+# Run all detectors
+raw_candidates = run_all_detectors(detector_ctx)
+
+# Score and filter
+scored = []
+for c in raw_candidates:
+    fits = day_type_fits_setup(detector_ctx.day_type, c.setup_type)
+    macro_ok = (c.direction == "long" and detector_ctx.macro_bias != "bear") or \
+               (c.direction == "short" and detector_ctx.macro_bias != "bull")
+    final_score = score_candidate(c, orderflow, fits, macro_ok, session.rotation_factor, session.aspr_percentile)
+    if final_score >= 70:
+        c.base_score = final_score
+        scored.append(c)
+
+# R:R filter: only TP1 >= 1.5
+scored = filter_by_rr(scored, min_rr=1.5)
+
+# Store as TradingSignal rows
+for c in scored:
+    signal = TradingSignal(
+        session_id=session.id,
+        symbol=symbol,
+        setup_type=c.setup_type,
+        setup_category=c.setup_type,
+        score=c.base_score,
+        direction=c.direction,
+        entry_price=c.entry_price,
+        suggested_stop=c.stop_price,
+        suggested_target=c.target_1,
+        suggested_target_2=c.target_2,
+        suggested_target_3=c.target_3,
+        level_touched=c.level_touched,
+        rr_tp1=c.rr_tp1,
+        rr_tp2=c.rr_tp2,
+        conditions=json.dumps({"orderflow": orderflow.__dict__}),
+    )
+    self.repo.db.add(signal)
+self.repo.db.commit()
+```
 
 - [ ] **Step 3: Add levels endpoint**
 
 ```python
 @router.get("/levels")
 async def get_levels(symbol: str = "NQ", date: str = None, svc: MarketService = Depends(_svc)):
-    levels = svc.repo.get_levels(symbol, date or datetime.utcnow().strftime("%Y-%m-%d"))
+    levels = svc.repo.get_levels(symbol, date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     return [{"level_type": l.level_type, "price_low": l.price_low, "price_high": l.price_high,
              "direction": l.direction, "session": l.session, "is_filled": l.is_filled} for l in levels]
 ```
