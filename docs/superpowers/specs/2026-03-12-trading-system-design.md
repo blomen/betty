@@ -29,6 +29,31 @@ The system is **rules-based, not ML-based**. Each component is explicit and audi
 
 ---
 
+## 0. Current State (What Already Exists)
+
+Before implementing anything, understand what is already live:
+
+| Component | Exists | Location |
+|---|---|---|
+| Market session computation | Yes | `backend/src/services/market_service.py` → `compute_session()` |
+| Session DB table | Yes | `market_sessions` (POC, VAH, VAL, VWAP bands, IB, overnight, delta, market_type, poor_high/low) |
+| Signal DB table | Yes | `trading_signals` (setup_type, score, conditions JSON, entry, stop, target×1, vwap, poc, vah, val) |
+| 4 auto-evaluated gates | Yes | `get_confirmations()` in MarketService: macro/span/fair_value/orderflow |
+| Scanner page UI | Yes | `TradingScannerPage.tsx` with confirmation strip + opportunity table |
+| Trade DB table | Yes | `trades` table |
+| Market routes | Yes | `backend/src/api/routes/market.py` |
+
+**What this spec adds vs replaces:**
+- The existing 4 auto-gates (`macro/span/fair_value/orderflow`) are **kept** and renamed as Layer B (L2 auto-confirmations)
+- The new 3 manual gates (Gate 1/2/3) are **added** as Layer A (contextual pre-filters) — they sit above the existing auto-gates
+- `market_sessions` is **extended** with new columns (RF, ASPR, IB TPO count, session baselines) rather than replaced
+- `trading_signals` is **extended** with `suggested_target_2`, `suggested_target_3`, `level_touched`, `setup_category` columns
+- `market_context` is a **new table** for manual gate persistence
+- `market_trades` is a **new table** for raw tick storage from Databento stream
+- `market_levels` is a **new table** for computed level snapshots (order blocks, FVGs, ledges, single prints)
+
+---
+
 ## 2. Data Layer
 
 ### Databento Standard Plan
@@ -48,6 +73,83 @@ The system is **rules-based, not ML-based**. Each component is explicit and audi
 - Session metrics history → `session_metrics` table (permanent, used for ASPR/RF baselines)
 - Manual context inputs → `market_context` table (persists macro bias, structure labels, day type)
 - Trade history → existing `trades` table (for per-setup win rate tracking)
+
+### New DB Tables
+
+**`market_trades`** (intraday tick storage, pruned nightly)
+```
+id          INTEGER PRIMARY KEY
+symbol      TEXT NOT NULL          -- "NQ"
+ts          DATETIME NOT NULL      -- UTC timestamp from Databento
+price       REAL NOT NULL
+size        INTEGER NOT NULL
+side        TEXT NOT NULL          -- "B" (bid aggressor) | "A" (ask aggressor)
+INDEX(symbol, ts)
+```
+
+**`market_levels`** (computed level snapshot per session)
+```
+id          INTEGER PRIMARY KEY
+symbol      TEXT NOT NULL
+date        TEXT NOT NULL          -- "2026-03-12"
+level_type  TEXT NOT NULL          -- "order_block" | "fvg" | "ledge" | "single_print" | "pdh" | "pdl" | "session_high" | "session_low" | "tokyo_high" | "tokyo_low" | "london_high" | "london_low"
+session     TEXT                   -- "tokyo" | "london" | "ny" | null
+price_low   REAL NOT NULL
+price_high  REAL NOT NULL          -- = price_low for single-price levels
+direction   TEXT                   -- "bullish" | "bearish" | null
+is_filled   BOOLEAN DEFAULT FALSE
+created_at  DATETIME
+INDEX(symbol, date, level_type)
+```
+
+**`market_context`** (manual gate persistence)
+```
+id            INTEGER PRIMARY KEY
+symbol        TEXT NOT NULL
+updated_at    DATETIME NOT NULL
+-- Gate 1
+macro_bias    TEXT                  -- "bull" | "bear" | "neutral"
+risk_mode     TEXT                  -- "risk_on" | "risk_off" | "mixed"
+cycle_phase   TEXT                  -- "early" | "mid" | "late" | "recession"
+-- Gate 2
+structure     TEXT                  -- "uptrend" | "downtrend" | "ranging"
+structure_hl  REAL                  -- last confirmed HL price (long invalidation below this)
+structure_lh  REAL                  -- last confirmed LH price (short invalidation above this)
+-- Gate 3
+day_type      TEXT                  -- "trend" | "normal" | "normal_variation" | "neutral" | "composite"
+-- VP anchors (Unix timestamps)
+vp_old_macro_start    INTEGER
+vp_ongoing_macro_start INTEGER
+vp_leg_start          INTEGER
+UNIQUE(symbol)
+```
+
+**`market_sessions` extensions** (add columns to existing table via migration)
+```
+-- New columns added to existing market_sessions:
+rotation_factor     INTEGER          -- running RF total for session
+aspr                REAL             -- average sub-period range
+aspr_percentile     REAL             -- percentile vs 1yr baseline (0.0–1.0)
+ib_tpo_count        INTEGER          -- number of TPO letters in IB
+value_migration     TEXT             -- "up" | "down" | "overlapping" | null
+pdh                 REAL             -- prior day high
+pdl                 REAL             -- prior day low
+tokyo_high          REAL
+tokyo_low           REAL
+london_high         REAL
+london_low          REAL
+```
+
+**`trading_signals` extensions** (add columns to existing table via migration)
+```
+-- New columns added to existing trading_signals:
+suggested_target_2  REAL             -- TP2
+suggested_target_3  REAL             -- TP3
+level_touched       TEXT             -- which level triggered the setup
+setup_category      TEXT             -- "spring" | "sfp" | "poor_extreme" | "ib_break" | "rule_80" | "double_dist" | "bfb" | "fakeout" | "news"
+rr_tp1              REAL             -- R:R to TP1
+rr_tp2              REAL             -- R:R to TP2
+```
 
 ---
 
@@ -126,6 +228,30 @@ Average of each 30-min candle's range across the session. Compared to 1-year dai
 - Average volume at session extremes
 - Typical delta behavior at exhaustion points
 When current session deviates from baseline → break from balance signal raised.
+
+---
+
+## 4b. Real-Time Transport
+
+The live L2 panel in expanded signal rows requires real-time data push from backend to frontend. Polling (the current `POST /scan` model) is insufficient for tick-by-tick delta/CVD.
+
+**Chosen transport: Server-Sent Events (SSE)**
+- Simpler than WebSocket for one-directional push
+- Fits FastAPI's `EventSourceResponse` (via `sse-starlette`)
+- Frontend consumes with native `EventSource` API
+
+**SSE endpoint:** `GET /api/trading/market/stream?symbol=NQ`
+
+**Stream events (JSON lines):**
+```
+event: tick        → {price, size, side, delta_running, cvd_running, ts}
+event: candle      → {open, high, low, close, volume, delta, vsa_signal, ts, period_mins}
+event: level_touch → {level_type, price, setup_type_candidate, direction}
+event: rf_update   → {rf, aspr, session_elapsed_mins}
+```
+
+Frontend hook: `useMarketStream(symbol)` — subscribes on mount, updates local state, disconnects on unmount.
+The expanded signal row consumes `useMarketStream` for the live L2 panel. Main scanner table still polls `GET /api/trading/market/signals` every 30s.
 
 ---
 
@@ -236,14 +362,8 @@ Each setup has: trigger conditions, required orderflow confirmations, SL rule, T
 - **TP1:** Midpoint of prior range; **TP2:** Opposite side of faked level
 - **Base win rate:** ~65%
 
-### Setup 9: Wolfe Wave (5th Wave)
-- **Trigger:** 5-wave converging wedge pattern — waves 1-4 form the structure, wave 5 reaches the convergence point of the 1-3 and 2-4 trendlines
-- **Key condition:** All 5 waves clearly visible; trendlines converge to a specific point (not arbitrary); proportional wave sizing
-- **Entry:** At convergence point (wave 5 extreme) with delta reversal confirmation
-- **Orderflow required:** Delta reversal at wave 5 extreme; VSA absorption
-- **SL:** Just beyond wave 5 extreme
-- **TP:** Intersection of 1-3 and 2-4 trendlines (the "sweet zone")
-- **Base win rate:** ~60%
+### Setup 9: Wolfe Wave (5th Wave) — DEFERRED TO V2
+Wolfe Wave requires a geometric pivot-detection algorithm (ZigZag with configurable swing %, trendline convergence test with ±X tick tolerance). Insufficient spec detail for v1 implementation. Deferred to a separate spec after v1 ships.
 
 ### Setup 10: News Directional
 - **Trigger:** Major economic release (pre-scheduled); price forms balance in 30 min before news; news fires → wait for "directional candle" (unidirectional, much larger than session average range)
@@ -322,6 +442,21 @@ SL and TP are computed automatically per setup type when an opportunity is detec
 **R:R filter:** Only surface opportunities where TP1 R:R ≥ 1.5. If TP1 is too close, promote TP2 as primary target.
 
 **Position sizing:** Kelly criterion applied using per-setup historical win rate and R:R. Capped at 2% account risk per trade (matching existing bankroll module).
+
+---
+
+## 9b. Gate Model Reconciliation
+
+The existing `TradingScannerPage` has 4 auto-evaluated gates: `macro / span / fair_value / orderflow`. These come from `get_confirmations()` in MarketService.
+
+**New model: 2-layer gate system**
+
+- **Layer A (new, manual):** Gate 1 / Gate 2 / Gate 3 — contextual pre-filters set by you. Shown as 3 new cards above the existing confirmation strip.
+- **Layer B (existing, auto):** The 4 existing auto-gates (`macro / span / fair_value / orderflow`) — kept as-is, renamed "Session Checks" in the UI.
+
+An opportunity surfaces only when: at least 1 Layer A gate set (not all null) AND Layer B score ≥ 2/4. This avoids hard-blocking on days you haven't set gates yet.
+
+**Timezone:** All Databento timestamps are UTC. Session boundary computations (IB = first 60 min of RTH, Tokyo = 20:00 ET = 01:00 UTC, London = 03:00 ET = 08:00 UTC) must convert using `pytz` / `zoneinfo` with US/Eastern. Never use naive datetimes for session windows.
 
 ---
 
@@ -407,47 +542,55 @@ Repositories and API routes follow existing patterns (`repositories/`, `services
 
 ## 12. Build Order (Implementation Phases)
 
-**Phase 1 — Data foundation (prerequisite for everything)**
-1. Databento stream client (live Trades + MBP-1)
-2. Historical OHLCV-1d + OHLCV-1m fetch
-3. DB schema: market_trades, market_levels, session_metrics, market_context
+**Phase 0 — Audit + migrations (prerequisite)**
+1. Audit existing `market_sessions`, `trading_signals` tables vs spec
+2. DB migrations: extend `market_sessions` + `trading_signals` with new columns
+3. Create `market_context`, `market_trades`, `market_levels` tables
 
-**Phase 2 — Level engine**
-4. VWAP + SD bands (simplest, uses live stream)
-5. Session levels: PDH/PDL, Tokyo/London/NY H/L (uses OHLCV-1m)
-6. Initial Balance detection (60-min from stream)
-7. Volume profile (4 anchors, uses Trades)
-8. TPO / Market Profile (uses live Trades, 30-min brackets)
-9. Session metrics: RF + ASPR
+**Phase 1 — Data foundation**
+4. Databento stream client (live Trades + MBP-1) — persistent async task in backend
+5. `market_trades` writer — store ticks, prune to current session on startup
+6. Historical OHLCV-1d + OHLCV-1m REST fetch utility
+7. COT fetcher (CFTC API, weekly)
 
-**Phase 3 — Context gates UI**
-10. Gate 1/2/3 input cards in Scanner page
-11. Context persistence API
+**Phase 2 — Confirmation signals (moved up — setups depend on these)**
+8. Per-candle delta + CVD from live stream
+9. VSA computation (vol + spread + close position relative to range)
+10. Tick volume acceleration/deceleration detection
+11. SSE stream endpoint (`GET /api/trading/market/stream`)
+12. Frontend `useMarketStream` hook
 
-**Phase 4 — Setup detector (setups in order of complexity)**
-12. Poor Extreme (simplest — level + volume threshold)
-13. 80% Rule (TPO-based, well-defined)
-14. IB Break (level + delta + tick volume)
-15. Spring (level penetration + delta snap)
-16. SFP (level break + close-back requirement)
-17. Fakeout (divergence detection)
-18. Break from Balance (ASPR + baseline metrics)
-19. Double Distribution (VP pattern)
-20. News Directional (scheduled event + candle size)
-21. Wolfe Wave (most complex — geometric pattern)
+**Phase 3 — Level engine**
+13. VWAP + SD bands (uses live stream)
+14. Session levels: PDH/PDL, Tokyo/London/NY H/L (UTC-aware, OHLCV-1m)
+15. Initial Balance detection (60-min from RTH open, UTC-aware)
+16. Volume profile (4 anchors, uses Trades — anchors from `market_context`)
+17. TPO / Market Profile (30-min brackets, single prints, ledges, poor extremes)
+18. Session metrics: RF + ASPR vs 1yr baseline
+19. Order blocks + FVG detection
 
-**Phase 5 — Confirmation layer + scoring**
-22. Per-candle delta + CVD
-23. VSA computation (vol + spread + close position)
-24. Tick volume acceleration
-25. Passive/active ratio
-26. Scoring model assembly
+**Phase 4 — Context gates**
+20. `market_context` read/write API
+21. Gate 1/2/3 input cards in Scanner page (above existing 4 auto-gate strip)
+22. Gate 1 auto-data display (COT, VIX, DXY, funding rate, value migration)
 
-**Phase 6 — Risk calculator + UI**
-27. SL/TP per setup type
-28. Opportunity table in Scanner UI
-29. Expanded row with L2 panel + two-step entry
-30. Level map panel
+**Phase 5 — Setup detector (in order of complexity)**
+23. Poor Extreme
+24. 80% Rule
+25. IB Break
+26. Spring
+27. SFP (close-back requirement)
+28. Fakeout
+29. Break from Balance
+30. Double Distribution
+31. News Directional
+
+**Phase 6 — Scoring + risk + UI**
+32. Scoring model (base win rate from trades history, adjustments)
+33. SL/TP calculator per setup type (TP1/TP2/TP3)
+34. Opportunity table: updated columns including TP2, TP3, level_touched, R:R
+35. Expanded row: live L2 panel consuming SSE stream
+36. Level map panel (sidebar showing all active levels)
 
 ---
 
@@ -473,3 +616,5 @@ Everything else is automated.
 - Automated order execution (manual two-step entry only)
 - Backtesting engine (separate future spec)
 - Mobile interface
+- Wolfe Wave setup (deferred to v2 — needs geometric pivot detection algorithm spec)
+- COT auto-interpretation (COT data fetched + displayed, bias set manually by user)
