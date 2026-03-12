@@ -3,14 +3,16 @@ import { api } from '@/services/api';
 import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { CLVChart } from './BetsPage';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { BankrollStats, Bet, ProviderLimit } from '@/types';
+import type { BankrollStats, Bet, Provider, ProviderLimit } from '@/types';
 
 export function StatsPage() {
   const [stats, setStats] = useState<BankrollStats | null>(null);
   const [bets, setBets] = useState<Bet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [limits, setLimits] = useState<ProviderLimit[]>([]);
+  const [providers, setProviders] = useState<Provider[]>([]);
   const [limitForm, setLimitForm] = useState<{
+    editingLimitId?: number;
     providerId: string;
     limitType: string;
     limitLevel: number;
@@ -21,14 +23,16 @@ export function StatsPage() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [statsData, betsData, limitsData] = await Promise.all([
+      const [statsData, betsData, limitsData, providersData] = await Promise.all([
         api.getBankrollStats(),
         api.getBets(undefined, 500),
         api.getLimits(),
+        api.getProviders(),
       ]);
       setStats(statsData);
       setBets(betsData.bets);
       setLimits(limitsData);
+      setProviders(providersData.providers);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
     } finally {
@@ -62,6 +66,7 @@ export function StatsPage() {
           ? clvBets.reduce((s, b) => s + (b.clv_pct ?? 0), 0) / clvBets.length
           : null;
         const provLimits = limits.filter(l => l.provider_id === providerId);
+        const prov = providers.find(p => p.id === providerId);
 
         return {
           providerId,
@@ -72,25 +77,33 @@ export function StatsPage() {
           winRate: settled.length > 0 ? wins / settled.length : null,
           avgClv,
           limits: provLimits,
+          limitRisk: prov?.limit_risk || 'low',
         };
       })
       .sort((a, b) => b.totalBets - a.totalBets);
   })();
 
-  const handleMarkLimited = async () => {
+  const handleSubmitLimit = async () => {
     if (!limitForm) return;
     setSaving(true);
     try {
-      await api.createLimit({
-        provider_id: limitForm.providerId,
-        limit_type: limitForm.limitType,
-        limit_level: limitForm.limitLevel,
-        notes: limitForm.notes || undefined,
-      });
+      if (limitForm.editingLimitId) {
+        await api.updateLimit(limitForm.editingLimitId, {
+          limit_level: limitForm.limitLevel,
+          notes: limitForm.notes || undefined,
+        });
+      } else {
+        await api.createLimit({
+          provider_id: limitForm.providerId,
+          limit_type: limitForm.limitType,
+          limit_level: limitForm.limitLevel,
+          notes: limitForm.notes || undefined,
+        });
+      }
       setLimitForm(null);
       fetchData();
     } catch (err) {
-      console.error('Failed to create limit:', err);
+      console.error('Failed to save limit:', err);
     } finally {
       setSaving(false);
     }
@@ -107,6 +120,13 @@ export function StatsPage() {
 
   const LIMIT_LEVEL_LABELS: Record<number, string> = {
     1: 'Minor', 2: 'Moderate', 3: 'Severe', 4: 'Gutted', 5: 'Closed',
+  };
+
+  const RISK_COLORS: Record<string, string> = {
+    low: 'text-success',
+    medium: 'text-warning',
+    high: 'text-orange-400',
+    instant: 'text-error',
   };
 
   if (isLoading) {
@@ -202,6 +222,7 @@ export function StatsPage() {
             <thead>
               <tr>
                 <th>Provider</th>
+                <th>Risk</th>
                 <th className="text-right">Bets</th>
                 <th className="text-right">Stake</th>
                 <th className="text-right">Profit</th>
@@ -214,6 +235,9 @@ export function StatsPage() {
               {providerStats.map(ps => (
                 <tr key={ps.providerId}>
                   <td className="text-text">{ps.providerId}</td>
+                  <td className={`text-xs ${RISK_COLORS[ps.limitRisk] || 'text-muted'}`}>
+                    {ps.limitRisk}
+                  </td>
                   <td className="text-right text-muted">{ps.totalBets}</td>
                   <td className="text-right text-muted">{ps.totalStake.toFixed(0)}</td>
                   <td className={`text-right ${ps.totalProfit >= 0 ? 'text-success' : 'text-error'}`}>
@@ -227,13 +251,19 @@ export function StatsPage() {
                   </td>
                   <td className="text-right">
                     {ps.limits.length > 0 ? (
-                      <span className="text-error text-xs">
+                      <span className="text-error text-xs flex gap-1 justify-end">
                         {ps.limits.map(l => (
                           <button
                             key={l.id}
-                            onClick={() => handleDeleteLimit(l.id)}
-                            className="hover:line-through cursor-pointer"
-                            title={`${l.limit_type} — ${l.notes || 'click to remove'}\nSnapshot: ${l.betting_snapshot?.total_bets ?? 0} bets`}
+                            onClick={() => setLimitForm({
+                              editingLimitId: l.id,
+                              providerId: ps.providerId,
+                              limitType: l.limit_type,
+                              limitLevel: l.limit_level,
+                              notes: l.notes || '',
+                            })}
+                            className="hover:underline cursor-pointer"
+                            title={`${l.limit_type} — ${l.notes || 'click to edit'}\nSnapshot: ${l.betting_snapshot?.total_bets ?? 0} bets`}
                           >
                             {LIMIT_LEVEL_LABELS[l.limit_level] || l.limit_level}/5
                           </button>
@@ -264,13 +294,14 @@ export function StatsPage() {
       {limitForm && (
         <div className="border-l-2 border-error p-3 space-y-2">
           <div className="text-sm text-text font-medium">
-            Mark {limitForm.providerId} as limited
+            {limitForm.editingLimitId ? `Edit limit for ${limitForm.providerId}` : `Mark ${limitForm.providerId} as limited`}
           </div>
           <div className="flex gap-2 items-center flex-wrap">
             <select
               value={limitForm.limitType}
               onChange={e => setLimitForm({ ...limitForm, limitType: e.target.value })}
-              className="bg-panel2 text-text text-xs px-2 py-1 rounded border border-border"
+              disabled={!!limitForm.editingLimitId}
+              className="bg-panel2 text-text text-xs px-2 py-1 rounded border border-border disabled:opacity-50"
             >
               <option value="stake_limited">Stake Limited</option>
               <option value="market_restricted">Market Restricted</option>
@@ -294,12 +325,20 @@ export function StatsPage() {
               className="bg-panel2 text-text text-xs px-2 py-1 rounded border border-border flex-1 min-w-[150px]"
             />
             <button
-              onClick={handleMarkLimited}
+              onClick={handleSubmitLimit}
               disabled={saving}
               className="text-xs px-3 py-1 bg-error/20 text-error hover:bg-error/30 rounded"
             >
-              {saving ? 'Saving...' : 'Confirm'}
+              {saving ? 'Saving...' : limitForm.editingLimitId ? 'Update' : 'Confirm'}
             </button>
+            {limitForm.editingLimitId && (
+              <button
+                onClick={() => { handleDeleteLimit(limitForm.editingLimitId!); setLimitForm(null); }}
+                className="text-xs px-2 py-1 text-error hover:text-error/80"
+              >
+                Delete
+              </button>
+            )}
             <button
               onClick={() => setLimitForm(null)}
               className="text-xs px-2 py-1 text-muted hover:text-text"

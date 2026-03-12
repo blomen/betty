@@ -93,6 +93,8 @@ export interface Provider {
   balance: number;
   bonus?: ProviderBonus | null;
   bonus_status?: 'available' | 'trigger_needed' | 'freebet_available' | 'in_progress' | 'completed' | 'claimed' | null;
+  limit_risk?: 'low' | 'medium' | 'high' | 'instant';
+  limit_notes?: string | null;
 }
 
 export interface ProvidersResponse {
