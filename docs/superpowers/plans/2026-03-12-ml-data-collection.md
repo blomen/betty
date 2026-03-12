@@ -256,7 +256,7 @@ class EconomicEvent(Base):
     created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
-        Index("ix_econ_events_datetime", "event_datetime"),
+        Index("idx_econ_events_datetime", "event_datetime"),
     )
 
 
