@@ -1,4 +1,4 @@
-# Trading System Design — AMT + Orderflow Scanner
+# Trading System Design — AMT + Orderflow Intraday
 
 **Date:** 2026-03-12
 **Status:** Approved for implementation planning
@@ -251,7 +251,7 @@ event: rf_update   → {rf, aspr, session_elapsed_mins}
 ```
 
 Frontend hook: `useMarketStream(symbol)` — subscribes on mount, updates local state, disconnects on unmount.
-The expanded signal row consumes `useMarketStream` for the live L2 panel. Main scanner table still polls `GET /api/trading/market/signals` every 30s.
+The expanded signal row consumes `useMarketStream` for the live L2 panel. Main intraday table still polls `GET /api/trading/market/signals` every 30s.
 
 ---
 
@@ -460,9 +460,9 @@ An opportunity surfaces only when: at least 1 Layer A gate set (not all null) AN
 
 ---
 
-## 10. UI / Scanner Page
+## 10. UI / Intraday Page
 
-The existing `TradingScannerPage` is refactored around this architecture.
+The existing `TradingScannerPage` is renamed to `TradingIntradayPage` (tab label: "Intraday").
 
 ### Layout (top to bottom)
 1. **FilterBar** — instrument selector, setup type filter, min score threshold slider
@@ -571,7 +571,7 @@ Repositories and API routes follow existing patterns (`repositories/`, `services
 
 **Phase 4 — Context gates**
 20. `market_context` read/write API
-21. Gate 1/2/3 input cards in Scanner page (above existing 4 auto-gate strip)
+21. Gate 1/2/3 input cards in Intraday page (above existing 4 auto-gate strip)
 22. Gate 1 auto-data display (COT, VIX, DXY, funding rate, value migration)
 
 **Phase 5 — Setup detector (in order of complexity)**
