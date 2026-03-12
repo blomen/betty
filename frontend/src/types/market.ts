@@ -135,3 +135,27 @@ export interface ConfirmationState {
   fair_value: ConfirmationCard;
   orderflow: ConfirmationCard;
 }
+
+export interface StreamTickEvent {
+  ts: string;
+  price: number;
+  size: number;
+  side: 'A' | 'B';
+  cvd: number;
+  delta_1m: number;
+}
+
+export interface MarketContext {
+  symbol: string;
+  gates_set: boolean;
+  macro_bias?: 'bull' | 'bear' | 'neutral';
+  risk_mode?: 'risk_on' | 'risk_off' | 'mixed';
+  cycle_phase?: 'early' | 'mid' | 'late' | 'recession';
+  structure?: 'uptrend' | 'downtrend' | 'ranging';
+  structure_hl?: number;
+  structure_lh?: number;
+  day_type?: 'trend' | 'normal' | 'normal_variation' | 'neutral' | 'composite';
+  vp_old_macro_start?: number;
+  vp_ongoing_macro_start?: number;
+  vp_leg_start?: number;
+}
