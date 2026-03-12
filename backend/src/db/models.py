@@ -32,6 +32,22 @@ class RiskLevel(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
+
+class LimitRisk(str, Enum):
+    """How aggressively a provider is known to limit winners."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    INSTANT = "instant"
+
+
+class LimitType(str, Enum):
+    """Type of limit imposed by a bookmaker."""
+    STAKE_LIMITED = "stake_limited"
+    MARKET_RESTRICTED = "market_restricted"
+    ODDS_RESTRICTED = "odds_restricted"
+    FULLY_BANNED = "fully_banned"
+
 # Database file location
 from ..paths import get_db_path
 DB_PATH = get_db_path()
@@ -90,6 +106,10 @@ class Provider(Base):
     url = Column(String)                        # "unibet.se"
 
     is_enabled = Column(Boolean, default=True)  # Can toggle off
+
+    # Limit risk (global — how aggressively this provider limits winners)
+    limit_risk = Column(String, default="low")      # LimitRisk enum value
+    limit_notes = Column(Text, nullable=True)        # Free-form context
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
@@ -378,6 +398,40 @@ class ProfileProviderBalance(Base):
 
     # Relationships
     profile = relationship("Profile", back_populates="provider_balances")
+    provider = relationship("Provider")
+
+
+class ProfileProviderLimit(Base):
+    """
+    Tracks bookmaker-imposed limits per profile+provider.
+
+    Records when a bookmaker limits an account, with an immutable
+    snapshot of betting stats at detection time for correlation analysis.
+    """
+    __tablename__ = "profile_provider_limits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+
+    limit_type = Column(String, nullable=False)     # LimitType enum value
+    limit_level = Column(Integer, nullable=False)   # 1=minor, 2=moderate, 3=severe, 4=gutted, 5=closed
+    detected_at = Column(DateTime, nullable=False, default=_utcnow)
+    notes = Column(Text, nullable=True)
+
+    # Immutable betting stats snapshot at detection time
+    betting_snapshot = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'provider_id', 'limit_type', name='uq_profile_provider_limit_type'),
+        Index('ix_limit_profile_provider', 'profile_id', 'provider_id'),
+    )
+
+    # Relationships
+    profile = relationship("Profile")
     provider = relationship("Provider")
 
 
@@ -1386,6 +1440,25 @@ def _run_migrations(engine):
                     raw.commit()
                 except sqlite3.OperationalError:
                     pass
+
+        # --- Provider limit risk columns ---
+        try:
+            cursor.execute("SELECT limit_risk FROM providers LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE providers ADD COLUMN limit_risk TEXT DEFAULT 'low'")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        try:
+            cursor.execute("SELECT limit_notes FROM providers LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE providers ADD COLUMN limit_notes TEXT")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
 
 
 def init_db() -> None:
