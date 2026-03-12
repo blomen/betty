@@ -160,7 +160,9 @@ export function MyBetsSection({ filter, colorKey, autoSettle }: MyBetsSectionPro
         live.push(b);
       } else {
         // No explicit status — use sport duration heuristic
-        const duration = SPORT_DURATION[b.sport ?? ''] ?? DEFAULT_DURATION;
+        // Bets without an event (manual/boost) default to 2.5h (football, most common)
+        const fallback = b.event_id ? DEFAULT_DURATION : 2.5 * 3600000;
+        const duration = SPORT_DURATION[b.sport ?? ''] ?? fallback;
         if (now < startMs + duration) {
           live.push(b); // Within typical game duration → probably playing
         } else {

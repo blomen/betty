@@ -79,6 +79,11 @@ input[type="number"] {
   background: var(--muted2);
 }
 
+/* Form elements inherit font */
+select, input, textarea, button {
+  font-family: inherit;
+}
+
 /* Selection styling */
 ::selection {
   background-color: rgba(79, 195, 247, 0.3);

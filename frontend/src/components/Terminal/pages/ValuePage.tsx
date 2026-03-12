@@ -85,7 +85,7 @@ function ManualBetForm({ providers, onSuccess, onError }: { providers: Provider[
         <select
           value={providerId}
           onChange={e => setProviderId(e.target.value)}
-          className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+          className="w-full bg-panel2 border border-border rounded px-2 py-1.5 text-sm text-text"
         >
           <option value="">Select provider...</option>
           {sortedProviders.map(p => (
@@ -100,7 +100,7 @@ function ManualBetForm({ providers, onSuccess, onError }: { providers: Provider[
           value={description}
           onChange={e => setDescription(e.target.value)}
           placeholder="e.g. Den Helder Suns ML"
-          className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+          className="w-full bg-panel2 border border-border rounded px-2 py-1.5 text-sm text-text"
         />
       </div>
       <div className="flex gap-3">
@@ -112,7 +112,7 @@ function ManualBetForm({ providers, onSuccess, onError }: { providers: Provider[
             value={odds}
             onChange={e => setOdds(e.target.value)}
             placeholder="2.50"
-            className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+            className="w-full bg-panel2 border border-border rounded px-2 py-1.5 text-sm text-text"
           />
         </div>
         <div className="flex-1">
@@ -123,7 +123,7 @@ function ManualBetForm({ providers, onSuccess, onError }: { providers: Provider[
             value={stake}
             onChange={e => setStake(e.target.value)}
             placeholder="500"
-            className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+            className="w-full bg-panel2 border border-border rounded px-2 py-1.5 text-sm text-text"
           />
         </div>
       </div>
