@@ -26,7 +26,40 @@ Machine learning layer for both sports betting and futures trading. Both domains
 └─────────────────────────────────────────────────────────┘
 ```
 
+## Existing Tables Referenced
+
+The following tables already exist in `db/models.py` and are extended (not created) by this spec:
+
+- **`opportunities`** — value bet opportunities from scanner. Has `provider1_id`, `edge_pct`, `market`, etc. We ADD columns to this table (see below).
+- **`trading_signals`** — generated trade signals. Has `id`, `signal_type`, `direction`, `score`, `conditions` (JSON array of `{name, score, weight, is_auto, detail}`). We ENRICH the `conditions` JSON.
+- **`trades`** — completed trades with `entry_price`, `exit_price`, `r_multiple`, `result`. Used for outcome labeling.
+- **`bets`** — placed bets with `odds`, `stake`, `result`. Used for outcome labeling.
+
+The following modules already exist and are integration points (not new code):
+- `analysis/scanner.py`, `analysis/devig.py`, `analysis/ev_enrichment.py` — sports betting pipeline
+- `market_data/scanner.py`, `market_data/scoring.py`, `market_data/orderflow.py` — trading pipeline
+- `bankroll/stake_calculator.py`, `risk/calculator.py`, `risk/features.py` — sizing and risk
+- `market_data/cot.py` — COT data fetcher (exists, needs wiring to storage)
+
+The following modules DO NOT exist and must be built:
+- Everything under `backend/src/ml/` — the entire ML layer
+- `data/economic_calendar.py` — economic event fetcher
+- Migration scripts for new tables and columns
+
 ## Data Collection Phase (Start Immediately)
+
+### Schema Migration Strategy
+
+SQLite has limited ALTER TABLE support. For new columns on existing tables:
+
+```sql
+-- Add columns one at a time (SQLite supports ADD COLUMN)
+ALTER TABLE opportunities ADD COLUMN prob_sum REAL;
+ALTER TABLE opportunities ADD COLUMN odds_ratio REAL;
+-- ... (one ALTER per column, in a migration script)
+```
+
+For new tables: standard CREATE TABLE (see below). All migrations will be Python scripts in `backend/src/ml/migrations/` that check `IF NOT EXISTS` / `column_exists()` before applying, making them idempotent and safe to re-run.
 
 ### New Database Tables
 
@@ -40,6 +73,7 @@ CREATE TABLE ml_features (
     source_id TEXT NOT NULL,           -- opportunity.id or trading_signal.id
     source_type TEXT NOT NULL,         -- 'opportunity', 'signal', 'boost'
     features JSON NOT NULL,            -- full feature dict (see per-model sections)
+    feature_version INTEGER NOT NULL DEFAULT 1, -- schema version (increment when features change)
     outcome REAL,                      -- NULL until resolved: CLV for betting, R-multiple for trading
     outcome_binary INTEGER,            -- NULL until resolved: 1=win, 0=loss
     resolved_at DATETIME,
@@ -154,6 +188,25 @@ CREATE TABLE options_flow (
     created_at DATETIME DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX idx_options_flow_date ON options_flow(date, symbol);
+```
+
+#### `cot_data`
+Weekly Commitment of Traders data (separate from daily `options_flow` to respect different frequencies).
+
+```sql
+CREATE TABLE cot_data (
+    id INTEGER PRIMARY KEY,
+    report_date TEXT NOT NULL,          -- YYYY-MM-DD (Tuesday report date)
+    symbol TEXT NOT NULL DEFAULT 'NQ',
+    net_position INTEGER,              -- net speculative position
+    net_change INTEGER,                -- week-over-week change
+    long_pct REAL,                     -- % of open interest held long
+    short_pct REAL,
+    open_interest INTEGER,
+    open_interest_change INTEGER,
+    created_at DATETIME DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX idx_cot_date ON cot_data(report_date, symbol);
 ```
 
 ### New Columns on Existing Tables
@@ -290,7 +343,7 @@ Temporal:
 
 **Architecture:** XGBoost regression (predicted bets remaining) or Cox proportional hazards (survival curve)
 
-**Min training data:** 10-20 limit events across providers
+**Min training data:** 10-20 limit events across providers. **Low-data strategy:** With so few positive examples, start with logistic regression on 3-5 features (`clv_score`, `total_bet_count_at_provider`, `max_single_bet_edge`, `bet_frequency_trend`, `similar_platform_limit_count`) rather than XGBoost. Graduate to XGBoost only after 50+ limit events. Use strong L2 regularization and leave-one-out cross-validation.
 
 **Replaces:** Linear weighted risk score in `risk/calculator.py`
 
@@ -347,7 +400,7 @@ New features to add:
 - `market_age_hours` — early lines may have different margin structure
 - `has_draw_option` — 3-way markets need different treatment
 
-**Target:** Which method produces CLV closest to 0 on average (evaluated on holdout set)
+**Target:** For each resolved bet, compute CLV under all three methods (multiplicative, additive, power/Shin). Label with the method whose absolute CLV is closest to 0 on average for that sport/market combination. This requires storing all three devigged fair odds at bet time (a one-time expansion of the feature vector), then resolving against closing line to determine which method was most accurate.
 
 **Prediction output:** `{"method": "multiplicative", "confidence": 0.82}` — used in `analysis/devig.py`
 
@@ -366,7 +419,7 @@ New features to add:
 **Features:**
 - `llm_raw_probability` — the LLM's estimate
 - `llm_confidence` — self-reported confidence (1-5)
-- `boost_type` — single / 2-leg combo / 3-leg combo / player prop keyword
+- `boost_type` — single / 2-leg combo / 3-leg combo (player props are filtered out by PROP_KEYWORDS before reaching this model)
 - `sport`, `league`
 - `num_legs` — more legs = more compounding error
 - `has_pinnacle_match` — could we verify any legs against sharp odds?
@@ -492,6 +545,8 @@ Macro (from Model 9):
 - `post_news_minutes` — if news already dropped, how long ago?
 - `cot_net_position` — Commitment of Traders net (weekly)
 - `cot_change_1w` — direction of institutional positioning change
+
+**Feature staging (p >> n mitigation):** With ~70 features and min 200 trades, start with 15-20 highest-prior features (setup_type, direction, delta_pct_of_volume, cvd_slope_5bar, volume_ratio_vs_20bar_avg, distance_to_level_ticks, price_position_in_va, ib_range_vs_avg, minutes_since_rth_open, vix_level, gex). Add remaining features in batches of 10 as data grows past 500/1000 trades. Use LightGBM's built-in feature importance to prune zero-contribution features.
 
 **Target:** R-multiple of resulting trade (regression) or win/loss (classification)
 
@@ -674,17 +729,18 @@ Market regime indicators (fetched daily/hourly):
 - Put/call ratio + net options volume direction
 
 Commitment of Traders (weekly):
-- Already have `cot.py` fetcher — wire output to `options_flow` table
+- Already have `cot.py` fetcher — wire output to `cot_data` table (separate from daily `options_flow`)
 - Net position + weekly change for NQ/ES
 
 Cross-asset correlations (rolling 20-day):
 - NQ vs ES, NQ vs DXY, NQ vs US10Y
 - When correlations break from norm = regime change signal
 
-Institutional report sentiment (weekly):
-- LLM reads macro reports from major banks (GS, JPM, BofA research notes)
+Institutional report sentiment (weekly, **aspirational** — requires data source):
+- LLM reads macro summaries from free sources (Fed speeches, FOMC minutes, public bank commentary on X/blogs)
+- Paid bank research (GS, JPM, BofA) can be added later if subscriptions are available
 - Outputs: sentiment_score (-1 to +1), key_themes (list), risk_factors (list)
-- Stored in dedicated column in `options_flow` or separate table
+- Stored in dedicated `macro_sentiment` table
 
 Geopolitical risk:
 - LLM classifies weekly news headlines for geopolitical risk level (1-10)
@@ -750,21 +806,54 @@ Each session has different baseline expectations for the features. Model 5 can l
 - Weekly batch job joins features + outcomes for training
 
 ### Model Training
-- Walk-forward cross-validation (train on months 1-3, validate on month 4, slide forward)
+- **Walk-forward cross-validation:** train on months 1-3, validate on month 4, slide forward by 1 month
+  - Minimum training window: 2 months (shorter = skip this fold)
+  - Step size: 1 month
+  - **Purge/embargo:** 24-hour gap between training end and validation start to prevent data leakage from correlated events (a bet placed at 23:59 shouldn't validate against an event starting at 00:01)
+  - Final metric: average across all folds (not single best fold)
 - No future data leakage — all features are point-in-time
 - Hyperparameter tuning via Optuna with Bayesian optimization
-- Models serialized to `backend/models/` as joblib files
+- For M6 (temporal patterns, PyTorch): z-score normalization per feature across each 20-candle window before inference
+
+### Model Versioning & Rollback
+- Models serialized to `backend/data/models/` with version naming: `{model_name}_v{N}.joblib` (or `.pt` for PyTorch)
+- **Model registry table** in SQLite:
+  ```sql
+  CREATE TABLE ml_model_registry (
+      id INTEGER PRIMARY KEY,
+      model_name TEXT NOT NULL,          -- 'edge_quality', 'setup_scorer', etc.
+      version INTEGER NOT NULL,
+      file_path TEXT NOT NULL,           -- relative path to serialized model
+      training_data_count INTEGER,       -- how many samples trained on
+      validation_metric REAL,            -- primary metric on validation fold
+      baseline_metric REAL,              -- rules-based baseline on same data
+      is_active INTEGER DEFAULT 0,       -- 1 = currently serving
+      created_at DATETIME DEFAULT (datetime('now'))
+  );
+  ```
+- **Auto-rollback:** After training, if new model's validation metric is worse than the active model (or worse than rules-based baseline), the new version is saved but NOT activated. Alert logged. Previous version stays active.
+- **Manual override:** API endpoint to activate/deactivate any model version
+- Keep last 5 versions per model; prune older versions automatically
 
 ### Model Serving
-- Models loaded at backend startup
+- Models loaded at backend startup from `ml_model_registry` (active versions only)
 - Prediction runs inline during scan/signal generation
+- **Latency budget:** M6 (temporal) must run in <10ms — use 1D-CNN with max 64 hidden units, not LSTM. If latency exceeds budget, fall back to rules.
 - Fallback to rules-based scoring if model unavailable or confidence below threshold
 - A/B testing: log both model prediction and rules-based score, compare outcomes
+- **A/B significance:** Require minimum 100 predictions with outcomes before evaluating switchover. Use one-sided binomial test (p < 0.05) that ML beats rules-based on the primary metric.
 
 ### Monitoring
 - Track Brier score (calibration) and log-loss per model per week
-- Alert if model accuracy degrades below rules-based baseline
+- Alert if model accuracy degrades below rules-based baseline → auto-rollback to previous version
 - Retrain weekly with expanding training window
+
+### Data Retention
+- `ml_features`: Retain indefinitely (primary training data, growth ~2K rows/day = ~730K/year, manageable for SQLite)
+- `candle_snapshots`: Retain indefinitely (smaller volume, ~50 rows/day)
+- `news_impact`, `economic_events`: Retain indefinitely (low volume)
+- `options_flow`: Retain indefinitely (~365 rows/year)
+- If SQLite performance degrades beyond 2M rows in `ml_features`, add date-based partitioning (archive pre-2-year data to `ml_features_archive`)
 
 ---
 
