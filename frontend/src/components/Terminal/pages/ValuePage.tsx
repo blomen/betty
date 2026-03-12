@@ -15,10 +15,10 @@ import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Opportunity, Provider, Bet } from '@/types';
 
-type ValueTab = 'value' | 'boosts' | 'mybets';
+type ValueTab = 'value' | 'boosts' | 'mybets' | 'manual';
 
 const softBetFilter = (b: Bet) =>
-  b.bet_type === 'value' || b.bet_type === 'boost' ||
+  b.bet_type === 'value' || b.bet_type === 'boost' || b.bet_type === 'manual' ||
   (b.bet_type == null && b.provider !== 'pinnacle' && b.provider !== 'polymarket');
 
 interface GroupedOpp {
@@ -32,6 +32,114 @@ interface GroupedSpecial {
   key: string;
   rep: SpecialItem;
   providers: string[];
+}
+
+function ManualBetForm({ providers, onSuccess, onError }: { providers: Provider[]; onSuccess: (msg: string) => void; onError: (msg: string) => void }) {
+  const [providerId, setProviderId] = useState('');
+  const [description, setDescription] = useState('');
+  const [odds, setOdds] = useState('');
+  const [stake, setStake] = useState('');
+  const [isFreebet, setIsFreebet] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!providerId || !description || !odds || !stake) return;
+    const oddsNum = parseFloat(odds);
+    const stakeNum = parseFloat(stake);
+    if (isNaN(oddsNum) || isNaN(stakeNum) || oddsNum <= 1 || stakeNum <= 0) {
+      onError('Invalid odds or stake');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await api.createBet({
+        provider_id: providerId,
+        outcome: description,
+        odds: oddsNum,
+        stake: stakeNum,
+        bet_type: 'manual',
+        is_bonus: isFreebet,
+        bonus_type: isFreebet ? 'free_bet' : undefined,
+      });
+      onSuccess(`Manual bet logged: ${description} @ ${oddsNum} — ${stakeNum} kr`);
+      setDescription('');
+      setOdds('');
+      setStake('');
+      setIsFreebet(false);
+    } catch (e: any) {
+      onError(e.message || 'Failed to create bet');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const sortedProviders = useMemo(() =>
+    [...providers].filter(p => p.is_enabled).sort((a, b) => a.id.localeCompare(b.id)),
+    [providers]
+  );
+
+  return (
+    <div className="p-4 max-w-md space-y-3">
+      <div>
+        <label className="block text-xs text-muted mb-1">Provider</label>
+        <select
+          value={providerId}
+          onChange={e => setProviderId(e.target.value)}
+          className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+        >
+          <option value="">Select provider...</option>
+          {sortedProviders.map(p => (
+            <option key={p.id} value={p.id}>{p.id}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="block text-xs text-muted mb-1">Description</label>
+        <input
+          type="text"
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          placeholder="e.g. Den Helder Suns ML"
+          className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+        />
+      </div>
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <label className="block text-xs text-muted mb-1">Odds</label>
+          <input
+            type="number"
+            step="0.01"
+            value={odds}
+            onChange={e => setOdds(e.target.value)}
+            placeholder="2.50"
+            className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+          />
+        </div>
+        <div className="flex-1">
+          <label className="block text-xs text-muted mb-1">Stake (kr)</label>
+          <input
+            type="number"
+            step="1"
+            value={stake}
+            onChange={e => setStake(e.target.value)}
+            placeholder="500"
+            className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
+          />
+        </div>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input type="checkbox" checked={isFreebet} onChange={e => setIsFreebet(e.target.checked)} className="accent-tabValue" />
+        Freebet
+      </label>
+      <button
+        onClick={handleSubmit}
+        disabled={isSubmitting || !providerId || !description || !odds || !stake}
+        className="px-4 py-1.5 text-sm font-medium bg-tabValue text-black rounded hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        {isSubmitting ? 'Logging...' : 'Log Bet'}
+      </button>
+    </div>
+  );
 }
 
 interface ValuePageProps {
@@ -519,6 +627,7 @@ export function ValuePage({ providers }: ValuePageProps) {
           { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
           { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabValue text-tabValue' },
           { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
+          { id: 'manual' as ValueTab, label: 'Manual', count: null, activeClass: 'border-tabValue text-tabValue' },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -535,9 +644,14 @@ export function ValuePage({ providers }: ValuePageProps) {
         ))}
       </div>
 
-      {/* MyBets tab — all soft provider bets (value + boosts) */}
+      {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
       {activeTab === 'mybets' && (
         <MyBetsSection filter={softBetFilter} colorKey="value" />
+      )}
+
+      {/* Manual bet entry tab */}
+      {activeTab === 'manual' && (
+        <ManualBetForm providers={providers} onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
       )}
 
       {/* Boosts tab */}
