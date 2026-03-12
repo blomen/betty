@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import httpx
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -46,3 +47,49 @@ async def fetch_cot(cftc_code: str = NQ_CFTC_CODE, limit: int = 4) -> list[COTRe
     except Exception as e:
         logger.error("COT fetch failed: %s", e)
         return []
+
+
+def store_cot_data(
+    session: Session,
+    reports: list[COTReport],
+    symbol: str = "NQ",
+) -> int:
+    """Store COT reports to the cot_data table, skipping dates that already exist.
+
+    Args:
+        session: SQLAlchemy session
+        reports: List of COTReport dataclasses from fetch_cot()
+        symbol: Futures symbol label (default 'NQ')
+
+    Returns:
+        Number of new rows inserted.
+    """
+    from src.db.models import CotData
+
+    inserted = 0
+    for report in reports:
+        report_date_str = report.report_date.isoformat()
+        existing = session.query(CotData).filter_by(
+            report_date=report_date_str, symbol=symbol
+        ).first()
+        if existing is not None:
+            logger.debug("COT row already exists for %s %s, skipping", symbol, report_date_str)
+            continue
+
+        # Compute net_position from non-commercial positioning (large speculators)
+        # and net_change requires two successive reports — store raw net values.
+        row = CotData(
+            report_date=report_date_str,
+            symbol=symbol,
+            net_position=report.net_non_commercial,
+            net_change=None,  # requires previous report; caller can back-fill
+            open_interest=report.open_interest,
+        )
+        session.add(row)
+        inserted += 1
+
+    if inserted:
+        session.flush()
+        logger.info("Stored %d new COT rows for %s", inserted, symbol)
+
+    return inserted
