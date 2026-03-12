@@ -40,6 +40,9 @@ backend/logs/
 # Temp/Scrap
 backend/scrap/
 
+# Git worktrees
+.worktrees/
+
 # Node
 node_modules/
 
