@@ -366,6 +366,9 @@ export function BetsPage() {
   const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
+  // Bet history collapsed state
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -535,10 +538,19 @@ export function BetsPage() {
   return (
     <div className="space-y-3 min-w-0 overflow-hidden">
       {/* Header */}
-      <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-        <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
-        Stats
-      </h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-text flex items-center gap-2">
+          <TabIcon name="stats" color={TAB_COLORS.stats} size={16} />
+          Stats
+        </h2>
+        <input
+          type="text"
+          placeholder="Search event, provider, sport..."
+          className="px-2 py-1 text-xs bg-bg border border-border text-text placeholder:text-muted2 w-64 focus:border-tabBets focus:outline-none"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
 
       {/* Stats Summary */}
       {bankrollStats && (
@@ -679,19 +691,16 @@ export function BetsPage() {
       )}
 
       {/* Bet History */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs text-muted uppercase tracking-wider font-semibold">
-          History <span className="text-muted2">{historyBets.length}</span>
+      <button
+        className="flex items-center gap-2 w-full text-left cursor-pointer group"
+        onClick={() => setHistoryCollapsed(c => !c)}
+      >
+        <span className={`text-[10px] text-muted2 transition-transform ${historyCollapsed ? '' : 'rotate-90'}`}>▶</span>
+        <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
+          Bet History <span className="text-muted2">{historyBets.length}</span>
         </h3>
-        <input
-          type="text"
-          placeholder="Search event, provider, sport..."
-          className="px-2 py-1 text-xs bg-bg border border-border text-text placeholder:text-muted2 w-64 focus:border-tabBets focus:outline-none"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-      {isLoading && bets.length === 0 ? (
+      </button>
+      {!historyCollapsed && (isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
       ) : historyBets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
@@ -910,7 +919,7 @@ export function BetsPage() {
           </table>
           </div>
         </>
-      )}
+      ))}
     </div>
   );
 }

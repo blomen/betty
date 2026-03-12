@@ -275,7 +275,12 @@ class InterwettenRetriever(BrowserRetriever):
     JS_EXTRACT_DETAIL_MARKETS = """() => {
         const SPREAD = new Set(["Asian Handicap", "Handicap", "Handicap Games"]);
         const TOTAL = new Set(["How many goals", "Over/Under", "How many games"]);
-        const results = { spread: null, total: null };
+        const results = { spread: null, total: null, datetime: null };
+
+        // Extract date/time from detail page header (e.g. "15.03. - 15:00" or "15.03.2026 - 15:00")
+        const timeEl = document.querySelector('[class*="gametime"]');
+        if (timeEl) results.datetime = timeEl.textContent.trim();
+
         const allBetting = document.querySelectorAll('[data-betting]');
 
         for (const el of allBetting) {
@@ -475,7 +480,7 @@ class InterwettenRetriever(BrowserRetriever):
                     const idMatch = href.match(/\\/e\\/(\\d+)\\//);
                     const eventId = idMatch ? idMatch[1] : '';
 
-                    const timeEl = el.querySelector('[class*="gametime"] span');
+                    const timeEl = el.querySelector('[class*="gametime"]');
                     const time = timeEl ? timeEl.textContent.trim() : '';
 
                     const outcomes = [];
@@ -597,6 +602,13 @@ class InterwettenRetriever(BrowserRetriever):
                     await worker_page.wait_for_timeout(50)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
+                    # Update start_time from detail page if available
+                    dt_str = detail.get("datetime", "")
+                    if dt_str:
+                        parsed_dt = self._parse_datetime_str(dt_str)
+                        if parsed_dt:
+                            event.start_time = parsed_dt
+
                     added_markets = []
                     if detail.get("spread"):
                         spread_market = self._parse_spread_market(detail["spread"], event)
@@ -628,6 +640,25 @@ class InterwettenRetriever(BrowserRetriever):
                 pass
 
         return enriched
+
+    def _parse_datetime_str(self, dt_str: str) -> Optional[datetime]:
+        """Parse interwetten datetime string like '15.03. - 15:00' into UTC datetime."""
+        m = re.search(r'(\d{1,2})\.(\d{1,2})\.\s*-\s*(\d{1,2}):(\d{2})', dt_str)
+        if not m:
+            return None
+        try:
+            day, month = int(m.group(1)), int(m.group(2))
+            hour, minute = int(m.group(3)), int(m.group(4))
+            now = datetime.now(timezone.utc)
+            year = now.year
+            if now.month >= 11 and month <= 2:
+                year += 1
+            return datetime(
+                year, month, day, hour, minute, 0,
+                tzinfo=timezone(timedelta(hours=1)),  # CET
+            ).astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            return None
 
     def _parse_spread_market(
         self, raw_market: dict, event: StandardEvent
@@ -756,17 +787,15 @@ class InterwettenRetriever(BrowserRetriever):
             home_team = normalize_team_name(home_raw)
             away_team = normalize_team_name(away_raw)
 
-            # Parse start time (just time like "13:30" on the page)
-            start_time = None
-            if time_str:
+            # Parse start time — format is "DD.MM. - HH:MM" or just "HH:MM"
+            start_time = self._parse_datetime_str(time_str) if time_str else None
+            if not start_time and time_str:
                 try:
                     hour, minute = time_str.split(":")
-                    # Assume today or tomorrow
                     now = datetime.now(timezone.utc)
                     start_time = now.replace(
                         hour=int(hour), minute=int(minute), second=0, microsecond=0
                     )
-                    # If time is in the past, it's tomorrow
                     if start_time < now:
                         start_time += timedelta(days=1)
                 except (ValueError, TypeError):

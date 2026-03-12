@@ -21,6 +21,25 @@ from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EX
 
 logger = logging.getLogger(__name__)
 
+# Youth/reserve league indicators — used to prevent cross-tier matching
+_YOUTH_INDICATORS = re.compile(
+    r'\bu[- ]?(?:17|18|19|20|21|23)\b|'
+    r'\breserve[s]?\b|'
+    r'\byouth\b|'
+    r'\bdevelopment\b|'
+    r'\bespoir[s]?\b|'
+    r'\bjunior[s]?\b|'
+    r'\b[bB] team\b|'
+    r'\bprimavera\b|'
+    r'\bjuvenil\b',
+    re.IGNORECASE,
+)
+
+
+def _is_youth_league(league: str) -> bool:
+    """Check if a league name indicates a youth/reserve competition."""
+    return bool(_YOUTH_INDICATORS.search(league)) if league else False
+
 
 def _extract_date_str(start_time) -> str:
     """Extract YYYYMMDD date string from start_time (str or datetime)."""
@@ -76,19 +95,21 @@ def _get_date_candidates(event_cache: dict, date_index: dict, sport: str, event_
     for pid in candidate_ids:
         entry = sport_events.get(pid)
         if entry:
-            home, away, date = entry
-            candidates.append((pid, home, away, date))
+            home, away, date = entry[0], entry[1], entry[2]
+            league = entry[3] if len(entry) > 3 else ""
+            candidates.append((pid, home, away, date, league))
     return candidates
 
 
 def _update_event_cache(event_cache: dict, date_index: dict,
                         sport: str, event_id: str,
-                        home: str, away: str, date_str: str):
+                        home: str, away: str, date_str: str,
+                        league: str = ""):
     """Update both event_cache and date_index atomically."""
     if sport not in event_cache:
         event_cache[sport] = {}
     if event_id not in event_cache[sport]:
-        event_cache[sport][event_id] = (home, away, date_str)
+        event_cache[sport][event_id] = (home, away, date_str, league)
 
         # Update date index
         if sport not in date_index:
@@ -534,16 +555,18 @@ def _resolve_event_id(
         # Fallback: O(N) scan if no date index provided
         sport_events = event_cache.get(event.sport, {})
         candidates = []
-        for pid, (home, away, date) in sport_events.items():
+        for pid, entry in sport_events.items():
+            home, away, date = entry[0], entry[1], entry[2]
+            league = entry[3] if len(entry) > 3 else ""
             if date == event_date:
-                candidates.append((pid, home, away, date))
+                candidates.append((pid, home, away, date, league))
             else:
                 try:
                     if date and event_date:
                         d1 = datetime.strptime(event_date, "%Y%m%d")
                         d2 = datetime.strptime(date, "%Y%m%d")
                         if abs((d1 - d2).days) <= 1:
-                            candidates.append((pid, home, away, date))
+                            candidates.append((pid, home, away, date, league))
                 except (ValueError, TypeError):
                     pass
 
@@ -553,8 +576,8 @@ def _resolve_event_id(
         away_prefix = event.away_team[:prefix_filter_length].lower() if event.away_team else ""
 
         prefix_filtered = [
-            (pid, home, away, date)
-            for pid, home, away, date in candidates
+            (pid, home, away, date, league)
+            for pid, home, away, date, league in candidates
             if (home[:prefix_filter_length].lower() == home_prefix or
                 away[:prefix_filter_length].lower() == home_prefix or
                 home[:prefix_filter_length].lower() == away_prefix or
@@ -573,7 +596,10 @@ def _resolve_event_id(
     near_miss_details = None
     near_miss_reason = None
 
-    for pid, poly_home, poly_away, date in candidates:
+    event_league = (event.league or "").lower()
+    event_is_youth = _is_youth_league(event_league)
+
+    for pid, poly_home, poly_away, date, candidate_league in candidates:
         home_direct = get_team_match_score(event.home_team, poly_home)
         away_direct = get_team_match_score(event.away_team, poly_away)
         home_swapped = get_team_match_score(event.home_team, poly_away)
@@ -616,6 +642,20 @@ def _resolve_event_id(
             logger.debug(
                 f"[{provider}] Rejected asymmetric match '{event.home_team} vs {event.away_team}': "
                 f"scores {team1_score:.0f}/{team2_score:.0f}"
+            )
+            continue
+
+        # Reject league tier mismatch (e.g. senior vs U21/reserve)
+        candidate_is_youth = _is_youth_league(candidate_league)
+        if candidate_league and event_league and event_is_youth != candidate_is_youth:
+            if is_new_best:
+                near_miss_reason = (
+                    f"league tier mismatch: '{event.league}' vs '{candidate_league}'"
+                )
+            logger.debug(
+                f"[{provider}] Rejected league tier mismatch "
+                f"'{event.home_team} vs {event.away_team}' ({event.league}) -> "
+                f"'{poly_home} vs {poly_away}' ({candidate_league})"
             )
             continue
 
@@ -740,6 +780,7 @@ def store_provider_event(
         _update_event_cache(
             event_cache, date_index or {},
             event.sport, final_id, db_event.home_team, db_event.away_team, date_str,
+            league=db_event.league or "",
         )
 
     # ── Update display names from Pinnacle (best quality names) ────

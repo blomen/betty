@@ -44,7 +44,7 @@ class ExtractionPipeline:
 
         # Cache for ALL events to enable cross-provider fuzzy matching
         # Dict indexed by sport for O(1) sport lookup
-        # {sport: {event_id: (home, away, date_str)}}
+        # {sport: {event_id: (home, away, date_str, league)}}
         # Events from Polymarket, Pinnacle, and all providers are added here
         self.event_cache = {}
         # Secondary date index for O(1) date-based candidate lookup
@@ -78,8 +78,8 @@ class ExtractionPipeline:
         """
         from ..db.models import Event
         from .storage import _update_event_cache
-        events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time).all()
-        for eid, sport, home, away, start_time in events:
+        events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league).all()
+        for eid, sport, home, away, start_time, league in events:
             if hasattr(start_time, 'strftime'):
                 date_str = start_time.strftime('%Y%m%d')
             elif isinstance(start_time, str):
@@ -89,6 +89,7 @@ class ExtractionPipeline:
             _update_event_cache(
                 self.event_cache, self.event_cache_by_date,
                 sport, eid, home, away, date_str,
+                league=league or "",
             )
         total = sum(len(v) for v in self.event_cache.values())
         if total > 0:
