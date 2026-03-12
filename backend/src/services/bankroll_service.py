@@ -88,8 +88,8 @@ class BankrollService:
         ).all()
         bonus_profit = sum(b.bonus_amount for b in bonus_records)
 
-        # Combined: betting profit + freebet profit + deposit bonus profit
-        combined_profit = bet_profit + freebet_profit + bonus_profit
+        # Betting profit only (freebets included, deposit bonuses excluded)
+        combined_profit = bet_profit + freebet_profit
 
         # CLV metrics
         clv_values = [b.clv_pct for b in bets if b.clv_pct is not None]

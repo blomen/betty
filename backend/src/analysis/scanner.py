@@ -715,6 +715,11 @@ class OpportunityScanner:
                 "is_sharp": is_sharp,
             }
 
+        # In constrained-provider mode: reject market if any leg needed a Pinnacle fallback.
+        # The user asked to only see results between their selected providers.
+        if counterpart_providers and any(d["is_sharp"] for d in best_per_outcome.values()):
+            return None
+
         # ── Enforce max 1 soft outcome per canonical platform ──
         # Placing multiple outcomes on the same bookmaker flags the account.
         # Resolve conflicts: keep the higher-edge leg, demote the other to
@@ -722,6 +727,10 @@ class OpportunityScanner:
         self._resolve_platform_conflicts(
             best_per_outcome, soft_candidates, fair_odds_map, anchor_provider
         )
+
+        # Check again after conflict resolution (a demotion may have assigned Pinnacle)
+        if counterpart_providers and any(d["is_sharp"] for d in best_per_outcome.values()):
+            return None
 
         # Need all outcomes covered
         all_outcomes = list(best_per_outcome.keys())

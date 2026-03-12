@@ -67,6 +67,8 @@ export function DutchPage({ providers }: DutchPageProps) {
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+  const [scanResults, setScanResults] = useState<DutchOpp[] | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Odds override: key = "oppId|legIdx", value = new odds
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -116,13 +118,14 @@ export function DutchPage({ providers }: DutchPageProps) {
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
+    for (const p of providers) set.add(p.id);
     for (const opp of opportunities) {
       for (const leg of opp.legs || []) {
         set.add(leg.provider);
       }
     }
     return Array.from(set).sort();
-  }, [opportunities]);
+  }, [providers, opportunities]);
 
   const availableLeagues = useMemo(() => {
     const set = new Set<string>();
@@ -142,12 +145,13 @@ export function DutchPage({ providers }: DutchPageProps) {
     providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
   const filtered = useMemo(() => {
-    let result = opportunities;
+    // When scan results are active, use them (already filtered by provider via the scan)
+    let result = scanResults !== null ? scanResults : opportunities;
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedProviders.size > 0) {
       result = result.filter(d => {
         const legs = d.legs || [];
-        // Every leg's provider must be in the selected set
+        // Every leg's provider must be in the selected set — no Pinnacle unless explicitly selected
         if (!legs.every(leg => selectedProviders.has(leg.provider))) return false;
         // When few providers selected, hide opps with more legs than selected providers
         if (selectedProviders.size < 3 && legs.length > selectedProviders.size) return false;
@@ -172,7 +176,7 @@ export function DutchPage({ providers }: DutchPageProps) {
       );
     }
     return result.slice(0, MAX_ROWS);
-  }, [opportunities, selectedProviders, selectedLeagues, search]);
+  }, [opportunities, scanResults, selectedProviders, selectedLeagues, search]);
 
   type DutchSortCol = 'edge' | 'stake' | 'profit' | 'ttk';
   const dutchSortExtractors = useMemo(() => ({
@@ -185,11 +189,30 @@ export function DutchPage({ providers }: DutchPageProps) {
     useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' });
 
   const toggleProvider = (p: string) => {
+    setScanResults(null);
     setSelectedProviders(prev => {
       const next = new Set(prev);
       if (next.has(p)) next.delete(p); else next.add(p);
       return next;
     });
+  };
+
+  const handleScanBetween = async () => {
+    const providerList = [...selectedProviders];
+    setIsScanning(true);
+    setBetError(null);
+    try {
+      const res = await api.getDutchWorkflow(providerList, false, 100, providerList);
+      const items = (res.opportunities as unknown as DutchOpp[]).map((o, i) => ({
+        ...o,
+        id: -(i + 1), // negative IDs to distinguish from stored opps
+      }));
+      setScanResults(items);
+    } catch {
+      setBetError('Scan failed');
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const toggleLeague = (l: string) => {
@@ -407,42 +430,66 @@ export function DutchPage({ providers }: DutchPageProps) {
       )}
 
       {/* Filters */}
-      {opportunities.length > 0 && (
-        <FilterBar>
-          <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
-          {availableProviders.length > 0 && (
-            <MultiSelectDropdown
-              label="Provider"
-              options={availableProviders}
-              selected={selectedProviders}
-              onToggle={toggleProvider}
-              onClear={() => setSelectedProviders(new Set())}
-              format={formatProviderWithPlatform}
-              accentColor="success"
-            />
-          )}
-          {availableLeagues.length > 0 && (
-            <MultiSelectDropdown
-              label="League"
-              options={availableLeagues}
-              selected={selectedLeagues}
-              onToggle={toggleLeague}
-              onClear={() => setSelectedLeagues(new Set())}
-              accentColor="success"
-            />
-          )}
-        </FilterBar>
-      )}
+      <FilterBar>
+        {availableProviders.length > 0 && (
+          <MultiSelectDropdown
+            label="Provider"
+            options={availableProviders}
+            selected={selectedProviders}
+            onToggle={toggleProvider}
+            onClear={() => { setSelectedProviders(new Set()); setScanResults(null); }}
+            format={formatProviderWithPlatform}
+            accentColor="success"
+          />
+        )}
+        {availableLeagues.length > 0 && (
+          <MultiSelectDropdown
+            label="League"
+            options={availableLeagues}
+            selected={selectedLeagues}
+            onToggle={toggleLeague}
+            onClear={() => setSelectedLeagues(new Set())}
+            accentColor="success"
+          />
+        )}
+        <div className="ml-auto"><FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} /></div>
+      </FilterBar>
 
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
       ) : sortedDutch.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {opportunities.length === 0
-            ? 'No dutch opportunities found. Run extraction first.'
-            : 'No matches for current filters.'}
+        <div className="text-muted text-sm py-8 text-center border border-border bg-panel flex flex-col items-center gap-3">
+          {isScanning ? (
+            <span>Scanning between selected providers...</span>
+          ) : scanResults !== null ? (
+            <span>No dutch found between selected providers.</span>
+          ) : selectedProviders.size >= 2 && opportunities.length > 0 ? (
+            <>
+              <span>No pre-computed dutch for selected providers.</span>
+              <button
+                onClick={handleScanBetween}
+                className="px-3 py-1.5 text-xs bg-success/10 border border-success/30 text-success hover:bg-success/20 rounded"
+              >
+                Scan between {[...selectedProviders].map(formatProviderName).join(' + ')}
+              </button>
+            </>
+          ) : selectedProviders.size >= 2 && opportunities.length === 0 ? (
+            <>
+              <span>No pre-computed dutch opportunities.</span>
+              <button
+                onClick={handleScanBetween}
+                className="px-3 py-1.5 text-xs bg-success/10 border border-success/30 text-success hover:bg-success/20 rounded"
+              >
+                Scan between {[...selectedProviders].map(formatProviderName).join(' + ')}
+              </button>
+            </>
+          ) : opportunities.length === 0 ? (
+            <span>No dutch opportunities found. Run extraction first.</span>
+          ) : (
+            <span>No matches for current filters.</span>
+          )}
         </div>
       ) : (
         <div className="border-l-2 border-success">

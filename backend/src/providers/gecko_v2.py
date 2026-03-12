@@ -189,7 +189,10 @@ class GeckoV2Retriever(BrowserRetriever):
                     captured.update(dict(request.headers))
                     idx = url.find('/api/sb/')
                     api_base_holder.append(url[:idx])
-                await route.continue_()
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
 
             await page.route('**/api/sb/**', capture_route)
 
