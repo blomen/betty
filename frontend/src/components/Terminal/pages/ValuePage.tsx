@@ -1,4 +1,4 @@
-import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
@@ -39,6 +39,274 @@ interface GroupedSpecial {
 }
 
 
+interface OpportunityRowProps {
+  group: GroupedOpp;
+  idx: number;
+  isExpanded: boolean;
+  onToggle: (idx: number) => void;
+  placedKeys: Set<string>;
+  balanceMap: Map<string, number>;
+  selectedBetProvider: number;
+  providerDropdownOpen: boolean;
+  providerDropdownRef: React.RefObject<HTMLDivElement | null>;
+  onProviderDropdownToggle: (groupKey: string) => void;
+  onProviderSelect: (groupKey: string, index: number) => void;
+  onPlaceBet: (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => void;
+  pendingBet: { groupKey: string; opp: Opportunity; actualOdds: number; useFreebet: boolean; navUrl: string | null; windowName: string; effectiveStake: number | null } | null;
+  isPlacing: boolean;
+  onConfirmBet: () => void;
+  onCancelBet: () => void;
+}
+
+const OpportunityRow = memo(function OpportunityRow({
+  group,
+  idx,
+  isExpanded,
+  onToggle,
+  balanceMap,
+  selectedBetProvider: selIdx,
+  providerDropdownOpen,
+  providerDropdownRef,
+  onProviderDropdownToggle,
+  onProviderSelect,
+  onPlaceBet,
+  pendingBet,
+  isPlacing,
+  onConfirmBet,
+  onCancelBet,
+}: OpportunityRowProps) {
+  const { rep, opps, providers: groupProviders } = group;
+
+  // Local edit state
+  const [localOddsOverride, setLocalOddsOverride] = useState<number | null>(null);
+  const [editingOdds, setEditingOdds] = useState(false);
+  const [localStakeOverride, setLocalStakeOverride] = useState<number | null>(null);
+  const [editingStake, setEditingStake] = useState(false);
+
+  // Flash detection
+  const prevOdds = useRef(rep.odds1);
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  useEffect(() => {
+    if (rep.odds1 !== prevOdds.current) {
+      setFlash(rep.odds1 > prevOdds.current ? 'up' : 'down');
+      prevOdds.current = rep.odds1;
+      const timer = setTimeout(() => setFlash(null), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [rep.odds1]);
+
+  const isSkipped = opps.every(o => !!o.skip_reason);
+  const providerCount = groupProviders.length;
+  const effectiveOdds = localOddsOverride ?? rep.odds1;
+  const effectiveStake = localStakeOverride ?? rep.final_stake;
+  const hasStake = effectiveStake != null && effectiveStake > 0;
+  const isOddsOverridden = localOddsOverride !== null;
+  const isStakeOverridden = localStakeOverride !== null;
+  const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
+    ? (effectiveOdds / rep.fair_odds - 1) * 100
+    : rep.edge_pct ?? 0;
+
+  const hasBalance = (ids: string[]) => ids.some(id => (balanceMap.get(id) ?? 0) > 0);
+
+  const selOpp = opps[selIdx] || opps[0];
+  const isPending = pendingBet?.groupKey === group.key;
+
+  const getDotClass = (opp: any) => {
+    if (opp.is_daily_capped) return 'bg-error';
+    if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
+    if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
+    return 'bg-muted/40';
+  };
+
+  const effStake = localStakeOverride ?? selOpp.final_stake;
+  const oppHasStake = effStake != null && effStake > 0;
+  const isTrigger = selOpp.bonus_status === 'trigger_needed';
+  const isFreebet = selOpp.bonus_status === 'freebet_available';
+  const skipReason = selOpp.skip_reason;
+  const isDisabled = !oppHasStake || isPlacing || !!skipReason;
+  const btnColor = isTrigger ? 'bg-warning' : isFreebet ? 'bg-accent' : 'bg-tabValue';
+  const btnLabel = isPlacing ? '...'
+    : skipReason === 'trigger_placed' ? 'Trigger placed'
+    : skipReason === 'no_balance' ? 'No balance'
+    : isTrigger ? 'Trigger'
+    : isFreebet ? 'Freebet'
+    : 'Place Bet';
+
+  return (
+    <Fragment key={group.key}>
+      <tr
+        className={`cursor-pointer group ${isSkipped ? 'opacity-50' : ''} ${isExpanded ? 'expanded' : ''}`}
+        onClick={() => !isSkipped && onToggle(idx)}
+      >
+        <td>
+          <div className="flex items-center gap-1 min-w-0">
+            <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)} vs {displayTeamName(rep.away_team, rep.display_away ?? rep.prov_away)}</span>
+            <button
+              title="Copy event"
+              className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+            {isSkipped && (
+              <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
+            )}
+          </div>
+          <div className="text-muted2 text-[11px]">
+            {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
+          </div>
+        </td>
+        <td className="text-right text-sm min-w-0">
+          <span className="inline-flex items-center gap-1.5 justify-end">
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${opps.every((o: any) => o.is_daily_capped) ? 'bg-error' : (rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
+            {providerCount <= 3 ? (
+              <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
+            ) : (
+              <span className="text-text truncate">
+                <ProviderName name={groupProviders[0]} />
+                <span className="text-muted ml-1">+{providerCount - 1}</span>
+              </span>
+            )}
+          </span>
+        </td>
+        <td className="text-right text-text text-sm">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
+        <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
+          {editingOdds ? (
+            <input
+              type="number" step="0.01" autoFocus
+              defaultValue={effectiveOdds.toFixed(2)}
+              className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+              onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setLocalOddsOverride(val); setEditingOdds(false); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(false); }}
+            />
+          ) : (
+            <span
+              onClick={() => setEditingOdds(true)}
+              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+              title="Click to adjust odds"
+            >
+              {effectiveOdds.toFixed(2)}
+            </span>
+          )}
+          {isOddsOverridden && <button onClick={() => { setLocalOddsOverride(null); setEditingOdds(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+        </td>
+        <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
+        <td className="text-right text-muted text-sm">
+          {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
+        </td>
+        <td className="text-right">
+          {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+        </td>
+        <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+          {editingStake ? (
+            <input
+              type="number" step="1" autoFocus
+              defaultValue={effectiveStake?.toFixed(0) ?? '0'}
+              className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
+              onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setLocalStakeOverride(val); setEditingStake(false); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(false); }}
+            />
+          ) : (
+            <span
+              onClick={() => setEditingStake(true)}
+              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+              title="Click to adjust stake"
+            >
+              {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
+            </span>
+          )}
+          {isStakeOverridden && <button onClick={() => { setLocalStakeOverride(null); setEditingStake(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+          {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
+          {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
+        </td>
+        <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
+      </tr>
+
+      {isExpanded && !isSkipped && (
+        <tr key={`${group.key}-expanded`}>
+          <td colSpan={10} className="!p-0" onClick={e => e.stopPropagation()}>
+            <div className="px-3 py-2 bg-panel">
+              <div className="flex items-center gap-2">
+              {isPending ? (
+                <>
+                  <button
+                    onClick={onConfirmBet}
+                    disabled={isPlacing || pendingBet!.actualOdds < 1.01}
+                    className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                  >
+                    {isPlacing ? '...' : 'Confirm'}
+                  </button>
+                  <span className="text-muted text-xs">@ {pendingBet!.actualOdds.toFixed(2)}</span>
+                  <button
+                    onClick={onCancelBet}
+                    className="px-2 py-1.5 text-xs text-muted hover:text-text"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="relative" ref={providerDropdownOpen ? providerDropdownRef : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => onProviderDropdownToggle(group.key)}
+                      className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
+                    >
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
+                      <span className="truncate">
+                        <ProviderName name={selOpp.provider1} />
+                        {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
+                        {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                      </span>
+                      <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                    {providerDropdownOpen && (
+                      <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
+                        {opps.map((opp, i) => {
+                          const oppStake = localStakeOverride ?? opp.final_stake;
+                          const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
+                          const tag = (opp as any).is_daily_capped ? ' [CAP]'
+                            : opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                            : opp.bonus_status === 'freebet_available' ? ' [FREE]'
+                            : opp.skip_reason ? ` (${opp.skip_reason})`
+                            : '';
+                          return (
+                            <button
+                              key={opp.id}
+                              type="button"
+                              onClick={() => {
+                                onProviderSelect(group.key, i);
+                              }}
+                              className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
+                            >
+                              <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
+                              <span className="truncate">
+                                <ProviderName name={opp.provider1} />{s}{tag}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => onPlaceBet(selOpp, effectiveOdds, localStakeOverride)}
+                    disabled={isDisabled}
+                    className={`px-4 py-1.5 ${btnColor} text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap`}
+                  >
+                    {btnLabel}
+                  </button>
+                </>
+              )}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+});
+
 interface ValuePageProps {
   providers?: Provider[];
 }
@@ -54,6 +322,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const [freebetPopup, setFreebetPopup] = useState<{
     opp: Opportunity;
     freebetAmount: number;
+    effectiveOdds: number;
+    effectiveStake: number | null;
   } | null>(null);
 
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
@@ -64,10 +334,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const boostSearch = useDeferredValue(boostSearchInput);
   const [betError, setBetError] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
-  const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
-  const [editingOdds, setEditingOdds] = useState<string | null>(null);
-  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
-  const [editingStake, setEditingStake] = useState<string | null>(null);
   const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
@@ -92,6 +358,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     useFreebet: boolean;
     navUrl: string | null;
     windowName: string;
+    effectiveStake: number | null;
   } | null>(null);
 
   // --- Boosts state ---
@@ -263,20 +530,14 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   }, [opportunities, selectedProviders, selectedLeagues, placedKeys, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
-  const getGroupOddsKey = (opp: Opportunity) =>
-    `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
   const valueSortExtractors = useMemo(() => ({
-    odds:  (g: GroupedOpp) => oddsOverride[getGroupOddsKey(g.rep)] ?? g.rep.odds1 ?? 0,
+    odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
     fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
     prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
-    stake: (g: GroupedOpp) => stakeOverride[getGroupOddsKey(g.rep)] ?? g.rep.final_stake ?? 0,
-    edge:  (g: GroupedOpp) => {
-      const ov = oddsOverride[getGroupOddsKey(g.rep)];
-      if (ov && g.rep.fair_odds) return (ov / g.rep.fair_odds - 1) * 100;
-      return g.rep.edge_pct ?? 0;
-    },
+    stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
+    edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
-  }), [oddsOverride, stakeOverride]);
+  }), []);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
     useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
 
@@ -418,43 +679,35 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const handleSelectGroup = (idx: number) => {
     setSelectedGroup(selectedGroup === idx ? null : idx);
     setPendingBet(null);
-    setEditingOdds(null);
-    setEditingStake(null);
   };
 
-  const handlePlaceBetClick = (opp: Opportunity) => {
-    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
-    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
+  const handlePlaceBetClick = (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => {
+    const stake = effectiveStake ?? opp.final_stake;
     if (!stake || stake <= 0) return;
 
     if (opp.bonus_status === 'freebet_available') {
       // Show popup to choose freebet vs balance
-      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake });
+      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake });
     } else {
       // Trigger or normal bet — start two-step flow
-      startPlaceBet(opp, false);
+      startPlaceBet(opp, false, effectiveOdds, effectiveStake);
     }
   };
 
-  const getEffectiveOdds = (opp: Opportunity) =>
-    oddsOverride[getGroupOddsKey(opp)] ?? opp.odds1;
-
   // Enter "awaiting confirm" state for two-step bet recording
-  const startPlaceBet = (opp: Opportunity, useFreebet: boolean) => {
-    const odds = getEffectiveOdds(opp);
+  const startPlaceBet = (opp: Opportunity, useFreebet: boolean, effectiveOdds: number, effectiveStake: number | null) => {
     setFreebetPopup(null);
     setBetError(null);
     setBetSuccess(null);
     const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
-    setPendingBet({ groupKey, opp, actualOdds: odds, useFreebet, navUrl: null, windowName: `bbq_${opp.provider1}` });
+    setPendingBet({ groupKey, opp, actualOdds: effectiveOdds, useFreebet, navUrl: null, windowName: `bbq_${opp.provider1}`, effectiveStake });
   };
 
   // Step 2: Confirm bet with actual odds
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
-    const { opp, actualOdds, useFreebet } = pendingBet;
-    const groupOddsKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}`;
-    const stake = stakeOverride[groupOddsKey] ?? opp.final_stake;
+    const { opp, actualOdds, useFreebet, effectiveStake } = pendingBet;
+    const stake = effectiveStake ?? opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
     setBetError(null);
@@ -828,228 +1081,27 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
             </tr>
           </thead>
           <tbody>
-            {sortedGroups.map((group, idx) => {
-              const { rep, opps, providers: groupProviders } = group;
-              const isSelected = selectedGroup === idx;
-              const isSkipped = opps.every(o => !!o.skip_reason);
-              const providerCount = groupProviders.length;
-
-              const groupOddsKey = `${rep.event_id}|${rep.outcome1}|${rep.market}|${rep.point ?? ''}`;
-              const effectiveOdds = oddsOverride[groupOddsKey] ?? rep.odds1;
-              const effectiveStake = stakeOverride[groupOddsKey] ?? rep.final_stake;
-              const hasStake = effectiveStake != null && effectiveStake > 0;
-              const isOddsOverridden = groupOddsKey in oddsOverride;
-              const isStakeOverridden = groupOddsKey in stakeOverride;
-              const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
-                ? (effectiveOdds / rep.fair_odds - 1) * 100
-                : rep.edge_pct ?? 0;
-
-              return (
-                <Fragment key={group.key}>
-                  <tr
-                    className={`cursor-pointer group ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
-                    onClick={() => !isSkipped && handleSelectGroup(idx)}
-                  >
-                    <td>
-                      <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)} vs {displayTeamName(rep.away_team, rep.display_away ?? rep.prov_away)}</span>
-                        <button
-                          title="Copy event"
-                          className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)); }}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                        </button>
-                        {isSkipped && (
-                          <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
-                        )}
-                      </div>
-                      <div className="text-muted2 text-[11px]">
-                        {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
-                      </div>
-                    </td>
-                    <td className="text-right text-sm min-w-0">
-                      <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${opps.every((o: any) => o.is_daily_capped) ? 'bg-error' : (rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
-                        {providerCount <= 3 ? (
-                          <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
-                        ) : (
-                          <span className="text-text truncate">
-                            <ProviderName name={groupProviders[0]} />
-                            <span className="text-muted ml-1">+{providerCount - 1}</span>
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="text-right text-text text-sm">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
-                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-                      {editingOdds === groupOddsKey ? (
-                        <input
-                          type="number" step="0.01" autoFocus
-                          defaultValue={effectiveOdds.toFixed(2)}
-                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setOddsOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingOdds(null); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(null); }}
-                        />
-                      ) : (
-                        <span
-                          onClick={() => setEditingOdds(groupOddsKey)}
-                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
-                          title="Click to adjust odds"
-                        >
-                          {effectiveOdds.toFixed(2)}
-                        </span>
-                      )}
-                      {isOddsOverridden && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                    </td>
-                    <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
-                    <td className="text-right text-muted text-sm">
-                      {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
-                    </td>
-                    <td className="text-right">
-                      {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
-                    </td>
-                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-                      {editingStake === groupOddsKey ? (
-                        <input
-                          type="number" step="1" autoFocus
-                          defaultValue={effectiveStake?.toFixed(0) ?? '0'}
-                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [groupOddsKey]: val })); setEditingStake(null); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(null); }}
-                        />
-                      ) : (
-                        <span
-                          onClick={() => setEditingStake(groupOddsKey)}
-                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
-                          title="Click to adjust stake"
-                        >
-                          {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
-                        </span>
-                      )}
-                      {isStakeOverridden && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[groupOddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                      {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
-                      {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-                    </td>
-                    <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
-                  </tr>
-
-                  {isSelected && !isSkipped && (() => {
-                    return (
-                    <tr key={`${group.key}-expanded`}>
-                      <td colSpan={10} className="!p-0" onClick={e => e.stopPropagation()}>
-                        {(() => {
-                          const selIdx = selectedBetProvider[group.key] ?? 0;
-                          const selOpp = opps[selIdx] || opps[0];
-                          const effStake = stakeOverride[groupOddsKey] ?? selOpp.final_stake;
-                          const oppHasStake = effStake != null && effStake > 0;
-                          const isTrigger = selOpp.bonus_status === 'trigger_needed';
-                          const isFreebet = selOpp.bonus_status === 'freebet_available';
-                          const skipReason = selOpp.skip_reason;
-                          const isDisabled = !oppHasStake || isPlacing || !!skipReason;
-                          const btnColor = isTrigger ? 'bg-warning' : isFreebet ? 'bg-accent' : 'bg-tabValue';
-                          const btnLabel = isPlacing ? '...'
-                            : skipReason === 'trigger_placed' ? 'Trigger placed'
-                            : skipReason === 'no_balance' ? 'No balance'
-                            : isTrigger ? 'Trigger'
-                            : isFreebet ? 'Freebet'
-                            : 'Place Bet';
-                          const isPending = pendingBet?.groupKey === group.key;
-
-                          // Dot color based on allocation score
-                          const getDotClass = (opp: any) => {
-                            if (opp.is_daily_capped) return 'bg-error';
-                            if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
-                            if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
-                            return 'bg-muted/40';
-                          };
-
-                          return (
-                          <div className="px-3 py-2 bg-panel">
-                            <div className="flex items-center gap-2">
-                            {isPending ? (
-                              <>
-                                <button
-                                  onClick={confirmPlaceBet}
-                                  disabled={isPlacing || pendingBet!.actualOdds < 1.01}
-                                  className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                                >
-                                  {isPlacing ? '...' : 'Confirm'}
-                                </button>
-                                <span className="text-muted text-xs">@ {pendingBet!.actualOdds.toFixed(2)}</span>
-                                <button
-                                  onClick={() => setPendingBet(null)}
-                                  className="px-2 py-1.5 text-xs text-muted hover:text-text"
-                                >
-                                  Cancel
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <div className="relative" ref={providerDropdownOpen === group.key ? providerDropdownRef : undefined}>
-                                  <button
-                                    type="button"
-                                    onClick={() => setProviderDropdownOpen(prev => prev === group.key ? null : group.key)}
-                                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
-                                  >
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
-                                    <span className="truncate">
-                                      <ProviderName name={selOpp.provider1} />
-                                      {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                                      {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
-                                    </span>
-                                    <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                  </button>
-                                  {providerDropdownOpen === group.key && (
-                                    <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
-                                      {opps.map((opp, i) => {
-                                        const oppStake = stakeOverride[groupOddsKey] ?? opp.final_stake;
-                                        const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
-                                        const tag = (opp as any).is_daily_capped ? ' [CAP]'
-                                          : opp.bonus_status === 'trigger_needed' ? ' [TRG]'
-                                          : opp.bonus_status === 'freebet_available' ? ' [FREE]'
-                                          : opp.skip_reason ? ` (${opp.skip_reason})`
-                                          : '';
-                                        return (
-                                          <button
-                                            key={opp.id}
-                                            type="button"
-                                            onClick={() => {
-                                              setSelectedBetProvider(prev => ({ ...prev, [group.key]: i }));
-                                              setProviderDropdownOpen(null);
-                                            }}
-                                            className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
-                                          >
-                                            <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
-                                            <span className="truncate">
-                                              <ProviderName name={opp.provider1} />{s}{tag}
-                                            </span>
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                </div>
-                                <button
-                                  onClick={() => handlePlaceBetClick(selOpp)}
-                                  disabled={isDisabled}
-                                  className={`px-4 py-1.5 ${btnColor} text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap`}
-                                >
-                                  {btnLabel}
-                                </button>
-                              </>
-                            )}
-                            </div>
-                          </div>
-                          );
-                        })()}
-                      </td>
-                    </tr>
-                    );
-                  })()}
-                </Fragment>
-              );
-            })}
+            {sortedGroups.map((group, idx) => (
+              <OpportunityRow
+                key={group.key}
+                group={group}
+                idx={idx}
+                isExpanded={selectedGroup === idx}
+                onToggle={handleSelectGroup}
+                placedKeys={placedKeys}
+                balanceMap={balanceMap}
+                selectedBetProvider={selectedBetProvider[group.key] ?? 0}
+                providerDropdownOpen={providerDropdownOpen === group.key}
+                providerDropdownRef={providerDropdownRef}
+                onProviderDropdownToggle={(key) => setProviderDropdownOpen(prev => prev === key ? null : key)}
+                onProviderSelect={(key, i) => { setSelectedBetProvider(prev => ({ ...prev, [key]: i })); setProviderDropdownOpen(null); }}
+                onPlaceBet={handlePlaceBetClick}
+                pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
+                isPlacing={isPlacing}
+                onConfirmBet={confirmPlaceBet}
+                onCancelBet={() => setPendingBet(null)}
+              />
+            ))}
           </tbody>
         </table>
         </div>
@@ -1071,13 +1123,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                 </tr>
                 <tr>
                   <td className="text-muted">Stake</td>
-                  <td className="text-right text-text">{freebetPopup.opp.final_stake?.toFixed(0)} kr @ {getEffectiveOdds(freebetPopup.opp).toFixed(2)}</td>
+                  <td className="text-right text-text">{(freebetPopup.effectiveStake ?? freebetPopup.opp.final_stake)?.toFixed(0)} kr @ {freebetPopup.effectiveOdds.toFixed(2)}</td>
                 </tr>
               </tbody>
             </table>
             <div className="flex gap-2 pt-1">
               <button
-                onClick={() => startPlaceBet(freebetPopup.opp, true)}
+                onClick={() => startPlaceBet(freebetPopup.opp, true, freebetPopup.effectiveOdds, freebetPopup.effectiveStake)}
                 disabled={isPlacing}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-accent text-bg hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
@@ -1085,12 +1137,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                 <div className="text-[10px] opacity-70">no deduction</div>
               </button>
               <button
-                onClick={() => startPlaceBet(freebetPopup.opp, false)}
+                onClick={() => startPlaceBet(freebetPopup.opp, false, freebetPopup.effectiveOdds, freebetPopup.effectiveStake)}
                 disabled={isPlacing}
                 className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted hover:text-text disabled:opacity-50 transition-colors"
               >
                 <div>Use Balance</div>
-                <div className="text-[10px] opacity-70">deduct {freebetPopup.opp.final_stake?.toFixed(0)} kr</div>
+                <div className="text-[10px] opacity-70">deduct {(freebetPopup.effectiveStake ?? freebetPopup.opp.final_stake)?.toFixed(0)} kr</div>
               </button>
             </div>
           </div>
