@@ -1,0 +1,214 @@
+"""Tests for betting ML models (M1-M4, M8)."""
+import pytest
+import numpy as np
+from unittest.mock import MagicMock
+
+
+# ===== Helpers =====
+
+def _mock_ml_feature(features: dict, outcome_binary: int = 1, outcome: float = 0.05):
+    mock = MagicMock()
+    mock.features = features
+    mock.outcome = outcome
+    mock.outcome_binary = outcome_binary
+    return mock
+
+
+def _generate_edge_features():
+    return {
+        "edge_pct": np.random.uniform(1, 30),
+        "prob_sum": np.random.uniform(0.85, 1.1),
+        "odds_ratio": np.random.uniform(0.8, 1.4),
+        "odds_age_minutes": np.random.uniform(0, 120),
+        "sharp_age_minutes": np.random.uniform(0, 60),
+        "time_to_start_minutes": np.random.uniform(30, 2880),
+        "pinnacle_overround": np.random.uniform(0.02, 0.08),
+        "num_providers_with_odds": np.random.randint(1, 10),
+        "provider_odds_rank": np.random.randint(1, 5),
+        "market_consensus_spread": np.random.uniform(0, 0.5),
+        "hour_of_day": np.random.randint(0, 24),
+        "day_of_week": np.random.randint(0, 7),
+        "sport": np.random.randint(0, 10),
+        "market_type": np.random.randint(0, 4),
+        "point": np.random.uniform(-5, 5),
+    }
+
+
+# ===== M1: Edge Quality =====
+
+def test_edge_quality_feature_names():
+    from src.ml.models.edge_quality import EdgeQualityModel
+    model = EdgeQualityModel()
+    assert "edge_pct" in model.feature_names
+    assert "prob_sum" in model.feature_names
+
+
+def test_edge_quality_train_insufficient_data():
+    from src.ml.models.edge_quality import EdgeQualityModel
+    model = EdgeQualityModel()
+    data = [_mock_ml_feature(_generate_edge_features(), outcome_binary=1) for _ in range(10)]
+    result = model.train(data)
+    assert result is None
+
+
+def test_edge_quality_train_sufficient_data():
+    from src.ml.models.edge_quality import EdgeQualityModel
+    model = EdgeQualityModel()
+    data = []
+    for i in range(250):
+        outcome = 1 if np.random.random() > 0.4 else 0
+        data.append(_mock_ml_feature(_generate_edge_features(), outcome_binary=outcome))
+    result = model.train(data)
+    assert result is not None
+    assert "model" in result
+    assert "file_path" in result
+    assert result["training_data_count"] == 250
+
+
+def test_edge_quality_predict():
+    from src.ml.models.edge_quality import EdgeQualityModel
+    model = EdgeQualityModel()
+    data = []
+    for i in range(250):
+        outcome = 1 if np.random.random() > 0.4 else 0
+        data.append(_mock_ml_feature(_generate_edge_features(), outcome_binary=outcome))
+    model.train(data)
+    prob = model.predict(_generate_edge_features())
+    assert prob is not None
+    assert 0 <= prob <= 1
+
+
+# ===== M2: Limit Predictor =====
+
+def test_limit_features_extraction():
+    from src.ml.features.limit_features import extract_limit_features
+    features = extract_limit_features(
+        stake_entropy=0.3, market_diversity=0.4,
+        timing_regularity=0.5, outcome_correlation=0.2,
+        bonus_usage_ratio=0.1, clv_score=0.6, win_rate_deviation=0.3,
+        total_bets=50, account_age_days=90,
+        total_turnover=5000, provider_id="betsson",
+        similar_platform_limits=0,
+    )
+    assert "clv_score" in features
+    assert "total_bets" in features
+    assert "provider_platform" in features
+    assert features["total_bets"] == 50
+
+
+def test_limit_predictor_low_data_logistic():
+    from src.ml.models.limit_predictor import LimitPredictorModel
+    model = LimitPredictorModel()
+    data = []
+    for i in range(25):
+        features = {
+            "clv_score": np.random.uniform(0, 1),
+            "total_bets": np.random.randint(10, 200),
+            "max_single_bet_edge": np.random.uniform(0, 30),
+            "stake_entropy": np.random.uniform(0, 1),
+            "similar_platform_limits": np.random.randint(0, 3),
+        }
+        data.append(_mock_ml_feature(features, outcome_binary=1 if np.random.random() > 0.7 else 0))
+    result = model.train(data)
+    assert result is not None
+    assert result.get("algorithm") == "logistic_regression"
+
+
+def test_limit_predictor_high_data_lgbm():
+    from src.ml.models.limit_predictor import LimitPredictorModel
+    model = LimitPredictorModel()
+    data = []
+    for i in range(60):
+        features = {
+            "clv_score": np.random.uniform(0, 1),
+            "total_bets": np.random.randint(10, 200),
+            "max_single_bet_edge": np.random.uniform(0, 30),
+            "stake_entropy": np.random.uniform(0, 1),
+            "market_diversity": np.random.uniform(0, 1),
+            "timing_regularity": np.random.uniform(0, 1),
+            "outcome_correlation": np.random.uniform(0, 1),
+            "bonus_usage_ratio": np.random.uniform(0, 1),
+            "win_rate_deviation": np.random.uniform(0, 1),
+            "account_age_days": np.random.randint(1, 365),
+            "total_turnover": np.random.uniform(100, 50000),
+            "similar_platform_limits": np.random.randint(0, 5),
+            "bet_frequency_trend": np.random.uniform(-1, 1),
+            "sport_concentration_top3": np.random.uniform(0.3, 1.0),
+            "has_used_freebet": np.random.randint(0, 2),
+            "avg_stake_vs_provider_median": np.random.uniform(0.5, 3.0),
+            "time_between_bets_cv": np.random.uniform(0, 2),
+            "time_from_odds_change_to_bet": np.random.uniform(0, 60),
+            "same_side_as_sharp_movement_pct": np.random.uniform(0, 1),
+            "deposit_withdrawal_ratio": np.random.uniform(0.5, 5.0),
+        }
+        data.append(_mock_ml_feature(features, outcome_binary=1 if np.random.random() > 0.7 else 0))
+    result = model.train(data)
+    assert result is not None
+    assert result.get("algorithm") == "lightgbm"
+
+
+# ===== M3: Devig Method Selector =====
+
+def test_devig_features_extraction():
+    from src.ml.features.devig_features import extract_devig_features
+    features = extract_devig_features(
+        sport="football", market="1x2", num_outcomes=3,
+        pinnacle_overround=0.03, favourite_odds=1.5,
+        odds_range=5.0, league="premier_league",
+    )
+    assert features["sport"] == 0  # football encoding
+    assert features["num_outcomes"] == 3
+    assert features["has_draw_option"] == 1
+
+
+def test_devig_selector_train():
+    from src.ml.models.devig_selector import DevigSelectorModel
+    model = DevigSelectorModel()
+    methods = [0, 1, 2]  # multiplicative, additive, power
+    data = []
+    for i in range(550):
+        features = {
+            "sport": np.random.randint(0, 10),
+            "market_type": np.random.randint(0, 4),
+            "num_outcomes": np.random.choice([2, 3]),
+            "pinnacle_overround": np.random.uniform(0.02, 0.08),
+            "favourite_odds": np.random.uniform(1.1, 5.0),
+            "odds_range": np.random.uniform(0.5, 10.0),
+            "league_tier": np.random.randint(0, 2),
+            "market_age_hours": np.random.uniform(0, 48),
+            "has_draw_option": np.random.randint(0, 2),
+        }
+        method_idx = np.random.choice(methods)
+        data.append(_mock_ml_feature(features, outcome_binary=0, outcome=float(method_idx)))
+    result = model.train(data)
+    assert result is not None
+
+
+def test_devig_selector_predict():
+    from src.ml.models.devig_selector import DevigSelectorModel
+    model = DevigSelectorModel()
+    data = []
+    for i in range(550):
+        features = {
+            "sport": np.random.randint(0, 10),
+            "market_type": np.random.randint(0, 4),
+            "num_outcomes": np.random.choice([2, 3]),
+            "pinnacle_overround": np.random.uniform(0.02, 0.08),
+            "favourite_odds": np.random.uniform(1.1, 5.0),
+            "odds_range": np.random.uniform(0.5, 10.0),
+            "league_tier": np.random.randint(0, 2),
+            "market_age_hours": np.random.uniform(0, 48),
+            "has_draw_option": np.random.randint(0, 2),
+        }
+        data.append(_mock_ml_feature(features, outcome_binary=0, outcome=float(np.random.randint(0, 3))))
+    model.train(data)
+    prediction = model.predict({
+        "sport": 0, "market_type": 0, "num_outcomes": 3,
+        "pinnacle_overround": 0.03, "favourite_odds": 1.5,
+        "odds_range": 3.0, "league_tier": 1, "market_age_hours": 2.0,
+        "has_draw_option": 1,
+    })
+    assert prediction is not None
+    assert "method" in prediction
+    assert prediction["method"] in ["multiplicative", "additive", "power"]
+    assert 0 <= prediction["confidence"] <= 1
