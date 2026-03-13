@@ -1311,6 +1311,34 @@ class OpportunityScanner:
                         {"provider": p["provider"], "odds": p["odds"], "updated_at": str(p.get("updated_at", ""))}
                         for p in provider_odds_list
                     ]
+
+                    # ML edge quality check (M1) — best-effort additional filter
+                    try:
+                        from src.ml.serving.predictor import get_predictor
+                        predictor = get_predictor()
+                        if predictor.is_loaded("edge_quality"):
+                            from src.ml.features.betting_features import extract_betting_features
+                            _ml_features = extract_betting_features(
+                                edge_pct=vb.edge_pct,
+                                provider_odds=vb.provider_odds,
+                                fair_odds=fair_odds,
+                                fair_probability=vb.fair_probability,
+                                provider=po["provider"],
+                                sport="",
+                                market=market,
+                                event_id=event_id,
+                                prob_sum=vb.prob_sum or 0,
+                                odds_by_outcome=odds_by_outcome,
+                                pinnacle_overround=pinnacle_overround,
+                                event_start_time=None,
+                                point=vb.point,
+                            )
+                            ml_prob = predictor.predict("edge_quality", _ml_features)
+                            if ml_prob is not None and ml_prob < 0.5:
+                                continue  # ML says edge is likely noise
+                    except Exception:
+                        pass
+
                     values.append(vb)
 
         return values

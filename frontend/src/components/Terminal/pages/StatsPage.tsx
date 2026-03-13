@@ -21,6 +21,8 @@ export function StatsPage() {
   const [saving, setSaving] = useState(false);
   const [extractionData, setExtractionData] = useState<any>(null);
   const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [mlStatus, setMlStatus] = useState<Record<string, { loaded: boolean; data_ready: boolean; min_samples: number }> | null>(null);
+  const [mlTraining, setMlTraining] = useState(false);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -49,6 +51,12 @@ export function StatsPage() {
       setRecommendations(recsData);
     } catch (e) {
       // Analytics endpoints may not exist yet — ignore
+    }
+    try {
+      const mlData = await api.getMlStatus();
+      setMlStatus(mlData);
+    } catch (e) {
+      // ML endpoints may not exist yet — ignore
     }
   }, []);
 
@@ -357,6 +365,63 @@ export function StatsPage() {
               </div>
             ))}
           </div>
+        </>
+      )}
+
+      {/* ML Models */}
+      {mlStatus && Object.keys(mlStatus).length > 0 && (
+        <>
+          <h3 className="text-sm font-bold mt-4 mb-2 text-[var(--text-primary)] flex items-center gap-2">
+            ML Models
+            <button
+              onClick={async () => {
+                setMlTraining(true);
+                try {
+                  await api.triggerMlTraining();
+                  const updated = await api.getMlStatus();
+                  setMlStatus(updated);
+                } catch (e) {
+                  console.error('ML training failed:', e);
+                } finally {
+                  setMlTraining(false);
+                }
+              }}
+              disabled={mlTraining}
+              className="text-xs px-2 py-0.5 bg-tabStats/20 text-tabStats hover:bg-tabStats/30 rounded"
+            >
+              {mlTraining ? 'Training...' : 'Train'}
+            </button>
+          </h3>
+          <table className="sq w-full">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th className="text-center">Status</th>
+                <th className="text-right">Min Samples</th>
+                <th className="text-center">Data Ready</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(mlStatus).map(([name, info]) => (
+                <tr key={name}>
+                  <td className="text-text font-mono text-xs">{name}</td>
+                  <td className="text-center">
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      info.loaded ? 'bg-success/20 text-success' : 'bg-panel2 text-muted'
+                    }`}>
+                      {info.loaded ? 'loaded' : 'idle'}
+                    </span>
+                  </td>
+                  <td className="text-right text-muted text-xs">{info.min_samples}</td>
+                  <td className="text-center">
+                    <span className={info.data_ready ? 'text-success' : 'text-muted'}>
+                      {info.data_ready ? 'yes' : 'no'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
       )}
 

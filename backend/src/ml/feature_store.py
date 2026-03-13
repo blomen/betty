@@ -38,6 +38,28 @@ def get_training_data(session: Session, domain: str, source_type: str,
     return query.order_by(MlFeature.created_at).all()
 
 
+def resolve_clv_outcomes(session: Session) -> int:
+    """Backfill outcome fields for betting ml_features rows."""
+    from sqlalchemy import text
+    updated = 0
+    unresolved = session.query(MlFeature).filter(
+        MlFeature.source_type == "opportunity",
+        MlFeature.outcome.is_(None),
+    ).all()
+    for row in unresolved:
+        result = session.execute(
+            text("SELECT closing_line_value FROM opportunities WHERE id = :oid"),
+            {"oid": row.source_id},
+        ).fetchone()
+        if result and result[0] is not None:
+            row.outcome = float(result[0])
+            row.outcome_binary = 1 if result[0] > 0 else 0
+            row.resolved_at = datetime.now(timezone.utc)
+            updated += 1
+    session.flush()
+    return updated
+
+
 def log_candle_snapshot(session: Session, signal_id: int, candles: list[dict],
                         timeframe: str = "1m") -> CandleSnapshot:
     row = CandleSnapshot(signal_id=signal_id, candles=candles, timeframe=timeframe)

@@ -274,6 +274,16 @@ class ExtractionPipeline:
         else:
             self.cache = None
 
+        # Load ML models from registry (best-effort)
+        try:
+            from src.ml.serving.predictor import get_predictor
+            predictor = get_predictor()
+            loaded = predictor.load_from_registry(self.session)
+            if loaded > 0:
+                logger.info(f"Loaded {loaded} ML models from registry")
+        except Exception:
+            pass
+
         # Initialize health checker if enabled
         if orchestrator_config.health_check.enabled:
             from .health import HealthChecker
@@ -1017,6 +1027,30 @@ class ExtractionPipeline:
                 self.session.commit()
             except Exception as e:
                 logger.debug(f"Extraction analytics skipped: {e}")
+
+            # Daily ML model training (best-effort)
+            try:
+                import time as _time
+                today = _time.strftime("%Y-%m-%d")
+                if getattr(self, '_ml_last_train_day', None) != today:
+                    from src.ml.training.train_all import TrainingOrchestrator
+                    orch = TrainingOrchestrator()
+                    train_results = orch.train_all(self.session)
+                    self._ml_last_train_day = today
+                    for model_name, status in train_results.items():
+                        if status == "trained":
+                            logger.info(f"ML model trained: {model_name}")
+            except Exception as e:
+                logger.debug(f"ML training check skipped: {e}")
+
+            # Resolve CLV outcomes for ML feature rows (best-effort)
+            try:
+                from src.ml.feature_store import resolve_clv_outcomes
+                resolved = resolve_clv_outcomes(self.session)
+                if resolved > 0:
+                    logger.info(f"Resolved CLV for {resolved} ML feature rows")
+            except Exception:
+                pass
 
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")

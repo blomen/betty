@@ -1121,6 +1121,14 @@ export const api = {
     }>>(`${API_BASE}/extraction/recommendations`);
   },
 
+  async getMlStatus(): Promise<Record<string, { loaded: boolean; data_ready: boolean; min_samples: number }>> {
+    return fetchJson('/extraction/ml/status');
+  },
+
+  async triggerMlTraining(): Promise<Record<string, string>> {
+    return fetchJson('/extraction/ml/train', { method: 'POST' });
+  },
+
   async updateRecommendation(id: number, status: string, afterMetric?: number) {
     const params = new URLSearchParams({ status });
     if (afterMetric !== undefined) params.set("after_metric", String(afterMetric));

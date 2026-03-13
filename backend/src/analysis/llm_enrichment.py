@@ -635,8 +635,63 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
                 continue
 
             probability = result["probability"]
-            fair_odds = round(1 / probability, 3)
+            confidence = result.get("confidence", "low")
             boosted_odds = special.get("boosted_odds", 0)
+
+            # ML boost calibration (M4) — best-effort
+            try:
+                from src.ml.serving.predictor import get_predictor
+                predictor = get_predictor()
+                if predictor.is_loaded("boost_calibrator"):
+                    from src.ml.features.boost_features import extract_boost_features
+                    num_legs = _detect_legs_from_title(special.get("title", ""))
+                    cal_features = extract_boost_features(
+                        llm_raw_probability=probability,
+                        llm_confidence=confidence,
+                        boost_type="combo" if num_legs > 1 else "single",
+                        sport=special.get("sport", ""),
+                        league=special.get("league", ""),
+                        num_legs=num_legs,
+                        has_pinnacle_match=False,
+                        pinnacle_implied_prob=None,
+                        original_odds=special.get("original_odds") or 0,
+                        boosted_odds=boosted_odds,
+                        provider=special.get("provider", ""),
+                        hours_to_event=0,
+                        llm_reasoning_length=len(result.get("reasoning") or ""),
+                    )
+                    calibrated = predictor.predict("boost_calibrator", cal_features)
+                    if calibrated is not None:
+                        probability = calibrated
+            except Exception:
+                pass
+
+            # Log features for M4 training (best-effort)
+            try:
+                from src.ml.feature_store import log_features as _log_ml_features
+                from src.ml.features.boost_features import extract_boost_features as _extract_bf
+                _num_legs = _detect_legs_from_title(special.get("title", ""))
+                _cal_features = _extract_bf(
+                    llm_raw_probability=result["probability"],
+                    llm_confidence=confidence,
+                    boost_type="combo" if _num_legs > 1 else "single",
+                    sport=special.get("sport", ""),
+                    league=special.get("league", ""),
+                    num_legs=_num_legs,
+                    has_pinnacle_match=False,
+                    pinnacle_implied_prob=None,
+                    original_odds=special.get("original_odds") or 0,
+                    boosted_odds=boosted_odds,
+                    provider=special.get("provider", ""),
+                    hours_to_event=0,
+                    llm_reasoning_length=len(result.get("reasoning") or ""),
+                )
+                if db:
+                    _log_ml_features(db, "betting", str(special.get("title", "")), "boost", _cal_features)
+            except Exception:
+                pass
+
+            fair_odds = round(1 / probability, 3)
 
             if fair_odds <= 1.0 or boosted_odds <= 1.0:
                 continue

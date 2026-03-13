@@ -277,6 +277,32 @@ def calculate_stake(
     # Get dynamic Kelly fraction (capped by profile max_kelly, clamped if low confidence)
     kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
 
+    # ML adaptive Kelly (M8) — best-effort
+    try:
+        from src.ml.serving.predictor import get_predictor
+        predictor = get_predictor()
+        if predictor.is_loaded("adaptive_kelly"):
+            from src.ml.features.kelly_features import extract_kelly_features
+            kelly_features = extract_kelly_features(
+                domain="betting",
+                model_confidence=0.5,
+                predicted_edge=edge_used,
+                historical_win_rate=0.55,
+                historical_avg_return=0.03,
+                recent_drawdown_pct=0.0,
+                consecutive_wins=0,
+                consecutive_losses=0,
+                daily_pnl=0.0,
+                weekly_pnl=0.0,
+                account_utilization=0.0,
+                volatility_regime=0.5,
+            )
+            ml_kelly = predictor.predict("adaptive_kelly", kelly_features)
+            if ml_kelly is not None:
+                kelly = ml_kelly
+    except Exception:
+        pass
+
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
 

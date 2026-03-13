@@ -173,6 +173,28 @@ def get_fair_odds_for_outcome(
     outcomes = list(market_odds.keys())
     odds_list = [market_odds[o] for o in outcomes]
 
+    # ML devig method selection (M3) — best-effort override
+    if method == "multiplicative":  # Only override default
+        try:
+            from src.ml.serving.predictor import get_predictor
+            predictor = get_predictor()
+            if predictor.is_loaded("devig_selector"):
+                from src.ml.features.devig_features import extract_devig_features
+                devig_features = extract_devig_features(
+                    sport="", market="", num_outcomes=len(odds_list) if odds_list else 2,
+                    pinnacle_overround=calculate_margin(odds_list) if odds_list else 0,
+                    favourite_odds=min(odds_list) if odds_list else 2.0,
+                    odds_range=(max(odds_list) - min(odds_list)) if odds_list and len(odds_list) > 1 else 0,
+                )
+                result = predictor.predict("devig_selector", devig_features)
+                if result and isinstance(result, dict):
+                    methods = ["multiplicative", "additive", "power"]
+                    class_idx = result.get("class", 0)
+                    if class_idx < len(methods):
+                        method = methods[class_idx]
+        except Exception:
+            pass
+
     # De-vig
     if method == "additive":
         fair_list = devig_additive(odds_list)
@@ -259,3 +281,31 @@ def compute_consensus_fair_odds(
     hm = n / sum(1.0 / v for v in platform_values)
 
     return (hm, n)
+
+
+def compute_all_methods(odds_list: list[float]) -> dict:
+    """Compute fair odds using all 3 methods for M3 training data."""
+    return {
+        "multiplicative": devig_multiplicative(odds_list),
+        "additive": devig_additive(odds_list),
+        "power": devig_power(odds_list),
+    }
+
+
+def log_devig_comparison(session, bet_id, event_id, market, outcome, odds_list, sport=None, league=None):
+    """Log all 3 devig method results for M3 training."""
+    try:
+        from src.ml.feature_store import log_features
+        from src.ml.features.devig_features import extract_devig_features
+        compute_all_methods(odds_list)  # ensure all methods work
+        num_outcomes = len(odds_list)
+        overround = calculate_margin(odds_list)
+        features = extract_devig_features(
+            sport=sport or "", market=market, num_outcomes=num_outcomes,
+            pinnacle_overround=overround,
+            favourite_odds=min(odds_list) if odds_list else 2.0,
+            odds_range=(max(odds_list) - min(odds_list)) if odds_list and len(odds_list) > 1 else 0,
+        )
+        log_features(session, "betting", str(bet_id), "devig_comparison", features)
+    except Exception:
+        pass

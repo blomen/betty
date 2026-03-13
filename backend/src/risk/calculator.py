@@ -131,6 +131,32 @@ class RiskCalculator:
         # Calculate weighted score
         risk_score = self._calculate_score(features, config)
 
+        # ML limit prediction (M2) — best-effort blend
+        try:
+            from src.ml.serving.predictor import get_predictor
+            predictor = get_predictor()
+            if predictor.is_loaded("limit_predictor"):
+                from src.ml.features.limit_features import extract_limit_features
+                limit_features = extract_limit_features(
+                    stake_entropy=features.stake_entropy,
+                    market_diversity=features.market_diversity,
+                    timing_regularity=features.timing_regularity,
+                    outcome_correlation=features.outcome_correlation,
+                    bonus_usage_ratio=features.bonus_usage_ratio,
+                    clv_score=features.clv_score,
+                    win_rate_deviation=features.win_rate_deviation,
+                    total_bets=features.total_bets_all_time,
+                    account_age_days=features.account_age_days,
+                    total_turnover=0,
+                    provider_id=provider_id,
+                    similar_platform_limits=0,
+                )
+                ml_risk = predictor.predict("limit_predictor", limit_features)
+                if ml_risk is not None:
+                    risk_score = 0.7 * ml_risk + 0.3 * risk_score
+        except Exception:
+            pass
+
         # Determine risk level
         risk_level = self._determine_level(risk_score, config)
 

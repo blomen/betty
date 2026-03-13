@@ -748,6 +748,45 @@ async def get_extraction_recommendations():
         session.close()
 
 
+@router.get("/ml/status")
+async def get_ml_status():
+    """Get status of all ML models."""
+    from src.ml.serving.predictor import get_predictor
+    from src.ml.training.train_all import TrainingOrchestrator
+
+    session = get_session()
+    try:
+        predictor = get_predictor()
+        orch = TrainingOrchestrator()
+        thresholds = orch.check_thresholds(session)
+
+        result = {}
+        for name, config in orch.model_configs.items():
+            result[name] = {
+                "loaded": predictor.is_loaded(name),
+                "data_ready": thresholds.get(name, False),
+                "min_samples": config["min_samples"],
+            }
+        return result
+    finally:
+        session.close()
+
+
+@router.post("/ml/train")
+async def trigger_ml_training():
+    """Manually trigger ML model training."""
+    from src.ml.training.train_all import TrainingOrchestrator
+
+    session = get_session()
+    try:
+        orch = TrainingOrchestrator()
+        results = orch.train_all(session)
+        session.commit()
+        return results
+    finally:
+        session.close()
+
+
 @router.patch("/recommendations/{rec_id}")
 async def update_recommendation(rec_id: int, status: str, after_metric: float = None):
     """Update recommendation status (acted_on, resolved, wont_fix)."""
