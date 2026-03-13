@@ -376,3 +376,48 @@ def detect_naked_pocs(
             naked.append({"date": session["date"], "price": poc})
 
     return naked
+
+
+def compute_developing_poc(bars: list[dict], tick_size: float = 0.25) -> dict:
+    """Track POC migration by comparing current POC vs POC from first half.
+
+    Converts bars (OHLCV) to synthetic trades for compute_volume_profile.
+
+    Returns:
+        {
+            "developing_poc": float | None,
+            "prior_poc": float | None,
+            "direction": "up" | "down" | "flat",
+        }
+    """
+    if not bars:
+        return {"developing_poc": None, "prior_poc": None, "direction": "flat"}
+
+    def bars_to_trades(b: list[dict]) -> list[dict]:
+        return [{"price": bar["close"], "size": bar.get("volume", 1)} for bar in b]
+
+    current_vp = compute_volume_profile(bars_to_trades(bars), tick_size)
+    current_poc = current_vp.poc
+
+    half = max(1, len(bars) // 2)
+    first_half_vp = compute_volume_profile(bars_to_trades(bars[:half]), tick_size)
+    prior_poc = first_half_vp.poc
+
+    if current_poc is None or prior_poc is None or (current_poc == 0 and prior_poc == 0):
+        return {"developing_poc": current_poc, "prior_poc": prior_poc, "direction": "flat"}
+
+    diff = current_poc - prior_poc
+    threshold = tick_size * 4  # 1 point for NQ
+
+    if diff > threshold:
+        direction = "up"
+    elif diff < -threshold:
+        direction = "down"
+    else:
+        direction = "flat"
+
+    return {
+        "developing_poc": current_poc,
+        "prior_poc": prior_poc,
+        "direction": direction,
+    }
