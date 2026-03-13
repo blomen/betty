@@ -1,4 +1,5 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
@@ -545,6 +546,15 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
   [sortedGroups]);
 
+  const valueScrollRef = useRef<HTMLDivElement>(null);
+
+  const valueVirtualizer = useVirtualizer({
+    count: sortedGroups.length,
+    getScrollElement: () => valueScrollRef.current,
+    estimateSize: (index) => selectedGroup === index ? 100 : 52,
+    overscan: 10,
+  });
+
   const toggleProvider = (p: string) => {
     setSelectedProviders(prev => {
       const next = new Set(prev);
@@ -1066,8 +1076,9 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue">
-        <table className="sq">
-          <thead>
+        <div ref={valueScrollRef} className="overflow-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <table className="sq w-full">
+          <thead className="sticky top-0 z-10 bg-panel">
             <tr>
               <th style={{ width: '35%' }}>Event</th>
               <th className="text-right">Providers</th>
@@ -1080,30 +1091,38 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
               <MultiSortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
             </tr>
           </thead>
-          <tbody>
-            {sortedGroups.map((group, idx) => (
-              <OpportunityRow
-                key={group.key}
-                group={group}
-                idx={idx}
-                isExpanded={selectedGroup === idx}
-                onToggle={handleSelectGroup}
-                placedKeys={placedKeys}
-                balanceMap={balanceMap}
-                selectedBetProvider={selectedBetProvider[group.key] ?? 0}
-                providerDropdownOpen={providerDropdownOpen === group.key}
-                providerDropdownRef={providerDropdownRef}
-                onProviderDropdownToggle={(key) => setProviderDropdownOpen(prev => prev === key ? null : key)}
-                onProviderSelect={(key, i) => { setSelectedBetProvider(prev => ({ ...prev, [key]: i })); setProviderDropdownOpen(null); }}
-                onPlaceBet={handlePlaceBetClick}
-                pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
-                isPlacing={isPlacing}
-                onConfirmBet={confirmPlaceBet}
-                onCancelBet={() => setPendingBet(null)}
-              />
-            ))}
+          <tbody style={{
+            paddingTop: valueVirtualizer.getVirtualItems()[0]?.start ?? 0,
+            paddingBottom: (() => { const items = valueVirtualizer.getVirtualItems(); return valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); })(),
+          }}>
+            {valueVirtualizer.getVirtualItems().map((virtualRow) => {
+              const group = sortedGroups[virtualRow.index];
+              const idx = virtualRow.index;
+              return (
+                <OpportunityRow
+                  key={group.key}
+                  group={group}
+                  idx={idx}
+                  isExpanded={selectedGroup === idx}
+                  onToggle={handleSelectGroup}
+                  placedKeys={placedKeys}
+                  balanceMap={balanceMap}
+                  selectedBetProvider={selectedBetProvider[group.key] ?? 0}
+                  providerDropdownOpen={providerDropdownOpen === group.key}
+                  providerDropdownRef={providerDropdownRef}
+                  onProviderDropdownToggle={(key) => setProviderDropdownOpen(prev => prev === key ? null : key)}
+                  onProviderSelect={(key, i) => { setSelectedBetProvider(prev => ({ ...prev, [key]: i })); setProviderDropdownOpen(null); }}
+                  onPlaceBet={handlePlaceBetClick}
+                  pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
+                  isPlacing={isPlacing}
+                  onConfirmBet={confirmPlaceBet}
+                  onCancelBet={() => setPendingBet(null)}
+                />
+              );
+            })}
           </tbody>
         </table>
+        </div>
         </div>
       )}
       </>}
