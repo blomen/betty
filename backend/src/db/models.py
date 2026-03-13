@@ -1720,6 +1720,30 @@ class PinnacleCoverageLog(Base):
     )
 
 
+class ProviderRecommendation(Base):
+    """Diagnostic recommendation for a provider with lifecycle tracking."""
+    __tablename__ = "provider_recommendations"
+
+    id = Column(Integer, primary_key=True)
+    provider_id = Column(String, nullable=False)
+    category = Column(String, nullable=False)      # match_rate, coverage, timing, roi, market_gap
+    severity = Column(String, nullable=False)       # critical, warning, info
+    message = Column(String, nullable=False)
+    diagnostic_data = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="open")  # open, acted_on, resolved, wont_fix
+    acted_on_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    before_metric = Column(Float, nullable=True)
+    after_metric = Column(Float, nullable=True)
+    source = Column(String, default="rules")        # rules or ml
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_recommendations_provider", "provider_id"),
+        Index("idx_recommendations_status", "status"),
+    )
+
+
 def init_db() -> None:
     """Initialize database and create tables."""
     return get_engine()

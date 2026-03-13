@@ -285,6 +285,30 @@ def _create_pinnacle_coverage_log(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_pinnacle_coverage_provider ON pinnacle_coverage_log(provider_id, sport)")
 
 
+def _create_provider_recommendations(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "provider_recommendations"):
+        return
+    conn.execute("""
+        CREATE TABLE provider_recommendations (
+            id INTEGER PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            message TEXT NOT NULL,
+            diagnostic_data JSON,
+            status TEXT NOT NULL DEFAULT 'open',
+            acted_on_at DATETIME,
+            resolved_at DATETIME,
+            before_metric REAL,
+            after_metric REAL,
+            source TEXT DEFAULT 'rules',
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_recommendations_provider ON provider_recommendations(provider_id)")
+    conn.execute("CREATE INDEX idx_recommendations_status ON provider_recommendations(status)")
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run all ML-related migrations against the given SQLite connection.
@@ -302,4 +326,5 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _create_extraction_features(conn)
     _create_provider_value_log(conn)
     _create_pinnacle_coverage_log(conn)
+    _create_provider_recommendations(conn)
     conn.commit()
