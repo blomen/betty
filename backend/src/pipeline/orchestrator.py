@@ -804,7 +804,22 @@ class ExtractionPipeline:
 
                     except asyncio.TimeoutError:
                         error_msg = f"Timed out after {provider_timeout}s"
-                        logger.error(f"[{provider_id}] {error_msg}")
+
+                        # Recover partial results from metrics (data already stored in DB)
+                        partial_events = 0
+                        partial_odds = 0
+                        if self.metrics:
+                            current_run = self.metrics.get_current_run()
+                            if current_run and provider_id in current_run.providers:
+                                pm = current_run.providers[provider_id]
+                                partial_events = pm.total_events
+                                partial_odds = pm.total_odds
+
+                        if partial_events > 0:
+                            error_msg = f"Timed out after {provider_timeout}s (partial: {partial_events} ev, {partial_odds} odds)"
+                            logger.warning(f"[{provider_id}] {error_msg}")
+                        else:
+                            logger.error(f"[{provider_id}] {error_msg}")
 
                         if self.metrics:
                             self.metrics.end_provider(provider_id, success=False, error=error_msg)
@@ -812,9 +827,9 @@ class ExtractionPipeline:
                             self.circuit_breaker.record_failure(provider_id)
 
                         return provider_id, {
-                            "events_processed": 0,
+                            "events_processed": partial_events,
                             "events_new": 0,
-                            "odds_processed": 0,
+                            "odds_processed": partial_odds,
                             "odds_new": 0,
                             "error": error_msg,
                         }
@@ -996,6 +1011,7 @@ class ExtractionPipeline:
             try:
                 from src.ml.features.extraction_features import (
                     extract_extraction_features, log_extraction_run,
+                    update_extraction_outcomes,
                 )
 
                 # Compute average match rate across providers
@@ -1015,6 +1031,83 @@ class ExtractionPipeline:
                     avg_match_rate=_avg_mr,
                 )
                 log_extraction_run(self.session, run_features)
+
+                # Backfill opportunity outcomes from analysis results
+                if analysis_results:
+                    value_found = analysis_results.get("value", {}).get("found", 0)
+                    dutch_found = analysis_results.get("dutch", {}).get("found", 0)
+                    reverse_found = (
+                        analysis_results.get("reverse", {}).get("found", 0)
+                        + analysis_results.get("reverse_value", {}).get("found", 0)
+                    )
+                    # Compute avg edge from opportunities table for this run's timeframe
+                    avg_edge = None
+                    try:
+                        from sqlalchemy import func
+                        from ..db.models import Opportunity
+                        row = self.session.query(
+                            func.avg(Opportunity.edge_pct)
+                        ).filter(
+                            Opportunity.edge_pct > 0
+                        ).scalar()
+                        avg_edge = float(row) if row else None
+                    except Exception:
+                        pass
+
+                    update_extraction_outcomes(
+                        self.session,
+                        run_id=run_id,
+                        value_bets_found=value_found,
+                        avg_edge_pct=avg_edge,
+                        dutch_opportunities_found=dutch_found,
+                        reverse_opportunities_found=reverse_found,
+                    )
+
+                # Log per-provider value attribution
+                if current_run and current_run.providers:
+                    from src.ml.features.extraction_features import (
+                        extract_provider_value, log_provider_value,
+                    )
+                    from sqlalchemy import func as sa_func
+                    from ..db.models import Opportunity
+
+                    for pid, pm in current_run.providers.items():
+                        matched = sum(1 for s in pm.sports.values() if s.events_processed > 0)
+                        total_sports = len(pm.sports)
+                        mr = matched / total_sports if total_sports > 0 else 0.0
+
+                        # Count value bets attributed to this provider
+                        vb_count = 0
+                        vb_avg_edge = None
+                        try:
+                            row = self.session.query(
+                                sa_func.count(Opportunity.id),
+                                sa_func.avg(Opportunity.edge_pct),
+                            ).filter(
+                                Opportunity.provider1_id == pid,
+                                Opportunity.edge_pct > 0,
+                                Opportunity.type == "value",
+                            ).first()
+                            if row:
+                                vb_count = row[0] or 0
+                                vb_avg_edge = float(row[1]) if row[1] else None
+                        except Exception:
+                            pass
+
+                        pv_features = extract_provider_value(
+                            run_id=run_id,
+                            provider_id=pid,
+                            events_extracted=pm.total_events,
+                            odds_extracted=pm.total_odds,
+                            duration_seconds=pm.duration_seconds,
+                            match_rate=mr,
+                            spread_count=sum(s.odds_processed for s in pm.sports.values()),
+                            total_count=pm.total_odds,
+                            value_bets_from_provider=vb_count,
+                            avg_edge_from_provider=vb_avg_edge,
+                        )
+                        log_provider_value(self.session, pv_features)
+
                 self.session.commit()
             except Exception as e:
                 logger.debug(f"ML extraction feature logging skipped: {e}")

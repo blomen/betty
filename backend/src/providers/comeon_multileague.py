@@ -144,6 +144,14 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         sports_to_extract = self._resolve_sports(sport)
         logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
+        # Ensure browser once for entire extraction run (not per-sport)
+        await self.transport._ensure_browser()
+        page = self.transport.page
+
+        # Dismiss cookie overlay once — persists across SPA navigations
+        await self._dismiss_cookie_overlay(page)
+        self._cookie_dismissed = True
+
         all_events = []
         sports_attempted = 0
         sports_with_events = 0
@@ -221,17 +229,25 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
         all_events_data = {}  # event_id -> event_data dict
 
         try:
-            await self.transport._ensure_browser()
             page = self.transport.page
 
-            # Validate page is still alive (browser may have been recycled)
+            # Validate page is still alive — if dead, create new page from
+            # existing browser context (avoids expensive full browser restart)
             try:
                 await page.evaluate("() => true", timeout=5000)
             except Exception:
-                logger.warning(f"[{self.provider_id}] Page context dead, reinitializing browser")
-                await self.transport.close()
-                await self.transport._ensure_browser()
-                page = self.transport.page
+                logger.warning(f"[{self.provider_id}] Page context dead for {sport_normalized}, creating new page")
+                try:
+                    # Try creating a new page in existing context (fast — no browser restart)
+                    page = await self.transport.context.new_page()
+                    self.transport.page = page
+                except Exception:
+                    # Context also dead — full reinit as last resort
+                    logger.warning(f"[{self.provider_id}] Context also dead, full browser reinit")
+                    await self.transport.close()
+                    await self.transport._ensure_browser()
+                    page = self.transport.page
+                    self._cookie_dismissed = False
 
             # Setup WS interception — persists across SPA navigations
             ws_connected = False
@@ -254,8 +270,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
             await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
             await page.wait_for_timeout(1000)
 
-            # Dismiss cookie overlay — may trigger SPA navigation
-            await self._dismiss_cookie_overlay(page)
+            # Dismiss cookie overlay if not already done
+            if not getattr(self, '_cookie_dismissed', False):
+                await self._dismiss_cookie_overlay(page)
+                self._cookie_dismissed = True
 
             # Check if we're still on the sport page, if not navigate back
             current_url = page.url
@@ -264,10 +282,19 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                 await page.goto(main_url, wait_until='domcontentloaded', timeout=30000)
                 await page.wait_for_timeout(1000)
 
-            # Wait for WS data to arrive (RSocket needs time to establish + send INITIAL_STATE)
-            # Football has 60+ leagues → larger payload → needs more time
-            ws_wait = 5000 if sport_normalized == 'football' else 3000
-            await page.wait_for_timeout(ws_wait)
+            # Adaptive wait for WS data — poll until messages arrive or max wait reached
+            # Saves 1-4s per sport vs fixed 3-5s wait
+            max_ws_wait = 5.0 if sport_normalized == 'football' else 3.0
+            elapsed_ws = 0.0
+            await asyncio.sleep(1.0)  # Minimum wait for RSocket handshake
+            elapsed_ws = 1.0
+            while elapsed_ws < max_ws_wait:
+                if ws_messages:
+                    # Got data — wait a bit more for stragglers
+                    await asyncio.sleep(0.5)
+                    break
+                await asyncio.sleep(0.3)
+                elapsed_ws += 0.3
 
             # Verify WS actually connected and delivered data
             if not ws_connected:
@@ -475,7 +502,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
 
     # --- Pass 2: Event detail page enrichment for spread/total ---
 
-    MAX_DETAIL_EVENTS = 100        # Cap to avoid sport_timeout
+    MAX_DETAIL_EVENTS = 50         # Reduced from 100 — diminishing returns after 50
 
     JS_DISCOVER_EVENT_URLS = """() => {
         const links = {};
@@ -552,16 +579,16 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever, RSocketMixin):
                     continue
 
                 # Adaptive wait for WS data — listener must stay active until WS connects
-                await asyncio.sleep(1.5)
-                elapsed = 1.5
+                await asyncio.sleep(1.0)
+                elapsed = 1.0
                 last_count = len(detail_ws_messages)
-                while elapsed < 4.0:
+                while elapsed < 3.0:
                     await asyncio.sleep(0.3)
                     elapsed += 0.3
                     new_count = len(detail_ws_messages)
                     if new_count > last_count:
                         last_count = new_count
-                    elif elapsed > 2.5:
+                    elif elapsed > 1.8:
                         break
 
                 page.remove_listener("websocket", on_ws)

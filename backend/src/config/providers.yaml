@@ -852,10 +852,9 @@ extraction_tiers:
     providers:
       # Spectate — canonical only (represents 2: 888sport, mrgreen)
       - 888sport
-      # ComeOn Group — 3-27% odds identity, each needs separate extraction
+      # ComeOn Group — canonical only (represents 3: comeon, lyllo, hajper)
+      # Same odds engine with ~0.3 avg margin diff — consolidated like Kambi/Altenar
       - comeon
-      # - hajper  # DISABLED: 31-62 events, 1 value bet, 534-771s browser time — not worth it
-      - lyllo
       # Snabbare (1)
       - snabbare
       # 10Bet (1)
