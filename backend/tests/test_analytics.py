@@ -192,3 +192,82 @@ def test_compute_scheduling_efficiency_empty(db_session):
     from src.ml.analytics.engine import compute_scheduling_efficiency
     sched = compute_scheduling_efficiency(db_session)
     assert sched == {}
+
+
+def test_diagnose_match_rate_drop():
+    """Test match rate drop detection."""
+    from src.ml.analytics.diagnostics import diagnose_provider
+
+    provider_data = {
+        "provider_id": "dbet",
+        "avg_match_rate": 0.55,
+        "prev_match_rate": 0.82,
+        "avg_events": 166,
+        "avg_duration": 42.5,
+        "total_opportunities": 20,
+        "seconds_per_value_bet": 8.3,
+    }
+
+    recommendations = diagnose_provider(provider_data)
+    assert len(recommendations) >= 1
+    match_rec = next((r for r in recommendations if r["category"] == "match_rate"), None)
+    assert match_rec is not None
+    assert match_rec["severity"] in ("warning", "critical")
+    assert "match rate" in match_rec["message"].lower()
+
+
+def test_diagnose_zero_spreads():
+    """Test missing market detection."""
+    from src.ml.analytics.diagnostics import diagnose_provider
+
+    provider_data = {
+        "provider_id": "betinia",
+        "avg_match_rate": 0.85,
+        "spread_count": 0,
+        "total_count": 45,
+        "avg_events": 67,
+        "avg_duration": 16.0,
+        "total_opportunities": 15,
+    }
+
+    recommendations = diagnose_provider(provider_data)
+    market_rec = next((r for r in recommendations if r["category"] == "market_gap"), None)
+    assert market_rec is not None
+    assert "spread" in market_rec["message"].lower()
+
+
+def test_diagnose_slow_provider():
+    """Test slow extraction detection."""
+    from src.ml.analytics.diagnostics import diagnose_provider
+
+    provider_data = {
+        "provider_id": "comeon",
+        "avg_match_rate": 0.70,
+        "avg_events": 42,
+        "avg_duration": 180.0,
+        "total_opportunities": 2,
+        "seconds_per_value_bet": 90.0,
+    }
+
+    recommendations = diagnose_provider(provider_data)
+    timing_rec = next((r for r in recommendations if r["category"] == "timing"), None)
+    assert timing_rec is not None
+
+
+def test_diagnose_healthy_provider():
+    """Healthy provider should get no recommendations."""
+    from src.ml.analytics.diagnostics import diagnose_provider
+
+    provider_data = {
+        "provider_id": "unibet",
+        "avg_match_rate": 0.85,
+        "spread_count": 30,
+        "total_count": 45,
+        "avg_events": 284,
+        "avg_duration": 25.0,
+        "total_opportunities": 50,
+        "seconds_per_value_bet": 2.1,
+    }
+
+    recommendations = diagnose_provider(provider_data)
+    assert len(recommendations) == 0
