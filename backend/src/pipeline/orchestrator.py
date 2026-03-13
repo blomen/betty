@@ -972,6 +972,43 @@ class ExtractionPipeline:
                 except Exception as e:
                     logger.error(f"[Metrics] Failed to persist run: {e}")
 
+            # Log Pinnacle coverage delta (M10d — always, from Day 1)
+            if tier_name != "sharp":
+                try:
+                    from src.ml.features.pinnacle_coverage import log_coverage
+                    coverage_rows = log_coverage(self.session, run_id)
+                    logger.info(f"Logged {coverage_rows} Pinnacle coverage rows")
+                    self.session.commit()
+                except Exception as e:
+                    logger.debug(f"Pinnacle coverage logging skipped: {e}")
+
+            # Log ML extraction features (best-effort)
+            try:
+                from src.ml.features.extraction_features import (
+                    extract_extraction_features, log_extraction_run,
+                )
+
+                # Compute average match rate across providers
+                _avg_mr = 0.0
+                if current_run and current_run.providers:
+                    _rates = [p.match_rate for p in current_run.providers.values() if p.match_rate > 0]
+                    _avg_mr = sum(_rates) / len(_rates) if _rates else 0.0
+
+                run_features = extract_extraction_features(
+                    run_id=run_id,
+                    trigger=tier_name or "manual",
+                    providers_attempted=current_run.providers_attempted if current_run else 0,
+                    providers_succeeded=current_run.providers_succeeded if current_run else 0,
+                    providers_failed=current_run.providers_failed if current_run else 0,
+                    total_events=current_run.total_events if current_run else 0,
+                    total_odds=current_run.total_odds if current_run else 0,
+                    avg_match_rate=_avg_mr,
+                )
+                log_extraction_run(self.session, run_features)
+                self.session.commit()
+            except Exception as e:
+                logger.debug(f"ML extraction feature logging skipped: {e}")
+
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
             results["cancelled"] = True

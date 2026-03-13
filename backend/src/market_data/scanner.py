@@ -39,11 +39,12 @@ class SetupSignal:
 class MarketScanner:
     """Scores all configured setups against current session analysis."""
 
-    def __init__(self, setups: dict, threshold: float = 70.0):
+    def __init__(self, setups: dict, threshold: float = 70.0, db_session=None):
         self.setups = setups
         self.threshold = threshold
+        self.db_session = db_session
 
-    def scan(self, session: SessionAnalysis) -> list[SetupSignal]:
+    def scan(self, session: SessionAnalysis, candles: list | None = None) -> list[SetupSignal]:
         """Score all setups, return those meeting threshold.
 
         Macro regime acts as a multiplier on directional setups:
@@ -79,7 +80,7 @@ class MarketScanner:
                     entry, stop, target = self._suggest_levels(
                         setup_type, session, direction
                     )
-                    signals.append(SetupSignal(
+                    signal = SetupSignal(
                         setup_type=setup_type,
                         setup_name=setup_cfg.get("name", setup_type),
                         category=setup_cfg.get("category", "other"),
@@ -89,7 +90,48 @@ class MarketScanner:
                         suggested_entry=entry,
                         suggested_stop=stop,
                         suggested_target=target,
-                    ))
+                    )
+                    signals.append(signal)
+
+                    # Log ML features (best-effort, never blocks scanning)
+                    try:
+                        if self.db_session is not None:
+                            from src.ml.features.trading_features import extract_trading_features
+                            from src.ml.feature_store import log_features, log_candle_snapshot, snapshot_candles
+                            orderflow = session.delta
+                            ml_features = extract_trading_features(
+                                setup_type=setup_type,
+                                direction=direction,
+                                base_score=int(round(composite)),
+                                delta=getattr(orderflow, 'delta', None) if orderflow else None,
+                                cvd=getattr(orderflow, 'cvd', None) if orderflow else None,
+                                passive_active_ratio=getattr(orderflow, 'passive_active_ratio', None) if orderflow else None,
+                                market_type=session.market_type,
+                                poor_high=session.poor_high,
+                                poor_low=session.poor_low,
+                            )
+                            source_id = f"{setup_type}_{direction}_{id(signal)}"
+                            feat_row = log_features(
+                                session=self.db_session,
+                                domain="trading",
+                                source_id=source_id,
+                                source_type="trading_signal",
+                                features=ml_features,
+                            )
+                            if candles and feat_row:
+                                from src.ml.features.candle_features import snapshot_candles as _snap
+                                candle_dicts = _snap(
+                                    candles,
+                                    vwap=session.vwap_bands.vwap if session.vwap_bands else None,
+                                    poc=session.volume_profile.poc if session.volume_profile else None,
+                                )
+                                log_candle_snapshot(
+                                    session=self.db_session,
+                                    signal_id=feat_row.id,
+                                    candles=candle_dicts,
+                                )
+                    except Exception as e:
+                        logger.debug(f"ML feature logging skipped: {e}")
 
         signals.sort(key=lambda s: s.score, reverse=True)
         logger.info("Scan produced %d signals (threshold=%.0f)", len(signals), self.threshold)

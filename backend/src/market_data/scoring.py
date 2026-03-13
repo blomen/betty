@@ -93,6 +93,36 @@ SETUP_RISK_PCT: dict[str, float] = {
 DEFAULT_RISK_PCT = 0.005
 
 
+def enrich_conditions_with_continuous(
+    conditions: list[dict],
+    orderflow,  # OrderflowSignals
+    candles: list | None = None,
+) -> list[dict]:
+    """Add continuous ML feature values to each condition dict."""
+    continuous = {
+        "delta_magnitude": getattr(orderflow, 'delta', None),
+        "delta_pct_of_volume": None,
+        "cvd": getattr(orderflow, 'cvd', None),
+        "cvd_slope_5bar": None,
+        "cvd_slope_10bar": None,
+        "passive_active_ratio": getattr(orderflow, 'passive_active_ratio', None),
+        "delta_aligned": getattr(orderflow, 'delta_aligned', None),
+        "delta_divergence": getattr(orderflow, 'delta_divergence', None),
+        "delta_unwind": getattr(orderflow, 'delta_unwind', None),
+        "cvd_trend": getattr(orderflow, 'cvd_trend', None),
+        "vsa_absorption": getattr(orderflow, 'vsa_absorption', None),
+        "tick_vol_accelerating": getattr(orderflow, 'tick_vol_accelerating', None),
+        "trapped_traders": getattr(orderflow, 'trapped_traders', None),
+        "imbalance_ratio_max": None,
+        "stacked_imbalance_count": None,
+        "big_trades_count": None,
+        "big_trades_net_delta": None,
+    }
+    for cond in conditions:
+        cond["continuous"] = continuous
+    return conditions
+
+
 def fixed_fractional_risk(
     setup_type: str,
     account_balance: float,
