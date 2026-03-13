@@ -80,9 +80,9 @@ class GateClassifierModel:
         }
 
     def predict(self, features: dict) -> dict | None:
-        """Predict day type from first-hour features."""
-        vec = np.array(
-            [float(features.get(f, 0) or 0) for f in DAY_TYPE_FEATURE_NAMES],
-            dtype=np.float32,
-        ).reshape(1, -1)
-        return vec  # Actual prediction done by Predictor
+        """Predict day type from first-hour features.
+
+        Returns None — actual prediction is done by the central Predictor
+        which loads the trained model from disk.
+        """
+        return None

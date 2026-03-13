@@ -102,13 +102,13 @@ class SetupScorerModel:
         }
 
     def predict(self, features: dict) -> float | None:
-        """Predict R-multiple for a trading setup."""
-        use_phase2 = len(features) > 20
-        feature_names = FEATURE_NAMES_PHASE2 if use_phase2 else FEATURE_NAMES_PHASE1
-        vec = _encode_features(features, feature_names)
-        if vec is None:
-            return None
-        return vec  # Actual prediction done by Predictor
+        """Predict R-multiple for a trading setup.
+
+        Returns None — actual prediction is done by the central Predictor
+        which loads the trained model from disk. This method exists for
+        interface consistency but requires Predictor.predict("setup_scorer", features).
+        """
+        return None
 
 
 def _encode_features(features: dict, feature_names: list) -> np.ndarray | None:

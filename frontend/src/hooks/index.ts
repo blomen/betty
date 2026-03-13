@@ -1,5 +1,4 @@
 // Export all hooks from a single entry point
-export { useBettingContext } from './useBettingContext';
 export { useBankroll } from './useBankroll';
 export { useProfiles } from './useProfiles';
 export { useTableSort } from './useTableSort';

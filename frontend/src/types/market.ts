@@ -137,8 +137,24 @@ export interface ConfirmationCard {
   structure?: string;
   deviation_sd?: number | null;
   price_vs_va?: string;
+  // Rich orderflow signals (only on orderflow card)
   delta?: number | null;
+  delta_aligned?: boolean;
   divergence?: boolean;
+  delta_unwind?: boolean;
+  cvd?: number | null;
+  cvd_trend?: 'rising' | 'falling' | 'flat';
+  vsa_absorption?: boolean;
+  tick_vol_accelerating?: boolean;
+  trapped_traders?: boolean;
+  passive_active_ratio?: number;
+  big_trades_count?: number;
+  big_trades_net_delta?: number;
+  stop_run_detected?: boolean;
+  // Imbalance stacking (footprint analysis)
+  imbalance_ratio_max?: number;
+  stacked_imbalance_count?: number;
+  stacked_imbalance_direction?: 'buy' | 'sell' | 'neutral';
 }
 
 /** @deprecated Use IndicatorsResponse instead */
@@ -147,6 +163,9 @@ export interface ConfirmationState {
   span: ConfirmationCard;
   fair_value: ConfirmationCard;
   orderflow: ConfirmationCard;
+  // M7 gate classifier predictions
+  ml_day_type?: string;
+  ml_day_type_confidence?: number;
 }
 
 export interface StreamTickEvent {

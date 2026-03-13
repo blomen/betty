@@ -3,7 +3,7 @@ import { api } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useExtractionFreshness, useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
@@ -161,10 +161,6 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
     }
   }, [handleScan, workflowProviders.size]);
 
-  // Re-scan when soft extraction completes
-  useRefreshOnExtraction(() => {
-    if (workflowProviders.size > 0) handleScan();
-  });
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();

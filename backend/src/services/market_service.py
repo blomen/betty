@@ -206,6 +206,31 @@ class MarketService:
 
         # Persist levels as MarketLevel rows for the /levels endpoint
         level_rows = self._session_levels_to_rows(session_levels, session_data)
+
+        # Detect order blocks and FVGs from 30-min bars
+        from ..market_data.levels import detect_order_blocks, detect_fvgs
+        order_blocks = detect_order_blocks(bars_30m)
+        fvgs = detect_fvgs(bars_30m)
+
+        for ob in order_blocks:
+            level_rows.append({
+                "level_type": f"order_block_{ob.direction}",
+                "price_low": ob.price_low,
+                "price_high": ob.price_high,
+                "direction": ob.direction,
+                "session": "rth",
+                "is_filled": False,
+            })
+        for fvg in fvgs:
+            level_rows.append({
+                "level_type": f"fvg_{fvg.direction}",
+                "price_low": fvg.price_low,
+                "price_high": fvg.price_high,
+                "direction": fvg.direction,
+                "session": "rth",
+                "is_filled": False,
+            })
+
         if level_rows:
             self.repo.upsert_levels(symbol, target_date, level_rows)
 
@@ -435,10 +460,14 @@ class MarketService:
                 cumulative_delta=[sj.get("cumulative_delta_last", 0)],
             )
 
-        # Run scanner
+        # Build live candles + orderflow for ML models and auto-scoring
+        of_signals = self._compute_live_orderflow(symbol, sj)
+        live_candles = self._get_live_candles(symbol)
+
+        # Run scanner with orderflow + candles (enables M5/M6/M9 + auto-scoring)
         setups = get_setups()
-        scanner = MarketScanner(setups, threshold)
-        signals = scanner.scan(analysis)
+        scanner = MarketScanner(setups, threshold, db_session=self.db)
+        signals = scanner.scan(analysis, candles=live_candles, orderflow=of_signals)
 
         # Expire old signals
         expiry = scanner_cfg.get("signal_expiry_minutes", 60)
@@ -690,22 +719,42 @@ class MarketService:
         ]
 
     def get_confirmations(self, symbol: str | None = None) -> dict:
-        """Evaluate 4 confirmation gates from current session data."""
+        """Evaluate 4 confirmation gates from current session + live orderflow.
+
+        Returns rich data for each gate so the frontend can display full context.
+        Layer B auto-gates: macro, span, fair_value, orderflow.
+        """
+        config = get_market_data_config()
+        symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
         session_data = self.get_current_session(symbol)
+
+        empty_of = {
+            "checked": False, "delta": None, "divergence": False,
+            "delta_aligned": False, "delta_unwind": False,
+            "cvd": None, "cvd_trend": "flat",
+            "vsa_absorption": False, "tick_vol_accelerating": False,
+            "trapped_traders": False, "passive_active_ratio": 0.0,
+            "big_trades_count": 0, "big_trades_net_delta": 0,
+            "stop_run_detected": False,
+        }
+
         if not session_data:
             return {
                 "macro": {"checked": False, "regime": "unknown", "vix": None},
                 "span": {"checked": False, "structure": "no_data"},
                 "fair_value": {"checked": False, "deviation_sd": None, "price_vs_va": "unknown"},
-                "orderflow": {"checked": False, "delta": None, "divergence": False},
+                "orderflow": empty_of,
             }
 
-        # Macro: risk_on = checked
+        # --- Compute live orderflow from recent ticks ---
+        of_signals = self._compute_live_orderflow(symbol, session_data)
+
+        # === Gate 1: Macro (risk regime) ===
         macro = session_data.get("macro") or {}
         regime = macro.get("regime", "unknown")
-        macro_checked = regime == "risk_on"
+        macro_checked = regime in ("risk_on", "mixed")
 
-        # Span: check market_type for trending structure
+        # === Gate 2: Span (trending structure) ===
         market_type = session_data.get("market_type", "unknown")
         if market_type in ("trending_up", "trending_down"):
             span_checked = True
@@ -714,7 +763,45 @@ class MarketService:
             span_checked = False
             span_structure = "no_clear_structure"
 
-        # Fair Value: price beyond 1.5SD from VWAP or outside VA
+        # M7: Auto day-type prediction (overrides manual if model loaded)
+        ml_day_type = None
+        ml_day_type_confidence = None
+        try:
+            from ..ml.serving.predictor import get_predictor
+            from ..ml.models.gate_classifier import DAY_TYPE_FEATURE_NAMES, DAY_TYPE_LABELS
+            predictor = get_predictor()
+            if predictor.is_loaded("gate_classifier"):
+                gate_features = {
+                    "rf_after_ib": session_data.get("rotation_factor", 0),
+                    "ib_range": session_data.get("ib_range", 0),
+                    "ib_range_vs_avg": session_data.get("ib_range_vs_avg", 1.0),
+                    "opening_type_encoded": {"od": 0, "oi": 1, "or": 2, "otd": 3}.get(
+                        session_data.get("opening_type", ""), 0),
+                    "first_hour_delta_total": session_data.get("total_delta", 0),
+                    "first_hour_volume_vs_avg": 1.0,
+                    "overnight_range_pct": 0,
+                    "gap_filled_pct": 0,
+                    "yesterday_market_type_encoded": 0,
+                    "poor_high_or_low_in_ib": 1 if session_data.get("poor_high") or session_data.get("poor_low") else 0,
+                    "first_hour_big_trades_count": of_signals.big_trades_count if of_signals else 0,
+                    "session_volume_first_hour": 0,
+                    "vix_level": (session_data.get("macro") or {}).get("vix", 0) or 0,
+                    "gex": 0,
+                    "value_migration_encoded": {"up": 1, "down": -1, "neutral": 0}.get(
+                        session_data.get("value_migration", "neutral"), 0),
+                    "ib_tpo_count": session_data.get("ib_tpo_count", 0),
+                }
+                pred = predictor.predict("gate_classifier", gate_features)
+                if pred and isinstance(pred, dict):
+                    ml_day_type = DAY_TYPE_LABELS.get(pred["class"], "unknown")
+                    probs = pred.get("probabilities", [])
+                    ml_day_type_confidence = round(max(probs) * 100, 1) if probs else None
+                    logger.info("M7 predicted day type: %s (%.1f%% confidence)",
+                               ml_day_type, ml_day_type_confidence or 0)
+        except Exception as e:
+            logger.debug("M7 gate classifier skipped: %s", e)
+
+        # === Gate 3: Fair Value (deviation from VWAP/VA) ===
         vwap = session_data.get("vwap")
         last_price = session_data.get("last_price")
         vwap_1sd_upper = session_data.get("vwap_1sd_upper")
@@ -729,23 +816,42 @@ class MarketService:
                 deviation_sd = round((last_price - vwap) / sd_width, 2)
                 fv_checked = abs(deviation_sd) >= 1.5 or price_vs_va in ("above", "below")
 
-        # Orderflow: delta confirms direction (nonzero + matches trend)
-        total_delta = session_data.get("total_delta")
-        divergence = session_data.get("delta_divergence", False)
-        of_checked = False
-        if total_delta is not None:
-            if market_type == "trending_up" and total_delta > 0:
-                of_checked = True
-            elif market_type == "trending_down" and total_delta < 0:
-                of_checked = True
-            elif divergence:
-                of_checked = True
+        # === Gate 4: Orderflow (rich signals from live ticks) ===
+        # Checked if: delta aligned + at least 1 confirming signal
+        confirming_count = sum([
+            of_signals.delta_aligned,
+            of_signals.vsa_absorption,
+            of_signals.trapped_traders,
+            of_signals.tick_vol_accelerating,
+            of_signals.cvd_trend in ("rising", "falling"),
+        ])
+        of_checked = of_signals.delta_aligned and confirming_count >= 2
 
         return {
             "macro": {"checked": macro_checked, "regime": regime, "vix": macro.get("vix")},
             "span": {"checked": span_checked, "structure": span_structure},
             "fair_value": {"checked": fv_checked, "deviation_sd": deviation_sd, "price_vs_va": price_vs_va},
-            "orderflow": {"checked": of_checked, "delta": total_delta, "divergence": divergence},
+            "ml_day_type": ml_day_type,
+            "ml_day_type_confidence": ml_day_type_confidence,
+            "orderflow": {
+                "checked": of_checked,
+                "delta": of_signals.delta,
+                "delta_aligned": of_signals.delta_aligned,
+                "divergence": of_signals.delta_divergence,
+                "delta_unwind": of_signals.delta_unwind,
+                "cvd": of_signals.cvd,
+                "cvd_trend": of_signals.cvd_trend,
+                "vsa_absorption": of_signals.vsa_absorption,
+                "tick_vol_accelerating": of_signals.tick_vol_accelerating,
+                "trapped_traders": of_signals.trapped_traders,
+                "passive_active_ratio": of_signals.passive_active_ratio,
+                "big_trades_count": of_signals.big_trades_count,
+                "big_trades_net_delta": of_signals.big_trades_net_delta,
+                "stop_run_detected": of_signals.stop_run_detected,
+                "imbalance_ratio_max": of_signals.imbalance_ratio_max,
+                "stacked_imbalance_count": of_signals.stacked_imbalance_count,
+                "stacked_imbalance_direction": of_signals.stacked_imbalance_direction,
+            },
         }
 
     async def get_indicators(self, symbol: str | None = None) -> dict:

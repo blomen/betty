@@ -1027,6 +1027,19 @@ export const api = {
     return res.json();
   },
 
+  async getCotData(limit = 4): Promise<any[]> {
+    return fetchJson(`/trading/market/cot?limit=${limit}`);
+  },
+
+  async getTopOfBook(): Promise<{ bid_price: number; bid_size: number; ask_price: number; ask_size: number; spread: number; ts: string | null }> {
+    return fetchJson('/trading/market/book');
+  },
+
+  async getMarketLevels(symbol = 'NQ', date?: string): Promise<any[]> {
+    const params = date ? `?symbol=${symbol}&date=${date}` : `?symbol=${symbol}`;
+    return fetchJson(`/trading/market/levels${params}`);
+  },
+
   // ============ Limits ============
   async getLimits(providerId?: string): Promise<ProviderLimit[]> {
     const params = providerId ? `?provider_id=${providerId}` : '';

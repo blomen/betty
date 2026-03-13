@@ -44,7 +44,8 @@ class MarketScanner:
         self.threshold = threshold
         self.db_session = db_session
 
-    def scan(self, session: SessionAnalysis, candles: list | None = None) -> list[SetupSignal]:
+    def scan(self, session: SessionAnalysis, candles: list | None = None,
+             orderflow: "OrderflowSignals | None" = None) -> list[SetupSignal]:
         """Score all setups, return those meeting threshold.
 
         Macro regime acts as a multiplier on directional setups:
@@ -62,7 +63,7 @@ class MarketScanner:
         for setup_type, setup_cfg in self.setups.items():
             # Try both directions for each setup
             for direction in ("long", "short"):
-                conditions = self._score_setup(setup_type, setup_cfg, session, direction)
+                conditions = self._score_setup(setup_type, setup_cfg, session, direction, orderflow)
                 if not conditions:
                     continue
 
@@ -80,14 +81,16 @@ class MarketScanner:
                 ml_features = None
                 try:
                     from src.ml.features.trading_features import extract_trading_features
-                    orderflow = session.delta
+                    of = orderflow or session.delta
                     ml_features = extract_trading_features(
                         setup_type=setup_type,
                         direction=direction,
                         base_score=int(round(composite)),
-                        delta=getattr(orderflow, 'delta', None) if orderflow else None,
-                        cvd=getattr(orderflow, 'cvd', None) if orderflow else None,
-                        passive_active_ratio=getattr(orderflow, 'passive_active_ratio', None) if orderflow else None,
+                        delta=getattr(of, 'delta', None) if of else None,
+                        cvd=getattr(of, 'cvd', None) if of else None,
+                        passive_active_ratio=getattr(of, 'passive_active_ratio', None) if of else None,
+                        big_trades_count=getattr(of, 'big_trades_count', None) if of else None,
+                        big_trades_net_delta=getattr(of, 'big_trades_net_delta', None) if of else None,
                         market_type=session.market_type,
                         poor_high=session.poor_high,
                         poor_low=session.poor_low,
@@ -219,17 +222,78 @@ class MarketScanner:
         setup_cfg: dict,
         session: SessionAnalysis,
         direction: str,
+        orderflow: "OrderflowSignals | None" = None,
     ) -> list[ScoredCondition]:
         """Score a specific setup. Returns conditions list."""
         scorer = self._get_scorer(setup_type)
         if scorer:
-            return scorer(session, direction)
+            conditions = scorer(session, direction)
+            # Enrich with live orderflow auto-scores (replaces manual placeholders)
+            if orderflow and conditions:
+                conditions = self._enrich_with_orderflow(conditions, orderflow, direction)
+            return conditions
 
         # Fallback: score generic confirmations at 0.5 (manual)
         return [
             ScoredCondition(name=c, score=0.5, weight=1.0, is_auto=False)
             for c in setup_cfg.get("confirmations", [])
         ]
+
+    def _enrich_with_orderflow(
+        self,
+        conditions: list[ScoredCondition],
+        of: "OrderflowSignals",
+        direction: str,
+    ) -> list[ScoredCondition]:
+        """Replace manual orderflow placeholders with auto-scored values from live signals."""
+        # Map manual condition names → auto-scored replacements
+        for i, c in enumerate(conditions):
+            if not c.is_auto and "absorption" in c.name.lower():
+                conditions[i] = ScoredCondition(
+                    c.name, 0.9 if of.vsa_absorption else 0.2, c.weight, True,
+                    f"VSA absorption={'YES' if of.vsa_absorption else 'no'}, PA ratio={of.passive_active_ratio:.1f}",
+                )
+            elif not c.is_auto and "delta" in c.name.lower() and "confirm" in c.name.lower():
+                conditions[i] = ScoredCondition(
+                    c.name, 0.9 if of.delta_aligned else 0.2, c.weight, True,
+                    f"Delta={'aligned' if of.delta_aligned else 'opposed'}, net={of.delta:+d}",
+                )
+            elif not c.is_auto and "trapped" in c.name.lower():
+                conditions[i] = ScoredCondition(
+                    c.name, 0.9 if of.trapped_traders else 0.2, c.weight, True,
+                    f"Trapped={'YES' if of.trapped_traders else 'no'}",
+                )
+            elif not c.is_auto and "volume" in c.name.lower() and ("spike" in c.name.lower() or "increase" in c.name.lower() or "expansion" in c.name.lower()):
+                conditions[i] = ScoredCondition(
+                    c.name, 0.85 if of.tick_vol_accelerating else 0.3, c.weight, True,
+                    f"Tick vol accel={'YES' if of.tick_vol_accelerating else 'no'}, big trades={of.big_trades_count}",
+                )
+            elif not c.is_auto and "unwind" in c.name.lower():
+                conditions[i] = ScoredCondition(
+                    c.name, 0.9 if of.delta_unwind else 0.2, c.weight, True,
+                    f"Delta unwind={'YES' if of.delta_unwind else 'no'}",
+                )
+            elif not c.is_auto and "reversal" in c.name.lower() and "quick" in c.name.lower():
+                conditions[i] = ScoredCondition(
+                    c.name, 0.9 if of.stop_run_detected else 0.3, c.weight, True,
+                    f"Stop run={'YES' if of.stop_run_detected else 'no'}",
+                )
+
+        # Append bonus conditions from strong orderflow signals (always auto)
+        if of.big_trades_count >= 2:
+            net = of.big_trades_net_delta
+            aligned = (direction == "long" and net > 0) or (direction == "short" and net < 0)
+            if aligned:
+                conditions.append(ScoredCondition(
+                    "Institutional big trades aligned", 0.9, 0.8, True,
+                    f"{of.big_trades_count} big trades, net delta={net:+d}",
+                ))
+        if of.stop_run_detected:
+            conditions.append(ScoredCondition(
+                "Stop run / liquidity sweep", 0.85, 0.7, True,
+            ))
+
+        return conditions
 
     def _get_scorer(self, setup_type: str):
         """Get the specialized scoring function for a setup."""

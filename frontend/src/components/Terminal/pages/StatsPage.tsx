@@ -1,16 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import { useRefreshOnExtraction } from '@/hooks/useExtractionStatus';
 import { CLVChart } from './BetsPage';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { BankrollStats, Bet, Provider, ProviderLimit } from '@/types';
 
 export function StatsPage() {
-  const [stats, setStats] = useState<BankrollStats | null>(null);
-  const [bets, setBets] = useState<Bet[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [limits, setLimits] = useState<ProviderLimit[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const queryClient = useQueryClient();
   const [limitForm, setLimitForm] = useState<{
     editingLimitId?: number;
     providerId: string;
@@ -19,52 +15,52 @@ export function StatsPage() {
     notes: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [extractionData, setExtractionData] = useState<any>(null);
-  const [recommendations, setRecommendations] = useState<any[]>([]);
-  const [mlStatus, setMlStatus] = useState<Record<string, { loaded: boolean; data_ready: boolean; min_samples: number }> | null>(null);
   const [mlTraining, setMlTraining] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [statsData, betsData, limitsData, providersData] = await Promise.all([
-        api.getBankrollStats(),
-        api.getBets(undefined, 500),
-        api.getLimits(),
-        api.getProviders(),
-      ]);
-      setStats(statsData);
-      setBets(betsData.bets);
-      setLimits(limitsData);
-      setProviders(providersData.providers);
-    } catch (err) {
-      console.error('Failed to fetch stats:', err);
-    } finally {
-      setIsLoading(false);
-    }
-    try {
-      const [analyticsData, recsData] = await Promise.all([
-        api.getExtractionAnalytics(),
-        api.getExtractionRecommendations(),
-      ]);
-      setExtractionData(analyticsData);
-      setRecommendations(recsData);
-    } catch (e) {
-      // Analytics endpoints may not exist yet — ignore
-    }
-    try {
-      const mlData = await api.getMlStatus();
-      setMlStatus(mlData);
-    } catch (e) {
-      // ML endpoints may not exist yet — ignore
-    }
-  }, []);
+  const { data: statsData, isLoading: statsLoading } = useQuery({
+    queryKey: ['bankroll-stats'],
+    queryFn: () => api.getBankrollStats(),
+  });
+  const stats: BankrollStats | null = statsData ?? null;
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const { data: betsData, isLoading: betsLoading } = useQuery({
+    queryKey: ['bets', 'all'],
+    queryFn: () => api.getBets(undefined, 500),
+  });
+  const bets: Bet[] = betsData?.bets ?? [];
 
-  useRefreshOnExtraction(fetchData);
+  const { data: limitsData } = useQuery({
+    queryKey: ['limits'],
+    queryFn: () => api.getLimits(),
+  });
+  const limits: ProviderLimit[] = limitsData ?? [];
+
+  const { data: providersData } = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => api.getProviders(),
+  });
+  const providers: Provider[] = providersData?.providers ?? [];
+
+  const { data: extractionData } = useQuery({
+    queryKey: ['extraction-analytics'],
+    queryFn: () => api.getExtractionAnalytics().catch(() => null),
+    staleTime: 300_000,
+  });
+
+  const { data: recommendationsData } = useQuery({
+    queryKey: ['extraction-recommendations'],
+    queryFn: () => api.getExtractionRecommendations().catch(() => []),
+    staleTime: 300_000,
+  });
+  const recommendations: any[] = recommendationsData ?? [];
+
+  const { data: mlStatus } = useQuery({
+    queryKey: ['ml-status'],
+    queryFn: () => api.getMlStatus().catch(() => null),
+    staleTime: 300_000,
+  });
+
+  const isLoading = statsLoading || betsLoading;
 
   // Compute per-provider stats from bets
   const providerStats = (() => {
@@ -121,7 +117,7 @@ export function StatsPage() {
         });
       }
       setLimitForm(null);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['limits'] });
     } catch (err) {
       console.error('Failed to save limit:', err);
     } finally {
@@ -132,7 +128,7 @@ export function StatsPage() {
   const handleDeleteLimit = async (id: number) => {
     try {
       await api.deleteLimit(id);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['limits'] });
     } catch (err) {
       console.error('Failed to delete limit:', err);
     }
@@ -310,7 +306,7 @@ export function StatsPage() {
         </div>
       )}
 
-      {extractionData?.provider_roi?.length > 0 && (
+      {(extractionData?.provider_roi?.length ?? 0) > 0 && (
         <>
           <h3 className="text-sm font-bold mt-4 mb-2 text-[var(--text-primary)]">
             Extraction Provider ROI
@@ -327,7 +323,7 @@ export function StatsPage() {
               </tr>
             </thead>
             <tbody>
-              {extractionData.provider_roi.map((r: any) => (
+              {extractionData!.provider_roi!.map((r: any) => (
                 <tr key={r.provider_id}>
                   <td>{r.provider_id}</td>
                   <td className="text-right">{r.total_opportunities}</td>
@@ -378,8 +374,7 @@ export function StatsPage() {
                 setMlTraining(true);
                 try {
                   await api.triggerMlTraining();
-                  const updated = await api.getMlStatus();
-                  setMlStatus(updated);
+                  queryClient.invalidateQueries({ queryKey: ['ml-status'] });
                 } catch (e) {
                   console.error('ML training failed:', e);
                 } finally {

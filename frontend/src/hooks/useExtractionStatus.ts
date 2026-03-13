@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { api, type ExtractionProgress, type TiersProgressResponse } from '@/services/api';
 
-/**
- * Custom event name dispatched on `window` when extraction completes.
- * Pages can listen for this to refresh their data.
- */
-export const EXTRACTION_COMPLETE_EVENT = 'bankrollbbq:extraction-complete';
-
 interface ExtractionStatus {
   /** Whether extraction is currently running */
   running: boolean;
@@ -77,16 +71,14 @@ export function useTiersProgress(): TiersProgressResponse | null {
 }
 
 /**
- * Monitors extraction progress and dispatches a window event when extraction
- * completes. Also calls `onComplete` callback if provided.
+ * Monitors extraction progress via polling.
  *
- * Polls every 3s while running, every 10s while idle.
+ * Polls every 10s while running, every 30s while idle.
  * Only ONE instance should run (in App.tsx).
  */
-export function useExtractionStatus(onComplete?: () => void): ExtractionStatus {
+export function useExtractionStatus(): ExtractionStatus {
   const [progress, setProgress] = useState<ExtractionProgress | null>(null);
   const [running, setRunning] = useState(false);
-  const wasRunningRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -113,23 +105,6 @@ export function useExtractionStatus(onComplete?: () => void): ExtractionStatus {
         // Use any_running from tiers (more accurate — handles tier transitions)
         const anyTierRunning = tiersData.any_running;
 
-        // Detect running → stopped transition (extraction just completed)
-        if (wasRunningRef.current && !anyTierRunning) {
-          // Dispatch custom event so all pages can refresh
-          window.dispatchEvent(new CustomEvent(EXTRACTION_COMPLETE_EVENT, {
-            detail: {
-              totalEvents: data.total_events,
-              totalOdds: data.total_odds,
-              elapsed: data.elapsed_seconds,
-            },
-          }));
-
-          // Call callback
-          onComplete?.();
-        }
-
-        wasRunningRef.current = anyTierRunning;
-
         // Poll while running (10s) or idle (30s) — gentle on slow PCs
         const interval = anyTierRunning ? 10_000 : 30_000;
         timeoutId = setTimeout(poll, interval);
@@ -147,27 +122,9 @@ export function useExtractionStatus(onComplete?: () => void): ExtractionStatus {
       mounted = false;
       clearTimeout(timeoutId);
     };
-  }, [onComplete]);
+  }, []);
 
   return { running, progress };
-}
-
-/**
- * Hook for pages to re-fetch data when extraction completes.
- * Pass a callback that will be invoked on the EXTRACTION_COMPLETE_EVENT.
- */
-export function useRefreshOnExtraction(callback: () => void) {
-  const callbackRef = useRef(callback);
-  callbackRef.current = callback;
-
-  useEffect(() => {
-    function handler() {
-      callbackRef.current();
-    }
-
-    window.addEventListener(EXTRACTION_COMPLETE_EVENT, handler);
-    return () => window.removeEventListener(EXTRACTION_COMPLETE_EVENT, handler);
-  }, []);
 }
 
 export interface ExtractionFreshness {
@@ -179,10 +136,8 @@ export interface ExtractionFreshness {
 
 /**
  * Hook that fetches extraction freshness timestamps.
- * - Fetches once on mount and on extraction complete events.
- * - Does NOT refetch while extraction is running (prevents backward timer
- *   caused by odds being written with new timestamps during extraction).
- * - Refetches every 60s only while idle.
+ * - Fetches once on mount.
+ * - Refetches every 60s only while idle (no extraction running).
  */
 export function useExtractionFreshness(): ExtractionFreshness {
   const [freshness, setFreshness] = useState<ExtractionFreshness>({ soft: null, sharp: null, poly: null, boosts: null });
@@ -204,9 +159,6 @@ export function useExtractionFreshness(): ExtractionFreshness {
     const id = setInterval(() => fetchFreshness.current(), 60_000);
     return () => clearInterval(id);
   }, [anyRunning]);
-
-  // Re-fetch when extraction completes (gives fresh post-extraction timestamp)
-  useRefreshOnExtraction(() => fetchFreshness.current());
 
   return freshness;
 }

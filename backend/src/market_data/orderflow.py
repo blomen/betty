@@ -1,6 +1,28 @@
 """L2 orderflow confirmation signals computed from tick data."""
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
+
+
+TICK_SIZE = 0.25  # NQ futures minimum tick
+
+
+@dataclass
+class PriceLevelFlow:
+    """Aggressor volume at a single price level within a candle."""
+    price: float
+    buy_volume: int = 0
+    sell_volume: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.buy_volume + self.sell_volume
+
+    @property
+    def imbalance_ratio(self) -> float:
+        """Buy fraction: >0.65 = buy imbalance, <0.35 = sell imbalance."""
+        t = self.total
+        return self.buy_volume / t if t > 0 else 0.5
 
 
 @dataclass
@@ -17,6 +39,8 @@ class CandleFlow:
     delta: int  # buy_volume - sell_volume
     tick_count: int
     spread: float  # high - low
+    # Footprint: per-price-level flow
+    price_levels: list[PriceLevelFlow] = field(default_factory=list)
 
     @property
     def body(self) -> float:
@@ -26,6 +50,27 @@ class CandleFlow:
     def body_ratio(self) -> float:
         """Body as fraction of spread. Low ratio + high volume = absorption."""
         return self.body / self.spread if self.spread > 0 else 0
+
+    @property
+    def imbalance_ratio_max(self) -> float:
+        """Max imbalance across price levels (most extreme buy or sell)."""
+        if not self.price_levels:
+            return 0.5
+        ratios = [pl.imbalance_ratio for pl in self.price_levels if pl.total >= 3]
+        if not ratios:
+            return 0.5
+        # Return the ratio furthest from 0.5 (most imbalanced)
+        return max(ratios, key=lambda r: abs(r - 0.5))
+
+    @property
+    def imbalance_direction(self) -> str:
+        """Dominant imbalance direction for this candle."""
+        r = self.imbalance_ratio_max
+        if r >= 0.65:
+            return "buy"
+        elif r <= 0.35:
+            return "sell"
+        return "neutral"
 
 
 @dataclass
@@ -41,6 +86,14 @@ class OrderflowSignals:
     tick_vol_accelerating: bool
     trapped_traders: bool
     passive_active_ratio: float  # > 1.0 = more passive (limit) orders than aggressive
+    # Footprint signals
+    big_trades_count: int = 0       # Ticks with size >= 3× median
+    big_trades_net_delta: int = 0   # Net direction of big trades (+ = buy, - = sell)
+    stop_run_detected: bool = False # Price spike on high vol that reversed quickly
+    # Imbalance stacking
+    imbalance_ratio_max: float = 0.5  # Most extreme imbalance across recent candles
+    stacked_imbalance_count: int = 0  # Consecutive candles with same-direction imbalance
+    stacked_imbalance_direction: str = "neutral"  # "buy", "sell", "neutral"
 
 
 def build_candle_flow(ticks: list[dict], period_seconds: int = 60) -> list[CandleFlow]:
@@ -76,6 +129,20 @@ def _aggregate_candle(ticks: list[dict], ts: datetime) -> CandleFlow:
     prices = [t["price"] for t in ticks]
     buy_vol = sum(t["size"] for t in ticks if t["side"] == "A")
     sell_vol = sum(t["size"] for t in ticks if t["side"] == "B")
+
+    # Build per-price-level footprint
+    level_map: dict[float, PriceLevelFlow] = defaultdict(lambda: PriceLevelFlow(price=0.0))
+    for t in ticks:
+        # Snap price to tick size grid
+        px = round(t["price"] / TICK_SIZE) * TICK_SIZE
+        if level_map[px].price == 0.0:
+            level_map[px] = PriceLevelFlow(price=px)
+        if t["side"] == "A":
+            level_map[px].buy_volume += t["size"]
+        else:
+            level_map[px].sell_volume += t["size"]
+    price_levels = sorted(level_map.values(), key=lambda pl: pl.price)
+
     return CandleFlow(
         ts=ts,
         open=prices[0],
@@ -88,6 +155,7 @@ def _aggregate_candle(ticks: list[dict], ts: datetime) -> CandleFlow:
         delta=buy_vol - sell_vol,
         tick_count=len(ticks),
         spread=max(prices) - min(prices),
+        price_levels=price_levels,
     )
 
 
@@ -158,6 +226,49 @@ def compute_signals(
     total_abs_delta = sum(abs(c.delta) for c in recent)
     passive_active_ratio = (total_vol - total_abs_delta) / max(1, total_abs_delta)
 
+    # Big trade detection: candles with volume >= 3× median volume
+    volumes = sorted(c.volume for c in recent)
+    median_vol = volumes[len(volumes) // 2] if volumes else 0
+    big_threshold = median_vol * 3 if median_vol > 0 else float("inf")
+    big_trades_count = sum(1 for c in recent if c.volume >= big_threshold)
+    big_trades_net_delta = sum(c.delta for c in recent if c.volume >= big_threshold)
+
+    # Stop run detection: price spike beyond prior range on high volume, then reversal
+    stop_run_detected = False
+    if len(recent) >= 4:
+        prior_high = max(c.high for c in recent[:-2])
+        prior_low = min(c.low for c in recent[:-2])
+        spike = recent[-2]  # The candle before last
+        reversal = recent[-1]  # Current candle
+        # Bullish stop run: spike below range, snaps back
+        if (spike.low < prior_low and reversal.close > spike.close
+                and spike.volume > avg_volume * 1.5):
+            stop_run_detected = True
+        # Bearish stop run: spike above range, snaps back
+        if (spike.high > prior_high and reversal.close < spike.close
+                and spike.volume > avg_volume * 1.5):
+            stop_run_detected = True
+
+    # Imbalance stacking: consecutive candles with same-direction imbalance (>0.65 buy or <0.35 sell)
+    imbalance_ratio_max = 0.5
+    stacked_imbalance_count = 0
+    stacked_imbalance_direction = "neutral"
+    if recent and recent[-1].price_levels:
+        imbalance_ratio_max = recent[-1].imbalance_ratio_max
+        # Count consecutive same-direction imbalanced candles from the end
+        streak_dir = None
+        for c in reversed(recent):
+            c_dir = c.imbalance_direction
+            if c_dir == "neutral":
+                break
+            if streak_dir is None:
+                streak_dir = c_dir
+            if c_dir == streak_dir:
+                stacked_imbalance_count += 1
+            else:
+                break
+        stacked_imbalance_direction = streak_dir or "neutral"
+
     return OrderflowSignals(
         delta=total_delta,
         delta_aligned=delta_aligned,
@@ -169,4 +280,10 @@ def compute_signals(
         tick_vol_accelerating=tick_vol_accelerating,
         trapped_traders=trapped_traders,
         passive_active_ratio=round(passive_active_ratio, 2),
+        big_trades_count=big_trades_count,
+        big_trades_net_delta=big_trades_net_delta,
+        stop_run_detected=stop_run_detected,
+        imbalance_ratio_max=round(imbalance_ratio_max, 3),
+        stacked_imbalance_count=stacked_imbalance_count,
+        stacked_imbalance_direction=stacked_imbalance_direction,
     )

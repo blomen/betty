@@ -41,6 +41,15 @@ def snapshot_candles(
         # spread field on CandleFlow = high - low (candle range), not bid/ask spread
         spread_ticks = candle.spread / TICK_SIZE
 
+        # Footprint: compute from price_levels if available
+        imb_max = candle.imbalance_ratio_max if hasattr(candle, 'imbalance_ratio_max') else None
+        # Big trades: candles with volume >= 3× median
+        big_count = None
+        big_net = None
+        if avg_volume > 0:
+            big_count = 1 if volume >= avg_volume * 3 else 0
+            big_net = candle.delta if big_count else 0
+
         result.append({
             "ts": candle.ts.isoformat(),
             "delta": candle.delta,
@@ -55,11 +64,35 @@ def snapshot_candles(
             "passive_active_ratio": passive_active,
             "vwap_distance_ticks": vwap_distance,
             "poc_distance_ticks": poc_distance,
-            # Footprint placeholders — populated by footprint enrichment
-            "imbalance_ratio_max": None,
-            "stacked_imbalance_count": None,
-            "big_trades_count": None,
-            "big_trades_net_delta": None,
+            # Footprint — computed from tick-level price flow
+            "imbalance_ratio_max": imb_max,
+            "stacked_imbalance_count": None,  # Set below after full window processed
+            "big_trades_count": big_count,
+            "big_trades_net_delta": big_net,
         })
+
+    # Backfill stacked_imbalance_count per candle (consecutive same-direction imbalances ending at each bar)
+    for i in range(len(result)):
+        imb = result[i].get("imbalance_ratio_max")
+        if imb is None:
+            continue
+        if imb >= 0.65:
+            cur_dir = "buy"
+        elif imb <= 0.35:
+            cur_dir = "sell"
+        else:
+            result[i]["stacked_imbalance_count"] = 0
+            continue
+        count = 1
+        for j in range(i - 1, -1, -1):
+            prev_imb = result[j].get("imbalance_ratio_max")
+            if prev_imb is None:
+                break
+            prev_dir = "buy" if prev_imb >= 0.65 else ("sell" if prev_imb <= 0.35 else "neutral")
+            if prev_dir == cur_dir:
+                count += 1
+            else:
+                break
+        result[i]["stacked_imbalance_count"] = count
 
     return result
