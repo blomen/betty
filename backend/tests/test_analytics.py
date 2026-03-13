@@ -53,3 +53,75 @@ def test_recommendation_status_update(db_session):
     updated = db_session.query(ProviderRecommendation).first()
     assert updated.status == "acted_on"
     assert updated.acted_on_at is not None
+
+
+def test_compute_provider_roi_basic(db_session):
+    """Test provider ROI computation with seeded data."""
+    from src.db.models import Opportunity, Bet, Event
+    from src.ml.analytics.engine import compute_provider_roi
+
+    evt = Event(
+        id="football:team_a:team_b:2026-03-13",
+        sport="football", league="Test League",
+        home_team="team_a", away_team="team_b",
+    )
+    db_session.add(evt)
+
+    for i in range(5):
+        db_session.add(Opportunity(
+            event_id=evt.id, type="value", market="1x2",
+            provider1_id="betsson", odds1=2.5, edge_pct=5.0 + i, is_active=True,
+        ))
+
+    db_session.add(Bet(
+        event_id=evt.id, provider_id="betsson", market="1x2",
+        outcome="home", odds=2.5, stake=100, result="won",
+        payout=250, bet_type="value",
+    ))
+    db_session.add(Bet(
+        event_id=evt.id, provider_id="betsson", market="1x2",
+        outcome="away", odds=2.5, stake=100, result="lost",
+        payout=0, bet_type="value",
+    ))
+    db_session.commit()
+
+    roi = compute_provider_roi(db_session)
+    betsson = next((r for r in roi if r["provider_id"] == "betsson"), None)
+    assert betsson is not None
+    assert betsson["total_opportunities"] == 5
+    assert betsson["avg_edge"] == 7.0  # (5+6+7+8+9) / 5
+    assert betsson["total_bets"] == 2
+    assert betsson["win_rate"] == 0.5
+    assert betsson["net_pnl"] == 50.0  # (250-100) + (0-100)
+
+
+def test_compute_provider_roi_canonical_grouping(db_session):
+    """Test that alias providers group under canonical."""
+    from src.db.models import Opportunity, Event
+    from src.ml.analytics.engine import compute_provider_roi
+
+    evt = Event(
+        id="football:team_c:team_d:2026-03-13",
+        sport="football", league="Test",
+        home_team="team_c", away_team="team_d",
+    )
+    db_session.add(evt)
+
+    for pid in ["unibet", "leovegas", "expekt"]:
+        db_session.add(Opportunity(
+            event_id=evt.id, type="value", market="1x2",
+            provider1_id=pid, odds1=2.0, edge_pct=4.0, is_active=True,
+        ))
+    db_session.commit()
+
+    roi = compute_provider_roi(db_session)
+    unibet = next((r for r in roi if r["provider_id"] == "unibet"), None)
+    assert unibet is not None
+    assert unibet["total_opportunities"] == 3
+
+
+def test_compute_provider_roi_empty_db(db_session):
+    """No data should return empty list."""
+    from src.ml.analytics.engine import compute_provider_roi
+    roi = compute_provider_roi(db_session)
+    assert roi == []
