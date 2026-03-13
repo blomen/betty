@@ -48,12 +48,20 @@ def _fetch_macro_sync() -> MacroSnapshot:
         end = datetime.now()
         start = end - timedelta(days=7)
 
+        def _scalar(df, col, idx):
+            """Extract scalar from yfinance DataFrame (handles MultiIndex columns)."""
+            val = df[col].iloc[idx]
+            # yf.download with single ticker may return MultiIndex columns
+            if hasattr(val, 'item'):
+                return val.item()
+            return float(val)
+
         # VIX
         try:
             vix = yf.download("^VIX", start=start, end=end, progress=False, auto_adjust=True)
             if not vix.empty and len(vix) >= 2:
-                snapshot.vix = float(vix["Close"].iloc[-1])
-                prev_vix = float(vix["Close"].iloc[-2])
+                snapshot.vix = _scalar(vix, "Close", -1)
+                prev_vix = _scalar(vix, "Close", -2)
                 if prev_vix > 0:
                     snapshot.vix_change_pct = round((snapshot.vix - prev_vix) / prev_vix * 100, 2)
         except Exception as e:
@@ -63,8 +71,8 @@ def _fetch_macro_sync() -> MacroSnapshot:
         try:
             dxy = yf.download("DX-Y.NYB", start=start, end=end, progress=False, auto_adjust=True)
             if not dxy.empty and len(dxy) >= 2:
-                snapshot.dxy = float(dxy["Close"].iloc[-1])
-                prev_dxy = float(dxy["Close"].iloc[-2])
+                snapshot.dxy = _scalar(dxy, "Close", -1)
+                prev_dxy = _scalar(dxy, "Close", -2)
                 if prev_dxy > 0:
                     snapshot.dxy_change_pct = round((snapshot.dxy - prev_dxy) / prev_dxy * 100, 2)
         except Exception as e:
@@ -74,8 +82,8 @@ def _fetch_macro_sync() -> MacroSnapshot:
         try:
             tnx = yf.download("^TNX", start=start, end=end, progress=False, auto_adjust=True)
             if not tnx.empty and len(tnx) >= 2:
-                snapshot.us10y = round(float(tnx["Close"].iloc[-1]) / 10, 3)
-                prev_10y = float(tnx["Close"].iloc[-2]) / 10
+                snapshot.us10y = round(_scalar(tnx, "Close", -1) / 10, 3)
+                prev_10y = _scalar(tnx, "Close", -2) / 10
                 snapshot.us10y_change_bps = round((snapshot.us10y - prev_10y) * 100, 1)
         except Exception as e:
             logger.debug("US10Y fetch failed: %s", e)
@@ -84,7 +92,7 @@ def _fetch_macro_sync() -> MacroSnapshot:
         try:
             two = yf.download("^TWO", start=start, end=end, progress=False, auto_adjust=True)
             if not two.empty and len(two) >= 1:
-                snapshot.us2y = round(float(two["Close"].iloc[-1]) / 10, 3)
+                snapshot.us2y = round(_scalar(two, "Close", -1) / 10, 3)
         except Exception as e:
             logger.debug("US2Y fetch failed: %s", e)
 
