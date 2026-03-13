@@ -134,6 +134,8 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
             # Recompute edge from current boosted_odds (may have changed)
             if fair_odds and fair_odds > 1.0 and boosted_odds > 1.0:
                 s["llm_edge_pct"] = round((boosted_odds / fair_odds - 1) * 100, 2)
+            # Apply bookmaker-anchor sanity check to cached results too
+            _apply_bookmaker_anchor(s)
             # Apply LLM event_time if scraped event_time is missing
             llm_et = prev.get("llm_event_time")
             if llm_et and not s.get("event_time"):
@@ -217,10 +219,12 @@ SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted
 
 RULES:
 - Base your estimate on statistics, recent form, and market context
-- Be CONSERVATIVE — overestimating probability loses money in betting
+- Be CONSERVATIVE — overestimating probability loses money in betting. When uncertain, lean toward lower probability
 - For player props (goalscorer, assists, etc.), use base rates and player statistics
 - Express your probability as a decimal between 0.01 and 0.99
 - Determine the event start time from search results, event context, or league schedules
+- BOOKMAKER ANCHOR: The ORIGINAL ODDS reflect the bookmaker's probability estimate (with ~5-10% margin). Your estimate should NOT differ from the bookmaker implied probability by more than 15 percentage points. If you estimate 65% but the bookmaker implies 30%, you are almost certainly wrong — recheck your analysis
+- STAT DISAMBIGUATION: Read market labels carefully. "Shots on target" (skott på mål) ≠ "total shots" — shots on target is typically 30-40% of total shots. "Corners" ≠ "goals". Always verify you are analyzing the EXACT stat in the market title
 
 COMBO BET RULES (CRITICAL — most boosts are combos):
 - A combo bet combines 2+ outcomes (e.g. "Team wins & over 2.5 goals")
@@ -347,8 +351,8 @@ def _validate_combo_probability(probability: float, legs: int, text: str) -> flo
 
     if len(leg_probs) < 2:
         # No structured legs found — check if probability seems too high for a combo.
-        # A 2-leg combo should rarely exceed 0.45; 3-leg rarely exceed 0.25.
-        max_reasonable = {2: 0.45, 3: 0.25}.get(legs, 0.20)
+        # A 2-leg combo should rarely exceed 0.35; 3-leg rarely exceed 0.15.
+        max_reasonable = {2: 0.35, 3: 0.15}.get(legs, 0.12)
         if probability > max_reasonable:
             logger.warning(
                 f"Combo ({legs} legs) probability {probability:.2f} exceeds "
@@ -389,6 +393,68 @@ def _validate_combo_probability(probability: float, legs: int, text: str) -> flo
         return round(min_combined, 4)
 
     return probability
+
+
+# ── Bookmaker-anchor sanity check ─────────────────────────────────────
+
+# Maximum allowed deviation (in percentage points) between LLM implied
+# probability and bookmaker implied probability.  If the LLM says 65%
+# but the bookmaker implies 30%, the gap is 35pp — way over the limit.
+_MAX_PROB_DEVIATION_PP = 15  # percentage points
+
+# Hard cap on edge — anything above this is almost certainly a bad estimate.
+_MAX_EDGE_PCT = 80.0
+
+
+def _apply_bookmaker_anchor(special: dict) -> dict:
+    """Clamp LLM probability / edge using the bookmaker's original odds as anchor.
+
+    If the LLM's implied probability deviates too far from the bookmaker's,
+    blend toward the bookmaker estimate and downgrade confidence.
+    Returns the (possibly modified) special dict.
+    """
+    llm_prob = special.get("llm_probability")
+    original_odds = special.get("original_odds")
+    boosted_odds = special.get("boosted_odds")
+
+    if not llm_prob or not original_odds or original_odds <= 1.0 or not boosted_odds:
+        return special
+
+    bookie_implied = 1.0 / original_odds  # includes margin
+    deviation_pp = (llm_prob - bookie_implied) * 100
+
+    if deviation_pp > _MAX_PROB_DEVIATION_PP:
+        # LLM thinks it's much more likely than the bookmaker — almost certainly wrong.
+        # Blend: take the bookmaker implied + half the max allowed deviation.
+        clamped_prob = bookie_implied + (_MAX_PROB_DEVIATION_PP / 100)
+        clamped_prob = min(clamped_prob, 0.95)
+
+        logger.info(
+            f"Bookmaker anchor: '{special.get('title', '')[:50]}' "
+            f"LLM prob {llm_prob:.2f} >> bookie implied {bookie_implied:.2f} "
+            f"(gap {deviation_pp:.0f}pp) — clamping to {clamped_prob:.3f}"
+        )
+        special["llm_probability"] = round(clamped_prob, 4)
+        special["llm_fair_odds"] = round(1 / clamped_prob, 3)
+        special["llm_edge_pct"] = round((boosted_odds / (1 / clamped_prob) - 1) * 100, 2)
+        special["llm_confidence"] = "low"
+
+    # Hard cap on edge regardless
+    if special.get("llm_edge_pct") and special["llm_edge_pct"] > _MAX_EDGE_PCT:
+        # Re-derive from max allowed edge
+        max_fair = boosted_odds / (1 + _MAX_EDGE_PCT / 100)
+        capped_prob = 1.0 / max_fair
+        logger.info(
+            f"Edge cap: '{special.get('title', '')[:50]}' "
+            f"edge {special['llm_edge_pct']:.0f}% > {_MAX_EDGE_PCT}% — "
+            f"capping to {_MAX_EDGE_PCT}%"
+        )
+        special["llm_probability"] = round(capped_prob, 4)
+        special["llm_fair_odds"] = round(max_fair, 3)
+        special["llm_edge_pct"] = round(_MAX_EDGE_PCT, 2)
+        special["llm_confidence"] = "low"
+
+    return special
 
 
 def _detect_legs_from_title(title: str) -> int:
@@ -534,7 +600,8 @@ async def _research_single_boost(
 # ── Cache invalidation for bad combo probabilities ────────────────────
 
 def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db: Session) -> None:
-    """Delete cached LLM results for combo boosts where probability is too high.
+    """Delete cached LLM results for combo boosts where probability is too high,
+    or where the LLM probability deviates too far from bookmaker implied odds.
 
     After improving the prompt to handle combos properly, old cache entries
     may have single-leg probabilities instead of combined. Detect and purge them
@@ -548,18 +615,37 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
         if not prev or not prev.get("llm_probability"):
             continue
         title = s.get("title", "")
-        legs = _detect_legs_from_title(title)
-        if legs <= 1:
-            continue
         prob = prev["llm_probability"]
-        max_reasonable = {2: 0.45, 3: 0.25}.get(legs, 0.20)
-        if prob > max_reasonable:
-            logger.info(
-                f"Invalidating cached combo: '{title[:50]}' p={prob:.2f} "
-                f"(>{max_reasonable} for {legs}-leg combo)"
-            )
-            keys_to_delete.append(key)
-            del cache[key]  # Remove from in-memory cache too
+
+        # Check 1: combo probability too high
+        legs = _detect_legs_from_title(title)
+        if legs > 1:
+            max_reasonable = {2: 0.35, 3: 0.15}.get(legs, 0.12)
+            if prob > max_reasonable:
+                logger.info(
+                    f"Invalidating cached combo: '{title[:50]}' p={prob:.2f} "
+                    f"(>{max_reasonable} for {legs}-leg combo)"
+                )
+                keys_to_delete.append(key)
+                if key in cache:
+                    del cache[key]
+                continue
+
+        # Check 2: LLM probability deviates too far from bookmaker
+        original_odds = s.get("original_odds")
+        if original_odds and original_odds > 1.0:
+            bookie_implied = 1.0 / original_odds
+            deviation_pp = (prob - bookie_implied) * 100
+            if deviation_pp > _MAX_PROB_DEVIATION_PP:
+                logger.info(
+                    f"Invalidating cached anchor-breach: '{title[:50]}' "
+                    f"LLM p={prob:.2f} vs bookie {bookie_implied:.2f} "
+                    f"(gap {deviation_pp:.0f}pp)"
+                )
+                keys_to_delete.append(key)
+                if key in cache:
+                    del cache[key]
+                continue
 
     if keys_to_delete:
         try:
@@ -567,7 +653,7 @@ def _invalidate_bad_combo_cache(specials: list[dict], cache: dict[str, dict], db
                 LlmBoostCache.cache_key.in_(keys_to_delete)
             ).delete(synchronize_session=False)
             db.commit()
-            logger.info(f"Invalidated {len(keys_to_delete)} bad combo cache entries")
+            logger.info(f"Invalidated {len(keys_to_delete)} bad cache entries (combo + anchor)")
         except Exception:
             db.rollback()
 
@@ -704,6 +790,8 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
             special["llm_edge_pct"] = edge_pct
             special["llm_reasoning"] = result["reasoning"]
             special["llm_confidence"] = result["confidence"]
+            # Apply bookmaker-anchor sanity check
+            _apply_bookmaker_anchor(special)
             # Apply LLM event_time if scraped event_time is missing
             llm_et = result.get("event_time")
             if llm_et and not special.get("event_time"):
