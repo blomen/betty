@@ -1082,7 +1082,6 @@ class OddsBatchProcessor:
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
-                logger.info(f"Batch flush: {len(self.changed_event_ids)} events with changed odds")
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:

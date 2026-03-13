@@ -1,5 +1,6 @@
-import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
@@ -39,6 +40,191 @@ type PolyTab = 'value' | 'rewards' | 'mybets' | 'manual';
 
 const polyProviderFilter = (p: Provider) => p.id === 'polymarket';
 
+// ──────────────────── PolyRow ────────────────────
+
+interface PolyRowProps {
+  vb: PolymarketValueBet;
+  idx: number;
+  isSelected: boolean;
+  isPending: boolean;
+  isPlacing: boolean;
+  onSelect: (idx: number) => void;
+  onStartPlace: (vb: PolymarketValueBet) => void;
+  onConfirmPlace: () => void;
+  onCancelPending: () => void;
+  polyName: (vb: PolymarketValueBet, side: 'home' | 'away') => string;
+  resolveOutcome: (vb: PolymarketValueBet) => string;
+  getOddsKey: (vb: PolymarketValueBet) => string;
+  oddsToCents: (odds: number) => number;
+  // Parent-level overrides (bet placement kept in parent)
+  oddsOverride: Record<string, number>;
+  stakeOverride: Record<string, number>;
+  onOddsOverride: (key: string, value: number) => void;
+  onOddsClear: (key: string) => void;
+  onStakeOverride: (key: string, value: number) => void;
+  onStakeClear: (key: string) => void;
+  pendingActualCents: number;
+}
+
+const PolyRow = memo(function PolyRow({
+  vb,
+  idx,
+  isSelected,
+  isPending,
+  isPlacing,
+  onSelect,
+  onStartPlace,
+  onConfirmPlace,
+  onCancelPending,
+  polyName,
+  resolveOutcome,
+  getOddsKey,
+  oddsToCents,
+  oddsOverride,
+  stakeOverride,
+  onOddsOverride,
+  onOddsClear,
+  onStakeOverride,
+  onStakeClear,
+  pendingActualCents,
+}: PolyRowProps) {
+  const [editingOdds, setEditingOdds] = useState(false);
+  const [editingStake, setEditingStake] = useState(false);
+
+  const oddsKey = getOddsKey(vb);
+  const effectiveOdds = oddsOverride[oddsKey] ?? vb.polymarket_odds;
+  const priceCents = oddsToCents(effectiveOdds);
+  const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
+  const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
+  const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc ?? 0;
+  const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
+  const payoutUsdc = shares * 1.0;
+  const profitUsdc = payoutUsdc - stakeUsdc;
+  void profitUsdc; // computed but not shown inline
+
+  const hasStake = stakeUsdc > 0;
+  const isOverridden = oddsKey in oddsOverride;
+  const isSkipped = !!vb.skip_reason;
+
+  // Flash detection: flash-up when odds improve, flash-down when they worsen
+  const prevOddsRef = useRef<number | null>(null);
+  const [flashClass, setFlashClass] = useState('');
+  useEffect(() => {
+    const prev = prevOddsRef.current;
+    if (prev !== null && prev !== vb.polymarket_odds) {
+      const cls = vb.polymarket_odds > prev ? 'flash-up' : 'flash-down';
+      setFlashClass(cls);
+      const timer = setTimeout(() => setFlashClass(''), 1500);
+      prevOddsRef.current = vb.polymarket_odds;
+      return () => clearTimeout(timer);
+    }
+    prevOddsRef.current = vb.polymarket_odds;
+  }, [vb.polymarket_odds]);
+
+  const ttk = getTTKFromNow(vb.start_time);
+
+  return (
+    <Fragment>
+      <tr
+        className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''} ${flashClass}`}
+        onClick={() => !isSkipped && onSelect(idx)}
+      >
+        <td>
+          <div className="flex items-center gap-2 min-w-0 group/copy">
+            {vb.event_slug ? (
+              <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors" onClick={e => e.stopPropagation()}>{polyName(vb, 'home')} vs {polyName(vb, 'away')}</a>
+            ) : (
+              <span className="text-text text-sm truncate">{polyName(vb, 'home')} vs {polyName(vb, 'away')}</span>
+            )}
+            <button
+              title="Copy event"
+              className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
+              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(polyName(vb, 'home')); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+            {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
+          </div>
+          <div className="text-muted2 text-[11px]">
+            {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' && !vb.market.startsWith('moneyline_m') ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
+          </div>
+        </td>
+        <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
+        <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+          {editingOdds ? (
+            <input
+              type="number" step="1" min="1" max="99" autoFocus
+              defaultValue={priceCents}
+              className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+              onBlur={(e) => { const cents = parseInt(e.target.value); if (!isNaN(cents) && cents >= 1 && cents <= 99) onOddsOverride(oddsKey, 100 / cents); setEditingOdds(false); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingOdds(false); }}
+            />
+          ) : (
+            <span
+              onClick={() => setEditingOdds(true)}
+              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
+              title="Click to adjust price"
+            >
+              {effectiveOdds.toFixed(2)} <span className="text-muted text-xs font-normal">({priceCents}¢)</span>
+            </span>
+          )}
+          {isOverridden && <button onClick={() => onOddsClear(oddsKey)} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+        </td>
+        <td className="text-right text-muted text-sm">
+          {vb.fair_odds.toFixed(2)} <span className="text-xs">({fairCents}¢)</span>
+        </td>
+        <td className="text-right text-muted text-sm">
+          {vb.fair_odds > 1 ? `${(100 / vb.fair_odds).toFixed(0)}%` : '-'}
+        </td>
+        <td className="text-right">
+          <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>
+        </td>
+        <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+          {editingStake ? (
+            <input
+              type="number" step="0.01" autoFocus
+              defaultValue={stakeUsdc.toFixed(2)}
+              className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
+              onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) onStakeOverride(oddsKey, val); setEditingStake(false); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingStake(false); }}
+            />
+          ) : (
+            <span
+              onClick={() => setEditingStake(true)}
+              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${oddsKey in stakeOverride ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
+              title="Click to adjust stake"
+            >
+              {hasStake ? `$${stakeUsdc.toFixed(2)}` : '-'}
+            </span>
+          )}
+          {oddsKey in stakeOverride && <button onClick={() => onStakeClear(oddsKey)} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
+        </td>
+        <td className={`text-right font-semibold text-sm ${edgePct > 0 ? 'text-success' : 'text-error'}`}>{edgePct > 0 ? '+' : ''}{edgePct.toFixed(1)}%</td>
+      </tr>
+
+      {isSelected && !isSkipped && (
+        <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
+          <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+            <div className="px-3 py-2 bg-panel flex items-center gap-2">
+              {isPending ? (
+                <>
+                  <button onClick={onConfirmPlace} disabled={isPlacing || pendingActualCents < 1} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
+                  <button onClick={onCancelPending} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
+                  <span className="text-muted text-xs">{pendingActualCents}¢</span>
+                </>
+              ) : (
+                <button onClick={() => onStartPlace(vb)} disabled={!hasStake || isPlacing} className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Place Bet'}</button>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+});
+
+// ──────────────────── PolymarketPage ────────────────────
+
 export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
@@ -49,11 +235,9 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
 
-  // Inline editing state (in table columns)
+  // Parent-level override state (kept here for bet placement logic)
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
-  const [editingOdds, setEditingOdds] = useState<string | null>(null);
   const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
-  const [editingStake, setEditingStake] = useState<string | null>(null);
 
   // Two-step bet flow (uniform with ValuePage)
   const [pendingBet, setPendingBet] = useState<{
@@ -124,37 +308,22 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
     setPendingBet(null);
-    setEditingOdds(null);
-    setEditingStake(null);
   };
 
-  const getOddsKey = (vb: PolymarketValueBet) =>
-    `${vb.event_id}|${vb.outcome}|${vb.market}|${vb.point ?? ''}`;
-
-  const getEffectiveOdds = (vb: PolymarketValueBet) =>
-    oddsOverride[getOddsKey(vb)] ?? vb.polymarket_odds;
+  const getOddsKey = useCallback((vb: PolymarketValueBet) =>
+    `${vb.event_id}|${vb.outcome}|${vb.market}|${vb.point ?? ''}`, []);
 
   const getPlacedKey = (vb: PolymarketValueBet) =>
     `${vb.event_id}|${vb.market}|${vb.outcome}|${vb.point ?? ''}`;
 
   // Convert decimal odds to price in cents (1/odds * 100)
-  const oddsToCents = (odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0;
+  const oddsToCents = useCallback((odds: number) => odds > 0 ? Math.round(1 / odds * 100) : 0, []);
 
-  const getMetrics = (vb: PolymarketValueBet) => {
-    const oddsKey = getOddsKey(vb);
-    const effectiveOdds = getEffectiveOdds(vb);
-    const priceCents = oddsToCents(effectiveOdds);
-    const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
-    const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
-    const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc ?? 0;
-    const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
-    const payoutUsdc = shares * 1.0;
-    const profitUsdc = payoutUsdc - stakeUsdc;
-    return { priceCents, fairCents, edgePct, stakeUsdc, shares, payoutUsdc, profitUsdc };
-  };
+  const getEffectiveOdds = useCallback((vb: PolymarketValueBet) =>
+    oddsOverride[getOddsKey(vb)] ?? vb.polymarket_odds, [oddsOverride, getOddsKey]);
 
   // Two-step bet: step 1 — start
-  const startPlaceBet = (vb: PolymarketValueBet) => {
+  const startPlaceBet = useCallback((vb: PolymarketValueBet) => {
     const oddsKey = getOddsKey(vb);
     const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc;
     if (!stakeUsdc || stakeUsdc <= 0) return;
@@ -162,10 +331,10 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     setBetError(null);
     setBetSuccess(null);
     setPendingBet({ vb, actualCents: oddsToCents(odds) });
-  };
+  }, [getOddsKey, stakeOverride, getEffectiveOdds, oddsToCents]);
 
   // Two-step bet: step 2 — confirm
-  const confirmPlaceBet = async () => {
+  const confirmPlaceBet = useCallback(async () => {
     if (!pendingBet) return;
     const { vb, actualCents } = pendingBet;
     const oddsKey = getOddsKey(vb);
@@ -206,20 +375,32 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     } finally {
       setIsPlacing(false);
     }
-  };
+  }, [pendingBet, getOddsKey, stakeOverride, queryClient]);
 
   // Prefer Polymarket's own team names (e.g., "Bulls") over canonical display names ("Chicago Bulls")
-  const polyName = (vb: PolymarketValueBet | PolymarketRewardMarket, side: 'home' | 'away') =>
+  const polyName = useCallback((vb: PolymarketValueBet | PolymarketRewardMarket, side: 'home' | 'away') =>
     side === 'home'
       ? displayTeamName(vb.home_team, vb.poly_home ?? vb.display_home)
-      : displayTeamName(vb.away_team, vb.poly_away ?? vb.display_away);
+      : displayTeamName(vb.away_team, vb.poly_away ?? vb.display_away), []);
 
-  const resolveOutcome = (vb: PolymarketValueBet): string =>
+  const resolveOutcome = useCallback((vb: PolymarketValueBet): string =>
     resolveOutcomeBase(vb.outcome ?? '?', {
       ...vb,
       display_home: vb.poly_home ?? vb.display_home,
       display_away: vb.poly_away ?? vb.display_away,
-    }, 'point' in vb ? vb.point : null, true);
+    }, 'point' in vb ? vb.point : null, true), []);
+
+  const handleOddsOverride = useCallback((key: string, value: number) =>
+    setOddsOverride(prev => ({ ...prev, [key]: value })), []);
+
+  const handleOddsClear = useCallback((key: string) =>
+    setOddsOverride(prev => { const next = { ...prev }; delete next[key]; return next; }), []);
+
+  const handleStakeOverride = useCallback((key: string, value: number) =>
+    setStakeOverride(prev => ({ ...prev, [key]: value })), []);
+
+  const handleStakeClear = useCallback((key: string) =>
+    setStakeOverride(prev => { const next = { ...prev }; delete next[key]; return next; }), []);
 
   const availableLeagues = useMemo(() => {
     const set = new Set<string>();
@@ -276,6 +457,25 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   }), []);
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
     useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
+
+  // ──────────────────── Virtualization ────────────────────
+
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+
+  const rowVirtualizer = useVirtualizer({
+    count: sortedBets.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: (idx) => {
+      // Expanded row adds ~48px for the action bar
+      return selectedOpp === idx ? 100 : 52;
+    },
+    overscan: 10,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom = virtualItems.length > 0 ? totalSize - virtualItems[virtualItems.length - 1].end : 0;
 
   // ──────────────────── Rewards ────────────────────
 
@@ -530,130 +730,62 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No Polymarket value bets found. Run extraction first.</div>
         ) : (
           <div className="border-l-2 border-tabPolymarket">
-          <table className="sq">
-            <thead>
-              <tr>
-                <th style={{ width: '35%' }}>Event</th>
-                <th className="text-right">Outcome</th>
-                <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
-                <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />
-                <SortableHeader column="prob" label="Prob" sort={polySort} onToggle={togglePolySort} />
-                <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
-                <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
-                <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedBets.map((vb, idx) => {
-                const isSelected = selectedOpp === idx;
-                const isSkipped = !!vb.skip_reason;
-                const m = getMetrics(vb);
-                const hasStake = m.stakeUsdc > 0;
-                const oddsKey = getOddsKey(vb);
-                const isOverridden = oddsKey in oddsOverride;
-                const isPending = pendingBet?.vb === vb;
-
-                return (
-                  <Fragment key={`${vb.event_id}-${vb.outcome}`}>
-                    <tr
-                      className={`cursor-pointer ${isSkipped ? 'opacity-50' : ''} ${isSelected ? 'expanded' : ''}`}
-                      onClick={() => !isSkipped && handleSelectOpp(idx)}
-                    >
-                      <td>
-                        <div className="flex items-center gap-2 min-w-0 group/copy">
-                          {vb.event_slug ? (
-                            <a href={`https://polymarket.com/event/${vb.event_slug}`} target="_blank" rel="noopener noreferrer" className="text-text text-sm truncate hover:text-tabPolymarket transition-colors" onClick={e => e.stopPropagation()}>{polyName(vb, 'home')} vs {polyName(vb, 'away')}</a>
-                          ) : (
-                            <span className="text-text text-sm truncate">{polyName(vb, 'home')} vs {polyName(vb, 'away')}</span>
-                          )}
-                          <button
-                            title="Copy event"
-                            className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(polyName(vb, 'home')); }}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                          </button>
-                          {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
-                        </div>
-                        <div className="text-muted2 text-[11px]">
-                          {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' && !vb.market.startsWith('moneyline_m') ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
-                        </div>
-                      </td>
-                      <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
-                      <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-                        {editingOdds === oddsKey ? (
-                          <input
-                            type="number" step="1" min="1" max="99" autoFocus
-                            defaultValue={m.priceCents}
-                            className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
-                            onBlur={(e) => { const cents = parseInt(e.target.value); if (!isNaN(cents) && cents >= 1 && cents <= 99) setOddsOverride(prev => ({ ...prev, [oddsKey]: 100 / cents })); setEditingOdds(null); }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingOdds(null); }}
-                          />
-                        ) : (
-                          <span
-                            onClick={() => setEditingOdds(oddsKey)}
-                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${isOverridden ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                            title="Click to adjust price"
-                          >
-                            {getEffectiveOdds(vb).toFixed(2)} <span className="text-muted text-xs font-normal">({m.priceCents}¢)</span>
-                          </span>
-                        )}
-                        {isOverridden && <button onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                      </td>
-                      <td className="text-right text-muted text-sm">
-                        {vb.fair_odds.toFixed(2)} <span className="text-xs">({m.fairCents}¢)</span>
-                      </td>
-                      <td className="text-right text-muted text-sm">
-                        {vb.fair_odds > 1 ? `${(100 / vb.fair_odds).toFixed(0)}%` : '-'}
-                      </td>
-                      <td className="text-right">
-                        {(() => { const ttk = getTTKFromNow(vb.start_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
-                      </td>
-                      <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-                        {editingStake === oddsKey ? (
-                          <input
-                            type="number" step="0.01" autoFocus
-                            defaultValue={m.stakeUsdc.toFixed(2)}
-                            className="w-16 bg-bg border border-tabPolymarket/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabPolymarket"
-                            onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setStakeOverride(prev => ({ ...prev, [oddsKey]: val })); setEditingStake(null); }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingStake(null); }}
-                          />
-                        ) : (
-                          <span
-                            onClick={() => setEditingStake(oddsKey)}
-                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabPolymarket/50 transition-colors ${oddsKey in stakeOverride ? 'text-tabPolymarket font-medium border-tabPolymarket/30' : 'text-text border-transparent'}`}
-                            title="Click to adjust stake"
-                          >
-                            {hasStake ? `$${m.stakeUsdc.toFixed(2)}` : '-'}
-                          </span>
-                        )}
-                        {oddsKey in stakeOverride && <button onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                      </td>
-                      <td className={`text-right font-semibold text-sm ${m.edgePct > 0 ? 'text-success' : 'text-error'}`}>{m.edgePct > 0 ? '+' : ''}{m.edgePct.toFixed(1)}%</td>
-                    </tr>
-
-                    {isSelected && !isSkipped && (
-                      <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
-                        <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <div className="px-3 py-2 bg-panel flex items-center gap-2">
-                            {isPending ? (
-                              <>
-                                <button onClick={confirmPlaceBet} disabled={isPlacing || pendingBet!.actualCents < 1} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
-                                <button onClick={() => setPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
-                                <span className="text-muted text-xs">{m.priceCents}¢</span>
-                              </>
-                            ) : (
-                              <button onClick={() => startPlaceBet(vb)} disabled={!hasStake || isPlacing} className="px-4 py-1.5 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Place Bet'}</button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+            <div
+              ref={tableContainerRef}
+              style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}
+            >
+              <table className="sq" style={{ width: '100%' }}>
+                <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                  <tr>
+                    <th style={{ width: '35%' }}>Event</th>
+                    <th className="text-right">Outcome</th>
+                    <SortableHeader column="odds" label="Odds" sort={polySort} onToggle={togglePolySort} />
+                    <SortableHeader column="fair" label="Fair" sort={polySort} onToggle={togglePolySort} />
+                    <SortableHeader column="prob" label="Prob" sort={polySort} onToggle={togglePolySort} />
+                    <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
+                    <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
+                    <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {paddingTop > 0 && (
+                    <tr><td colSpan={8} style={{ height: paddingTop, padding: 0 }} /></tr>
+                  )}
+                  {virtualItems.map(virtualRow => {
+                    const vb = sortedBets[virtualRow.index];
+                    const idx = virtualRow.index;
+                    return (
+                      <PolyRow
+                        key={`${vb.event_id}-${vb.outcome}`}
+                        vb={vb}
+                        idx={idx}
+                        isSelected={selectedOpp === idx}
+                        isPending={pendingBet?.vb === vb}
+                        isPlacing={isPlacing}
+                        onSelect={handleSelectOpp}
+                        onStartPlace={startPlaceBet}
+                        onConfirmPlace={confirmPlaceBet}
+                        onCancelPending={() => setPendingBet(null)}
+                        polyName={polyName}
+                        resolveOutcome={resolveOutcome}
+                        getOddsKey={getOddsKey}
+                        oddsToCents={oddsToCents}
+                        oddsOverride={oddsOverride}
+                        stakeOverride={stakeOverride}
+                        onOddsOverride={handleOddsOverride}
+                        onOddsClear={handleOddsClear}
+                        onStakeOverride={handleStakeOverride}
+                        onStakeClear={handleStakeClear}
+                        pendingActualCents={pendingBet?.vb === vb ? pendingBet.actualCents : 0}
+                      />
+                    );
+                  })}
+                  {paddingBottom > 0 && (
+                    <tr><td colSpan={8} style={{ height: paddingBottom, padding: 0 }} /></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </>}

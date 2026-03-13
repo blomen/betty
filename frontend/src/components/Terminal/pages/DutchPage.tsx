@@ -1,4 +1,5 @@
-import { useState, useEffect, useDeferredValue, useMemo, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
@@ -59,6 +60,324 @@ interface DutchPageProps {
 
 const MAX_ROWS = 50;
 
+// ─── DutchRow ────────────────────────────────────────────────────────────────
+
+interface DutchRowProps {
+  opp: DutchOpp;
+  idx: number;
+  isExpanded: boolean;
+  onToggle: (idx: number) => void;
+  balanceMap: Map<string, number>;
+  placedLegs: Record<number, Set<number>>;
+  isPlacing: boolean;
+  placingLeg: string | null;
+  onPlaceLeg: (opp: DutchOpp, leg: DutchLeg, legIdx: number, effectiveOdds: number, legStake: number) => void;
+  onPlaceAll: (opp: DutchOpp, effTotalStake: number, legStakes: number[], oddsOverrideMap: Record<number, number>) => void;
+}
+
+const DutchRow = memo(function DutchRow({
+  opp,
+  idx,
+  isExpanded,
+  onToggle,
+  balanceMap,
+  placedLegs,
+  isPlacing,
+  placingLeg,
+  onPlaceLeg,
+  onPlaceAll,
+}: DutchRowProps) {
+  const legs = opp.legs || [];
+  const totalStake = opp.total_stake || 0;
+  const gp = opp.guaranteed_profit_pct ?? opp.profit_pct ?? 0;
+  const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
+
+  const hasBalance = (providerIds: string[]) =>
+    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
+
+  // Per-row odds override state: key = legIdx
+  const [oddsOverride, setOddsOverride] = useState<Record<number, number>>({});
+  const [editingOdds, setEditingOdds] = useState<number | null>(null);
+
+  // Per-row stake override: only one leg at a time can be the "anchor"
+  const [stakeOverride, setStakeOverride] = useState<{ legIdx: number; value: number } | null>(null);
+  const [editingStake, setEditingStake] = useState<number | null>(null);
+
+  // Flash detection on profit %
+  const prevGp = useRef(gp);
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  useEffect(() => {
+    if (gp !== prevGp.current) {
+      setFlash(gp > prevGp.current ? 'up' : 'down');
+      prevGp.current = gp;
+      const timer = setTimeout(() => setFlash(null), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [gp]);
+
+  const getEffectiveOdds = (legIdx: number, originalOdds: number): number =>
+    oddsOverride[legIdx] ?? originalOdds;
+
+  const getEffectiveStakes = (): { totalStake: number; legStakes: number[] } => {
+    if (stakeOverride !== null && legs[stakeOverride.legIdx]) {
+      const anchorIdx = stakeOverride.legIdx;
+      const anchorStake = stakeOverride.value;
+      const anchorOdds = getEffectiveOdds(anchorIdx, legs[anchorIdx].odds);
+      const payout = anchorStake * anchorOdds;
+      const legStakes = legs.map((leg, i) => {
+        if (i === anchorIdx) return anchorStake;
+        const odds = getEffectiveOdds(i, leg.odds);
+        return odds > 0 ? payout / odds : 0;
+      });
+      return { totalStake: legStakes.reduce((a, b) => a + b, 0), legStakes };
+    }
+    return {
+      totalStake,
+      legStakes: legs.map(leg => leg.stake ?? (totalStake > 0 ? totalStake * leg.stake_pct / 100 : 0)),
+    };
+  };
+
+  const { totalStake: effTotalStake, legStakes: effLegStakes } = getEffectiveStakes();
+  const hasStakeEdit = stakeOverride !== null;
+
+  return (
+    <Fragment>
+      <tr
+        className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
+        onClick={() => onToggle(idx)}
+      >
+        <td>
+          <div className="flex items-center gap-2 min-w-0 group/copy">
+            <span className="text-text text-sm truncate">
+              {displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)} vs {displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}
+            </span>
+            <button
+              title="Copy event"
+              className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
+              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+          </div>
+          <div className="text-muted2 text-[11px]">
+            {opp.sport}
+            {opp.league ? ` · ${opp.league}` : ''}
+            {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
+            {opp.point != null ? ` · ${opp.point}` : ''}
+            {' · '}{formatDateTime(opp.starts_at)}
+          </div>
+        </td>
+        <td className="text-right text-muted text-sm">
+          <span className="inline-flex items-center gap-1.5 justify-end">
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
+            {uniqueProviders.length <= 3
+              ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
+              : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
+            }
+          </span>
+        </td>
+        <td className="text-right">
+          {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
+        </td>
+        <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
+          {opp.edge_pct != null ? `${opp.edge_pct >= 0 ? '+' : ''}${opp.edge_pct.toFixed(1)}%` : '-'}
+        </td>
+        <td className="text-right text-text text-sm font-medium">
+          {totalStake > 0 ? `${totalStake.toFixed(0)} kr` : '-'}
+        </td>
+        <td className={`text-right font-semibold text-sm ${flash ? `flash-${flash}` : ''} ${gp >= 0 ? 'text-success' : 'text-error'}`}>
+          {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
+        </td>
+      </tr>
+
+      {isExpanded && (
+        <tr key={`${opp.id}-expanded`}>
+          <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th>Outcome</th>
+                  <th className="text-right">Provider</th>
+                  <th className="text-right">Odds</th>
+                  <th className="text-right">Fair</th>
+                  <th className="text-right">Edge</th>
+                  <th className="text-right">Stake</th>
+                  <th className="text-right">Return</th>
+                  <th className="text-right"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {legs.map((leg, legIdx) => {
+                  const effectiveOdds = getEffectiveOdds(legIdx, leg.odds);
+                  const oddsChanged = legIdx in oddsOverride;
+                  const legStake = effLegStakes[legIdx];
+                  const legReturn = legStake * effectiveOdds;
+                  const isEditingThisOdds = editingOdds === legIdx;
+                  const isEditingThisStake = editingStake === legIdx;
+                  const isEditedLeg = stakeOverride?.legIdx === legIdx;
+                  const legKey = `${opp.id}|${legIdx}`;
+                  const isPlacingThis = isPlacing && placingLeg === legKey;
+
+                  return (
+                    <tr key={legIdx}>
+                      <td>
+                        <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
+                        {resolveOutcome(leg.outcome, opp, opp.point, true)}
+                        {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
+                      </td>
+                      <td className="text-right"><ProviderName name={leg.provider} /></td>
+                      <td className="text-right font-medium">
+                        <div className="flex items-center justify-end gap-1">
+                          {isEditingThisOdds ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              autoFocus
+                              defaultValue={effectiveOdds.toFixed(2)}
+                              className="w-16 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
+                              onBlur={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 1.01) {
+                                  setOddsOverride(prev => ({ ...prev, [legIdx]: val }));
+                                }
+                                setEditingOdds(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                else if (e.key === 'Escape') setEditingOdds(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingOdds(legIdx)}
+                              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${oddsChanged ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
+                              title="Click to adjust odds"
+                            >
+                              {effectiveOdds.toFixed(2)}
+                            </span>
+                          )}
+                          {oddsChanged && (
+                            <button
+                              onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[legIdx]; return next; })}
+                              className="text-muted2 hover:text-text text-[10px]"
+                              title="Reset to original"
+                            >
+                              x
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="text-right text-muted">{leg.fair_odds.toFixed(2)}</td>
+                      <td className={`text-right font-medium ${leg.edge_pct > 0 ? 'text-success' : 'text-muted'}`}>
+                        {leg.edge_pct > 0 ? '+' : ''}{leg.edge_pct.toFixed(1)}%
+                      </td>
+                      <td className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {isEditingThisStake ? (
+                            <input
+                              type="number"
+                              step="1"
+                              autoFocus
+                              defaultValue={legStake > 0 ? legStake.toFixed(0) : ''}
+                              placeholder="Stake"
+                              className="w-20 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
+                              onBlur={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val > 0) {
+                                  setStakeOverride({ legIdx, value: val });
+                                }
+                                setEditingStake(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                else if (e.key === 'Escape') setEditingStake(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingStake(legIdx)}
+                              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isEditedLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
+                              title="Click to set stake"
+                            >
+                              {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
+                            </span>
+                          )}
+                          {isEditedLeg && (
+                            <button
+                              onClick={() => setStakeOverride(null)}
+                              className="text-muted2 hover:text-text text-[10px]"
+                              title="Reset to default stake"
+                            >
+                              x
+                            </button>
+                          )}
+                        </div>
+                        {legStake > 0 && <span className="text-muted2 text-[10px]">({leg.stake_pct.toFixed(0)}%)</span>}
+                      </td>
+                      <td className="text-right">{legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}</td>
+                      <td className="text-right">
+                        {placedLegs[opp.id]?.has(legIdx) ? (
+                          <span className="text-success text-[10px] font-medium">✓ placed</span>
+                        ) : legStake > 0 ? (
+                          <button
+                            onClick={() => onPlaceLeg(opp, leg, legIdx, effectiveOdds, legStake)}
+                            disabled={isPlacing}
+                            className="px-2 py-1 bg-panel2 text-muted text-[10px] font-medium hover:text-text hover:bg-panel2/80 disabled:opacity-50 transition-all whitespace-nowrap"
+                          >
+                            {isPlacingThis ? '...' : 'Place Bet'}
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {effTotalStake > 0 && (
+              <div className="px-3 py-2 border-t border-border bg-panel flex items-center justify-between text-xs text-muted">
+                <div className="flex items-center gap-6">
+                  <div>
+                    <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
+                    <span className={`font-medium ${hasStakeEdit ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
+                    {hasStakeEdit && totalStake > 0 && (
+                      <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
+                    )}
+                  </div>
+                  {gp !== 0 && (
+                    <div>
+                      <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
+                      <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
+                        {gp > 0 ? '+' : ''}{(effTotalStake * gp / 100).toFixed(0)} kr
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {(() => {
+                  const allPlaced = placedLegs[opp.id]?.size === legs.length;
+                  const isPlacingAll = isPlacing && placingLeg === `${opp.id}|all`;
+                  return allPlaced ? (
+                    <span className="text-success text-[10px] font-medium">✓ all legs placed</span>
+                  ) : (
+                    <button
+                      onClick={() => onPlaceAll(opp, effTotalStake, effLegStakes, oddsOverride)}
+                      disabled={isPlacing}
+                      className="px-3 py-1.5 bg-success text-bg text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
+                    >
+                      {isPlacingAll ? '...' : 'Place All'}
+                    </button>
+                  );
+                })()}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+});
+
+// ─── DutchPage ────────────────────────────────────────────────────────────────
+
 export function DutchPage({ providers = [] }: DutchPageProps) {
   const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
@@ -71,15 +390,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const [scanResults, setScanResults] = useState<DutchOpp[] | null>(null);
   const [isScanning, setIsScanning] = useState(false);
 
-  // Odds override: key = "oppId|legIdx", value = new odds
-  const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
-  const [editingOdds, setEditingOdds] = useState<string | null>(null);
-
-  // Stake override: key = "oppId|legIdx", value = edited stake
-  const [stakeOverride, setStakeOverride] = useState<Record<string, number>>({});
-  const [editingStake, setEditingStake] = useState<string | null>(null);
-
-  // Place bet state
+  // Place bet state (kept at page level for toasts / query invalidation)
   const [isPlacing, setIsPlacing] = useState(false);
   const [placingLeg, setPlacingLeg] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
@@ -130,19 +441,13 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     return m;
   }, [providers]);
 
-  const hasBalance = (providerIds: string[]) =>
-    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
-
   const filtered = useMemo(() => {
-    // When scan results are active, use them (already filtered by provider via the scan)
     let result = scanResults !== null ? scanResults : opportunities;
     result = result.filter(d => { const ttk = getTTKFromNow(d.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); });
     if (selectedProviders.size > 0) {
       result = result.filter(d => {
         const legs = d.legs || [];
-        // Every leg's provider must be in the selected set — no Pinnacle unless explicitly selected
         if (!legs.every(leg => selectedProviders.has(leg.provider))) return false;
-        // When few providers selected, hide opps with more legs than selected providers
         if (selectedProviders.size < 3 && legs.length > selectedProviders.size) return false;
         return true;
       });
@@ -177,6 +482,24 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const { sorted: sortedDutch, sort: dutchSort, toggle: toggleDutchSort } =
     useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' });
 
+  // Virtualizer
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: sortedDutch.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: (idx) => {
+      const isExpanded = selectedOpp === idx;
+      return isExpanded ? 100 : 52;
+    },
+    overscan: 10,
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalVirtualHeight = virtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom = virtualItems.length > 0
+    ? totalVirtualHeight - virtualItems[virtualItems.length - 1].end
+    : 0;
+
   const toggleProvider = (p: string) => {
     setScanResults(null);
     setSelectedProviders(prev => {
@@ -194,7 +517,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       const res = await api.getDutchWorkflow(providerList, false, 100, providerList);
       const items = (res.opportunities as unknown as DutchOpp[]).map((o, i) => ({
         ...o,
-        id: -(i + 1), // negative IDs to distinguish from stored opps
+        id: -(i + 1),
       }));
       setScanResults(items);
     } catch {
@@ -212,51 +535,14 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     });
   };
 
-  const getEffectiveOdds = (oppId: number, legIdx: number, originalOdds: number): number => {
-    const key = `${oppId}|${legIdx}`;
-    return oddsOverride[key] ?? originalOdds;
-  };
-
-  const getEffectiveStakes = (opp: DutchOpp): { totalStake: number; legStakes: number[]; editedLegIdx: number | null } => {
-    const legs = opp.legs || [];
-    const baseTotalStake = opp.total_stake || 0;
-
-    // Find if any leg has a stake override for this opp
-    let editedLegIdx: number | null = null;
-    let editedStake = 0;
-    for (const k of Object.keys(stakeOverride)) {
-      if (k.startsWith(`${opp.id}|`)) {
-        editedLegIdx = parseInt(k.split('|')[1], 10);
-        editedStake = stakeOverride[k];
-        break;
-      }
-    }
-
-    if (editedLegIdx !== null && legs[editedLegIdx]) {
-      const editedOdds = getEffectiveOdds(opp.id, editedLegIdx, legs[editedLegIdx].odds);
-      const payout = editedStake * editedOdds;
-      const legStakes = legs.map((leg, i) => {
-        if (i === editedLegIdx) return editedStake;
-        const odds = getEffectiveOdds(opp.id, i, leg.odds);
-        return odds > 0 ? payout / odds : 0;
-      });
-      const totalStake = legStakes.reduce((a, b) => a + b, 0);
-      return { totalStake, legStakes, editedLegIdx };
-    }
-
-    return {
-      totalStake: baseTotalStake,
-      legStakes: legs.map(leg => leg.stake ?? (baseTotalStake > 0 ? baseTotalStake * leg.stake_pct / 100 : 0)),
-      editedLegIdx: null,
-    };
-  };
-
-  const handlePlaceLeg = async (opp: DutchOpp, leg: DutchLeg, legIdx: number) => {
-    const { legStakes } = getEffectiveStakes(opp);
-    const legStake = legStakes[legIdx];
+  const handlePlaceLeg = async (
+    opp: DutchOpp,
+    leg: DutchLeg,
+    legIdx: number,
+    effectiveOdds: number,
+    legStake: number,
+  ) => {
     if (legStake <= 0) return;
-
-    const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
     const legKey = `${opp.id}|${legIdx}`;
     setIsPlacing(true);
     setPlacingLeg(legKey);
@@ -269,7 +555,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
         provider_id: leg.provider,
         market: opp.market,
         outcome: leg.outcome,
-        odds,
+        odds: effectiveOdds,
         stake: legStake,
         point: opp.point,
         is_bonus: false,
@@ -285,7 +571,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       });
 
       const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point, true);
-      setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
+      setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${effectiveOdds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
       queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
@@ -299,14 +585,18 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     }
   };
 
-  const handlePlaceAll = async (opp: DutchOpp) => {
+  const handlePlaceAll = async (
+    opp: DutchOpp,
+    effTotalStake: number,
+    legStakes: number[],
+    oddsOverrideMap: Record<number, number>,
+  ) => {
     const legs = opp.legs || [];
-    const { totalStake: effTotal, legStakes } = getEffectiveStakes(opp);
-    if (legs.length === 0 || effTotal <= 0) return;
+    if (legs.length === 0 || effTotalStake <= 0) return;
 
     const batchLegs = legs.map((leg, legIdx) => {
       const legStake = legStakes[legIdx];
-      const odds = getEffectiveOdds(opp.id, legIdx, leg.odds);
+      const odds = oddsOverrideMap[legIdx] ?? leg.odds;
       return {
         event_id: opp.event_id,
         provider_id: leg.provider,
@@ -348,9 +638,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
         setBetSuccess(`All ${res.placed_count} legs recorded — ${res.total_staked.toFixed(0)} kr total`);
       } else if (res.placed_count > 0) {
         setBetSuccess(`${res.placed_count}/${res.total_legs} legs recorded — ${res.total_staked.toFixed(0)} kr`);
-        if (errors.length > 0) {
-          setBetError(errors.join(' · '));
-        }
+        if (errors.length > 0) setBetError(errors.join(' · '));
       } else {
         setBetError(errors.join(' · ') || 'Failed to place any legs');
       }
@@ -484,273 +772,50 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-success">
-          <table className="sq">
-            <thead>
-              <tr>
-                <th style={{ width: '35%' }}>Event</th>
-                <th className="text-right">Providers</th>
-                <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="stake" label="Stake" sort={dutchSort} onToggle={toggleDutchSort} />
-                <SortableHeader column="profit" label="Profit" sort={dutchSort} onToggle={toggleDutchSort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedDutch.map((opp, idx) => {
-                const isSelected = selectedOpp === idx;
-                const gp = opp.guaranteed_profit_pct ?? opp.profit_pct ?? 0;
-                const legs = opp.legs || [];
-                const totalStake = opp.total_stake || 0;
-                const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
-
-                return (
-                  <Fragment key={opp.id}>
-                    <tr
-                      className={`cursor-pointer ${isSelected ? 'expanded' : ''}`}
-                      onClick={() => setSelectedOpp(isSelected ? null : idx)}
-                    >
-                      <td>
-                        <div className="flex items-center gap-2 min-w-0 group/copy">
-                          <span className="text-text text-sm truncate">{displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)} vs {displayTeamName(opp.away_team, opp.display_away ?? opp.prov_away)}</span>
-                          <button
-                            title="Copy event"
-                            className="text-muted hover:text-text transition-colors opacity-0 group-hover/copy:opacity-100 flex-shrink-0"
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(opp.home_team, opp.display_home ?? opp.prov_home)); }}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                          </button>
-                        </div>
-                        <div className="text-muted2 text-[11px]">
-                          {opp.sport}
-                          {opp.league ? ` · ${opp.league}` : ''}
-                          {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
-                          {opp.point != null ? ` · ${opp.point}` : ''}
-                          {' · '}{formatDateTime(opp.starts_at)}
-                        </div>
-                      </td>
-                      <td className="text-right text-muted text-sm">
-                        <span className="inline-flex items-center gap-1.5 justify-end">
-                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
-                          {uniqueProviders.length <= 3
-                            ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
-                            : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
-                          }
-                        </span>
-                      </td>
-                      <td className="text-right">
-                        {(() => { const ttk = getTTKFromNow(opp.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
-                      </td>
-                      <td className={`text-right font-semibold text-sm ${(opp.edge_pct ?? 0) >= 0 ? 'text-success' : 'text-error'}`}>
-                        {opp.edge_pct != null ? `${opp.edge_pct >= 0 ? '+' : ''}${opp.edge_pct.toFixed(1)}%` : '-'}
-                      </td>
-                      <td className="text-right text-text text-sm font-medium">
-                        {totalStake > 0 ? `${totalStake.toFixed(0)} kr` : '-'}
-                      </td>
-                      <td className={`text-right font-semibold text-sm ${gp >= 0 ? 'text-success' : 'text-error'}`}>
-                        {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
-                      </td>
-                    </tr>
-
-                    {isSelected && (() => {
-                      const { totalStake: effTotalStake, legStakes: effLegStakes } = getEffectiveStakes(opp);
-                      const hasStakeEdit = Object.keys(stakeOverride).some(k => k.startsWith(opp.id + '|'));
-                      return (
-                      <tr key={`${opp.id}-expanded`}>
-                        <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
-                          <table className="sq">
-                            <thead>
-                              <tr>
-                                <th>Outcome</th>
-                                <th className="text-right">Provider</th>
-                                <th className="text-right">Odds</th>
-                                <th className="text-right">Fair</th>
-                                <th className="text-right">Edge</th>
-                                <th className="text-right">Stake</th>
-                                <th className="text-right">Return</th>
-                                <th className="text-right"></th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {legs.map((leg, legIdx) => {
-                                const oddsKey = `${opp.id}|${legIdx}`;
-                                const stakeKey = `${opp.id}|${legIdx}`;
-                                const effectiveOdds = getEffectiveOdds(opp.id, legIdx, leg.odds);
-                                const oddsChanged = oddsKey in oddsOverride;
-                                const legStake = effLegStakes[legIdx];
-                                const legReturn = legStake * effectiveOdds;
-                                const isEditingThisOdds = editingOdds === oddsKey;
-                                const isEditingThisStake = editingStake === stakeKey;
-                                const isEditedLeg = stakeKey in stakeOverride;
-                                const isPlacingThis = isPlacing && placingLeg === oddsKey;
-
-                                return (
-                                  <tr key={legIdx}>
-                                    <td>
-                                      <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
-                                      {resolveOutcome(leg.outcome, opp, opp.point, true)}
-                                      {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
-                                    </td>
-                                    <td className="text-right"><ProviderName name={leg.provider} /></td>
-                                    <td className="text-right font-medium">
-                                      <div className="flex items-center justify-end gap-1">
-                                        {isEditingThisOdds ? (
-                                          <input
-                                            type="number"
-                                            step="0.01"
-                                            autoFocus
-                                            defaultValue={effectiveOdds.toFixed(2)}
-                                            className="w-16 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
-                                            onBlur={(e) => {
-                                              const val = parseFloat(e.target.value);
-                                              if (!isNaN(val) && val >= 1.01) {
-                                                setOddsOverride(prev => ({ ...prev, [oddsKey]: val }));
-                                              }
-                                              setEditingOdds(null);
-                                            }}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                              else if (e.key === 'Escape') setEditingOdds(null);
-                                            }}
-                                          />
-                                        ) : (
-                                          <span
-                                            onClick={() => setEditingOdds(oddsKey)}
-                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${oddsChanged ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
-                                            title="Click to adjust odds"
-                                          >
-                                            {effectiveOdds.toFixed(2)}
-                                          </span>
-                                        )}
-                                        {oddsChanged && (
-                                          <button
-                                            onClick={() => setOddsOverride(prev => { const next = { ...prev }; delete next[oddsKey]; return next; })}
-                                            className="text-muted2 hover:text-text text-[10px]"
-                                            title="Reset to original"
-                                          >
-                                            x
-                                          </button>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td className="text-right text-muted">{leg.fair_odds.toFixed(2)}</td>
-                                    <td className={`text-right font-medium ${leg.edge_pct > 0 ? 'text-success' : 'text-muted'}`}>
-                                      {leg.edge_pct > 0 ? '+' : ''}{leg.edge_pct.toFixed(1)}%
-                                    </td>
-                                    <td className="text-right">
-                                      <div className="flex items-center justify-end gap-1">
-                                        {isEditingThisStake ? (
-                                          <input
-                                            type="number"
-                                            step="1"
-                                            autoFocus
-                                            defaultValue={legStake > 0 ? legStake.toFixed(0) : ''}
-                                            placeholder="Stake"
-                                            className="w-20 bg-bg border border-success/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-success"
-                                            onBlur={(e) => {
-                                              const val = parseFloat(e.target.value);
-                                              if (!isNaN(val) && val > 0) {
-                                                // Clear other overrides for this opp, set new one
-                                                setStakeOverride(prev => {
-                                                  const next: Record<string, number> = {};
-                                                  for (const [k, v] of Object.entries(prev)) {
-                                                    if (!k.startsWith(`${opp.id}|`)) next[k] = v;
-                                                  }
-                                                  next[stakeKey] = val;
-                                                  return next;
-                                                });
-                                              }
-                                              setEditingStake(null);
-                                            }}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                              else if (e.key === 'Escape') setEditingStake(null);
-                                            }}
-                                          />
-                                        ) : (
-                                          <span
-                                            onClick={() => setEditingStake(stakeKey)}
-                                            className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-success/50 transition-colors ${isEditedLeg ? 'text-success font-medium border-success/30' : 'text-text border-transparent'}`}
-                                            title="Click to set stake"
-                                          >
-                                            {legStake > 0 ? `${legStake.toFixed(0)} kr` : '-'}
-                                          </span>
-                                        )}
-                                        {isEditedLeg && (
-                                          <button
-                                            onClick={() => setStakeOverride(prev => { const next = { ...prev }; delete next[stakeKey]; return next; })}
-                                            className="text-muted2 hover:text-text text-[10px]"
-                                            title="Reset to default stake"
-                                          >
-                                            x
-                                          </button>
-                                        )}
-                                      </div>
-                                      {legStake > 0 && <span className="text-muted2 text-[10px]">({leg.stake_pct.toFixed(0)}%)</span>}
-                                    </td>
-                                    <td className="text-right">{legReturn > 0 ? `${legReturn.toFixed(0)} kr` : '-'}</td>
-                                    <td className="text-right">
-                                      {placedLegs[opp.id]?.has(legIdx) ? (
-                                        <span className="text-success text-[10px] font-medium">✓ placed</span>
-                                      ) : legStake > 0 ? (
-                                        <button
-                                          onClick={() => handlePlaceLeg(opp, leg, legIdx)}
-                                          disabled={isPlacing}
-                                          className="px-2 py-1 bg-panel2 text-muted text-[10px] font-medium hover:text-text hover:bg-panel2/80 disabled:opacity-50 transition-all whitespace-nowrap"
-                                        >
-                                          {isPlacingThis ? '...' : 'Place Bet'}
-                                        </button>
-                                      ) : null}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                          {effTotalStake > 0 && (
-                            <div className="px-3 py-2 border-t border-border bg-panel flex items-center justify-between text-xs text-muted">
-                              <div className="flex items-center gap-6">
-                                <div>
-                                  <span className="text-muted2 uppercase tracking-wider">Total Stake: </span>
-                                  <span className={`font-medium ${hasStakeEdit ? 'text-success' : 'text-text'}`}>{effTotalStake.toFixed(0)} kr</span>
-                                  {hasStakeEdit && totalStake > 0 && (
-                                    <span className="text-muted2 text-[10px] ml-1">(was {totalStake.toFixed(0)})</span>
-                                  )}
-                                </div>
-                                {gp !== 0 && (
-                                  <div>
-                                    <span className="text-muted2 uppercase tracking-wider">{gp > 0 ? 'Guaranteed' : 'Loss'}: </span>
-                                    <span className={gp > 0 ? 'text-success font-medium' : 'text-error font-medium'}>
-                                      {gp > 0 ? '+' : ''}{(effTotalStake * gp / 100).toFixed(0)} kr
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                              {(() => {
-                                const allPlaced = placedLegs[opp.id]?.size === legs.length;
-                                const isPlacingAll = isPlacing && placingLeg === `${opp.id}|all`;
-                                return allPlaced ? (
-                                  <span className="text-success text-[10px] font-medium">✓ all legs placed</span>
-                                ) : (
-                                  <button
-                                    onClick={() => handlePlaceAll(opp)}
-                                    disabled={isPlacing}
-                                    className="px-3 py-1.5 bg-success text-bg text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                                  >
-                                    {isPlacingAll ? '...' : 'Place All'}
-                                  </button>
-                                );
-                              })()}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                      );
-                    })()}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+          {/* Scrollable virtualizer container */}
+          <div
+            ref={tableContainerRef}
+            style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}
+          >
+            <table className="sq" style={{ tableLayout: 'fixed', width: '100%' }}>
+              <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                <tr>
+                  <th style={{ width: '35%' }}>Event</th>
+                  <th className="text-right">Providers</th>
+                  <SortableHeader column="ttk" label="TTK" sort={dutchSort} onToggle={toggleDutchSort} />
+                  <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
+                  <SortableHeader column="stake" label="Stake" sort={dutchSort} onToggle={toggleDutchSort} />
+                  <SortableHeader column="profit" label="Profit" sort={dutchSort} onToggle={toggleDutchSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {paddingTop > 0 && (
+                  <tr><td colSpan={6} style={{ height: paddingTop, padding: 0 }} /></tr>
+                )}
+                {virtualItems.map(virtualRow => {
+                  const opp = sortedDutch[virtualRow.index];
+                  return (
+                    <DutchRow
+                      key={opp.id}
+                      opp={opp}
+                      idx={virtualRow.index}
+                      isExpanded={selectedOpp === virtualRow.index}
+                      onToggle={(idx) => setSelectedOpp(selectedOpp === idx ? null : idx)}
+                      balanceMap={balanceMap}
+                      placedLegs={placedLegs}
+                      isPlacing={isPlacing}
+                      placingLeg={placingLeg}
+                      onPlaceLeg={handlePlaceLeg}
+                      onPlaceAll={handlePlaceAll}
+                    />
+                  );
+                })}
+                {paddingBottom > 0 && (
+                  <tr><td colSpan={6} style={{ height: paddingBottom, padding: 0 }} /></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       </>}
