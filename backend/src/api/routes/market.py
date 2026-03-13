@@ -21,11 +21,11 @@ def _svc(db=Depends(get_db)) -> MarketService:
 
 @router.get("/session")
 async def get_current_session(svc: MarketService = Depends(_svc)):
-    """Get today's computed session data (POC, VAH, VAL, VWAP, IB, delta, etc.)."""
-    data = svc.get_current_session()
-    if not data:
+    """Expanded session data with all analytical layers."""
+    result = await svc.build_expanded_session()
+    if not result:
         return {"status": "no_data", "message": "No session computed yet. POST /compute first."}
-    return data
+    return result
 
 
 @router.get("/session/{date}")
@@ -76,10 +76,16 @@ async def get_session_history(
     return {"sessions": svc.get_session_history(limit=limit)}
 
 
+@router.get("/indicators")
+async def get_indicators(svc: MarketService = Depends(_svc)):
+    """Live orderflow indicators + ML predictions."""
+    return await svc.get_indicators()
+
+
 @router.get("/confirmations")
 async def get_confirmations(svc: MarketService = Depends(_svc)):
-    """Get auto-evaluated confirmation gates for trading."""
-    return svc.get_confirmations()
+    """Deprecated: use /indicators instead."""
+    return await svc.get_indicators()
 
 
 @router.get("/macro")
@@ -172,6 +178,12 @@ async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
 
 @router.put("/context")
 async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = Depends(_svc)):
+    """Update market context — accepts ISO date strings for VP anchors."""
+    from datetime import datetime as dt_cls
+    for field in ["vp_leg_start", "vp_ongoing_macro_start"]:
+        if field in data and isinstance(data[field], str):
+            parsed = dt_cls.strptime(data[field], "%Y-%m-%d")
+            data[field] = int(parsed.timestamp())
     svc.repo.upsert_context(symbol, data)
     return {"status": "ok", "symbol": symbol}
 
