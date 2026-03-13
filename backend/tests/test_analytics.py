@@ -125,3 +125,39 @@ def test_compute_provider_roi_empty_db(db_session):
     from src.ml.analytics.engine import compute_provider_roi
     roi = compute_provider_roi(db_session)
     assert roi == []
+
+
+def test_compute_coverage_gaps(db_session):
+    """Test coverage gap computation from sport_run_metrics."""
+    from src.ml.analytics.engine import compute_coverage_gaps
+    from sqlalchemy import text
+
+    db_session.execute(text("""
+        INSERT INTO sport_run_metrics (run_id, provider_id, sport, duration_seconds,
+            events_extracted, events_new, events_matched, events_unmatched,
+            odds_extracted, odds_new, ml_count, spread_count, total_count, success)
+        VALUES
+            ('run1', 'betsson', 'football', 10.0, 80, 0, 65, 15, 500, 0, 65, 30, 40, 1),
+            ('run1', 'betsson', 'tennis', 5.0, 40, 0, 20, 20, 200, 0, 20, 0, 0, 1),
+            ('run1', 'pinnacle', 'football', 5.0, 100, 0, 100, 0, 800, 0, 100, 90, 95, 1),
+            ('run1', 'pinnacle', 'tennis', 3.0, 60, 0, 60, 0, 400, 0, 60, 50, 55, 1)
+    """))
+    db_session.commit()
+
+    gaps = compute_coverage_gaps(db_session)
+    fb = next((g for g in gaps if g["provider_id"] == "betsson" and g["sport"] == "football"), None)
+    assert fb is not None
+    assert fb["pinnacle_events"] == 100
+    assert fb["matched_events"] == 65
+    assert fb["event_coverage_pct"] == 65.0
+
+    tn = next((g for g in gaps if g["provider_id"] == "betsson" and g["sport"] == "tennis"), None)
+    assert tn is not None
+    assert tn["spread_count"] == 0
+    assert tn["pinnacle_spread_count"] == 50
+
+
+def test_compute_coverage_gaps_empty(db_session):
+    from src.ml.analytics.engine import compute_coverage_gaps
+    gaps = compute_coverage_gaps(db_session)
+    assert gaps == []

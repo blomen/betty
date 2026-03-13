@@ -93,3 +93,73 @@ def compute_provider_roi(session, limit_runs: int = 10) -> list[dict]:
 
     results.sort(key=lambda x: x["total_opportunities"], reverse=True)
     return results
+
+
+def compute_coverage_gaps(session) -> list[dict]:
+    """Compute per-provider per-sport coverage vs Pinnacle from sport_run_metrics.
+
+    Uses the latest run's data per provider per sport. Compares each soft
+    provider's event/market counts against Pinnacle's baseline.
+
+    Returns list of dicts sorted by missing_events descending (biggest gaps first).
+    """
+    from sqlalchemy import text
+
+    # Get Pinnacle baseline per sport (latest run)
+    pin_rows = session.execute(text("""
+        SELECT sport, events_extracted, ml_count, spread_count, total_count
+        FROM sport_run_metrics
+        WHERE provider_id = 'pinnacle'
+        AND run_id = (SELECT run_id FROM sport_run_metrics WHERE provider_id = 'pinnacle' ORDER BY rowid DESC LIMIT 1)
+    """)).fetchall()
+
+    if not pin_rows:
+        return []
+
+    pinnacle_baseline = {}
+    for sport, events, ml, spread, total in pin_rows:
+        pinnacle_baseline[sport] = {
+            "events": events, "ml": ml, "spread": spread, "total": total,
+        }
+
+    # Get soft provider data (latest run per provider)
+    soft_rows = session.execute(text("""
+        SELECT provider_id, sport, events_matched, ml_count, spread_count, total_count
+        FROM sport_run_metrics
+        WHERE provider_id NOT IN ('pinnacle', 'polymarket')
+        AND run_id IN (
+            SELECT DISTINCT run_id FROM sport_run_metrics
+            WHERE provider_id NOT IN ('pinnacle', 'polymarket')
+            ORDER BY rowid DESC
+            LIMIT 1
+        )
+    """)).fetchall()
+
+    results = []
+    for provider_id, sport, matched, ml, spread, total in soft_rows:
+        pin = pinnacle_baseline.get(sport)
+        if not pin:
+            continue
+
+        pin_events = pin["events"]
+        coverage_pct = round(100 * matched / pin_events, 1) if pin_events > 0 else 0.0
+
+        results.append({
+            "provider_id": provider_id,
+            "sport": sport,
+            "pinnacle_events": pin_events,
+            "matched_events": matched,
+            "event_coverage_pct": coverage_pct,
+            "missing_events": pin_events - matched,
+            "ml_count": ml,
+            "spread_count": spread,
+            "total_count": total,
+            "pinnacle_ml_count": pin["ml"],
+            "pinnacle_spread_count": pin["spread"],
+            "pinnacle_total_count": pin["total"],
+            "missing_spread": pin["spread"] - spread,
+            "missing_total": pin["total"] - total,
+        })
+
+    results.sort(key=lambda x: x["missing_events"], reverse=True)
+    return results
