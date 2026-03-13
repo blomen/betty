@@ -166,6 +166,7 @@ def compute_coverage_gaps(session) -> list[dict]:
 
 
 def compute_scheduling_efficiency(session) -> dict:
+
     """Compute per-tier scheduling metrics from extraction_runs.
 
     Returns dict keyed by trigger name with avg duration, events, odds, and events/sec.
@@ -194,3 +195,87 @@ def compute_scheduling_efficiency(session) -> dict:
         }
 
     return results
+
+
+class AnalyticsEngine:
+    """Orchestrates analytics computation and recommendation generation."""
+
+    def refresh(self, session, run_id: str) -> dict:
+        """Run full analytics refresh after an extraction run.
+
+        1. Compute provider ROI
+        2. Compute coverage gaps
+        3. Compute scheduling efficiency
+        4. Run diagnostics on provider metrics
+        5. Create/update recommendations
+
+        Returns dict with all analytics results.
+        """
+        from .diagnostics import diagnose_provider
+        from .recommendations import RecommendationManager
+        from sqlalchemy import text
+
+        provider_roi = compute_provider_roi(session)
+        coverage_gaps = compute_coverage_gaps(session)
+        scheduling = compute_scheduling_efficiency(session)
+
+        # Build per-provider diagnostic data from provider_run_metrics
+        # Note: table uses events_processed and odds_processed (not events_extracted)
+        provider_metrics = session.execute(text("""
+            SELECT provider_id,
+                AVG(duration_seconds) as avg_duration,
+                AVG(events_processed) as avg_events,
+                AVG(CASE WHEN events_processed > 0
+                    THEN CAST(events_matched AS REAL) / events_processed
+                    ELSE 0 END) as avg_match_rate,
+                SUM(spread_count) as spread_count,
+                SUM(total_count) as total_count
+            FROM provider_run_metrics
+            WHERE provider_id NOT IN ('pinnacle', 'polymarket')
+            GROUP BY provider_id
+        """)).fetchall()
+
+        mgr = RecommendationManager(session)
+        all_recs = []
+
+        for pid, avg_dur, avg_events, avg_mr, spr_cnt, tot_cnt in provider_metrics:
+            # Find matching ROI data
+            roi_data = next((r for r in provider_roi if r["provider_id"] == pid), {})
+            total_opps = roi_data.get("total_opportunities", 0)
+            sec_per_vb = round(avg_dur / max(total_opps / 10, 1), 1) if avg_dur and total_opps else None
+
+            diag_data = {
+                "provider_id": pid,
+                "avg_match_rate": avg_mr or 0,
+                "avg_events": avg_events or 0,
+                "avg_duration": avg_dur or 0,
+                "total_opportunities": total_opps,
+                "seconds_per_value_bet": sec_per_vb,
+                "spread_count": spr_cnt or 0,
+                "total_count": tot_cnt or 0,
+            }
+
+            recommendations = diagnose_provider(diag_data)
+            for rec in recommendations:
+                created = mgr.create(
+                    provider_id=pid,
+                    category=rec["category"],
+                    severity=rec["severity"],
+                    message=rec["message"],
+                    before_metric=rec.get("diagnostic_data", {}).get("current"),
+                    diagnostic_data=rec.get("diagnostic_data"),
+                )
+                all_recs.append(created)
+
+        session.flush()
+
+        return {
+            "provider_roi": provider_roi,
+            "coverage_gaps": coverage_gaps,
+            "scheduling": scheduling,
+            "recommendations": [
+                {"id": r.id, "provider_id": r.provider_id, "category": r.category,
+                 "severity": r.severity, "message": r.message, "status": r.status}
+                for r in all_recs
+            ],
+        }

@@ -333,3 +333,43 @@ def test_recommendation_manager_resolve(db_session):
     assert resolved.status == "resolved"
     assert resolved.after_metric == 0.82
     assert resolved.resolved_at is not None
+
+
+def test_analytics_refresh(db_session):
+    """Test full refresh cycle: compute analytics + generate recommendations."""
+    from src.ml.analytics.engine import AnalyticsEngine
+    from src.db.models import ProviderRecommendation, Event, Opportunity
+    from sqlalchemy import text
+
+    evt = Event(
+        id="football:x:y:2026-03-13", sport="football", league="Test",
+        home_team="x", away_team="y",
+    )
+    db_session.add(evt)
+
+    # Provider with poor match rate (15/42 = 36% < 40% critical threshold)
+    # Note: table uses events_processed and odds_processed (not events_extracted/odds_extracted)
+    db_session.execute(text("""
+        INSERT INTO provider_run_metrics (run_id, provider_id, start_time, end_time,
+            duration_seconds, events_processed, events_new, odds_processed, odds_new,
+            sports_attempted, sports_succeeded, events_matched, events_unmatched,
+            ml_count, spread_count, total_count, status)
+        VALUES ('run1', 'comeon', '2026-03-13', '2026-03-13', 180.0, 42, 0, 200, 0,
+            5, 5, 15, 27, 0, 0, 0, 'success')
+    """))
+
+    db_session.add(Opportunity(
+        event_id=evt.id, type="value", market="1x2",
+        provider1_id="comeon", odds1=2.0, edge_pct=3.0, is_active=True,
+    ))
+    db_session.commit()
+
+    engine = AnalyticsEngine()
+    result = engine.refresh(db_session, "run1")
+
+    assert "provider_roi" in result
+    assert "recommendations" in result
+
+    # comeon should have match_rate recommendation (15/42 = 36%)
+    recs = db_session.query(ProviderRecommendation).filter_by(provider_id="comeon").all()
+    assert len(recs) >= 1
