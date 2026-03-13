@@ -964,6 +964,25 @@ export const api = {
     return fetchJson('/trading/market/session');
   },
 
+  /** Get expanded session with all analytical layers (replaces getMarketSession for dashboard) */
+  async getExpandedSession(): Promise<import('@/types/market').ExpandedSession> {
+    return fetchJson('/trading/market/session');
+  },
+
+  /** Get live indicators — orderflow + ML predictions (replaces getConfirmations) */
+  async getIndicators(): Promise<import('@/types/market').IndicatorsResponse> {
+    return fetchJson('/trading/market/indicators');
+  },
+
+  /** Update VP anchor dates (leg start, macro start) */
+  async updateVPAnchors(data: { vp_leg_start?: string; vp_ongoing_macro_start?: string }, symbol = 'NQ'): Promise<{ status: string }> {
+    return fetchJson(`/trading/market/context?symbol=${symbol}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
   async getMarketSessionByDate(date: string): Promise<import('@/types/market').MarketSession> {
     return fetchJson(`/trading/market/session/${date}`);
   },
