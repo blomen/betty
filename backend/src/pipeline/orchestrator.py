@@ -1052,6 +1052,24 @@ class ExtractionPipeline:
             except Exception:
                 pass
 
+            # Store daily macro data to options_flow (M9)
+            try:
+                from src.ml.models.macro_engine import store_daily_options_flow
+                from src.market_data.macro_provider import fetch_macro_snapshot
+                macro = await fetch_macro_snapshot()
+                await store_daily_options_flow(self.session, macro)
+            except Exception as e:
+                logger.debug(f"Daily options_flow storage skipped: {e}")
+
+            # Resolve trading signal outcomes
+            try:
+                from src.ml.feature_store import resolve_trading_outcomes
+                resolved = resolve_trading_outcomes(self.session)
+                if resolved:
+                    logger.info(f"Resolved {resolved} trading signal outcomes")
+            except Exception as e:
+                logger.debug(f"Trading outcome resolution skipped: {e}")
+
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
             results["cancelled"] = True

@@ -32,6 +32,23 @@ MODEL_CONFIGS = {
         "min_samples": 300, "domain": "betting",
         "source_type": "bet_outcome", "task": "regression",
     },
+    # Trading models (M5-M7, M9)
+    "setup_scorer": {
+        "min_samples": 200, "domain": "trading",
+        "source_type": "trading_signal", "task": "regression",
+    },
+    "temporal_pattern": {
+        "min_samples": 500, "domain": "trading",
+        "source_type": "trading_signal", "task": "classification",
+    },
+    "gate_classifier": {
+        "min_samples": 100, "domain": "trading",
+        "source_type": "market_session", "task": "multiclass",
+    },
+    "macro_engine": {
+        "min_samples": 50, "domain": "trading",
+        "source_type": "news_event", "task": "regression",
+    },
 }
 
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
@@ -112,6 +129,10 @@ def _get_trainer(model_name: str):
         "devig_selector": lambda data, s: _train_devig_selector(data, s),
         "boost_calibrator": lambda data, s: _train_boost_calibrator(data, s),
         "adaptive_kelly": lambda data, s: _train_adaptive_kelly(data, s),
+        "setup_scorer": lambda data, s: _train_setup_scorer(data, s),
+        "temporal_pattern": lambda data, s: _train_temporal_pattern(data, s),
+        "gate_classifier": lambda data, s: _train_gate_classifier(data, s),
+        "macro_engine": lambda data, s: _train_macro_engine(data, s),
     }
     return trainers.get(model_name)
 
@@ -139,3 +160,23 @@ def _train_boost_calibrator(data, session):
 def _train_adaptive_kelly(data, session):
     from src.ml.models.adaptive_kelly import AdaptiveKellyModel
     return AdaptiveKellyModel().train(data)
+
+
+def _train_setup_scorer(data, session):
+    from src.ml.models.setup_scorer import SetupScorerModel
+    return SetupScorerModel().train(data)
+
+
+def _train_temporal_pattern(data, session):
+    from src.ml.models.temporal_pattern import TemporalPatternModel
+    return TemporalPatternModel().train(data)
+
+
+def _train_gate_classifier(data, session):
+    from src.ml.models.gate_classifier import GateClassifierModel
+    return GateClassifierModel().train(data)
+
+
+def _train_macro_engine(data, session):
+    from src.ml.models.macro_engine import MacroEngineModel
+    return MacroEngineModel().train(data)

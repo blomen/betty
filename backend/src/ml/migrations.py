@@ -375,6 +375,34 @@ def _create_provider_recommendations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_recommendations_status ON provider_recommendations(status)")
 
 
+def _create_market_sessions(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "market_sessions"):
+        return
+    conn.execute("""
+        CREATE TABLE market_sessions (
+            id INTEGER PRIMARY KEY,
+            date TEXT NOT NULL,
+            symbol TEXT DEFAULT 'NQ',
+            day_type TEXT,
+            opening_type TEXT,
+            macro_bias TEXT,
+            ib_range REAL,
+            rf_after_ib REAL,
+            first_hour_delta_total REAL,
+            first_hour_volume REAL,
+            session_volume_total REAL,
+            overnight_range_pct REAL,
+            gap_filled_pct REAL,
+            vix_level REAL,
+            gex REAL,
+            features TEXT,
+            created_at TEXT,
+            UNIQUE (date, symbol)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_sessions_date ON market_sessions(date)")
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run all ML-related migrations against the given SQLite connection.
@@ -395,4 +423,5 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _create_provider_recommendations(conn)
     _create_devig_method_log(conn)
     _create_betting_outcome_log(conn)
+    _create_market_sessions(conn)
     conn.commit()

@@ -817,4 +817,27 @@ def build_session_analysis(
         analysis.last_price, analysis.volume_profile, analysis.vwap_bands, analysis.initial_balance,
     )
 
+    # M7: ML day-type prediction (best-effort, supplements rule-based)
+    try:
+        from src.ml.serving.predictor import get_predictor
+        predictor = get_predictor()
+        if predictor.is_loaded("gate_classifier"):
+            from src.ml.features.gate_features import extract_gate_features
+            gate_features = extract_gate_features(
+                ib_range=analysis.initial_balance.ib_range if analysis.initial_balance else None,
+                opening_type=analysis.opening_type,
+                vix_level=analysis.macro.vix if analysis.macro else None,
+                gex=None,  # from options_flow if available
+            )
+            ml_type = predictor.predict("gate_classifier", gate_features)
+            if ml_type and isinstance(ml_type, dict):
+                from src.ml.models.gate_classifier import DAY_TYPE_LABELS
+                predicted_class = ml_type.get("class", -1)
+                probs = ml_type.get("probabilities", [])
+                confidence = max(probs) if probs else 0
+                if confidence > 0.6:
+                    analysis.market_type = DAY_TYPE_LABELS.get(predicted_class, analysis.market_type)
+    except Exception as e:
+        logger.debug(f"M7 prediction skipped: {e}")
+
     return analysis

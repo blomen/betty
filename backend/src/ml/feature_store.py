@@ -60,6 +60,36 @@ def resolve_clv_outcomes(session: Session) -> int:
     return updated
 
 
+def resolve_trading_outcomes(session: Session) -> int:
+    """Backfill trading signal outcomes from completed trades.
+
+    Links trading_signal -> trade via trade_id, uses r_multiple as outcome.
+    """
+    from src.db.models import TradingSignal, Trade
+
+    unresolved = session.query(MlFeature).filter(
+        MlFeature.domain == "trading",
+        MlFeature.source_type == "trading_signal",
+        MlFeature.outcome.is_(None),
+    ).all()
+
+    count = 0
+    for feat in unresolved:
+        signal = session.query(TradingSignal).filter_by(id=feat.source_id).first()
+        if not signal or not signal.trade_id:
+            continue
+        trade = session.query(Trade).filter_by(id=signal.trade_id).first()
+        if not trade or trade.r_multiple is None:
+            continue
+        feat.outcome = trade.r_multiple
+        feat.outcome_binary = 1 if trade.r_multiple > 0 else 0
+        feat.resolved_at = datetime.now(timezone.utc)
+        count += 1
+
+    session.flush()
+    return count
+
+
 def log_candle_snapshot(session: Session, signal_id: int, candles: list[dict],
                         timeframe: str = "1m") -> CandleSnapshot:
     row = CandleSnapshot(signal_id=signal_id, candles=candles, timeframe=timeframe)

@@ -76,6 +76,88 @@ class MarketScanner:
                         regime_adj = -regime_score * 5  # inverse for shorts
                     composite = max(0, min(100, composite + regime_adj))
 
+                # Extract ML features before threshold check (needed for M5 prediction)
+                ml_features = None
+                try:
+                    from src.ml.features.trading_features import extract_trading_features
+                    orderflow = session.delta
+                    ml_features = extract_trading_features(
+                        setup_type=setup_type,
+                        direction=direction,
+                        base_score=int(round(composite)),
+                        delta=getattr(orderflow, 'delta', None) if orderflow else None,
+                        cvd=getattr(orderflow, 'cvd', None) if orderflow else None,
+                        passive_active_ratio=getattr(orderflow, 'passive_active_ratio', None) if orderflow else None,
+                        market_type=session.market_type,
+                        poor_high=session.poor_high,
+                        poor_low=session.poor_low,
+                    )
+                except Exception as e:
+                    logger.debug(f"ML feature extraction skipped: {e}")
+
+                # M5: ML-predicted score overrides composite (best-effort)
+                try:
+                    from src.ml.serving.predictor import get_predictor
+                    predictor = get_predictor()
+                    if predictor.is_loaded("setup_scorer") and ml_features:
+                        ml_pred = predictor.predict("setup_scorer", ml_features)
+                        if ml_pred is not None and isinstance(ml_pred, (int, float)):
+                            # ML returns predicted R-multiple; convert to 0-100 score
+                            # R > 1.0 -> 85+, R > 0.5 -> 70+, R < 0 -> below threshold
+                            ml_score = min(100, max(0, 50 + ml_pred * 25))
+                            composite = ml_score
+                except Exception as e:
+                    logger.debug(f"M5 prediction skipped: {e}")
+
+                # M6: Temporal pattern overlay -- boosts/penalizes based on candle pattern
+                try:
+                    from src.ml.serving.predictor import get_predictor
+                    predictor = get_predictor()
+                    if predictor.is_loaded("temporal_pattern") and candles:
+                        from src.ml.features.candle_features import snapshot_candles as _snap
+                        candle_dicts = _snap(
+                            candles,
+                            vwap=session.vwap_bands.vwap if session.vwap_bands else None,
+                            poc=session.volume_profile.poc if session.volume_profile else None,
+                        )
+                        if candle_dicts and len(candle_dicts) >= 20:
+                            pattern_pred = predictor.predict("temporal_pattern", {"candle_sequence": candle_dicts})
+                            if pattern_pred and isinstance(pattern_pred, dict):
+                                # Classes: 0=rev_long, 1=rev_short, 2=cont_long, 3=cont_short, 4=chop
+                                pattern_class = pattern_pred.get("class", 4)
+                                probs = pattern_pred.get("probabilities", [])
+                                if probs:
+                                    if direction == "long" and pattern_class in (0, 2):
+                                        composite = min(100, composite + max(probs) * 10)
+                                    elif direction == "short" and pattern_class in (1, 3):
+                                        composite = min(100, composite + max(probs) * 10)
+                                    elif pattern_class == 4:
+                                        composite = max(0, composite - 5)
+                except Exception as e:
+                    logger.debug(f"M6 prediction skipped: {e}")
+
+                # M9: Add news event proximity to features
+                try:
+                    if self.db_session is not None and ml_features is not None:
+                        from src.data.economic_calendar import get_upcoming_events, get_recent_events
+                        from datetime import datetime, timezone
+                        upcoming = get_upcoming_events(self.db_session, minutes_ahead=30)
+                        if upcoming:
+                            nearest = upcoming[0]
+                            ml_features["news_event_minutes_away"] = (
+                                datetime.fromisoformat(nearest.event_datetime) - datetime.now(timezone.utc)
+                            ).total_seconds() / 60
+                            ml_features["news_event_importance"] = nearest.importance
+                        recent = get_recent_events(self.db_session, minutes_ago=60)
+                        if recent:
+                            latest = recent[0]
+                            ml_features["post_news_minutes"] = (
+                                datetime.now(timezone.utc) - datetime.fromisoformat(latest.event_datetime)
+                            ).total_seconds() / 60
+                            ml_features["news_surprise"] = latest.surprise
+                except Exception as e:
+                    logger.debug(f"M9 news context skipped: {e}")
+
                 if composite >= self.threshold:
                     entry, stop, target = self._suggest_levels(
                         setup_type, session, direction
@@ -95,21 +177,8 @@ class MarketScanner:
 
                     # Log ML features (best-effort, never blocks scanning)
                     try:
-                        if self.db_session is not None:
-                            from src.ml.features.trading_features import extract_trading_features
-                            from src.ml.feature_store import log_features, log_candle_snapshot, snapshot_candles
-                            orderflow = session.delta
-                            ml_features = extract_trading_features(
-                                setup_type=setup_type,
-                                direction=direction,
-                                base_score=int(round(composite)),
-                                delta=getattr(orderflow, 'delta', None) if orderflow else None,
-                                cvd=getattr(orderflow, 'cvd', None) if orderflow else None,
-                                passive_active_ratio=getattr(orderflow, 'passive_active_ratio', None) if orderflow else None,
-                                market_type=session.market_type,
-                                poor_high=session.poor_high,
-                                poor_low=session.poor_low,
-                            )
+                        if self.db_session is not None and ml_features is not None:
+                            from src.ml.feature_store import log_features, log_candle_snapshot
                             source_id = f"{setup_type}_{direction}_{id(signal)}"
                             feat_row = log_features(
                                 session=self.db_session,
@@ -119,8 +188,8 @@ class MarketScanner:
                                 features=ml_features,
                             )
                             if candles and feat_row:
-                                from src.ml.features.candle_features import snapshot_candles as _snap
-                                candle_dicts = _snap(
+                                from src.ml.features.candle_features import snapshot_candles as _snap_log
+                                candle_dicts = _snap_log(
                                     candles,
                                     vwap=session.vwap_bands.vwap if session.vwap_bands else None,
                                     poc=session.volume_profile.poc if session.volume_profile else None,
