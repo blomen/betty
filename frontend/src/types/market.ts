@@ -129,6 +129,7 @@ export interface MarketSessionSummary {
   total_delta?: number;
 }
 
+/** @deprecated Use OrderflowIndicators instead */
 export interface ConfirmationCard {
   checked: boolean;
   regime?: string;
@@ -140,6 +141,7 @@ export interface ConfirmationCard {
   divergence?: boolean;
 }
 
+/** @deprecated Use IndicatorsResponse instead */
 export interface ConfirmationState {
   macro: ConfirmationCard;
   span: ConfirmationCard;
