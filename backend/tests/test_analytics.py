@@ -271,3 +271,65 @@ def test_diagnose_healthy_provider():
 
     recommendations = diagnose_provider(provider_data)
     assert len(recommendations) == 0
+
+
+def test_recommendation_manager_create(db_session):
+    from src.ml.analytics.recommendations import RecommendationManager
+    mgr = RecommendationManager(db_session)
+    rec = mgr.create(
+        provider_id="dbet",
+        category="match_rate",
+        severity="warning",
+        message="Match rate dropped to 55%",
+        before_metric=0.55,
+    )
+    assert rec.id is not None
+    assert rec.status == "open"
+
+
+def test_recommendation_manager_dedup(db_session):
+    """Creating same category+provider should not duplicate."""
+    from src.ml.analytics.recommendations import RecommendationManager
+    mgr = RecommendationManager(db_session)
+    rec1 = mgr.create(provider_id="dbet", category="match_rate", severity="warning",
+                       message="First message", before_metric=0.55)
+    rec2 = mgr.create(provider_id="dbet", category="match_rate", severity="warning",
+                       message="Updated message", before_metric=0.50)
+    assert rec1.id == rec2.id
+    assert rec2.message == "Updated message"
+    assert rec2.before_metric == 0.50
+
+
+def test_recommendation_manager_get_active(db_session):
+    from src.ml.analytics.recommendations import RecommendationManager
+    mgr = RecommendationManager(db_session)
+    mgr.create(provider_id="dbet", category="match_rate", severity="warning",
+               message="Test", before_metric=0.55)
+    mgr.create(provider_id="comeon", category="timing", severity="critical",
+               message="Slow", before_metric=90.0)
+
+    active = mgr.get_active()
+    assert len(active) == 2
+
+
+def test_recommendation_manager_update_status(db_session):
+    from src.ml.analytics.recommendations import RecommendationManager
+    mgr = RecommendationManager(db_session)
+    rec = mgr.create(provider_id="dbet", category="match_rate", severity="warning",
+                     message="Test", before_metric=0.55)
+
+    updated = mgr.update_status(rec.id, "acted_on")
+    assert updated.status == "acted_on"
+    assert updated.acted_on_at is not None
+
+
+def test_recommendation_manager_resolve(db_session):
+    from src.ml.analytics.recommendations import RecommendationManager
+    mgr = RecommendationManager(db_session)
+    rec = mgr.create(provider_id="dbet", category="match_rate", severity="warning",
+                     message="Test", before_metric=0.55)
+
+    resolved = mgr.update_status(rec.id, "resolved", after_metric=0.82)
+    assert resolved.status == "resolved"
+    assert resolved.after_metric == 0.82
+    assert resolved.resolved_at is not None
