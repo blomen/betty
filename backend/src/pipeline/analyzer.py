@@ -23,7 +23,7 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
-from ..db.models import Profile
+from ..db.models import Profile, Opportunity
 from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
 from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
@@ -79,15 +79,22 @@ class OpportunityAnalyzer:
             getattr(profile, 'min_edge_pct', 5.0) if profile else 5.0
         )
 
-    def run(self) -> dict:
+    def run(self, changed_event_ids: set[str] | None = None) -> dict:
         """
         Run opportunity detection on all events with 2+ providers.
+
+        Args:
+            changed_event_ids: When provided, only rescan events with changed odds
+                               (incremental mode). When None, rescan all events (full mode).
 
         Returns:
             Dictionary with analysis results:
             {
                 "value": {"found": int, "new": int},
-                "events_analyzed": int
+                "events_analyzed": int,
+                "updated_opportunities": list,
+                "added_opportunities": list,
+                "removed_opportunities": list[tuple[int, str]],
             }
         """
         logger.info("[Analyzer] Starting opportunity detection...")
@@ -101,11 +108,25 @@ class OpportunityAnalyzer:
             logger.warning(f"[Analyzer] CLV snapshot failed: {e}")
             clv_snapshot = {"processed": 0, "updated": 0}
 
-        # Clean up stale opportunities before detection
-        cleanup_stats = self.opp_repo.cleanup_stale()
+        # Clean up stale opportunities before detection (incremental deactivation when provided)
+        cleanup_stats = self.opp_repo.cleanup_stale(changed_event_ids=changed_event_ids)
 
         # Pre-load events once — shared across all scan types (value, dutch, reverse)
         events = self.scanner.get_multi_provider_events(min_providers=2)
+
+        # Incremental mode: restrict scan to changed events only
+        if changed_event_ids is not None:
+            events = [e for e in events if e.id in changed_event_ids]
+
+        # Delta tracking: record which opportunity IDs existed before scanning
+        # so we can distinguish added vs updated vs removed after scanning.
+        pre_scan_ids: set[int] = set()
+        if changed_event_ids is not None and events:
+            pre_scan_ids = set(
+                row[0] for row in self.session.query(Opportunity.id).filter(
+                    Opportunity.event_id.in_(changed_event_ids)
+                ).all()
+            )
 
         results = {
             "value": {"found": 0, "new": 0, "fanned": 0},
@@ -115,7 +136,12 @@ class OpportunityAnalyzer:
             "events_analyzed": len(events),
             "cleanup": cleanup_stats,
             "clv_snapshot": clv_snapshot,
+            "updated_opportunities": [],
+            "added_opportunities": [],
+            "removed_opportunities": [],
         }
+
+        upserted_opps: list = []  # all opportunity objects returned from upserts
 
         for event in events:
             # Group odds by market -> outcome -> providers (delegates to scanner)
@@ -127,6 +153,7 @@ class OpportunityAnalyzer:
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
                 results["value"]["fanned"] += value_count.get("fanned", 0)
+                upserted_opps.extend(value_count.get("opps", []))
 
                 # Detect dutch/reverse (cross-book opportunities)
                 dutch_count = self._detect_dutch(event, market, odds_by_outcome, odds_grouped)
@@ -134,13 +161,36 @@ class OpportunityAnalyzer:
                 results["dutch"]["new"] += dutch_count["dutch_new"]
                 results["reverse"]["found"] += dutch_count["reverse_found"]
                 results["reverse"]["new"] += dutch_count["reverse_new"]
+                upserted_opps.extend(dutch_count.get("opps", []))
 
                 # Detect reverse value (Pinnacle vs soft consensus)
                 rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome, odds_grouped)
                 results["reverse_value"]["found"] += rv_count["found"]
                 results["reverse_value"]["new"] += rv_count["new"]
+                upserted_opps.extend(rv_count.get("opps", []))
 
         self.session.commit()
+
+        # Build delta lists after commit (IDs are now assigned for new objects)
+        if changed_event_ids is not None:
+            upserted_ids: set[int] = set()
+            for opp in upserted_opps:
+                opp_id = getattr(opp, "id", None)
+                if opp_id is None:
+                    continue
+                upserted_ids.add(opp_id)
+                if opp_id in pre_scan_ids:
+                    results["updated_opportunities"].append(opp)
+                else:
+                    results["added_opportunities"].append(opp)
+
+            # Opportunities that were deactivated but never re-created
+            removed_ids = pre_scan_ids - upserted_ids
+            if removed_ids:
+                removed_rows = self.session.query(
+                    Opportunity.id, Opportunity.type
+                ).filter(Opportunity.id.in_(removed_ids)).all()
+                results["removed_opportunities"] = [(row[0], row[1]) for row in removed_rows]
 
         logger.info(
             f"[Analyzer] Complete: {results['events_analyzed']} events analyzed, "
@@ -239,7 +289,7 @@ class OpportunityAnalyzer:
         Returns:
             {"found": int, "new": int}
         """
-        result = {"found": 0, "new": 0, "fanned": 0}
+        result = {"found": 0, "new": 0, "fanned": 0, "opps": []}
 
         # Delegate to scanner (all quality gates applied here)
         value_bets = self.scanner.find_value_in_market(
@@ -293,7 +343,7 @@ class OpportunityAnalyzer:
                 ]
 
                 # Upsert to Opportunity table via repo
-                is_new = self.opp_repo.upsert_value(
+                is_new, opp = self.opp_repo.upsert_value(
                     event_id=event_id,
                     market=clean_market,
                     outcome=outcome,
@@ -304,6 +354,7 @@ class OpportunityAnalyzer:
                     outcomes_json=outcomes_json,
                     point=point_value,
                 )
+                result["opps"].append(opp)
                 if is_new:
                     result["new"] += 1
 
@@ -328,7 +379,7 @@ class OpportunityAnalyzer:
         Returns:
             {"found": int, "new": int}
         """
-        result = {"found": 0, "new": 0}
+        result = {"found": 0, "new": 0, "opps": []}
 
         reverse_bets = self.scanner.find_reverse_value_in_market(
             event_id=event_id,
@@ -362,7 +413,7 @@ class OpportunityAnalyzer:
                 }
             ]
 
-            is_new = self.opp_repo.upsert_reverse_value(
+            is_new, opp = self.opp_repo.upsert_reverse_value(
                 event_id=event_id,
                 market=clean_market,
                 outcome=vb.outcome,
@@ -372,6 +423,7 @@ class OpportunityAnalyzer:
                 outcomes_json=outcomes_json,
                 point=point_value,
             )
+            result["opps"].append(opp)
             if is_new:
                 result["new"] += 1
 
@@ -393,7 +445,7 @@ class OpportunityAnalyzer:
         Returns:
             {"dutch_found": int, "dutch_new": int, "reverse_found": int, "reverse_new": int}
         """
-        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0}
+        result = {"dutch_found": 0, "dutch_new": 0, "reverse_found": 0, "reverse_new": 0, "opps": []}
 
         opp = self.scanner._find_dutch_in_market(
             event=event,
@@ -444,7 +496,7 @@ class OpportunityAnalyzer:
         # Store once with canonical providers (no fan-out needed for dutch —
         # there's only one row per event+market, so fan-out to platform members
         # would overwrite the same row N times with only the last write persisting).
-        is_new = self.opp_repo.upsert_dutch(
+        is_new, dutch_opp = self.opp_repo.upsert_dutch(
             event_id=event.id,
             market=clean_market,
             legs=opp.legs,
@@ -454,6 +506,7 @@ class OpportunityAnalyzer:
             arb_profit_pct=opp.arb_profit_pct,
             arb_legs=opp.arb_legs,
         )
+        result["opps"].append(dutch_opp)
         if is_new:
             result["dutch_new"] = 1
 

@@ -85,8 +85,8 @@ class OpportunityRepo:
         edge_pct: float,
         outcomes_json: list[dict],
         point: float | None = None,
-    ) -> bool:
-        """Upsert a value opportunity. Returns True if new."""
+    ) -> tuple[bool, "Opportunity"]:
+        """Upsert a value opportunity. Returns (is_new, opportunity)."""
         existing = self.db.query(Opportunity).filter(
             Opportunity.event_id == event_id,
             Opportunity.market == market,
@@ -108,7 +108,7 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False
+            return False, existing
         else:
             opp = Opportunity(
                 type="value",
@@ -126,7 +126,7 @@ class OpportunityRepo:
                 detected_at=now,
             )
             self.db.add(opp)
-            return True
+            return True, opp
 
     def upsert_dutch(
         self,
@@ -138,8 +138,8 @@ class OpportunityRepo:
         point: float | None = None,
         arb_profit_pct: float | None = None,
         arb_legs: list[dict] | None = None,
-    ) -> bool:
-        """Upsert a dutch opportunity. Returns True if new."""
+    ) -> tuple[bool, "Opportunity"]:
+        """Upsert a dutch opportunity. Returns (is_new, opportunity)."""
         # Primary leg = highest edge, secondary = second highest
         sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
         primary = sorted_legs[0]
@@ -185,7 +185,7 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False
+            return False, existing
         else:
             opp = Opportunity(
                 type="dutch",
@@ -205,7 +205,7 @@ class OpportunityRepo:
                 detected_at=now,
             )
             self.db.add(opp)
-            return True
+            return True, opp
 
     def upsert_reverse(
         self,
@@ -215,8 +215,8 @@ class OpportunityRepo:
         combined_edge_pct: float,
         guaranteed_profit_pct: float,
         point: float | None = None,
-    ) -> bool:
-        """Upsert a reverse dutch opportunity. Returns True if new."""
+    ) -> tuple[bool, "Opportunity"]:
+        """Upsert a reverse dutch opportunity. Returns (is_new, opportunity)."""
         sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
         primary = sorted_legs[0]
         secondary = sorted_legs[1] if len(sorted_legs) > 1 else sorted_legs[0]
@@ -256,7 +256,7 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False
+            return False, existing
         else:
             opp = Opportunity(
                 type="reverse",
@@ -276,7 +276,7 @@ class OpportunityRepo:
                 detected_at=now,
             )
             self.db.add(opp)
-            return True
+            return True, opp
 
     def upsert_reverse_value(
         self,
@@ -288,8 +288,8 @@ class OpportunityRepo:
         edge_pct: float,
         outcomes_json: list[dict],
         point: float | None = None,
-    ) -> bool:
-        """Upsert a reverse value opportunity (Pinnacle vs consensus). Returns True if new."""
+    ) -> tuple[bool, "Opportunity"]:
+        """Upsert a reverse value opportunity (Pinnacle vs consensus). Returns (is_new, opportunity)."""
         existing = self.db.query(Opportunity).filter(
             Opportunity.event_id == event_id,
             Opportunity.market == market,
@@ -310,7 +310,7 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False
+            return False, existing
         else:
             opp = Opportunity(
                 type="reverse_value",
@@ -328,11 +328,16 @@ class OpportunityRepo:
                 detected_at=now,
             )
             self.db.add(opp)
-            return True
+            return True, opp
 
-    def cleanup_stale(self) -> dict:
+    def cleanup_stale(self, changed_event_ids: set[str] | None = None) -> dict:
         """
         Clean up stale data from database.
+
+        Args:
+            changed_event_ids: When provided, only deactivate opportunities for these events
+                               (incremental mode). Steps 1-4 always run as maintenance.
+                               When None, deactivate all active opportunities (full mode).
 
         Returns cleanup stats dict.
         """
@@ -386,10 +391,18 @@ class OpportunityRepo:
                         Event.id.in_(batch)
                     ).delete(synchronize_session='fetch')
 
-        # 5. Deactivate remaining (will be refreshed during detection)
-        stats["deactivated"] = self.db.query(Opportunity).filter(
-            Opportunity.is_active == True
-        ).update({"is_active": False})
+        # 5. Deactivation — incremental vs full
+        if changed_event_ids is not None:
+            # Incremental: only deactivate opportunities for changed events
+            stats["deactivated"] = self.db.query(Opportunity).filter(
+                Opportunity.event_id.in_(changed_event_ids),
+                Opportunity.is_active == True
+            ).update({"is_active": False}, synchronize_session=False)
+        else:
+            # Full: deactivate all (existing behavior)
+            stats["deactivated"] = self.db.query(Opportunity).filter(
+                Opportunity.is_active == True
+            ).update({"is_active": False})
 
         return stats
 
