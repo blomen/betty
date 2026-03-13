@@ -294,3 +294,96 @@ def test_boost_calibrator_predict():
     })
     assert prob is not None
     assert 0 <= prob <= 1
+
+
+# ===== M8: Adaptive Kelly =====
+
+def test_kelly_features_extraction():
+    from src.ml.features.kelly_features import extract_kelly_features
+    features = extract_kelly_features(
+        domain="betting", model_confidence=0.75, predicted_edge=8.0,
+        historical_win_rate=0.55, historical_avg_return=0.03,
+        recent_drawdown_pct=2.5, consecutive_wins=3, consecutive_losses=0,
+        daily_pnl=150.0, weekly_pnl=500.0, account_utilization=0.4,
+        volatility_regime=0.5,
+    )
+    assert features["model_confidence"] == 0.75
+    assert features["predicted_edge"] == 8.0
+    assert features["domain_betting"] == 1
+    assert features["domain_trading"] == 0
+    assert features["time_of_day"] == 12  # default
+
+
+def test_adaptive_kelly_train():
+    from src.ml.models.adaptive_kelly import AdaptiveKellyModel
+    model = AdaptiveKellyModel()
+    data = []
+    for i in range(350):
+        features = {
+            "domain_betting": 1, "domain_trading": 0,
+            "model_confidence": np.random.uniform(0.5, 1.0),
+            "predicted_edge": np.random.uniform(1, 20),
+            "historical_win_rate": np.random.uniform(0.4, 0.65),
+            "historical_avg_return": np.random.uniform(-0.05, 0.1),
+            "recent_drawdown_pct": np.random.uniform(0, 15),
+            "consecutive_wins": np.random.randint(0, 10),
+            "consecutive_losses": np.random.randint(0, 5),
+            "daily_pnl": np.random.uniform(-500, 500),
+            "weekly_pnl": np.random.uniform(-2000, 2000),
+            "account_utilization": np.random.uniform(0, 1),
+            "volatility_regime": np.random.uniform(0, 1),
+            "time_of_day": np.random.randint(0, 24),
+            "provider_remaining_lifetime": np.random.uniform(0, 200),
+            "is_freebet": np.random.randint(0, 2),
+            "bonus_wagering_remaining": np.random.uniform(0, 5000),
+            "gex": 0.0, "correlation_with_open": 0.0,
+            "session_volume_regime": 1.0,
+        }
+        outcome = np.clip(np.random.uniform(0.05, 0.5), 0, 1)
+        data.append(_mock_ml_feature(features, outcome_binary=1, outcome=outcome))
+    result = model.train(data)
+    assert result is not None
+
+
+def test_adaptive_kelly_predict():
+    from src.ml.models.adaptive_kelly import AdaptiveKellyModel
+    model = AdaptiveKellyModel()
+    data = []
+    for i in range(350):
+        features = {
+            "domain_betting": 1, "domain_trading": 0,
+            "model_confidence": np.random.uniform(0.5, 1.0),
+            "predicted_edge": np.random.uniform(1, 20),
+            "historical_win_rate": np.random.uniform(0.4, 0.65),
+            "historical_avg_return": np.random.uniform(-0.05, 0.1),
+            "recent_drawdown_pct": np.random.uniform(0, 15),
+            "consecutive_wins": np.random.randint(0, 10),
+            "consecutive_losses": np.random.randint(0, 5),
+            "daily_pnl": np.random.uniform(-500, 500),
+            "weekly_pnl": np.random.uniform(-2000, 2000),
+            "account_utilization": np.random.uniform(0, 1),
+            "volatility_regime": np.random.uniform(0, 1),
+            "time_of_day": np.random.randint(0, 24),
+            "provider_remaining_lifetime": 0.0,
+            "is_freebet": 0, "bonus_wagering_remaining": 0.0,
+            "gex": 0.0, "correlation_with_open": 0.0,
+            "session_volume_regime": 1.0,
+        }
+        outcome = np.clip(np.random.uniform(0.05, 0.5), 0, 1)
+        data.append(_mock_ml_feature(features, outcome_binary=1, outcome=outcome))
+    model.train(data)
+    kelly = model.predict({
+        "domain_betting": 1, "domain_trading": 0,
+        "model_confidence": 0.8, "predicted_edge": 10.0,
+        "historical_win_rate": 0.55, "historical_avg_return": 0.04,
+        "recent_drawdown_pct": 3.0, "consecutive_wins": 2,
+        "consecutive_losses": 0, "daily_pnl": 100.0,
+        "weekly_pnl": 400.0, "account_utilization": 0.3,
+        "volatility_regime": 0.5, "time_of_day": 14,
+        "provider_remaining_lifetime": 100.0,
+        "is_freebet": 0, "bonus_wagering_remaining": 0.0,
+        "gex": 0.0, "correlation_with_open": 0.0,
+        "session_volume_regime": 1.0,
+    })
+    assert kelly is not None
+    assert 0 <= kelly <= 1
