@@ -1009,6 +1009,15 @@ class ExtractionPipeline:
             except Exception as e:
                 logger.debug(f"ML extraction feature logging skipped: {e}")
 
+            # Run extraction analytics (best-effort, never blocks extraction)
+            try:
+                from src.ml.analytics.engine import AnalyticsEngine
+                analytics = AnalyticsEngine()
+                analytics.refresh(self.session, run_id)
+                self.session.commit()
+            except Exception as e:
+                logger.debug(f"Extraction analytics skipped: {e}")
+
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
             results["cancelled"] = True
