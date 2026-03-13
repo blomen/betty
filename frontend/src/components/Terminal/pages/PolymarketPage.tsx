@@ -38,7 +38,7 @@ type PolyTab = 'value' | 'rewards' | 'mybets' | 'manual';
 
 const polyProviderFilter = (p: Provider) => p.id === 'polymarket';
 
-export function PolymarketPage({ providers }: { providers: Provider[] }) {
+export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
 

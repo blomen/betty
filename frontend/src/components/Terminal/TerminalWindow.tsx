@@ -1,5 +1,4 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
-import type { BettingContext } from '@/types';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
 // Eager: core pages always in main bundle
@@ -21,12 +20,7 @@ const TradingStatsPage = lazy(() => import('./pages/TradingStatsPage').then(m =>
 import { api } from '@/services/api';
 import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
 
-interface TerminalWindowProps {
-  context: BettingContext;
-  onRefresh: () => void;
-}
-
-export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
+export function TerminalWindow() {
   const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
   const [activeTab, setActiveTab] = useState<TabName>('value');
   const [isProfileActive, setIsProfileActive] = useState(false);
@@ -93,19 +87,19 @@ export function TerminalWindow({ context, onRefresh }: TerminalWindowProps) {
   const renderPage = () => {
     switch (activeTab) {
       case 'value':
-        return <ValuePage providers={context.providers} />;
+        return <ValuePage />;
       case 'dutch':
-        return <DutchPage providers={context.providers} />;
+        return <DutchPage />;
       case 'reverse':
-        return <ReversePage providers={context.providers} />;
+        return <ReversePage />;
       case 'polymarket':
-        return <PolymarketPage providers={context.providers} />;
+        return <PolymarketPage />;
       case 'stats':
         return <BetsPage />;
       case 'bankroll':
-        return <BankrollPage providers={context.providers} onRefresh={onRefresh} />;
+        return <BankrollPage />;
       case 'profiles':
-        return <ProfilePage onRefresh={onRefresh} />;
+        return <ProfilePage />;
       case 'settings':
         return <SettingsPage />;
       case 'tradingIntraday':

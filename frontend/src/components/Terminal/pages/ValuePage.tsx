@@ -39,10 +39,10 @@ interface GroupedSpecial {
 
 
 interface ValuePageProps {
-  providers: Provider[];
+  providers?: Provider[];
 }
 
-export function ValuePage({ providers }: ValuePageProps) {
+export function ValuePage({ providers = [] }: ValuePageProps) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ValueTab>('value');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);

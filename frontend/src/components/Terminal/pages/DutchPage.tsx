@@ -53,12 +53,12 @@ interface DutchOpp {
 }
 
 interface DutchPageProps {
-  providers: Provider[];
+  providers?: Provider[];
 }
 
 const MAX_ROWS = 50;
 
-export function DutchPage({ providers }: DutchPageProps) {
+export function DutchPage({ providers = [] }: DutchPageProps) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
   const [opportunities, setOpportunities] = useState<DutchOpp[]>([]);

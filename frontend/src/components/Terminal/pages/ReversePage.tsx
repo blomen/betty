@@ -16,7 +16,7 @@ type ReverseTab = 'reverse' | 'mybets' | 'manual';
 const reverseBetFilter = (b: Bet) => b.bet_type === 'reverse' || (b.bet_type == null && b.provider === 'pinnacle');
 const reverseProviderFilter = (p: Provider) => p.id === 'pinnacle';
 
-export function ReversePage({ providers }: { providers: Provider[] }) {
+export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const freshness = useExtractionFreshness();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);

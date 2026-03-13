@@ -5,7 +5,7 @@ import { TabIcon } from '../TabBar';
 import type { Profile, ProfileCreate, ProfileUpdate } from '@/types';
 
 interface ProfilePageProps {
-  onRefresh: () => void;
+  onRefresh?: () => void;
 }
 
 export function ProfilePage({ onRefresh }: ProfilePageProps) {
@@ -54,7 +54,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       setIsCreating(false);
       setNameInput('');
       setActionSuccess(`Profile "${data.name}" created`);
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to create profile');
     }
@@ -69,7 +69,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       setEditingId(null);
       setNameInput('');
       setActionSuccess('Profile updated');
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update profile');
     }
@@ -80,7 +80,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
       await activateProfile(id);
       setActionSuccess('Profile activated');
       await refreshProfiles();
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to activate profile');
       // Refresh to sync with server state even on error
@@ -96,7 +96,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
     try {
       await deleteProfile(id);
       setActionSuccess(`Profile "${name}" deleted`);
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to delete profile');
     }

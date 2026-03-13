@@ -23,11 +23,11 @@ const bankrollSortExtractors: Record<BankrollSortCol, (p: ProviderExposure) => n
 };
 
 interface BankrollPageProps {
-  providers: Provider[];
-  onRefresh: () => void;
+  providers?: Provider[];
+  onRefresh?: () => void;
 }
 
-export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
+export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
   const [exposure, setExposure] = useState<BankrollExposure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
@@ -171,7 +171,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setAdjustingProvider(null);
       setAdjustAmount('');
       fetchData();
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -194,7 +194,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setAdjustingProvider(null);
       setAdjustAmount('');
       fetchData();
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -216,7 +216,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setAdjustingProvider(null);
       setAdjustAmount('');
       fetchData();
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -251,7 +251,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
       setTransferAmount('');
       setTransferTo('');
       fetchData();
-      onRefresh();
+      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -369,7 +369,7 @@ export function BankrollPage({ providers, onRefresh }: BankrollPageProps) {
                               e.stopPropagation();
                               try {
                                 await api.claimBonus(provider.provider_id);
-                                onRefresh();
+                                onRefresh?.();
                               } catch (err) {
                                 setDepositResult({ success: false, message: err instanceof Error ? err.message : 'Failed to claim bonus' });
                               }
