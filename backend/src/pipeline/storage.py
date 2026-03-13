@@ -281,7 +281,7 @@ def store_polymarket_event(
             # Use date index for O(1) candidate lookup instead of O(N) scan
             if date_index is not None:
                 raw_candidates = _get_date_candidates(event_cache, date_index, kambi_sport, date_str)
-                candidates = [(pid, home, away) for pid, home, away, _date in raw_candidates]
+                candidates = [(pid, home, away) for pid, home, away, _date, *_ in raw_candidates]
             else:
                 # Fallback: O(N) scan if no date index provided
                 sport_events = event_cache.get(kambi_sport, {})
@@ -1029,6 +1029,8 @@ class OddsBatchProcessor:
         self._insert_count = 0
         self._update_count = 0
         self._market_counts: dict[str, int] = {}  # market_type -> count
+        self.changed_event_ids: set[str] = set()
+        self._changed_records: list[dict] = []
 
     def add(
         self,
@@ -1080,6 +1082,7 @@ class OddsBatchProcessor:
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
+                logger.info(f"Batch flush: {len(self.changed_event_ids)} events with changed odds")
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
@@ -1138,6 +1141,10 @@ class OddsBatchProcessor:
             if key in existing_records:
                 # Update existing
                 existing = existing_records[key]
+                # Before overwriting, detect if odds actually changed
+                if abs(existing.odds - record["odds"]) >= 0.01:
+                    self.changed_event_ids.add(record["event_id"])
+                    self._changed_records.append({**record, "prev_odds": existing.odds})
                 existing.odds = record["odds"]
                 existing.updated_at = now
                 if record.get("provider_meta"):
@@ -1145,6 +1152,7 @@ class OddsBatchProcessor:
                 self._update_count += 1
             else:
                 # New record
+                self.changed_event_ids.add(record["event_id"])
                 to_insert.append(record)
 
         # Bulk insert new records
@@ -1161,6 +1169,10 @@ class OddsBatchProcessor:
     def get_market_counts(self) -> dict[str, int]:
         """Return market type -> odds count mapping."""
         return dict(self._market_counts)
+
+    def get_changed_records(self) -> list[dict]:
+        """Return records where odds changed (updates with delta >= 0.01, plus all inserts)."""
+        return self._changed_records
 
     def __enter__(self):
         return self
