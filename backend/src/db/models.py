@@ -1631,6 +1631,95 @@ class MlModelRegistry(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class ExtractionFeature(Base):
+    """Per-extraction-run feature snapshot for M10 optimization."""
+    __tablename__ = "extraction_features"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    trigger = Column(String, nullable=False)
+    hour_of_day = Column(Integer, nullable=True)
+    day_of_week = Column(Integer, nullable=True)
+    minutes_since_last_sharp = Column(Float, nullable=True)
+    minutes_since_last_soft = Column(Float, nullable=True)
+    events_starting_next_2h = Column(Integer, nullable=True)
+    events_starting_next_6h = Column(Integer, nullable=True)
+    providers_attempted = Column(Integer, nullable=True)
+    providers_succeeded = Column(Integer, nullable=True)
+    providers_failed = Column(Integer, nullable=True)
+    circuit_breakers_open = Column(Integer, nullable=True)
+    total_events = Column(Integer, nullable=True)
+    total_odds = Column(Integer, nullable=True)
+    avg_match_rate = Column(Float, nullable=True)
+    value_bets_found = Column(Integer, nullable=True)
+    avg_edge_pct = Column(Float, nullable=True)
+    dutch_opportunities_found = Column(Integer, nullable=True)
+    reverse_opportunities_found = Column(Integer, nullable=True)
+    total_opportunity_value = Column(Float, nullable=True)
+    bets_placed_from_run = Column(Integer, nullable=True)
+    avg_clv_from_run = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_extraction_features_run", "run_id"),
+    )
+
+
+class ProviderValueLog(Base):
+    """Per-provider-per-run attribution — connects extraction to value outcomes."""
+    __tablename__ = "provider_value_log"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    provider_id = Column(String, nullable=False)
+    events_extracted = Column(Integer, nullable=True)
+    odds_extracted = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    match_rate = Column(Float, nullable=True)
+    spread_count = Column(Integer, nullable=True)
+    total_count = Column(Integer, nullable=True)
+    value_bets_from_provider = Column(Integer, nullable=True)
+    avg_edge_from_provider = Column(Float, nullable=True)
+    exclusive_events = Column(Integer, nullable=True)
+    clv_avg_from_provider = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_provider_value_run", "run_id", "provider_id"),
+    )
+
+
+class PinnacleCoverageLog(Base):
+    """Per-provider per-sport Pinnacle coverage delta."""
+    __tablename__ = "pinnacle_coverage_log"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    provider_id = Column(String, nullable=False)
+    sport = Column(String, nullable=False)
+    pinnacle_events = Column(Integer, nullable=False)
+    pinnacle_ml_events = Column(Integer, default=0)
+    pinnacle_spread_events = Column(Integer, default=0)
+    pinnacle_total_events = Column(Integer, default=0)
+    provider_matched_events = Column(Integer, default=0)
+    provider_ml_events = Column(Integer, default=0)
+    provider_spread_events = Column(Integer, default=0)
+    provider_total_events = Column(Integer, default=0)
+    event_coverage_pct = Column(Float, nullable=True)
+    ml_coverage_pct = Column(Float, nullable=True)
+    spread_coverage_pct = Column(Float, nullable=True)
+    total_coverage_pct = Column(Float, nullable=True)
+    missing_events = Column(Integer, nullable=True)
+    missing_spread = Column(Integer, nullable=True)
+    missing_total = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("idx_pinnacle_coverage_run", "run_id"),
+        Index("idx_pinnacle_coverage_provider", "provider_id", "sport"),
+    )
+
+
 def init_db() -> None:
     """Initialize database and create tables."""
     return get_engine()

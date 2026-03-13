@@ -196,6 +196,95 @@ def _add_opportunity_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+def _create_extraction_features(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "extraction_features"):
+        return
+    conn.execute("""
+        CREATE TABLE extraction_features (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            hour_of_day INTEGER,
+            day_of_week INTEGER,
+            minutes_since_last_sharp REAL,
+            minutes_since_last_soft REAL,
+            events_starting_next_2h INTEGER,
+            events_starting_next_6h INTEGER,
+            providers_attempted INTEGER,
+            providers_succeeded INTEGER,
+            providers_failed INTEGER,
+            circuit_breakers_open INTEGER,
+            total_events INTEGER,
+            total_odds INTEGER,
+            avg_match_rate REAL,
+            value_bets_found INTEGER,
+            avg_edge_pct REAL,
+            dutch_opportunities_found INTEGER,
+            reverse_opportunities_found INTEGER,
+            total_opportunity_value REAL,
+            bets_placed_from_run INTEGER,
+            avg_clv_from_run REAL,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_extraction_features_run ON extraction_features(run_id)")
+
+
+def _create_provider_value_log(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "provider_value_log"):
+        return
+    conn.execute("""
+        CREATE TABLE provider_value_log (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            events_extracted INTEGER,
+            odds_extracted INTEGER,
+            duration_seconds REAL,
+            match_rate REAL,
+            spread_count INTEGER,
+            total_count INTEGER,
+            value_bets_from_provider INTEGER,
+            avg_edge_from_provider REAL,
+            exclusive_events INTEGER,
+            clv_avg_from_provider REAL,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_provider_value_run ON provider_value_log(run_id, provider_id)")
+
+
+def _create_pinnacle_coverage_log(conn: sqlite3.Connection) -> None:
+    if _table_exists(conn, "pinnacle_coverage_log"):
+        return
+    conn.execute("""
+        CREATE TABLE pinnacle_coverage_log (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            pinnacle_events INTEGER NOT NULL,
+            pinnacle_ml_events INTEGER DEFAULT 0,
+            pinnacle_spread_events INTEGER DEFAULT 0,
+            pinnacle_total_events INTEGER DEFAULT 0,
+            provider_matched_events INTEGER DEFAULT 0,
+            provider_ml_events INTEGER DEFAULT 0,
+            provider_spread_events INTEGER DEFAULT 0,
+            provider_total_events INTEGER DEFAULT 0,
+            event_coverage_pct REAL,
+            ml_coverage_pct REAL,
+            spread_coverage_pct REAL,
+            total_coverage_pct REAL,
+            missing_events INTEGER,
+            missing_spread INTEGER,
+            missing_total INTEGER,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_pinnacle_coverage_run ON pinnacle_coverage_log(run_id)")
+    conn.execute("CREATE INDEX idx_pinnacle_coverage_provider ON pinnacle_coverage_log(provider_id, sport)")
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run all ML-related migrations against the given SQLite connection.
@@ -210,4 +299,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _create_cot_data(conn)
     _create_ml_model_registry(conn)
     _add_opportunity_columns(conn)
+    _create_extraction_features(conn)
+    _create_provider_value_log(conn)
+    _create_pinnacle_coverage_log(conn)
     conn.commit()
