@@ -212,3 +212,85 @@ def test_devig_selector_predict():
     assert "method" in prediction
     assert prediction["method"] in ["multiplicative", "additive", "power"]
     assert 0 <= prediction["confidence"] <= 1
+
+
+# ===== M4: Boost Calibrator =====
+
+def test_boost_features_extraction():
+    from src.ml.features.boost_features import extract_boost_features
+    features = extract_boost_features(
+        llm_raw_probability=0.45, llm_confidence=3,
+        boost_type="single", sport="football", league="premier_league",
+        num_legs=1, has_pinnacle_match=True,
+        pinnacle_implied_prob=0.42, original_odds=2.20,
+        boosted_odds=2.80, provider="betsson",
+        hours_to_event=5.0, llm_reasoning_length=500,
+    )
+    assert features["llm_raw_probability"] == 0.45
+    assert abs(features["boost_margin"] - (2.80 - 2.20) / 2.20) < 0.01
+    assert features["has_pinnacle_match"] == 1
+    assert features["keyword_anytime_scorer"] == 0
+
+
+def test_boost_calibrator_train():
+    from src.ml.models.boost_calibrator import BoostCalibratorModel
+    model = BoostCalibratorModel()
+    data = []
+    for i in range(120):
+        llm_prob = np.random.uniform(0.1, 0.9)
+        features = {
+            "llm_raw_probability": llm_prob,
+            "llm_confidence": np.random.randint(1, 6),
+            "boost_type_single": np.random.randint(0, 2),
+            "boost_type_combo": 0, "sport": np.random.randint(0, 5),
+            "num_legs": 1, "has_pinnacle_match": np.random.randint(0, 2),
+            "pinnacle_implied_prob": np.random.uniform(0.2, 0.8),
+            "legs_matched_ratio": np.random.uniform(0, 1),
+            "original_odds": np.random.uniform(1.5, 5.0),
+            "boosted_odds": np.random.uniform(2.0, 7.0),
+            "boost_margin": np.random.uniform(0.1, 0.5),
+            "hours_to_event": np.random.uniform(1, 48),
+            "llm_reasoning_length": np.random.randint(100, 2000),
+            "brave_results_count": np.random.randint(0, 20),
+            "keyword_anytime_scorer": 0, "keyword_both_teams": 0,
+            "keyword_over": 0, "day_of_week": np.random.randint(0, 7),
+        }
+        outcome = 1 if np.random.random() < llm_prob * 0.8 else 0
+        data.append(_mock_ml_feature(features, outcome_binary=outcome))
+    result = model.train(data)
+    assert result is not None
+
+
+def test_boost_calibrator_predict():
+    from src.ml.models.boost_calibrator import BoostCalibratorModel
+    model = BoostCalibratorModel()
+    data = []
+    for i in range(120):
+        llm_prob = np.random.uniform(0.1, 0.9)
+        features = {
+            "llm_raw_probability": llm_prob, "llm_confidence": 3,
+            "boost_type_single": 1, "boost_type_combo": 0, "sport": 0,
+            "num_legs": 1, "has_pinnacle_match": 1,
+            "pinnacle_implied_prob": 0.4, "legs_matched_ratio": 1.0,
+            "original_odds": 2.5, "boosted_odds": 3.0, "boost_margin": 0.2,
+            "hours_to_event": 5, "llm_reasoning_length": 500,
+            "brave_results_count": 10,
+            "keyword_anytime_scorer": 0, "keyword_both_teams": 0,
+            "keyword_over": 0, "day_of_week": 3,
+        }
+        outcome = 1 if np.random.random() < llm_prob else 0
+        data.append(_mock_ml_feature(features, outcome_binary=outcome))
+    model.train(data)
+    prob = model.predict({
+        "llm_raw_probability": 0.5, "llm_confidence": 3,
+        "boost_type_single": 1, "boost_type_combo": 0, "sport": 0,
+        "num_legs": 1, "has_pinnacle_match": 1,
+        "pinnacle_implied_prob": 0.4, "legs_matched_ratio": 1.0,
+        "original_odds": 2.5, "boosted_odds": 3.0, "boost_margin": 0.2,
+        "hours_to_event": 5, "llm_reasoning_length": 500,
+        "brave_results_count": 10,
+        "keyword_anytime_scorer": 0, "keyword_both_teams": 0,
+        "keyword_over": 0, "day_of_week": 3,
+    })
+    assert prob is not None
+    assert 0 <= prob <= 1
