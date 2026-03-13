@@ -181,3 +181,103 @@ export interface MarketContext {
   vp_ongoing_macro_start?: number;
   vp_leg_start?: number;
 }
+
+// === Expanded Dashboard Types ===
+
+/** Swing point structure from detect_swing_points() */
+export interface PriceStructure {
+  structure: 'uptrend' | 'downtrend' | 'ranging';
+  last_hh: number | null;
+  last_hl: number | null;
+  last_lh: number | null;
+  last_ll: number | null;
+  swing_high: number | null;
+  swing_low: number | null;
+}
+
+/** Multi-timeframe volume profile data */
+export interface VPLevel {
+  poc: number;
+  vah: number;
+  val: number;
+  anchor?: string;
+}
+
+export interface NakedPOC {
+  date: string;
+  price: number;
+}
+
+export interface ProfilesData {
+  session: VPLevel;
+  weekly?: VPLevel | null;
+  leg?: VPLevel | null;
+  macro?: VPLevel | null;
+  developing_poc: number | null;
+  developing_poc_direction: 'up' | 'down' | 'flat';
+  naked_pocs: NakedPOC[];
+}
+
+/** Structural level from MarketLevel table */
+export interface StructuralLevel {
+  type: string;
+  price_low: number;
+  price_high: number;
+  direction: string | null;
+  session?: string;
+  is_filled?: boolean;
+}
+
+/** Price position relative to key levels */
+export interface PricePosition {
+  last_price: number | null;
+  vs_va: string;
+  vs_vwap: string;
+  vs_ib: string;
+  vwap_deviation_sd?: number;
+}
+
+/** Expanded session response (replaces old MarketSession for dashboard) */
+export interface ExpandedSession {
+  session: MarketSession;
+  macro: MacroSnapshot & {
+    cot_net_position?: number | null;
+    cot_change_1w?: number | null;
+    gex?: number | null;
+    put_call_ratio?: number | null;
+    es_nq_ratio_change?: number | null;
+  };
+  structure: PriceStructure;
+  profiles: ProfilesData;
+  levels: StructuralLevel[];
+  price_position: PricePosition;
+  ml_day_type: string | null;
+  ml_day_type_confidence: number | null;
+}
+
+/** Orderflow indicator data (replaces ConfirmationCard for orderflow) */
+export interface OrderflowIndicators {
+  delta: number | null;
+  delta_aligned: boolean;
+  delta_divergence: boolean;
+  delta_unwind: boolean;
+  cvd: number | null;
+  cvd_trend: 'rising' | 'falling' | 'flat';
+  vsa_absorption: boolean;
+  tick_vol_accelerating: boolean;
+  trapped_traders: boolean;
+  passive_active_ratio: number | null;
+  big_trades_count: number;
+  big_trades_net_delta: number;
+  stop_run_detected: boolean;
+  imbalance_ratio_max: number | null;
+  stacked_imbalance_count: number;
+  stacked_imbalance_direction: 'buy' | 'sell' | 'neutral';
+}
+
+/** Indicators response (replaces ConfirmationState) */
+export interface IndicatorsResponse {
+  orderflow: OrderflowIndicators;
+  ml_day_type: string | null;
+  ml_day_type_confidence: number | null;
+}
