@@ -19,6 +19,8 @@ export function StatsPage() {
     notes: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [extractionData, setExtractionData] = useState<any>(null);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -37,6 +39,16 @@ export function StatsPage() {
       console.error('Failed to fetch stats:', err);
     } finally {
       setIsLoading(false);
+    }
+    try {
+      const [analyticsData, recsData] = await Promise.all([
+        api.getExtractionAnalytics(),
+        api.getExtractionRecommendations(),
+      ]);
+      setExtractionData(analyticsData);
+      setRecommendations(recsData);
+    } catch (e) {
+      // Analytics endpoints may not exist yet — ignore
     }
   }, []);
 
@@ -288,6 +300,64 @@ export function StatsPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {extractionData?.provider_roi?.length > 0 && (
+        <>
+          <h3 className="text-sm font-bold mt-4 mb-2 text-[var(--text-primary)]">
+            Extraction Provider ROI
+          </h3>
+          <table className="sq w-full">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th className="text-right">Opps</th>
+                <th className="text-right">Edge%</th>
+                <th className="text-right">Bets</th>
+                <th className="text-right">Win%</th>
+                <th className="text-right">P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {extractionData.provider_roi.map((r: any) => (
+                <tr key={r.provider_id}>
+                  <td>{r.provider_id}</td>
+                  <td className="text-right">{r.total_opportunities}</td>
+                  <td className="text-right">{r.avg_edge.toFixed(1)}%</td>
+                  <td className="text-right">{r.total_bets}</td>
+                  <td className="text-right">
+                    {r.win_rate != null ? `${(r.win_rate * 100).toFixed(0)}%` : '-'}
+                  </td>
+                  <td className={`text-right ${r.net_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {r.net_pnl >= 0 ? '+' : ''}{r.net_pnl.toFixed(0)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {recommendations.length > 0 && (
+        <>
+          <h3 className="text-sm font-bold mt-4 mb-2 text-[var(--text-primary)]">
+            Recommendations
+          </h3>
+          <div className="space-y-1">
+            {recommendations.map((r: any) => (
+              <div key={r.id} className={`text-xs px-2 py-1 rounded ${
+                r.severity === 'critical' ? 'bg-red-900/30 text-red-300' :
+                r.severity === 'warning' ? 'bg-yellow-900/30 text-yellow-300' :
+                'bg-blue-900/30 text-blue-300'
+              }`}>
+                <span className="font-mono mr-2">
+                  {r.severity === 'critical' ? '!' : r.severity === 'warning' ? '~' : '+'}
+                </span>
+                {r.message}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {/* Limit Form Modal */}

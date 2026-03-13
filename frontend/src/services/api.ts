@@ -1075,4 +1075,59 @@ export const api = {
     });
   },
 
+  async getExtractionAnalytics() {
+    return fetchWithRetry<{
+      provider_roi: Array<{
+        provider_id: string;
+        total_opportunities: number;
+        avg_edge: number;
+        total_bets: number;
+        win_rate: number | null;
+        net_pnl: number;
+      }>;
+      coverage_gaps: Array<{
+        provider_id: string;
+        sport: string;
+        pinnacle_events: number;
+        matched_events: number;
+        event_coverage_pct: number;
+        missing_events: number;
+        spread_count: number;
+        total_count: number;
+        pinnacle_spread_count: number;
+        pinnacle_total_count: number;
+      }>;
+      scheduling: Record<string, {
+        runs: number;
+        avg_duration: number;
+        avg_events: number;
+        events_per_sec: number;
+      }>;
+    }>(`${API_BASE}/extraction/analytics`);
+  },
+
+  async getExtractionRecommendations() {
+    return fetchWithRetry<Array<{
+      id: number;
+      provider_id: string;
+      category: string;
+      severity: string;
+      message: string;
+      status: string;
+      before_metric: number | null;
+      after_metric: number | null;
+      source: string;
+      created_at: string | null;
+    }>>(`${API_BASE}/extraction/recommendations`);
+  },
+
+  async updateRecommendation(id: number, status: string, afterMetric?: number) {
+    const params = new URLSearchParams({ status });
+    if (afterMetric !== undefined) params.set("after_metric", String(afterMetric));
+    return fetchWithRetry<{ id: number; status: string }>(
+      `${API_BASE}/extraction/recommendations/${id}?${params}`,
+      { method: "PATCH" }
+    );
+  },
+
 };
