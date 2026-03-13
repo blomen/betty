@@ -1234,7 +1234,7 @@ def get_engine():
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(
             f"sqlite:///{DB_PATH}",
-            pool_size=5,
+            pool_size=10,
             pool_recycle=3600,
             pool_pre_ping=True,
             # SQLite-specific: allow multi-thread access + 30s busy timeout

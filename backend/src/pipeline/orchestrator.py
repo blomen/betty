@@ -1388,51 +1388,57 @@ class ExtractionPipeline:
                     events_new = 0
                     odds_processed = 0
 
-                    with OddsBatchProcessor(
-                        self.session,
-                        batch_size=batch_size,
-                    ) as odds_batch:
-                        is_soft = provider_id not in SHARP_PROVIDERS
-                        sport_has_sharp = sharp_sports and sport in sharp_sports
-                        events_matched = 0
-                        events_unmatched = 0
-                        for event in events:
-                            is_new, odds_proc, _ = store_provider_event(
-                                session=self.session,
-                                provider=provider_id,
-                                event=event,
-                                event_cache=self.event_cache,
-                                fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
-                                min_individual_score=self.orchestrator_config.fuzzy_match.min_individual_score,
-                                prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
-                                odds_batch=odds_batch,
-                                require_match=is_soft and sport_has_sharp,
-                                sharp_odds_cache=sharp_odds_cache,
-                                max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
-                                min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
-                                date_index=self.event_cache_by_date,
-                            )
-                            events_processed += 1
-                            if is_new:
-                                events_new += 1
-                                if is_soft and sport_has_sharp:
-                                    events_unmatched += 1
-                            elif is_soft and sport_has_sharp:
-                                events_matched += 1
-                            odds_processed += odds_proc
-
-                    # Get actual insert/update counts from batch processor
-                    # Must be AFTER `with` block so __exit__ flushes the final batch
-                    odds_new, odds_updated = odds_batch.get_stats()
-                    market_counts = odds_batch.get_market_counts()
-
-                    # Commit after each sport to release SQLite locks sooner
-                    # and prevent accumulating dirty session state across concurrent providers
+                    # Use a per-sport session to isolate DB errors between
+                    # concurrent providers. A "database is locked" error on one
+                    # provider's session won't poison other providers' sessions.
+                    sport_session = get_session()
                     try:
-                        self.session.commit()
-                    except Exception as e:
-                        logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
-                        self.session.rollback()
+                        with OddsBatchProcessor(
+                            sport_session,
+                            batch_size=batch_size,
+                        ) as odds_batch:
+                            is_soft = provider_id not in SHARP_PROVIDERS
+                            sport_has_sharp = sharp_sports and sport in sharp_sports
+                            events_matched = 0
+                            events_unmatched = 0
+                            for event in events:
+                                is_new, odds_proc, _ = store_provider_event(
+                                    session=sport_session,
+                                    provider=provider_id,
+                                    event=event,
+                                    event_cache=self.event_cache,
+                                    fuzzy_threshold=self.orchestrator_config.fuzzy_match.threshold,
+                                    min_individual_score=self.orchestrator_config.fuzzy_match.min_individual_score,
+                                    prefix_filter_length=self.orchestrator_config.fuzzy_match.prefix_filter_length,
+                                    odds_batch=odds_batch,
+                                    require_match=is_soft and sport_has_sharp,
+                                    sharp_odds_cache=sharp_odds_cache,
+                                    max_asymmetry_diff=self.orchestrator_config.fuzzy_match.max_asymmetry_diff,
+                                    min_for_asymmetry_check=self.orchestrator_config.fuzzy_match.min_for_asymmetry_check,
+                                    date_index=self.event_cache_by_date,
+                                )
+                                events_processed += 1
+                                if is_new:
+                                    events_new += 1
+                                    if is_soft and sport_has_sharp:
+                                        events_unmatched += 1
+                                elif is_soft and sport_has_sharp:
+                                    events_matched += 1
+                                odds_processed += odds_proc
+
+                        # Get actual insert/update counts from batch processor
+                        # Must be AFTER `with` block so __exit__ flushes the final batch
+                        odds_new, odds_updated = odds_batch.get_stats()
+                        market_counts = odds_batch.get_market_counts()
+
+                        # Commit to release SQLite locks
+                        try:
+                            sport_session.commit()
+                        except Exception as e:
+                            logger.warning(f"[{provider_id}] {sport} commit failed: {e}")
+                            sport_session.rollback()
+                    finally:
+                        sport_session.close()
 
                     sport_elapsed = time.time() - sport_start_time
                     # Build detailed per-sport log line
