@@ -56,6 +56,9 @@ class ExtractionPipeline:
         # Pre-warmed sharp odds cache (populated after sharp extraction)
         self._sharp_odds_cache = {}
 
+        # Aggregated set of event IDs whose odds changed during this run
+        self._changed_event_ids: set[str] = set()
+
         # Initialize orchestrator components
         self._init_orchestrator()
 
@@ -471,6 +474,9 @@ class ExtractionPipeline:
             polymarket = False  # Default: don't extract polymarket in main pipeline
         # Start timing
         pipeline_start_time = time.time()
+
+        # Reset changed event IDs for this run
+        self._changed_event_ids = set()
 
         # Start metrics collection
         run_id = f"run_{tier_name or 'manual'}_{int(time.time())}"
@@ -927,7 +933,8 @@ class ExtractionPipeline:
             log_progress("Running opportunity analysis...")
             from .analyzer import OpportunityAnalyzer
             analyzer = OpportunityAnalyzer(self.session)
-            analysis_results = analyzer.run()
+            changed_ids = self._changed_event_ids if self._changed_event_ids else None
+            analysis_results = analyzer.run(changed_event_ids=changed_ids)
             results["analysis"] = analysis_results
             log_progress(
                 f"Analysis complete: {analysis_results['value']['found']} value bets"
@@ -1247,6 +1254,7 @@ class ExtractionPipeline:
                     # Get actual insert/update counts from batch processor
                     odds_new, odds_updated = odds_batch.get_stats()
 
+                self._changed_event_ids |= odds_batch.changed_event_ids
                 db_elapsed = time.time() - db_start
 
             except Exception as e:
@@ -1430,6 +1438,7 @@ class ExtractionPipeline:
                         # Must be AFTER `with` block so __exit__ flushes the final batch
                         odds_new, odds_updated = odds_batch.get_stats()
                         market_counts = odds_batch.get_market_counts()
+                        self._changed_event_ids |= odds_batch.changed_event_ids
 
                         # Commit to release SQLite locks
                         try:
