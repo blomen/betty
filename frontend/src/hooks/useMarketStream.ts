@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import type { StreamTickEvent } from '@/types/market';
+import type { StreamTickEvent, StreamBookEvent } from '@/types/market';
 
 export function useMarketStream(symbol: string = 'NQ') {
   const [lastTick, setLastTick] = useState<StreamTickEvent | null>(null);
+  const [book, setBook] = useState<StreamBookEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
@@ -12,6 +13,9 @@ export function useMarketStream(symbol: string = 'NQ') {
 
     es.addEventListener('tick', (e) => {
       setLastTick(JSON.parse(e.data));
+    });
+    es.addEventListener('book', (e) => {
+      setBook(JSON.parse(e.data));
     });
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
@@ -23,5 +27,5 @@ export function useMarketStream(symbol: string = 'NQ') {
     };
   }, [symbol]);
 
-  return { lastTick, connected };
+  return { lastTick, book, connected };
 }

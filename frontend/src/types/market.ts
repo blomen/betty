@@ -148,12 +148,23 @@ export interface ConfirmationState {
 }
 
 export interface StreamTickEvent {
+  type: 'tick';
   ts: string;
   price: number;
   size: number;
   side: 'A' | 'B';
   cvd: number;
   delta_1m: number;
+}
+
+export interface StreamBookEvent {
+  type: 'book';
+  ts: string;
+  bid_price: number;
+  bid_size: number;
+  ask_price: number;
+  ask_size: number;
+  spread: number;
 }
 
 export interface MarketContext {

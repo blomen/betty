@@ -176,11 +176,48 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start_continuous(interval_seconds=300)
 
+    # Auto-start Databento live stream + prune old ticks
+    import os
+    databento_key = os.environ.get("DATABENTO_API_KEY")
+    _databento_stream = None
+    if databento_key:
+        from ..db.models import get_session as _get_db_session
+        from ..market_data.stream import DatabentoLiveStream, TickWriter
+
+        # Prune ticks from prior sessions
+        await TickWriter.prune_old_trades(_get_db_session, symbol="NQ")
+
+        _databento_stream = DatabentoLiveStream(
+            api_key=databento_key,
+            db_session_factory=_get_db_session,
+        )
+        await _databento_stream.start()
+        app.state.databento_stream = _databento_stream
+
+        # Refresh COT data on startup
+        try:
+            from ..market_data.cot import fetch_cot, store_cot_data
+            reports = await fetch_cot()
+            if reports:
+                db = _get_db_session()
+                try:
+                    store_cot_data(db, reports)
+                    db.commit()
+                finally:
+                    db.close()
+                logger.info("COT data refreshed: %d reports", len(reports))
+        except Exception as e:
+            logger.warning("COT refresh failed on startup: %s", e)
+    else:
+        logger.info("DATABENTO_API_KEY not set — live stream disabled")
+
     yield  # App is running
 
     # Graceful shutdown: stop all scheduler tiers
     logger.info("Shutting down: stopping scheduler tiers...")
     scheduler.stop_all()
+    if _databento_stream:
+        await _databento_stream.stop()
     logger.info("Scheduler stopped.")
 
 

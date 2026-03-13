@@ -1,26 +1,16 @@
 """Market data API routes — AMT session analysis and scanner signals."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 import asyncio, json
 
 from ..deps import get_db
 from ...services.market_service import MarketService
 
-# Module-level singleton for live stream
-_live_stream = None
 
-def _get_live_stream():
-    """Get or create the singleton DatabentoLiveStream."""
-    global _live_stream
-    if _live_stream is None:
-        import os
-        api_key = os.environ.get("DATABENTO_API_KEY")
-        if not api_key:
-            return None
-        from src.market_data.stream import DatabentoLiveStream
-        _live_stream = DatabentoLiveStream(api_key=api_key)
-    return _live_stream
+def _get_live_stream(request: Request):
+    """Get the DatabentoLiveStream from app state (set during lifespan startup)."""
+    return getattr(request.app.state, "databento_stream", None)
 
 router = APIRouter(prefix="/api/trading/market", tags=["market"])
 
@@ -113,9 +103,9 @@ async def get_macro_snapshot():
 
 
 @router.get("/stream")
-async def market_stream(symbol: str = "NQ"):
+async def market_stream(request: Request, symbol: str = "NQ"):
     """SSE stream of real-time tick data, candles, and level touches."""
-    stream = _get_live_stream()
+    stream = _get_live_stream(request)
     if not stream:
         return {"error": "Live stream not available"}
 
@@ -126,7 +116,8 @@ async def market_stream(symbol: str = "NQ"):
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield {"event": "tick", "data": json.dumps(event)}
+                    event_type = event.get("type", "tick")
+                    yield {"event": event_type, "data": json.dumps(event)}
                 except asyncio.TimeoutError:
                     yield {"event": "heartbeat", "data": "{}"}
         except asyncio.CancelledError:
@@ -183,3 +174,67 @@ async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
 async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = Depends(_svc)):
     svc.repo.upsert_context(symbol, data)
     return {"status": "ok", "symbol": symbol}
+
+
+@router.get("/book")
+async def get_top_of_book(request: Request):
+    """Get current top-of-book snapshot from MBP-1 stream."""
+    stream = _get_live_stream(request)
+    if not stream:
+        return {"error": "Live stream not available"}
+    book = stream.book
+    return {
+        "bid_price": book.bid_price,
+        "bid_size": book.bid_size,
+        "ask_price": book.ask_price,
+        "ask_size": book.ask_size,
+        "spread": book.spread,
+        "ts": book.ts.isoformat() if book.ts else None,
+    }
+
+
+@router.post("/backfill")
+async def backfill_trades(
+    start: str = Query(description="Start date YYYY-MM-DD"),
+    end: str = Query(default=None, description="End date YYYY-MM-DD (default today)"),
+    symbol: str = "NQ.FUT",
+):
+    """Backfill historical trades from Databento into market_trades table."""
+    import os
+    from datetime import date as dt_date
+
+    api_key = os.environ.get("DATABENTO_API_KEY")
+    if not api_key:
+        return {"error": "DATABENTO_API_KEY not set"}
+
+    from ...market_data.history import backfill_trades_to_db
+    from ...db.models import get_session as get_db_session
+
+    start_date = dt_date.fromisoformat(start)
+    end_date = dt_date.fromisoformat(end) if end else None
+
+    count = await backfill_trades_to_db(
+        api_key=api_key,
+        db_session_factory=get_db_session,
+        symbol=symbol,
+        start=start_date,
+        end=end_date,
+    )
+    return {"status": "ok", "ticks_inserted": count, "symbol": symbol}
+
+
+@router.get("/cot")
+async def get_cot_data(limit: int = Query(default=4, le=52)):
+    """Get latest COT report data."""
+    from ...market_data.cot import fetch_cot
+    reports = await fetch_cot(limit=limit)
+    return [
+        {
+            "report_date": r.report_date.isoformat(),
+            "net_commercial": r.net_commercial,
+            "net_non_commercial": r.net_non_commercial,
+            "net_non_reportable": r.net_non_reportable,
+            "open_interest": r.open_interest,
+        }
+        for r in reports
+    ]
