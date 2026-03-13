@@ -163,3 +163,34 @@ def compute_coverage_gaps(session) -> list[dict]:
 
     results.sort(key=lambda x: x["missing_events"], reverse=True)
     return results
+
+
+def compute_scheduling_efficiency(session) -> dict:
+    """Compute per-tier scheduling metrics from extraction_runs.
+
+    Returns dict keyed by trigger name with avg duration, events, odds, and events/sec.
+    """
+    from sqlalchemy import text
+
+    rows = session.execute(text("""
+        SELECT trigger,
+            COUNT(*) as runs,
+            AVG(duration_seconds) as avg_duration,
+            AVG(total_events) as avg_events,
+            AVG(total_odds) as avg_odds
+        FROM extraction_runs
+        GROUP BY trigger
+    """)).fetchall()
+
+    results = {}
+    for trigger, runs, avg_dur, avg_events, avg_odds in rows:
+        events_per_sec = round(avg_events / avg_dur, 1) if avg_dur > 0 else 0.0
+        results[trigger] = {
+            "runs": runs,
+            "avg_duration": round(avg_dur, 1),
+            "avg_events": round(avg_events, 1),
+            "avg_odds": round(avg_odds, 1),
+            "events_per_sec": events_per_sec,
+        }
+
+    return results

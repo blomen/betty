@@ -161,3 +161,34 @@ def test_compute_coverage_gaps_empty(db_session):
     from src.ml.analytics.engine import compute_coverage_gaps
     gaps = compute_coverage_gaps(db_session)
     assert gaps == []
+
+
+def test_compute_scheduling_efficiency(db_session):
+    """Test scheduling efficiency from extraction_runs."""
+    from src.ml.analytics.engine import compute_scheduling_efficiency
+    from sqlalchemy import text
+
+    db_session.execute(text("""
+        INSERT INTO extraction_runs (id, start_time, end_time, duration_seconds,
+            providers_attempted, providers_succeeded, providers_failed,
+            total_events, total_odds, trigger)
+        VALUES
+            ('run1', '2026-03-13 10:00:00', '2026-03-13 10:02:30', 150.0, 8, 7, 1, 9000, 35000, 'api_soft'),
+            ('run2', '2026-03-13 14:00:00', '2026-03-13 14:02:00', 120.0, 8, 8, 0, 10000, 40000, 'api_soft'),
+            ('run3', '2026-03-13 10:00:00', '2026-03-13 10:00:50', 50.0, 2, 2, 0, 2000, 20000, 'sharp')
+    """))
+    db_session.commit()
+
+    sched = compute_scheduling_efficiency(db_session)
+    assert "api_soft" in sched
+    assert sched["api_soft"]["runs"] == 2
+    assert sched["api_soft"]["avg_duration"] == 135.0
+    assert sched["api_soft"]["avg_events"] == 9500.0
+    assert "sharp" in sched
+    assert sched["sharp"]["runs"] == 1
+
+
+def test_compute_scheduling_efficiency_empty(db_session):
+    from src.ml.analytics.engine import compute_scheduling_efficiency
+    sched = compute_scheduling_efficiency(db_session)
+    assert sched == {}
