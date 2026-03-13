@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
@@ -44,9 +45,8 @@ interface ValuePageProps {
 
 export function ValuePage({ providers = [] }: ValuePageProps) {
   const freshness = useExtractionFreshness();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ValueTab>('value');
-  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
 
   const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -58,8 +58,10 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
-  const [boostSearch, setBoostSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDeferredValue(searchInput);
+  const [boostSearchInput, setBoostSearchInput] = useState('');
+  const boostSearch = useDeferredValue(boostSearchInput);
   const [betError, setBetError] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -93,7 +95,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   } | null>(null);
 
   // --- Boosts state ---
-  const [specials, setSpecials] = useState<SpecialItem[]>([]);
   const [boostFilters, setBoostFilters] = useState<{ providers: string[] } | null>(null);
   const [boostExpandedIdx, setBoostExpandedIdx] = useState<number | null>(null);
   const [boostStakePreview, setBoostStakePreview] = useState<StakePreviewResult | null>(null);
@@ -117,60 +118,56 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [res, boostRes, , betsRes] = await Promise.all([
-        api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
-        api.getSpecials({}).catch(() => null),
-        api.getBankroll().catch(() => null),
-        api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
-      ]);
-      // Build placed-bet keys before setting opportunities (no race condition)
-      const keys = new Set<string>();
-      const bKeys = new Set<string>();
-      for (const b of betsRes.bets) {
-        if (b.market === 'boost' && b.outcome) {
-          bKeys.add(b.outcome);
-        } else if (b.event_id) {
-          keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
-        }
-      }
-      setPlacedKeys(prev => {
-        // Merge: keep in-session keys + DB keys
-        const merged = new Set(prev);
-        for (const k of keys) merged.add(k);
-        return merged;
-      });
-      setBoostPlacedKeys(prev => {
-        const merged = new Set(prev);
-        for (const k of bKeys) merged.add(k);
-        return merged;
-      });
-      setMyBetsCount(betsRes.bets.filter(softBetFilter).length);
-      setOpportunities(res.opportunities);
-      if (boostRes) {
-        setSpecials(boostRes.specials || []);
-        if (boostRes.filters) setBoostFilters({ providers: boostRes.filters.providers });
-      }
-    } catch (err) {
-      console.error('Failed to fetch value bets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const { data: opportunitiesData, isLoading } = useQuery({
+    queryKey: ['opportunities', 'value'],
+    queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+  });
+  const opportunities = opportunitiesData?.opportunities ?? [];
 
-  useEffect(() => { fetchData(); }, [fetchData]);
-  useRefreshOnExtraction(fetchData);
-
-  // Periodic refetch while extraction is running (catches bets appearing mid-extraction)
-  const tiersProgress = useTiersProgress();
-  const anyExtracting = tiersProgress?.any_running ?? false;
+  const { data: specialsData } = useQuery({
+    queryKey: ['specials'],
+    queryFn: () => api.getSpecials({}),
+    staleTime: 60_000,
+  });
+  const specials = specialsData?.specials ?? [];
+  // Sync boostFilters from query data
   useEffect(() => {
-    if (!anyExtracting) return;
-    const id = setInterval(fetchData, 60_000);
-    return () => clearInterval(id);
-  }, [anyExtracting, fetchData]);
+    if (specialsData?.filters) {
+      setBoostFilters({ providers: specialsData.filters.providers });
+    }
+  }, [specialsData]);
+
+  const { data: betsData } = useQuery({
+    queryKey: ['bets', 'pending'],
+    queryFn: () => api.getBets('pending', 500),
+    staleTime: 60_000,
+  });
+  const pendingBets = betsData?.bets ?? [];
+
+  // Sync placed-bet keys from DB (merge with in-session keys)
+  useEffect(() => {
+    if (!pendingBets.length) return;
+    const keys = new Set<string>();
+    const bKeys = new Set<string>();
+    for (const b of pendingBets) {
+      if (b.market === 'boost' && b.outcome) {
+        bKeys.add(b.outcome);
+      } else if (b.event_id) {
+        keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
+      }
+    }
+    setPlacedKeys(prev => {
+      const merged = new Set(prev);
+      for (const k of keys) merged.add(k);
+      return merged;
+    });
+    setBoostPlacedKeys(prev => {
+      const merged = new Set(prev);
+      for (const k of bKeys) merged.add(k);
+      return merged;
+    });
+    setMyBetsCount(pendingBets.filter(softBetFilter).length);
+  }, [pendingBets]);
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
@@ -411,7 +408,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       setBetError(err instanceof Error ? err.message : 'Failed to place bet');
       setTimeout(() => setBetError(null), 5000);
@@ -491,7 +488,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedGroup(null);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -510,10 +507,10 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           Soft
         </h2>
         {activeTab === 'value' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="tabValue" />
+          <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
         )}
         {activeTab === 'boosts' && (
-          <SearchInput value={boostSearch} onChange={setBoostSearch} placeholder="Search boost, provider..." accentColor="tabValue" />
+          <SearchInput value={boostSearchInput} onChange={setBoostSearchInput} placeholder="Search boost, provider..." accentColor="tabValue" />
         )}
       </div>
 
