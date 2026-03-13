@@ -15,6 +15,7 @@ from ..db.models import get_session, Event, Odds, Provider
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
 from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS, PROVIDER_CANONICAL
+from .broadcast import odds_broadcaster
 
 logger = logging.getLogger(__name__)
 
@@ -940,6 +941,44 @@ class ExtractionPipeline:
                 f"Analysis complete: {analysis_results['value']['found']} value bets"
             )
 
+            # Broadcast opportunity deltas to SSE clients
+            if odds_broadcaster.client_count > 0 and analysis_results:
+                for opp in analysis_results.get("added_opportunities", []):
+                    odds_broadcaster.publish("opportunity_added", {
+                        "id": opp.id,
+                        "type": opp.type if hasattr(opp, "type") else "value",
+                        "edge_pct": getattr(opp, "edge_pct", None),
+                        "odds1": getattr(opp, "odds1", None),
+                        "fair_odds": getattr(opp, "fair_odds", None),
+                        "stake": getattr(opp, "stake", None),
+                        "event_id": getattr(opp, "event_id", None),
+                        "provider1": getattr(opp, "provider1_id", None),
+                        "outcome1": getattr(opp, "outcome1", None),
+                        "market": getattr(opp, "market", None),
+                    })
+                for opp in analysis_results.get("updated_opportunities", []):
+                    odds_broadcaster.publish("opportunity_update", {
+                        "id": opp.id,
+                        "type": opp.type if hasattr(opp, "type") else "value",
+                        "edge_pct": getattr(opp, "edge_pct", None),
+                        "odds1": getattr(opp, "odds1", None),
+                        "fair_odds": getattr(opp, "fair_odds", None),
+                        "stake": getattr(opp, "stake", None),
+                    })
+                for item in analysis_results.get("removed_opportunities", []):
+                    if isinstance(item, tuple) and len(item) == 2:
+                        opp_id, opp_type = item
+                    else:
+                        opp_id, opp_type = item, "value"
+                    odds_broadcaster.publish("opportunity_removed", {
+                        "id": opp_id,
+                        "type": opp_type,
+                        "reason": "edge_below_threshold",
+                    })
+                odds_broadcaster.publish("tier_complete", {
+                    "changed_events": len(self._changed_event_ids),
+                })
+
             # Count totals
             results["total_events"] = self.session.query(Event).count()
             results["total_odds"] = self.session.query(Odds).count()
@@ -1255,6 +1294,17 @@ class ExtractionPipeline:
                     odds_new, odds_updated = odds_batch.get_stats()
 
                 self._changed_event_ids |= odds_batch.changed_event_ids
+                if odds_broadcaster.client_count > 0:
+                    for record in odds_batch.get_changed_records():
+                        odds_broadcaster.publish("odds_update", {
+                            "event_id": record["event_id"],
+                            "provider": record.get("provider_id", record.get("provider", "")),
+                            "market": record.get("market", ""),
+                            "outcome": record.get("outcome", ""),
+                            "point": record.get("point"),
+                            "odds": record["odds"],
+                            "prev_odds": record.get("prev_odds"),
+                        })
                 db_elapsed = time.time() - db_start
 
             except Exception as e:
@@ -1439,6 +1489,17 @@ class ExtractionPipeline:
                         odds_new, odds_updated = odds_batch.get_stats()
                         market_counts = odds_batch.get_market_counts()
                         self._changed_event_ids |= odds_batch.changed_event_ids
+                        if odds_broadcaster.client_count > 0:
+                            for record in odds_batch.get_changed_records():
+                                odds_broadcaster.publish("odds_update", {
+                                    "event_id": record["event_id"],
+                                    "provider": record.get("provider_id", record.get("provider", "")),
+                                    "market": record.get("market", ""),
+                                    "outcome": record.get("outcome", ""),
+                                    "point": record.get("point"),
+                                    "odds": record["odds"],
+                                    "prev_odds": record.get("prev_odds"),
+                                })
 
                         # Commit to release SQLite locks
                         try:

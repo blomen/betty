@@ -1,10 +1,13 @@
 """Extraction API routes."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
+from sse_starlette.sse import EventSourceResponse
 
+from ...pipeline.broadcast import odds_broadcaster
 from ..state import (
     extraction_state,
     update_extraction_state,
@@ -398,6 +401,31 @@ async def websocket_extraction_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# SSE stream endpoint
+@router.get("/stream")
+async def extraction_stream(request: Request):
+    """SSE endpoint streaming real-time odds and opportunity updates."""
+    client_id, queue = odds_broadcaster.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield {
+                        "event": msg["event"],
+                        "data": json.dumps(msg["data"]),
+                    }
+                except asyncio.TimeoutError:
+                    yield {"event": "heartbeat", "data": ""}
+        except asyncio.CancelledError:
+            pass
+        finally:
+            odds_broadcaster.unsubscribe(client_id)
+
+    return EventSourceResponse(event_generator())
 
 
 # =============================================================================
