@@ -345,3 +345,34 @@ def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
         "swing_high": pivot_highs[-1][1],
         "swing_low": pivot_lows[-1][1],
     }
+
+
+def detect_naked_pocs(
+    prior_sessions: list[dict],
+    bars_since: list[dict],
+) -> list[dict]:
+    """Find POCs from prior sessions that price has never revisited.
+
+    A POC is 'naked' if no bar's low-high range includes that price
+    since the session it was computed from.
+
+    Args:
+        prior_sessions: [{date, poc}, ...] ordered oldest to newest
+        bars_since: All bars from oldest session date to now
+
+    Returns: [{date, price}, ...] for naked POCs only
+    """
+    if not prior_sessions:
+        return []
+
+    naked = []
+    for session in prior_sessions:
+        poc = session["poc"]
+        touched = any(
+            bar["low"] <= poc <= bar["high"]
+            for bar in bars_since
+        )
+        if not touched:
+            naked.append({"date": session["date"], "price": poc})
+
+    return naked
