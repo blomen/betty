@@ -389,6 +389,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
+    refetchInterval: 30_000,
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 

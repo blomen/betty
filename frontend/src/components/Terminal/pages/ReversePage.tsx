@@ -211,6 +211,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const { data: reverseData, isLoading } = useQuery({
     queryKey: ['opportunities', 'reverse'],
     queryFn: () => api.getOpportunities('reverse_value', true, undefined, undefined, undefined, undefined, undefined, 3),
+    refetchInterval: 30_000,
   });
   const opportunities = reverseData?.opportunities ?? [];
 

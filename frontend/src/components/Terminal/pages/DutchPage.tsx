@@ -401,6 +401,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const { data: dutchData, isLoading } = useQuery({
     queryKey: ['opportunities', 'dutch'],
     queryFn: () => api.getOpportunities('dutch', true),
+    refetchInterval: 30_000,
   });
   const opportunities = (dutchData?.opportunities ?? []) as unknown as DutchOpp[];
 
