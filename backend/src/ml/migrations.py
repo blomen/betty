@@ -285,6 +285,72 @@ def _create_pinnacle_coverage_log(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_pinnacle_coverage_provider ON pinnacle_coverage_log(provider_id, sport)")
 
 
+def _create_devig_method_log(conn: sqlite3.Connection) -> None:
+    """Stores all 3 devig method results per bet for M3 training."""
+    if _table_exists(conn, "devig_method_log"):
+        return
+    conn.execute("""
+        CREATE TABLE devig_method_log (
+            id INTEGER PRIMARY KEY,
+            bet_id INTEGER,
+            event_id TEXT NOT NULL,
+            market TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            sport TEXT,
+            league TEXT,
+            num_outcomes INTEGER,
+            pinnacle_overround REAL,
+            favourite_odds REAL,
+            odds_range REAL,
+            fair_odds_multiplicative REAL,
+            fair_odds_additive REAL,
+            fair_odds_power REAL,
+            closing_odds REAL,
+            clv_multiplicative REAL,
+            clv_additive REAL,
+            clv_power REAL,
+            best_method TEXT,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_devig_log_bet ON devig_method_log(bet_id)")
+    conn.execute("CREATE INDEX idx_devig_log_sport ON devig_method_log(sport, market)")
+
+
+def _create_betting_outcome_log(conn: sqlite3.Connection) -> None:
+    """Stores bet outcome data for M8 Kelly training."""
+    if _table_exists(conn, "betting_outcome_log"):
+        return
+    conn.execute("""
+        CREATE TABLE betting_outcome_log (
+            id INTEGER PRIMARY KEY,
+            bet_id INTEGER NOT NULL,
+            provider_id TEXT NOT NULL,
+            edge_pct REAL,
+            odds REAL,
+            stake REAL,
+            kelly_fraction REAL,
+            result TEXT,
+            pnl REAL,
+            clv REAL,
+            model_confidence REAL,
+            provider_historical_clv REAL,
+            provider_win_rate REAL,
+            recent_drawdown_pct REAL,
+            consecutive_wins INTEGER,
+            consecutive_losses INTEGER,
+            daily_pnl REAL,
+            weekly_pnl REAL,
+            account_utilization REAL,
+            is_freebet INTEGER DEFAULT 0,
+            volatility_regime REAL,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX idx_betting_outcome_bet ON betting_outcome_log(bet_id)")
+    conn.execute("CREATE INDEX idx_betting_outcome_provider ON betting_outcome_log(provider_id)")
+
+
 def _create_provider_recommendations(conn: sqlite3.Connection) -> None:
     if _table_exists(conn, "provider_recommendations"):
         return
@@ -327,4 +393,6 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _create_provider_value_log(conn)
     _create_pinnacle_coverage_log(conn)
     _create_provider_recommendations(conn)
+    _create_devig_method_log(conn)
+    _create_betting_outcome_log(conn)
     conn.commit()
