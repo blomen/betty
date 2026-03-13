@@ -415,6 +415,13 @@ class BankrollService:
                 deadline_days=bonus_config.get('deadline_days'),
             )
 
+        # Invalidate planner cache on deposit (triggers re-plan on next request)
+        try:
+            from .planner_service import BankrollPlannerService
+            BankrollPlannerService.invalidate_cache(active_profile.id)
+        except Exception:
+            pass
+
         return {
             "success": True,
             "profile_id": active_profile.id,

@@ -1,6 +1,6 @@
 """Bankroll API routes."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from ...services import BankrollService
@@ -463,3 +463,39 @@ async def backfill_wagering(db: Session = Depends(get_db)):
         )
 
     return {"success": True, "results": results}
+
+
+# ── Bankroll Planner ──
+
+@router.get("/plan")
+async def get_bankroll_plan(db: Session = Depends(get_db)):
+    """Get current planner recommendation (returns cached if fresh)."""
+    from ...services.planner_service import BankrollPlannerService
+
+    profile = ProfileRepo(db).get_active()
+    if not profile:
+        raise HTTPException(status_code=404, detail="No active profile")
+
+    service = BankrollPlannerService(db)
+    recommendation = service.get_latest_recommendation(profile.id)
+    if not recommendation:
+        return {"status": "no_plan", "message": "No plan available. POST /plan/replan to generate."}
+    return recommendation.to_dict()
+
+
+@router.post("/plan/replan")
+async def trigger_replan(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger re-planning in background. Returns immediately."""
+    from ...services.planner_service import BankrollPlannerService
+
+    profile = ProfileRepo(db).get_active()
+    if not profile:
+        raise HTTPException(status_code=404, detail="No active profile")
+
+    service = BankrollPlannerService(db)
+
+    async def _run_planner():
+        await service.run_planner(profile.id)
+
+    background_tasks.add_task(_run_planner)
+    return {"status": "replanning", "message": "Re-plan triggered in background."}

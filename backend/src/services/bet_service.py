@@ -276,6 +276,14 @@ class BetService:
                 bonus.wagered_amount = bet.stake
                 bonus.updated_at = datetime.utcnow()
 
+        # Invalidate planner cache if bonus status changed (triggers re-plan on next request)
+        if bet.profile_id and wagering_status:
+            try:
+                from .planner_service import BankrollPlannerService
+                BankrollPlannerService.invalidate_cache(bet.profile_id)
+            except Exception:
+                pass  # Non-critical — planner cache will expire naturally
+
         return {
             "success": True,
             "profit": bet.profit,

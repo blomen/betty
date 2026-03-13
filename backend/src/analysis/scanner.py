@@ -281,6 +281,9 @@ class OpportunityScanner:
         # Sort by edge (highest first), then by stake
         enriched_bets.sort(key=lambda x: (x.edge_pct, x.recommended_stake or 0), reverse=True)
 
+        # Apply routing priority from bankroll planner (if available)
+        enriched_bets = self._apply_routing_priority(enriched_bets)
+
         # Count actionable bets
         actionable = sum(1 for b in enriched_bets if b.recommended_stake and b.recommended_stake > 0)
         logger.info(
@@ -288,6 +291,37 @@ class OpportunityScanner:
         )
 
         return enriched_bets
+
+    def _apply_routing_priority(self, bets: list[ValueBet]) -> list[ValueBet]:
+        """
+        Re-rank value bets using bankroll planner routing priority.
+
+        When multiple bets have similar edges, prefer providers that need
+        wagering progress. Uses a tiny continuous penalty so routing priority
+        only acts as a tiebreaker — never overrides meaningful edge differences.
+        """
+        try:
+            from ..services.planner_service import BankrollPlannerService
+            from ..repositories import ProfileRepo
+
+            profile = ProfileRepo(self.session).get_active()
+            if not profile:
+                return bets
+
+            service = BankrollPlannerService(self.session)
+            recommendation = service.get_latest_recommendation(profile.id)
+            if not recommendation or not recommendation.routing_priority:
+                return bets
+
+            priority_map = {p: i for i, p in enumerate(recommendation.routing_priority)}
+
+            def sort_key(vb: ValueBet) -> float:
+                provider_rank = priority_map.get(vb.provider, 999)
+                return -vb.edge_pct + provider_rank * 0.001
+
+            return sorted(bets, key=sort_key)
+        except Exception:
+            return bets
 
     def _assess_confidence(self, vb: ValueBet, threshold: int = 90) -> bool:
         """
