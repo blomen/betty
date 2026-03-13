@@ -698,3 +698,71 @@ async def get_extraction_freshness():
         }
     finally:
         session.close()
+
+
+# =============================================================================
+# Analytics + Recommendations Endpoints
+# =============================================================================
+
+@router.get("/analytics")
+async def get_extraction_analytics():
+    """Get extraction analytics: provider ROI, coverage gaps, scheduling efficiency."""
+    from src.ml.analytics.engine import compute_provider_roi, compute_coverage_gaps, compute_scheduling_efficiency
+
+    session = get_session()
+    try:
+        return {
+            "provider_roi": compute_provider_roi(session),
+            "coverage_gaps": compute_coverage_gaps(session),
+            "scheduling": compute_scheduling_efficiency(session),
+        }
+    finally:
+        session.close()
+
+
+@router.get("/recommendations")
+async def get_extraction_recommendations():
+    """Get active extraction recommendations."""
+    from src.ml.analytics.recommendations import RecommendationManager
+
+    session = get_session()
+    try:
+        mgr = RecommendationManager(session)
+        active = mgr.get_active()
+        return [
+            {
+                "id": r.id,
+                "provider_id": r.provider_id,
+                "category": r.category,
+                "severity": r.severity,
+                "message": r.message,
+                "status": r.status,
+                "before_metric": r.before_metric,
+                "after_metric": r.after_metric,
+                "source": r.source,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in active
+        ]
+    finally:
+        session.close()
+
+
+@router.patch("/recommendations/{rec_id}")
+async def update_recommendation(rec_id: int, status: str, after_metric: float = None):
+    """Update recommendation status (acted_on, resolved, wont_fix)."""
+    from src.ml.analytics.recommendations import RecommendationManager
+
+    if status not in ("acted_on", "resolved", "wont_fix"):
+        raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    session = get_session()
+    try:
+        mgr = RecommendationManager(session)
+        rec = mgr.update_status(rec_id, status, after_metric=after_metric)
+        session.commit()
+        if not rec:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        return {"id": rec.id, "status": rec.status}
+    finally:
+        session.close()
