@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, Fragment } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
@@ -60,13 +61,13 @@ const MAX_ROWS = 50;
 
 export function DutchPage({ providers = [] }: DutchPageProps) {
   const freshness = useExtractionFreshness();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
-  const [opportunities, setOpportunities] = useState<DutchOpp[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDeferredValue(searchInput);
   const [scanResults, setScanResults] = useState<DutchOpp[] | null>(null);
   const [isScanning, setIsScanning] = useState(false);
 
@@ -86,35 +87,23 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
+  const { data: dutchData, isLoading } = useQuery({
+    queryKey: ['opportunities', 'dutch'],
+    queryFn: () => api.getOpportunities('dutch', true),
+  });
+  const opportunities = (dutchData?.opportunities ?? []) as unknown as DutchOpp[];
+
+  const { data: betsData } = useQuery({
+    queryKey: ['bets', 'pending'],
+    queryFn: () => api.getBets('pending', 500),
+    staleTime: 60_000,
+  });
+
+  // Sync myBetsCount from bets query data
   useEffect(() => {
-    api.getBets('pending', 500).then(({ bets }) => {
-      setMyBetsCount(bets.filter(dutchBetFilter).length);
-    }).catch(() => {});
-  }, []);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const dutchRes = await api.getOpportunities('dutch', true);
-      const all = dutchRes.opportunities as unknown as DutchOpp[];
-      setOpportunities(all);
-    } catch (err) {
-      console.error('Failed to fetch dutch opportunities:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-  useRefreshOnExtraction(fetchData);
-
-  const tiersProgress = useTiersProgress();
-  const anyExtracting = tiersProgress?.any_running ?? false;
-  useEffect(() => {
-    if (!anyExtracting) return;
-    const id = setInterval(fetchData, 60_000);
-    return () => clearInterval(id);
-  }, [anyExtracting, fetchData]);
+    if (!betsData?.bets) return;
+    setMyBetsCount(betsData.bets.filter(dutchBetFilter).length);
+  }, [betsData]);
 
   const availableProviders = useMemo(() => {
     const set = new Set<string>();
@@ -298,7 +287,8 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point, true);
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${odds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bet';
       setBetError(msg);
@@ -366,7 +356,8 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       }
 
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 8000);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bets';
       setBetError(msg);
@@ -385,7 +376,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
           Dutch
         </h2>
         {activeTab === 'dutch' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, provider..." accentColor="success" />
+          <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="success" />
         )}
       </div>
 

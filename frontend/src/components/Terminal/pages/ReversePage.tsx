@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, Fragment } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
-import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
@@ -18,9 +19,8 @@ const reverseProviderFilter = (p: Provider) => p.id === 'pinnacle';
 
 export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const freshness = useExtractionFreshness();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
-  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
@@ -42,45 +42,38 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   // Track placed market+outcome+point combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDeferredValue(searchInput);
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
-  // Load placed bets from DB on mount to filter out already-bet market+outcome+point combos
+  const { data: reverseData, isLoading } = useQuery({
+    queryKey: ['opportunities', 'reverse'],
+    queryFn: () => api.getOpportunities('reverse_value', true, undefined, undefined, undefined, undefined, undefined, 3),
+  });
+  const opportunities = reverseData?.opportunities ?? [];
+
+  const { data: betsData } = useQuery({
+    queryKey: ['bets', 'pending'],
+    queryFn: () => api.getBets('pending', 500),
+    staleTime: 60_000,
+  });
+
+  // Sync placedKeys and myBetsCount from bets query data
   useEffect(() => {
-    api.getBets('pending', 500).then(({ bets }) => {
-      const keys = new Set<string>();
-      for (const b of bets) {
-        if (b.event_id && b.provider === 'pinnacle') {
-          keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
-        }
+    if (!betsData?.bets) return;
+    const keys = new Set<string>();
+    for (const b of betsData.bets) {
+      if (b.event_id && b.provider === 'pinnacle') {
+        keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
       }
-      if (keys.size > 0) setPlacedKeys(keys);
-      setMyBetsCount(bets.filter(reverseBetFilter).length);
-    }).catch(() => {});
-  }, []);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const res = await api.getOpportunities('reverse_value', true, undefined, undefined, undefined, undefined, undefined, 3);
-      setOpportunities(res.opportunities);
-    } catch (err) {
-      console.error('Failed to fetch reverse value bets:', err);
-    } finally {
-      setIsLoading(false);
     }
-  }, []);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-  useRefreshOnExtraction(fetchData);
-
-  const tiersProgress = useTiersProgress();
-  const anyExtracting = tiersProgress?.any_running ?? false;
-  useEffect(() => {
-    if (!anyExtracting) return;
-    const id = setInterval(fetchData, 60_000);
-    return () => clearInterval(id);
-  }, [anyExtracting, fetchData]);
+    if (keys.size > 0) setPlacedKeys(prev => {
+      const merged = new Set(prev);
+      for (const k of keys) merged.add(k);
+      return merged;
+    });
+    setMyBetsCount(betsData.bets.filter(reverseBetFilter).length);
+  }, [betsData]);
 
   const availableLeagues = useMemo(() => {
     const set = new Set<string>();
@@ -181,7 +174,8 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
       setPendingBet(null);
       setSelectedRow(null);
-      fetchData();
+      queryClient.invalidateQueries({ queryKey: ['opportunities', 'reverse'] });
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -200,7 +194,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
           Reverse
         </h2>
         {activeTab === 'reverse' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabReverse" />
+          <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, sport..." accentColor="tabReverse" />
         )}
       </div>
 

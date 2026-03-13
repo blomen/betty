@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
-import { useRefreshOnExtraction, useExtractionFreshness, useTiersProgress } from '@/hooks/useExtractionStatus';
+import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
@@ -40,11 +41,8 @@ const polyProviderFilter = (p: Provider) => p.id === 'polymarket';
 
 export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const freshness = useExtractionFreshness();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
-
-  // Value bets state
-  const [valueBets, setValueBets] = useState<PolymarketValueBet[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
 
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -66,63 +64,62 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   // Track placed market+outcome combos for immediate removal from list
   const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDeferredValue(searchInput);
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
   // Rewards state
-  const [rewards, setRewards] = useState<PolymarketRewardMarket[]>([]);
-  const [rewardsLoading, setRewardsLoading] = useState(false);
-  const [rewardsFetched, setRewardsFetched] = useState(false);
-  const [rewardsSearch, setRewardsSearch] = useState('');
+  const [rewardsSearchInput, setRewardsSearchInput] = useState('');
+  const rewardsSearch = useDeferredValue(rewardsSearchInput);
   const [selectedRewardSports, setSelectedRewardSports] = useState<Set<string>>(new Set());
+
+  // ──────────────────── Auto-settle on mount ────────────────────
+  const autoSettleRan = useRef(false);
+  useEffect(() => {
+    if (autoSettleRan.current) return;
+    autoSettleRan.current = true;
+    api.autoSettleBets().then(res => {
+      if (res.settled > 0) console.info(`[Poly] Auto-settled ${res.settled} bets`);
+    }).catch(() => {});
+  }, []);
 
   // ──────────────────── Value Bets ────────────────────
 
-  const fetchValueData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      // Auto-settle finished Polymarket bets first, then fetch fresh data
-      try {
-        const settleRes = await api.autoSettleBets();
-        if (settleRes.settled > 0) console.info(`[Poly] Auto-settled ${settleRes.settled} bets`);
-      } catch { /* non-critical — continue loading */ }
+  const { data: polyData, isLoading } = useQuery({
+    queryKey: ['opportunities', 'polymarket'],
+    queryFn: () => api.getPolymarketValue(3, undefined, 50),
+  });
+  const valueBets = polyData?.value_bets ?? [];
 
-      const [valueRes, betsRes] = await Promise.all([
-        api.getPolymarketValue(3, undefined, 50),
-        api.getBets('pending', 500).catch(() => ({ bets: [] as Bet[] })),
-      ]);
-      // Build placed-bet keys before setting value bets (no race condition)
-      const keys = new Set<string>();
-      for (const b of betsRes.bets) {
-        if (b.event_id && b.provider === 'polymarket') {
-          keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
-        }
-      }
-      setPlacedKeys(prev => {
-        const merged = new Set(prev);
-        for (const k of keys) merged.add(k);
-        return merged;
-      });
-      // Count only bets needing manual settlement (auto-settle handles the rest)
-      setMyBetsCount(countManualSettleBets(betsRes.bets));
-      setValueBets(valueRes.value_bets);
-    } catch (err) {
-      console.error('Failed to fetch Polymarket data:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const { data: betsData } = useQuery({
+    queryKey: ['bets', 'pending'],
+    queryFn: () => api.getBets('pending', 500),
+    staleTime: 60_000,
+  });
 
-  useEffect(() => { fetchValueData(); }, [fetchValueData]);
-  useRefreshOnExtraction(fetchValueData);
-
-  const tiersProgress = useTiersProgress();
-  const anyExtracting = tiersProgress?.any_running ?? false;
+  // Sync placedKeys and myBetsCount from bets query data
   useEffect(() => {
-    if (!anyExtracting) return;
-    const id = setInterval(fetchValueData, 60_000);
-    return () => clearInterval(id);
-  }, [anyExtracting, fetchValueData]);
+    if (!betsData?.bets) return;
+    const keys = new Set<string>();
+    for (const b of betsData.bets) {
+      if (b.event_id && b.provider === 'polymarket') {
+        keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
+      }
+    }
+    setPlacedKeys(prev => {
+      const merged = new Set(prev);
+      for (const k of keys) merged.add(k);
+      return merged;
+    });
+    setMyBetsCount(countManualSettleBets(betsData.bets));
+  }, [betsData]);
+
+  const { data: rewardsData, isLoading: rewardsLoading } = useQuery({
+    queryKey: ['polymarket-rewards'],
+    queryFn: () => api.getPolymarketRewards(0, undefined, 100),
+    enabled: activeTab === 'rewards',
+  });
+  const rewards = rewardsData?.rewards ?? [];
 
   const handleSelectOpp = (idx: number) => {
     setSelectedOpp(selectedOpp === idx ? null : idx);
@@ -200,7 +197,8 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedOpp(null);
-      fetchValueData();
+      queryClient.invalidateQueries({ queryKey: ['opportunities', 'polymarket'] });
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -281,25 +279,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
   // ──────────────────── Rewards ────────────────────
 
-  const fetchRewards = useCallback(async () => {
-    setRewardsLoading(true);
-    try {
-      const res = await api.getPolymarketRewards(0, undefined, 100);
-      setRewards(res.rewards);
-      setRewardsFetched(true);
-    } catch (err) {
-      console.error('Failed to fetch rewards:', err);
-    } finally {
-      setRewardsLoading(false);
-    }
-  }, []);
-
-  // Lazy-load rewards on first tab click
-  useEffect(() => {
-    if (activeTab === 'rewards' && !rewardsFetched) {
-      fetchRewards();
-    }
-  }, [activeTab, rewardsFetched, fetchRewards]);
+  const refetchRewards = () => queryClient.invalidateQueries({ queryKey: ['polymarket-rewards'] });
 
   const availableRewardSports = useMemo(() => {
     const set = new Set<string>();
@@ -370,10 +350,10 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
           Polymarket
         </h2>
         {activeTab === 'value' && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search event, sport..." accentColor="tabPolymarket" />
+          <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, sport..." accentColor="tabPolymarket" />
         )}
         {activeTab === 'rewards' && (
-          <SearchInput value={rewardsSearch} onChange={setRewardsSearch} placeholder="Search rewards..." accentColor="tabPolymarket" />
+          <SearchInput value={rewardsSearchInput} onChange={setRewardsSearchInput} placeholder="Search rewards..." accentColor="tabPolymarket" />
         )}
       </div>
 
@@ -381,7 +361,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as PolyTab, label: 'Value Bets', count: sortedBets.length },
-          { id: 'rewards' as PolyTab, label: 'Rewards', count: rewardsFetched ? sortedRewards.length : null },
+          { id: 'rewards' as PolyTab, label: 'Rewards', count: rewardsData ? sortedRewards.length : null },
           { id: 'mybets' as PolyTab, label: 'My Bets', count: myBetsCount },
           { id: 'manual' as PolyTab, label: 'Manual', count: null },
         ]).map(tab => (
@@ -424,7 +404,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
             />
           )}
           <button
-            onClick={fetchRewards}
+            onClick={refetchRewards}
             disabled={rewardsLoading}
             className="px-2 py-1 text-xs text-muted hover:text-text border border-border hover:border-tabPolymarket/50 transition-colors disabled:opacity-50"
           >
