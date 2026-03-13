@@ -787,6 +787,35 @@ async def trigger_ml_training():
         session.close()
 
 
+@router.get("/optimizer/status")
+async def get_optimizer_status():
+    """Return latest M10 optimizer analysis results."""
+    from src.ml.optimizer.schedule import ScheduleOptimizer
+    from src.ml.optimizer.provider_priority import ProviderPriorityScorer
+    from src.ml.optimizer.timeout import TimeoutTuner
+    from src.ml.optimizer.coverage import CoverageOptimizer
+
+    session = get_session()
+    try:
+        results = {}
+        for name, cls in [
+            ("schedule", ScheduleOptimizer),
+            ("provider_priority", ProviderPriorityScorer),
+            ("timeout", TimeoutTuner),
+            ("coverage", CoverageOptimizer),
+        ]:
+            try:
+                result = cls().check_and_train(session) or {"status": "insufficient_data"}
+                # Remove non-serializable model objects
+                result.pop("model", None)
+                results[name] = result
+            except Exception as e:
+                results[name] = {"status": "error", "error": str(e)}
+        return results
+    finally:
+        session.close()
+
+
 @router.patch("/recommendations/{rec_id}")
 async def update_recommendation(rec_id: int, status: str, after_metric: float = None):
     """Update recommendation status (acted_on, resolved, wont_fix)."""

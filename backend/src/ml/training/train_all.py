@@ -49,6 +49,23 @@ MODEL_CONFIGS = {
         "min_samples": 50, "domain": "trading",
         "source_type": "news_event", "task": "regression",
     },
+    # M10 optimizer sub-models (use check_and_train directly, not get_training_data)
+    "schedule_optimizer": {
+        "min_samples": 50, "domain": "extraction",
+        "source_type": "extraction_run", "task": "regression",
+    },
+    "provider_priority": {
+        "min_samples": 100, "domain": "extraction",
+        "source_type": "provider_value", "task": "ranking",
+    },
+    "timeout_tuner": {
+        "min_samples": 50, "domain": "extraction",
+        "source_type": "provider_metrics", "task": "statistical",
+    },
+    "coverage_optimizer": {
+        "min_samples": 20, "domain": "extraction",
+        "source_type": "pinnacle_coverage", "task": "analysis",
+    },
 }
 
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
@@ -133,6 +150,10 @@ def _get_trainer(model_name: str):
         "temporal_pattern": lambda data, s: _train_temporal_pattern(data, s),
         "gate_classifier": lambda data, s: _train_gate_classifier(data, s),
         "macro_engine": lambda data, s: _train_macro_engine(data, s),
+        "schedule_optimizer": lambda data, s: _train_schedule_optimizer(data, s),
+        "provider_priority": lambda data, s: _train_provider_priority(data, s),
+        "timeout_tuner": lambda data, s: _train_timeout_tuner(data, s),
+        "coverage_optimizer": lambda data, s: _train_coverage_optimizer(data, s),
     }
     return trainers.get(model_name)
 
@@ -180,3 +201,23 @@ def _train_gate_classifier(data, session):
 def _train_macro_engine(data, session):
     from src.ml.models.macro_engine import MacroEngineModel
     return MacroEngineModel().train(data)
+
+
+def _train_schedule_optimizer(data, session):
+    from src.ml.optimizer.schedule import ScheduleOptimizer
+    return ScheduleOptimizer().check_and_train(session)
+
+
+def _train_provider_priority(data, session):
+    from src.ml.optimizer.provider_priority import ProviderPriorityScorer
+    return ProviderPriorityScorer().check_and_train(session)
+
+
+def _train_timeout_tuner(data, session):
+    from src.ml.optimizer.timeout import TimeoutTuner
+    return TimeoutTuner().check_and_train(session)
+
+
+def _train_coverage_optimizer(data, session):
+    from src.ml.optimizer.coverage import CoverageOptimizer
+    return CoverageOptimizer().check_and_train(session)
