@@ -220,6 +220,152 @@ class MarketService:
 
         return session_data
 
+    async def build_expanded_session(self, symbol: str = "NQ") -> dict | None:
+        """Build the expanded session response with all analytical layers."""
+        from ..market_data.levels import detect_swing_points, detect_naked_pocs, compute_developing_poc
+
+        config = get_market_data_config()
+        symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
+        today = date.today().isoformat()
+
+        session_row = self.repo.get_session(today, symbol)
+        if not session_row or not session_row.session_json:
+            return None
+
+        sj = session_row.session_json
+        if isinstance(sj, str):
+            sj = json.loads(sj)
+
+        # Get bars for analysis — not stored in session_json, fetch from cache
+        bars = await self._fetch_bars_for_date(symbol, today)
+
+        # 1. Swing points
+        bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
+        structure = detect_swing_points(bar_dicts, lookback=5)
+
+        # 2. Multi-TF volume profiles
+        profiles = {
+            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
+        }
+
+        # Weekly composite
+        weekly_bars = await self._fetch_weekly_bars(symbol)
+        if weekly_bars:
+            from ..market_data.levels import compute_volume_profile as compute_vp_levels
+            wb_trades = [{"price": b.get("close", 0), "size": b.get("volume", 1)} for b in weekly_bars]
+            weekly_vp = compute_vp_levels(wb_trades)
+            profiles["weekly"] = {"poc": weekly_vp.poc, "vah": weekly_vp.vah, "val": weekly_vp.val}
+
+        # Leg and Macro profiles from context anchor dates
+        ctx = self.repo.get_context(symbol)
+        if ctx and ctx.vp_leg_start:
+            from datetime import timezone as tz
+            leg_start = datetime.fromtimestamp(ctx.vp_leg_start, tz=tz.utc).strftime("%Y-%m-%d")
+            leg_bars = await self._fetch_bars_range(symbol, leg_start)
+            if leg_bars:
+                from ..market_data.levels import compute_volume_profile as compute_vp_levels
+                lb_trades = [{"price": b.get("close", 0), "size": b.get("volume", 1)} for b in leg_bars]
+                leg_vp = compute_vp_levels(lb_trades)
+                profiles["leg"] = {"poc": leg_vp.poc, "vah": leg_vp.vah, "val": leg_vp.val, "anchor": leg_start}
+
+        if ctx and ctx.vp_ongoing_macro_start:
+            from datetime import timezone as tz
+            macro_start = datetime.fromtimestamp(ctx.vp_ongoing_macro_start, tz=tz.utc).strftime("%Y-%m-%d")
+            macro_bars = await self._fetch_bars_range(symbol, macro_start, daily=True)
+            if macro_bars:
+                from ..market_data.levels import compute_volume_profile as compute_vp_levels
+                mb_trades = [{"price": b.get("close", 0), "size": b.get("volume", 1)} for b in macro_bars]
+                macro_vp = compute_vp_levels(mb_trades)
+                profiles["macro"] = {"poc": macro_vp.poc, "vah": macro_vp.vah, "val": macro_vp.val, "anchor": macro_start}
+
+        # 3. Developing POC
+        bar_dicts_with_vol = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0), "volume": b.get("volume", 1)} for b in bars] if bars else []
+        dev_poc = compute_developing_poc(bar_dicts_with_vol)
+        profiles["developing_poc"] = dev_poc["developing_poc"]
+        profiles["developing_poc_direction"] = dev_poc["direction"]
+
+        # 4. Naked POCs
+        prior_sessions = self.repo.list_sessions(symbol, limit=20)
+        prior_pocs = [{"date": s.date, "poc": s.poc} for s in prior_sessions if s.poc and s.date != today]
+        if prior_pocs:
+            oldest_date = prior_pocs[0]["date"] if prior_pocs else today
+            all_bars = await self._fetch_bars_range(symbol, oldest_date)
+            all_bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0)} for b in (all_bars or [])]
+            profiles["naked_pocs"] = detect_naked_pocs(prior_pocs, all_bar_dicts)
+        else:
+            profiles["naked_pocs"] = []
+
+        # 5. COT data
+        cot_data = self._get_cot_summary()
+
+        # 6. Levels from DB
+        levels = self.repo.get_levels(symbol, today)
+        levels_list = [
+            {
+                "type": lv.level_type,
+                "price_low": lv.price_low,
+                "price_high": lv.price_high,
+                "direction": lv.direction,
+                "session": lv.session,
+                "is_filled": lv.is_filled,
+            }
+            for lv in levels
+        ]
+
+        # Build macro dict with COT merged
+        macro = sj.get("macro", {}) or {}
+        if cot_data:
+            macro["cot_net_position"] = cot_data.get("net_non_commercial")
+            macro["cot_change_1w"] = cot_data.get("change_1w")
+
+        # Compute VWAP deviation SD
+        vwap_dev_sd = None
+        vwap = sj.get("vwap")
+        last_price = sj.get("last_price")
+        vwap_1sd_upper = sj.get("vwap_1sd_upper")
+        if vwap and last_price and vwap_1sd_upper:
+            sd_width = vwap_1sd_upper - vwap
+            if sd_width > 0:
+                vwap_dev_sd = round((last_price - vwap) / sd_width, 2)
+
+        # Assemble nested response
+        return {
+            "session": {
+                **{k: sj.get(k) for k in [
+                    "poc", "vah", "val", "vwap",
+                    "vwap_1sd_upper", "vwap_1sd_lower",
+                    "vwap_2sd_upper", "vwap_2sd_lower",
+                    "vwap_3sd_upper", "vwap_3sd_lower",
+                    "ib_high", "ib_low", "ib_range",
+                    "market_type", "opening_type",
+                    "poor_high", "poor_low", "single_prints",
+                    "value_migration", "overnight_high", "overnight_low",
+                    "total_delta", "delta_divergence",
+                    "last_price", "price_vs_va", "price_vs_vwap", "price_vs_ib",
+                    "distribution_type",
+                ]},
+                "rotation_factor": session_row.rotation_factor,
+                "aspr": session_row.aspr,
+                "aspr_percentile": session_row.aspr_percentile,
+                "tpo_poc": sj.get("tpo_poc"),
+                "tpo_vah": sj.get("tpo_vah"),
+                "tpo_val": sj.get("tpo_val"),
+            },
+            "macro": macro,
+            "structure": structure,
+            "profiles": profiles,
+            "levels": levels_list,
+            "price_position": {
+                "last_price": sj.get("last_price"),
+                "vs_va": sj.get("price_vs_va"),
+                "vs_vwap": sj.get("price_vs_vwap"),
+                "vs_ib": sj.get("price_vs_ib"),
+                "vwap_deviation_sd": vwap_dev_sd,
+            },
+            "ml_day_type": None,
+            "ml_day_type_confidence": None,
+        }
+
     async def run_scan(self, threshold: float | None = None) -> list[dict]:
         """Run scanner on current session → persist signals → return."""
         config = get_market_data_config()
@@ -372,13 +518,23 @@ class MarketService:
         # Build candle flow
         candles = build_candle_flow(tick_dicts, period_seconds=60)
 
-        # Get context gates
-        ctx_model = self.repo.get_context(symbol)
-        direction = "long"
-        if ctx_model and ctx_model.macro_bias == "bear":
-            direction = "short"
-        elif ctx_model and ctx_model.macro_bias == "bull":
+        # Auto-detect direction from price action structure
+        from ..market_data.levels import detect_swing_points
+        bars_for_structure = sj.get("bars", [])
+        if bars_for_structure:
+            bar_dicts_for_struct = [{"high": b.get("high", 0) if isinstance(b, dict) else 0, "low": b.get("low", 0) if isinstance(b, dict) else 0, "close": b.get("close", 0) if isinstance(b, dict) else 0} for b in bars_for_structure]
+        else:
+            bar_dicts_for_struct = []
+        structure_result = detect_swing_points(bar_dicts_for_struct, lookback=5)
+        struct_class = structure_result.get("structure", "ranging")
+        if struct_class == "uptrend":
             direction = "long"
+        elif struct_class == "downtrend":
+            direction = "short"
+        else:
+            direction = "long"  # Default to long when ranging
+
+        ctx_model = self.repo.get_context(symbol)
 
         orderflow = compute_signals(candles, direction)
 
@@ -423,8 +579,8 @@ class MarketService:
             tpo=tpo,
             orderflow=orderflow,
             last_price=tick_dicts[-1]["price"] if tick_dicts else 0,
-            macro_bias=ctx_model.macro_bias if ctx_model else None,
-            structure=ctx_model.structure if ctx_model else None,
+            macro_bias=None,  # No longer using manual macro_bias
+            structure=struct_class,  # Auto-detected from swing points
             day_type=ctx_model.day_type if ctx_model else None,
         )
 
@@ -435,10 +591,7 @@ class MarketService:
         scored = []
         for c in raw_candidates:
             fits = day_type_fits_setup(detector_ctx.day_type, c.setup_type)
-            macro_ok = (
-                (c.direction == "long" and detector_ctx.macro_bias != "bear") or
-                (c.direction == "short" and detector_ctx.macro_bias != "bull")
-            )
+            macro_ok = True  # No longer gating on manual macro bias
             final_score = score_candidate(
                 c, orderflow, fits, macro_ok,
                 session_row.rotation_factor, session_row.aspr_percentile,
@@ -595,6 +748,58 @@ class MarketService:
             "orderflow": {"checked": of_checked, "delta": total_delta, "divergence": divergence},
         }
 
+    async def get_indicators(self, symbol: str | None = None) -> dict:
+        """Return live indicator data (orderflow + ML predictions). No gate logic."""
+        config = get_market_data_config()
+        symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
+
+        session_row = self.repo.get_session(date.today().isoformat(), symbol)
+        sj = {}
+        if session_row and session_row.session_json:
+            sj = session_row.session_json if isinstance(session_row.session_json, dict) else json.loads(session_row.session_json)
+
+        # Bars not in session_json — fetch from cache
+        bars = await self._fetch_bars_for_date(symbol, date.today().isoformat())
+        bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
+
+        # Direction from structure, not manual gates
+        from ..market_data.levels import detect_swing_points
+        structure = detect_swing_points(bar_dicts, lookback=5)
+        struct_class = structure.get("structure", "ranging")
+        if struct_class == "uptrend":
+            direction = "long"
+        elif struct_class == "downtrend":
+            direction = "short"
+        else:
+            direction = None
+
+        # Compute orderflow
+        of_signals = self._compute_live_orderflow(symbol, sj, direction=direction)
+
+        # M7 day type prediction
+        ml_day_type = None
+        ml_day_type_confidence = None
+        try:
+            from ..ml.serving.predictor import get_predictor
+            from ..ml.models.gate_classifier import DAY_TYPE_LABELS
+            predictor = get_predictor()
+            if predictor.is_loaded("gate_classifier"):
+                gate_features = self._build_gate_features(sj, session_row)
+                if gate_features:
+                    pred = predictor.predict("gate_classifier", gate_features)
+                    if pred and "class" in pred:
+                        ml_day_type = DAY_TYPE_LABELS.get(pred["class"], "unknown")
+                        probs = pred.get("probabilities", [])
+                        ml_day_type_confidence = round(max(probs) * 100, 1) if probs else None
+        except Exception as e:
+            logger.debug("M7 prediction skipped: %s", e)
+
+        return {
+            "orderflow": of_signals.__dict__ if of_signals else {},
+            "ml_day_type": ml_day_type,
+            "ml_day_type_confidence": ml_day_type_confidence,
+        }
+
     def get_session_history(self, symbol: str | None = None, limit: int = 30) -> list[dict]:
         """Get historical session data."""
         config = get_market_data_config()
@@ -682,3 +887,131 @@ class MarketService:
         _add("vwap", session_data.get("vwap"), None, "rth")
 
         return rows
+
+    async def _fetch_bars_for_date(self, symbol: str, date_str: str | None) -> list[dict]:
+        """Fetch 1-min bars for a specific date from cache/Databento."""
+        if not date_str:
+            return []
+        try:
+            provider = _get_provider()
+            config = get_market_data_config()
+            full_symbol = config.get("symbol", "NQ.FUT")
+            sessions_cfg = config.get("sessions", {})
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            globex_start = datetime.combine(
+                dt - timedelta(days=1),
+                datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
+            )
+            rth_close = datetime.combine(
+                dt,
+                datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
+            )
+            bars = await provider.get_bars(full_symbol, "1m", globex_start, rth_close)
+            if not bars:
+                return []
+            return [{"high": b.high, "low": b.low, "close": b.close, "open": b.open, "volume": b.volume, "timestamp": b.timestamp} for b in bars]
+        except Exception as e:
+            logger.warning("Failed to fetch bars for %s %s: %s", symbol, date_str, e)
+            return []
+
+    async def _fetch_weekly_bars(self, symbol: str) -> list[dict]:
+        """Fetch 1-min bars for current week (Monday to today)."""
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        try:
+            provider = _get_provider()
+            config = get_market_data_config()
+            full_symbol = config.get("symbol", "NQ.FUT")
+            sessions_cfg = config.get("sessions", {})
+            bars_all = []
+            current = monday
+            while current <= today:
+                dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+                dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
+                day_bars = await provider.get_bars(full_symbol, "1m", dt, dt_close)
+                if day_bars:
+                    bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
+                current += timedelta(days=1)
+            return bars_all
+        except Exception as e:
+            logger.warning("Failed to fetch weekly bars: %s", e)
+            return []
+
+    async def _fetch_bars_range(self, symbol: str, start_date: str, daily: bool = False) -> list[dict]:
+        """Fetch bars from start_date to today. Use daily=True for long ranges."""
+        today_str = date.today().isoformat()
+        try:
+            provider = _get_provider()
+            config = get_market_data_config()
+            full_symbol = config.get("symbol", "NQ.FUT")
+            interval = "1d" if daily else "1m"
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(today_str, "%Y-%m-%d")
+            bars = await provider.get_bars(full_symbol, interval, start_dt, end_dt)
+            if not bars:
+                return []
+            return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
+        except Exception as e:
+            logger.warning("Failed to fetch bars range %s to %s: %s", start_date, today_str, e)
+            return []
+
+    def _get_cot_summary(self) -> dict | None:
+        """Get latest COT data from DB."""
+        try:
+            from sqlalchemy import text
+            rows = self.db.execute(
+                text("SELECT * FROM cot_reports ORDER BY report_date DESC LIMIT 2")
+            ).fetchall()
+            if not rows:
+                return None
+            latest = dict(rows[0]._mapping)
+            change_1w = None
+            if len(rows) > 1:
+                prev = dict(rows[1]._mapping)
+                change_1w = (latest.get("net_non_commercial", 0) or 0) - (prev.get("net_non_commercial", 0) or 0)
+            return {
+                "net_non_commercial": latest.get("net_non_commercial"),
+                "change_1w": change_1w,
+            }
+        except Exception:
+            return None
+
+    def _compute_live_orderflow(self, symbol: str, session_data: dict, direction: str | None = None):
+        """Compute live orderflow signals. Returns OrderflowSignals or None."""
+        try:
+            from ..market_data.orderflow import build_candle_flow, compute_signals
+            config = get_market_data_config()
+            sessions_cfg = config.get("sessions", {})
+            today = date.today()
+            dt = datetime.combine(today, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+            session_start = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            recent_ticks = self.repo.get_trades(symbol, start=session_start, end=now)
+            if not recent_ticks:
+                return None
+            tick_dicts = [{"ts": t.ts, "price": t.price, "size": t.size, "side": t.side} for t in recent_ticks]
+            candles = build_candle_flow(tick_dicts, period_seconds=60)
+            return compute_signals(candles, direction or "long")
+        except Exception as e:
+            logger.debug("Live orderflow failed: %s", e)
+            return None
+
+    def _build_gate_features(self, session_data: dict, session_row) -> dict | None:
+        """Build feature dict for ML gate classifier from session data."""
+        try:
+            if not session_data:
+                return None
+            return {
+                "vix": (session_data.get("macro") or {}).get("vix"),
+                "regime_score": (session_data.get("macro") or {}).get("regime_score"),
+                "market_type": session_data.get("market_type"),
+                "opening_type": session_data.get("opening_type"),
+                "total_delta": session_data.get("total_delta"),
+                "delta_divergence": session_data.get("delta_divergence"),
+                "rotation_factor": getattr(session_row, "rotation_factor", None),
+                "aspr_percentile": getattr(session_row, "aspr_percentile", None),
+                "price_vs_va": session_data.get("price_vs_va"),
+                "price_vs_vwap": session_data.get("price_vs_vwap"),
+            }
+        except Exception:
+            return None

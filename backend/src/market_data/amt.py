@@ -85,6 +85,10 @@ class MacroSnapshot:
     regime: str = "unknown"  # "risk_on", "risk_off", "mixed"
     regime_score: float = 0.0  # -1.0 (max risk-off) to +1.0 (max risk-on)
     fetched_at: str | None = None
+    # Phase 2 fields — None until external data sources added
+    gex: float | None = None
+    put_call_ratio: float | None = None
+    es_nq_ratio_change: float | None = None
 
 
 @dataclass

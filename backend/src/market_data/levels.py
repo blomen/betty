@@ -274,3 +274,150 @@ def detect_fvgs(bars: list[dict]) -> list[FairValueGap]:
             ))
 
     return gaps
+
+
+def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
+    """Detect HH/HL/LH/LL swing structure from bar data.
+
+    A swing high = bar whose high > all bars within lookback on each side.
+    A swing low = bar whose low < all bars within lookback on each side.
+
+    Returns dict with structure classification and swing levels.
+    """
+    n = len(bars)
+    if n < 2 * lookback + 1:
+        return {
+            "structure": "ranging",
+            "last_hh": None, "last_hl": None,
+            "last_lh": None, "last_ll": None,
+            "swing_high": None, "swing_low": None,
+        }
+
+    # Find pivot highs and lows
+    pivot_highs: list[tuple[int, float]] = []  # (index, price)
+    pivot_lows: list[tuple[int, float]] = []
+
+    for i in range(lookback, n - lookback):
+        high = bars[i]["high"]
+        low = bars[i]["low"]
+        is_pivot_high = all(
+            high >= bars[j]["high"] for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+        is_pivot_low = all(
+            low <= bars[j]["low"] for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+        if is_pivot_high:
+            pivot_highs.append((i, high))
+        if is_pivot_low:
+            pivot_lows.append((i, low))
+
+    if len(pivot_highs) < 2 or len(pivot_lows) < 2:
+        return {
+            "structure": "ranging",
+            "last_hh": pivot_highs[-1][1] if pivot_highs else None,
+            "last_hl": None, "last_lh": None, "last_ll": None,
+            "swing_high": pivot_highs[-1][1] if pivot_highs else None,
+            "swing_low": pivot_lows[-1][1] if pivot_lows else None,
+        }
+
+    # Classify structure from last 2 pivot highs and lows
+    ph1, ph2 = pivot_highs[-2][1], pivot_highs[-1][1]
+    pl1, pl2 = pivot_lows[-2][1], pivot_lows[-1][1]
+
+    hh = ph2 > ph1  # Higher high
+    hl = pl2 > pl1  # Higher low
+    lh = ph2 < ph1  # Lower high
+    ll = pl2 < pl1  # Lower low
+
+    if hh and hl:
+        structure = "uptrend"
+    elif lh and ll:
+        structure = "downtrend"
+    else:
+        structure = "ranging"
+
+    return {
+        "structure": structure,
+        "last_hh": ph2 if hh else None,
+        "last_hl": pl2 if hl else None,
+        "last_lh": ph2 if lh else None,
+        "last_ll": pl2 if ll else None,
+        "swing_high": pivot_highs[-1][1],
+        "swing_low": pivot_lows[-1][1],
+    }
+
+
+def detect_naked_pocs(
+    prior_sessions: list[dict],
+    bars_since: list[dict],
+) -> list[dict]:
+    """Find POCs from prior sessions that price has never revisited.
+
+    A POC is 'naked' if no bar's low-high range includes that price
+    since the session it was computed from.
+
+    Args:
+        prior_sessions: [{date, poc}, ...] ordered oldest to newest
+        bars_since: All bars from oldest session date to now
+
+    Returns: [{date, price}, ...] for naked POCs only
+    """
+    if not prior_sessions:
+        return []
+
+    naked = []
+    for session in prior_sessions:
+        poc = session["poc"]
+        touched = any(
+            bar["low"] <= poc <= bar["high"]
+            for bar in bars_since
+        )
+        if not touched:
+            naked.append({"date": session["date"], "price": poc})
+
+    return naked
+
+
+def compute_developing_poc(bars: list[dict], tick_size: float = 0.25) -> dict:
+    """Track POC migration by comparing current POC vs POC from first half.
+
+    Converts bars (OHLCV) to synthetic trades for compute_volume_profile.
+
+    Returns:
+        {
+            "developing_poc": float | None,
+            "prior_poc": float | None,
+            "direction": "up" | "down" | "flat",
+        }
+    """
+    if not bars:
+        return {"developing_poc": None, "prior_poc": None, "direction": "flat"}
+
+    def bars_to_trades(b: list[dict]) -> list[dict]:
+        return [{"price": bar["close"], "size": bar.get("volume", 1)} for bar in b]
+
+    current_vp = compute_volume_profile(bars_to_trades(bars), tick_size)
+    current_poc = current_vp.poc
+
+    half = max(1, len(bars) // 2)
+    first_half_vp = compute_volume_profile(bars_to_trades(bars[:half]), tick_size)
+    prior_poc = first_half_vp.poc
+
+    if current_poc is None or prior_poc is None or (current_poc == 0 and prior_poc == 0):
+        return {"developing_poc": current_poc, "prior_poc": prior_poc, "direction": "flat"}
+
+    diff = current_poc - prior_poc
+    threshold = tick_size * 4  # 1 point for NQ
+
+    if diff > threshold:
+        direction = "up"
+    elif diff < -threshold:
+        direction = "down"
+    else:
+        direction = "flat"
+
+    return {
+        "developing_poc": current_poc,
+        "prior_poc": prior_poc,
+        "direction": direction,
+    }
