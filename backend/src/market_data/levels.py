@@ -274,3 +274,74 @@ def detect_fvgs(bars: list[dict]) -> list[FairValueGap]:
             ))
 
     return gaps
+
+
+def detect_swing_points(bars: list[dict], lookback: int = 5) -> dict:
+    """Detect HH/HL/LH/LL swing structure from bar data.
+
+    A swing high = bar whose high > all bars within lookback on each side.
+    A swing low = bar whose low < all bars within lookback on each side.
+
+    Returns dict with structure classification and swing levels.
+    """
+    n = len(bars)
+    if n < 2 * lookback + 1:
+        return {
+            "structure": "ranging",
+            "last_hh": None, "last_hl": None,
+            "last_lh": None, "last_ll": None,
+            "swing_high": None, "swing_low": None,
+        }
+
+    # Find pivot highs and lows
+    pivot_highs: list[tuple[int, float]] = []  # (index, price)
+    pivot_lows: list[tuple[int, float]] = []
+
+    for i in range(lookback, n - lookback):
+        high = bars[i]["high"]
+        low = bars[i]["low"]
+        is_pivot_high = all(
+            high >= bars[j]["high"] for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+        is_pivot_low = all(
+            low <= bars[j]["low"] for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+        if is_pivot_high:
+            pivot_highs.append((i, high))
+        if is_pivot_low:
+            pivot_lows.append((i, low))
+
+    if len(pivot_highs) < 2 or len(pivot_lows) < 2:
+        return {
+            "structure": "ranging",
+            "last_hh": pivot_highs[-1][1] if pivot_highs else None,
+            "last_hl": None, "last_lh": None, "last_ll": None,
+            "swing_high": pivot_highs[-1][1] if pivot_highs else None,
+            "swing_low": pivot_lows[-1][1] if pivot_lows else None,
+        }
+
+    # Classify structure from last 2 pivot highs and lows
+    ph1, ph2 = pivot_highs[-2][1], pivot_highs[-1][1]
+    pl1, pl2 = pivot_lows[-2][1], pivot_lows[-1][1]
+
+    hh = ph2 > ph1  # Higher high
+    hl = pl2 > pl1  # Higher low
+    lh = ph2 < ph1  # Lower high
+    ll = pl2 < pl1  # Lower low
+
+    if hh and hl:
+        structure = "uptrend"
+    elif lh and ll:
+        structure = "downtrend"
+    else:
+        structure = "ranging"
+
+    return {
+        "structure": structure,
+        "last_hh": ph2 if hh else None,
+        "last_hl": pl2 if hl else None,
+        "last_lh": ph2 if lh else None,
+        "last_ll": pl2 if ll else None,
+        "swing_high": pivot_highs[-1][1],
+        "swing_low": pivot_lows[-1][1],
+    }
