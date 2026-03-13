@@ -185,6 +185,16 @@ class ExtractionReport:
             if boost_lines:
                 lines.extend(boost_lines)
 
+        # ── Provider ROI + Recommendations ──────────────────────────
+        if db_session:
+            try:
+                roi_lines = self._build_provider_roi(db_session)
+                lines.extend(roi_lines)
+                rec_lines = self._build_recommendations(db_session)
+                lines.extend(rec_lines)
+            except Exception:
+                pass
+
         # ── Issues ──────────────────────────────────────────────────
         issues = self._detect_issues(provider_rows, results, metrics, db_session)
         if issues:
@@ -196,6 +206,63 @@ class ExtractionReport:
 
         lines.append(sep)
         return "\n".join(lines)
+
+    # ── Provider ROI ────────────────────────────────────────────────
+
+    def _build_provider_roi(self, session) -> list[str]:
+        """Build Provider ROI section from analytics engine."""
+        try:
+            from src.ml.analytics.engine import compute_provider_roi
+        except ImportError:
+            return []
+
+        roi = compute_provider_roi(session)
+        if not roi:
+            return []
+
+        lines = []
+        lines.append("")
+        lines.append("PROVIDER ROI (all time)")
+        lines.append("-" * 90)
+        lines.append(f"{'Provider':<20s} {'Opps':>6s} {'Edge%':>6s} {'Bets':>5s} {'Win%':>5s} {'P&L':>8s}")
+        lines.append("-" * 90)
+
+        for r in roi[:15]:  # Top 15
+            win_str = f"{r['win_rate']:.0%}" if r['win_rate'] is not None else "-"
+            pnl_str = f"{r['net_pnl']:+.0f}" if r['net_pnl'] else "0"
+            lines.append(
+                f"{r['provider_id']:<20s} {r['total_opportunities']:>6d} "
+                f"{r['avg_edge']:>5.1f}% {r['total_bets']:>5d} "
+                f"{win_str:>5s} {pnl_str:>8s}"
+            )
+
+        lines.append("-" * 90)
+        return lines
+
+    # ── Recommendations ─────────────────────────────────────────────
+
+    def _build_recommendations(self, session) -> list[str]:
+        """Build Recommendations section from analytics engine."""
+        try:
+            from src.ml.analytics.recommendations import RecommendationManager
+        except ImportError:
+            return []
+
+        mgr = RecommendationManager(session)
+        active = mgr.get_active()
+        if not active:
+            return []
+
+        severity_icon = {"critical": "!", "warning": "~", "info": "+"}
+        lines = []
+        lines.append("")
+        lines.append("RECOMMENDATIONS")
+        lines.append("-" * 90)
+        for rec in active[:10]:
+            icon = severity_icon.get(rec.severity, " ")
+            lines.append(f"{icon} {rec.message}")
+        lines.append("-" * 90)
+        return lines
 
     # ── Pinnacle delta ──────────────────────────────────────────────
 
