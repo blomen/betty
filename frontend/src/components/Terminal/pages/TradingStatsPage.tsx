@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Trade, TradingAnalytics } from '@/types/trading';
@@ -10,31 +11,24 @@ type FilterState = {
 };
 
 export function TradingStatsPage() {
-  const [analytics, setAnalytics] = useState<TradingAnalytics | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
   const [filters, setFilters] = useState<FilterState>({
     setup_type: 'all', direction: 'all', result: 'all',
   });
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [analyticsRes, tradesRes] = await Promise.all([
-        api.getTradingAnalytics({}).catch(() => null),
-        api.getTrades({}).catch(() => []),
-      ]);
-      if (analyticsRes) setAnalytics(analyticsRes);
-      setTrades(Array.isArray(tradesRes) ? tradesRes : []);
-    } catch (err) {
-      console.error('Failed to fetch stats:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const { data: analyticsData, isLoading: analyticsLoading } = useQuery({
+    queryKey: ['trading-analytics'],
+    queryFn: () => api.getTradingAnalytics({}).catch(() => null),
+  });
+  const analytics: TradingAnalytics | null = analyticsData ?? null;
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const { data: tradesData, isLoading: tradesLoading } = useQuery({
+    queryKey: ['trading-trades'],
+    queryFn: () => api.getTrades({}).catch(() => []),
+  });
+  const trades: Trade[] = Array.isArray(tradesData) ? tradesData : [];
+
+  const isLoading = analyticsLoading || tradesLoading;
 
   const filteredTrades = trades.filter(t => {
     if (filters.setup_type !== 'all' && t.setup_type !== filters.setup_type) return false;

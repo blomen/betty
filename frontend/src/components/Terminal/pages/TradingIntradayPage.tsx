@@ -1,10 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useMarketStream } from '@/hooks/useMarketStream';
-import type { MarketSession, TradingSignal, ConfirmationState, MarketContext, ScanCondition } from '@/types/market';
+import type { TradingSignal, ConfirmationState, ScanCondition } from '@/types/market';
 
 type ConfirmationKey = 'macro' | 'span' | 'fair_value' | 'orderflow';
+
+interface CotReport {
+  report_date: string;
+  net_commercial: number;
+  net_non_commercial: number;
+  net_non_reportable: number;
+  open_interest: number;
+}
 
 const SETUP_COLORS: Record<string, string> = {
   spring: 'bg-emerald-600', sfp: 'bg-blue-600', poor_extreme: 'bg-purple-600',
@@ -14,18 +23,12 @@ const SETUP_COLORS: Record<string, string> = {
 };
 
 export function TradingIntradayPage() {
-  const [session, setSession] = useState<MarketSession | null>(null);
-  const [signals, setSignals] = useState<TradingSignal[]>([]);
-  const [confirmations, setConfirmations] = useState<ConfirmationState | null>(null);
-  const [context, setContext] = useState<MarketContext | null>(null);
-  const [levels, setLevels] = useState<any[]>([]);
-  const [showLevels, setShowLevels] = useState(false);
+  const queryClient = useQueryClient();
+
   const [overrides, setOverrides] = useState<Record<ConfirmationKey, boolean | null>>({
     macro: null, span: null, fair_value: null, orderflow: null,
   });
-  const [isLoading, setIsLoading] = useState(true);
-  const [isComputing, setIsComputing] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
+  const [showLevels, setShowLevels] = useState(false);
   const [expandedSignal, setExpandedSignal] = useState<number | null>(null);
   const [threshold, setThreshold] = useState(70);
   const [lastScan, setLastScan] = useState<string | null>(null);
@@ -34,71 +37,93 @@ export function TradingIntradayPage() {
 
   const { lastTick, connected } = useMarketStream();
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [sessionRes, signalsRes, confirmRes] = await Promise.all([
-        api.getMarketSession().catch(() => null),
-        api.getMarketSignals().catch(() => ({ signals: [] })),
-        api.getConfirmations().catch(() => null),
-      ]);
-      if (sessionRes && !sessionRes.status) setSession(sessionRes);
-      setSignals(signalsRes.signals || []);
-      if (confirmRes) setConfirmations(confirmRes);
-    } catch (err) {
-      console.error('Failed to fetch market data:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  // --- Data queries ---
+  const { data: sessionData, isLoading: sessionLoading } = useQuery({
+    queryKey: ['market-session'],
+    queryFn: () => api.getMarketSession().catch(() => null),
+    staleTime: Infinity,
+  });
+  const session = sessionData && !sessionData.status ? sessionData : null;
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const { data: signalsData } = useQuery({
+    queryKey: ['market-signals'],
+    queryFn: () => api.getMarketSignals().catch(() => ({ signals: [] })),
+    staleTime: 60_000,
+  });
+  const signals: TradingSignal[] = signalsData?.signals ?? [];
 
-  useEffect(() => {
-    api.getMarketContext().then(setContext).catch(() => null);
-  }, []);
+  const { data: confirmRes } = useQuery({
+    queryKey: ['confirmations'],
+    queryFn: () => api.getConfirmations().catch(() => null),
+    staleTime: 30_000,
+  });
+  const confirmations: ConfirmationState | null = confirmRes ?? null;
 
+  const { data: contextData } = useQuery({
+    queryKey: ['market-context'],
+    queryFn: () => api.getMarketContext().catch(() => null),
+    staleTime: Infinity,
+  });
+  const context = contextData ?? null;
+
+  const { data: macroData } = useQuery({
+    queryKey: ['macro-snapshot'],
+    queryFn: () => api.getMacroSnapshot().catch(() => null),
+    staleTime: 300_000,
+  });
+  const macro = macroData ?? null;
+
+  const { data: cotData } = useQuery({
+    queryKey: ['cot-data'],
+    queryFn: () => api.getCotData(2).catch(() => null),
+    staleTime: 300_000,
+  });
+  const cot: CotReport[] | null = cotData ?? null;
+
+  const { data: levelsData, refetch: refetchLevels } = useQuery({
+    queryKey: ['market-levels'],
+    queryFn: () => api.getMarketLevels(),
+    enabled: false,
+  });
+  const levels = levelsData ?? [];
+
+  // --- Mutations ---
+  const computeMutation = useMutation({
+    mutationFn: () => api.triggerMarketCompute(),
+    onSuccess: (res) => {
+      if (res && !res.status) {
+        queryClient.setQueryData(['market-session'], res);
+      }
+      queryClient.invalidateQueries({ queryKey: ['market-signals'] });
+      queryClient.invalidateQueries({ queryKey: ['confirmations'] });
+      queryClient.invalidateQueries({ queryKey: ['market-levels'] });
+    },
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: (thr: number) => api.triggerMarketScan(thr),
+    onSuccess: (res) => {
+      queryClient.setQueryData(['market-signals'], res);
+      setLastScan(new Date().toLocaleTimeString());
+      queryClient.invalidateQueries({ queryKey: ['confirmations'] });
+    },
+  });
+
+  const tradeMutation = useMutation({
+    mutationFn: (params: any) => api.createTrade(params),
+    onSuccess: () => {
+      setTakingTrade(null);
+      setEntryPrice('');
+    },
+  });
+
+  // --- Handlers ---
   const updateGate = async (field: string, value: string) => {
     await api.updateMarketContext({ [field]: value });
-    const updated = await api.getMarketContext();
-    setContext(updated);
+    queryClient.invalidateQueries({ queryKey: ['market-context'] });
   };
 
-  const handleCompute = async () => {
-    setIsComputing(true);
-    try {
-      const res = await api.triggerMarketCompute();
-      if (res && !res.status) setSession(res);
-      const confirmRes = await api.getConfirmations().catch(() => null);
-      if (confirmRes) setConfirmations(confirmRes);
-    } catch (err) {
-      console.error('Compute failed:', err);
-    } finally {
-      setIsComputing(false);
-    }
-  };
-
-  const handleScan = async () => {
-    setIsScanning(true);
-    try {
-      const res = await api.triggerMarketScan(threshold);
-      setSignals(res.signals || []);
-      setLastScan(new Date().toLocaleTimeString());
-      const confirmRes = await api.getConfirmations().catch(() => null);
-      if (confirmRes) setConfirmations(confirmRes);
-    } catch (err) {
-      console.error('Scan failed:', err);
-    } finally {
-      setIsScanning(false);
-    }
-  };
-
-  const loadLevels = async () => {
-    const res = await fetch(`/api/trading/market/levels?symbol=NQ`);
-    const data = await res.json();
-    setLevels(data);
-    setShowLevels(true);
-  };
+  const loadLevels = () => { refetchLevels(); setShowLevels(true); };
 
   const toggleOverride = (key: ConfirmationKey) => {
     setOverrides(prev => {
@@ -116,30 +141,34 @@ export function TradingIntradayPage() {
     return confirmations?.[key]?.checked ?? false;
   };
 
-  const allConfirmed = (['macro', 'span', 'fair_value', 'orderflow'] as ConfirmationKey[]).every(isChecked);
+  // Layer A: at least 1 context gate set (manual input)
+  const layerACount = [context?.macro_bias, context?.structure, context?.day_type].filter(Boolean).length;
+  const layerAReady = layerACount >= 1;
+
+  // Layer B: at least 2/4 auto-confirmations checked (or overridden)
+  const CONFIRM_KEYS: ConfirmationKey[] = ['macro', 'span', 'fair_value', 'orderflow'];
+  const layerBCount = CONFIRM_KEYS.filter(isChecked).length;
+  const layerBReady = layerBCount >= 2;
+
+  // Signals show when both layers pass
+  const gatesPassed = layerAReady && layerBReady;
 
   const handleTakeTrade = async (signal: TradingSignal) => {
     const price = parseFloat(entryPrice);
     if (!price || !signal) return;
-    try {
-      await api.createTrade({
-        instrument: session?.symbol || 'NQ',
-        direction: signal.direction,
-        setup_type: signal.setup_type,
-        entry_price: price,
-        stop_price: signal.suggested_stop || 0,
-        targets: signal.suggested_target ? [{ price: signal.suggested_target }] : [],
-        contracts: 1,
-        notes: `Scanner signal: ${signal.setup_name} (score: ${signal.score})`,
-      });
-      setTakingTrade(null);
-      setEntryPrice('');
-    } catch (err) {
-      console.error('Failed to create trade:', err);
-    }
+    tradeMutation.mutate({
+      instrument: session?.symbol || 'NQ',
+      direction: signal.direction,
+      setup_type: signal.setup_type,
+      entry_price: price,
+      stop_price: signal.suggested_stop || 0,
+      targets: signal.suggested_target ? [{ price: signal.suggested_target }] : [],
+      contracts: 1,
+      notes: `Scanner signal: ${signal.setup_name} (score: ${signal.score})`,
+    });
   };
 
-  if (isLoading) return <div className="text-muted text-sm">Loading scanner...</div>;
+  if (sessionLoading) return <div className="text-muted text-sm">Loading scanner...</div>;
 
   const hasSession = session && session.poc;
 
@@ -151,18 +180,18 @@ export function TradingIntradayPage() {
         <span className="text-sm font-semibold text-text">Intraday</span>
         <div className="flex-1" />
         <button
-          onClick={handleCompute}
-          disabled={isComputing}
+          onClick={() => computeMutation.mutate()}
+          disabled={computeMutation.isPending}
           className="text-xs px-3 py-1 border border-tabTradingScanner/50 text-tabTradingScanner rounded hover:bg-tabTradingScanner/10 disabled:opacity-40"
         >
-          {isComputing ? 'Computing...' : 'Compute'}
+          {computeMutation.isPending ? 'Computing...' : 'Compute'}
         </button>
         <button
-          onClick={handleScan}
-          disabled={isScanning || !hasSession}
+          onClick={() => scanMutation.mutate(threshold)}
+          disabled={scanMutation.isPending || !hasSession}
           className="text-xs px-3 py-1 bg-tabTradingScanner/20 border border-tabTradingScanner text-tabTradingScanner rounded hover:bg-tabTradingScanner/30 disabled:opacity-40"
         >
-          {isScanning ? 'Scanning...' : 'Scan'}
+          {scanMutation.isPending ? 'Scanning...' : 'Scan'}
         </button>
         <div className="flex items-center gap-1.5 text-xs text-muted">
           <label>Thr:</label>
@@ -174,57 +203,202 @@ export function TradingIntradayPage() {
         {lastScan && <span className="text-[10px] text-muted">Last: {lastScan}</span>}
       </div>
 
-      {/* Layer A: Gate Cards (23a) */}
-      <div className="flex gap-2 mb-3">
-        {/* Gate 1: Macro */}
-        <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
-          <div className="text-xs text-zinc-400 mb-1">Gate 1: Macro</div>
-          <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
-            value={context?.macro_bias || ''}
-            onChange={e => updateGate('macro_bias', e.target.value)}>
-            <option value="">—</option>
-            <option value="bull">Bull</option>
-            <option value="bear">Bear</option>
-            <option value="neutral">Neutral</option>
-          </select>
-          <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white mt-1"
-            value={context?.risk_mode || ''}
-            onChange={e => updateGate('risk_mode', e.target.value)}>
-            <option value="">Risk Mode —</option>
-            <option value="risk_on">Risk On</option>
-            <option value="risk_off">Risk Off</option>
-            <option value="mixed">Mixed</option>
-          </select>
+      {/* Layer A: Manual Context Gates — YOU set these */}
+      <div className="mb-3">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Layer A · You Set</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${layerAReady ? 'bg-success/15 text-success' : 'bg-zinc-700 text-zinc-400'}`}>
+            {layerACount}/3 — need ≥1
+          </span>
         </div>
-        {/* Gate 2: Structure */}
-        <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
-          <div className="text-xs text-zinc-400 mb-1">Gate 2: Structure</div>
-          <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
-            value={context?.structure || ''}
-            onChange={e => updateGate('structure', e.target.value)}>
-            <option value="">—</option>
-            <option value="uptrend">Uptrend (HH/HL)</option>
-            <option value="downtrend">Downtrend (LH/LL)</option>
-            <option value="ranging">Ranging</option>
-          </select>
-        </div>
-        {/* Gate 3: Day Type */}
-        <div className="bg-zinc-800 p-2 rounded flex-1 border border-zinc-700">
-          <div className="text-xs text-zinc-400 mb-1">Gate 3: Day Type</div>
-          <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
-            value={context?.day_type || ''}
-            onChange={e => updateGate('day_type', e.target.value)}>
-            <option value="">—</option>
-            <option value="trend">Trend</option>
-            <option value="normal">Normal</option>
-            <option value="normal_variation">Normal Variation</option>
-            <option value="neutral">Neutral</option>
-            <option value="composite">Composite</option>
-          </select>
+        <div className="flex gap-2">
+          {/* Gate 1: Macro (weekly) */}
+          <div className={`p-2 rounded flex-1 border transition-colors ${context?.macro_bias ? 'bg-zinc-800 border-success/30' : 'bg-zinc-800/50 border-zinc-700'}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-zinc-400">Macro Bias</span>
+              <span className="text-[9px] text-zinc-600">weekly</span>
+            </div>
+            <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+              value={context?.macro_bias || ''}
+              onChange={e => updateGate('macro_bias', e.target.value)}>
+              <option value="">—</option>
+              <option value="bull">Bull</option>
+              <option value="bear">Bear</option>
+              <option value="neutral">Neutral</option>
+            </select>
+            <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white mt-1"
+              value={context?.risk_mode || ''}
+              onChange={e => updateGate('risk_mode', e.target.value)}>
+              <option value="">Risk Mode —</option>
+              <option value="risk_on">Risk On</option>
+              <option value="risk_off">Risk Off</option>
+              <option value="mixed">Mixed</option>
+            </select>
+            {/* Supporting data for macro decision */}
+            {macro && (
+              <div className="mt-1.5 space-y-0.5 text-[10px] text-zinc-500 font-mono">
+                {macro.vix != null && (
+                  <div className="flex justify-between">
+                    <span>VIX</span>
+                    <span className={macro.vix > 25 ? 'text-red-400' : macro.vix < 15 ? 'text-green-400' : 'text-zinc-400'}>
+                      {macro.vix.toFixed(1)} {macro.vix_change_pct != null && <span className="text-zinc-600">({macro.vix_change_pct > 0 ? '+' : ''}{macro.vix_change_pct.toFixed(1)}%)</span>}
+                    </span>
+                  </div>
+                )}
+                {macro.dxy != null && (
+                  <div className="flex justify-between">
+                    <span>DXY</span>
+                    <span className="text-zinc-400">{macro.dxy.toFixed(1)}</span>
+                  </div>
+                )}
+                {macro.us10y != null && (
+                  <div className="flex justify-between">
+                    <span>10Y</span>
+                    <span className="text-zinc-400">{macro.us10y.toFixed(2)}%</span>
+                  </div>
+                )}
+                {macro.yield_curve_spread != null && (
+                  <div className="flex justify-between">
+                    <span>2s10s</span>
+                    <span className={macro.yield_curve_spread < 0 ? 'text-red-400' : 'text-zinc-400'}>
+                      {macro.yield_curve_spread > 0 ? '+' : ''}{macro.yield_curve_spread.toFixed(0)}bp
+                    </span>
+                  </div>
+                )}
+                {macro.regime && (
+                  <div className="flex justify-between">
+                    <span>Regime</span>
+                    <span className={macro.regime === 'risk_on' ? 'text-green-400' : macro.regime === 'risk_off' ? 'text-red-400' : 'text-yellow-400'}>
+                      {macro.regime.replace('_', ' ')}
+                    </span>
+                  </div>
+                )}
+                {cot && cot.length > 0 && (
+                  <div className="flex justify-between">
+                    <span>COT</span>
+                    <span className={cot[0].net_non_commercial > 0 ? 'text-green-400' : 'text-red-400'}>
+                      {cot[0].net_non_commercial > 0 ? '+' : ''}{cot[0].net_non_commercial.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {/* Gate 2: Structure (daily) */}
+          <div className={`p-2 rounded flex-1 border transition-colors ${context?.structure ? 'bg-zinc-800 border-success/30' : 'bg-zinc-800/50 border-zinc-700'}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-zinc-400">Structure</span>
+              <span className="text-[9px] text-zinc-600">daily</span>
+            </div>
+            <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+              value={context?.structure || ''}
+              onChange={e => updateGate('structure', e.target.value)}>
+              <option value="">—</option>
+              <option value="uptrend">Uptrend (HH/HL)</option>
+              <option value="downtrend">Downtrend (LH/LL)</option>
+              <option value="ranging">Ranging</option>
+            </select>
+            {/* Supporting data for structure decision */}
+            <div className="mt-1.5 space-y-0.5 text-[10px] text-zinc-500 font-mono">
+              {context?.structure_hl != null && (
+                <div className="flex justify-between">
+                  <span>Last HL</span>
+                  <span className="text-green-400">{context.structure_hl.toFixed(0)}</span>
+                </div>
+              )}
+              {context?.structure_lh != null && (
+                <div className="flex justify-between">
+                  <span>Last LH</span>
+                  <span className="text-red-400">{context.structure_lh.toFixed(0)}</span>
+                </div>
+              )}
+              {session?.value_migration && (
+                <div className="flex justify-between">
+                  <span>VA Migr</span>
+                  <span className={session.value_migration === 'up' ? 'text-green-400' : session.value_migration === 'down' ? 'text-red-400' : 'text-zinc-400'}>
+                    {session.value_migration}
+                  </span>
+                </div>
+              )}
+              {session?.market_type && (
+                <div className="flex justify-between">
+                  <span>Type</span>
+                  <span className="text-zinc-400">{session.market_type.replace(/_/g, ' ')}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          {/* Gate 3: Day Type (after first 30-60 min) */}
+          <div className={`p-2 rounded flex-1 border transition-colors ${context?.day_type ? 'bg-zinc-800 border-success/30' : 'bg-zinc-800/50 border-zinc-700'}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-zinc-400">Day Type</span>
+              <span className="text-[9px] text-zinc-600">after IB</span>
+            </div>
+            <select className="bg-zinc-900 text-xs p-1 rounded w-full text-white"
+              value={context?.day_type || ''}
+              onChange={e => updateGate('day_type', e.target.value)}>
+              <option value="">—</option>
+              <option value="trend">Trend</option>
+              <option value="normal">Normal</option>
+              <option value="normal_variation">Normal Variation</option>
+              <option value="neutral">Neutral</option>
+              <option value="composite">Composite</option>
+            </select>
+            {/* M7 ML prediction (auto-hint) */}
+            {confirmations?.ml_day_type && (
+              <div className="mt-1 text-[9px] font-mono flex items-center gap-1">
+                <span className="text-zinc-600">M7:</span>
+                <span className="text-blue-400">{confirmations.ml_day_type}</span>
+                {confirmations.ml_day_type_confidence != null && (
+                  <span className="text-zinc-600">({confirmations.ml_day_type_confidence}%)</span>
+                )}
+              </div>
+            )}
+            {/* Supporting data for day type decision */}
+            <div className="mt-1.5 space-y-0.5 text-[10px] text-zinc-500 font-mono">
+              {session?.rotation_factor != null && (
+                <div className="flex justify-between">
+                  <span>RF</span>
+                  <span className={session.rotation_factor > 70 ? 'text-green-400' : session.rotation_factor < 30 ? 'text-yellow-400' : 'text-zinc-400'}>
+                    {session.rotation_factor}
+                  </span>
+                </div>
+              )}
+              {session?.aspr != null && (
+                <div className="flex justify-between">
+                  <span>ASPR</span>
+                  <span className="text-zinc-400">
+                    {session.aspr.toFixed(1)}
+                    {session.aspr_percentile != null && <span className="text-zinc-600 ml-0.5">({(session.aspr_percentile * 100).toFixed(0)}%)</span>}
+                  </span>
+                </div>
+              )}
+              {session?.ib_range != null && (
+                <div className="flex justify-between">
+                  <span>IB Rng</span>
+                  <span className="text-zinc-400">{session.ib_range.toFixed(1)}</span>
+                </div>
+              )}
+              {session?.opening_type && (
+                <div className="flex justify-between">
+                  <span>Open</span>
+                  <span className="text-zinc-400">{session.opening_type.replace(/_/g, ' ')}</span>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* B. Confirmation Strip */}
+      {/* Layer B: Auto Confirmations — system evaluates these */}
+      <div className="mb-1">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Layer B · Auto</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${layerBReady ? 'bg-success/15 text-success' : 'bg-zinc-700 text-zinc-400'}`}>
+            {layerBCount}/4 — need ≥2
+          </span>
+        </div>
+      </div>
       <div className="grid grid-cols-4 gap-2">
         <ConfirmCard
           label="Macro"
@@ -268,10 +442,48 @@ export function TradingIntradayPage() {
           detail={confirmations?.orderflow?.delta != null
             ? `Delta ${confirmations.orderflow.delta > 0 ? '+' : ''}${confirmations.orderflow.delta.toLocaleString()}`
             : 'No data'}
-          subDetail={confirmations?.orderflow?.divergence ? 'Divergence' : undefined}
+          subDetail={confirmations?.orderflow?.cvd_trend && confirmations.orderflow.cvd_trend !== 'flat'
+            ? `CVD ${confirmations.orderflow.cvd_trend}`
+            : undefined}
           detailColor={confirmations?.orderflow?.checked ? 'text-success' : 'text-muted'}
         />
       </div>
+
+      {/* Orderflow Signal Strip — Fabio / OrderflowHorse signals */}
+      {confirmations?.orderflow?.delta != null && (
+        <div className="flex gap-1.5 flex-wrap text-[10px] font-mono px-0.5">
+          <OFSignal label="Delta" active={confirmations.orderflow.delta_aligned} />
+          <OFSignal label="Diverge" active={confirmations.orderflow.divergence} />
+          <OFSignal label="Unwind" active={confirmations.orderflow.delta_unwind} />
+          <OFSignal label="VSA" active={confirmations.orderflow.vsa_absorption} />
+          <OFSignal label="TickVol" active={confirmations.orderflow.tick_vol_accelerating} />
+          <OFSignal label="Trapped" active={confirmations.orderflow.trapped_traders} />
+          <OFSignal label="StopRun" active={confirmations.orderflow.stop_run_detected} />
+          <span className={`px-1.5 py-0.5 rounded ${confirmations.orderflow.cvd_trend === 'rising' ? 'bg-green-900/40 text-green-400' : confirmations.orderflow.cvd_trend === 'falling' ? 'bg-red-900/40 text-red-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            CVD {confirmations.orderflow.cvd_trend}
+          </span>
+          {confirmations.orderflow.big_trades_count != null && confirmations.orderflow.big_trades_count > 0 && (
+            <span className={`px-1.5 py-0.5 rounded ${confirmations.orderflow.big_trades_count >= 2 ? 'bg-yellow-900/40 text-yellow-400' : 'bg-zinc-800 text-zinc-500'}`}>
+              BigTx {confirmations.orderflow.big_trades_count} ({(confirmations.orderflow.big_trades_net_delta ?? 0) > 0 ? '+' : ''}{confirmations.orderflow.big_trades_net_delta})
+            </span>
+          )}
+          {confirmations.orderflow.passive_active_ratio != null && confirmations.orderflow.passive_active_ratio > 0 && (
+            <span className={`px-1.5 py-0.5 rounded ${confirmations.orderflow.passive_active_ratio > 2 ? 'bg-purple-900/40 text-purple-400' : 'bg-zinc-800 text-zinc-500'}`}>
+              P/A {confirmations.orderflow.passive_active_ratio.toFixed(1)}
+            </span>
+          )}
+          {confirmations.orderflow.stacked_imbalance_count != null && confirmations.orderflow.stacked_imbalance_count >= 2 && (
+            <span className={`px-1.5 py-0.5 rounded ${confirmations.orderflow.stacked_imbalance_count >= 3 ? 'bg-cyan-900/40 text-cyan-400' : 'bg-zinc-800 text-zinc-400'}`}>
+              Imb×{confirmations.orderflow.stacked_imbalance_count} {confirmations.orderflow.stacked_imbalance_direction === 'buy' ? '▲' : '▼'}
+            </span>
+          )}
+          {confirmations.orderflow.imbalance_ratio_max != null && confirmations.orderflow.imbalance_ratio_max !== 0.5 && (
+            <span className={`px-1.5 py-0.5 rounded ${confirmations.orderflow.imbalance_ratio_max >= 0.65 ? 'bg-green-900/40 text-green-400' : confirmations.orderflow.imbalance_ratio_max <= 0.35 ? 'bg-red-900/40 text-red-400' : 'bg-zinc-800 text-zinc-500'}`}>
+              ImbR {(confirmations.orderflow.imbalance_ratio_max * 100).toFixed(0)}%
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Session Metrics Row (23b) */}
       {session && (
@@ -340,18 +552,24 @@ export function TradingIntradayPage() {
       <div className="border border-border bg-panel rounded">
         <div className="flex items-center justify-between px-4 py-2 border-b border-border">
           <h3 className="text-sm font-semibold text-text">
-            Opportunities ({allConfirmed ? signals.length : 0})
+            Opportunities ({gatesPassed ? signals.length : 0})
           </h3>
-          {!allConfirmed && (
+          {!gatesPassed && (
             <span className="text-xs text-muted">
-              {(['macro', 'span', 'fair_value', 'orderflow'] as ConfirmationKey[]).filter(k => !isChecked(k)).length} confirmation{(['macro', 'span', 'fair_value', 'orderflow'] as ConfirmationKey[]).filter(k => !isChecked(k)).length !== 1 ? 's' : ''} remaining
+              {!layerAReady && !layerBReady
+                ? 'Set ≥1 context gate + need ≥2 auto confirmations'
+                : !layerAReady
+                ? 'Set at least 1 context gate (Layer A)'
+                : `Need ${2 - layerBCount} more auto confirmation${2 - layerBCount !== 1 ? 's' : ''} (Layer B)`}
             </span>
           )}
         </div>
 
-        {!allConfirmed ? (
+        {!gatesPassed ? (
           <div className="p-6 text-center text-muted text-sm">
-            Waiting for confirmations...
+            {!layerAReady
+              ? 'Set at least 1 context gate above to unlock signals'
+              : `Waiting for auto confirmations (${layerBCount}/4, need 2)...`}
           </div>
         ) : signals.length === 0 ? (
           <div className="p-4 text-center text-muted text-sm">
@@ -582,6 +800,14 @@ function Badge({ label, value, color = 'text-tabTradingScanner' }: { label: stri
   return (
     <span className="text-muted">
       {label} <span className={`${color}`}>{value}</span>
+    </span>
+  );
+}
+
+function OFSignal({ label, active }: { label: string; active?: boolean }) {
+  return (
+    <span className={`px-1.5 py-0.5 rounded ${active ? 'bg-green-900/40 text-green-400' : 'bg-zinc-800 text-zinc-600'}`}>
+      {active ? '✓' : '✗'} {label}
     </span>
   );
 }

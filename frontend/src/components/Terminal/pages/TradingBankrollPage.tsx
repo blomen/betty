@@ -1,54 +1,62 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { TradingAccount } from '@/types/trading';
 
 export function TradingBankrollPage() {
-  const [accounts, setAccounts] = useState<TradingAccount[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
+
   const [editingId, setEditingId] = useState<number | null>(null);
   const [adjustId, setAdjustId] = useState<number | null>(null);
   const [adjustAmount, setAdjustAmount] = useState('');
 
-  const fetchAccounts = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const res = await api.getTradingAccounts();
-      setAccounts(res.accounts);
-    } catch (err) {
-      console.error('Failed to fetch trading accounts:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const { data: accountsData, isLoading } = useQuery({
+    queryKey: ['trading-accounts'],
+    queryFn: () => api.getTradingAccounts(),
+  });
+  const accounts = accountsData?.accounts ?? [];
 
-  useEffect(() => { fetchAccounts(); }, [fetchAccounts]);
+  const adjustMutation = useMutation({
+    mutationFn: ({ id, amount }: { id: number; amount: number }) => api.adjustTradingBalance(id, amount),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trading-accounts'] });
+      setAdjustId(null);
+      setAdjustAmount('');
+    },
+  });
 
-  const handleAdjust = async (id: number) => {
+  const resetDailyMutation = useMutation({
+    mutationFn: (id: number) => api.resetTradingDaily(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['trading-accounts'] }),
+  });
+
+  const resetWeeklyMutation = useMutation({
+    mutationFn: (id: number) => api.resetTradingWeekly(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['trading-accounts'] }),
+  });
+
+  const savePolicyMutation = useMutation({
+    mutationFn: ({ id, updates }: { id: number; updates: Record<string, number> }) => api.updateTradingAccount(id, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trading-accounts'] });
+      setEditingId(null);
+    },
+  });
+
+  const handleAdjust = (id: number) => {
     const amt = parseFloat(adjustAmount);
     if (isNaN(amt)) return;
-    await api.adjustTradingBalance(id, amt);
-    setAdjustId(null);
-    setAdjustAmount('');
-    fetchAccounts();
+    adjustMutation.mutate({ id, amount: amt });
   };
 
-  const handleResetDaily = async (id: number) => {
-    await api.resetTradingDaily(id);
-    fetchAccounts();
-  };
+  const handleResetDaily = (id: number) => resetDailyMutation.mutate(id);
+  const handleResetWeekly = (id: number) => resetWeeklyMutation.mutate(id);
 
-  const handleResetWeekly = async (id: number) => {
-    await api.resetTradingWeekly(id);
-    fetchAccounts();
-  };
-
-  const handleSavePolicy = async (acct: TradingAccount, field: string, value: string) => {
+  const handleSavePolicy = (acct: TradingAccount, field: string, value: string) => {
     const num = parseFloat(value);
     if (isNaN(num)) return;
-    await api.updateTradingAccount(acct.id, { [field]: field.includes('max_trades') || field.includes('stop_after') ? Math.floor(num) : num });
-    fetchAccounts();
-    setEditingId(null);
+    savePolicyMutation.mutate({ id: acct.id, updates: { [field]: field.includes('max_trades') || field.includes('stop_after') ? Math.floor(num) : num } });
   };
 
   const totals = accounts.reduce(
