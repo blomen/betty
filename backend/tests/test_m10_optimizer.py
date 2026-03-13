@@ -177,3 +177,67 @@ class TestProviderPriorityScorer:
         }
         ranked = scorer.rank_providers(provider_stats)
         assert ranked[0]["suggest_deactivate"] is True
+
+
+class TestCoverageOptimizer:
+    def test_identify_gaps(self):
+        from src.ml.optimizer.coverage import CoverageOptimizer
+        opt = CoverageOptimizer()
+        coverage_rows = [
+            {"provider_id": "unibet", "sport": "football", "event_coverage_pct": 80.0,
+             "spread_coverage_pct": 45.0, "total_coverage_pct": 50.0,
+             "missing_events": 20, "missing_spread": 30, "missing_total": 25},
+            {"provider_id": "unibet", "sport": "tennis", "event_coverage_pct": 90.0,
+             "spread_coverage_pct": 85.0, "total_coverage_pct": 80.0,
+             "missing_events": 5, "missing_spread": 3, "missing_total": 5},
+            {"provider_id": "betsson", "sport": "football", "event_coverage_pct": 75.0,
+             "spread_coverage_pct": 40.0, "total_coverage_pct": 55.0,
+             "missing_events": 25, "missing_spread": 35, "missing_total": 20},
+        ]
+        gaps = opt.identify_gaps(coverage_rows)
+        assert len(gaps) > 0
+        assert gaps[0]["sport"] == "football"
+        assert gaps[0]["market"] == "spread"
+
+    def test_identify_gaps_no_missing(self):
+        from src.ml.optimizer.coverage import CoverageOptimizer
+        opt = CoverageOptimizer()
+        coverage_rows = [
+            {"provider_id": "unibet", "sport": "football", "event_coverage_pct": 100.0,
+             "spread_coverage_pct": 100.0, "total_coverage_pct": 100.0,
+             "missing_events": 0, "missing_spread": 0, "missing_total": 0},
+        ]
+        gaps = opt.identify_gaps(coverage_rows)
+        assert len(gaps) == 0
+
+    def test_provider_coverage_summary(self):
+        from src.ml.optimizer.coverage import CoverageOptimizer
+        opt = CoverageOptimizer()
+        coverage_rows = [
+            {"provider_id": "unibet", "sport": "football", "event_coverage_pct": 80.0,
+             "spread_coverage_pct": 45.0, "total_coverage_pct": 50.0,
+             "missing_events": 20, "missing_spread": 30, "missing_total": 25},
+            {"provider_id": "unibet", "sport": "tennis", "event_coverage_pct": 90.0,
+             "spread_coverage_pct": 85.0, "total_coverage_pct": 80.0,
+             "missing_events": 5, "missing_spread": 3, "missing_total": 5},
+        ]
+        summary = opt.provider_coverage_summary(coverage_rows)
+        assert "unibet" in summary
+        assert "avg_event_coverage" in summary["unibet"]
+        assert summary["unibet"]["avg_event_coverage"] == 85.0
+
+    def test_aggregate_coverage(self):
+        from src.ml.optimizer.coverage import CoverageOptimizer
+        opt = CoverageOptimizer()
+        coverage_rows = [
+            {"provider_id": "unibet", "sport": "football", "event_coverage_pct": 80.0,
+             "spread_coverage_pct": 45.0, "total_coverage_pct": 50.0,
+             "missing_events": 20, "missing_spread": 30, "missing_total": 25},
+            {"provider_id": "betsson", "sport": "football", "event_coverage_pct": 75.0,
+             "spread_coverage_pct": 60.0, "total_coverage_pct": 55.0,
+             "missing_events": 25, "missing_spread": 20, "missing_total": 20},
+        ]
+        agg = opt.aggregate_coverage(coverage_rows)
+        assert "football" in agg
+        assert agg["football"]["best_event_coverage"] == 80.0
+        assert agg["football"]["best_spread_coverage"] == 60.0
