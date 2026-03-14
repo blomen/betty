@@ -11,6 +11,7 @@ from src.providers.comeon_dom_parser import (
     build_outcomes_from_labels,
     select_market_pills,
 )
+from src.providers.comeon_multileague import ComeOnMultiLeagueRetriever
 
 
 class TestParseAriaLabel:
@@ -170,3 +171,46 @@ class TestSelectMarketPills:
         spread, total = select_market_pills(pills, "ice_hockey")
         assert spread == "Handikapp"
         assert total == "Over/Under mål"
+
+
+class TestFilterLeagues:
+    """Test league filtering against Pinnacle target leagues."""
+
+    def setup_method(self):
+        self.retriever = ComeOnMultiLeagueRetriever.__new__(ComeOnMultiLeagueRetriever)
+        self.retriever.provider_id = "comeon"
+
+    def test_filters_to_matching_leagues(self):
+        leagues = [
+            {"id": 134, "name": "England Premier League", "href": "/leagues/134-..."},
+            {"id": 999, "name": "Tonga Division 2", "href": "/leagues/999-..."},
+            {"id": 171, "name": "Spanien La Liga", "href": "/leagues/171-..."},
+        ]
+        target = {"premier league", "la liga", "bundesliga"}
+        result = self.retriever._filter_leagues(leagues, target, "football")
+        assert len(result) == 2
+        assert result[0]["id"] == 134
+        assert result[1]["id"] == 171
+
+    def test_fallback_to_top_10_when_no_targets(self):
+        leagues = [{"id": i, "name": f"League {i}", "href": f"/leagues/{i}"} for i in range(20)]
+        result = self.retriever._filter_leagues(leagues, None, "football")
+        assert len(result) == 10
+
+    def test_fallback_to_top_10_when_no_matches(self):
+        leagues = [
+            {"id": 1, "name": "Tonga Div 2", "href": "/leagues/1-..."},
+            {"id": 2, "name": "Samoa Cup", "href": "/leagues/2-..."},
+        ]
+        target = {"premier league", "la liga"}
+        result = self.retriever._filter_leagues(leagues, target, "football")
+        # Falls back to first 10 (or all if fewer)
+        assert len(result) == 2
+
+    def test_strips_country_prefix(self):
+        leagues = [
+            {"id": 134, "name": "England Premier League", "href": "/leagues/134-..."},
+        ]
+        target = {"premier league"}
+        result = self.retriever._filter_leagues(leagues, target, "football")
+        assert len(result) == 1
