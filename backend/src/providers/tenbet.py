@@ -58,6 +58,52 @@ MARKET_TYPE_MAP: Dict[str, str] = {
 }
 
 
+JS_EXTRACT_DETAIL_MARKETS = """() => {
+    const result = {spread: null, total: null};
+
+    // Find Asian Handicap market (spread) - look for market containers
+    const allMarkets = document.querySelectorAll('[class*="ta-MarketType-"], [class*="ta-AggregatedMarket"]');
+    for (const mkt of allMarkets) {
+        const cls = Array.from(mkt.classList || []).join(' ');
+
+        // Asian Handicap (2-way spread)
+        if (!result.spread && (cls.includes('AHCP') || cls.includes('AsianHandicap'))) {
+            const outcomes = [];
+            const prices = Array.from(mkt.querySelectorAll('[class*="ta-price_text"]')).map(p => p.textContent.trim());
+            const infos = Array.from(mkt.querySelectorAll('[class*="ta-infoText"]')).map(t => t.textContent.trim());
+            const names = Array.from(mkt.querySelectorAll('[class*="ta-participantName"]')).map(n => n.textContent.trim());
+
+            for (let i = 0; i < Math.min(prices.length, 2); i++) {
+                outcomes.push({
+                    name: names[i] || '',
+                    point: infos[i] || '',
+                    odds: prices[i]
+                });
+            }
+            if (outcomes.length >= 2) result.spread = {outcomes};
+        }
+
+        // Asian Total / Over-Under (total)
+        if (!result.total && (cls.includes('ATOT') || cls.includes('AsianTotal') || cls.includes('OverUnder') || cls.includes('ÖverUnder'))) {
+            const outcomes = [];
+            const prices = Array.from(mkt.querySelectorAll('[class*="ta-price_text"]')).map(p => p.textContent.trim());
+            const labels = Array.from(mkt.querySelectorAll('[class*="ta-participantName"], [class*="ta-label"]')).map(l => l.textContent.trim());
+
+            for (let i = 0; i < Math.min(prices.length, 2); i++) {
+                outcomes.push({
+                    name: labels[i] || (i === 0 ? 'Over' : 'Under'),
+                    odds: prices[i]
+                });
+            }
+            if (outcomes.length >= 2) result.total = {outcomes};
+        }
+
+        if (result.spread && result.total) break;
+    }
+    return result;
+}"""
+
+
 class TenBetRetriever(BrowserRetriever):
     """
     Retriever for 10Bet sportsbook via DOM scraping.
@@ -166,6 +212,14 @@ class TenBetRetriever(BrowserRetriever):
                         unique_ids.add(ev.id)
 
         logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted")
+
+        # Pass 2: Enrich football events with detail page spread/total
+        if all_events and sport == "football":
+            detail_count = await self._enrich_events_with_details(all_events, sport)
+            logger.info(
+                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} with spread/total"
+            )
+
         return all_events
 
     async def _handle_cookie_consent(self):
@@ -741,6 +795,165 @@ class TenBetRetriever(BrowserRetriever):
                 return now
 
         return now
+
+    def _parse_detail_spread(self, raw: dict) -> Optional[Dict]:
+        """Parse Asian Handicap from event detail JS output."""
+        outcomes = []
+        has_point = False
+        for o in raw.get("outcomes", []):
+            odds_str = o.get("odds", "")
+            point_str = o.get("point", "")
+            try:
+                odds = float(odds_str.replace(",", "."))
+                if odds <= 1.0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            # Extract point from point field
+            try:
+                point = float(point_str.replace(",", "."))
+                has_point = True
+            except (ValueError, TypeError):
+                continue
+
+            # Determine side from position (first = home, second = away)
+            side = "home" if len(outcomes) == 0 else "away"
+            outcomes.append({"name": side, "odds": odds, "point": point})
+
+        if len(outcomes) < 2 or not has_point:
+            return None
+        return {"type": "spread", "outcomes": outcomes}
+
+    def _parse_detail_total(self, raw: dict) -> Optional[Dict]:
+        """Parse Over/Under total from event detail JS output."""
+        outcomes = []
+        for o in raw.get("outcomes", []):
+            odds_str = o.get("odds", "")
+            name = o.get("name", "").strip()
+            try:
+                odds = float(odds_str.replace(",", "."))
+                if odds <= 1.0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            name_lower = name.lower()
+            if name_lower.startswith("over") or name_lower.startswith("över"):
+                side = "over"
+            elif name_lower.startswith("under"):
+                side = "under"
+            else:
+                side = "over" if len(outcomes) == 0 else "under"
+
+            # Extract point from name: "Over 2.5" -> 2.5
+            m = re.search(r'(\d+\.?\d*)', name)
+            point = float(m.group(1)) if m else None
+
+            outcome = {"name": side, "odds": odds}
+            if point is not None:
+                outcome["point"] = point
+            outcomes.append(outcome)
+
+        if len(outcomes) < 2:
+            return None
+        return {"type": "total", "outcomes": outcomes}
+
+    MAX_DETAIL_EVENTS = 150
+
+    async def _enrich_events_with_details(
+        self, events: List[StandardEvent], sport: str
+    ) -> int:
+        """Navigate to event detail pages to extract Asian Handicap + Asian Total."""
+        # Only enrich events that have href-derived IDs
+        todo = [(ev, ev.id) for ev in events if ev.id.startswith("10bet-")]
+        if not todo:
+            return 0
+
+        if len(todo) > self.MAX_DETAIL_EVENTS:
+            logger.info(f"[{self.provider_id}] Capping detail enrichment from {len(todo)} to {self.MAX_DETAIL_EVENTS}")
+            todo = todo[:self.MAX_DETAIL_EVENTS]
+
+        enriched = 0
+        errors = 0
+        sem = asyncio.Semaphore(4)
+
+        # Create page pool
+        await self.transport._ensure_browser()
+        context = self.transport.page.context
+        extra_pages = []
+        for _ in range(3):  # 3 extra + main = 4 total
+            try:
+                p = await context.new_page()
+                extra_pages.append(p)
+            except Exception:
+                break
+        page_pool = asyncio.Queue()
+        for p in [self.transport.page] + extra_pages:
+            await page_pool.put(p)
+
+        sport_slug = self.SPORT_SLUGS.get(sport, sport)
+
+        async def enrich_one(event, event_id):
+            nonlocal enriched, errors
+            if errors > 30:
+                return
+
+            # Extract numeric ID from "10bet-{id}"
+            numeric_id = event_id.replace("10bet-", "")
+            if not numeric_id.isdigit():
+                return
+
+            worker_page = await page_pool.get()
+            try:
+                async with sem:
+                    url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
+                    try:
+                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                        # Wait briefly for markets to render
+                        await worker_page.wait_for_timeout(1500)
+                    except Exception as e:
+                        errors += 1
+                        return
+
+                    detail = await worker_page.evaluate(JS_EXTRACT_DETAIL_MARKETS)
+
+                    added = False
+                    if detail.get("spread"):
+                        spread = self._parse_detail_spread(detail["spread"])
+                        if spread:
+                            # Only add if event doesn't already have a spread
+                            has_spread = any(m.get("type") == "spread" for m in event.markets)
+                            if not has_spread:
+                                event.markets.append(spread)
+                                added = True
+
+                    if detail.get("total"):
+                        total = self._parse_detail_total(detail["total"])
+                        if total:
+                            has_total = any(m.get("type") == "total" for m in event.markets)
+                            if not has_total:
+                                event.markets.append(total)
+                                added = True
+
+                    if added:
+                        enriched += 1
+            except Exception as e:
+                errors += 1
+                logger.debug(f"[{self.provider_id}] Detail enrichment error for {event_id}: {e}")
+            finally:
+                await page_pool.put(worker_page)
+
+        await asyncio.gather(*(enrich_one(ev, eid) for ev, eid in todo))
+
+        # Close extra pages
+        for p in extra_pages:
+            try:
+                await p.close()
+            except Exception:
+                pass
+
+        return enriched
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         """Not used — extract() is overridden."""
