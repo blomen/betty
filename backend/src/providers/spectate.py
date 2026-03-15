@@ -13,6 +13,13 @@ class SpectateRetriever(BrowserRetriever):
     """
     Retriever for 888sport / Spectate based sites.
     Uses BrowserTransport to bypass protections.
+
+    API limitation (confirmed 2026-03-14): The Spectate bulk API
+    (getUpcomingEvents) only returns 1x2/moneyline for football,
+    tennis, handball, MMA, esports, volleyball, rugby. Spread + total
+    markets are only available for basketball, ice_hockey, and baseball.
+    No event detail API exists — the SPA uses authenticated /load/state
+    which requires BankID login. This is a confirmed platform limitation.
     """
     # Track unknown market names for discovery (class-level to avoid noise)
     _logged_unknown_markets: set = set()
