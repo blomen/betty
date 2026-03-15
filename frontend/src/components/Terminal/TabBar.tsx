@@ -9,7 +9,7 @@ interface Tab {
 const SPORTS_TABS: Tab[] = [
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
-  { name: 'reverse',    label: 'Reverse',   color: '#EF5350' },
+  { name: 'reverse',    label: 'Pinnacle',  color: '#EF5350' },
   { name: 'dutch',      label: 'Dutch',     color: '#10b981' },
   { name: 'bankroll',   label: 'Bankroll',  color: '#EC4899' },
   { name: 'stats',      label: 'Stats',     color: '#1E88E5' },

@@ -728,7 +728,7 @@ providers:
       min_odds: 1.80
 
   # --------------------------------------------------------------------------
-  # Interwetten (JSON API via XHR header — dynamic league discovery)
+  # Interwetten (Browser DOM — dynamic league discovery + concurrent tabs)
   # --------------------------------------------------------------------------
 
   interwetten:
@@ -737,8 +737,8 @@ providers:
     domain: interwetten.se
     retriever_type: interwetten
     site_url: https://www.interwetten.se
-    provider_timeout: 300              # JSON API calls are 10x faster than DOM scraping
-    sport_timeout: 120                 # No concurrent browser tabs needed
+    provider_timeout: 700              # DOM scraping with concurrent league+detail tabs
+    sport_timeout: 300                 # Many leagues per sport, sequential navigation
     supported_sports:
       - football
       - ice_hockey

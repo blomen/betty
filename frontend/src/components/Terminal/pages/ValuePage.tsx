@@ -1,4 +1,5 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
@@ -83,6 +84,18 @@ const OpportunityRow = memo(function OpportunityRow({
   const [editingOdds, setEditingOdds] = useState(false);
   const [localStakeOverride, setLocalStakeOverride] = useState<number | null>(null);
   const [editingStake, setEditingStake] = useState(false);
+
+  // Dropdown portal positioning
+  const dropdownBtnRef = useRef<HTMLButtonElement>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ left: number; top: number } | null>(null);
+  useEffect(() => {
+    if (providerDropdownOpen && dropdownBtnRef.current) {
+      const rect = dropdownBtnRef.current.getBoundingClientRect();
+      setDropdownPos({ left: rect.left, top: rect.top - 2 });
+    } else {
+      setDropdownPos(null);
+    }
+  }, [providerDropdownOpen]);
 
   // Flash detection
   const prevOdds = useRef(rep.odds1);
@@ -170,7 +183,7 @@ const OpportunityRow = memo(function OpportunityRow({
             )}
           </span>
         </td>
-        <td className="text-right text-text text-sm">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
+        <td className="text-right text-text text-sm truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
         <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -249,6 +262,7 @@ const OpportunityRow = memo(function OpportunityRow({
                 <>
                   <div className="relative" ref={providerDropdownOpen ? providerDropdownRef : undefined}>
                     <button
+                      ref={dropdownBtnRef}
                       type="button"
                       onClick={() => onProviderDropdownToggle(group.key)}
                       className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
@@ -261,8 +275,11 @@ const OpportunityRow = memo(function OpportunityRow({
                       </span>
                       <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
-                    {providerDropdownOpen && (
-                      <div className="absolute left-0 top-full mt-0.5 z-50 bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]">
+                    {providerDropdownOpen && dropdownPos && createPortal(
+                      <div
+                        style={{ position: 'fixed', left: dropdownPos.left, bottom: `calc(100vh - ${dropdownPos.top}px)`, zIndex: 9999 }}
+                        className="bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]"
+                      >
                         {opps.map((opp, i) => {
                           const oppStake = localStakeOverride ?? opp.final_stake;
                           const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
@@ -287,7 +304,8 @@ const OpportunityRow = memo(function OpportunityRow({
                             </button>
                           );
                         })}
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
                   <button
@@ -840,8 +858,19 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue">
-        <table className="sq">
-          <thead>
+        <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <table className="sq w-full table-fixed">
+          <colgroup>
+            <col style={{ width: '36%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '10%' }} />
+          </colgroup>
+          <thead className="sticky top-0 z-10 bg-panel">
             <tr>
               <th>Boost</th>
               <th className="text-right">Providers</th>
@@ -1021,6 +1050,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           </tbody>
         </table>
         </div>
+        </div>
       )}
       </>}
 
@@ -1077,11 +1107,22 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue">
-        <div ref={valueScrollRef} className="overflow-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
-        <table className="sq w-full">
+        <div ref={valueScrollRef} className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <table className="sq w-full table-fixed">
+          <colgroup>
+            <col style={{ width: '30%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '9%' }} />
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
-              <th style={{ width: '35%' }}>Event</th>
+              <th>Event</th>
               <th className="text-right">Providers</th>
               <th className="text-right">Outcome</th>
               <MultiSortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />

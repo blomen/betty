@@ -44,8 +44,9 @@ OT_KEYWORDS: set[str] = {"inkl", "övertid", "overtime"}
 # Compiled regexes
 # ---------------------------------------------------------------------------
 
-# Matches: "Lag till val: {name}, Odds: {value}"
-_ARIA_RE = re.compile(r"Lag till val:\s*(.+?),\s*Odds:\s*([\d.]+)")
+# Matches: "Lägg till val: {name}, Odds: {value}" (Swedish: "Add to selection")
+# Also handles "Lag till val" as fallback
+_ARIA_RE = re.compile(r"L[aä]g+\s+till\s+val:\s*(.+?),\s*Odds:\s*([\d.]+)")
 
 # Matches spread point in parentheses: "Team (+0.5)" or "Team (-1)"
 # Only matches numeric content (not letters like "Dam")
@@ -289,7 +290,7 @@ def build_outcomes_from_labels(
 # ---------------------------------------------------------------------------
 
 _SPREAD_KEYWORDS = {"handikapp", "handicap", "spread"}
-_TOTAL_KEYWORDS = {"over/under", "over / under", "total"}
+_TOTAL_KEYWORDS = {"over/under", "over / under", "över/under", "total"}
 
 
 def _pill_has_ot(pill: str) -> bool:

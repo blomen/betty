@@ -211,10 +211,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("DATABENTO_API_KEY not set — live stream disabled")
 
+    # Auto-start market compute + scan scheduler (always-on, every 5 min)
+    from ..market_data.scheduler import MarketScanScheduler
+    market_scheduler = MarketScanScheduler(interval_minutes=5)
+    market_scheduler.start()
+
     yield  # App is running
 
     # Graceful shutdown: stop all scheduler tiers
     logger.info("Shutting down: stopping scheduler tiers...")
+    market_scheduler.stop()
     scheduler.stop_all()
     if _databento_stream:
         await _databento_stream.stop()

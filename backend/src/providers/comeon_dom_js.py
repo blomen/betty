@@ -6,18 +6,18 @@ All page.evaluate() strings used by the ComeOn DOM scraper.
 Kept in one module to separate JS from Python logic.
 """
 
-# Expand all country accordions on the /leagues directory page
-JS_EXPAND_ALL_COUNTRIES = """() => {
-    const wrappers = document.querySelectorAll('li[data-expanded="false"]');
-    let clicked = 0;
-    for (const wrapper of wrappers) {
-        const btn = wrapper.querySelector('button');
-        if (btn) {
-            btn.click();
-            clicked++;
-        }
-    }
-    return clicked;
+# Count how many country accordions exist on the /leagues directory page
+JS_GET_COUNTRY_COUNT = """() => {
+    return document.querySelectorAll('li[data-expanded]').length;
+}"""
+
+# Click a specific country accordion by index (0-based)
+JS_CLICK_COUNTRY_AT_INDEX = """(index) => {
+    const wrappers = document.querySelectorAll('li[data-expanded]');
+    if (index >= wrappers.length) return false;
+    const btn = wrappers[index].querySelector('button');
+    if (btn) { btn.click(); return true; }
+    return false;
 }"""
 
 # Collect all league URLs from the expanded league directory
@@ -45,8 +45,9 @@ JS_PARSE_GAME_CARDS = """() => {
     const events = [];
 
     for (const card of cards) {
-        const scoreRow = card.querySelector('[class*="ScoreRow"]');
-        if (scoreRow) continue;
+        // Skip live events: pre-match cards have UpcomingGameTime, live ones don't
+        const upcomingTime = card.querySelector('[class*="UpcomingGameTime"]');
+        if (!upcomingTime) continue;
 
         const link = card.querySelector('a[data-at="link-to-event"]');
         if (!link) continue;
@@ -87,23 +88,26 @@ JS_PARSE_GAME_CARDS = """() => {
     return events;
 }"""
 
-# Get all market pill texts on the current league page
+# Get market tab pill texts (not navigation pills)
+# Market pills have parent <button>, nav pills have parent <a>
 JS_GET_MARKET_PILLS = """() => {
     const pills = [];
     document.querySelectorAll('[class*="pill__Wrapper"]').forEach(pill => {
-        const text = pill.textContent.trim();
-        if (text) pills.push(text);
+        if (pill.parentElement && pill.parentElement.tagName === 'BUTTON') {
+            const text = pill.textContent.trim();
+            if (text) pills.push(text);
+        }
     });
     return pills;
 }"""
 
-# Click a market pill by text content
+# Click a market tab pill by text content (only button-parented pills)
 JS_CLICK_PILL = """(targetText) => {
     const pills = document.querySelectorAll('[class*="pill__Wrapper"]');
     for (const pill of pills) {
-        if (pill.textContent.trim() === targetText) {
-            const btn = pill.closest('button') || pill;
-            btn.click();
+        if (pill.parentElement && pill.parentElement.tagName === 'BUTTON' &&
+            pill.textContent.trim() === targetText) {
+            pill.parentElement.click();
             return true;
         }
     }
@@ -115,7 +119,7 @@ JS_GET_CARD_ODDS = """() => {
     const cards = document.querySelectorAll('[data-at="game-card"]');
     const result = {};
     for (const card of cards) {
-        if (card.querySelector('[class*="ScoreRow"]')) continue;
+        if (!card.querySelector('[class*="UpcomingGameTime"]')) continue;
         const link = card.querySelector('a[data-at="link-to-event"]');
         if (!link) continue;
         const href = link.getAttribute('href') || '';

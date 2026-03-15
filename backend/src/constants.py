@@ -41,11 +41,11 @@ PLATFORM_MAP: dict[str, str] = {
     'betsson': 'gecko', 'nordicbet': 'gecko', 'bethard': 'gecko', 'spelklubben': 'gecko',
     # Spectate — 100% identical
     'mrgreen': 'spectate', '888sport': 'spectate',
-    # ComeOn Group — same odds engine, slight margin variance (~0.3 avg diff)
-    'comeon': 'comeon', 'hajper': 'comeon', 'lyllo': 'comeon',
+    # ComeOn Group — same odds engine, identical odds confirmed 2026-03-14
+    'comeon': 'comeon', 'hajper': 'comeon', 'lyllo': 'comeon', 'snabbare': 'comeon',
     # Standalone platforms (each is its own independent source)
     'vbet': 'vbet', 'interwetten': 'interwetten', '10bet': '10bet',
-    'tipwin': 'tipwin', 'coolbet': 'coolbet', 'snabbare': 'snabbare',
+    'tipwin': 'tipwin', 'coolbet': 'coolbet',
     # Sharp
     'pinnacle': 'pinnacle',
     # Prediction markets
@@ -78,7 +78,7 @@ PLATFORM_GROUPS: dict[str, dict] = {
     },
     "comeon_group": {
         "canonical": "comeon",
-        "members": ["comeon", "lyllo", "hajper"],
+        "members": ["comeon", "lyllo", "hajper", "snabbare"],
     },
 }
 

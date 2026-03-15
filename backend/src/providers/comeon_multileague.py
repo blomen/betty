@@ -27,8 +27,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     DOM-based ComeOn retriever.
 
     Strategy: Navigate to sport league directory → discover leagues →
-    filter to Pinnacle-matched leagues → scrape each league page with
-    concurrent tabs → parse 1x2/spread/total from market tabs.
+    filter to Pinnacle-matched leagues → scrape each league page
+    sequentially on main page → parse 1x2/spread/total from market tabs.
     """
 
     SPORT_URL_MAP = {
@@ -46,13 +46,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
-    MAX_CONCURRENT_LEAGUES = 8
-
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        self._concurrent_leagues = config.get("concurrent_leagues", self.MAX_CONCURRENT_LEAGUES)
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         raise NotImplementedError("ComeOnMultiLeagueRetriever uses extract() directly")
@@ -64,10 +61,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
         await self.transport._ensure_browser()
-        page = self.transport.page
-
-        await self._dismiss_cookie_overlay(page)
-        self._cookie_dismissed = True
+        self._cookie_dismissed = False
 
         all_events = []
         sports_attempted = 0
@@ -133,31 +127,25 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         page = self.transport.page
 
-        # Validate page is still alive
-        try:
-            await page.evaluate("() => true", timeout=5000)
-        except Exception:
-            logger.warning(f"[{self.provider_id}] Page context dead, creating new page")
-            try:
-                page = await self.transport.context.new_page()
-                self.transport.page = page
-            except Exception:
-                logger.warning(f"[{self.provider_id}] Context dead, full browser reinit")
-                await self.transport.close()
-                await self.transport._ensure_browser()
-                page = self.transport.page
-                self._cookie_dismissed = False
-
         # Step 1: Navigate to league directory
         leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
         try:
             await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
             await asyncio.sleep(1.5)
         except Exception as e:
-            logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport_normalized}: {e}")
-            return []
+            # Page may be dead — try to recover once
+            logger.warning(f"[{self.provider_id}] Navigation failed, recovering page: {e}")
+            try:
+                page = await self.transport.context.new_page()
+                self.transport.page = page
+                self._cookie_dismissed = False
+                await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
+                await asyncio.sleep(1.5)
+            except Exception as e2:
+                logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport_normalized}: {e2}")
+                return []
 
-        if not getattr(self, '_cookie_dismissed', False):
+        if not self._cookie_dismissed:
             await self._dismiss_cookie_overlay(page)
             self._cookie_dismissed = True
 
@@ -177,22 +165,41 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         except Exception:
             pass
 
-        # Step 3: Expand all country accordions
+        # Step 3: Collect league URLs from popular section first
+        all_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
+        popular_count = len(all_leagues) if all_leagues else 0
+
+        # Step 4: Expand country accordions ONE AT A TIME (mutually exclusive)
         try:
-            expanded = await page.evaluate(JS.JS_EXPAND_ALL_COUNTRIES)
-            if expanded > 0:
-                await asyncio.sleep(0.5)
-                logger.debug(f"[{self.provider_id}] {sport_normalized}: expanded {expanded} countries")
+            country_count = await page.evaluate(JS.JS_GET_COUNTRY_COUNT)
+            if country_count > 0:
+                logger.debug(
+                    f"[{self.provider_id}] {sport_normalized}: "
+                    f"expanding {country_count} countries sequentially"
+                )
+                for i in range(country_count):
+                    clicked = await page.evaluate(JS.JS_CLICK_COUNTRY_AT_INDEX, i)
+                    if clicked:
+                        await asyncio.sleep(0.3)
+                        country_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
+                        # Merge new leagues (JS deduplicates by ID via seen Set)
+                        existing_ids = {lg["id"] for lg in all_leagues}
+                        for lg in country_leagues:
+                            if lg["id"] not in existing_ids:
+                                all_leagues.append(lg)
+                                existing_ids.add(lg["id"])
         except Exception as e:
             logger.debug(f"[{self.provider_id}] Country expansion failed: {e}")
 
-        # Step 4: Collect all league URLs
-        all_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
         if not all_leagues:
             logger.warning(f"[{self.provider_id}] {sport_normalized}: no leagues found")
             return []
 
-        logger.debug(f"[{self.provider_id}] {sport_normalized}: discovered {len(all_leagues)} leagues")
+        logger.debug(
+            f"[{self.provider_id}] {sport_normalized}: "
+            f"discovered {len(all_leagues)} leagues ({popular_count} popular + "
+            f"{len(all_leagues) - popular_count} from countries)"
+        )
 
         # Step 5: Filter leagues
         filtered_leagues = self._filter_leagues(all_leagues, target_leagues, sport_normalized)
@@ -201,40 +208,24 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             f"scraping {len(filtered_leagues)}/{len(all_leagues)} leagues"
         )
 
-        # Step 6: Scrape league pages concurrently
-        semaphore = asyncio.Semaphore(self._concurrent_leagues)
+        # Step 6: Scrape league pages sequentially on main page
+        # ComeOn's SPA only renders fully on the active page — new tabs
+        # don't hydrate the React app reliably. Sequential is required.
         all_events = []
 
-        async def scrape_with_semaphore(league_info):
-            async with semaphore:
-                league_page = await self.transport.context.new_page()
-                try:
-                    events = await scrape_league_page(
-                        page=league_page,
-                        league_href=league_info["href"],
-                        site_url=self.site_url,
-                        sport=sport_normalized,
-                        league_name=league_info["name"],
-                        provider_id=self.provider_id,
-                    )
-                    return events
-                except Exception as e:
-                    logger.debug(f"[{self.provider_id}] {league_info['name']}: scrape failed: {e}")
-                    return []
-                finally:
-                    try:
-                        await league_page.close()
-                    except Exception:
-                        pass
-
-        tasks = [scrape_with_semaphore(league) for league in filtered_leagues]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, list):
-                all_events.extend(result)
-            elif isinstance(result, Exception):
-                logger.debug(f"[{self.provider_id}] League scrape exception: {result}")
+        for league_info in filtered_leagues:
+            try:
+                events = await scrape_league_page(
+                    page=page,
+                    league_href=league_info["href"],
+                    site_url=self.site_url,
+                    sport=sport_normalized,
+                    league_name=league_info["name"],
+                    provider_id=self.provider_id,
+                )
+                all_events.extend(events)
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] {league_info['name']}: scrape failed: {e}")
 
         logger.info(
             f"[{self.provider_id}] {sport_normalized}: "

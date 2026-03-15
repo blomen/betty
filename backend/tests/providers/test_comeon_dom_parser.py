@@ -53,6 +53,11 @@ class TestParseAriaLabel:
         result = parse_aria_label("Lag till val: Real Madrid (+1), Odds: 1.45")
         assert result == {"name": "Real Madrid", "odds": 1.45, "point": 1.0}
 
+    def test_lagg_variant(self):
+        """Actual ComeOn aria-label uses 'Lägg till val' (with ä and double g)."""
+        result = parse_aria_label("Lägg till val: Chelsea, Odds: 1.88")
+        assert result == {"name": "Chelsea", "odds": 1.88}
+
 
 class TestParseSwedishDatetime:
     @freeze_time("2026-03-14 12:00:00", tz_offset=1)
