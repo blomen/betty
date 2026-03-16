@@ -302,3 +302,21 @@ export interface IndicatorsResponse {
   ml_day_type: string | null;
   ml_day_type_confidence: number | null;
 }
+
+/** Single OHLCV candle for chart rendering */
+export interface CandleData {
+  t: number;  // Unix epoch seconds
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+/** Response from GET /api/trading/market/candles */
+export interface CandlesResponse {
+  candles: CandleData[];
+  symbol: string;
+  interval: string;
+  date: string;
+}
