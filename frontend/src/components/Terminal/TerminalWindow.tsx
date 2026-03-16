@@ -142,8 +142,8 @@ export function TerminalWindow() {
         )}
         <ConnectionErrorBar />
         <ErrorNotificationBar />
-        <div className="flex-1 overflow-y-auto p-3">
-          <Suspense fallback={<div className="p-4 text-muted text-sm">Loading...</div>}>
+        <div className="flex-1 overflow-y-auto p-4">
+          <Suspense fallback={<div className="p-4 text-muted text-sm animate-blink">█</div>}>
             {isOverlay ? (
               renderPage()
             ) : tabs.length > 0 ? (
