@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
-  MonitoredLevel, BattleScreenData, OrderflowSnapshot,
+  MonitoredLevel, BattleScreenData,
   LevelTouchedEvent, LevelApproachingEvent, OrderflowUpdateEvent, LevelRejectedEvent,
 } from '@/types/market';
 

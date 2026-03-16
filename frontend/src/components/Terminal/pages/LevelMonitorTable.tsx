@@ -31,7 +31,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   overnight: 'text-zinc-400',
 };
 
-export function LevelMonitorTable({ levels, currentPrice, onLevelClick, compact }: Props) {
+export function LevelMonitorTable({ levels, onLevelClick, compact }: Props) {
   const displayLevels = compact ? levels.slice(0, 5) : levels;
 
   return (

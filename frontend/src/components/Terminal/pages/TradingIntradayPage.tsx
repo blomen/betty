@@ -11,7 +11,7 @@ import type { ExpandedSession, PositionRow } from '@/types/market';
 
 export function TradingIntradayPage() {
   const [session, setSession] = useState<ExpandedSession | null>(null);
-  const [positions, setPositions] = useState<PositionRow[]>([]);
+  const [positions] = useState<PositionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -32,7 +32,7 @@ export function TradingIntradayPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [sessionRes, levelsRes] = await Promise.all([
+      const [sessionRes] = await Promise.all([
         api.getExpandedSession().catch(() => null),
         api.getLiveLevels().catch(() => null),
       ]);
