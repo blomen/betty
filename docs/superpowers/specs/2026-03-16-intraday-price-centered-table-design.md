@@ -14,18 +14,18 @@ The intraday page uses a custom monospace level table that doesn't match the bet
 Replace `LevelMonitorTable` with a price-centered `.sq` table that mirrors the betting page table pattern. Current price sits as a highlighted divider row in the middle. Levels above price stack upward (closest to center first), levels below price stack downward (closest to center first).
 
 ```
-┌───────────┬──────────────┬─────────┬────────┬────────┐
-│ PRICE     │ LEVEL        │ TYPE    │ DIST   │ STATUS │
-├───────────┼──────────────┼─────────┼────────┼────────┤
-│ 25,180.00 │ monthly_high │ session │ +290   │ WATCH  │  ← furthest above
-│ 24,855.25 │ vah          │ session │ +35    │ WATCH  │  ← closest above
-├═══════════╧══════════════╧═════════╧════════╧════════┤
-│  ● NQ 24890.25  Live  +0.60 SD                      │  ← center divider
-├═══════════╤══════════════╤═════════╤════════╤════════┤
-│ 24,795.50 │ ib_high      │ session │ -95    │ WATCH  │  ← closest below
-│ 213.50    │ poc          │ session │ -854   │ WATCH  │
-│ 209.00    │ val          │ session │ -836   │ WATCH  │  ← furthest below
-└───────────┴──────────────┴─────────┴────────┴────────┘
+┌────────────┬──────────────┬─────────┬────────┬────────┐
+│ PRICE      │ LEVEL        │ TYPE    │ DIST   │ STATUS │
+├────────────┼──────────────┼─────────┼────────┼────────┤
+│ 25,180.00  │ monthly_high │ session │ +1160  │ WATCH  │  ← furthest above
+│ 24,920.25  │ vah          │ session │ +120   │ WATCH  │  ← closest above
+├════════════╧══════════════╧═════════╧════════╧════════┤
+│  ● NQ 24890.25  Live  +0.60 SD                       │  ← center divider
+├════════════╤══════════════╤═════════╤════════╤════════┤
+│ 24,795.50  │ ib_high      │ session │ -379   │ WATCH  │  ← closest below
+│ 24,213.50  │ poc          │ session │ -2707  │ WATCH  │
+│ 24,209.00  │ val          │ session │ -2725  │ WATCH  │  ← furthest below
+└────────────┴──────────────┴─────────┴────────┴────────┘
 ```
 
 ### Table Styling
@@ -35,6 +35,8 @@ Use the exact same `.sq` table pattern from ValuePage:
 - `<colgroup>` with column width percentages
 - `<thead className="sticky top-0 z-10 bg-panel">` with uppercase 10px headers
 - Standard `.sq` cell padding, borders, hover states, even-row shading
+- Center price row gets explicit `bg-zinc-800/50` class to override `.sq` even/odd shading
+- Rows are clickable — clicking a level row calls `switchBattleLevel(level)` to trigger the battle screen (same as current `onLevelClick` behavior)
 
 ### Columns
 
@@ -56,7 +58,11 @@ A `<tr>` with a single `<td colSpan={5}>` that displays:
 
 ### Sorting Logic
 
+Sorting happens in the **component** (not the hook). `currentPrice` comes from `lastTick?.price ?? session?.price_position?.last_price`. The hook pre-sorts by `Math.abs(distance_ticks)` but the component overrides this with a price-based split:
+
 ```typescript
+const currentPrice = lastTick?.price ?? session?.price_position?.last_price ?? 0;
+
 const above = levels
   .filter(l => l.price > currentPrice)
   .sort((a, b) => a.price - b.price);  // ascending: furthest at top, closest at bottom
@@ -68,7 +74,7 @@ const below = levels
 // Render: [...above, CENTER_ROW, ...below]
 ```
 
-Distance signs: levels above show `+N`, levels below show `-N`.
+**Distance sign convention:** The hook computes `distance_ticks = (currentPrice - levelPrice) / TICK`, so levels above have negative values and levels below have positive values. For display, **negate** the sign so it reads naturally: levels above show `+N` (price is above you), levels below show `-N` (price is below you). Display: `const displayDist = -level.distance_ticks;`
 
 ### Page Structure
 
