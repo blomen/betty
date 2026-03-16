@@ -41,6 +41,17 @@ async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
     return {"status": "no_data", "date": date}
 
 
+@router.get("/candles")
+async def get_candles(
+    symbol: str = Query(default="NQ"),
+    interval: str = Query(default="5m", pattern="^(1m|5m|15m)$"),
+    date: str = Query(default=None),
+    svc: MarketService = Depends(_svc),
+):
+    """Return OHLCV candles for charting."""
+    return await svc.get_candles(symbol, interval, date)
+
+
 @router.get("/signals")
 async def get_active_signals(svc: MarketService = Depends(_svc)):
     """Get currently active trading signals."""

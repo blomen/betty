@@ -960,6 +960,12 @@ export const api = {
 
   // ============ Market Data / Scanner ============
 
+  async getCandles(symbol = 'NQ', interval = '5m', date?: string): Promise<import('@/types/market').CandlesResponse> {
+    const params = new URLSearchParams({ symbol, interval });
+    if (date) params.set('date', date);
+    return fetchJson(`/trading/market/candles?${params}`);
+  },
+
   async getMarketSession(): Promise<import('@/types/market').MarketSession> {
     return fetchJson('/trading/market/session');
   },
