@@ -70,11 +70,20 @@ async def trigger_scan(
 
 @router.post("/compute")
 async def trigger_compute(
+    request: Request,
     date: str = Query(default=None, description="Date to compute (YYYY-MM-DD, default today)"),
     svc: MarketService = Depends(_svc),
 ):
     """Fetch market data and compute AMT analysis for a date."""
     data = await svc.compute_session(date)
+
+    # Refresh level monitor with new session data
+    level_monitor = getattr(request.app.state, "level_monitor", None)
+    if level_monitor:
+        expanded = await svc.build_expanded_session()
+        if expanded:
+            level_monitor.load_levels(expanded)
+
     return data
 
 
@@ -164,6 +173,20 @@ async def get_levels(
         }
         for l in levels
     ]
+
+
+@router.get("/levels/live")
+async def get_live_levels(request: Request):
+    """Get all monitored levels with current distance and status."""
+    monitor = getattr(request.app.state, "level_monitor", None)
+    stream = _get_live_stream(request)
+    if not monitor or not stream:
+        return {"levels": [], "price": None}
+    last_price = stream.buffer.ticks[-1]["price"] if stream.buffer.ticks else None
+    return {
+        "levels": monitor.get_levels_snapshot(last_price or 0),
+        "price": last_price,
+    }
 
 
 @router.get("/context")

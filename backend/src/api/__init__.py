@@ -195,6 +195,26 @@ async def lifespan(app: FastAPI):
         await _databento_stream.start()
         app.state.databento_stream = _databento_stream
 
+        # Initialize Level Monitor for proximity-based level alerts
+        from ..market_data.level_monitor import LevelMonitor
+        from ..services.market_service import MarketService
+
+        level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
+        _databento_stream.set_level_monitor(level_monitor)
+        app.state.level_monitor = level_monitor
+
+        # Load initial levels if session exists
+        try:
+            svc = MarketService(_get_db_session())
+            try:
+                expanded = await svc.build_expanded_session()
+                if expanded:
+                    level_monitor.load_levels(expanded)
+            finally:
+                svc.db.close()
+        except Exception as e:
+            logger.warning("Failed to load initial levels for monitor: %s", e)
+
         # Refresh COT data on startup
         try:
             from ..market_data.cot import fetch_cot, store_cot_data
