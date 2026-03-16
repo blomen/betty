@@ -267,6 +267,30 @@ class Bet(Base):
         return (self.profit / self.stake) * 100
 
 
+class BetPostmortem(Base):
+    """Post-settlement classification for a bet. One row per settled bet."""
+    __tablename__ = "bet_postmortems"
+
+    bet_id = Column(Integer, ForeignKey("bets.id"), primary_key=True)
+    classification = Column(String, nullable=False)  # expected_loss, edge_erosion, false_edge, sizing_error, expected_win, bonus_win
+    edge_at_placement = Column(Float, nullable=True)  # Derived: (odds / fair_odds_at_placement - 1) * 100
+    clv_pct = Column(Float, nullable=True)  # Copied from bet.clv_pct
+    clv_confirmed = Column(Boolean, default=False)  # True if (start_time - placed_at) <= 12h
+    expected_win_pct = Column(Float, nullable=True)  # 1 / fair_odds_at_placement
+    kelly_fraction = Column(Float, nullable=True)  # actual_stake / kelly_optimal_stake
+    is_oversized = Column(Boolean, default=False)  # kelly_fraction > 1.5
+    is_undersized = Column(Boolean, default=False)  # kelly_fraction < 0.5
+    variance_score = Column(Float, nullable=True)  # win: 1 - expected_win_pct, loss: expected_win_pct
+    computed_at = Column(DateTime, default=_utcnow)
+    version = Column(Integer, default=1)
+
+    bet = relationship("Bet")
+
+    __table_args__ = (
+        Index("ix_bet_pm_classification_version", "classification", "version"),
+    )
+
+
 # ============ User Settings ============
 
 class Profile(Base):
@@ -992,6 +1016,30 @@ class TradeReview(Base):
 
     # Relationships
     trade = relationship("Trade", back_populates="review")
+
+
+class TradePostmortem(Base):
+    """Post-close classification for a trade. One row per closed trade."""
+    __tablename__ = "trade_postmortems"
+
+    trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
+    classification = Column(String, nullable=False)  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
+    r_multiple = Column(Float, nullable=True)
+    setup_avg_r = Column(Float, nullable=True)
+    setup_win_rate = Column(Float, nullable=True)
+    stop_quality = Column(String, nullable=True)  # optimal, too_wide
+    target_quality = Column(String, nullable=True)  # hit_target, partial_exit_good, missed_runner, exited_early
+    streak_position = Column(Integer, nullable=True)  # negative = losing streak
+    routine_psych_avg = Column(Float, nullable=True)
+    rules_followed = Column(Boolean, nullable=True)
+    computed_at = Column(DateTime, default=_utcnow)
+    version = Column(Integer, default=1)
+
+    trade = relationship("Trade")
+
+    __table_args__ = (
+        Index("ix_trade_pm_classification_version", "classification", "version"),
+    )
 
 
 class MarketSession(Base):
