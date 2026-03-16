@@ -26,59 +26,65 @@ Daily POC/VAH/VAL already exist as `poc`, `vah`, `val` with `session=rth`.
 
 ### Data Fetching
 
-**Weekly bars:** Reuse existing `_fetch_weekly_bars()` — fetches RTH 1-min bars for Mon-today, already cached by `CachedMarketDataProvider`.
+**Weekly bars:** Reuse existing `_fetch_weekly_bars()` — iterates day-by-day (Mon→today), fetching RTH 1-min bars per day. Each day cached independently by `CachedMarketDataProvider`.
 
-**Monthly bars:** New `_fetch_monthly_bars()` method — fetches RTH 1-hour bars for the 1st of current month through today. Uses `ohlcv-1h` schema to keep record count low (~154 bars for a full month). Same pattern as `_fetch_weekly_bars()`.
+**Monthly bars:** New `_fetch_monthly_bars()` method — same day-by-day iteration pattern as `_fetch_weekly_bars()`, fetching RTH 1-hour bars per day from the 1st of current month through today. Day-by-day iteration is required because the cache keys by `start.date()` — a single month-spanning call would cache stale data permanently.
 
 Both use the existing `compute_volume_profile()` function from `levels.py`, converting bars to `{price, size}` trade dicts via close price × volume.
+
+**Minimum data threshold:** Skip weekly VP if < 2 trading days of data. Skip monthly VP if < 5 trading days. On those early days the composite would just duplicate the daily session VP.
 
 ### Backend Changes
 
 #### 1. `MarketService._fetch_monthly_bars()` (new method)
 
+Day-by-day iteration (same pattern as `_fetch_weekly_bars()`) to ensure correct caching:
+
 ```python
 async def _fetch_monthly_bars(self, symbol: str) -> list[dict]:
-    """Fetch 1-hour RTH bars for current calendar month."""
+    """Fetch 1-hour RTH bars for current calendar month (day-by-day for cache correctness)."""
     today = date.today()
     first_of_month = today.replace(day=1)
     provider = _get_provider()
     config = get_market_data_config()
     full_symbol = config.get("symbol", "NQ.FUT")
     sessions_cfg = config.get("sessions", {})
-
-    start_dt = datetime.combine(
-        first_of_month,
-        datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time()
-    )
-    end_dt = datetime.combine(
-        today,
-        datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
-    )
-    bars = await provider.get_bars(full_symbol, "1h", start_dt, end_dt)
-    if not bars:
-        return []
-    return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
+    bars_all = []
+    current = first_of_month
+    while current <= today:
+        dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+        dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
+        day_bars = await provider.get_bars(full_symbol, "1h", dt, dt_close)
+        if day_bars:
+            bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
+        current += timedelta(days=1)
+    return bars_all
 ```
 
 #### 2. `MarketService.compute_session()` — add composite VP computation
 
-After computing daily VP and session levels, compute weekly and monthly VPs:
+After computing daily VP and session levels, compute weekly and monthly VPs. Pass them to `_session_levels_to_rows()`:
 
 ```python
-# Weekly composite VP
+# Weekly composite VP (min 2 trading days)
 weekly_bars = await self._fetch_weekly_bars(symbol)
 weekly_vp = None
-if weekly_bars:
+if weekly_bars and len(weekly_bars) >= 780:  # ~2 days of 1-min bars
     wb_trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in weekly_bars]
     weekly_vp = compute_volume_profile(wb_trades)
 
-# Monthly composite VP
+# Monthly composite VP (min 5 trading days)
 monthly_bars = await self._fetch_monthly_bars(symbol)
 monthly_vp = None
-if monthly_bars:
+if monthly_bars and len(monthly_bars) >= 35:  # ~5 days of 1-hour bars
     mb_trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in monthly_bars]
     monthly_vp = compute_volume_profile(mb_trades)
+
+# Pass composite VPs to level row builder
+level_rows = self._session_levels_to_rows(session_levels, session_data, weekly_vp, monthly_vp)
 ```
+
+Note: The existing call `level_rows = self._session_levels_to_rows(session_levels, session_data)` on line 208 gets updated to pass the new args.
 
 #### 3. `MarketService._session_levels_to_rows()` — add composite levels
 
@@ -109,9 +115,20 @@ def _session_levels_to_rows(
     return rows
 ```
 
-#### 4. `MarketService.build_expanded_session()` — store composite profiles
+#### 4. `MarketService.build_expanded_session()` — add monthly profile
 
-The `profiles` dict already has a `weekly` key. Ensure it's populated from the DB-persisted levels (or recompute). The monthly profile gets added the same way. No structural change — `profiles["weekly"]` and `profiles["monthly"]` already have `poc`, `vah`, `val` fields.
+The `profiles` dict already computes `profiles["weekly"]` (line 277-282). Add the same for monthly:
+
+```python
+# Monthly composite (reuse _fetch_monthly_bars)
+monthly_bars = await self._fetch_monthly_bars(symbol)
+if monthly_bars and len(monthly_bars) >= 35:
+    mb_trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in monthly_bars]
+    monthly_vp = compute_volume_profile(mb_trades)
+    profiles["monthly"] = {"poc": monthly_vp.poc, "vah": monthly_vp.vah, "val": monthly_vp.val}
+```
+
+This ensures the REST API `/api/trading/market/session` response includes the monthly VP in the `profiles` dict alongside the existing weekly VP. Both `compute_session()` (persists levels to DB) and `build_expanded_session()` (serves REST API) now have consistent monthly VP data.
 
 #### 5. `LevelMonitor._categorize()` — no change needed
 
@@ -123,12 +140,12 @@ Weekly/monthly VP levels have names like `weekly_poc`, `monthly_val`. The existi
 
 ### Data Cost
 
-| Composite | Schema | Records/fetch | Frequency |
-|-----------|--------|--------------|-----------|
-| Weekly | `ohlcv-1m` | ~1,950 (5 days × 390 bars) | On compute_session |
-| Monthly | `ohlcv-1h` | ~154 (22 days × 7 bars) | On compute_session |
+| Composite | Schema | Records/fetch | API calls | Frequency |
+|-----------|--------|--------------|-----------|-----------|
+| Weekly | `ohlcv-1m` | ~1,950 (5 days × 390 bars) | 5 (day-by-day) | On compute_session |
+| Monthly | `ohlcv-1h` | ~154 (22 days × 7 bars) | 22 (day-by-day) | On compute_session |
 
-All fetches go through `CachedMarketDataProvider` — second calls are free.
+All fetches go through `CachedMarketDataProvider` — completed days are cached permanently, only the current day refetches. The day-by-day iteration adds API calls but ensures cache correctness (cache keys by `start.date()`).
 
 ### TPO Alignment
 
