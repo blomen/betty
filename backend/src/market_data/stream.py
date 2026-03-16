@@ -1,6 +1,7 @@
 """Databento live stream client for Trades + MBP-1."""
 import asyncio
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -124,6 +125,59 @@ class TickWriter:
             logger.error("Trade prune failed: %s", e)
 
 
+class CandleFlow:
+    """Aggregates ticks into a running OHLCV candle for the current 5-min bucket."""
+
+    BUCKET_SECONDS = 300  # 5 minutes
+    EMIT_INTERVAL = 5.0   # seconds between candle event emissions
+
+    def __init__(self):
+        self._bucket_start: int = 0
+        self._o = self._h = self._l = self._c = 0.0
+        self._v = 0
+        self._dirty = False
+        self._last_emit: float = 0.0
+
+    def _bucket_for(self, epoch: float) -> int:
+        return int(epoch) // self.BUCKET_SECONDS * self.BUCKET_SECONDS
+
+    def update(self, price: float, size: int, epoch: float) -> dict | None:
+        """Feed a tick. Returns a candle event dict if it's time to emit, else None."""
+        bucket = self._bucket_for(epoch)
+
+        if bucket != self._bucket_start:
+            # New bucket — reset
+            self._bucket_start = bucket
+            self._o = self._h = self._l = self._c = price
+            self._v = size
+        else:
+            self._h = max(self._h, price)
+            self._l = min(self._l, price)
+            self._c = price
+            self._v += size
+
+        self._dirty = True
+
+        now = time.monotonic()
+        if now - self._last_emit >= self.EMIT_INTERVAL and self._dirty:
+            self._last_emit = now
+            self._dirty = False
+            return self.snapshot()
+
+        return None
+
+    def snapshot(self) -> dict:
+        return {
+            "type": "candle",
+            "t": self._bucket_start,
+            "o": self._o,
+            "h": self._h,
+            "l": self._l,
+            "c": self._c,
+            "v": self._v,
+        }
+
+
 class DatabentoLiveStream:
     """Manages a persistent Databento live subscription (Trades + MBP-1)."""
 
@@ -139,6 +193,7 @@ class DatabentoLiveStream:
         self.symbol = symbol
         self.buffer = TickBuffer()
         self.book = TopOfBook()
+        self._candle_flow = CandleFlow()
         self._running = False
         self._task: asyncio.Task | None = None
         self._subscribers: list[asyncio.Queue] = []
@@ -219,6 +274,12 @@ class DatabentoLiveStream:
                         "delta_1m": self.buffer.delta_1m,
                     }
                     self._publish(event)
+
+                    # Aggregate into running candle and emit periodically
+                    ts_epoch = record.ts_event / 1e9
+                    candle_event = self._candle_flow.update(price, record.size, ts_epoch)
+                    if candle_event:
+                        self._publish(candle_event)
 
                 elif hasattr(record, "levels") and len(record.levels) >= 2:
                     # MBP-1 record — top of book

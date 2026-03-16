@@ -911,6 +911,23 @@ class MarketService:
             "ml_day_type_confidence": ml_day_type_confidence,
         }
 
+    async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None) -> dict:
+        """Return OHLCV candle array for charting."""
+        provider = _get_provider()
+        target = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        target_dt = datetime.strptime(target, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_dt = target_dt + timedelta(days=1)
+        bars = await provider.get_bars(f"{symbol}.FUT", interval, target_dt, end_dt)
+        return {
+            "candles": [
+                {"t": int(b.timestamp.timestamp()), "o": b.open, "h": b.high, "l": b.low, "c": b.close, "v": b.volume}
+                for b in bars
+            ],
+            "symbol": symbol,
+            "interval": interval,
+            "date": target,
+        }
+
     def get_session_history(self, symbol: str | None = None, limit: int = 30) -> list[dict]:
         """Get historical session data."""
         config = get_market_data_config()
