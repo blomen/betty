@@ -2,10 +2,13 @@
 
 import csv
 import io
+import logging
 import math
 from datetime import date, datetime, timezone
 
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from ..constants import TRADE_STATE_TRANSITIONS, PSYCH_GATE_THRESHOLD
 from ..config.trading_loader import get_instruments, get_setups, get_routine_config
@@ -348,6 +351,14 @@ class TradingService:
             details={"exit_price": exit_price, "pnl": realized_pnl, "commission": commission},
             notes=notes,
         )
+
+        # Compute postmortem (synchronous, non-critical)
+        try:
+            from .postmortem_service import PostmortemService
+            PostmortemService(self.db).compute_trade(trade)
+        except Exception as e:
+            logger.warning(f"Postmortem compute failed for trade {trade_id}: {e}")
+
         self.db.commit()
         return {"success": True, "realized_pnl": realized_pnl, "r_multiple": r_multiple}
 
