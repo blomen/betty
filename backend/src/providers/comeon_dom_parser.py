@@ -367,8 +367,8 @@ async def scrape_league_page(
 ) -> list[StandardEvent]:
     """Scrape a single league page for all events and markets.
 
-    Navigates to the league page, parses 1x2 from default tab,
-    then clicks spread and total tabs to get those markets.
+    Navigates to the league page, then runs a single JS evaluation that
+    parses 1x2, clicks spread/total tabs, and collects all markets.
     """
     url = f"{site_url}{league_href}" if league_href.startswith("/") else league_href
 
@@ -385,27 +385,59 @@ async def scrape_league_page(
         logger.debug(f"[{provider_id}] League {league_name}: no game cards (empty or timeout)")
         return []
 
-    await asyncio.sleep(0.5)
+    # Single JS call: parse 1x2 + discover pills + click spread/total + collect all odds
+    try:
+        result = await page.evaluate(JS.JS_SCRAPE_ALL_MARKETS, {
+            "spreadKeywords": list(_SPREAD_KEYWORDS),
+            "totalKeywords": list(_TOTAL_KEYWORDS),
+            "otKeywords": list(OT_KEYWORDS),
+            "otSports": list(OT_SPORTS),
+            "sport": sport,
+        })
+    except Exception as e:
+        logger.debug(f"[{provider_id}] League {league_name}: combined scrape failed: {e}")
+        return []
 
-    # Step 1: Parse default tab (1x2/moneyline)
-    card_data = await page.evaluate(JS.JS_PARSE_GAME_CARDS)
+    card_data = result.get("events", [])
     if not card_data:
         return []
 
-    # Build event shells with 1x2 markets
+    spread_odds = result.get("spreadOdds", {})
+    total_odds = result.get("totalOdds", {})
+
+    # Build events with all markets from the single JS result
     events: dict[str, StandardEvent] = {}
     for card in card_data:
         home = normalize_team_name(card["home"])
         away = normalize_team_name(card["away"])
         start_time = parse_swedish_datetime(card["timeText"])
+        event_id = card["eventId"]
 
+        # 1x2 market from default tab
         labels = [parse_aria_label(l) for l in card["odds"]]
         labels = [l for l in labels if l is not None]
-        market = build_outcomes_from_labels(labels, "1x2", home, away)
+        market_1x2 = build_outcomes_from_labels(labels, "1x2", home, away)
 
-        markets = [market] if market else []
-        events[card["eventId"]] = StandardEvent(
-            id=card["eventId"],
+        markets = [market_1x2] if market_1x2 else []
+
+        # Spread market
+        if event_id in spread_odds:
+            s_labels = [parse_aria_label(l) for l in spread_odds[event_id]]
+            s_labels = [l for l in s_labels if l is not None]
+            spread_market = build_outcomes_from_labels(s_labels, "spread", home, away)
+            if spread_market:
+                markets.append(spread_market)
+
+        # Total market
+        if event_id in total_odds:
+            t_labels = [parse_aria_label(l) for l in total_odds[event_id]]
+            t_labels = [l for l in t_labels if l is not None]
+            total_market = build_outcomes_from_labels(t_labels, "total", home, away)
+            if total_market:
+                markets.append(total_market)
+
+        events[event_id] = StandardEvent(
+            id=event_id,
             name=f"{home} vs {away}",
             sport=sport,
             provider=provider_id,
@@ -416,18 +448,7 @@ async def scrape_league_page(
             start_time=start_time.isoformat() if start_time else "",
         )
 
-    # Step 2: Get market pills and select spread/total
-    pills = await page.evaluate(JS.JS_GET_MARKET_PILLS)
-    spread_pill, total_pill = select_market_pills(pills, sport)
-
-    # Step 3: Click spread tab and parse
-    if spread_pill:
-        await _scrape_market_tab(page, spread_pill, "spread", events, provider_id, league_name)
-
-    # Step 4: Click total tab and parse
-    if total_pill:
-        await _scrape_market_tab(page, total_pill, "total", events, provider_id, league_name)
-
+    pills = result.get("pills", [])
     logger.debug(
         f"[{provider_id}] League {league_name}: {len(events)} events, "
         f"pills=[{', '.join(pills[:4])}...]"
@@ -436,37 +457,3 @@ async def scrape_league_page(
     return list(events.values())
 
 
-async def _scrape_market_tab(
-    page,
-    pill_text: str,
-    market_type: str,
-    events: dict[str, StandardEvent],
-    provider_id: str,
-    league_name: str,
-) -> None:
-    """Click a market tab pill and parse the resulting odds into events."""
-    try:
-        clicked = await page.evaluate(JS.JS_CLICK_PILL, pill_text)
-        if not clicked:
-            return
-
-        # Wait for DOM to update after tab click
-        await asyncio.sleep(0.8)
-
-        # Get odds per event
-        card_odds = await page.evaluate(JS.JS_GET_CARD_ODDS)
-        for event_id, aria_labels in card_odds.items():
-            event = events.get(event_id)
-            if not event:
-                continue
-
-            labels = [parse_aria_label(l) for l in aria_labels]
-            labels = [l for l in labels if l is not None]
-            market = build_outcomes_from_labels(
-                labels, market_type, event.home_team, event.away_team
-            )
-            if market:
-                event.markets.append(market)
-
-    except Exception as e:
-        logger.debug(f"[{provider_id}] {league_name}: {market_type} tab failed: {e}")

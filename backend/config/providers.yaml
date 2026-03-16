@@ -595,7 +595,7 @@ providers:
     domain: comeon.com
     retriever_type: custom
     site_url: https://www.comeon.com
-    provider_timeout: 900              # 12 sports × ~45s each (date scrolling adds more dates)
+    provider_timeout: 1200             # 12 sports × ~45s each — Camoufox is slower than Playwright
     sport_timeout: 120                 # ~21 dates × 2s wait + overhead
     bonus:
       type: bonusdeposit
@@ -833,12 +833,8 @@ extraction_tiers:
       # Spectate (2)
       - mrgreen
       - 888sport
-      # ComeOn Group (3)
+      # ComeOn Group (1 canonical — hajper/lyllo/snabbare fanned out via PLATFORM_GROUPS)
       - comeon
-      - hajper
-      - lyllo
-      # Snabbare (1)
-      - snabbare
       # 10Bet (1)
       - 10bet
       # Interwetten (1)
@@ -892,12 +888,8 @@ active:
   - nordicbet
   - spelklubben  # OBG platform — re-enabled 2026-02-10
   - bethard
-  # Snabbare (1)
-  - snabbare
-  # ComeOn Group (3)
+  # ComeOn Group (1 canonical — hajper/lyllo/snabbare fanned out via PLATFORM_GROUPS)
   - comeon
-  - hajper
-  - lyllo
 
 
 # ============================================================================
