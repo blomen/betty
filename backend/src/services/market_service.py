@@ -1065,6 +1065,29 @@ class MarketService:
             logger.warning("Failed to fetch weekly bars: %s", e)
             return []
 
+    async def _fetch_monthly_bars(self, symbol: str) -> list[dict]:
+        """Fetch 1-hour RTH bars for current calendar month (day-by-day for cache correctness)."""
+        today = date.today()
+        first_of_month = today.replace(day=1)
+        try:
+            provider = _get_provider()
+            config = get_market_data_config()
+            full_symbol = config.get("symbol", "NQ.FUT")
+            sessions_cfg = config.get("sessions", {})
+            bars_all = []
+            current = first_of_month
+            while current <= today:
+                dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+                dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
+                day_bars = await provider.get_bars(full_symbol, "1h", dt, dt_close)
+                if day_bars:
+                    bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
+                current += timedelta(days=1)
+            return bars_all
+        except Exception as e:
+            logger.warning("Failed to fetch monthly bars: %s", e)
+            return []
+
     async def _fetch_bars_range(self, symbol: str, start_date: str, daily: bool = False) -> list[dict]:
         """Fetch bars from start_date to today. Use daily=True for long ranges."""
         today_str = date.today().isoformat()
