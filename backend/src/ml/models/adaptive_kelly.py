@@ -8,6 +8,7 @@ Min training data: 300 bets/trades.
 """
 import logging
 import json
+import warnings
 import numpy as np
 from pathlib import Path
 
@@ -70,7 +71,9 @@ class AdaptiveKellyModel:
             return None
         X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
         try:
-            pred = self.model.predict(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                pred = self.model.predict(X)
             return float(np.clip(pred[0], 0.0, 1.0))
         except Exception as e:
             logger.warning(f"Kelly prediction failed: {e}")

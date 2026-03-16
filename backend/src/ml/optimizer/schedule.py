@@ -5,6 +5,7 @@ Uses LightGBM regression to predict how many value bets a run will produce
 given current timing/health context. Recommends skipping low-yield runs.
 """
 import logging
+import warnings
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,9 @@ class ScheduleOptimizer:
         if self._model is None:
             return -1.0
         X = np.array([[features.get(f, 0) or 0 for f in FEATURE_NAMES]], dtype=float)
-        pred = float(self._model.predict(X)[0])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="X does not have valid feature names")
+            pred = float(self._model.predict(X)[0])
         return max(0.0, pred)
 
     def should_skip_run(self, features: dict, min_yield: float = 2.0) -> bool:

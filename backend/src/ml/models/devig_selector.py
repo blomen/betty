@@ -7,6 +7,7 @@ Min training data: 500 bets across sports/markets.
 """
 import logging
 import json
+import warnings
 import numpy as np
 from pathlib import Path
 
@@ -73,7 +74,9 @@ class DevigSelectorModel:
             return None
         X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
         try:
-            proba = self.model.predict_proba(X)[0]
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                proba = self.model.predict_proba(X)[0]
             best_idx = int(np.argmax(proba))
             return {
                 "method": METHODS[best_idx],

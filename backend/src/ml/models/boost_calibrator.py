@@ -7,6 +7,7 @@ Min training data: 100 resolved boosts.
 """
 import logging
 import json
+import warnings
 import numpy as np
 from pathlib import Path
 
@@ -81,7 +82,9 @@ class BoostCalibratorModel:
         try:
             if self.lgbm_model is not None:
                 X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
-                proba = self.lgbm_model.predict_proba(X)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                    proba = self.lgbm_model.predict_proba(X)
                 return float(proba[0][1])
             llm_prob = features.get("llm_raw_probability", 0.5)
             calibrated = self.isotonic_model.predict([llm_prob])

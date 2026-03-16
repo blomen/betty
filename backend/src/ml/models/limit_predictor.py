@@ -7,6 +7,7 @@ Min training data: 20 limit events.
 """
 import logging
 import json
+import warnings
 import numpy as np
 from pathlib import Path
 
@@ -87,7 +88,9 @@ class LimitPredictorModel:
             return None
         X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
         try:
-            proba = self.model.predict_proba(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                proba = self.model.predict_proba(X)
             return float(proba[0][1])
         except Exception as e:
             logger.warning(f"Limit prediction failed: {e}")

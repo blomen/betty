@@ -4,6 +4,7 @@ Models loaded lazily from ml_model_registry.
 Falls back to None (rules-based) when model unavailable.
 """
 import logging
+import warnings
 import numpy as np
 from pathlib import Path
 
@@ -79,29 +80,31 @@ class Predictor:
 
         try:
             X = np.array([[features.get(f, 0.0) for f in feature_names]])
-            if task == "calibration":
-                # Boost calibrator: prefer lgbm_model, fall back to isotonic
-                lgbm = model_data.get("lgbm_model")
-                if lgbm is not None:
-                    proba = lgbm.predict_proba(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="X does not have valid feature names")
+                if task == "calibration":
+                    # Boost calibrator: prefer lgbm_model, fall back to isotonic
+                    lgbm = model_data.get("lgbm_model")
+                    if lgbm is not None:
+                        proba = lgbm.predict_proba(X)
+                        return float(proba[0][1])
+                    isotonic = model_data.get("isotonic_model")
+                    if isotonic is not None:
+                        llm_prob = features.get("llm_raw_probability", 0.5)
+                        return float(isotonic.predict([llm_prob])[0])
+                    return None
+                if task == "multiclass":
+                    proba = model.predict_proba(X)[0]
+                    return {
+                        "class": int(np.argmax(proba)),
+                        "probabilities": proba.tolist(),
+                    }
+                elif task == "classification":
+                    proba = model.predict_proba(X)
                     return float(proba[0][1])
-                isotonic = model_data.get("isotonic_model")
-                if isotonic is not None:
-                    llm_prob = features.get("llm_raw_probability", 0.5)
-                    return float(isotonic.predict([llm_prob])[0])
-                return None
-            if task == "multiclass":
-                proba = model.predict_proba(X)[0]
-                return {
-                    "class": int(np.argmax(proba)),
-                    "probabilities": proba.tolist(),
-                }
-            elif task == "classification":
-                proba = model.predict_proba(X)
-                return float(proba[0][1])
-            else:
-                pred = model.predict(X)
-                return float(pred[0])
+                else:
+                    pred = model.predict(X)
+                    return float(pred[0])
         except Exception as e:
             logger.warning(f"Prediction failed for {model_name}: {e}")
             return None
