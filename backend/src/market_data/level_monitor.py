@@ -50,6 +50,7 @@ class LevelMonitor:
         self._any_at_level: bool = False
         self._tick_buffer = None
         self._candle_flow_fn = None
+        self._open_positions: list[dict] = []  # [{trade_id, direction, entry, stop, targets: [{name, price, hit}]}]
 
     def load_levels(self, expanded_session: dict) -> None:
         """Load levels from an ExpandedSession dict. Called on compute_session()."""
@@ -151,6 +152,8 @@ class LevelMonitor:
             self._emit_orderflow_update(price)
             self._last_orderflow_emit = now
 
+        self._check_positions(price)
+
     def mark_triggered(self, level_name: str) -> None:
         """Mark a level as triggered (trade taken)."""
         for level in self._levels:
@@ -199,6 +202,42 @@ class LevelMonitor:
             "long": long_signals.__dict__,
             "short": short_signals.__dict__,
         }
+
+    # --- Position target tracking ---
+
+    def register_position(self, trade_id: int, direction: str, entry: float, stop: float, targets: list[dict]) -> None:
+        """Register an open position for target monitoring."""
+        self._open_positions.append({
+            "trade_id": trade_id,
+            "direction": direction,
+            "entry_price": entry,
+            "stop_price": stop,
+            "targets": [{"name": t["name"], "price": t["price"], "hit": False} for t in targets],
+        })
+
+    def close_position(self, trade_id: int) -> None:
+        """Remove a closed position from monitoring."""
+        self._open_positions = [p for p in self._open_positions if p["trade_id"] != trade_id]
+
+    def _check_positions(self, price: float) -> None:
+        """Check if any open position has reached a target level."""
+        for pos in self._open_positions:
+            for target in pos["targets"]:
+                if target["hit"]:
+                    continue
+                dist = abs(price - target["price"]) / TICK_SIZE
+                if dist <= self.AT_LEVEL_TICKS:
+                    target["hit"] = True
+                    snapshot = self._compute_orderflow_snapshot()
+                    self._publish({
+                        "type": "position_at_target",
+                        "trade_id": pos["trade_id"],
+                        "target_name": target["name"],
+                        "target_price": target["price"],
+                        "price": price,
+                        "direction": pos["direction"],
+                        "orderflow": snapshot,
+                    })
 
     # --- SSE event emitters ---
 
