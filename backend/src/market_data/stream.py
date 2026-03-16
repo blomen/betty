@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
+from .level_monitor import LevelMonitor
+
 logger = logging.getLogger(__name__)
 
 # Batch flush config
@@ -194,6 +196,7 @@ class DatabentoLiveStream:
         self.buffer = TickBuffer()
         self.book = TopOfBook()
         self._candle_flow = CandleFlow()
+        self._level_monitor: LevelMonitor | None = None
         self._running = False
         self._task: asyncio.Task | None = None
         self._subscribers: list[asyncio.Queue] = []
@@ -228,6 +231,20 @@ class DatabentoLiveStream:
     def unsubscribe(self, q: asyncio.Queue):
         if q in self._subscribers:
             self._subscribers.remove(q)
+
+    def set_level_monitor(self, monitor: LevelMonitor) -> None:
+        """Attach a level monitor to receive tick callbacks."""
+        self._level_monitor = monitor
+        monitor.set_tick_buffer(self.buffer)
+        monitor.set_candle_flow_source(self._get_recent_candles)
+
+    def _get_recent_candles(self):
+        """Build CandleFlow candles from recent tick buffer for orderflow computation."""
+        from .orderflow import build_candle_flow
+        ticks = list(self.buffer.ticks)  # deque snapshot
+        if len(ticks) < 10:
+            return []
+        return build_candle_flow(ticks, period_seconds=300)
 
     async def _stream_loop(self):
         try:
@@ -280,6 +297,10 @@ class DatabentoLiveStream:
                     candle_event = self._candle_flow.update(price, record.size, ts_epoch)
                     if candle_event:
                         self._publish(candle_event)
+
+                    # Level proximity check
+                    if self._level_monitor:
+                        self._level_monitor.on_tick(price, record.size, ts_epoch)
 
                 elif hasattr(record, "levels") and len(record.levels) >= 2:
                     # MBP-1 record — top of book
