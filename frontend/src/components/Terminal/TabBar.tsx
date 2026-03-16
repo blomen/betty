@@ -107,7 +107,7 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
   if (tabs.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-0 border-b border-border bg-panel px-2 flex-shrink-0">
+    <div className="flex items-center gap-1 border-b-2 border-border bg-panel px-3 flex-shrink-0">
       {tabs.map(tab => {
         const isActive = activeTab === tab.name;
         return (
@@ -115,17 +115,14 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
             key={tab.name}
             onClick={() => onTabChange(tab.name)}
             className={`
-              flex items-center gap-1.5 px-3 py-2 text-xs font-mono
-              transition-colors duration-150 outline-none border-b-2 -mb-px
-              ${isActive
-                ? 'text-text'
-                : 'text-muted hover:text-text border-b-transparent'
-              }
+              flex items-center gap-1.5 px-4 py-2.5 text-xs font-mono
+              uppercase tracking-wider outline-none
+              ${isActive ? 'font-bold' : 'text-muted hover:text-text'}
             `}
-            style={isActive ? { borderBottomColor: tab.color } : undefined}
+            style={isActive ? { backgroundColor: tab.color, color: '#0a0e0a' } : undefined}
           >
-            <TabIcon name={tab.name} color={tab.color} />
-            <span>{tab.label}</span>
+            <span style={{ color: isActive ? '#0a0e0a' : tab.color }}>●</span>
+            <span>{isActive ? `[ ${tab.label} ]` : tab.label}</span>
           </button>
         );
       })}
