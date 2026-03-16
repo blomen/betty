@@ -44,5 +44,5 @@ export function useMarketStream(symbol: string = 'NQ') {
     };
   }, [symbol]);
 
-  return { lastTick, book, lastCandle, connected };
+  return { lastTick, book, lastCandle, connected, esRef };
 }
