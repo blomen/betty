@@ -284,6 +284,13 @@ class BetService:
             except Exception:
                 pass  # Non-critical — planner cache will expire naturally
 
+        # Compute postmortem (synchronous, non-critical)
+        try:
+            from .postmortem_service import PostmortemService
+            PostmortemService(self.db).compute_bet(bet)
+        except Exception as e:
+            logger.warning(f"Postmortem compute failed for bet {bet_id}: {e}")
+
         return {
             "success": True,
             "profit": bet.profit,
