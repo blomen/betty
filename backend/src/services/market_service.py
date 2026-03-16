@@ -204,8 +204,22 @@ class MarketService:
         # Persist session metric for baseline history
         self.repo.upsert_session_metric(symbol, target_date, rf, aspr)
 
+        # Weekly composite VP (min 2 trading days of 1-min bars)
+        weekly_bars = await self._fetch_weekly_bars(symbol)
+        weekly_vp = None
+        if weekly_bars and len(weekly_bars) >= 780:
+            wb_trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in weekly_bars]
+            weekly_vp = compute_volume_profile(wb_trades)
+
+        # Monthly composite VP (min 5 trading days of 1-hour bars)
+        monthly_bars = await self._fetch_monthly_bars(symbol)
+        monthly_vp = None
+        if monthly_bars and len(monthly_bars) >= 35:
+            mb_trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in monthly_bars]
+            monthly_vp = compute_volume_profile(mb_trades)
+
         # Persist levels as MarketLevel rows for the /levels endpoint
-        level_rows = self._session_levels_to_rows(session_levels, session_data)
+        level_rows = self._session_levels_to_rows(session_levels, session_data, weekly_vp, monthly_vp)
 
         # Detect order blocks and FVGs from 30-min bars
         from ..market_data.levels import detect_order_blocks, detect_fvgs
