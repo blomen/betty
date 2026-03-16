@@ -982,7 +982,12 @@ class MarketService:
         return result
 
     @staticmethod
-    def _session_levels_to_rows(levels: SessionLevels, session_data: dict) -> list[dict]:
+    def _session_levels_to_rows(
+        levels: SessionLevels,
+        session_data: dict,
+        weekly_vp: VolumeProfile | None = None,
+        monthly_vp: VolumeProfile | None = None,
+    ) -> list[dict]:
         """Convert SessionLevels + session data into MarketLevel row dicts."""
         rows = []
 
@@ -1013,6 +1018,18 @@ class MarketService:
         _add("vah", session_data.get("vah"), "resistance", "rth")
         _add("val", session_data.get("val"), "support", "rth")
         _add("vwap", session_data.get("vwap"), None, "rth")
+
+        # Weekly composite VP levels
+        if weekly_vp and weekly_vp.poc:
+            _add("weekly_poc", weekly_vp.poc, None, "weekly")
+            _add("weekly_vah", weekly_vp.vah, "resistance", "weekly")
+            _add("weekly_val", weekly_vp.val, "support", "weekly")
+
+        # Monthly composite VP levels
+        if monthly_vp and monthly_vp.poc:
+            _add("monthly_poc", monthly_vp.poc, None, "monthly")
+            _add("monthly_vah", monthly_vp.vah, "resistance", "monthly")
+            _add("monthly_val", monthly_vp.val, "support", "monthly")
 
         return rows
 
