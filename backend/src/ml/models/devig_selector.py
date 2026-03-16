@@ -35,27 +35,23 @@ class DevigSelectorModel:
 
         X, y = self._prepare_data(data)
 
-        try:
-            import lightgbm as lgb
-        except ImportError:
-            logger.warning("lightgbm not installed")
+        from src.ml.optimizer.trainer import train_model
+        result = train_model(
+            X, y, task="multiclass", min_samples=MIN_SAMPLES,
+            feature_names=self.feature_names,
+            num_class=len(METHODS),
+        )
+        if result is None:
             return None
 
-        params = {
-            "objective": "multiclass", "num_class": 3,
-            "num_leaves": 15, "learning_rate": 0.05,
-            "n_estimators": 100, "verbose": -1, "min_child_samples": 5,
-        }
-        model = lgb.LGBMClassifier(**params)
-        model.fit(X, y)
-        self.model = model
+        self.model = result["model"]
 
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         file_path = str(MODELS_DIR / "devig_selector_latest.joblib")
         try:
             import joblib
             joblib.dump({
-                "model": model,
+                "model": self.model,
                 "feature_names": self.feature_names,
                 "task": "multiclass",
             }, file_path)
@@ -63,9 +59,11 @@ class DevigSelectorModel:
             return None
 
         return {
-            "model": model,
+            "model": self.model,
             "file_path": file_path,
             "training_data_count": len(data),
+            "validation_score": result.get("validation_score"),
+            "feature_importance": result.get("feature_importance"),
         }
 
     def predict(self, features: dict) -> dict | None:

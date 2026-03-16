@@ -81,7 +81,7 @@ class SetupScorerModel:
             return None
 
         from src.ml.optimizer.trainer import train_model
-        result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES)
+        result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES, feature_names=feature_names)
         if result is None:
             return None
 

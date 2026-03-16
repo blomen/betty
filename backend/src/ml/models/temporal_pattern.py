@@ -1,7 +1,10 @@
-"""M6: Temporal Pattern Recognizer -- 1D-CNN on candle sequences.
+"""M6: Temporal Pattern Recognizer -- flattened GBDT on candle sequences.
 
 Predicts reversal/continuation from last 20 candles of orderflow.
-Input: (20, N_FEATURES) candle sequence.
+Flattens the sequence into summary statistics (trends, aggregates, last-candle)
+and feeds into LightGBM multiclass via walk-forward validation.
+
+Input: 20-candle sequence (via candle_features.snapshot_candles).
 Output: {direction, probability, confidence}.
 """
 import json
@@ -14,7 +17,7 @@ logger = logging.getLogger(__name__)
 MIN_SAMPLES = 500
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
 
-# Features per candle (must match candle_features.snapshot_candles output)
+# Raw per-candle features (must match candle_features.snapshot_candles output)
 CANDLE_FEATURE_NAMES = [
     "delta", "delta_pct", "cvd", "volume", "volume_ratio",
     "spread_ticks", "body_ratio", "close_position", "tick_count",
@@ -22,36 +25,44 @@ CANDLE_FEATURE_NAMES = [
     "imbalance_ratio_max", "stacked_imbalance_count",
     "big_trades_count", "big_trades_net_delta",
 ]
-N_FEATURES = len(CANDLE_FEATURE_NAMES)
 SEQ_LEN = 20
 
 # Target classes
 CLASSES = ["reversal_long", "reversal_short", "continuation_long", "continuation_short", "chop"]
 N_CLASSES = len(CLASSES)
 
+# Flattened feature names for the GBDT model
+# For each candle feature: slope, mean, std, min, max, last, first_half_mean, second_half_mean
+_SUMMARY_SUFFIXES = ["_slope", "_mean", "_std", "_min", "_max", "_last", "_first_half", "_second_half"]
+FLATTENED_FEATURE_NAMES = []
+for cf in CANDLE_FEATURE_NAMES:
+    for suffix in _SUMMARY_SUFFIXES:
+        FLATTENED_FEATURE_NAMES.append(cf + suffix)
+# Cross-feature interactions
+FLATTENED_FEATURE_NAMES += [
+    "momentum_consistency",  # How many consecutive same-sign deltas at end
+    "volume_acceleration",   # Second derivative of volume
+    "cvd_delta_divergence",  # CVD trend vs delta trend disagreement
+    "spread_expansion",      # Spread trend (widening = volatility)
+]
+N_FLATTENED = len(FLATTENED_FEATURE_NAMES)
+
 
 class TemporalPatternModel:
     def train(self, data) -> dict | None:
-        try:
-            import torch
-            import torch.nn as nn
-        except ImportError:
-            logger.warning("torch not installed -- M6 disabled")
-            return None
-
         X_list, y_list = [], []
         for row in data:
             features = row.features if isinstance(row.features, dict) else json.loads(row.features)
             candles = features.get("candle_sequence")
             if not candles or len(candles) < SEQ_LEN:
                 continue
-            seq = _encode_candle_sequence(candles[-SEQ_LEN:])
-            if seq is None:
+            flat = _flatten_sequence(candles[-SEQ_LEN:])
+            if flat is None:
                 continue
             label = _get_label(row.outcome, row.outcome_binary)
             if label is None:
                 continue
-            X_list.append(seq)
+            X_list.append(flat)
             y_list.append(label)
 
         if len(X_list) < MIN_SAMPLES:
@@ -61,99 +72,102 @@ class TemporalPatternModel:
         X = np.array(X_list, dtype=np.float32)
         y = np.array(y_list, dtype=np.int64)
 
-        # Z-score normalize per feature across each window
-        mean = X.mean(axis=1, keepdims=True)
-        std = X.std(axis=1, keepdims=True) + 1e-8
-        X = (X - mean) / std
-
-        X_tensor = torch.tensor(X).permute(0, 2, 1)  # (batch, features, seq_len)
-        y_tensor = torch.tensor(y)
-
-        # Train/val split (last 20% for validation, time-ordered)
-        split = int(len(X_tensor) * 0.8)
-        X_train, X_val = X_tensor[:split], X_tensor[split:]
-        y_train, y_val = y_tensor[:split], y_tensor[split:]
-
-        model = _CandleCNN(N_FEATURES, N_CLASSES)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
-
-        best_val_acc = 0.0
-        for epoch in range(50):
-            model.train()
-            optimizer.zero_grad()
-            out = model(X_train)
-            loss = criterion(out, y_train)
-            loss.backward()
-            optimizer.step()
-
-            model.eval()
-            with torch.no_grad():
-                val_out = model(X_val)
-                val_preds = val_out.argmax(dim=1)
-                val_acc = (val_preds == y_val).float().mean().item()
-                if val_acc > best_val_acc:
-                    best_val_acc = val_acc
+        from src.ml.optimizer.trainer import train_model
+        result = train_model(
+            X, y, task="multiclass", min_samples=MIN_SAMPLES,
+            feature_names=FLATTENED_FEATURE_NAMES,
+            num_class=N_CLASSES,
+        )
+        if result is None:
+            return None
 
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        path = MODELS_DIR / "temporal_pattern_latest.pt"
-        torch.save(model.state_dict(), path)
+        path = MODELS_DIR / "temporal_pattern_latest.joblib"
+        try:
+            import joblib
+            joblib.dump({
+                "model": result["model"],
+                "feature_names": FLATTENED_FEATURE_NAMES,
+                "task": "multiclass",
+            }, path)
+        except ImportError:
+            return None
 
         return {
             "file_path": str(path),
             "training_data_count": len(X_list),
-            "validation_score": best_val_acc,
-            "baseline_metric": 1.0 / N_CLASSES,  # random baseline
+            "validation_score": result.get("validation_score"),
+            "feature_importance": result.get("feature_importance"),
+            "baseline_metric": 1.0 / N_CLASSES,
         }
 
     def predict(self, candle_sequence: list[dict]) -> dict | None:
-        """Predict pattern from candle sequence."""
-        try:
-            import torch
-        except ImportError:
-            return None
-
+        """Flatten candle sequence for prediction by central Predictor."""
         if not candle_sequence or len(candle_sequence) < SEQ_LEN:
             return None
-
-        seq = _encode_candle_sequence(candle_sequence[-SEQ_LEN:])
-        if seq is None:
+        flat = _flatten_sequence(candle_sequence[-SEQ_LEN:])
+        if flat is None:
             return None
-
-        # Z-score normalize
-        mean = seq.mean(axis=0, keepdims=True)
-        std = seq.std(axis=0, keepdims=True) + 1e-8
-        seq = (seq - mean) / std
-
-        X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).permute(0, 2, 1)
-        return X  # Actual inference done by Predictor with loaded model
+        return {"flattened_features": dict(zip(FLATTENED_FEATURE_NAMES, flat.tolist()))}
 
 
-class _CandleCNN(object):
-    """Minimal 1D-CNN for candle pattern recognition.
+def _flatten_sequence(candles: list[dict]) -> np.ndarray | None:
+    """Flatten a 20-candle sequence into summary statistics for GBDT."""
+    seq = _encode_candle_sequence(candles)
+    if seq is None:
+        return None
 
-    Architecture: Conv1d -> ReLU -> Conv1d -> ReLU -> AdaptiveAvgPool -> FC -> Softmax
-    Designed for <10ms inference on 20-candle sequences.
-    """
-    def __new__(cls, n_features, n_classes):
-        import torch.nn as nn
+    features = []
+    half = SEQ_LEN // 2
+    x_axis = np.arange(SEQ_LEN, dtype=np.float32)
 
-        class CandleCNNModule(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv1 = nn.Conv1d(n_features, 32, kernel_size=3, padding=1)
-                self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
-                self.pool = nn.AdaptiveAvgPool1d(1)
-                self.fc = nn.Linear(64, n_classes)
-                self.relu = nn.ReLU()
+    for col_idx in range(seq.shape[1]):
+        col = seq[:, col_idx]
+        # Linear slope via polyfit
+        slope = np.polyfit(x_axis, col, 1)[0] if np.std(col) > 1e-8 else 0.0
+        features.append(slope)
+        features.append(np.mean(col))
+        features.append(np.std(col))
+        features.append(np.min(col))
+        features.append(np.max(col))
+        features.append(col[-1])  # last candle value
+        features.append(np.mean(col[:half]))   # first half mean
+        features.append(np.mean(col[half:]))   # second half mean
 
-            def forward(self, x):
-                x = self.relu(self.conv1(x))
-                x = self.relu(self.conv2(x))
-                x = self.pool(x).squeeze(-1)
-                return self.fc(x)
+    # Cross-feature interactions
+    delta_col = seq[:, 0]  # delta
+    cvd_col = seq[:, 2]    # cvd
+    volume_col = seq[:, 3] # volume
+    spread_col = seq[:, 5] # spread_ticks
 
-        return CandleCNNModule()
+    # Momentum consistency: consecutive same-sign deltas at end of window
+    momentum = 0
+    if len(delta_col) > 1:
+        sign = np.sign(delta_col[-1])
+        for i in range(len(delta_col) - 1, -1, -1):
+            if np.sign(delta_col[i]) == sign and sign != 0:
+                momentum += 1
+            else:
+                break
+    features.append(float(momentum))
+
+    # Volume acceleration (second derivative)
+    if len(volume_col) >= 3:
+        vol_diff2 = np.diff(volume_col, n=2)
+        features.append(float(np.mean(vol_diff2)))
+    else:
+        features.append(0.0)
+
+    # CVD vs delta divergence (slope disagreement)
+    delta_slope = np.polyfit(x_axis, delta_col, 1)[0] if np.std(delta_col) > 1e-8 else 0.0
+    cvd_slope = np.polyfit(x_axis, cvd_col, 1)[0] if np.std(cvd_col) > 1e-8 else 0.0
+    features.append(float(np.sign(delta_slope) != np.sign(cvd_slope)))
+
+    # Spread expansion (slope of spread)
+    spread_slope = np.polyfit(x_axis, spread_col, 1)[0] if np.std(spread_col) > 1e-8 else 0.0
+    features.append(float(spread_slope))
+
+    return np.array(features, dtype=np.float32)
 
 
 def _encode_candle_sequence(candles: list[dict]) -> np.ndarray | None:
@@ -173,7 +187,7 @@ def _get_label(outcome, outcome_binary) -> int | None:
     if outcome is None:
         return None
     if outcome > 0.5:
-        return 0  # reversal_long (or continuation_long depending on context)
+        return 0  # reversal_long
     elif outcome < -0.5:
         return 1  # reversal_short
     elif outcome > 0:

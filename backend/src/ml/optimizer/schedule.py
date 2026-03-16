@@ -60,7 +60,7 @@ class ScheduleOptimizer:
         X, y = self._build_features_and_target(feature_dicts)
 
         from src.ml.optimizer.trainer import train_model
-        result = train_model(X, y, task="regression", min_samples=self.activation_threshold)
+        result = train_model(X, y, task="regression", min_samples=self.activation_threshold, feature_names=FEATURE_NAMES)
         if result is None:
             return None
 

@@ -50,7 +50,7 @@ class LimitPredictorModel:
 
         if use_lgbm:
             from src.ml.optimizer.trainer import train_model
-            result = train_model(X, y, task="classification", min_samples=MIN_SAMPLES)
+            result = train_model(X, y, task="classification", min_samples=MIN_SAMPLES, feature_names=self.feature_names)
             if result is None:
                 return None
             self.model = result["model"]

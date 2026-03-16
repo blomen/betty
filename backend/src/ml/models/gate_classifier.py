@@ -3,7 +3,7 @@
 Day types: trend, normal, normal_variation, neutral, composite
 Macro regimes: bull, bear, neutral
 
-Uses RandomForest (good with small datasets, no tuning needed).
+Uses LightGBM multiclass with walk-forward validation via trainer.
 """
 import json
 import logging
@@ -34,16 +34,12 @@ DAY_TYPE_LABELS = {v: k for k, v in DAY_TYPE_MAP.items()}
 
 class GateClassifierModel:
     def train(self, data) -> dict | None:
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.model_selection import cross_val_score
-
         X, y = [], []
         for row in data:
             features = row.features if isinstance(row.features, dict) else json.loads(row.features)
             vec = [float(features.get(f, 0) or 0) for f in DAY_TYPE_FEATURE_NAMES]
             label = features.get("day_type_label")
             if label is None:
-                # Use outcome field as label index
                 label = row.outcome
             if label is None:
                 continue
@@ -56,18 +52,20 @@ class GateClassifierModel:
         if len(X) < MIN_SAMPLES:
             return None
 
-        model = RandomForestClassifier(
-            n_estimators=100, max_depth=8, min_samples_leaf=5,
-            random_state=42, n_jobs=-1,
+        from src.ml.optimizer.trainer import train_model
+        result = train_model(
+            X, y, task="multiclass", min_samples=MIN_SAMPLES,
+            feature_names=DAY_TYPE_FEATURE_NAMES,
+            num_class=len(DAY_TYPE_MAP),
         )
-        scores = cross_val_score(model, X, y, cv=min(5, len(X) // 20), scoring="accuracy")
-        model.fit(X, y)
+        if result is None:
+            return None
 
         import joblib
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         path = MODELS_DIR / "gate_classifier_latest.joblib"
         joblib.dump({
-            "model": model,
+            "model": result["model"],
             "feature_names": DAY_TYPE_FEATURE_NAMES,
             "task": "multiclass",
         }, path)
@@ -75,7 +73,8 @@ class GateClassifierModel:
         return {
             "file_path": str(path),
             "training_data_count": len(X),
-            "validation_score": float(np.mean(scores)),
+            "validation_score": result.get("validation_score"),
+            "feature_importance": result.get("feature_importance"),
             "baseline_metric": 1.0 / len(DAY_TYPE_MAP),
         }
 

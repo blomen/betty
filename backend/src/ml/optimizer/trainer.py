@@ -36,8 +36,15 @@ def train_model(
     min_samples: int = MIN_SAMPLES_DEFAULT,
     n_splits: int = 3,
     embargo: int = 5,
+    feature_names: list[str] | None = None,
+    num_class: int | None = None,
 ) -> dict | None:
     """Train a LightGBM model with walk-forward validation.
+
+    Args:
+        task: "regression", "classification" (binary), or "multiclass".
+        feature_names: Optional list of feature names for importance reporting.
+        num_class: Required for task="multiclass" — number of target classes.
 
     Returns dict with 'model', 'validation_score', 'feature_importance'
     or None if insufficient data.
@@ -52,8 +59,12 @@ def train_model(
         logger.warning("lightgbm not installed — ML optimizer disabled")
         return None
 
-    objective = "regression" if task == "regression" else "binary"
-    metric = "rmse" if task == "regression" else "binary_logloss"
+    if task == "regression":
+        objective, metric = "regression", "rmse"
+    elif task == "multiclass":
+        objective, metric = "multiclass", "multi_logloss"
+    else:
+        objective, metric = "binary", "binary_logloss"
 
     params = {
         "objective": objective,
@@ -64,6 +75,13 @@ def train_model(
         "verbose": -1,
         "min_child_samples": 5,
     }
+    if task == "multiclass":
+        params["num_class"] = num_class or int(np.max(y) + 1)
+
+    def _make_model():
+        if task == "regression":
+            return lgb.LGBMRegressor(**params)
+        return lgb.LGBMClassifier(**params)
 
     # Walk-forward validation
     scores = []
@@ -74,20 +92,22 @@ def train_model(
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
-        model = lgb.LGBMRegressor(**params) if task == "regression" else lgb.LGBMClassifier(**params)
+        model = _make_model()
         model.fit(X_train, y_train)
         score = model.score(X_test, y_test)
         scores.append(score)
 
     # Train final model on all data
-    final_model = lgb.LGBMRegressor(**params) if task == "regression" else lgb.LGBMClassifier(**params)
+    final_model = _make_model()
     final_model.fit(X, y)
+
+    # Use real feature names if provided
+    names = feature_names if feature_names and len(feature_names) == X.shape[1] else [
+        f"f{i}" for i in range(X.shape[1])
+    ]
 
     return {
         "model": final_model,
         "validation_score": float(np.mean(scores)) if scores else None,
-        "feature_importance": dict(zip(
-            [f"f{i}" for i in range(X.shape[1])],
-            final_model.feature_importances_.tolist(),
-        )),
+        "feature_importance": dict(zip(names, final_model.feature_importances_.tolist())),
     }

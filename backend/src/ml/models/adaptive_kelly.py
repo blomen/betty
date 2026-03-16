@@ -41,7 +41,7 @@ class AdaptiveKellyModel:
         X, y = self._prepare_data(data)
 
         from src.ml.optimizer.trainer import train_model
-        result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES)
+        result = train_model(X, y, task="regression", min_samples=MIN_SAMPLES, feature_names=self.feature_names)
         if result is None:
             return None
 
