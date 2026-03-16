@@ -1176,4 +1176,37 @@ export const api = {
     );
   },
 
+  // ============ Postmortem ============
+
+  async getPostmortemBets(filters?: { classification?: string; market?: string; provider?: string }): Promise<{ postmortems: any[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filters?.classification) params.set('classification', filters.classification);
+    if (filters?.market) params.set('market', filters.market);
+    if (filters?.provider) params.set('provider', filters.provider);
+    return fetchJson(`/postmortem/bets?${params}`);
+  },
+
+  async getPostmortemBetsSummary(): Promise<{ summary: any[]; total: number }> {
+    return fetchJson('/postmortem/bets/summary');
+  },
+
+  async getPostmortemBetsPatterns(): Promise<{ patterns: any[] }> {
+    return fetchJson('/postmortem/bets/patterns');
+  },
+
+  async getPostmortemTradesSummary(accountId: number): Promise<{ summary: any[]; total: number }> {
+    return fetchJson(`/postmortem/trades/summary?account_id=${accountId}`);
+  },
+
+  async getPostmortemTradesPatterns(accountId: number): Promise<{ patterns: any[] }> {
+    return fetchJson(`/postmortem/trades/patterns?account_id=${accountId}`);
+  },
+
+  async recomputePostmortems(profileId?: number, accountId?: number): Promise<{ bets_recomputed: number; trades_recomputed: number }> {
+    const params = new URLSearchParams();
+    if (profileId) params.set('profile_id', String(profileId));
+    if (accountId) params.set('account_id', String(accountId));
+    return fetchJson(`/postmortem/recompute?${params}`, { method: 'POST' });
+  },
+
 };
