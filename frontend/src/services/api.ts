@@ -1046,6 +1046,22 @@ export const api = {
     return fetchJson(`/trading/market/levels${params}`);
   },
 
+  async getLiveLevels(symbol = 'NQ'): Promise<{ levels: import('@/types/market').MonitoredLevel[]; price: number | null }> {
+    return fetchJson(`/trading/market/levels/live?symbol=${symbol}`);
+  },
+
+  async scalePosition(tradeId: number, pct: number = 50): Promise<{ success: boolean; remaining_contracts: number }> {
+    return fetchJson(`/trading/trades/${tradeId}/scale?pct=${pct}`, { method: 'POST' });
+  },
+
+  async closePosition(tradeId: number): Promise<{ success: boolean }> {
+    return fetchJson(`/trading/trades/${tradeId}/close`, { method: 'POST' });
+  },
+
+  async updateStop(tradeId: number, newStop: number): Promise<{ success: boolean }> {
+    return fetchJson(`/trading/trades/${tradeId}/stop?new_stop=${newStop}`, { method: 'POST' });
+  },
+
   // ============ Limits ============
   async getLimits(providerId?: string): Promise<ProviderLimit[]> {
     const params = providerId ? `?provider_id=${providerId}` : '';
