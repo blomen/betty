@@ -33,7 +33,7 @@ Update both Tailwind config and CSS custom properties in sync.
 | `accentBorder` | `#1e2636` | `#2a3a2a` | Matches new border |
 | `tableBorder` | `#1e2636` | `#2a3a2a` | Matches new border |
 
-All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
+All `tab*`, `success`, `warning`, `error`, `yellow`, `calloutBorder` colors: **unchanged**.
 
 ### Files
 - `tailwind.config.js` — update `theme.extend.colors`
@@ -71,6 +71,7 @@ All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
 ### Bottom Buttons (Settings, Profile)
 - Same treatment as category buttons: square, 2px border, no rounded
 - Size: `w-12 h-12` (up from `w-10 h-10`)
+- SVG icon sizes: increase from 18px to 20px to stay proportional in larger containers
 
 ---
 
@@ -102,7 +103,7 @@ All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
 - Hover: `text-text` (instant, no transition)
 
 ### Tab Icons
-- Remove the `<TabIcon>` SVG component from tab rendering
+- Remove the `<TabIcon>` **call** from the tab button JSX (do NOT delete the `TabIcon` component definition — it's still used by Sidebar)
 - Replace with a colored dot character: `<span style={{ color: tab.color }}>●</span>`
 - Size inherits from parent `text-xs`
 
@@ -136,15 +137,14 @@ All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
 
 ### Row Hover
 - Current: `background-color: var(--panel)`
-- New: keep `background-color: var(--panel)` AND add `border-left: 3px solid var(--muted)` — cursor-like left indicator
-- To prevent layout shift: all `td` get `border-left: 3px solid transparent` by default, hover replaces with `var(--muted)`
+- New: keep `background-color: var(--panel)` AND add a cursor-like left indicator
+- Technique: `box-shadow: inset 3px 0 0 var(--muted)` on `tr:hover td:first-child` — avoids border-collapse conflicts, no layout shift
 
 ### Expanded Rows
-- `tr.expanded td`: `border-left: 3px solid var(--muted)` (solid, always visible)
+- `tr.expanded td:first-child`: `box-shadow: inset 3px 0 0 var(--muted)` (solid, always visible)
 
 ### Alternating Rows
-- `table.sq tr:nth-child(even) td`: `background-color: var(--panel)` with opacity — use `rgba(19, 26, 19, 0.5)` (50% of panel color)
-- Actually simpler: `table.sq tbody tr:nth-child(even) td { background-color: #0f150f; }` — a value between bg and panel
+- `table.sq tbody tr:nth-child(even) td { background-color: #0f150f; }` — a value between bg and panel
 
 ---
 
@@ -153,8 +153,7 @@ All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
 **File:** `FilterBar.tsx`
 
 ### Dropdown Trigger Button
-- Remove any `rounded` classes — square corners
-- Border: `2px solid` in `border` color
+- Border: `2px solid` in `border` color (global border-radius reset handles square corners)
 - When filter is active (has selections): **inverted** — accent background, dark text
 - Implementation: `style={{ backgroundColor: hex, color: '#0a0e0a', borderColor: hex }}` when `hasFilter`
 
@@ -172,8 +171,13 @@ All `tab*`, `success`, `warning`, `error`, `yellow` colors: **unchanged**.
 - Followed by the label text with `ml-2`
 
 ### Search Input (in dropdown)
-- Square corners, 2px border
+- 2px border (square corners via global reset)
 - Focus: border-color changes to accent (via inline style)
+
+### Other Sub-Components (MultiSelectPills, SingleSelectPills, RangeFilter, SearchInput)
+- Remove any `transition-all duration-150` classes — matches Design Principle #5
+- Square corners already handled by global reset
+- No other structural changes needed
 
 ---
 
