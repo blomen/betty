@@ -98,9 +98,18 @@ class LevelMonitor:
         return "session"
 
     def on_tick(self, price: float, size: int, ts: float) -> None:
-        """Called on each trade tick. Checks all levels for proximity transitions."""
-        now = time.time()
+        """Called on each trade tick. Checks all levels for proximity transitions.
+
+        Args:
+            ts: Exchange timestamp as epoch seconds (from Databento ts_event / 1e9).
+        """
+        now = ts  # Use exchange timestamp for consistency and replay-ability
         at_level_levels = []
+        newly_touched = []
+
+        # Clear stale confluence clusters each tick
+        for level in self._levels:
+            level.cluster = []
 
         for level in self._levels:
             if level.status == LevelStatus.TRIGGERED:
@@ -113,7 +122,7 @@ class LevelMonitor:
                 if old_status != LevelStatus.AT_LEVEL:
                     level.status = LevelStatus.AT_LEVEL
                     level.touched_at = now
-                    self._on_level_touched(level, price)
+                    newly_touched.append(level)
                 at_level_levels.append(level)
 
             elif dist <= self.APPROACHING_TICKS:
@@ -127,10 +136,15 @@ class LevelMonitor:
                     self._on_level_rejected(level, price)
                     level.status = LevelStatus.WATCHING
 
+        # Mark confluence clusters before emitting touch events
         if len(at_level_levels) > 1:
             cluster_names = [l.name for l in at_level_levels]
             for l in at_level_levels:
                 l.cluster = [n for n in cluster_names if n != l.name]
+
+        # Emit touch events after confluence is computed
+        for level in newly_touched:
+            self._on_level_touched(level, price)
 
         self._any_at_level = bool(at_level_levels)
         if self._any_at_level and (now - self._last_orderflow_emit) >= self._orderflow_interval:
