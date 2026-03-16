@@ -26,6 +26,7 @@ from datetime import datetime
 
 from ..core import StandardEvent
 from ..core.browser_retriever import BrowserRetriever
+from ..core.exceptions import RetryableError
 from ..core.transport import BrowserTransport
 from ..matching.normalizer import normalize_team_name, normalize_outcome
 
@@ -196,7 +197,10 @@ class CoolbetRetriever(BrowserRetriever):
         try:
             page = await self._get_page()
             if not page:
-                return []
+                raise RetryableError(
+                    "No browser available (camoufox not installed?)",
+                    provider_id=self.provider_id,
+                )
 
             # Navigate to sport page to establish session (needed for API auth)
             if not self._session_ready:
@@ -214,11 +218,10 @@ class CoolbetRetriever(BrowserRetriever):
                 )
                 if 'Incapsula' in body_text or 'security check' in body_text.lower() or \
                    'Access denied' in body_text or 'Error 15' in body_text:
-                    logger.error(
-                        f"[{self.provider_id}] Imperva block detected even with Camoufox. "
-                        f"This may require a manual CDP session."
+                    raise RetryableError(
+                        "Imperva block detected even with Camoufox",
+                        provider_id=self.provider_id,
                     )
-                    return []
 
                 logger.info(f"[{self.provider_id}] Session established — Imperva bypassed")
                 self._session_ready = True

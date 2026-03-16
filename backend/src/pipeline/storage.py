@@ -1066,11 +1066,8 @@ class OddsBatchProcessor:
         during concurrent extraction (multiple providers flushing simultaneously).
 
         Note: Uses synchronous time.sleep() for retry backoff because this method
-        is called from synchronous contexts (__exit__, add()). The sleeps are
-        very short (50-200ms) and SQLite locks typically clear within milliseconds.
-        Making this async would require converting OddsBatchProcessor, its callers
-        in storage.py, and all context-manager usage sites — not worth the churn
-        for sub-second retry waits.
+        is called from synchronous contexts (__exit__, add()). Max total backoff
+        ~12s across 8 retries, which aligns with the 30s SQLite busy_timeout.
         """
         if not self._pending:
             return
@@ -1078,14 +1075,14 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 5
+        max_retries = 8
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms, 400ms
+                    wait = 0.1 * (2 ** attempt)  # 100ms, 200ms, 400ms, 800ms, 1.6s, 3.2s, 6.4s
                     logger.warning(
                         f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
                         f"retrying in {wait * 1000:.0f}ms..."

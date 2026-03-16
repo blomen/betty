@@ -12,6 +12,7 @@ and only captured ~3-5% of football events.
 from typing import Dict, Any, List, Optional, Set
 import asyncio
 import logging
+import time
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
 from ..core.exceptions import RetryableError
@@ -46,10 +47,93 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
+    _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
+
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
+        self._camoufox_browser = None
+        self._camoufox_page = None
+
+    # ------------------------------------------------------------------
+    # Camoufox anti-detect browser (Cloudflare bypass)
+    # ------------------------------------------------------------------
+
+    async def _ensure_camoufox(self):
+        """Launch Camoufox anti-detect browser if not already running."""
+        if self._camoufox_page is not None:
+            try:
+                await self._camoufox_page.evaluate("() => true", timeout=5000)
+                return self._camoufox_page
+            except Exception:
+                logger.warning(f"[{self.provider_id}] Camoufox page died, recovering...")
+                if self._camoufox_browser:
+                    try:
+                        self._camoufox_page = await self._camoufox_browser.new_page()
+                        logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
+                        return self._camoufox_page
+                    except Exception:
+                        logger.warning(f"[{self.provider_id}] Browser also dead, full relaunch")
+                await self._cleanup_camoufox()
+
+        if ComeOnMultiLeagueRetriever._camoufox_unavailable:
+            return None
+
+        try:
+            from camoufox.async_api import AsyncCamoufox
+        except ImportError:
+            ComeOnMultiLeagueRetriever._camoufox_unavailable = True
+            logger.error(
+                f"[{self.provider_id}] camoufox not installed. "
+                f"Install with: pip install camoufox[geoip] && python -m camoufox fetch"
+            )
+            return None
+
+        logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
+        t0 = time.time()
+        try:
+            self._camoufox_browser = await AsyncCamoufox(
+                headless=True,
+                geoip=True,
+                humanize=0.2,
+                os="windows",
+            ).__aenter__()
+
+            self._camoufox_page = await self._camoufox_browser.new_page()
+            logger.info(f"[{self.provider_id}] Camoufox browser ready in {time.time()-t0:.1f}s")
+            return self._camoufox_page
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
+            self._camoufox_browser = None
+            self._camoufox_page = None
+            return None
+
+    async def _cleanup_camoufox(self):
+        """Close camoufox browser."""
+        if self._camoufox_browser:
+            try:
+                await self._camoufox_browser.__aexit__(None, None, None)
+            except (Exception, OSError, ValueError):
+                pass
+            finally:
+                self._camoufox_browser = None
+                self._camoufox_page = None
+
+    async def _get_page(self):
+        """Get a browser page — Camoufox for Cloudflare bypass, Playwright fallback."""
+        page = await self._ensure_camoufox()
+        if page:
+            return page
+
+        # Fallback to regular Playwright transport
+        try:
+            await self.transport._ensure_browser()
+            return self.transport.page
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] Playwright fallback failed: {e}")
+
+        return None
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         raise NotImplementedError("ComeOnMultiLeagueRetriever uses extract() directly")
@@ -60,8 +144,25 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         sports_to_extract = self._resolve_sports(sport)
         logger.debug(f"[{self.provider_id}] Extracting {len(sports_to_extract)} sports: {', '.join(sports_to_extract)}")
 
-        await self.transport._ensure_browser()
+        page = await self._get_page()
+        if not page:
+            raise RetryableError(
+                "No browser available (camoufox not installed?)",
+                provider_id=self.provider_id,
+            )
+        self._page = page
         self._cookie_dismissed = False
+
+        # Warm up: load homepage to pass Cloudflare + dismiss cookies
+        if self._camoufox_page and not getattr(self, '_warmed_up', False):
+            try:
+                await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                await asyncio.sleep(3)
+                await self._dismiss_cookie_overlay(page)
+                self._warmed_up = True
+                logger.info(f"[{self.provider_id}] Camoufox session warmed up")
+            except Exception as e:
+                logger.warning(f"[{self.provider_id}] Warm-up failed: {e}")
 
         all_events = []
         sports_attempted = 0
@@ -77,9 +178,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Failed to extract {sport_key}: {e}")
 
-        if not all_events and sports_attempted >= 3:
+        if not all_events:
             raise RetryableError(
-                f"0 events from {sports_attempted} sports — possible page/SPA failure",
+                f"0 events from {sports_attempted} sport(s) — possible page/SPA failure",
                 provider_id=self.provider_id,
             )
 
@@ -125,25 +226,16 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             logger.warning(f"[{self.provider_id}] Sport '{sport_normalized}' not supported")
             return []
 
-        page = self.transport.page
+        page = self._page
 
         # Step 1: Navigate to league directory
         leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
         try:
             await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(3)  # SPA needs time to render league list
         except Exception as e:
-            # Page may be dead — try to recover once
-            logger.warning(f"[{self.provider_id}] Navigation failed, recovering page: {e}")
-            try:
-                page = await self.transport.context.new_page()
-                self.transport.page = page
-                self._cookie_dismissed = False
-                await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
-                await asyncio.sleep(1.5)
-            except Exception as e2:
-                logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport_normalized}: {e2}")
-                return []
+            logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport_normalized}: {e}")
+            return []
 
         if not self._cookie_dismissed:
             await self._dismiss_cookie_overlay(page)

@@ -723,7 +723,8 @@ class ExtractionPipeline:
                     # Health check if enabled (with group-aware delays)
                     # Skip health check for browser-based providers (too slow for pre-check)
                     BROWSER_TYPES = ('sbtech', 'gecko_v2', 'spectate', 'custom', 'tipwin',
-                                     'snabbare', 'interwetten', 'coolbet', 'tenbet')
+                                     'snabbare', 'interwetten', 'coolbet', 'tenbet',
+                                     'betconstruct')
                     provider_cfg = self.engine.get_provider(pid)
                     retriever_type = getattr(provider_cfg, 'retriever_type', '')
 
