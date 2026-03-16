@@ -111,10 +111,10 @@ export function MultiSelectDropdown({
       {/* Trigger button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-all duration-150 ${
-          hasFilter ? '' : 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80'
+        className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] border-2 ${
+          hasFilter ? 'font-medium' : 'border-border bg-panel2 text-muted hover:text-text hover:bg-panel2/80'
         }`}
-        style={hasFilter ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+        style={hasFilter ? { backgroundColor: hex, color: '#0a0e0a', borderColor: hex } : undefined}
       >
         <span className="text-muted2 text-[10px] uppercase tracking-wider mr-0.5">
           {label}
@@ -125,7 +125,7 @@ export function MultiSelectDropdown({
           <span>All</span>
         )}
         <svg
-          className={`w-3 h-3 transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`}
+          className={`w-3 h-3 ${isOpen ? 'rotate-180' : ''}`}
           style={{ color: hasFilter ? hex : undefined }}
           fill="none"
           viewBox="0 0 24 24"
@@ -138,7 +138,7 @@ export function MultiSelectDropdown({
 
       {/* Dropdown popover */}
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 z-50 w-56 bg-panel border border-border shadow-xl shadow-black/30 overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 z-50 w-56 bg-panel border-2 border-border overflow-hidden">
           {/* Search */}
           {options.length > 6 && (
             <div className="p-2 border-b border-border">
@@ -148,7 +148,7 @@ export function MultiSelectDropdown({
                 placeholder="Search..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full px-2.5 py-1.5 text-[11px] bg-panel2 border border-border text-text
+                className="w-full px-2.5 py-1.5 text-[11px] bg-panel2 border-2 border-border text-text
                   placeholder:text-muted2 focus:outline-none focus:border-muted"
               />
             </div>
@@ -158,14 +158,14 @@ export function MultiSelectDropdown({
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
             <button
               onClick={selectAll}
-              className="text-[10px] uppercase tracking-wider text-muted hover:text-text transition-colors"
+              className="text-[10px] uppercase tracking-wider text-muted hover:text-text"
             >
               {filtered.every(o => selected.has(o)) ? 'Deselect all' : 'Select all'}
             </button>
             {hasFilter && (
               <button
                 onClick={() => { onClear(); setSearch(''); }}
-                className="text-[10px] uppercase tracking-wider text-muted hover:text-text transition-colors"
+                className="text-[10px] uppercase tracking-wider text-muted hover:text-text"
               >
                 Clear
               </button>
@@ -184,20 +184,14 @@ export function MultiSelectDropdown({
                   <button
                     key={opt}
                     onClick={() => onToggle(opt)}
-                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left hover:bg-panel2 transition-colors"
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left hover:bg-panel2"
                   >
                     {/* Checkbox */}
                     <span
-                      className={`w-[18px] h-[18px] rounded-[4px] border-2 flex items-center justify-center shrink-0 transition-all duration-150 ${
-                        isActive ? 'border-transparent' : 'border-muted/40 hover:border-muted/60'
-                      }`}
-                      style={isActive ? { background: hex, borderColor: hex } : undefined}
+                      className={`font-mono text-xs shrink-0 ${isActive ? '' : 'text-muted'}`}
+                      style={isActive ? { color: hex } : undefined}
                     >
-                      {isActive && (
-                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                          <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
+                      {isActive ? '[x]' : '[ ]'}
                     </span>
                     <span className={`text-[11px] truncate ${isActive ? 'text-text font-medium' : 'text-muted'}`}>
                       {display}
@@ -247,7 +241,7 @@ export function MultiSelectPills({
       </span>
       <button
         onClick={onClear}
-        className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
+        className={`px-2.5 py-1 text-[11px] ${
           !allSelected ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
         style={allSelected ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -260,7 +254,7 @@ export function MultiSelectPills({
           <button
             key={opt}
             onClick={() => onToggle(opt)}
-            className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
+            className={`px-2.5 py-1 text-[11px] ${
               !isActive ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
             }`}
             style={isActive ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -361,7 +355,7 @@ export function SingleSelectPills({
       </span>
       <button
         onClick={() => onSelect(null)}
-        className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
+        className={`px-2.5 py-1 text-[11px] ${
           active !== null ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
         style={active === null ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -372,7 +366,7 @@ export function SingleSelectPills({
         <button
           key={opt}
           onClick={() => onSelect(active === opt ? null : opt)}
-          className={`px-2.5 py-1 text-[11px] transition-all duration-150 ${
+          className={`px-2.5 py-1 text-[11px] ${
             active !== opt ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
           }`}
           style={active === opt ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
@@ -515,7 +509,7 @@ export function SearchInput({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="p-1 text-muted2 hover:text-text transition-colors"
+        className="p-1 text-muted2 hover:text-text"
         title="Search"
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
