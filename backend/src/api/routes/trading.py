@@ -1,6 +1,6 @@
 """Trading API routes — thin handlers delegating to TradingService."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..deps import get_db
@@ -155,6 +155,68 @@ async def close_trade(trade_id: int, data: CloseTradeRequest, svc: TradingServic
 @router.post("/trades/{trade_id}/review")
 async def submit_review(trade_id: int, data: TradeReviewCreate, svc: TradingService = Depends(_svc)):
     return svc.submit_review(trade_id, data.model_dump(exclude_none=True))
+
+
+# ---- Quick Position Management (Level Monitor integration) ----
+
+@router.post("/trades/{trade_id}/scale")
+async def scale_position(trade_id: int, pct: float = Query(default=50), db=Depends(get_db)):
+    """Scale out of a position by percentage. Creates TradeEvent(partial_exit)."""
+    from ...db.models import Trade, TradeEvent
+    trade = db.query(Trade).get(trade_id)
+    if not trade or trade.state == "closed":
+        raise HTTPException(404, "Trade not found or closed")
+
+    exit_contracts = max(1, int(trade.contracts * pct / 100))
+    event = TradeEvent(
+        trade_id=trade_id,
+        event_type="partial_exit",
+        details={"contracts": exit_contracts, "pct": pct},
+        notes=f"Scale out {pct}%",
+    )
+    db.add(event)
+
+    # Move stop to breakeven after first scale
+    if trade.be_price is None:
+        trade.be_price = trade.entry_price
+        trade.stop_price = trade.entry_price
+        be_event = TradeEvent(trade_id=trade_id, event_type="move_to_be", details={"new_stop": trade.entry_price})
+        db.add(be_event)
+
+    db.commit()
+    return {"success": True, "remaining_contracts": trade.contracts - exit_contracts}
+
+
+@router.post("/trades/{trade_id}/quick-close")
+async def quick_close_position(trade_id: int, db=Depends(get_db)):
+    """Close entire position immediately (no exit price details)."""
+    from ...db.models import Trade, TradeEvent
+    from datetime import datetime, timezone
+    trade = db.query(Trade).get(trade_id)
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    old_state = trade.state
+    trade.state = "closed"
+    trade.closed_at = datetime.now(timezone.utc)
+    event = TradeEvent(trade_id=trade_id, event_type="transition", details={"from": old_state, "to": "closed"})
+    db.add(event)
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/trades/{trade_id}/stop")
+async def update_stop(trade_id: int, new_stop: float = Query(...), db=Depends(get_db)):
+    """Update stop price for a trade."""
+    from ...db.models import Trade, TradeEvent
+    trade = db.query(Trade).get(trade_id)
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    old_stop = trade.stop_price
+    trade.stop_price = new_stop
+    event = TradeEvent(trade_id=trade_id, event_type="trail_stop", details={"old": old_stop, "new": new_stop})
+    db.add(event)
+    db.commit()
+    return {"success": True}
 
 
 # ---- Analytics ----
