@@ -202,6 +202,7 @@ async def lifespan(app: FastAPI):
         level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
         _databento_stream.set_level_monitor(level_monitor)
         app.state.level_monitor = level_monitor
+        level_monitor.set_async_context(asyncio.get_event_loop(), _get_db_session)
 
         # Load initial levels if session exists
         try:

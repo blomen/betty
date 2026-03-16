@@ -130,16 +130,57 @@ export function useLevelMonitor(
       });
     };
 
+    const onContext = (e: MessageEvent) => {
+      const data = JSON.parse(e.data);
+      setState(prev => {
+        if (!prev.activeBattle || prev.activeBattle.level !== data.level) return prev;
+        return {
+          ...prev,
+          activeBattle: {
+            ...prev.activeBattle,
+            ml: data.ml,
+            macro: data.macro,
+          },
+        };
+      });
+    };
+
+    const onPositionTarget = (e: MessageEvent) => {
+      const data = JSON.parse(e.data);
+      setState(prev => ({
+        ...prev,
+        activeBattle: {
+          level: data.target_name,
+          level_price: data.target_price,
+          category: 'target',
+          price: data.price,
+          confluence: [],
+          orderflow: data.orderflow,
+          structure: sessionData?.session || null,
+          ml: prev.activeBattle?.ml || null,
+          macro: prev.activeBattle?.macro || null,
+          suggested_entry: data.price,
+          suggested_stop: data.price,
+          targets: [],
+        },
+        battleActive: true,
+      }));
+    };
+
     es.addEventListener('level_approaching', onApproaching);
     es.addEventListener('level_touched', onTouched);
     es.addEventListener('orderflow_update', onOrderflow);
     es.addEventListener('level_rejected', onRejected);
+    es.addEventListener('level_context', onContext);
+    es.addEventListener('position_at_target', onPositionTarget);
 
     return () => {
       es.removeEventListener('level_approaching', onApproaching);
       es.removeEventListener('level_touched', onTouched);
       es.removeEventListener('orderflow_update', onOrderflow);
       es.removeEventListener('level_rejected', onRejected);
+      es.removeEventListener('level_context', onContext);
+      es.removeEventListener('position_at_target', onPositionTarget);
     };
   }, [esRef, sessionData]);
 
