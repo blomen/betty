@@ -118,12 +118,14 @@ class InterwettenRetriever(BrowserRetriever):
 
     CONCURRENT_LEAGUE_PAGES = 16
     CONCURRENT_DETAIL_PAGES = 20
-    MAX_DETAIL_EVENTS = 200
+    MAX_DETAIL_EVENTS = 120
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         transport = transport or BrowserTransport(headless=False)
         super().__init__(config, transport=transport)
         self.base_url = config.get("site_url", "https://www.interwetten.se")
+        # Interwetten only reads data-betting attributes — no CSS needed
+        self.transport._BLOCK_STYLESHEETS = True
 
     async def extract(self, sport: str, limit: int = 500, **kwargs) -> List[StandardEvent]:
         """
@@ -132,6 +134,10 @@ class InterwettenRetriever(BrowserRetriever):
         2. League pages (concurrent): get events with 1x2/moneyline + detail hrefs
         3. Event detail pages (concurrent): get spread + total markets
         """
+        import time as _time
+        extract_start = _time.time()
+        sport_timeout = self.config.get("sport_timeout", 300)
+
         await self.transport._ensure_browser()
         page = self.transport.page
         await self._ensure_init(f"{self.base_url}/en/sportsbook", "sportsbook")
@@ -190,16 +196,28 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await league_page_pool.put(worker_page)
 
-        tasks = [extract_league_concurrent(lg) for lg in leagues]
-        results = await asyncio.gather(*tasks)
+        # Scrape leagues in batches with time-budget checks
+        batch_size = 20
+        for batch_start in range(0, len(leagues), batch_size):
+            elapsed = _time.time() - extract_start
+            if elapsed > sport_timeout * 0.70:
+                logger.warning(
+                    f"[{self.provider_id}] {sport}: time-budget exit at {elapsed:.0f}s "
+                    f"({batch_start}/{len(leagues)} leagues, {len(all_events)} events)"
+                )
+                break
 
-        for league_events, league_hrefs in results:
-            if league_events:
-                for event in league_events:
-                    if event.id not in seen_event_ids:
-                        seen_event_ids.add(event.id)
-                        all_events.append(event)
-                event_hrefs.update(league_hrefs)
+            batch = leagues[batch_start:batch_start + batch_size]
+            tasks = [extract_league_concurrent(lg) for lg in batch]
+            results = await asyncio.gather(*tasks)
+
+            for league_events, league_hrefs in results:
+                if league_events:
+                    for event in league_events:
+                        if event.id not in seen_event_ids:
+                            seen_event_ids.add(event.id)
+                            all_events.append(event)
+                    event_hrefs.update(league_hrefs)
 
         for p in league_pages:
             try:
@@ -212,13 +230,28 @@ class InterwettenRetriever(BrowserRetriever):
         )
 
         # --- Pass 2: Event detail pages (spread + total) ---
+        elapsed = _time.time() - extract_start
         if all_events and event_hrefs and sport in self.DETAIL_SPORTS:
-            detail_count = await self._enrich_with_detail_markets(
-                page, all_events, event_hrefs, sport
-            )
-            logger.info(
-                f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} events with spread/total"
-            )
+            if elapsed < sport_timeout * 0.80:
+                detail_count = await self._enrich_with_detail_markets(
+                    page, all_events, event_hrefs, sport,
+                    extract_start=extract_start, sport_timeout=sport_timeout,
+                )
+                logger.info(
+                    f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} "
+                    f"events with spread/total"
+                )
+            else:
+                logger.warning(
+                    f"[{self.provider_id}] {sport}: skipping detail enrichment — "
+                    f"{elapsed:.0f}s already elapsed (budget: {sport_timeout}s)"
+                )
+
+        total_elapsed = _time.time() - extract_start
+        logger.info(
+            f"[{self.provider_id}] {sport}: completed in {total_elapsed:.0f}s — "
+            f"{len(all_events)} events"
+        )
 
         return all_events[:limit] if limit else all_events
 
@@ -375,6 +408,7 @@ class InterwettenRetriever(BrowserRetriever):
     async def _enrich_with_detail_markets(
         self, page, events: List[StandardEvent],
         event_hrefs: Dict[str, str], sport: str,
+        extract_start: float = 0, sport_timeout: float = 300,
     ) -> int:
         """Navigate to event detail pages to extract spread and total markets."""
         todo = [(ev, event_hrefs[ev.id]) for ev in events if ev.id in event_hrefs]
@@ -410,6 +444,11 @@ class InterwettenRetriever(BrowserRetriever):
             if errors > 20:
                 return
 
+            # Time-budget check: stop if approaching sport timeout
+            import time as _time
+            if extract_start and _time.time() - extract_start > sport_timeout * 0.90:
+                return
+
             worker_page = await page_pool.get()
             try:
                 async with sem:
@@ -419,7 +458,6 @@ class InterwettenRetriever(BrowserRetriever):
                         errors += 1
                         return
 
-                    await worker_page.wait_for_timeout(50)
                     detail = await worker_page.evaluate(self.JS_EXTRACT_DETAIL_MARKETS)
 
                     dt_str = detail.get("datetime", "")

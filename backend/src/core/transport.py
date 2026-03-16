@@ -261,6 +261,47 @@ class BrowserTransport(Transport):
         self.context = None
         self.page = None
 
+        # Resource types always blocked during extraction (speeds up page loads)
+        self._BLOCKED_RESOURCE_TYPES = {"image", "font", "media"}
+
+        # Opt-in: set True to also block stylesheets
+        # Default False because Hajper uses getComputedStyle() for scroll detection
+        self._BLOCK_STYLESHEETS = False
+
+        # Tracking/analytics domains to block
+        self._BLOCKED_URL_PATTERNS = [
+            "google-analytics.com", "googletagmanager.com",
+            "googlesyndication.com", "doubleclick.net",
+            "bat.bing.com", "bat.bing.net",
+            "facebook.net", "facebook.com/tr",
+            "truendo.com", "braze.eu", "braze.com",
+            "hotjar.com", "clarity.ms",
+            "sportradar.com/widgets",
+        ]
+
+    async def _setup_resource_blocking(self):
+        """Block images, fonts, and tracking scripts on all pages in this context."""
+        if not self.context:
+            return
+
+        blocked_types = set(self._BLOCKED_RESOURCE_TYPES)
+        if self._BLOCK_STYLESHEETS:
+            blocked_types.add("stylesheet")
+
+        async def _block_unnecessary(route):
+            if route.request.resource_type in blocked_types:
+                await route.abort()
+                return
+            url = route.request.url.lower()
+            for pattern in self._BLOCKED_URL_PATTERNS:
+                if pattern in url:
+                    await route.abort()
+                    return
+            await route.continue_()
+
+        await self.context.route("**/*", _block_unnecessary)
+        logger.debug("Resource blocking enabled for browser context (block_css=%s)", self._BLOCK_STYLESHEETS)
+
     async def _ensure_browser(self):
         if self.page: return
 
@@ -296,6 +337,7 @@ class BrowserTransport(Transport):
             else:
                 self.context = await self.browser.new_context()
                 self.page = await self.context.new_page()
+            await self._setup_resource_blocking()
             logger.info(f"Browser connected via CDP to {self.cdp_url}")
             return
 
@@ -338,6 +380,8 @@ class BrowserTransport(Transport):
             )
             self.context = await self.browser.new_context(**context_opts)
             self.page = await self.context.new_page()
+
+        await self._setup_resource_blocking()
 
         # Patchright handles all stealth at CDP level (webdriver, plugins, WebGL, etc.)
         # No add_init_script() needed — it conflicts with patchright's internal patching
