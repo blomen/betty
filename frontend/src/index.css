@@ -2,23 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Retro: square corners everywhere */
+*, *::before, *::after {
+  border-radius: 0 !important;
+}
+
 :root {
-  --bg: #111111;
-  --panel: #1a1a1a;
-  --panel2: #202020;
-  --border: #1e2636;
-  --text: #E6E8EB;
-  --muted: #9AA0A6;
-  --muted2: #7A7F87;
+  --bg: #0a0e0a;
+  --panel: #131a13;
+  --panel2: #1a231a;
+  --border: #2a3a2a;
+  --text: #d4e0d4;
+  --muted: #7a9a7a;
+  --muted2: #5a7a5a;
   --accent: #4FC3F7;
-  --accentBg: #1a1f2a;
-  --accentBorder: #1e2636;
+  --accentBg: #0a1a0a;
+  --accentBorder: #2a3a2a;
   --success: #4CAF50;
   --error: #EF5350;
   --warning: #FF9800;
-  --tableBorder: #1e2636;
+  --tableBorder: #2a3a2a;
   --calloutBorder: #4CAF50;
-  /* Tab colors — must match Sidebar.tsx dot colors */
+  /* Tab colors unchanged */
   --tab-arb: #22c55e;
   --tab-value: #FF9800;
   --tab-bonus: #A78BFA;
@@ -63,8 +68,8 @@ input[type="number"] {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -72,10 +77,6 @@ input[type="number"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-}
-
-::-webkit-scrollbar-thumb:hover {
   background: var(--muted2);
 }
 
@@ -86,7 +87,7 @@ select, input, textarea, button {
 
 /* Selection styling */
 ::selection {
-  background-color: rgba(79, 195, 247, 0.3);
+  background-color: rgba(122, 154, 122, 0.3);
   color: #ffffff;
 }
 
@@ -109,41 +110,56 @@ code {
   padding: 2px 6px;
 }
 
-/* Square bordered table style — the core visual */
+/* Square bordered table style — retro data grid */
 table.sq {
   border-collapse: collapse;
   width: 100%;
+  outline: 2px solid var(--border);
 }
 
 table.sq th,
 table.sq td {
   border: 1px solid var(--border);
-  padding: 5px 8px;
+  padding: 8px 12px;
   text-align: left;
   vertical-align: middle;
 }
 
 table.sq th {
-  background-color: var(--panel);
+  background-color: var(--panel2);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.1em;
+  border-bottom: 2px solid var(--border);
 }
 
 table.sq td {
   background-color: var(--bg);
   color: var(--text);
   font-size: 12px;
+  line-height: 1.6;
+}
+
+table.sq tbody tr:nth-child(even) td {
+  background-color: #0f150f;
 }
 
 table.sq tr:hover td {
   background-color: var(--panel);
 }
 
+table.sq tr:hover td:first-child {
+  box-shadow: inset 3px 0 0 var(--muted);
+}
+
 table.sq tr.expanded td {
   background-color: var(--panel);
+}
+
+table.sq tr.expanded td:first-child {
+  box-shadow: inset 3px 0 0 var(--muted);
 }
 
 /* Reset default table styles */
