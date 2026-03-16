@@ -1,7 +1,7 @@
 """Bankroll service - balance management, bonus tracking, stake calculation."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
@@ -162,7 +162,7 @@ class BankrollService:
                 # Deadline info
                 days_remaining = None
                 if bonus.expires_at and bonus.bonus_status in ("in_progress", "trigger_needed"):
-                    delta = bonus.expires_at - datetime.utcnow()
+                    delta = bonus.expires_at - datetime.now(timezone.utc)
                     days_remaining = max(0, round(delta.total_seconds() / 86400, 1))
 
                 wagering_info = {
@@ -267,7 +267,6 @@ class BankrollService:
             ProfileProviderBonus.profile_id == profile.id
         ).all()
 
-        from datetime import datetime
         from ..api.routes.providers import load_provider_bonuses
         all_bonus_configs = load_provider_bonuses()
 
@@ -279,13 +278,13 @@ class BankrollService:
 
             # Auto-expire active bonuses past deadline
             if (bonus.bonus_status in active_statuses and bonus.expires_at
-                    and datetime.utcnow() > bonus.expires_at):
+                    and datetime.now(timezone.utc) > bonus.expires_at):
                 bonus.bonus_status = "completed"
-                bonus.updated_at = datetime.utcnow()
+                bonus.updated_at = datetime.now(timezone.utc)
 
             days_remaining = None
             if bonus.expires_at and bonus.bonus_status in active_statuses:
-                delta = bonus.expires_at - datetime.utcnow()
+                delta = bonus.expires_at - datetime.now(timezone.utc)
                 days_remaining = max(0, delta.days)
 
             # Resolve bonus_type from DB or fallback to config
@@ -367,7 +366,7 @@ class BankrollService:
 
         # Track cumulative deposits for ROI calculation
         active_profile.total_deposited = (active_profile.total_deposited or 0.0) + deposit_amount
-        active_profile.updated_at = datetime.utcnow()
+        active_profile.updated_at = datetime.now(timezone.utc)
 
         old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
 

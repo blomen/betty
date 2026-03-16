@@ -11,7 +11,7 @@ Where features are normalized 0-1 and weights sum to 1.0.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import logging
 
@@ -241,19 +241,19 @@ class RiskCalculator:
         profile.win_rate_deviation = features.win_rate_deviation
         profile.total_bets_placed = features.total_bets_all_time
         profile.bets_analyzed = features.bets_analyzed
-        profile.last_calculated_at = datetime.utcnow()
+        profile.last_calculated_at = datetime.now(timezone.utc)
 
         # Update first_bet_date if we have account age info and it's not set
         if features.account_age_days > 0 and profile.first_bet_date is None:
             from datetime import timedelta
-            profile.first_bet_date = datetime.utcnow() - timedelta(days=features.account_age_days)
+            profile.first_bet_date = datetime.now(timezone.utc) - timedelta(days=features.account_age_days)
 
         # Auto-cooldown if score exceeds threshold
         config = self._get_config()
         if risk_score >= config.cooldown_trigger_score and not profile.is_on_cooldown:
             from datetime import timedelta
             profile.is_on_cooldown = True
-            profile.cooldown_until = datetime.utcnow() + timedelta(hours=config.cooldown_duration_hours)
+            profile.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=config.cooldown_duration_hours)
             profile.cooldown_reason = f"Auto-cooldown: risk score {risk_score:.2f} >= {config.cooldown_trigger_score:.2f}"
             logger.warning(
                 f"Provider {provider_id} placed on auto-cooldown: "

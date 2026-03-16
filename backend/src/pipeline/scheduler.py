@@ -548,12 +548,12 @@ class ExtractionScheduler:
     def _persist_boost_log(self, run_log, max_runs: int = 10):
         """Persist boost extraction log to DB. Keeps last `max_runs` runs."""
         from src.db.models import BoostExtractionLog, get_session
-        from datetime import datetime as dt
+        from datetime import datetime as dt, timezone
         from sqlalchemy import func
 
         try:
             session = get_session()
-            scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.utcnow()
+            scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.now(timezone.utc)
 
             # Prune old boost runs beyond max_runs (keep N-1, adding 1 new = N total)
             # Each run shares the same run_id, so count distinct run_ids

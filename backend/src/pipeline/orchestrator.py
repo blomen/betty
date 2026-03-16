@@ -122,10 +122,10 @@ class ExtractionPipeline:
 
         Returns number of events marked as finished.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from sqlalchemy import or_
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Strategy 1: stale updated_at (not seen in last 3 min = Pinnacle dropped it)
         stale_threshold = now - timedelta(minutes=3)

@@ -261,7 +261,7 @@ def _persist_boost_log(run_log):
 
     try:
         session = get_session()
-        scraped_at = datetime.fromisoformat(run_log.scraped_at) if run_log.scraped_at else datetime.utcnow()
+        scraped_at = datetime.fromisoformat(run_log.scraped_at) if run_log.scraped_at else datetime.now(timezone.utc)
 
         session.query(BoostExtractionLog).delete()
 

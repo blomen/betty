@@ -1,6 +1,6 @@
 """Provider API routes."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -144,7 +144,7 @@ async def update_provider(
     if data.balance is not None:
         provider.balance = data.balance
 
-    provider.updated_at = datetime.utcnow()
+    provider.updated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {
@@ -193,7 +193,7 @@ async def update_bonus_status(
 
     if bonus_record:
         bonus_record.bonus_status = status
-        bonus_record.updated_at = datetime.utcnow()
+        bonus_record.updated_at = datetime.now(timezone.utc)
     else:
         bonus_record = ProfileProviderBonus(
             profile_id=active_profile.id,
@@ -227,7 +227,7 @@ async def update_limit_risk(
     provider.limit_risk = data.limit_risk
     if data.limit_notes is not None:
         provider.limit_notes = data.limit_notes
-    provider.updated_at = datetime.utcnow()
+    provider.updated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {

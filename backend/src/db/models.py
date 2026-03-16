@@ -86,7 +86,7 @@ class Event(Base):
     stats_json = Column(Text, nullable=True)       # JSON blob: corners, cards, scoreByQuarter, etc.
 
     created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     odds = relationship("Odds", back_populates="event", cascade="all, delete-orphan")
@@ -112,7 +112,7 @@ class Provider(Base):
     limit_notes = Column(Text, nullable=True)        # Free-form context
 
     created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     odds = relationship("Odds", back_populates="provider")
@@ -328,7 +328,7 @@ class Profile(Base):
     color = Column(String, nullable=True)            # Hex color for Chrome border (auto-assigned)
 
     created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
@@ -379,7 +379,7 @@ class ProfileProviderBonus(Base):
     claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
     expires_at = Column(DateTime, nullable=True)        # Deadline to complete wagering (claimed_at + 60 days)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_bonus'),
@@ -413,7 +413,7 @@ class ProfileProviderBalance(Base):
     # Used for dormant account handling - accounts opened before +EV betting
     account_opened_at = Column(DateTime, nullable=True)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint('profile_id', 'provider_id', name='uq_profile_provider_balance'),
@@ -841,7 +841,7 @@ class RiskConfig(Base):
     daily_bet_cap = Column(Integer, default=0)  # 0 = no cap; >0 = max bets per day per platform group
 
     # Updated timestamp
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     profile = relationship("Profile")

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -279,7 +279,7 @@ async def set_account_opened_date(
     except ValueError:
         raise HTTPException(400, f"Invalid date format: {data.opened_at}. Use ISO format (YYYY-MM-DD)")
 
-    if opened_at > datetime.utcnow():
+    if opened_at > datetime.now(timezone.utc):
         raise HTTPException(400, "Account opened date cannot be in the future")
 
     profile_repo = ProfileRepo(db)
@@ -292,7 +292,7 @@ async def set_account_opened_date(
 
     if balance:
         balance.account_opened_at = opened_at
-        balance.updated_at = datetime.utcnow()
+        balance.updated_at = datetime.now(timezone.utc)
     else:
         balance = ProfileProviderBalance(
             profile_id=profile.id,
@@ -304,7 +304,7 @@ async def set_account_opened_date(
 
     db.commit()
 
-    age_days = (datetime.utcnow() - opened_at).days
+    age_days = (datetime.now(timezone.utc) - opened_at).days
 
     return {
         "success": True,
@@ -337,7 +337,7 @@ async def get_account_opened_date(
             "source": "none"
         }
 
-    age_days = (datetime.utcnow() - balance.account_opened_at).days
+    age_days = (datetime.now(timezone.utc) - balance.account_opened_at).days
 
     return {
         "provider_id": provider_id,
@@ -365,7 +365,7 @@ async def clear_account_opened_date(
         raise HTTPException(404, f"No balance record for {provider_id}")
 
     balance.account_opened_at = None
-    balance.updated_at = datetime.utcnow()
+    balance.updated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {

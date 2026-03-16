@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import databento as db
 
@@ -101,7 +101,7 @@ class DabentoProvider(MarketDataProvider):
                 symbols=[symbol],
                 stype_in="parent",
                 schema="trades",
-                start=datetime.utcnow().replace(hour=0, minute=0, second=0).isoformat(),
+                start=datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat(),
                 limit=1,
             )
             for rec in data:

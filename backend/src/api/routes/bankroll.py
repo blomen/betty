@@ -1,5 +1,7 @@
 """Bankroll API routes."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy.orm import Session
 
@@ -327,7 +329,7 @@ async def bonus_transition(
             bonus_record.wagered_amount = 0.0
             bonus_record.wagering_requirement = bonus_amount * bonus_config.get("wagering_multiplier", 12.0)
             bonus_record.min_odds = bonus_config.get("min_odds", 1.80)
-            bonus_record.updated_at = __import__("datetime").datetime.utcnow()
+            bonus_record.updated_at = datetime.now(timezone.utc)
             result = profile_repo.get_bonus_status(profile.id, provider_id)
             result["bonus_credited"] = bonus_amount
         else:

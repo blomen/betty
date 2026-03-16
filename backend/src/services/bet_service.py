@@ -1,7 +1,7 @@
 """Bet service - bet recording and settlement with risk management."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
@@ -28,7 +28,7 @@ class BetService:
         ).first()
         if not risk_profile or not risk_profile.is_on_cooldown:
             return None
-        if risk_profile.cooldown_until and risk_profile.cooldown_until < datetime.utcnow():
+        if risk_profile.cooldown_until and risk_profile.cooldown_until < datetime.now(timezone.utc):
             # Cooldown expired — clear it
             risk_profile.is_on_cooldown = False
             risk_profile.cooldown_until = None
@@ -110,7 +110,7 @@ class BetService:
             }
 
         # Populate behavioral fields
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         risk_score = self._get_risk_score(provider_id)
         is_round = stake == round(stake) and stake % 5 == 0 and stake >= 10
 
@@ -209,7 +209,7 @@ class BetService:
             ).first()
             if bonus:
                 bonus.bonus_status = "completed"
-                bonus.updated_at = datetime.utcnow()
+                bonus.updated_at = datetime.now(timezone.utc)
                 logger.info(f"[BetService] Auto-completed freebet for {provider_id}")
 
         # Check current wagering status (but don't record — wagering counts on settlement)
@@ -245,7 +245,7 @@ class BetService:
 
         bet.result = result
         bet.payout = payout
-        bet.settled_at = datetime.utcnow()
+        bet.settled_at = datetime.now(timezone.utc)
 
         # Calculate CLV (Closing Line Value)
         clv_pct = self._calculate_clv(bet)
@@ -274,7 +274,7 @@ class BetService:
                     and bet.stake >= (bonus.bonus_amount or 0)):
                 bonus.bonus_status = "freebet_available"
                 bonus.wagered_amount = bet.stake
-                bonus.updated_at = datetime.utcnow()
+                bonus.updated_at = datetime.now(timezone.utc)
 
         # Invalidate planner cache if bonus status changed (triggers re-plan on next request)
         if bet.profile_id and wagering_status:
@@ -349,7 +349,7 @@ class BetService:
 
         Returns: {"processed": int, "updated": int}
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Find pending bets where closing_odds is not yet set,
         # joined with events that have already started
@@ -428,7 +428,7 @@ class BetService:
             bet.result = result
             # Set settled_at when transitioning from pending to a final result
             if old_result == "pending" and result in ("won", "lost", "void"):
-                bet.settled_at = datetime.utcnow()
+                bet.settled_at = datetime.now(timezone.utc)
             # Clear settled_at when reverting back to pending
             elif result == "pending":
                 bet.settled_at = None

@@ -10,7 +10,7 @@ All features are normalized to 0-1 range where:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import statistics
 import logging
@@ -54,7 +54,7 @@ class BehavioralFeatures:
     # Metadata
     bets_analyzed: int = 0
     calculation_window_days: int = 30
-    calculated_at: datetime = field(default_factory=datetime.utcnow)
+    calculated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API responses."""
@@ -104,7 +104,7 @@ class FeatureExtractor:
         Returns:
             BehavioralFeatures with all metrics normalized 0-1
         """
-        cutoff = datetime.utcnow() - timedelta(days=self.window_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.window_days)
 
         # Get bets within window
         bets = (
@@ -275,7 +275,7 @@ class FeatureExtractor:
         Returns 0-1 (higher = more hedging detected)
         """
         # Get all bets in window (not just this provider)
-        cutoff = datetime.utcnow() - timedelta(days=self.window_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.window_days)
         all_bets = (
             self.db.query(Bet)
             .filter(Bet.placed_at >= cutoff)
@@ -394,7 +394,7 @@ class FeatureExtractor:
             return 0, len(bets)
 
         first_bet_date = min(b.placed_at for b in bets_with_date)
-        age_days = (datetime.utcnow() - first_bet_date).days
+        age_days = (datetime.now(timezone.utc) - first_bet_date).days
         total_bets = len(bets)
 
         return age_days, total_bets
