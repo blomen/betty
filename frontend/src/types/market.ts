@@ -320,3 +320,87 @@ export interface CandlesResponse {
   interval: string;
   date: string;
 }
+
+// --- Level Battle Station types ---
+
+export type LevelStatusType = 'watching' | 'approaching' | 'at_level' | 'triggered' | 'rejected';
+
+export interface MonitoredLevel {
+  name: string;
+  price: number;
+  category: 'session' | 'band' | 'prior' | 'structure' | 'overnight';
+  status: LevelStatusType;
+  distance_ticks: number;
+  cluster: string[];
+}
+
+export interface OrderflowSnapshot {
+  long: OrderflowIndicators;
+  short: OrderflowIndicators;
+}
+
+export interface LevelTouchedEvent {
+  type: 'level_touched';
+  level: string;
+  level_price: number;
+  category: string;
+  price: number;
+  confluence: string[];
+  orderflow: OrderflowSnapshot;
+}
+
+export interface LevelApproachingEvent {
+  type: 'level_approaching';
+  level: string;
+  level_price: number;
+  category: string;
+  price: number;
+  distance_ticks: number;
+}
+
+export interface OrderflowUpdateEvent {
+  type: 'orderflow_update';
+  price: number;
+  ts: number;
+  orderflow: OrderflowSnapshot;
+}
+
+export interface LevelRejectedEvent {
+  type: 'level_rejected';
+  level: string;
+  level_price: number;
+}
+
+export interface BattleScreenData {
+  level: string;
+  level_price: number;
+  category: string;
+  price: number;
+  confluence: string[];
+  orderflow: OrderflowSnapshot;
+  structure: ExpandedSession['session'] | null;
+  ml: {
+    day_type: string | null;
+    day_type_confidence: number | null;
+  } | null;
+  macro: ExpandedSession['macro'] | null;
+  suggested_entry: number;
+  suggested_stop: number;
+  targets: { name: string; price: number }[];
+}
+
+export interface PositionRow {
+  trade_id: number;
+  instrument: string;
+  direction: 'long' | 'short';
+  entry_price: number;
+  current_size: number;
+  original_size: number;
+  current_price: number;
+  pnl_points: number;
+  pnl_dollars: number;
+  stop_price: number;
+  targets: { name: string; price: number; hit: boolean }[];
+  next_target: { name: string; price: number } | null;
+  status: 'running' | 'at_target' | 'stopped' | 'closed';
+}
