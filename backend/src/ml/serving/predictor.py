@@ -38,6 +38,29 @@ class Predictor:
                 loaded += 1
         return loaded
 
+    def load_from_disk(self, models_dir: str | Path | None = None) -> int:
+        """Fallback: auto-discover *_latest.joblib files from disk.
+
+        Used when ml_model_registry is empty but trained models exist on disk.
+        """
+        if models_dir is None:
+            models_dir = Path(__file__).parent.parent.parent.parent / "data" / "models"
+        else:
+            models_dir = Path(models_dir)
+
+        if not models_dir.exists():
+            return 0
+
+        loaded = 0
+        for joblib_path in sorted(models_dir.glob("*_latest.joblib")):
+            model_name = joblib_path.stem.replace("_latest", "")
+            if model_name not in self.models:
+                if self.load_model(model_name, str(joblib_path)):
+                    loaded += 1
+        if loaded:
+            logger.info(f"Loaded {loaded} ML models from disk (registry was empty)")
+        return loaded
+
     def predict(self, model_name: str, features: dict) -> float | dict | None:
         """Get prediction for a model. Returns None if model not loaded.
 
@@ -50,12 +73,23 @@ class Predictor:
             return None
 
         model_data = self.models[model_name]
-        model = model_data["model"]
         feature_names = model_data["feature_names"]
         task = model_data.get("task", "classification")
+        model = model_data.get("model")
 
         try:
             X = np.array([[features.get(f, 0.0) for f in feature_names]])
+            if task == "calibration":
+                # Boost calibrator: prefer lgbm_model, fall back to isotonic
+                lgbm = model_data.get("lgbm_model")
+                if lgbm is not None:
+                    proba = lgbm.predict_proba(X)
+                    return float(proba[0][1])
+                isotonic = model_data.get("isotonic_model")
+                if isotonic is not None:
+                    llm_prob = features.get("llm_raw_probability", 0.5)
+                    return float(isotonic.predict([llm_prob])[0])
+                return None
             if task == "multiclass":
                 proba = model.predict_proba(X)[0]
                 return {

@@ -278,13 +278,15 @@ class ExtractionPipeline:
         else:
             self.cache = None
 
-        # Load ML models from registry (best-effort)
+        # Load ML models from registry, fall back to disk discovery
         try:
             from src.ml.serving.predictor import get_predictor
             predictor = get_predictor()
             loaded = predictor.load_from_registry(self.session)
+            if loaded == 0:
+                loaded = predictor.load_from_disk()
             if loaded > 0:
-                logger.info(f"Loaded {loaded} ML models from registry")
+                logger.info(f"Loaded {loaded} ML models")
         except Exception:
             pass
 
