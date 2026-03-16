@@ -287,13 +287,21 @@ class MarketService:
             "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
         }
 
-        # Weekly composite
+        # Weekly composite (min 2 trading days of 1-min bars)
         weekly_bars = await self._fetch_weekly_bars(symbol)
-        if weekly_bars:
+        if weekly_bars and len(weekly_bars) >= 780:
             from ..market_data.levels import compute_volume_profile as compute_vp_levels
             wb_trades = [{"price": b.get("close", 0), "size": b.get("volume", 1)} for b in weekly_bars]
             weekly_vp = compute_vp_levels(wb_trades)
             profiles["weekly"] = {"poc": weekly_vp.poc, "vah": weekly_vp.vah, "val": weekly_vp.val}
+
+        # Monthly composite (min 5 trading days of 1-hour bars)
+        monthly_bars = await self._fetch_monthly_bars(symbol)
+        if monthly_bars and len(monthly_bars) >= 35:
+            from ..market_data.levels import compute_volume_profile as compute_vp_levels
+            mb_trades = [{"price": b.get("close", 0), "size": b.get("volume", 1)} for b in monthly_bars]
+            monthly_vp = compute_vp_levels(mb_trades)
+            profiles["monthly"] = {"poc": monthly_vp.poc, "vah": monthly_vp.vah, "val": monthly_vp.val}
 
         # Leg and Macro profiles from context anchor dates
         ctx = self.repo.get_context(symbol)
