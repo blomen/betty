@@ -132,12 +132,12 @@ class TenBetRetriever(BrowserRetriever):
     # Max competitions to scrape per sport (football can have 100+ but most are tiny leagues)
     MAX_COMPETITIONS_PER_SPORT = 60
 
-    # Per-sport caps to keep total extraction under provider_timeout (700s).
+    # Per-sport caps to keep total extraction under provider_timeout.
     # Each comp needs ~4-5s (page nav + DOM render + parse) with Semaphore(4).
-    # Football: 60 comps * ~5s / 4 parallel = ~75s effective
-    # Other sports: capped to avoid long-tail extraction on small leagues
+    # Football was 60 but timed out at 600s in 4/5 runs — reduced to 30
+    # (top competitions discovered first, covers ~90% of Pinnacle matches).
     SPORT_COMPETITION_CAPS: Dict[str, int] = {
-        "football": 60,
+        "football": 30,
         "basketball": 35,
         "ice_hockey": 30,
         "tennis": 25,
@@ -157,6 +157,9 @@ class TenBetRetriever(BrowserRetriever):
 
     async def extract(self, sport: str, limit: int = 1000, **kwargs) -> List[StandardEvent]:
         """Extract events for a sport by discovering and scraping competitions."""
+        import time as _time
+        extract_start = _time.time()
+
         # Initialize session
         await self._ensure_init(url=f"{self.site_url}/sports", page_key="sports_home")
 
@@ -190,6 +193,7 @@ class TenBetRetriever(BrowserRetriever):
         unique_ids = set()
         sem = asyncio.Semaphore(4)  # 4 parallel tabs (6 caused browser pressure, slow DOM renders)
         batch_size = 15
+        sport_timeout = self.config.get("sport_timeout", 600)
 
         async def process_competition(comp):
             async with sem:
@@ -197,6 +201,15 @@ class TenBetRetriever(BrowserRetriever):
 
         for batch_start in range(0, len(competitions), batch_size):
             if len(all_events) >= limit:
+                break
+
+            # Time-budget check: stop if we've used 70% of sport timeout
+            elapsed = _time.time() - extract_start
+            if elapsed > sport_timeout * 0.70:
+                logger.warning(
+                    f"[{self.provider_id}] {sport}: time-budget exit at {elapsed:.0f}s "
+                    f"({batch_start}/{len(competitions)} comps, {len(all_events)} events)"
+                )
                 break
 
             batch = competitions[batch_start:batch_start + batch_size]
@@ -211,13 +224,20 @@ class TenBetRetriever(BrowserRetriever):
                         all_events.append(ev)
                         unique_ids.add(ev.id)
 
-        logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted")
+        logger.info(f"[{self.provider_id}] {sport}: {len(all_events)} events extracted in {_time.time() - extract_start:.0f}s")
 
         # Pass 2: Enrich football events with detail page spread/total
-        if all_events and sport == "football":
+        # Skip if competition scraping already consumed most of the timeout
+        elapsed = _time.time() - extract_start
+        if all_events and sport == "football" and elapsed < sport_timeout * 0.80:
             detail_count = await self._enrich_events_with_details(all_events, sport)
             logger.info(
                 f"[{self.provider_id}] {sport}: enriched {detail_count}/{len(all_events)} with spread/total"
+            )
+        elif all_events and sport == "football":
+            logger.warning(
+                f"[{self.provider_id}] {sport}: skipping detail enrichment — "
+                f"{elapsed:.0f}s already elapsed (budget: {sport_timeout}s)"
             )
 
         return all_events
@@ -859,7 +879,7 @@ class TenBetRetriever(BrowserRetriever):
             return None
         return {"type": "total", "outcomes": outcomes}
 
-    MAX_DETAIL_EVENTS = 150
+    MAX_DETAIL_EVENTS = 75  # Reduced from 150 — detail enrichment was doubling football extraction time
 
     async def _enrich_events_with_details(
         self, events: List[StandardEvent], sport: str

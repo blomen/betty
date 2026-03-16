@@ -213,6 +213,16 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         except Exception:
             pass
 
+    # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
+    # Popular leagues are discovered first, so capping preserves the highest-value ones.
+    SPORT_LEAGUE_CAPS: Dict[str, int] = {
+        "football": 30,     # 60+ discovered, but top 30 cover ~95% of Pinnacle matches
+        "basketball": 20,
+        "ice_hockey": 20,
+        "tennis": 20,
+    }
+    DEFAULT_LEAGUE_CAP = 15
+
     async def _extract_single_sport(
         self,
         sport: str,
@@ -293,8 +303,16 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             f"{len(all_leagues) - popular_count} from countries)"
         )
 
-        # Step 5: Filter leagues
+        # Step 5: Filter leagues and enforce per-sport cap
         filtered_leagues = self._filter_leagues(all_leagues, target_leagues, sport_normalized)
+        league_cap = self.SPORT_LEAGUE_CAPS.get(sport_normalized, self.DEFAULT_LEAGUE_CAP)
+        if len(filtered_leagues) > league_cap:
+            logger.info(
+                f"[{self.provider_id}] {sport_normalized}: capping from "
+                f"{len(filtered_leagues)} to {league_cap} leagues"
+            )
+            filtered_leagues = filtered_leagues[:league_cap]
+
         logger.info(
             f"[{self.provider_id}] {sport_normalized}: "
             f"scraping {len(filtered_leagues)}/{len(all_leagues)} leagues"
@@ -304,8 +322,21 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         # ComeOn's SPA only renders fully on the active page — new tabs
         # don't hydrate the React app reliably. Sequential is required.
         all_events = []
+        sport_timeout = self.config.get("sport_timeout", 360)
+        sport_start = time.time()
+        leagues_scraped = 0
 
         for league_info in filtered_leagues:
+            # Time-budget early exit: stop if we've used 85% of sport timeout
+            elapsed = time.time() - sport_start
+            if elapsed > sport_timeout * 0.85:
+                logger.warning(
+                    f"[{self.provider_id}] {sport_normalized}: time-budget exit at "
+                    f"{elapsed:.0f}s ({leagues_scraped}/{len(filtered_leagues)} leagues, "
+                    f"{len(all_events)} events)"
+                )
+                break
+
             try:
                 events = await scrape_league_page(
                     page=page,
@@ -316,12 +347,15 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                     provider_id=self.provider_id,
                 )
                 all_events.extend(events)
+                leagues_scraped += 1
             except Exception as e:
+                leagues_scraped += 1
                 logger.debug(f"[{self.provider_id}] {league_info['name']}: scrape failed: {e}")
 
         logger.info(
             f"[{self.provider_id}] {sport_normalized}: "
-            f"{len(all_events)} events from {len(filtered_leagues)} leagues"
+            f"{len(all_events)} events from {leagues_scraped}/{len(filtered_leagues)} leagues "
+            f"in {time.time() - sport_start:.0f}s"
         )
         return all_events
 

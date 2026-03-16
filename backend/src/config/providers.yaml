@@ -746,13 +746,9 @@ providers:
       - tennis
       - handball
       - volleyball
-      - rugby
-      - cricket
-      - boxing
-      - darts
-      - american_football
-      - baseball
-      # Removed: golf (0 events, 3.1s), cycling (0 events, 5.1s) — no soft book covers these
+      # Removed: rugby (0 events), cricket (0-1 events), boxing (0 events in Pinnacle markets),
+      # darts (0 events in Pinnacle markets), american_football (0 events), baseball (0-1 events),
+      # golf (0 events), cycling (0 events) — these waste 300s+ on sport timeout with near-zero yield
     bonus:
       type: bonusdeposit
       amount: 1000
