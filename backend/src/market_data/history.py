@@ -27,7 +27,7 @@ class HistoricalTick:
 
 async def fetch_ohlcv_1d(
     api_key: str,
-    symbol: str = "NQ.FUT",
+    symbol: str = "NQ.c.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -58,7 +58,7 @@ async def fetch_ohlcv_1d(
 
 async def fetch_ohlcv_1m(
     api_key: str,
-    symbol: str = "NQ.FUT",
+    symbol: str = "NQ.c.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -89,7 +89,7 @@ async def fetch_ohlcv_1m(
 
 async def fetch_trades_historical(
     api_key: str,
-    symbol: str = "NQ.FUT",
+    symbol: str = "NQ.c.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -105,7 +105,7 @@ async def fetch_trades_historical(
     data = client.timeseries.get_range(
         dataset=dataset,
         symbols=[symbol],
-        stype_in="parent",
+        stype_in="continuous",
         schema="trades",
         start=start.isoformat() if start else "2026-01-01",
         end=end.isoformat() if end else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -128,7 +128,7 @@ async def fetch_trades_historical(
 async def backfill_trades_to_db(
     api_key: str,
     db_session_factory: Callable,
-    symbol: str = "NQ.FUT",
+    symbol: str = "NQ.c.0",
     start: date | None = None,
     end: date | None = None,
     batch_size: int = 1000,

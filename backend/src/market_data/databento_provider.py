@@ -21,7 +21,10 @@ class DabentoProvider(MarketDataProvider):
 
         self.client = db.Historical(key=api_key)
         self.dataset = config.get("dataset", "GLBX.MDP3")
-        self.symbol = config.get("symbol", "NQ.FUT")
+        # Convert parent symbol (NQ.FUT) to continuous front-month (NQ.c.0)
+        raw_symbol = config.get("symbol", "NQ.FUT")
+        root = raw_symbol.split(".")[0]  # "NQ"
+        self.symbol = f"{root}.c.0"  # front-month by calendar roll
 
     async def get_bars(
         self, symbol: str, interval: str, start: datetime, end: datetime
@@ -39,7 +42,7 @@ class DabentoProvider(MarketDataProvider):
         data = self.client.timeseries.get_range(
             dataset=self.dataset,
             symbols=[symbol],
-            stype_in="parent",
+            stype_in="continuous",
             schema=schema,
             start=start.isoformat(),
             end=end.isoformat(),
@@ -47,8 +50,10 @@ class DabentoProvider(MarketDataProvider):
 
         bars = []
         for rec in data:
+            ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
+            ts = datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc)
             bars.append(BarData(
-                timestamp=rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event,
+                timestamp=ts,
                 open=rec.open / 1e9,  # Databento fixed-point prices
                 high=rec.high / 1e9,
                 low=rec.low / 1e9,
@@ -71,7 +76,7 @@ class DabentoProvider(MarketDataProvider):
         data = self.client.timeseries.get_range(
             dataset=self.dataset,
             symbols=[symbol],
-            stype_in="parent",
+            stype_in="continuous",
             schema="trades",
             start=start.isoformat(),
             end=end.isoformat(),
@@ -83,8 +88,9 @@ class DabentoProvider(MarketDataProvider):
             side_char = getattr(rec, "side", "")
             side = "buy" if side_char == "A" else "sell" if side_char == "B" else "unknown"
 
+            ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
             ticks.append(TickData(
-                timestamp=rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event,
+                timestamp=datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc),
                 price=rec.price / 1e9,
                 size=rec.size,
                 side=side,
@@ -99,7 +105,7 @@ class DabentoProvider(MarketDataProvider):
             data = self.client.timeseries.get_range(
                 dataset=self.dataset,
                 symbols=[symbol],
-                stype_in="parent",
+                stype_in="continuous",
                 schema="trades",
                 start=datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat(),
                 limit=1,

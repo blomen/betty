@@ -993,7 +993,9 @@ class MarketService:
         target_dt = datetime.strptime(target, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         end_dt = target_dt + timedelta(days=1)
         try:
-            bars = await provider.get_bars(f"{symbol}.FUT", interval, target_dt, end_dt)
+            config = get_market_data_config()
+            full_symbol = config.get("symbol", "NQ.c.0")
+            bars = await provider.get_bars(full_symbol, interval, target_dt, end_dt)
         except Exception as e:
             logger.debug("get_candles failed (likely weekend/no data): %s", e)
             bars = []

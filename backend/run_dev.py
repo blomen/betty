@@ -13,8 +13,9 @@ Usage:
 """
 
 import asyncio
-import signal
+import os
 import socket
+import subprocess
 import sys
 
 HOST = "127.0.0.1"
@@ -50,9 +51,18 @@ if __name__ == "__main__":
         print(f"  Starting a second instance would wipe the database.\n")
         sys.exit(1)
 
-    import uvicorn
+    # On Windows with ProactorEventLoop, Ctrl+C is swallowed.
+    # Spawn uvicorn as a child process so the parent can catch Ctrl+C and kill it.
+    if sys.platform == "win32" and not os.environ.get("_BBQDEV_CHILD"):
+        env = {**os.environ, "_BBQDEV_CHILD": "1"}
+        proc = subprocess.Popen([sys.executable, __file__], env=env)
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            proc.wait()
+        sys.exit(proc.returncode or 0)
 
-    # ProactorEventLoop on Windows swallows Ctrl+C — re-register handler
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+    import uvicorn
 
     uvicorn.run("src.api:app", host=HOST, port=PORT)

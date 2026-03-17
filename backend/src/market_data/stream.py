@@ -187,7 +187,7 @@ class DatabentoLiveStream:
         self,
         api_key: str,
         dataset: str = "GLBX.MDP3",
-        symbol: str = "NQ.FUT",
+        symbol: str = "NQ.c.0",
         db_session_factory: Callable | None = None,
     ):
         self.api_key = api_key
@@ -256,11 +256,13 @@ class DatabentoLiveStream:
                 dataset=self.dataset,
                 schema="trades",
                 symbols=[self.symbol],
+                stype_in="continuous",
             )
             client.subscribe(
                 dataset=self.dataset,
                 schema="mbp-1",
                 symbols=[self.symbol],
+                stype_in="continuous",
             )
 
             async for record in client:

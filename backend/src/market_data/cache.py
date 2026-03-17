@@ -1,7 +1,7 @@
 """Caching wrapper for market data providers. Stores completed days as parquet."""
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -81,11 +81,24 @@ class CachedMarketDataProvider(MarketDataProvider):
         } for b in bars])
         df.to_parquet(path, index=False)
 
+    @staticmethod
+    def _to_datetime(ts) -> datetime:
+        """Convert various timestamp formats to timezone-aware datetime."""
+        if hasattr(ts, "to_pydatetime"):
+            dt = ts.to_pydatetime()
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        if isinstance(ts, (int, float)):
+            # Epoch nanoseconds from parquet
+            return datetime.fromtimestamp(int(ts) / 1e9, tz=timezone.utc)
+        if isinstance(ts, datetime):
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        return ts
+
     def _read_bars_cache(self, path: Path) -> list[BarData]:
         df = pd.read_parquet(path)
         return [
             BarData(
-                timestamp=row["timestamp"].to_pydatetime() if hasattr(row["timestamp"], "to_pydatetime") else row["timestamp"],
+                timestamp=self._to_datetime(row["timestamp"]),
                 open=row["open"],
                 high=row["high"],
                 low=row["low"],
@@ -109,7 +122,7 @@ class CachedMarketDataProvider(MarketDataProvider):
         df = pd.read_parquet(path)
         return [
             TickData(
-                timestamp=row["timestamp"].to_pydatetime() if hasattr(row["timestamp"], "to_pydatetime") else row["timestamp"],
+                timestamp=self._to_datetime(row["timestamp"]),
                 price=row["price"],
                 size=int(row["size"]),
                 side=row["side"],
