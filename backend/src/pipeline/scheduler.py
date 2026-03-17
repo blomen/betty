@@ -157,6 +157,20 @@ class ExtractionScheduler:
 
         schedule.task.add_done_callback(_on_restart_done)
 
+    def _get_last_extraction_time(self, provider_ids: list[str]) -> datetime | None:
+        """Check DB for the most recent Odds.updated_at for given provider(s)."""
+        try:
+            from src.db.models import Odds, get_session
+            from sqlalchemy import func
+            with get_session() as session:
+                result = session.query(func.max(Odds.updated_at)).filter(
+                    Odds.provider_id.in_(provider_ids)
+                ).scalar()
+                return result
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not check last extraction time: {e}")
+            return None
+
     async def _provider_loop(self, schedule: ProviderSchedule):
         """Extraction loop for a single provider (or grouped sharp providers)."""
         # Wait for sharp if not sharp category
@@ -167,6 +181,35 @@ class ExtractionScheduler:
                 logger.info(f"[Scheduler:{schedule.provider_id}] Sharp ready, starting extraction")
             except asyncio.TimeoutError:
                 logger.warning(f"[Scheduler:{schedule.provider_id}] Sharp timeout (120s), starting anyway")
+
+        # On startup, check if data is still fresh from a previous run
+        providers = schedule.providers or [schedule.provider_id]
+        last_extraction = await asyncio.get_running_loop().run_in_executor(
+            None, self._get_last_extraction_time, providers
+        )
+        if last_extraction:
+            age_seconds = (datetime.now(timezone.utc) - last_extraction).total_seconds()
+            remaining = schedule.interval_seconds - age_seconds
+            if remaining > 0:
+                logger.info(
+                    f"[Scheduler:{schedule.provider_id}] Data is {age_seconds:.0f}s old, "
+                    f"sleeping {remaining:.0f}s before first run"
+                )
+                schedule.last_completed = last_extraction
+                update_provider_state(schedule.provider_id, {
+                    "running": False,
+                    "last_completed": last_extraction.isoformat(),
+                    "category": schedule.category,
+                })
+                try:
+                    await asyncio.sleep(remaining)
+                except asyncio.CancelledError:
+                    return
+            else:
+                logger.info(
+                    f"[Scheduler:{schedule.provider_id}] Data is {age_seconds:.0f}s old "
+                    f"(stale), running immediately"
+                )
 
         while schedule.running:
             start = datetime.now(timezone.utc)
