@@ -601,44 +601,25 @@ async def run_soft_extraction(
 
 @router.post("/tier/{tier_name}/start")
 async def start_tier(tier_name: str):
-    """Start a specific extraction tier.
+    """Start a specific extraction tier/category.
 
+    Reads config from providers.yaml extraction_scheduling section.
     Valid tier names: sharp, api_soft, browser_soft
     """
-    from ...pipeline.scheduler import get_scheduler
+    from ...pipeline.scheduler import get_scheduler, ProviderSchedule
 
     scheduler = get_scheduler()
 
-    tier_configs = {
-        "sharp": {
-            "providers": ["polymarket", "pinnacle"],
-            "interval_seconds": 300,
-        },
-        "api_soft": {
-            "providers": [
-                "unibet", "leovegas", "betmgm",
-                "speedybet", "x3000", "goldenbull", "1x2",
-                "betinia", "campobet", "swiper", "lodur", "dbet", "quickcasino",
-                "betsson", "nordicbet", "spelklubben", "bethard",
-                "vbet",
-            ],
-            "interval_seconds": 3600,
-        },
-        "browser_soft": {
-            "providers": [
-                "mrgreen", "888sport",
-                "comeon", "hajper", "lyllo",
-                "snabbare", "10bet", "interwetten",
-                "coolbet", "tipwin",
-            ],
-            "interval_seconds": 7200,
-        },
-    }
+    # Load from YAML config (single source of truth)
+    scheduling = scheduler._load_scheduling_config()
+    if tier_name not in scheduling:
+        raise HTTPException(400, f"Unknown tier: {tier_name}. Use: {', '.join(scheduling.keys())}")
 
-    if tier_name not in tier_configs:
-        raise HTTPException(400, f"Unknown tier: {tier_name}. Use: sharp, api_soft, browser_soft")
-
-    config = tier_configs[tier_name]
+    category_config = scheduling[tier_name]
+    all_providers = category_config.get("providers", [])
+    interval_minutes = category_config.get("interval_minutes", 60)
+    interval_seconds = interval_minutes * 60
+    grouped = category_config.get("grouped", False)
 
     # Filter out providers disabled in settings for active profile
     from ...db.models import Profile, ProviderExtractionSetting, get_session
@@ -658,19 +639,30 @@ async def start_tier(tier_name: str):
             }
     finally:
         session.close()
-    providers = [p for p in config["providers"] if p not in disabled]
+    providers = [p for p in all_providers if p not in disabled]
 
-    await scheduler.start_tier(
-        name=tier_name,
-        providers=providers,
-        interval_seconds=config["interval_seconds"],
-    )
+    if grouped:
+        schedule = ProviderSchedule(
+            provider_id=tier_name,
+            category=tier_name,
+            interval_seconds=interval_seconds,
+            providers=providers,
+        )
+        await scheduler._start_schedule(schedule)
+    else:
+        for provider_id in providers:
+            schedule = ProviderSchedule(
+                provider_id=provider_id,
+                category=tier_name,
+                interval_seconds=interval_seconds,
+            )
+            await scheduler._start_schedule(schedule)
 
     return {
         "status": "started",
         "tier": tier_name,
         "providers": providers,
-        "interval_seconds": config["interval_seconds"],
+        "interval_seconds": interval_seconds,
     }
 
 

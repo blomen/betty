@@ -69,7 +69,7 @@ def get_extraction_settings(db: Session = Depends(get_db)):
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    extraction_tiers = config.get("extraction_tiers", {})
+    extraction_tiers = config.get("extraction_scheduling", config.get("extraction_tiers", {}))
     providers_config = config.get("providers", {})
 
     # Load DB overrides for active profile
