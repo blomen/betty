@@ -17,14 +17,13 @@ from dotenv import load_dotenv
 from ..paths import get_env_path
 load_dotenv(get_env_path(), override=True)
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..db.models import init_db
-from .state import ws_manager
 from .routes import (
     providers_router,
     bankroll_router,
@@ -371,22 +370,6 @@ app.include_router(market_router)
 app.include_router(settings_router)
 app.include_router(limits_router)
 app.include_router(postmortem_router)
-
-
-# WebSocket endpoint for extraction progress (legacy path)
-@app.websocket("/ws/extraction")
-async def websocket_extraction_progress(websocket: WebSocket):
-    """WebSocket endpoint for real-time extraction progress."""
-    await ws_manager.connect(websocket)
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_json({"type": "pong"})
-
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
 
 
 # Version endpoint

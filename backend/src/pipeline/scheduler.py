@@ -479,8 +479,6 @@ class ExtractionScheduler:
         Waits for sharp to complete first (Pinnacle data needed for EV enrichment),
         then runs on a fixed interval after each completion.
         """
-        from src.api.state import update_tier_state
-
         # Wait for sharp first (Pinnacle data needed for EV enrichment)
         if not self._sharp_ready.is_set():
             logger.info("[Scheduler:boosts] Waiting for sharp before first run...")
@@ -494,28 +492,27 @@ class ExtractionScheduler:
                 logger.info("[Scheduler:boosts] Starting boost scrape")
                 await self._run_boost_scrape()
                 logger.info("[Scheduler:boosts] Boost scrape complete")
-                update_tier_state("boosts", running=False, completed_providers=1, last_run=datetime.now(timezone.utc).isoformat())
+                update_provider_state("boosts", {"running": False, "last_completed": datetime.now(timezone.utc).isoformat(), "category": "boosts"})
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Loop cancelled")
-                update_tier_state("boosts", running=False)
+                update_provider_state("boosts", {"running": False, "category": "boosts"})
                 break
             except Exception as e:
                 logger.error(f"[Scheduler:boosts] Error: {e}", exc_info=True)
-                update_tier_state("boosts", running=False)
+                update_provider_state("boosts", {"running": False, "last_error": str(e), "category": "boosts"})
 
             # Fixed cooldown after completion
             try:
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Cooldown cancelled")
-                update_tier_state("boosts", running=False)
+                update_provider_state("boosts", {"running": False, "category": "boosts"})
                 break
 
     async def _run_boost_scrape(self):
         """Execute the boost scraper in a thread executor."""
         import sys
         from dataclasses import asdict
-        from src.api.state import update_tier_state
         from src.paths import get_bundle_dir
         # Ensure scripts/ package is importable (lives in bundle root / backend/)
         _root = str(get_bundle_dir())
@@ -525,7 +522,7 @@ class ExtractionScheduler:
         from src.analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
         from src.db.models import get_session
 
-        update_tier_state("boosts", running=True, start_time=datetime.now(timezone.utc), total_providers=1, completed_providers=0)
+        update_provider_state("boosts", {"running": True, "category": "boosts"})
 
         loop = asyncio.get_running_loop()
         specials, run_log = await loop.run_in_executor(None, lambda: scrape_all(verbose=False))
