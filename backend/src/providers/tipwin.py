@@ -146,9 +146,8 @@ class TipwinRetriever(BrowserRetriever):
         Navigate to /sv/sports/full/ and paginate through all pages
         to collect events for every sport.
 
-        Optimized: uses direct ?page=N URL navigation instead of clicking
-        pagination buttons. Each page navigation triggers the API call with
-        the correct opaque filter parameter automatically.
+        Uses page.route() to intercept API responses inline (captures body
+        before navigation disposes it). Direct ?page=N URL navigation.
         """
         try:
             if not isinstance(self.transport, BrowserTransport):
@@ -168,40 +167,28 @@ class TipwinRetriever(BrowserRetriever):
                 await self.transport._ensure_browser()
                 page = self.transport.page
 
-            # Storage for intercepted API data
+            # Storage for intercepted API data — captured inline via route handler
+            import json as _json
             api_responses: List[Dict] = []
-            pending_tasks: List[asyncio.Task] = []
 
-            async def process_response(response):
+            async def intercept_offer_api(route):
+                """Intercept offer/data API calls, capture body before navigation disposes it."""
                 try:
-                    data = await response.json()
+                    response = await route.fetch()
+                    body = await response.text()
+                    data = _json.loads(body)
                     if isinstance(data, dict):
                         has_items = 'items' in data and isinstance(data.get('items'), list)
                         has_offer = 'offer' in data and isinstance(data.get('offer'), list) and len(data['offer']) > 0
                         if has_items or has_offer:
                             api_responses.append(data)
-                        else:
-                            logger.debug(
-                                f"[{self.provider_id}] API response has no items/offer "
-                                f"(keys={list(data.keys())[:5]}, url={response.url[:80]})"
-                            )
+                    await route.fulfill(response=response, body=body)
                 except Exception as e:
-                    logger.warning(
-                        f"[{self.provider_id}] Failed to parse API response: {e} "
-                        f"(url={response.url[:80]}, status={response.status})"
-                    )
+                    logger.debug(f"[{self.provider_id}] Route intercept error: {e}")
+                    await route.continue_()
 
-            def intercept_response(response):
-                url = response.url
-                if ('api-web.tipwin' in url or 'api-web-rest.tipwin' in url) \
-                        and response.status == 200:
-                    if 'offer' in url:
-                        task = asyncio.create_task(process_response(response))
-                        pending_tasks.append(task)
-                    else:
-                        logger.debug(f"[{self.provider_id}] API response (non-offer): {url[:120]}")
-
-            page.on('response', intercept_response)
+            # Intercept all offer/data API calls via route (reliable body capture)
+            await page.route("**/offer/data*", intercept_offer_api)
 
             # Handle cookie consent on initial load
             if not self._session_ready:
@@ -212,27 +199,14 @@ class TipwinRetriever(BrowserRetriever):
 
             # Navigate to full sports listing (page 1)
             full_url = f"{self.site_url}/sv/sports/full/"
-            logger.debug(f"[{self.provider_id}] Navigating to {full_url}")
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
-            # Wait for pending tasks from initial load
-            if pending_tasks:
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
-
-            # Verify initial page captured API responses
             if not api_responses:
-                logger.warning(
-                    f"[{self.provider_id}] No API responses captured from initial page load — "
-                    f"response interception may have missed the first response"
-                )
-                # Give the page one more chance to fire API calls
+                # Retry — sometimes the first response fires before route is ready
                 await asyncio.sleep(2)
-                if pending_tasks:
-                    await asyncio.gather(*pending_tasks, return_exceptions=True)
-                    pending_tasks.clear()
                 if not api_responses:
-                    page.remove_listener('response', intercept_response)
+                    await page.unroute("**/offer/data*", intercept_offer_api)
                     raise RetryableError(
                         "No API responses captured after initial page load",
                         provider_id=self.provider_id,
@@ -247,79 +221,41 @@ class TipwinRetriever(BrowserRetriever):
                     if total and ps:
                         total_pages = (total + ps - 1) // ps
                         break
-
-            # If no items response captured (e.g. only offer/highlights), assume
-            # many pages and rely on empty-streak detection to stop
             if total_pages == 0:
-                total_pages = 30
-                # Log response types for debugging
-                resp_types = []
-                for r in api_responses:
-                    if 'items' in r:
-                        resp_types.append(f"items({r.get('totalNumberOfItems', '?')})")
-                    elif 'offer' in r:
-                        resp_types.append(f"offer({len(r.get('offer', []))})")
-                    else:
-                        resp_types.append(f"unknown({list(r.keys())[:3]})")
-                logger.debug(
-                    f"[{self.provider_id}] No totalNumberOfItems in initial response, "
-                    f"paginating until empty (captured: {len(api_responses)} responses: {resp_types})"
-                )
+                total_pages = 30  # Fallback: paginate until empty
 
-            max_pages = min(total_pages, 120)  # Safety cap
-            logger.debug(
-                f"[{self.provider_id}] Full listing: {max_pages} pages "
-                f"(initial captured: {len(api_responses)} responses)"
+            max_pages = min(total_pages, 120)
+            logger.info(
+                f"[{self.provider_id}] Paginating {max_pages} pages "
+                f"({api_responses[0].get('totalNumberOfItems', '?')} total items)"
             )
 
-            # Paginate via direct ?page=N URL navigation (faster than button clicks)
+            # Paginate via direct ?page=N URL navigation
             empty_streak = 0
             for pg in range(2, max_pages + 1):
                 try:
                     prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
-                    await asyncio.sleep(0.2)
-
-                    # Drain all pending response tasks (clear after gather to avoid
-                    # re-gathering already-completed tasks on subsequent iterations)
-                    if pending_tasks:
-                        await asyncio.gather(*pending_tasks, return_exceptions=True)
-                        pending_tasks.clear()
-
-                    if len(api_responses) == prev_count:
-                        # No response yet — yield to event loop then retry
-                        await asyncio.sleep(0.3)
-                        if pending_tasks:
-                            await asyncio.gather(*pending_tasks, return_exceptions=True)
-                            pending_tasks.clear()
+                    # Route handler captures response inline — just a brief yield
+                    await asyncio.sleep(0.3)
 
                     if len(api_responses) == prev_count:
                         empty_streak += 1
                         if empty_streak >= 3:
-                            logger.debug(
-                                f"[{self.provider_id}] No data for {empty_streak} pages, stopping at page {pg}"
-                            )
+                            logger.debug(f"[{self.provider_id}] No data for {empty_streak} pages, stopping at page {pg}")
                             break
                     else:
                         empty_streak = 0
-
-                    if pg % 20 == 0:
-                        logger.debug(
-                            f"[{self.provider_id}] Page {pg}/{max_pages}, "
-                            f"{len(api_responses)} responses captured"
-                        )
 
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")
                     break
 
-            page.remove_listener('response', intercept_response)
-            if pending_tasks:
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            await page.unroute("**/offer/data*", intercept_offer_api)
 
-            logger.debug(
-                f"[{self.provider_id}] Collected {len(api_responses)} API responses "
+            logger.info(
+                f"[{self.provider_id}] Captured {len(api_responses)} API responses "
                 f"across {max_pages} pages"
             )
 

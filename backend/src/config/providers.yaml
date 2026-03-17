@@ -837,7 +837,7 @@ extraction_tiers:
       # Altenar — canonical only (represents 6: betinia, campobet, lodur, quickcasino, swiper, dbet)
       # dbet consolidated 2026-03-17 — odds 99.7% identical (avg diff 0.0006)
       - betinia
-      # Gecko V2 — canonical only (represents 4: betsson, nordicbet, bethard, spelklubben)
+      # Gecko V2 — canonical only (represents 5: betsson, nordicbet, bethard, spelklubben, betsafe)
       # Odds differ <0.02 avg — consolidated 2026-03-17
       - betsson
       # BetConstruct (1) — WebSocket API
@@ -861,8 +861,8 @@ extraction_tiers:
       - comeon
       # 10Bet — DOM scraping, slowest (1000-1200s)
       - 10bet
-      # Tipwin (1) - DISABLED: 15-30 events (inconsistent), 0 value bets ever, intermittent failures
-      # - tipwin
+      # Tipwin — API interception via page.route(), ~76s for 1500 events
+      - tipwin
     interval_minutes: 60
 
 # ============================================================================
@@ -897,14 +897,14 @@ active:
   - interwetten
   # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
   - coolbet
-  # Tipwin (1) - DISABLED: 0 value bets, inconsistent event count, not worth browser time
-  # - tipwin
+  # Tipwin (1) — API interception, re-enabled after page.route() fix (1530 events)
+  - tipwin
   # Spectate (2) - browser-based
   - mrgreen
   - 888sport
-  # Gecko V2 (4) - events-table/v2 API (OBG platform)
+  # Gecko V2 (5) - events-table/v2 API (OBG platform)
   - betsson
-  # - betsafe  # BROKEN: Swedish site NOT on OBG platform
+  - betsafe   # Same OBG platform as betsson — fanned out via gecko_v2 group
   - nordicbet
   - spelklubben  # OBG platform — re-enabled 2026-02-10
   - bethard

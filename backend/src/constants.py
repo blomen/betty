@@ -70,7 +70,7 @@ PLATFORM_GROUPS: dict[str, dict] = {
     },
     "gecko_v2": {
         "canonical": "betsson",
-        "members": ["betsson", "nordicbet", "bethard", "spelklubben"],
+        "members": ["betsson", "nordicbet", "bethard", "spelklubben", "betsafe"],
     },
     "comeon_group": {
         "canonical": "comeon",
