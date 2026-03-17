@@ -6,7 +6,7 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeam
 import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
-import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
+import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -205,7 +205,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const [searchInput, setSearchInput] = useState('');
   // useDeferredValue defers search filtering so typing stays responsive
   const search = useDeferredValue(searchInput);
-  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
   const { data: reverseData, isLoading } = useQuery({
     queryKey: ['opportunities', 'reverse'],
@@ -237,29 +236,10 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
     setMyBetsCount(betsData.bets.filter(reverseBetFilter).length);
   }, [betsData]);
 
-  const availableLeagues = useMemo(() => {
-    const set = new Set<string>();
-    for (const opp of opportunities) {
-      if (opp.league) set.add(opp.league);
-    }
-    return Array.from(set).sort();
-  }, [opportunities]);
-
-  const toggleLeague = (l: string) => {
-    setSelectedLeagues(prev => {
-      const next = new Set(prev);
-      if (next.has(l)) next.delete(l); else next.add(l);
-      return next;
-    });
-  };
-
   const filtered = useMemo(() => {
     let result = opportunities
       .filter(o => { const ttk = getTTKFromNow(o.starts_at); return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS); })
       .filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
-    if (selectedLeagues.size > 0) {
-      result = result.filter(o => o.league != null && selectedLeagues.has(o.league));
-    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       result = result.filter(o =>
@@ -274,7 +254,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
       );
     }
     return result;
-  }, [opportunities, placedKeys, selectedLeagues, search]);
+  }, [opportunities, placedKeys, search]);
 
   type ReverseSortCol = 'odds' | 'consensus' | 'prob' | 'ttk' | 'stake' | 'edge';
   const reverseSortExtractors = useMemo(() => ({
@@ -414,19 +394,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
-
-      <FilterBar>
-        {availableLeagues.length > 0 && (
-          <MultiSelectDropdown
-            label="League"
-            options={availableLeagues}
-            selected={selectedLeagues}
-            onToggle={toggleLeague}
-            onClear={() => setSelectedLeagues(new Set())}
-            accentColor="tabReverse"
-          />
-        )}
-      </FilterBar>
 
       {/* Table */}
       {isLoading && opportunities.length === 0 ? (

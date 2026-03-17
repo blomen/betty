@@ -6,7 +6,7 @@ import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeam
 import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
+import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -249,12 +249,10 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const search = useDeferredValue(searchInput);
-  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
 
   // Rewards state
   const [rewardsSearchInput, setRewardsSearchInput] = useState('');
   const rewardsSearch = useDeferredValue(rewardsSearchInput);
-  const [selectedRewardSports, setSelectedRewardSports] = useState<Set<string>>(new Set());
 
   // ──────────────────── Auto-settle on mount ────────────────────
   const autoSettleRan = useRef(false);
@@ -402,22 +400,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const handleStakeClear = useCallback((key: string) =>
     setStakeOverride(prev => { const next = { ...prev }; delete next[key]; return next; }), []);
 
-  const availableLeagues = useMemo(() => {
-    const set = new Set<string>();
-    for (const vb of valueBets) {
-      if (vb.league) set.add(vb.league);
-    }
-    return Array.from(set).sort();
-  }, [valueBets]);
-
-  const toggleLeague = (l: string) => {
-    setSelectedLeagues(prev => {
-      const next = new Set(prev);
-      if (next.has(l)) next.delete(l); else next.add(l);
-      return next;
-    });
-  };
-
   // Remove started/imminent events and placed bets
   const activeValueBets = useMemo(() => {
     let result = valueBets.filter(vb => {
@@ -426,9 +408,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       if (placedKeys.has(getPlacedKey(vb))) return false;
       return true;
     });
-    if (selectedLeagues.size > 0) {
-      result = result.filter(vb => vb.league != null && selectedLeagues.has(vb.league));
-    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       result = result.filter(vb =>
@@ -444,7 +423,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       );
     }
     return result;
-  }, [valueBets, placedKeys, selectedLeagues, search]);
+  }, [valueBets, placedKeys, search]);
 
   type PolySortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const polySortExtractors = useMemo(() => ({
@@ -481,31 +460,12 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
   const refetchRewards = () => queryClient.invalidateQueries({ queryKey: ['polymarket-rewards'] });
 
-  const availableRewardSports = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of rewards) {
-      if (r.sport) set.add(r.sport);
-    }
-    return Array.from(set).sort();
-  }, [rewards]);
-
-  const toggleRewardSport = (s: string) => {
-    setSelectedRewardSports(prev => {
-      const next = new Set(prev);
-      if (next.has(s)) next.delete(s); else next.add(s);
-      return next;
-    });
-  };
-
   const filteredRewards = useMemo(() => {
     let result = rewards.filter(r => {
       const ttk = getTTKFromNow(r.start_time);
       if (ttk !== null && ttk <= 0) return false;
       return true;
     });
-    if (selectedRewardSports.size > 0) {
-      result = result.filter(r => selectedRewardSports.has(r.sport));
-    }
     if (rewardsSearch.trim()) {
       const q = rewardsSearch.trim().toLowerCase();
       result = result.filter(r =>
@@ -520,7 +480,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       );
     }
     return result;
-  }, [rewards, selectedRewardSports, rewardsSearch]);
+  }, [rewards, rewardsSearch]);
 
   type RewardSortCol = 'comp' | 'spread' | 'min' | 'ttk';
   const rewardSortExtractors = useMemo(() => ({
@@ -592,17 +552,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* ═══════════════ REWARDS TAB ═══════════════ */}
       {activeTab === 'rewards' && <>
-        <FilterBar>
-          {availableRewardSports.length > 1 && (
-            <MultiSelectDropdown
-              label="Sport"
-              options={availableRewardSports}
-              selected={selectedRewardSports}
-              onToggle={toggleRewardSport}
-              onClear={() => setSelectedRewardSports(new Set())}
-              accentColor="tabPolymarket"
-            />
-          )}
+        <div className="flex justify-end">
           <button
             onClick={refetchRewards}
             disabled={rewardsLoading}
@@ -610,7 +560,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
           >
             {rewardsLoading ? '...' : '↻'}
           </button>
-        </FilterBar>
+        </div>
 
         {rewardsLoading && rewards.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading rewards...</div>
@@ -709,19 +659,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
             <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
           </div>
         )}
-
-        <FilterBar>
-          {availableLeagues.length > 0 && (
-            <MultiSelectDropdown
-              label="League"
-              options={availableLeagues}
-              selected={selectedLeagues}
-              onToggle={toggleLeague}
-              onClear={() => setSelectedLeagues(new Set())}
-              accentColor="tabPolymarket"
-            />
-          )}
-        </FilterBar>
 
         {isLoading && valueBets.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>

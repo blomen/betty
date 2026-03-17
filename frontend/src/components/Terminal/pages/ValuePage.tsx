@@ -4,14 +4,14 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
-import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
+import { SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
@@ -344,8 +344,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     effectiveStake: number | null;
   } | null>(null);
 
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set());
-  const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
   const [searchInput, setSearchInput] = useState('');
   const search = useDeferredValue(searchInput);
   const [boostSearchInput, setBoostSearchInput] = useState('');
@@ -380,11 +378,9 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   } | null>(null);
 
   // --- Boosts state ---
-  const [boostFilters, setBoostFilters] = useState<{ providers: string[] } | null>(null);
   const [boostExpandedIdx, setBoostExpandedIdx] = useState<number | null>(null);
   const [boostStakePreview, setBoostStakePreview] = useState<StakePreviewResult | null>(null);
   const [isLoadingBoostPreview, setIsLoadingBoostPreview] = useState(false);
-  const [boostSelectedProviders, setBoostSelectedProviders] = useState<Set<string>>(new Set());
   const [boostSelectedBetProvider, setBoostSelectedBetProvider] = useState<Record<string, number>>({});
   const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
   const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
@@ -416,13 +412,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     staleTime: 60_000,
   });
   const specials = specialsData?.specials ?? [];
-  // Sync boostFilters from query data
-  useEffect(() => {
-    if (specialsData?.filters) {
-      setBoostFilters({ providers: specialsData.filters.providers });
-    }
-  }, [specialsData]);
-
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
@@ -455,27 +444,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     setMyBetsCount(pendingBets.filter(softBetFilter).length);
   }, [pendingBets]);
 
-  const availableProviders = useMemo(() => {
-    const set = new Set<string>();
-    // Include all known providers (from profiles/balances)
-    for (const p of providers) {
-      if (p.is_enabled) set.add(p.id);
-    }
-    // Also include any provider appearing in current opportunities
-    for (const opp of opportunities) {
-      if (opp.provider1) set.add(opp.provider1);
-    }
-    return Array.from(set).sort();
-  }, [providers, opportunities]);
-
-  const availableLeagues = useMemo(() => {
-    const set = new Set<string>();
-    for (const opp of opportunities) {
-      if (opp.league) set.add(opp.league);
-    }
-    return Array.from(set).sort();
-  }, [opportunities]);
-
   const balanceMap = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of providers) m.set(p.id, p.balance);
@@ -495,12 +463,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
       result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
-    }
-    if (selectedProviders.size > 0) {
-      result = result.filter(o => selectedProviders.has(o.provider1));
-    }
-    if (selectedLeagues.size > 0) {
-      result = result.filter(o => o.league != null && selectedLeagues.has(o.league));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -530,23 +492,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       opps.sort((a, b) => ((b as any).allocation_score ?? -1) - ((a as any).allocation_score ?? -1));
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
-    // Bonus-first when user actively filters to those providers
-    const boostBonus = selectedProviders.size > 0;
-    if (boostBonus) {
-      groups.sort((a, b) => {
-        const aBonus = a.opps.some(o =>
-          selectedProviders.has(o.provider1) &&
-          (o.bonus_status === 'trigger_needed' || o.bonus_status === 'freebet_available')
-        ) ? 1 : 0;
-        const bBonus = b.opps.some(o =>
-          selectedProviders.has(o.provider1) &&
-          (o.bonus_status === 'trigger_needed' || o.bonus_status === 'freebet_available')
-        ) ? 1 : 0;
-        return bBonus - aBonus;
-      });
-    }
     return groups;
-  }, [opportunities, selectedProviders, selectedLeagues, placedKeys, search]);
+  }, [opportunities, placedKeys, search]);
 
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
@@ -572,22 +519,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     estimateSize: (index) => selectedGroup === index ? 100 : 52,
     overscan: 10,
   });
-
-  const toggleProvider = (p: string) => {
-    setSelectedProviders(prev => {
-      const next = new Set(prev);
-      if (next.has(p)) next.delete(p); else next.add(p);
-      return next;
-    });
-  };
-
-  const toggleLeague = (l: string) => {
-    setSelectedLeagues(prev => {
-      const next = new Set(prev);
-      if (next.has(l)) next.delete(l); else next.add(l);
-      return next;
-    });
-  };
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
@@ -615,11 +546,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   const boostActiveGroups = useMemo(() => {
     let result = boostGrouped;
-    if (boostSelectedProviders.size > 0) {
-      result = result.filter(g =>
-        g.providers.some(p => boostSelectedProviders.has(p.toLowerCase()))
-      );
-    }
     if (boostSearch.trim()) {
       const q = boostSearch.trim().toLowerCase();
       result = result.filter(g =>
@@ -629,7 +555,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       );
     }
     return result;
-  }, [boostGrouped, boostSelectedProviders, boostSearch]);
+  }, [boostGrouped, boostSearch]);
 
   type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
@@ -649,11 +575,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   }), []);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
     useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'aiEdge', direction: 'desc' });
-
-  const toggleBoostProvider = (p: string) => {
-    setBoostSelectedProviders(prev => { const next = new Set(prev); const key = p.toLowerCase(); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-    setBoostExpandedIdx(null);
-  };
 
   const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
     if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
@@ -849,12 +770,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
-
-      <FilterBar>
-        {boostFilters && boostFilters.providers.length > 0 && (
-          <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderWithPlatform} accentColor="tabValue" />
-        )}
-      </FilterBar>
 
       {sortedBoosts.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
@@ -1075,30 +990,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
-
-      <FilterBar>
-        {availableProviders.length > 0 && (
-          <MultiSelectDropdown
-            label="Provider"
-            options={availableProviders}
-            selected={selectedProviders}
-            onToggle={toggleProvider}
-            onClear={() => setSelectedProviders(new Set())}
-            format={formatProviderWithPlatform}
-            accentColor="tabValue"
-          />
-        )}
-        {availableLeagues.length > 0 && (
-          <MultiSelectDropdown
-            label="League"
-            options={availableLeagues}
-            selected={selectedLeagues}
-            onToggle={toggleLeague}
-            onClear={() => setSelectedLeagues(new Set())}
-            accentColor="tabValue"
-          />
-        )}
-      </FilterBar>
 
       {/* Value bets table */}
       {isLoading && opportunities.length === 0 ? (
