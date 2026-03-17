@@ -147,9 +147,9 @@ async def lifespan(app: FastAPI):
     finally:
         _s.close()
 
-    # Purge stale extracted data — fresh re-extraction on every startup
-    if not _dup:
-        _startup_purge()
+    # No startup purge — data persists across restarts.
+    # Stale data is visible via per-row "Upd" timestamps in the frontend.
+    # Cleanup happens on re-extraction and via the 6-hour cleanup tier.
 
     # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
     import logging.handlers
