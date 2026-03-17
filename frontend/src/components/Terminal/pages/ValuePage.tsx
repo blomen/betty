@@ -12,7 +12,7 @@ import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
@@ -234,6 +234,7 @@ const OpportunityRow = memo(function OpportunityRow({
           {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
+        {(() => { const rt = relativeTime(selOpp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && !isSkipped && (
@@ -1110,15 +1111,16 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         <div ref={valueScrollRef} className="overflow-y-auto h-full">
         <table className="sq w-full table-fixed">
           <colgroup>
-            <col style={{ width: '30%' }} />
-            <col style={{ width: '14%' }} />
-            <col style={{ width: '12%' }} />
+            <col style={{ width: '28%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '11%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />
             <col style={{ width: '6%' }} />
-            <col style={{ width: '9%' }} />
-            <col style={{ width: '9%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '6%' }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
@@ -1131,6 +1133,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
               <MultiSortableHeader column="ttk" label="TTK" sort={valueSort} onToggle={toggleValueSort} />
               <MultiSortableHeader column="stake" label="Stake" sort={valueSort} onToggle={toggleValueSort} />
               <MultiSortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
+              <th className="text-right">Upd</th>
             </tr>
           </thead>
           <tbody style={{

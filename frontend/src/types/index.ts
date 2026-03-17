@@ -54,6 +54,8 @@ export interface Opportunity {
   min_odds_applied?: number | null;
   // Provider-specific IDs for browser navigation
   provider_meta?: Record<string, string | number> | null;
+  // Freshness tracking
+  odds_updated_at?: string | null;
 }
 
 // Events

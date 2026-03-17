@@ -7,7 +7,7 @@ import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION 
 import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -200,11 +200,12 @@ const PolyRow = memo(function PolyRow({
           {oddsKey in stakeOverride && <button onClick={() => onStakeClear(oddsKey)} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${edgePct > 0 ? 'text-success' : 'text-error'}`}>{edgePct > 0 ? '+' : ''}{edgePct.toFixed(1)}%</td>
+        {(() => { const rt = relativeTime(vb.updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (
         <tr key={`${vb.event_id}-${vb.outcome}-exp`}>
-          <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+          <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
             <div className="px-3 py-2 bg-panel flex items-center gap-2">
               {isPending ? (
                 <>
@@ -746,11 +747,12 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                     <SortableHeader column="ttk" label="TTK" sort={polySort} onToggle={togglePolySort} />
                     <SortableHeader column="stake" label="Stake" sort={polySort} onToggle={togglePolySort} />
                     <SortableHeader column="edge" label="Edge" sort={polySort} onToggle={togglePolySort} />
+                    <th className="text-right">Upd</th>
                   </tr>
                 </thead>
                 <tbody>
                   {paddingTop > 0 && (
-                    <tr><td colSpan={8} style={{ height: paddingTop, padding: 0 }} /></tr>
+                    <tr><td colSpan={9} style={{ height: paddingTop, padding: 0 }} /></tr>
                   )}
                   {virtualItems.map(virtualRow => {
                     const vb = sortedBets[virtualRow.index];
@@ -782,7 +784,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                     );
                   })}
                   {paddingBottom > 0 && (
-                    <tr><td colSpan={8} style={{ height: paddingBottom, padding: 0 }} /></tr>
+                    <tr><td colSpan={9} style={{ height: paddingBottom, padding: 0 }} /></tr>
                   )}
                 </tbody>
               </table>

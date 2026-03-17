@@ -429,6 +429,19 @@ export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
   );
 }
 
+// ── Relative time helper for per-row freshness ──────────────────────
+
+export function relativeTime(isoTimestamp: string | null | undefined): { text: string; className: string } {
+  if (!isoTimestamp) return { text: "\u2014", className: "text-zinc-600" };
+  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return { text: "<1m", className: "text-green-400" };
+  if (mins < 15) return { text: `${mins}m`, className: "text-green-400" };
+  if (mins < 60) return { text: `${mins}m`, className: "text-zinc-400" };
+  const hrs = Math.floor(mins / 60);
+  return { text: `${hrs}h`, className: "text-yellow-500/70" };
+}
+
 // ── Expandable search icon ───────────────────────────────────────────
 
 interface SearchInputProps {

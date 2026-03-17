@@ -7,7 +7,7 @@ import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
 import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -157,11 +157,12 @@ const ReverseRow = memo(function ReverseRow({
           {isStakeOver && <button onClick={() => { setLocalStakeOverride(null); setEditingStake(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynEdge > 0 ? 'text-success' : 'text-error'}`}>{dynEdge > 0 ? '+' : ''}{dynEdge.toFixed(1)}%</td>
+        {(() => { const rt = relativeTime(opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (
         <tr key={`${opp.id}-expanded`}>
-          <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+          <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
             <div className="px-3 py-2 bg-panel flex items-center gap-2">
               {isPending && pendingBet ? (
                 <>
@@ -453,6 +454,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
               <MultiSortableHeader column="ttk" label="TTK" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
               <MultiSortableHeader column="stake" label="Stake" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
               <MultiSortableHeader column="edge" label="Edge" sort={reverseSort} onToggle={toggleReverseSort} align="right" />
+              <th className="text-right">Upd</th>
             </tr>
           </thead>
           <tbody style={{

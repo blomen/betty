@@ -91,8 +91,9 @@ class OpportunityService:
             except Exception as e:
                 logger.warning(f"Could not initialize stake calculator: {e}")
 
-        # Batch pre-fetch provider_meta for all opportunities (avoid N+1)
+        # Batch pre-fetch provider_meta and odds_updated_at for all opportunities (avoid N+1)
         meta_cache = self._batch_lookup_provider_meta(rows)
+        updated_at_cache = self._batch_lookup_odds_updated_at(rows)
 
         # Batch pre-fetch bonus statuses for all providers (avoid N+1)
         bonus_cache = {}
@@ -136,6 +137,9 @@ class OpportunityService:
             meta_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
             meta = meta_cache.get(meta_key)
             result["provider_meta"] = meta
+
+            # Attach odds freshness timestamp
+            result["odds_updated_at"] = updated_at_cache.get(meta_key)
 
             # Expose provider's own team names (for copy-paste between app and sportsbook)
             if isinstance(meta, dict):
@@ -709,5 +713,45 @@ class OpportunityService:
             key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
             orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
             result[orig_key] = meta_index.get(key)
+
+        return result
+
+    def _batch_lookup_odds_updated_at(self, rows) -> dict:
+        """Batch-load odds updated_at timestamps for all opportunities in one query."""
+        if not rows:
+            return {}
+
+        lookup_pairs = set()
+        for opp, _ in rows:
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            lookup_pairs.add((opp.event_id, canonical))
+
+        if not lookup_pairs:
+            return {}
+
+        event_ids = list({p[0] for p in lookup_pairs})
+        provider_ids = list({p[1] for p in lookup_pairs})
+
+        odds_rows = (
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.point, Odds.updated_at)
+            .filter(
+                Odds.event_id.in_(event_ids),
+                Odds.provider_id.in_(provider_ids),
+            )
+            .all()
+        )
+
+        updated_index = {}
+        for eid, pid, market, outcome, point, updated_at in odds_rows:
+            updated_index[(eid, pid, market, outcome, point)] = (
+                updated_at.isoformat() + "Z" if updated_at else None
+            )
+
+        result = {}
+        for opp, _ in rows:
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
+            orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
+            result[orig_key] = updated_index.get(key)
 
         return result

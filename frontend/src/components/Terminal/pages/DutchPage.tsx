@@ -8,7 +8,7 @@ import { ProviderName } from '../ProviderName';
 import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider, Bet } from '@/types';
@@ -52,6 +52,7 @@ interface DutchOpp {
   legs?: DutchLeg[];
   arb_profit_pct?: number | null;
   arb_legs?: DutchLeg[] | null;
+  odds_updated_at?: string | null;
 }
 
 interface DutchPageProps {
@@ -188,11 +189,12 @@ const DutchRow = memo(function DutchRow({
         <td className={`text-right font-semibold text-sm ${flash ? `flash-${flash}` : ''} ${gp >= 0 ? 'text-success' : 'text-error'}`}>
           {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
         </td>
+        {(() => { const rt = relativeTime(opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && (
         <tr key={`${opp.id}-expanded`}>
-          <td colSpan={6} className="!p-0" onClick={e => e.stopPropagation()}>
+          <td colSpan={7} className="!p-0" onClick={e => e.stopPropagation()}>
             <table className="sq">
               <thead>
                 <tr>
@@ -787,11 +789,12 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
                   <SortableHeader column="edge" label="Edge" sort={dutchSort} onToggle={toggleDutchSort} />
                   <SortableHeader column="stake" label="Stake" sort={dutchSort} onToggle={toggleDutchSort} />
                   <SortableHeader column="profit" label="Profit" sort={dutchSort} onToggle={toggleDutchSort} />
+                  <th className="text-right">Upd</th>
                 </tr>
               </thead>
               <tbody>
                 {paddingTop > 0 && (
-                  <tr><td colSpan={6} style={{ height: paddingTop, padding: 0 }} /></tr>
+                  <tr><td colSpan={7} style={{ height: paddingTop, padding: 0 }} /></tr>
                 )}
                 {virtualItems.map(virtualRow => {
                   const opp = sortedDutch[virtualRow.index];
@@ -812,7 +815,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
                   );
                 })}
                 {paddingBottom > 0 && (
-                  <tr><td colSpan={6} style={{ height: paddingBottom, padding: 0 }} /></tr>
+                  <tr><td colSpan={7} style={{ height: paddingBottom, padding: 0 }} /></tr>
                 )}
               </tbody>
             </table>
