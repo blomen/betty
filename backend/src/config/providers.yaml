@@ -817,20 +817,20 @@ providers:
       min_odds: 1.80
 
 # ============================================================================
-# Extraction Tiers
+# Extraction Scheduling (per-provider cadence)
 # ============================================================================
 
-extraction_tiers:
+extraction_scheduling:
   sharp:
     # Sharp reference (Pinnacle) + event matching (Polymarket)
-    # Runs on startup, then every 1 minute
+    # Grouped: run together as one unit every 1 minute
     providers: [pinnacle, polymarket]
     interval_minutes: 1
+    grouped: true
 
   api_soft:
-    # Fast REST/WS/API-interception providers — every 60 minutes
+    # Fast REST/WS/API-interception providers — each runs independently every 15 minutes
     # Platform consolidation: only canonical providers extracted (others get fanned-out opportunities)
-    # Runs on startup, then every 60 minutes
     providers:
       # Kambi — canonical only (represents 7 brands: unibet, leovegas, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
@@ -842,14 +842,15 @@ extraction_tiers:
       - betsson
       # BetConstruct (1) — WebSocket API
       - vbet
-    interval_minutes: 60
+    interval_minutes: 15
+    grouped: false
 
   browser_soft:
-    # Heavy browser-based extractors — every 60 minutes
-    # Sequential: this machine can't handle 2+ concurrent browser sessions
+    # Heavy browser-based extractors — each runs independently every 60 minutes
+    # Sequential via semaphore(1): this machine can't handle 2+ concurrent browser sessions
     # (concurrency=2 tested 2026-03-17: both providers 2-3x slower than solo)
     # Ordered fastest-first so data is available sooner
-    max_concurrency: 1
+    max_concurrent_browsers: 1
     providers:
       # Spectate — API-based, fastest (30-400s)
       - 888sport
@@ -864,6 +865,7 @@ extraction_tiers:
       # Tipwin — API interception via page.route(), ~76s for 1500 events
       - tipwin
     interval_minutes: 60
+    grouped: false
 
 # ============================================================================
 # Active providers (subset used for extraction)
