@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from sse_starlette.sse import EventSourceResponse
 
 from ...pipeline.broadcast import odds_broadcaster
@@ -12,92 +12,13 @@ from ..state import (
     extraction_state,
     update_extraction_state,
     get_extraction_state,
-    get_tier_states,
-    ws_manager,
+    get_provider_states,
 )
 from ...db.models import Event, Odds, get_session
 
 router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 logger = logging.getLogger(__name__)
 
-
-async def poll_metrics_and_update_state(pipeline, stop_event):
-    """
-    Polls metrics every 500ms and updates extraction_state.
-    Runs in background while extraction is active.
-
-    Uses actual DB counts for both totals and per-provider numbers
-    so they are always consistent.
-    """
-    from sqlalchemy import func
-
-    while not stop_event.is_set():
-        if not pipeline.metrics:
-            await asyncio.sleep(0.5)
-            continue
-
-        current_run = pipeline.metrics.get_current_run()
-        if not current_run:
-            await asyncio.sleep(0.5)
-            continue
-
-        # Build provider states from metrics (status, duration, errors)
-        providers_state = {}
-        completed_count = 0
-        current_provider = None
-
-        for pid, pm in current_run.providers.items():
-            status = "pending"
-            if pm.is_complete:
-                status = "completed" if pm.success else "failed"
-                completed_count += 1
-            elif pm.start_time and not pm.is_complete:
-                status = "running"
-                current_provider = pid
-
-            providers_state[pid] = {
-                "status": status,
-                "events": pm.total_events,
-                "odds": pm.total_odds,
-                "duration_seconds": pm.duration_seconds,
-                "error": pm.error,
-                "sports_completed": pm.sports_succeeded,
-                "sports_total": pm.sports_attempted,
-            }
-
-        # Query DB for actual unique counts (totals + per-provider)
-        db = get_session()
-        try:
-            total_events = db.query(Event).count()
-            total_odds = db.query(Odds).count()
-
-            # Override per-provider counts with actual DB numbers
-            # for completed providers (running ones keep live metrics)
-            provider_counts = {
-                row[0]: {"events": row[1], "odds": row[2]}
-                for row in db.query(
-                    Odds.provider_id,
-                    func.count(func.distinct(Odds.event_id)),
-                    func.count(Odds.id),
-                ).group_by(Odds.provider_id).all()
-            }
-            for pid, counts in provider_counts.items():
-                if pid in providers_state and providers_state[pid]["status"] == "completed":
-                    providers_state[pid]["events"] = counts["events"]
-                    providers_state[pid]["odds"] = counts["odds"]
-        finally:
-            db.close()
-
-        # Update global state
-        update_extraction_state(
-            total_events=total_events,
-            total_odds=total_odds,
-            providers=providers_state,
-            current_provider=current_provider,
-            completed_providers=completed_count,
-        )
-
-        await asyncio.sleep(0.5)
 
 
 def _build_final_state(results: dict) -> dict:
@@ -196,23 +117,9 @@ async def run_extraction_task(providers: list[str] | None):
 
     _results = None
     try:
-        # Start metrics polling task
-        stop_event = asyncio.Event()
-        polling_task = asyncio.create_task(
-            poll_metrics_and_update_state(pipeline, stop_event)
+        _results = await pipeline.run(
+            providers=provider_list if provider_list else None,
         )
-
-        try:
-            _results = await pipeline.run(
-                providers=provider_list if provider_list else None,
-            )
-        finally:
-            stop_event.set()
-            try:
-                await polling_task
-            except Exception:
-                pass
-
     except Exception as e:
         logger.error(f"Extraction failed: {e}", exc_info=True)
         update_extraction_state(error=str(e))
@@ -255,104 +162,11 @@ async def get_extraction_status():
 
 @router.get("/progress")
 async def get_extraction_progress():
-    """
-    Get detailed extraction progress with provider breakdown.
-    Returns real-time progress during extraction.
-    """
-    state = get_extraction_state()
-
-    # Calculate elapsed time
-    if state["running"] and state["start_time"]:
-        elapsed_seconds = (datetime.now(timezone.utc) - state["start_time"]).total_seconds()
-    else:
-        elapsed_seconds = state.get("elapsed_seconds", 0)
-
-    # Calculate progress percentage from sport-level granularity
-    progress_pct = 0
-    providers_dict = state["providers"]
-    if providers_dict:
-        total_sports_all = 0
-        completed_sports_all = 0
-        for prov in providers_dict.values():
-            total_sports_all += prov.get("sports_total", 0)
-            completed_sports_all += prov.get("sports_completed", 0)
-        if total_sports_all > 0:
-            progress_pct = (completed_sports_all / total_sports_all) * 100
-    elif state["total_providers"] > 0:
-        progress_pct = (state["completed_providers"] / state["total_providers"]) * 100
-
+    """Per-provider extraction status."""
+    states = get_provider_states()
     return {
-        "running": state["running"],
-        "last_run": state["last_run"],
-        "start_time": state["start_time"].isoformat() if state["start_time"] else None,
-        "elapsed_seconds": elapsed_seconds,
-        "progress_pct": progress_pct,
-        "total_events": state["total_events"],
-        "total_odds": state["total_odds"],
-        "current_provider": state["current_provider"],
-        "completed_providers": state["completed_providers"],
-        "total_providers": state["total_providers"],
-        "providers": state["providers"],
-    }
-
-
-@router.get("/tiers/progress")
-async def get_tier_progress():
-    """
-    Get per-tier extraction progress.
-
-    Returns progress for each scheduler tier (sharp, api_soft, browser_soft)
-    independently. Unlike /progress which shows one global state,
-    this shows each tier separately so the UI can render individual bars.
-    """
-    tier_states_raw = get_tier_states()
-
-    tiers = {}
-    for tier_name, state in tier_states_raw.items():
-        # Calculate elapsed time
-        if state.get("running") and state.get("start_time"):
-            elapsed = (datetime.now(timezone.utc) - state["start_time"]).total_seconds()
-        else:
-            elapsed = state.get("elapsed_seconds", 0)
-
-        # Calculate progress percentage from sport-level granularity
-        # Each provider contributes its completed sports / total sports
-        # This gives smooth progress across the entire tier
-        total_p = state.get("total_providers", 0)
-        completed_p = state.get("completed_providers", 0)
-        progress_pct = 0
-        providers_dict = state.get("providers", {})
-        if providers_dict:
-            total_sports_all = 0
-            completed_sports_all = 0
-            for prov in providers_dict.values():
-                total_sports_all += prov.get("sports_total", 0)
-                completed_sports_all += prov.get("sports_completed", 0)
-            if total_sports_all > 0:
-                progress_pct = (completed_sports_all / total_sports_all) * 100
-        elif total_p > 0:
-            # Fallback to provider-level if no provider detail available
-            progress_pct = (completed_p / total_p) * 100
-
-        tiers[tier_name] = {
-            "running": state.get("running", False),
-            "last_run": state.get("last_run"),
-            "elapsed_seconds": elapsed,
-            "progress_pct": progress_pct,
-            "total_events": state.get("total_events", 0),
-            "total_odds": state.get("total_odds", 0),
-            "current_provider": state.get("current_provider"),
-            "completed_providers": completed_p,
-            "total_providers": total_p,
-            "providers": state.get("providers", {}),
-        }
-
-    # Check if ANY tier is running
-    any_running = any(t["running"] for t in tiers.values())
-
-    return {
-        "any_running": any_running,
-        "tiers": tiers,
+        "providers": states,
+        "any_running": any(s.get("running", False) for s in states.values()),
     }
 
 
@@ -381,26 +195,6 @@ async def run_extraction(
         "status": "started",
         "providers": provider_list or "all",
     }
-
-
-# WebSocket endpoint
-@router.websocket("/ws")
-async def websocket_extraction_progress(websocket: WebSocket):
-    """WebSocket endpoint for real-time extraction progress."""
-    await ws_manager.connect(websocket)
-
-    try:
-        # Keep connection alive
-        while True:
-            # Wait for client message (ping)
-            data = await websocket.receive_text()
-
-            # Echo back to confirm connection
-            if data == "ping":
-                await websocket.send_json({"type": "pong"})
-
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
 
 
 # SSE stream endpoint
@@ -700,12 +494,12 @@ async def get_extraction_freshness():
         # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
         result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
 
-        # Boost freshness: use tier state last_run (includes LLM enrichment time),
+        # Boost freshness: use provider state last_completed (includes LLM enrichment time),
         # falling back to boost_extraction_logs scraped_at for first load
-        from ...api.state import get_tier_states
-        tier_states = get_tier_states()
-        boosts_state = tier_states.get("boosts", {})
-        boosts_ts = boosts_state.get("last_run")  # already ISO string with timezone
+        from ...api.state import get_provider_states
+        _provider_states = get_provider_states()
+        boosts_state = _provider_states.get("boosts", {})
+        boosts_ts = boosts_state.get("last_completed")  # already ISO string with timezone
         if not boosts_ts:
             boost_latest = session.query(func.max(BoostExtractionLog.scraped_at)).scalar()
             boosts_ts = boost_latest.isoformat() + "Z" if boost_latest else None
