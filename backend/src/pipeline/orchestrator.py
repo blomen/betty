@@ -447,6 +447,7 @@ class ExtractionPipeline:
         on_progress: Callable[[str], None] | None = None,
         tier_name: str | None = None,
         sequential: bool = False,
+        max_concurrency: int | None = None,
     ) -> dict:
         """
         Run extraction from all sources.
@@ -643,14 +644,19 @@ class ExtractionPipeline:
             # Browser providers that time out will at least have extracted high-value sports
             pin_event_counts = {}
             try:
-                rows = self.session.query(
-                    Event.sport, func.count(Event.id)
+                # Use a fresh session — per-tier pipelines have isolated sessions
+                # that may not see data committed by the sharp tier's session.
+                from sqlalchemy import func as sa_count
+                fresh_session = get_session()
+                rows = fresh_session.query(
+                    Event.sport, sa_count.count(Event.id)
                 ).filter(
                     Event.id.in_(
-                        self.session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
+                        fresh_session.query(Odds.event_id).filter(Odds.provider_id == 'pinnacle')
                     )
                 ).group_by(Event.sport).all()
                 pin_event_counts = {sport: count for sport, count in rows}
+                fresh_session.close()
             except Exception:
                 pass
 
@@ -788,9 +794,21 @@ class ExtractionPipeline:
                             provider_sports = [s for s in provider_supported if s in ALLOWED_SPORTS]
                             if sharp_sports:
                                 provider_sports = [s for s in provider_sports if s in sharp_sports]
-                            # Order by Pinnacle event count (same as global ordering)
+                            # Order by Pinnacle event count.
+                            # Browser providers with time budgets: smallest sports first
+                            # so fast sports complete before the budget cuts in.
+                            # API providers: largest sports first (most value first).
                             if pin_event_counts:
-                                provider_sports.sort(key=lambda s: pin_event_counts.get(s, 0), reverse=True)
+                                # DOM scrapers with time budgets: smallest sports first
+                                # so more sports complete before the budget cuts off.
+                                # API/WS providers: largest sports first (most value first).
+                                DOM_SCRAPERS = ('custom', 'tipwin', 'interwetten', 'coolbet', 'tenbet')
+                                prov_retriever = getattr(provider_cfg, 'retriever_type', '')
+                                is_dom_scraper = prov_retriever in DOM_SCRAPERS
+                                provider_sports.sort(
+                                    key=lambda s: pin_event_counts.get(s, 0),
+                                    reverse=not is_dom_scraper,
+                                )
                         else:
                             provider_sports = kambi_sports
 
@@ -877,16 +895,25 @@ class ExtractionPipeline:
                         async with self.provider_semaphore:
                             return await extract_with_error_handling(provider_id)
 
-                # Run providers: sequential (browser_soft) or parallel (api_soft)
-                if sequential:
-                    # Sequential mode: one provider at a time — full CPU/RAM, no contention
-                    provider_results_list = []
-                    for pid in available_providers:
-                        log_progress(f"[{pid}] Starting (sequential mode, {len(provider_results_list)+1}/{len(available_providers)})")
-                        result = await extract_with_error_handling(pid)
-                        provider_results_list.append(result)
+                # Run providers with concurrency control:
+                # - max_concurrency=1: sequential (one at a time)
+                # - max_concurrency=2+: limited parallel (semaphore-based)
+                # - max_concurrency=None/0: full parallel with pool manager
+                effective_concurrency = max_concurrency if max_concurrency else (1 if sequential else 0)
+
+                if effective_concurrency >= 1:
+                    # Limited concurrency: semaphore controls how many run at once
+                    concurrency_sem = asyncio.Semaphore(effective_concurrency)
+
+                    async def extract_with_limited_concurrency(pid):
+                        async with concurrency_sem:
+                            log_progress(f"[{pid}] Starting (concurrency={effective_concurrency})")
+                            return await extract_with_error_handling(pid)
+
+                    provider_tasks = [extract_with_limited_concurrency(pid) for pid in available_providers]
+                    provider_results_list = await asyncio.gather(*provider_tasks)
                 else:
-                    # Parallel mode: run all providers concurrently with pool limits
+                    # Full parallel mode: run all providers concurrently with pool limits
                     provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
                     provider_results_list = await asyncio.gather(*provider_tasks)
 

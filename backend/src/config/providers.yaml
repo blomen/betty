@@ -846,9 +846,10 @@ extraction_tiers:
 
   browser_soft:
     # Heavy browser-based extractors — every 60 minutes
-    # Sequential mode: one provider at a time to avoid browser resource contention
+    # Sequential: this machine can't handle 2+ concurrent browser sessions
+    # (concurrency=2 tested 2026-03-17: both providers 2-3x slower than solo)
     # Ordered fastest-first so data is available sooner
-    sequential: true
+    max_concurrency: 1
     providers:
       # Spectate — API-based, fastest (30-400s)
       - 888sport
