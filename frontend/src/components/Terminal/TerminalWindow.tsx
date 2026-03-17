@@ -103,9 +103,9 @@ export function TerminalWindow() {
         return <ProfilePage />;
       case 'settings':
         return <SettingsPage />;
-      case 'tradingMonitor':
-      case 'tradingExecute':
-        return <TradingContainer activeSubTab={activeTab as 'tradingMonitor' | 'tradingExecute'} onSwitchToExecute={() => handleTabChange('tradingExecute')} />;
+      case 'tradingL1':
+      case 'tradingL2':
+        return <TradingContainer activeSubTab={activeTab as 'tradingL1' | 'tradingL2'} />;
       case 'tradingBankroll':
         return <TradingBankrollPage />;
       case 'tradingStats':
@@ -144,7 +144,7 @@ export function TerminalWindow() {
         )}
         <ConnectionErrorBar />
         <ErrorNotificationBar />
-        <div className="flex-1 flex flex-col min-h-0 p-4 overflow-y-auto">
+        <div className="flex-1 flex flex-col min-h-0 p-4 overflow-hidden">
           <Suspense fallback={<div className="p-4 text-muted text-sm animate-blink">█</div>}>
             {isOverlay ? (
               renderPage()

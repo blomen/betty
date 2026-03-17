@@ -227,7 +227,7 @@ export function SettingsPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-2 overflow-y-auto">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="settings" color={settingsColor} size={16} />
           Settings
@@ -240,7 +240,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 overflow-y-auto">
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
         <TabIcon name="settings" color={settingsColor} size={16} />
         Settings

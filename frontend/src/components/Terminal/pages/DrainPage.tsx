@@ -354,7 +354,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 overflow-y-auto">
       {/* Feedback toasts */}
       {betSuccess && (
         <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">

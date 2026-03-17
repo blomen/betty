@@ -286,7 +286,7 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 overflow-y-auto">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="bankroll" color={TAB_COLORS.bankroll} size={16} />
           Bankroll
@@ -297,7 +297,7 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-y-auto">
       <h2 className="text-lg font-semibold text-text flex items-center gap-2">
         <span className="w-2 h-2 bg-tabBankroll" />
         Bankroll

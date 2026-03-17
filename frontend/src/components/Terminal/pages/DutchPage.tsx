@@ -771,11 +771,11 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
           )}
         </div>
       ) : (
-        <div className="border-l-2 border-success flex-1 min-h-0">
+        <div className="border-l-2 border-success flex-1 min-h-0 relative">
           {/* Scrollable virtualizer container */}
           <div
             ref={tableContainerRef}
-            style={{ height: '100%', overflowY: 'auto' }}
+            className="absolute inset-0 overflow-y-auto"
           >
             <table className="sq" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>

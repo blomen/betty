@@ -861,8 +861,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           No active boosts. Boosts are scraped automatically every hour.
         </div>
       ) : (
-        <div className="border-l-2 border-tabValue flex-1 min-h-0">
-        <div className="overflow-y-auto h-full">
+        <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
+        <div className="overflow-y-auto absolute inset-0">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '34%' }} />
@@ -1112,8 +1112,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
             : 'No matches for current filters.'}
         </div>
       ) : (
-        <div className="border-l-2 border-tabValue flex-1 min-h-0">
-        <div ref={valueScrollRef} className="overflow-y-auto h-full">
+        <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
+        <div ref={valueScrollRef} className="overflow-y-auto absolute inset-0">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '28%' }} />

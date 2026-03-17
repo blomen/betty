@@ -438,8 +438,8 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
           No Pinnacle value bets found. Run extraction first.
         </div>
       ) : (
-        <div className="border-l-2 border-tabReverse flex-1 min-h-0">
-        <div ref={scrollRef} className="overflow-auto h-full">
+        <div className="border-l-2 border-tabReverse flex-1 min-h-0 relative">
+        <div ref={scrollRef} className="overflow-auto absolute inset-0">
         <table className="sq w-full">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>

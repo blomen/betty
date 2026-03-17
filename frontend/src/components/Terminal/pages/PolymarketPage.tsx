@@ -728,10 +728,10 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
         ) : sortedBets.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No Polymarket value bets found. Run extraction first.</div>
         ) : (
-          <div className="border-l-2 border-tabPolymarket flex-1 min-h-0">
+          <div className="border-l-2 border-tabPolymarket flex-1 min-h-0 relative">
             <div
               ref={tableContainerRef}
-              style={{ height: '100%', overflowY: 'auto' }}
+              className="absolute inset-0 overflow-y-auto"
             >
               <table className="sq" style={{ width: '100%' }}>
                 <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>

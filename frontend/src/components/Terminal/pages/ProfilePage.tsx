@@ -122,7 +122,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 overflow-y-auto">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="profiles" color="#9AA0A6" size={16} />
           Profiles
@@ -133,7 +133,7 @@ export function ProfilePage({ onRefresh }: ProfilePageProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-y-auto">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="profiles" color="#9AA0A6" size={16} />
