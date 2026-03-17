@@ -45,6 +45,9 @@ class ValueBet:
     is_high_confidence: Optional[bool] = None
     skip_reason: Optional[str] = None
 
+    # Freshness tracking
+    odds_updated_at: Optional[str] = None  # ISO timestamp of when this provider's odds were last updated
+
     # Point/line value (for spread/total markets)
     point: Optional[float] = None
 

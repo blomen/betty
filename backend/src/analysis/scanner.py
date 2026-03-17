@@ -1081,6 +1081,7 @@ class OpportunityScanner:
                 "provider": odds.provider_id,
                 "odds": odds.odds,
                 "point": odds.point,
+                "updated_at": odds.updated_at,
             })
 
         # Fix Asian-style spread providers that store 2 outcomes at the same point.
@@ -1331,6 +1332,7 @@ class OpportunityScanner:
                     min_edge_pct=min_edge_pct,
                 )
                 if vb:
+                    vb.odds_updated_at = po.get("updated_at").isoformat() if po.get("updated_at") else None
                     # Hard cap: edges above MAX_EDGE_PCT are data quality issues
                     if vb.edge_pct > MAX_EDGE_PCT:
                         logger.debug(
