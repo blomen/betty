@@ -536,7 +536,7 @@ export function BetsPage() {
   };
 
   return (
-    <div className="space-y-3 min-w-0 overflow-hidden">
+    <div className="space-y-3 min-w-0">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -593,6 +593,26 @@ export function BetsPage() {
                 </>
               )}
             </div>
+          </div>
+          {/* Financial context row */}
+          <div className="flex items-center gap-4 px-3 py-1.5 bg-panel2 border border-border border-t-0 text-[10px]">
+            <span className="text-muted">Win rate: <span className="text-text">{bankrollStats.win_rate.toFixed(1)}%</span></span>
+            <span className="text-muted">Staked: <span className="text-text">{bankrollStats.total_staked.toFixed(0)} kr</span></span>
+            {bankrollStats.total_deposited > 0 && (
+              <span className="text-muted">Net deposited: <span className="text-text">{bankrollStats.net_deposited.toFixed(0)} kr</span></span>
+            )}
+            {(bankrollStats.freebet_profit > 0 || bankrollStats.bonus_profit > 0) && (
+              <>
+                <span className="text-muted">|</span>
+                <span className="text-muted">Bet P&L: <span className="text-text">{bankrollStats.bet_profit.toFixed(0)}</span></span>
+                {bankrollStats.freebet_profit > 0 && (
+                  <span className="text-accent">+{bankrollStats.freebet_profit.toFixed(0)} fb</span>
+                )}
+                {bankrollStats.bonus_profit > 0 && (
+                  <span className="text-tabBonus">+{bankrollStats.bonus_profit.toFixed(0)} bonus</span>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}

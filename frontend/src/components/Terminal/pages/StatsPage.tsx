@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { CLVChart } from './BetsPage';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { BankrollStats, Bet, Provider, ProviderLimit } from '@/types';
+import type { BankrollStats, Bet, BonusProgressEntry, Provider, ProviderLimit } from '@/types';
+import { ProviderName } from '../ProviderName';
 
 export function StatsPage() {
   const queryClient = useQueryClient();
@@ -40,6 +41,17 @@ export function StatsPage() {
     queryFn: () => api.getProviders(),
   });
   const providers: Provider[] = providersData?.providers ?? [];
+
+  const { data: bonusStatus } = useQuery({
+    queryKey: ['bankroll-status'],
+    queryFn: () => api.getBankrollStatus().catch(() => null),
+    staleTime: 60_000,
+  });
+  const activeBonuses: [string, BonusProgressEntry][] = bonusStatus
+    ? Object.entries(bonusStatus.bonus_progress).filter(
+        ([, b]) => ['trigger_needed', 'freebet_available', 'in_progress'].includes(b.status)
+      )
+    : [];
 
   const { data: extractionData } = useQuery({
     queryKey: ['extraction-analytics'],
@@ -193,8 +205,34 @@ export function StatsPage() {
                   <span className="text-muted font-medium">{stats.voids} V</span>
                 </div>
               </td>
-              <td colSpan={2}></td>
+              <td className="text-right text-muted">
+                {stats.win_rate.toFixed(1)}% win rate
+              </td>
+              <td className="text-right">
+                <div className="flex flex-col items-end gap-0.5">
+                  <span className="text-muted text-xs">{stats.total_staked.toFixed(0)} kr staked</span>
+                  {stats.total_deposited > 0 && (
+                    <span className="text-muted text-xs">{stats.net_deposited.toFixed(0)} kr net deposited</span>
+                  )}
+                </div>
+              </td>
             </tr>
+            {(stats.freebet_profit > 0 || stats.bonus_profit > 0) && (
+              <tr>
+                <td colSpan={3}>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-muted">Profit breakdown:</span>
+                    <span className="text-text">{stats.bet_profit.toFixed(0)} kr bets</span>
+                    {stats.freebet_profit > 0 && (
+                      <span className="text-accent">+{stats.freebet_profit.toFixed(0)} kr freebets</span>
+                    )}
+                    {stats.bonus_profit > 0 && (
+                      <span className="text-tabBonus">+{stats.bonus_profit.toFixed(0)} kr bonuses</span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
         </div>
@@ -230,6 +268,88 @@ export function StatsPage() {
 
       {/* CLV Trend Chart */}
       <CLVChart bets={bets} />
+
+      {/* Active Wagering Window */}
+      {activeBonuses.length > 0 && (
+        <div className="border-l-2 border-tabBonus">
+          <table className="sq">
+            <thead>
+              <tr>
+                <th>Wagering</th>
+                <th>Type</th>
+                <th className="text-right">Progress</th>
+                <th className="text-right">Remaining</th>
+                <th className="text-right">Kr/wk</th>
+                <th className="text-right">Deadline</th>
+                <th className="text-right">ETA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeBonuses.map(([providerId, bonus]) => {
+                const pct = Math.min(100, bonus.progress_pct);
+                const days = bonus.days_remaining;
+                const urgent = days !== null && days <= 10;
+                const warning = days !== null && days > 10 && days <= 30;
+                const remaining = bonus.wagering_requirement - bonus.wagered_amount;
+                const hasProgress = (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
+                const estDays = bonus.prognosis?.est_weeks != null ? Math.round(bonus.prognosis.est_weeks * 7) : null;
+                const requiredPerWk = bonus.prognosis?.required_weekly_wagering ?? null;
+
+                return (
+                  <tr key={providerId}>
+                    <td className="text-text text-sm font-medium"><ProviderName name={providerId} /></td>
+                    <td>
+                      <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                        bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
+                        'bg-tabBonus/15 text-tabBonus'
+                      }`}>
+                        {bonus.bonus_type === 'freebet' ? 'FREEBET'
+                          : bonus.status === 'trigger_needed' ? 'TRIGGER'
+                          : 'WAGER'}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {hasProgress ? (
+                        <div className="flex items-center gap-2 justify-end">
+                          <div className="w-16 h-1.5 bg-bg overflow-hidden">
+                            <div
+                              className={`h-full ${urgent ? 'bg-error' : warning ? 'bg-amber-400' : 'bg-tabBonus'}`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-muted2">{pct.toFixed(0)}%</span>
+                        </div>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right text-sm text-text">
+                      {hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
+                    </td>
+                    <td className="text-right">
+                      {requiredPerWk != null && requiredPerWk > 0 ? (
+                        <span className="text-sm text-text">{requiredPerWk.toFixed(0)}</span>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right">
+                      {days !== null ? (
+                        <span className={`text-sm ${urgent ? 'text-error font-medium' : warning ? 'text-amber-400' : 'text-muted'}`}>
+                          {days}d
+                        </span>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                    <td className="text-right">
+                      {estDays !== null ? (
+                        <span className={`text-sm ${days !== null && estDays <= days ? 'text-success' : 'text-error'}`}>
+                          ~{estDays}d
+                        </span>
+                      ) : <span className="text-muted text-sm">-</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Provider Stats */}
       {providerStats.length > 0 && (

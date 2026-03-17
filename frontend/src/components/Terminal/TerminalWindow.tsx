@@ -15,7 +15,7 @@ const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.B
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const TradingBankrollPage = lazy(() => import('./pages/TradingBankrollPage').then(m => ({ default: m.TradingBankrollPage })));
-const TradingIntradayPage = lazy(() => import('./pages/TradingIntradayPage').then(m => ({ default: m.TradingIntradayPage })));
+const TradingContainer = lazy(() => import('./pages/TradingContainer').then(m => ({ default: m.TradingContainer })));
 const TradingStatsPage = lazy(() => import('./pages/TradingStatsPage').then(m => ({ default: m.TradingStatsPage })));
 import { api } from '@/services/api';
 import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
@@ -48,7 +48,8 @@ export function TerminalWindow() {
           return;
         }
       } catch {
-        // API not ready yet — show welcome
+        // API not ready — skip welcome so dev/offline mode still works
+        setShowWelcome(false);
       }
       setWelcomeChecked(true);
     };
@@ -102,8 +103,9 @@ export function TerminalWindow() {
         return <ProfilePage />;
       case 'settings':
         return <SettingsPage />;
-      case 'tradingIntraday':
-        return <TradingIntradayPage />;
+      case 'tradingMonitor':
+      case 'tradingExecute':
+        return <TradingContainer activeSubTab={activeTab as 'tradingMonitor' | 'tradingExecute'} onSwitchToExecute={() => handleTabChange('tradingExecute')} />;
       case 'tradingBankroll':
         return <TradingBankrollPage />;
       case 'tradingStats':
@@ -142,7 +144,7 @@ export function TerminalWindow() {
         )}
         <ConnectionErrorBar />
         <ErrorNotificationBar />
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 flex flex-col min-h-0 p-4 overflow-y-auto">
           <Suspense fallback={<div className="p-4 text-muted text-sm animate-blink">█</div>}>
             {isOverlay ? (
               renderPage()
