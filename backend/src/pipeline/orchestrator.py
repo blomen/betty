@@ -446,6 +446,7 @@ class ExtractionPipeline:
         max_events_per_sport: int = 9999,
         on_progress: Callable[[str], None] | None = None,
         tier_name: str | None = None,
+        sequential: bool = False,
     ) -> dict:
         """
         Run extraction from all sources.
@@ -876,9 +877,18 @@ class ExtractionPipeline:
                         async with self.provider_semaphore:
                             return await extract_with_error_handling(provider_id)
 
-                # Run all available providers with concurrency limit
-                provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
-                provider_results_list = await asyncio.gather(*provider_tasks)
+                # Run providers: sequential (browser_soft) or parallel (api_soft)
+                if sequential:
+                    # Sequential mode: one provider at a time — full CPU/RAM, no contention
+                    provider_results_list = []
+                    for pid in available_providers:
+                        log_progress(f"[{pid}] Starting (sequential mode, {len(provider_results_list)+1}/{len(available_providers)})")
+                        result = await extract_with_error_handling(pid)
+                        provider_results_list.append(result)
+                else:
+                    # Parallel mode: run all providers concurrently with pool limits
+                    provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
+                    provider_results_list = await asyncio.gather(*provider_tasks)
 
                 # Collect results and log each provider
                 for provider_id, provider_result in provider_results_list:

@@ -30,6 +30,7 @@ class TierState:
     task: Optional[asyncio.Task] = field(default=None, repr=False)
     last_run: Optional[datetime] = None
     run_count: int = 0
+    sequential: bool = False
 
 
 class ExtractionScheduler:
@@ -96,6 +97,7 @@ class ExtractionScheduler:
         interval_seconds: int,
         run_immediately: bool = True,
         wait_for_sharp: bool = False,
+        sequential: bool = False,
     ):
         """Start a named extraction tier.
 
@@ -105,6 +107,7 @@ class ExtractionScheduler:
             interval_seconds: Seconds between runs
             run_immediately: Run first extraction immediately (default: True)
             wait_for_sharp: Wait for sharp tier's first run before starting (default: False)
+            sequential: Run providers one-at-a-time instead of parallel (default: False)
         """
         if name in self._tiers and self._tiers[name].running:
             logger.warning(f"[Scheduler] Tier '{name}' already running")
@@ -115,13 +118,15 @@ class ExtractionScheduler:
             providers=providers,
             interval_seconds=interval_seconds,
             running=True,
+            sequential=sequential,
         )
         self._tiers[name] = tier
 
         logger.info(
             f"[Scheduler] Starting tier '{name}': "
             f"providers={providers}, interval={interval_seconds}s, "
-            f"run_immediately={run_immediately}, wait_for_sharp={wait_for_sharp}"
+            f"run_immediately={run_immediately}, wait_for_sharp={wait_for_sharp}, "
+            f"sequential={sequential}"
         )
 
         tier.task = asyncio.create_task(
@@ -210,7 +215,7 @@ class ExtractionScheduler:
                     lock = self._tier_locks[tier.name]
 
                 async with lock:
-                    results = await self._run_with_state_updates(tier.providers, tier_name=tier.name)
+                    results = await self._run_with_state_updates(tier.providers, tier_name=tier.name, sequential=tier.sequential)
 
                 tier.last_run = datetime.now(timezone.utc)
                 elapsed = (tier.last_run - start_time).total_seconds()
@@ -302,6 +307,7 @@ class ExtractionScheduler:
             providers = [p for p in tier_config.get("providers", []) if p not in disabled]
             interval_minutes = tier_config.get("interval_minutes", 60)
             wait_for_sharp = tier_name != "sharp"
+            sequential = tier_config.get("sequential", False)
 
             await self.start_tier(
                 name=tier_name,
@@ -309,6 +315,7 @@ class ExtractionScheduler:
                 interval_seconds=interval_minutes * 60,
                 run_immediately=True,
                 wait_for_sharp=wait_for_sharp,
+                sequential=sequential,
             )
 
         # Boosts tier — oddsboost scraping (standalone, no pipeline lock needed)
@@ -973,7 +980,7 @@ class ExtractionScheduler:
 
     # ── Internal ───────────────────────────────────────────────────────
 
-    async def _run_with_state_updates(self, providers: list[str], tier_name: str = "default") -> dict:
+    async def _run_with_state_updates(self, providers: list[str], tier_name: str = "default", sequential: bool = False) -> dict:
         """Run extraction with UI state updates (both global and per-tier).
 
         Each tier gets its own pipeline instance with isolated DB session + caches.
@@ -1023,7 +1030,7 @@ class ExtractionScheduler:
             )
 
             try:
-                _results = await tier_pipeline.run(providers=providers, tier_name=tier_name)
+                _results = await tier_pipeline.run(providers=providers, tier_name=tier_name, sequential=sequential)
             finally:
                 stop_event.set()
                 try:

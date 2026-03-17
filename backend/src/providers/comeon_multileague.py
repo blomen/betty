@@ -47,6 +47,15 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
+    # Sports ordered by extraction speed (fastest first).
+    # Tennis/handball/mma complete in <60s. Football/basketball often timeout at 360s.
+    # Extracting fast sports first ensures we get data before provider timeout hits.
+    SPORT_PRIORITY = [
+        'tennis', 'mma', 'handball', 'esports', 'cricket',
+        'table_tennis', 'rugby', 'baseball', 'american_football',
+        'ice_hockey', 'basketball', 'football',
+    ]
+
     _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
@@ -166,8 +175,28 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         all_events = []
         sports_attempted = 0
+        provider_timeout = self.config.get("provider_timeout", 900)
+        provider_start = time.time()
+
+        # Sort sports by priority (fast sports first, heavy sports last)
+        sports_to_extract = sorted(
+            sports_to_extract,
+            key=lambda s: self.SPORT_PRIORITY.index(s) if s in self.SPORT_PRIORITY else 99,
+        )
 
         for sport_key in sports_to_extract:
+            # Provider-level time budget: stop starting new sports at 80% of provider timeout
+            elapsed = time.time() - provider_start
+            if elapsed > provider_timeout * 0.80:
+                remaining = [s for s in sports_to_extract if s not in
+                             [sk for sk in sports_to_extract[:sports_to_extract.index(sport_key)]]]
+                logger.warning(
+                    f"[{self.provider_id}] Provider time-budget exit at {elapsed:.0f}s "
+                    f"({sports_attempted} sports, {len(all_events)} events). "
+                    f"Skipping: {remaining[1:] if len(remaining) > 1 else 'none'}"
+                )
+                break
+
             try:
                 sports_attempted += 1
                 sport_events = await self._extract_single_sport(
@@ -216,12 +245,12 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
     # Popular leagues are discovered first, so capping preserves the highest-value ones.
     SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 30,     # 60+ discovered, but top 30 cover ~95% of Pinnacle matches
-        "basketball": 20,
-        "ice_hockey": 20,
-        "tennis": 20,
+        "football": 15,     # Reduced from 30 — top 15 cover ~90% of Pinnacle matches
+        "basketball": 15,
+        "ice_hockey": 15,
+        "tennis": 15,
     }
-    DEFAULT_LEAGUE_CAP = 15
+    DEFAULT_LEAGUE_CAP = 10
 
     async def _extract_single_sport(
         self,

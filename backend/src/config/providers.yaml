@@ -834,32 +834,32 @@ extraction_tiers:
     providers:
       # Kambi — canonical only (represents 7 brands: unibet, leovegas, betmgm, speedybet, x3000, goldenbull, 1x2)
       - unibet
-      # Altenar — main group canonical (represents 5: betinia, campobet, lodur, quickcasino, swiper)
+      # Altenar — canonical only (represents 6: betinia, campobet, lodur, quickcasino, swiper, dbet)
+      # dbet consolidated 2026-03-17 — odds 99.7% identical (avg diff 0.0006)
       - betinia
-      # Altenar — dbet extracted separately (~4% different odds)
-      - dbet
-      # Gecko V2 — 2 sub-group canonicals (betsson+nordicbet, bethard+spelklubben)
+      # Gecko V2 — canonical only (represents 4: betsson, nordicbet, bethard, spelklubben)
+      # Odds differ <0.02 avg — consolidated 2026-03-17
       - betsson
-      - bethard
       # BetConstruct (1) — WebSocket API
       - vbet
     interval_minutes: 60
 
   browser_soft:
     # Heavy browser-based extractors — every 60 minutes
-    # Runs on startup, then every 60 minutes
+    # Sequential mode: one provider at a time to avoid browser resource contention
+    # Ordered fastest-first so data is available sooner
+    sequential: true
     providers:
-      # Spectate — canonical only (represents 2: 888sport, mrgreen)
+      # Spectate — API-based, fastest (30-400s)
       - 888sport
-      # ComeOn Group — canonical only (represents 4: comeon, lyllo, hajper, snabbare)
-      # Same odds engine, identical odds confirmed 2026-03-14
-      - comeon
-      # 10Bet (1)
-      - 10bet
-      # Interwetten (1)
-      - interwetten
-      # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
+      # Coolbet — Camoufox, reliable (170-470s)
       - coolbet
+      # Interwetten — 16-20 concurrent tabs (500-700s)
+      - interwetten
+      # ComeOn Group — Camoufox + SPA scraping (700-900s)
+      - comeon
+      # 10Bet — DOM scraping, slowest (1000-1200s)
+      - 10bet
       # Tipwin (1) - DISABLED: 15-30 events (inconsistent), 0 value bets ever, intermittent failures
       # - tipwin
     interval_minutes: 60

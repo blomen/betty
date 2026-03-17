@@ -66,15 +66,11 @@ PLATFORM_GROUPS: dict[str, dict] = {
     },
     "altenar_main": {
         "canonical": "betinia",
-        "members": ["betinia", "campobet", "lodur", "quickcasino", "swiper"],
+        "members": ["betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"],
     },
-    "gecko_betsson": {
+    "gecko_v2": {
         "canonical": "betsson",
-        "members": ["betsson", "nordicbet"],
-    },
-    "gecko_bethard": {
-        "canonical": "bethard",
-        "members": ["bethard", "spelklubben"],
+        "members": ["betsson", "nordicbet", "bethard", "spelklubben"],
     },
     "comeon_group": {
         "canonical": "comeon",
