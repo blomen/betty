@@ -1,5 +1,5 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo, useCallback } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
@@ -272,7 +272,8 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const { data: polyData, isLoading } = useQuery({
     queryKey: ['opportunities', 'polymarket'],
     queryFn: () => api.getPolymarketValue(3, undefined, 50),
-    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const valueBets = polyData?.value_bets ?? [];
 
@@ -543,7 +544,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   // ──────────────────── Render ────────────────────
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -730,10 +731,10 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
         ) : sortedBets.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">No Polymarket value bets found. Run extraction first.</div>
         ) : (
-          <div className="border-l-2 border-tabPolymarket">
+          <div className="border-l-2 border-tabPolymarket flex-1 min-h-0">
             <div
               ref={tableContainerRef}
-              style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}
+              style={{ height: '100%', overflowY: 'auto' }}
             >
               <table className="sq" style={{ width: '100%' }}>
                 <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
@@ -407,7 +407,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
-    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
@@ -781,7 +782,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -857,8 +858,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           No active boosts. Boosts are scraped automatically every hour.
         </div>
       ) : (
-        <div className="border-l-2 border-tabValue">
-        <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <div className="border-l-2 border-tabValue flex-1 min-h-0">
+        <div className="overflow-y-auto h-full">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '36%' }} />
@@ -1106,8 +1107,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
             : 'No matches for current filters.'}
         </div>
       ) : (
-        <div className="border-l-2 border-tabValue">
-        <div ref={valueScrollRef} className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <div className="border-l-2 border-tabValue flex-1 min-h-0">
+        <div ref={valueScrollRef} className="overflow-y-auto h-full">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '30%' }} />

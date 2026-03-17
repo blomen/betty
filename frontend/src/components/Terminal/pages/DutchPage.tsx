@@ -1,6 +1,6 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
@@ -401,7 +401,8 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const { data: dutchData, isLoading } = useQuery({
     queryKey: ['opportunities', 'dutch'],
     queryFn: () => api.getOpportunities('dutch', true),
-    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const opportunities = (dutchData?.opportunities ?? []) as unknown as DutchOpp[];
 
@@ -658,7 +659,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
           <TabIcon name="dutch" color={TAB_COLORS.dutch} size={16} />
@@ -772,11 +773,11 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
           )}
         </div>
       ) : (
-        <div className="border-l-2 border-success">
+        <div className="border-l-2 border-success flex-1 min-h-0">
           {/* Scrollable virtualizer container */}
           <div
             ref={tableContainerRef}
-            style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}
+            style={{ height: '100%', overflowY: 'auto' }}
           >
             <table className="sq" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>

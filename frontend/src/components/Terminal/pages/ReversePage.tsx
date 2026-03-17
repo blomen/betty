@@ -1,6 +1,6 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
@@ -211,7 +211,8 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const { data: reverseData, isLoading } = useQuery({
     queryKey: ['opportunities', 'reverse'],
     queryFn: () => api.getOpportunities('reverse_value', true, undefined, undefined, undefined, undefined, undefined, 3),
-    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const opportunities = reverseData?.opportunities ?? [];
 
@@ -357,7 +358,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   });
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -440,8 +441,8 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
           No Pinnacle value bets found. Run extraction first.
         </div>
       ) : (
-        <div className="border-l-2 border-tabReverse">
-        <div ref={scrollRef} className="overflow-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+        <div className="border-l-2 border-tabReverse flex-1 min-h-0">
+        <div ref={scrollRef} className="overflow-auto h-full">
         <table className="sq w-full">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
