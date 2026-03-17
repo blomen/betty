@@ -104,6 +104,15 @@ class ExtractionScheduler:
         self._schedules[schedule.provider_id] = schedule
         self._provider_locks[schedule.provider_id] = asyncio.Lock()
 
+        # Register initial state so /progress shows this provider immediately
+        update_provider_state(schedule.provider_id, {
+            "running": False,
+            "last_completed": None,
+            "last_duration": None,
+            "last_error": None,
+            "category": schedule.category,
+        })
+
         logger.info(
             f"[Scheduler] Starting schedule '{schedule.provider_id}': "
             f"category={schedule.category}, "
@@ -166,6 +175,9 @@ class ExtractionScheduler:
                 result = session.query(func.max(Odds.updated_at)).filter(
                     Odds.provider_id.in_(provider_ids)
                 ).scalar()
+                # SQLite stores naive datetimes — make timezone-aware for arithmetic
+                if result and result.tzinfo is None:
+                    result = result.replace(tzinfo=timezone.utc)
                 return result
         except Exception as e:
             logger.warning(f"[Scheduler] Could not check last extraction time: {e}")
