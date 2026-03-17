@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TerminalWindow } from '@/components/Terminal';
 import { useUpdateChecker } from '@/hooks/useUpdateChecker';
-import { useExtractionStatus } from '@/hooks/useExtractionStatus';
 import { useOddsStream } from '@/hooks/useOddsStream';
 
 const queryClient = new QueryClient({
@@ -46,8 +45,6 @@ function AppInner({ updateAvailable, latestVersion, downloadUrl }: {
 
 export default function App() {
   const { updateAvailable, latestVersion, downloadUrl } = useUpdateChecker();
-
-  useExtractionStatus();
 
   return (
     <QueryClientProvider client={queryClient}>

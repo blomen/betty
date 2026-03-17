@@ -278,71 +278,8 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit, timeoutMs?:
   return fetchWithRetry<T>(endpoint, options, DEFAULT_RETRIES, timeoutMs ?? DEFAULT_TIMEOUT_MS);
 }
 
-// ============ Extraction Progress Types ============
-
-export interface ProviderSportProgress {
-  status: string;
-  success: boolean | null;
-  events: number;
-  odds: number;
-  duration: number;
-}
-
-export interface ProviderProgress {
-  status: string;
-  events: number;
-  odds: number;
-  duration_seconds: number;
-  error: string | null;
-  sports_completed: number;
-  sports_total: number;
-  current_sport: string | null;
-  sports: Record<string, ProviderSportProgress>;
-}
-
-export interface ExtractionProgress {
-  running: boolean;
-  last_run: string | null;
-  start_time: string | null;
-  elapsed_seconds: number;
-  progress_pct: number;
-  total_events: number;
-  total_odds: number;
-  current_provider: string | null;
-  completed_providers: number;
-  total_providers: number;
-  providers: Record<string, ProviderProgress>;
-}
-
-// Per-tier progress
-export interface TierProgress {
-  running: boolean;
-  last_run: string | null;
-  elapsed_seconds: number;
-  progress_pct: number;
-  total_events: number;
-  total_odds: number;
-  current_provider: string | null;
-  completed_providers: number;
-  total_providers: number;
-  providers: Record<string, ProviderProgress>;
-}
-
-export interface TiersProgressResponse {
-  any_running: boolean;
-  tiers: Record<string, TierProgress>;
-}
-
 export const api = {
   // ============ Extraction ============
-  async getExtractionProgress(): Promise<ExtractionProgress> {
-    return fetchJson<ExtractionProgress>('/extraction/progress');
-  },
-
-  async getTiersProgress(): Promise<TiersProgressResponse> {
-    return fetchJson<TiersProgressResponse>('/extraction/tiers/progress');
-  },
-
   async getExtractionFreshness(): Promise<{ soft: string | null; sharp: string | null; poly: string | null; boosts: string | null }> {
     return fetchJson('/extraction/freshness');
   },
