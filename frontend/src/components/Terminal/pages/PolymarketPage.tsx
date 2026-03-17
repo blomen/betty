@@ -273,7 +273,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     queryKey: ['opportunities', 'polymarket'],
     queryFn: () => api.getPolymarketValue(3, undefined, 50),
     placeholderData: keepPreviousData,
-    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const valueBets = polyData?.value_bets ?? [];
 

@@ -408,7 +408,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
     placeholderData: keepPreviousData,
-    refetchInterval: 120_000, // Fallback only — SSE handles real-time updates
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 

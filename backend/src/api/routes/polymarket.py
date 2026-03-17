@@ -11,7 +11,6 @@ from sqlalchemy import func
 
 from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
-from ...analysis.scanner import OpportunityScanner
 from ...analysis.devig import devig_multiplicative
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ...matching.normalizer import normalize_team_name, generate_canonical_id
@@ -32,19 +31,26 @@ async def get_polymarket_value(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    """Get Polymarket value bets vs de-vigged Pinnacle odds."""
-    scanner = OpportunityScanner(db)
-    all_values = scanner.scan_value(min_edge_pct=min_edge)
+    """Get Polymarket value bets from pre-computed opportunities table."""
+    from ...repositories import OpportunityRepo
+    opp_repo = OpportunityRepo(db)
 
-    # Filter to polymarket only
-    poly_values = [vb for vb in all_values if vb.provider == "polymarket"]
+    # Read pre-computed opportunities (fast indexed query, no scanning)
+    rows = opp_repo.find_active(
+        type="value",
+        provider_ids=["polymarket"],
+        sport=sport,
+        min_edge=min_edge,
+        limit=limit,
+    )
 
     # Use total bankroll (same as Value page) — Polymarket is just another provider
     stake_calculator = None
     profile = None
     profile_repo = None
     total_bankroll = 0.0
-    if poly_values:
+    bonus_status = None
+    if rows:
         try:
             profile_repo = ProfileRepo(db)
             profile = profile_repo.get_active()
@@ -55,21 +61,14 @@ async def get_polymarket_value(
                 single_bet_cap_pct=profile.max_stake_pct / 100.0,
                 min_edge=profile.min_edge_pct / 100.0,
             )
+            bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
         except Exception as e:
             logger.warning(f"Could not initialize stake calculator: {e}")
 
-    # Batch-load all events (avoid N+1)
-    event_ids = list({vb.event_id for vb in poly_values})
-    events_map = {}
-    if event_ids:
-        events_list = db.query(Event).filter(Event.id.in_(event_ids)).all()
-        events_map = {e.id: e for e in events_list}
-
     # Batch-load provider_meta + updated_at from Odds for event_slug + poly names
-    # Key: (event_id, market, outcome) → provider_meta dict
+    event_ids = list({opp.event_id for opp, _ in rows})
     odds_meta_map: dict[tuple, dict] = {}
     odds_updated_map: dict[tuple, str] = {}
-    # Per-event Polymarket display names (from provider_meta)
     poly_names_map: dict[str, tuple[str | None, str | None]] = {}
     if event_ids:
         poly_odds = (
@@ -84,88 +83,80 @@ async def get_polymarket_value(
                 odds_meta_map[key] = o.provider_meta
             if o.updated_at:
                 odds_updated_map[key] = o.updated_at.isoformat()
-            # Extract Polymarket's own team names (same for all odds of an event)
             if o.event_id not in poly_names_map and (meta.get("poly_home") or meta.get("poly_away")):
                 poly_names_map[o.event_id] = (meta.get("poly_home"), meta.get("poly_away"))
 
-    # Enrich with event context
+    usdc_rate = get_exchange_rate("polymarket")
+
+    # Build response from pre-computed opportunities
     results = []
-    for vb in poly_values:
-        event = events_map.get(vb.event_id)
+    for opp, event in rows:
         if not event:
             continue
 
-        if sport and event.sport != sport:
-            continue
+        poly_odds_val = opp.odds1 or 0
+        fair_odds_val = opp.odds2 or 0
+        price_cents = round(1 / poly_odds_val * 100) if poly_odds_val > 0 else 0
+        fair_price_cents = round(1 / fair_odds_val * 100) if fair_odds_val > 0 else 0
 
-        # Polymarket price = implied probability (1/odds), shown in whole cents
-        price_cents = round(1 / vb.provider_odds * 100) if vb.provider_odds > 0 else 0
-        fair_price_cents = round(1 / vb.fair_odds * 100) if vb.fair_odds > 0 else 0
-        usdc_rate = get_exchange_rate("polymarket")  # USDC → SEK
-
-        # Look up provider_meta for deep link URL
-        meta = odds_meta_map.get((vb.event_id, vb.market, vb.outcome), {})
+        meta = odds_meta_map.get((opp.event_id, opp.market, opp.outcome1), {})
         event_slug = meta.get("event_slug") if isinstance(meta, dict) else None
 
         result = {
-            "event_id": vb.event_id,
-            "market": vb.market,
-            "outcome": vb.outcome,
-            "polymarket_odds": vb.provider_odds,
-            "fair_odds": vb.fair_odds,
-            "fair_probability": vb.fair_probability,
-            "edge_pct": vb.edge_pct,
-            "point": vb.point,
+            "event_id": opp.event_id,
+            "market": opp.market,
+            "outcome": opp.outcome1,
+            "polymarket_odds": poly_odds_val,
+            "fair_odds": fair_odds_val,
+            "fair_probability": round(1 / fair_odds_val, 4) if fair_odds_val > 0 else 0,
+            "edge_pct": opp.edge_pct,
+            "point": opp.point,
             "home_team": event.home_team,
             "away_team": event.away_team,
             "display_home": event.display_home,
             "display_away": event.display_away,
-            # Polymarket's own team names (may differ from canonical display names)
-            "poly_home": poly_names_map.get(vb.event_id, (None, None))[0],
-            "poly_away": poly_names_map.get(vb.event_id, (None, None))[1],
+            "poly_home": poly_names_map.get(opp.event_id, (None, None))[0],
+            "poly_away": poly_names_map.get(opp.event_id, (None, None))[1],
             "sport": event.sport,
             "league": event.league,
             "start_time": (event.start_time.isoformat() + "Z") if event.start_time else None,
-            # Polymarket-native fields
             "price_cents": price_cents,
             "fair_price_cents": fair_price_cents,
             "exchange_rate_sek": usdc_rate,
-            # Navigation — event_slug for deep linking to polymarket.com/event/{slug}
             "event_slug": event_slug,
             "provider_meta": {"event_slug": event_slug} if event_slug else None,
-            "updated_at": odds_updated_map.get((vb.event_id, vb.market, vb.outcome)),
+            "updated_at": odds_updated_map.get((opp.event_id, opp.market, opp.outcome1)),
         }
 
         # Add stake recommendation
         if stake_calculator and profile:
             try:
-                edge_raw = (vb.provider_odds / vb.fair_odds - 1) if vb.fair_odds > 1 else 0
-                bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
-                min_odds = 0.0 if bonus_status.get("is_cleared", True) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
+                edge_raw = (poly_odds_val / fair_odds_val - 1) if fair_odds_val > 1 else 0
+                min_odds = 0.0 if (not bonus_status or bonus_status.get("is_cleared", True)) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
                 stake_rec = stake_calculator.calculate(
                     edge_raw=edge_raw,
-                    odds=vb.provider_odds,
-                    event_id=vb.event_id,
+                    odds=poly_odds_val,
+                    event_id=opp.event_id,
                     provider_id="polymarket",
                     min_odds=min_odds,
                 )
                 stake_sek = stake_rec.stake
                 stake_usdc = round(stake_sek / usdc_rate, 2) if usdc_rate > 0 else 0
                 shares = round(stake_usdc / (price_cents / 100), 1) if price_cents > 0 else 0
-                payout_usdc = round(shares * 1.0, 2)  # Each share pays $1 if correct
+                payout_usdc = round(shares * 1.0, 2)
 
                 result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
-                result["final_stake"] = round(stake_sek, 2)  # SEK for internal tracking
+                result["final_stake"] = round(stake_sek, 2)
                 result["final_stake_usdc"] = stake_usdc
                 result["shares"] = shares
                 result["payout_usdc"] = payout_usdc
                 result["kelly_fraction"] = stake_rec.kelly_fraction
                 result["skip_reason"] = stake_rec.skip_reason
                 result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
-                result["bonus_cleared"] = bonus_status.get("is_cleared", True)
+                result["bonus_cleared"] = bonus_status.get("is_cleared", True) if bonus_status else True
             except Exception as e:
-                logger.debug(f"Stake calculation failed for {vb.event_id}: {e}")
+                logger.debug(f"Stake calculation failed for {opp.event_id}: {e}")
                 result["suggested_stake"] = None
                 result["final_stake"] = None
                 result["final_stake_usdc"] = None
@@ -178,13 +169,10 @@ async def get_polymarket_value(
 
         results.append(result)
 
-        if len(results) >= limit:
-            break
-
     return {
         "value_bets": results,
         "count": len(results),
-        "total_scanned": len(all_values),
+        "total_scanned": len(results),
         "total_bankroll": round(total_bankroll, 2),
     }
 
