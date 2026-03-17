@@ -111,13 +111,14 @@ class ExtractionScheduler:
             f"interval={schedule.interval_seconds}s"
         )
 
+        loop = asyncio.get_running_loop()
         schedule.task = asyncio.create_task(
             self._provider_loop(schedule),
             name=f"extraction-{schedule.provider_id}",
         )
 
         # Auto-restart on unexpected death
-        def _on_schedule_done(task: asyncio.Task, sched=schedule):
+        def _on_schedule_done(task: asyncio.Task, sched=schedule, _loop=loop):
             if task.cancelled():
                 return
             exc = task.exception()
@@ -126,8 +127,7 @@ class ExtractionScheduler:
                     f"[Scheduler:{sched.provider_id}] Schedule task died unexpectedly: {exc}. "
                     f"Auto-restarting in 10s..."
                 )
-                loop = asyncio.get_event_loop()
-                loop.call_later(10, lambda: asyncio.ensure_future(
+                _loop.call_later(10, lambda: asyncio.ensure_future(
                     self._restart_schedule(sched)
                 ))
 
@@ -136,12 +136,13 @@ class ExtractionScheduler:
     async def _restart_schedule(self, schedule: ProviderSchedule):
         """Restart a schedule that died unexpectedly."""
         logger.info(f"[Scheduler:{schedule.provider_id}] Restarting schedule...")
+        loop = asyncio.get_running_loop()
         schedule.task = asyncio.create_task(
             self._provider_loop(schedule),
             name=f"extraction-{schedule.provider_id}",
         )
 
-        def _on_restart_done(task: asyncio.Task, sched=schedule):
+        def _on_restart_done(task: asyncio.Task, sched=schedule, _loop=loop):
             if task.cancelled():
                 return
             exc = task.exception()
@@ -150,8 +151,7 @@ class ExtractionScheduler:
                     f"[Scheduler:{sched.provider_id}] Schedule died again: {exc}. "
                     f"Auto-restarting in 30s..."
                 )
-                loop = asyncio.get_event_loop()
-                loop.call_later(30, lambda: asyncio.ensure_future(
+                _loop.call_later(30, lambda: asyncio.ensure_future(
                     self._restart_schedule(sched)
                 ))
 
@@ -252,9 +252,15 @@ class ExtractionScheduler:
         logger.info(f"[Scheduler] Stopped provider '{provider_id}' after {schedule.run_count} runs")
 
     # Keep stop_tier as alias for backward compat with API routes
-    def stop_tier(self, name: str):
-        """Stop a specific tier/provider (backward compat alias)."""
-        self.stop_provider(name)
+    def stop_tier(self, tier_name: str):
+        """Stop all providers in a category (backward compat)."""
+        stopped = []
+        for sched_id, sched in list(self._schedules.items()):
+            if sched.category == tier_name or sched.provider_id == tier_name:
+                self.stop_provider(sched_id)
+                stopped.append(sched_id)
+        if not stopped:
+            logger.warning(f"No providers found for category '{tier_name}'")
 
     # ── Convenience: start/stop all ──────────────────────────────────
 
