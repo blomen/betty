@@ -279,11 +279,6 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit, timeoutMs?:
 }
 
 export const api = {
-  // ============ Extraction ============
-  async getExtractionFreshness(): Promise<{ soft: string | null; sharp: string | null; poly: string | null; boosts: string | null }> {
-    return fetchJson('/extraction/freshness');
-  },
-
   // ============ Providers ============
   async getProviders(): Promise<ProvidersResponse> {
     return fetchJson<ProvidersResponse>('/providers');

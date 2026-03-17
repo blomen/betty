@@ -1,0 +1,84 @@
+<h2>Postmortem Data Model</h2>
+<p class="subtitle">New tables that materialize post-settlement analysis</p>
+
+<div class="section">
+  <h3>BetPostmortem</h3>
+  <p class="subtitle">One row per settled bet — computed by batch job</p>
+  <div class="mockup">
+    <div class="mockup-header">bet_postmortems table</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8;">
+      <div style="display: grid; grid-template-columns: 200px 120px 1fr; gap: 4px 16px;">
+        <span style="color: #f59e0b;">bet_id</span><span style="color: #888;">FK → bets.id</span><span>Primary key, 1:1 with Bet</span>
+        <span style="color: #f59e0b;">classification</span><span style="color: #888;">VARCHAR</span><span>expected_loss | edge_erosion | false_edge | sizing_error | expected_win | bonus_win</span>
+        <span style="color: #f59e0b;">edge_at_placement</span><span style="color: #888;">FLOAT</span><span>Snapshotted edge % when bet was placed</span>
+        <span style="color: #f59e0b;">edge_at_close</span><span style="color: #888;">FLOAT</span><span>Edge % using closing line (CLV-based)</span>
+        <span style="color: #f59e0b;">clv_confirmed</span><span style="color: #888;">BOOLEAN</span><span>True if closing odds available & reliable (TTK ≤ 12h)</span>
+        <span style="color: #f59e0b;">expected_win_pct</span><span style="color: #888;">FLOAT</span><span>Implied probability from fair odds at placement</span>
+        <span style="color: #f59e0b;">kelly_fraction</span><span style="color: #888;">FLOAT</span><span>Optimal Kelly stake / actual stake ratio</span>
+        <span style="color: #f59e0b;">is_oversized</span><span style="color: #888;">BOOLEAN</span><span>stake > 1.5× Kelly optimal</span>
+        <span style="color: #f59e0b;">is_undersized</span><span style="color: #888;">BOOLEAN</span><span>stake < 0.5× Kelly optimal</span>
+        <span style="color: #f59e0b;">variance_score</span><span style="color: #888;">FLOAT</span><span>How "surprising" was the outcome (0=expected, 1=max surprise)</span>
+        <span style="color: #f59e0b;">computed_at</span><span style="color: #888;">DATETIME</span><span>When this row was last recomputed</span>
+        <span style="color: #f59e0b;">version</span><span style="color: #888;">INTEGER</span><span>Recomputation count (tracks reclassifications)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>TradePostmortem</h3>
+  <p class="subtitle">One row per closed trade — complements manual TradeReview</p>
+  <div class="mockup">
+    <div class="mockup-header">trade_postmortems table</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8;">
+      <div style="display: grid; grid-template-columns: 200px 120px 1fr; gap: 4px 16px;">
+        <span style="color: #8b5cf6;">trade_id</span><span style="color: #888;">FK → trades.id</span><span>Primary key, 1:1 with Trade</span>
+        <span style="color: #8b5cf6;">classification</span><span style="color: #888;">VARCHAR</span><span>expected_loss | stop_too_tight | stop_too_wide | thesis_invalid | expected_win | runner</span>
+        <span style="color: #8b5cf6;">r_multiple</span><span style="color: #888;">FLOAT</span><span>Copied from trade for fast queries</span>
+        <span style="color: #8b5cf6;">setup_avg_r</span><span style="color: #888;">FLOAT</span><span>Average R for this setup type at time of compute</span>
+        <span style="color: #8b5cf6;">setup_win_rate</span><span style="color: #888;">FLOAT</span><span>Win rate for this setup type</span>
+        <span style="color: #8b5cf6;">stop_quality</span><span style="color: #888;">VARCHAR</span><span>optimal | too_tight | too_wide (based on price action vs stop distance)</span>
+        <span style="color: #8b5cf6;">target_quality</span><span style="color: #888;">VARCHAR</span><span>hit_target | partial_exit_good | missed_runner | exited_early</span>
+        <span style="color: #8b5cf6;">streak_position</span><span style="color: #888;">INTEGER</span><span>Position in win/loss streak at time of trade (negative = losing streak)</span>
+        <span style="color: #8b5cf6;">routine_psych_avg</span><span style="color: #888;">FLOAT</span><span>Psych score from DailyRoutine on trade day</span>
+        <span style="color: #8b5cf6;">rules_followed</span><span style="color: #888;">BOOLEAN</span><span>From TradeReview if exists, else null</span>
+        <span style="color: #8b5cf6;">computed_at</span><span style="color: #888;">DATETIME</span><span>When this row was last recomputed</span>
+        <span style="color: #8b5cf6;">version</span><span style="color: #888;">INTEGER</span><span>Recomputation count</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Classification Logic</h3>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header" style="background: #f59e0b; color: black;">Bet Classification</div>
+      <div class="mockup-body" style="font-size: 13px; line-height: 1.9;">
+        <strong>On loss:</strong><br>
+        &nbsp;&nbsp;CLV positive → <code>expected_loss</code> (had real edge, variance)<br>
+        &nbsp;&nbsp;CLV negative → <code>edge_erosion</code> (market moved against)<br>
+        &nbsp;&nbsp;No CLV + edge < 1% → <code>false_edge</code> (thin/no edge)<br>
+        &nbsp;&nbsp;Kelly ratio > 1.5 → <code>sizing_error</code> (oversized)<br>
+        <br>
+        <strong>On win:</strong><br>
+        &nbsp;&nbsp;CLV positive → <code>expected_win</code> (real edge, deserved)<br>
+        &nbsp;&nbsp;CLV negative → <code>bonus_win</code> (got lucky, no real edge)<br>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header" style="background: #8b5cf6;">Trade Classification</div>
+      <div class="mockup-body" style="font-size: 13px; line-height: 1.9;">
+        <strong>On loss:</strong><br>
+        &nbsp;&nbsp;R ≥ -1.0 → <code>expected_loss</code> (stopped out at plan)<br>
+        &nbsp;&nbsp;R < -1.0 + stop moved → <code>stop_too_wide</code><br>
+        &nbsp;&nbsp;Hit stop but reversed → <code>stop_too_tight</code><br>
+        &nbsp;&nbsp;Setup avg R < 0 → <code>thesis_invalid</code><br>
+        <br>
+        <strong>On win:</strong><br>
+        &nbsp;&nbsp;R ≥ 2.0 → <code>runner</code> (let it ride)<br>
+        &nbsp;&nbsp;R > 0 → <code>expected_win</code><br>
+      </div>
+    </div>
+  </div>
+</div>

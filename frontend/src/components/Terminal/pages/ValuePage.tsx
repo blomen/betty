@@ -7,12 +7,11 @@ import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
@@ -332,7 +331,6 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers = [] }: ValuePageProps) {
-  const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ValueTab>('value');
 
@@ -850,7 +848,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         {boostFilters && boostFilters.providers.length > 0 && (
           <MultiSelectDropdown label="Provider" options={boostFilters.providers} selected={boostSelectedProviders} onToggle={toggleBoostProvider} onClear={() => { setBoostSelectedProviders(new Set()); setBoostExpandedIdx(null); }} format={formatProviderWithPlatform} accentColor="tabValue" />
         )}
-        <FreshnessIndicator tiers={[['boosts', freshness.boosts]]} />
       </FilterBar>
 
       {sortedBoosts.length === 0 ? (
@@ -1092,7 +1089,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
             accentColor="tabValue"
           />
         )}
-        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
       {/* Value bets table */}

@@ -13,6 +13,7 @@ Usage:
 """
 
 import asyncio
+import signal
 import socket
 import sys
 
@@ -50,5 +51,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     import uvicorn
+
+    # ProactorEventLoop on Windows swallows Ctrl+C — re-register handler
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     uvicorn.run("src.api:app", host=HOST, port=PORT)

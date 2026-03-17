@@ -3,10 +3,9 @@ import { api } from '@/services/api';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { MultiSelectDropdown, FreshnessIndicator } from '../FilterBar';
+import { MultiSelectDropdown } from '../FilterBar';
 import type { Provider } from '@/types';
 
 interface DutchLeg {
@@ -70,7 +69,6 @@ function saveDutchAnchorSettings(providers: Set<string>, stake: string, limitedO
 }
 
 export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
-  const freshness = useExtractionFreshness();
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [search] = useState('');
 
@@ -436,7 +434,6 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
           {workflowResults && (
             <span className="text-muted2">{sorted.length} results</span>
           )}
-          <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
         </div>
       </div>
 

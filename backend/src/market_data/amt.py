@@ -346,6 +346,7 @@ def compute_delta(ticks: list[TickData], bars: list[BarData]) -> DeltaAnalysis:
                 lambda r: r["size"] if r["side"] == "buy" else -r["size"], axis=1
             )
 
+            tick_df["timestamp"] = pd.to_datetime(tick_df["timestamp"], utc=True)
             tick_df.set_index("timestamp", inplace=True)
             bar_deltas_series = tick_df["signed_vol"].resample("1min").sum().fillna(0)
             bar_deltas = bar_deltas_series.astype(int).tolist()

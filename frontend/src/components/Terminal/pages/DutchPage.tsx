@@ -5,10 +5,9 @@ import { api } from '@/services/api';
 import { formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, formatProviderName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { Provider, Bet } from '@/types';
@@ -381,7 +380,6 @@ const DutchRow = memo(function DutchRow({
 // ─── DutchPage ────────────────────────────────────────────────────────────────
 
 export function DutchPage({ providers = [] }: DutchPageProps) {
-  const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
@@ -734,7 +732,6 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
             accentColor="success"
           />
         )}
-        <div className="ml-auto"><FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} /></div>
       </FilterBar>
 
       {isLoading && opportunities.length === 0 ? (

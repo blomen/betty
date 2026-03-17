@@ -1,0 +1,115 @@
+<h2>Battle Mode — Layout Transition</h2>
+<p class="subtitle">When price touches a level, the page transforms. How should the gauges appear?</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Before: Scanning Mode</div>
+    <div class="mockup-body" style="padding:0">
+      <div style="display:flex;flex-direction:column;height:280px;gap:1px;background:#333">
+        <div style="background:#1a1a2e;padding:6px 10px;display:flex;justify-content:space-between;font-size:10px">
+          <span style="color:#06b6d4;font-weight:bold">⚡ Intraday</span>
+          <span style="color:#888">NQ · 21,456.75 · <span style="color:#10b981">LIVE</span></span>
+        </div>
+        <div style="background:#0f0f1a;height:40px;display:flex;align-items:center;padding:0 8px">
+          <svg width="100%" height="28" viewBox="0 0 250 28"><rect x="10" y="6" width="5" height="16" fill="#ef5350" rx="1"/><rect x="22" y="8" width="5" height="12" fill="#10b981" rx="1"/><rect x="34" y="5" width="5" height="18" fill="#10b981" rx="1"/><rect x="46" y="10" width="5" height="10" fill="#ef5350" rx="1"/><rect x="58" y="7" width="5" height="14" fill="#10b981" rx="1"/><rect x="70" y="4" width="5" height="16" fill="#10b981" rx="1"/><rect x="82" y="8" width="5" height="14" fill="#ef5350" rx="1"/><rect x="94" y="6" width="5" height="12" fill="#10b981" rx="1"/></svg>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 0.6fr;gap:1px;background:#333;flex:1">
+          <div style="background:#0f0f1a;padding:8px;font-size:9px;color:#666">
+            <div style="color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px;font-size:8px">Levels</div>
+            <div style="color:#555">21,520 · PDH · 63 · WATCH</div>
+            <div style="color:#555">21,498 · +1SD · 41 · WATCH</div>
+            <div style="color:#eab308">21,475 · ON Hi · 18 · NEAR</div>
+            <div style="background:#06b6d415;padding:4px;margin:4px 0;text-align:center;color:#06b6d4;font-weight:bold;border:1px solid #06b6d433">▸ NQ 21,456.75</div>
+            <div style="color:#555">21,442 · POC · 15 · WATCH</div>
+            <div style="color:#555">21,415 · −1SD · 42 · WATCH</div>
+            <div style="color:#555">21,380 · PDL · 77 · WATCH</div>
+          </div>
+          <div style="background:#0f0f1a;padding:8px;font-size:9px;color:#555">
+            <div style="color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px;font-size:8px">Context</div>
+            Balanced · OTD<br>IB: 30pt<br>POC: 442<br>VIX: 14.2<br>Risk On
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:center;padding:0 8px">
+    <div style="font-size:28px;color:#06b6d4;animation:pulse 1.5s ease-in-out infinite">→</div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header" style="background:#ef535033;color:#ef5350">⚡ BATTLE MODE — ON High touched!</div>
+    <div class="mockup-body" style="padding:0">
+      <div style="display:flex;flex-direction:column;height:280px;gap:1px;background:#333">
+        <!-- Header with level info -->
+        <div style="background:#1a1a2e;padding:6px 10px;display:flex;justify-content:space-between;font-size:10px;border-bottom:2px solid #ef5350">
+          <span style="color:#ef5350;font-weight:bold">⚔ ON High · 21,475</span>
+          <span style="color:#888">Confluence: 2 · <span style="color:#eab308">IB High nearby</span></span>
+          <span style="color:#555;cursor:pointer">[✕ Dismiss]</span>
+        </div>
+        <!-- Gauges (dominant) -->
+        <div style="background:#0f0f1a;flex:1;padding:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <!-- Orderflow gauges -->
+          <div>
+            <div style="color:#888;font-size:8px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Orderflow</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:9px">
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">DELTA</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:65%;background:#10b981;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">CVD</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:80%;background:#10b981;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">ABSORB</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:90%;background:#10b981;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">IMBAL</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:40%;background:#ef5350;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">BIG</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:70%;background:#10b981;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">TRAPPED</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:55%;background:#eab308;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">STOP RUN</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:20%;background:#666;border-radius:2px"></div></div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">PA RATIO</span><div style="height:4px;background:#222;border-radius:2px;margin-top:3px"><div style="height:100%;width:75%;background:#10b981;border-radius:2px"></div></div></div>
+            </div>
+          </div>
+          <!-- Structure gauges -->
+          <div>
+            <div style="color:#888;font-size:8px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Structure & ML</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:9px">
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">MKT TYPE</span><div style="color:#10b981;font-size:10px;margin-top:2px">Balanced</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">OPEN</span><div style="color:#eab308;font-size:10px;margin-top:2px">OTD</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">DISTRIB</span><div style="color:#a855f7;font-size:10px;margin-top:2px">P-shape</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">POOR H/L</span><div style="color:#ef5350;font-size:10px;margin-top:2px">Poor High</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">DAY TYPE</span><div style="color:#a855f7;font-size:10px;margin-top:2px">Normal 82%</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">VIX</span><div style="color:#10b981;font-size:10px;margin-top:2px">14.2 Low</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">REGIME</span><div style="color:#10b981;font-size:10px;margin-top:2px">Risk On</div></div>
+              <div style="background:#111;padding:4px 6px;border-radius:3px"><span style="color:#555">CONFLNC</span><div style="color:#eab308;font-size:10px;margin-top:2px">2 levels</div></div>
+            </div>
+          </div>
+        </div>
+        <!-- Minimal level strip + trade bar -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#333">
+          <!-- Minimal level strip -->
+          <div style="background:#0f0f1a;padding:4px 8px;font-size:8px;color:#444;display:flex;gap:8px;align-items:center">
+            <span style="color:#555">↑</span> <span>+1SD 498</span> <span style="color:#333">·</span> <span style="color:#eab308;font-weight:bold">▸ ON Hi 475</span> <span style="color:#333">·</span> <span style="color:#06b6d4">NQ 456</span> <span style="color:#333">·</span> <span>POC 442</span> <span style="color:#333">·</span> <span>−1SD 415</span> <span style="color:#555">↓</span>
+          </div>
+          <!-- Trade action bar -->
+          <div style="background:#0f0f1a;padding:4px 8px;font-size:9px;display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <span style="color:#555">E: <span style="color:#fff">21,474</span></span>
+            <span style="color:#555">S: <span style="color:#ef5350">21,480</span></span>
+            <span style="color:#555">T1: <span style="color:#10b981">21,456</span></span>
+            <span style="color:#555">T2: <span style="color:#10b981">21,442</span></span>
+            <button style="background:#10b981;border:none;color:#000;padding:3px 10px;border-radius:3px;font-size:9px;font-weight:bold;cursor:pointer">SHORT</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes pulse { 0%,100% { opacity:0.3 } 50% { opacity:1 } }
+</style>
+
+<div style="margin-top:20px;padding:16px;background:#111;border-radius:8px;border:1px solid #333">
+  <h3 style="margin-top:0;color:#06b6d4">How the transition works</h3>
+  <ol style="color:#888;font-size:13px;line-height:1.8">
+    <li>Price approaches level → status changes to <span style="color:#eab308">NEAR</span> in table</li>
+    <li>Price touches level → <span style="color:#ef5350">sound plays</span>, layout morphs to battle mode</li>
+    <li>Level table compresses to a <strong>minimal price strip</strong> at the bottom</li>
+    <li>Gauges fill the main area with real-time orderflow + structure readings</li>
+    <li>Trade action bar shows computed Entry/Stop/Targets + trade button</li>
+    <li>Dismiss returns to scanning layout</li>
+  </ol>
+</div>

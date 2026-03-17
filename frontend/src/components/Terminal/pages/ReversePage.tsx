@@ -4,10 +4,9 @@ import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-quer
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
-import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useMultiSort } from '@/hooks/useMultiSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -184,7 +183,6 @@ const ReverseRow = memo(function ReverseRow({
 // ── ReversePage ──────────────────────────────────────────────────────────────
 
 export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
-  const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
@@ -428,7 +426,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
             accentColor="tabReverse"
           />
         )}
-        <FreshnessIndicator tiers={[['soft', freshness.soft], ['sharp', freshness.sharp]]} />
       </FilterBar>
 
       {/* Table */}

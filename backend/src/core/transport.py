@@ -289,15 +289,18 @@ class BrowserTransport(Transport):
             blocked_types.add("stylesheet")
 
         async def _block_unnecessary(route):
-            if route.request.resource_type in blocked_types:
-                await route.abort()
-                return
-            url = route.request.url.lower()
-            for pattern in self._BLOCKED_URL_PATTERNS:
-                if pattern in url:
+            try:
+                if route.request.resource_type in blocked_types:
                     await route.abort()
                     return
-            await route.continue_()
+                url = route.request.url.lower()
+                for pattern in self._BLOCKED_URL_PATTERNS:
+                    if pattern in url:
+                        await route.abort()
+                        return
+                await route.continue_()
+            except Exception:
+                pass  # Route already handled by another handler
 
         await self.context.route("**/*", _block_unnecessary)
         logger.debug("Resource blocking enabled for browser context (block_css=%s)", self._BLOCK_STYLESHEETS)

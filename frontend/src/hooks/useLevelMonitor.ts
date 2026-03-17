@@ -22,6 +22,19 @@ export function useLevelMonitor(
 
   const levelStatusRef = useRef<Map<string, MonitoredLevel>>(new Map());
 
+  const seedLevels = useCallback((levels: MonitoredLevel[]) => {
+    for (const l of levels) {
+      if (!levelStatusRef.current.has(l.name)) {
+        levelStatusRef.current.set(l.name, l);
+      }
+    }
+    setState(prev => ({
+      ...prev,
+      levels: Array.from(levelStatusRef.current.values())
+        .sort((a, b) => Math.abs(a.distance_ticks) - Math.abs(b.distance_ticks)),
+    }));
+  }, []);
+
   useEffect(() => {
     const es = esRef.current;
     if (!es) return;
@@ -203,5 +216,6 @@ export function useLevelMonitor(
     battleActive: state.battleActive,
     dismissBattle,
     switchBattleLevel,
+    seedLevels,
   };
 }

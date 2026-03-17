@@ -4,10 +4,9 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { api } from '@/services/api';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
-import { useExtractionFreshness } from '@/hooks/useExtractionStatus';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
-import { FilterBar, MultiSelectDropdown, FreshnessIndicator, SearchInput, relativeTime } from '../FilterBar';
+import { FilterBar, MultiSelectDropdown, SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
@@ -227,7 +226,6 @@ const PolyRow = memo(function PolyRow({
 // ──────────────────── PolymarketPage ────────────────────
 
 export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
-  const freshness = useExtractionFreshness();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<PolyTab>('value');
 
@@ -723,7 +721,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
               accentColor="tabPolymarket"
             />
           )}
-          <FreshnessIndicator tiers={[['poly', freshness.poly], ['sharp', freshness.sharp]]} />
         </FilterBar>
 
         {isLoading && valueBets.length === 0 ? (

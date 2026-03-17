@@ -57,6 +57,33 @@ class MarketService:
         self.db = db
         self.repo = MarketRepo(db)
 
+    @staticmethod
+    def _is_globex_closed(dt: datetime | None = None) -> bool:
+        """Check if CME Globex is closed (weekend gap).
+
+        Globex schedule: Sun 18:00 ET → Fri 17:00 ET (with daily 17:00-18:00 halt).
+        Weekend close: Fri 17:00 ET → Sun 18:00 ET.
+        """
+        import zoneinfo
+        et = zoneinfo.ZoneInfo("America/New_York")
+        now = dt or datetime.now(et)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=et)
+        else:
+            now = now.astimezone(et)
+        wd = now.weekday()  # Mon=0 … Sun=6
+        hour = now.hour
+        # Saturday: always closed
+        if wd == 5:
+            return True
+        # Friday after 17:00: closed
+        if wd == 4 and hour >= 17:
+            return True
+        # Sunday before 18:00: closed
+        if wd == 6 and hour < 18:
+            return True
+        return False
+
     async def compute_session(
         self, target_date: str | None = None, symbol: str | None = None
     ) -> dict:
@@ -64,6 +91,15 @@ class MarketService:
         config = get_market_data_config()
         symbol = symbol or config.get("symbol", "NQ.FUT").split(".")[0]
         target_date = target_date or date.today().isoformat()
+
+        # Skip Databento fetch during weekend close — serve cached session
+        if not target_date or target_date == date.today().isoformat():
+            if self._is_globex_closed():
+                logger.info("Globex closed (weekend) — serving cached session for %s", symbol)
+                cached = self.repo.get_previous_session(symbol)
+                if cached:
+                    return cached
+                return {}
 
         sessions_cfg = config.get("sessions", {})
         rth_open = sessions_cfg.get("rth_open", "09:30")
@@ -82,13 +118,25 @@ class MarketService:
             datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
         )
 
-        # Fetch current day data
-        bars = await provider.get_bars(
-            config.get("symbol", "NQ.FUT"), "1m", globex_start, rth_close
-        )
-        ticks = await provider.get_ticks(
-            config.get("symbol", "NQ.FUT"), globex_start, rth_close
-        )
+        # Fetch current day data (may fail on weekends / no data available)
+        sym = config.get("symbol", "NQ.FUT")
+        try:
+            bars = await provider.get_bars(sym, "1m", globex_start, rth_close)
+        except Exception as e:
+            logger.debug("get_bars failed (likely weekend/no data): %s", e)
+            bars = []
+        try:
+            ticks = await provider.get_ticks(sym, globex_start, rth_close)
+        except Exception as e:
+            logger.debug("get_ticks failed (likely weekend/no data): %s", e)
+            ticks = []
+
+        if not bars:
+            logger.info("No bars available for %s on %s — returning cached/empty session", symbol, target_date)
+            cached = self.repo.get_previous_session(symbol)
+            if cached:
+                return cached
+            return {}
 
         # Fetch previous day for prev VA
         prev_dt = dt - timedelta(days=1)
@@ -100,9 +148,11 @@ class MarketService:
             prev_dt,
             datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time()
         )
-        prev_bars = await provider.get_bars(
-            config.get("symbol", "NQ.FUT"), "1m", prev_globex, prev_close
-        )
+        try:
+            prev_bars = await provider.get_bars(sym, "1m", prev_globex, prev_close)
+        except Exception as e:
+            logger.debug("get_bars (prev day) failed: %s", e)
+            prev_bars = []
 
         # Fetch macro data (VIX, DXY, yields)
         try:
@@ -269,7 +319,10 @@ class MarketService:
 
         session_row = self.repo.get_session(today, symbol)
         if not session_row or not session_row.session_json:
-            return None
+            # Fallback: latest session (e.g. weekend/holiday — use last trading day)
+            session_row = self.repo.get_previous_session(symbol)
+            if not session_row or not session_row.session_json:
+                return None
 
         sj = session_row.session_json
         if isinstance(sj, str):
@@ -939,7 +992,11 @@ class MarketService:
         target = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         target_dt = datetime.strptime(target, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         end_dt = target_dt + timedelta(days=1)
-        bars = await provider.get_bars(f"{symbol}.FUT", interval, target_dt, end_dt)
+        try:
+            bars = await provider.get_bars(f"{symbol}.FUT", interval, target_dt, end_dt)
+        except Exception as e:
+            logger.debug("get_candles failed (likely weekend/no data): %s", e)
+            bars = []
         return {
             "candles": [
                 {"t": int(b.timestamp.timestamp()), "o": b.open, "h": b.high, "l": b.low, "c": b.close, "v": b.volume}
@@ -1093,11 +1150,13 @@ class MarketService:
             bars_all = []
             current = monday
             while current <= today:
-                dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
-                dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
-                day_bars = await provider.get_bars(full_symbol, "1m", dt, dt_close)
-                if day_bars:
-                    bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
+                # Skip weekends — no Globex RTH data
+                if current.weekday() < 5:
+                    dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+                    dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
+                    day_bars = await provider.get_bars(full_symbol, "1m", dt, dt_close)
+                    if day_bars:
+                        bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
                 current += timedelta(days=1)
             return bars_all
         except Exception as e:
@@ -1116,11 +1175,13 @@ class MarketService:
             bars_all = []
             current = first_of_month
             while current <= today:
-                dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
-                dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
-                day_bars = await provider.get_bars(full_symbol, "1h", dt, dt_close)
-                if day_bars:
-                    bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
+                # Skip weekends — no Globex RTH data
+                if current.weekday() < 5:
+                    dt = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_open", "09:30"), "%H:%M").time())
+                    dt_close = datetime.combine(current, datetime.strptime(sessions_cfg.get("rth_close", "16:00"), "%H:%M").time())
+                    day_bars = await provider.get_bars(full_symbol, "1h", dt, dt_close)
+                    if day_bars:
+                        bars_all.extend([{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in day_bars])
                 current += timedelta(days=1)
             return bars_all
         except Exception as e:

@@ -378,57 +378,6 @@ export function SingleSelectPills({
 }
 
 
-// ── Extraction freshness indicators ───────────────────────────────────
-
-function formatAge(isoTimestamp: string): { label: string; color: string } {
-  const ageMs = Date.now() - new Date(isoTimestamp).getTime();
-  const totalSec = Math.max(0, Math.floor(ageMs / 1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const label = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-
-  const ageMin = totalSec / 60;
-  const ageHr = ageMin / 60;
-  const color = ageMin < 15 ? 'text-success' : ageMin < 60 ? 'text-yellow' : ageHr < 3 ? 'text-warning' : 'text-error';
-  return { label, color };
-}
-
-interface FreshnessIndicatorProps {
-  /** Array of [label, isoTimestamp] pairs, e.g. [["soft", "2026-..."], ["sharp", "2026-..."]] */
-  tiers: [string, string | null][];
-}
-
-/**
- * Shows extraction age per tier in HH:MM:SS format with color coding.
- * Auto-refreshes every 30 seconds.
- */
-export function FreshnessIndicator({ tiers }: FreshnessIndicatorProps) {
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const entries = tiers.filter(([, ts]) => ts != null);
-  if (entries.length === 0) return null;
-
-  return (
-    <span className="ml-auto shrink-0 flex items-center gap-3">
-      {entries.map(([tier, ts]) => {
-        if (!ts) return null;
-        const { label, color } = formatAge(ts);
-        return (
-          <span key={tier} className={`text-[10px] ${color}`} title={new Date(ts).toLocaleString()}>
-            <span className="text-muted2 uppercase">{tier}</span> {label}
-          </span>
-        );
-      })}
-    </span>
-  );
-}
-
 // ── Relative time helper for per-row freshness ──────────────────────
 
 export function relativeTime(isoTimestamp: string | null | undefined): { text: string; className: string } {

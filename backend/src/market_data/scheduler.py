@@ -45,6 +45,11 @@ class MarketScanScheduler:
         from ..db.models import get_session
         from ..services.market_service import MarketService
 
+        # Skip during weekend close — no new data to process
+        if MarketService._is_globex_closed():
+            logger.debug("Globex closed — skipping scheduled scan")
+            return
+
         db = get_session()
         try:
             svc = MarketService(db)
