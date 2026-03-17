@@ -636,7 +636,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
     fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? 0,
     aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? 0,
-    aiEdge: (g: GroupedSpecial) => g.rep.llm_edge_pct ?? -999,
+    aiEdge: (g: GroupedSpecial) => {
+      const s = g.rep;
+      const fairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
+      if (fairOdds != null && fairOdds > 1 && s.boosted_odds)
+        return (s.boosted_odds / fairOdds - 1) * 100;
+      return s.llm_edge_pct ?? s.edge_pct ?? s.boost_pct ?? -999;
+    },
     stake: (g: GroupedSpecial) => g.rep.recommended_stake ?? 0,
     edge: (g: GroupedSpecial) => g.rep.edge_pct ?? g.rep.boost_pct ?? 0,
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
@@ -859,14 +865,15 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         <div className="overflow-y-auto h-full">
         <table className="sq w-full table-fixed">
           <colgroup>
-            <col style={{ width: '36%' }} />
-            <col style={{ width: '16%' }} />
+            <col style={{ width: '34%' }} />
+            <col style={{ width: '15%' }} />
             <col style={{ width: '10%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />
             <col style={{ width: '6%' }} />
             <col style={{ width: '9%' }} />
-            <col style={{ width: '10%' }} />
+            <col style={{ width: '5%' }} />
+            <col style={{ width: '8%' }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
@@ -877,6 +884,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
               <SortableHeader column="aiProb" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
               <SortableHeader column="stake" label="Stake" sort={boostSort} onToggle={toggleBoostSort} />
+              <th className="text-right">Upd</th>
               <SortableHeader column="aiEdge" label="Edge" sort={boostSort} onToggle={toggleBoostSort} />
             </tr>
           </thead>
@@ -917,8 +925,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                     <td className="text-right text-sm min-w-0">
                       <span className="inline-flex items-center gap-1.5 justify-end">
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
-                        {providerCount <= 3 ? (
-                          <span className="text-text truncate">{group.providers.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
+                        {providerCount === 1 ? (
+                          <span className="text-text truncate"><ProviderName name={group.providers[0]} /></span>
                         ) : (
                           <span className="text-text truncate">
                             <ProviderName name={group.providers[0]} />
@@ -976,6 +984,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                       )}
                       {isBoostStakeOverridden && <button onClick={() => { setBoostStakeOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingStake(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                     </td>
+                    {(() => { const rt = relativeTime(s.scraped_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
                     <td className="text-right font-semibold text-sm">
                       {boostDynEdge != null ? (
                         <span className="text-text">
@@ -992,7 +1001,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
                     return (
                     <tr key={`${group.key}-exp`}>
-                      <td colSpan={8} className="!p-0" onClick={e => e.stopPropagation()}>
+                      <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
                         {isLoadingBoostPreview ? <div className="px-3 py-2 bg-panel text-muted text-sm">Loading...</div> : (
                         <div className="px-3 py-2 bg-panel">
                           {s.llm_reasoning && (
