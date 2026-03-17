@@ -142,8 +142,11 @@ class ProfileRepo:
 
         # Auto-expire: if wagering deadline has passed, mark as completed
         active_statuses = ("in_progress", "trigger_needed")
-        if (record.bonus_status in active_statuses and record.expires_at
-                and datetime.now(timezone.utc) > record.expires_at):
+        _expires = record.expires_at
+        if _expires and _expires.tzinfo is None:
+            _expires = _expires.replace(tzinfo=timezone.utc)
+        if (record.bonus_status in active_statuses and _expires
+                and datetime.now(timezone.utc) > _expires):
             record.bonus_status = "completed"
             record.updated_at = datetime.now(timezone.utc)
 
@@ -186,7 +189,10 @@ class ProfileRepo:
             return self.get_bonus_status(profile_id, provider_id)
 
         # Check if bonus has expired
-        if record.expires_at and datetime.now(timezone.utc) > record.expires_at:
+        _rec_expires = record.expires_at
+        if _rec_expires and _rec_expires.tzinfo is None:
+            _rec_expires = _rec_expires.replace(tzinfo=timezone.utc)
+        if _rec_expires and datetime.now(timezone.utc) > _rec_expires:
             record.bonus_status = "completed"
             record.updated_at = datetime.now(timezone.utc)
             return self.get_bonus_status(profile_id, provider_id)
@@ -465,7 +471,10 @@ class ProfileRepo:
         days_remaining = 0.0
         required_weekly_wagering = 0.0
         if record.expires_at:
-            days_remaining = max(0, (record.expires_at - datetime.now(timezone.utc)).total_seconds() / 86400)
+            expires_at = record.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            days_remaining = max(0, (expires_at - datetime.now(timezone.utc)).total_seconds() / 86400)
             weeks_remaining = days_remaining / 7
             required_weekly_wagering = remaining / weeks_remaining if weeks_remaining > 0 else remaining
 
@@ -483,7 +492,10 @@ class ProfileRepo:
         est_weeks = None
 
         if recent_bets:
-            days_span = max(1, (datetime.now(timezone.utc) - min(b.placed_at for b in recent_bets)).days)
+            earliest = min(b.placed_at for b in recent_bets)
+            if earliest.tzinfo is None:
+                earliest = earliest.replace(tzinfo=timezone.utc)
+            days_span = max(1, (datetime.now(timezone.utc) - earliest).days)
             bets_per_week = len(recent_bets) / (days_span / 7) if days_span > 0 else 0
             avg_stake = sum(b.stake for b in recent_bets) / len(recent_bets)
             weekly_wagering = bets_per_week * avg_stake
@@ -501,7 +513,10 @@ class ProfileRepo:
         bankroll = self.get_total_bankroll(profile_id)
 
         if total_bets:
-            total_days_span = max(1, (datetime.now(timezone.utc) - min(b.placed_at for b in total_bets)).days)
+            total_earliest = min(b.placed_at for b in total_bets)
+            if total_earliest.tzinfo is None:
+                total_earliest = total_earliest.replace(tzinfo=timezone.utc)
+            total_days_span = max(1, (datetime.now(timezone.utc) - total_earliest).days)
             total_bets_per_week = len(total_bets) / (total_days_span / 7) if total_days_span > 0 else 0
             total_avg_stake = sum(b.stake for b in total_bets) / len(total_bets)
             total_weekly_wagering = total_bets_per_week * total_avg_stake

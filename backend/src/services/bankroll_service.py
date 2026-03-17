@@ -273,18 +273,24 @@ class BankrollService:
         active_statuses = ("in_progress", "trigger_needed")
 
         bonus_progress = {}
+        now = datetime.now(timezone.utc)
         for bonus in bonuses:
             provider_min_odds = bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS
 
+            # Ensure expires_at is timezone-aware for comparison
+            expires_at = bonus.expires_at
+            if expires_at and expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
             # Auto-expire active bonuses past deadline
-            if (bonus.bonus_status in active_statuses and bonus.expires_at
-                    and datetime.now(timezone.utc) > bonus.expires_at):
+            if (bonus.bonus_status in active_statuses and expires_at
+                    and now > expires_at):
                 bonus.bonus_status = "completed"
-                bonus.updated_at = datetime.now(timezone.utc)
+                bonus.updated_at = now
 
             days_remaining = None
-            if bonus.expires_at and bonus.bonus_status in active_statuses:
-                delta = bonus.expires_at - datetime.now(timezone.utc)
+            if expires_at and bonus.bonus_status in active_statuses:
+                delta = expires_at - now
                 days_remaining = max(0, delta.days)
 
             # Resolve bonus_type from DB or fallback to config
