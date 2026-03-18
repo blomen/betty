@@ -411,6 +411,14 @@ class PolymarketRetriever(Retriever):
         if " - More Markets" in title:
             return None
 
+        # Skip standalone game/map events (e.g., "Team A vs Team B (Game 1)")
+        # These are individual game winners that would overwrite the series moneyline
+        # if stored under the same canonical event. Map-level markets are handled
+        # as child_moneyline sub-markets within the main series event instead.
+        title_lower = title.lower()
+        if re.search(r'[\(\-:]\s*(?:game|map)\s*\d', title_lower):
+            return None
+
         # Parse teams from title
         home, away = self._parse_teams(title)
         if not home or not away:
@@ -911,8 +919,14 @@ class PolymarketRetriever(Retriever):
             return []
 
     def _parse_market(self, data: dict, home: str = "", away: str = "") -> Optional[dict]:
-        """Parse a single market (moneyline only - skips totals/spreads)."""
+        """Parse a single market (series/match moneyline only - skips totals/spreads/maps)."""
         try:
+            # Skip child_moneyline markets — these are map/game-level winners
+            # handled exclusively by _parse_map_winner_market()
+            smt = data.get("sportsMarketType", "")
+            if smt == "child_moneyline":
+                return None
+
             # Skip non-moneyline markets based on question text
             question = data.get("question", "")
             question_lower = question.lower()
