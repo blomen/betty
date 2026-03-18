@@ -35,12 +35,15 @@ class BetRepo:
         self,
         profile_id: int,
         status: str | None = None,
+        exclude_bonus: bool = False,
         limit: int = 50,
     ) -> list[Bet]:
         """List bets for a profile with optional status filter."""
         query = self.db.query(Bet).filter(Bet.profile_id == profile_id)
         if status:
             query = query.filter(Bet.result == status)
+        if exclude_bonus:
+            query = query.filter(Bet.is_bonus != True)
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     def create(self, **kwargs) -> Bet:

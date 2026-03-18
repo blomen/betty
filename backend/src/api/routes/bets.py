@@ -153,6 +153,7 @@ def _get_service(db: Session = Depends(get_db)) -> BetService:
 @router.get("")
 async def list_bets(
     status: Optional[str] = None,
+    exclude_bonus: bool = False,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
@@ -161,7 +162,7 @@ async def list_bets(
     bet_repo = BetRepo(db)
     profile = profile_repo.get_active()
 
-    bets = bet_repo.list_for_profile(profile.id, status=status, limit=limit)
+    bets = bet_repo.list_for_profile(profile.id, status=status, exclude_bonus=exclude_bonus, limit=limit)
     site_urls = load_provider_site_urls()
 
     # Pre-fetch events for team name resolution
@@ -281,6 +282,8 @@ async def list_bets(
             "risk_score": b.risk_score_at_bet,
             "clv_pct": b.clv_pct,
             "closing_odds": b.closing_odds,
+            "provider_closing_odds": b.provider_closing_odds,
+            "provider_clv_pct": b.provider_clv_pct,
             "edge_pct": edge_pct,
             "fair_odds": fair_odds,
             "selection_probability": sel_prob,
