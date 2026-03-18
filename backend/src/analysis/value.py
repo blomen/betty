@@ -17,6 +17,7 @@ from typing import Optional
 import logging
 
 from .devig import get_fair_odds_for_outcome
+from src.constants import POLYMARKET_FEE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,15 @@ class ValueBet:
         return (self.provider_odds * self.fair_probability) - 1
 
 
+def polymarket_effective_odds(odds: float) -> float:
+    """Adjust decimal odds for Polymarket's 2% fee on net profit.
+
+    Fee is charged on (payout - cost), so:
+        net_payout = odds - fee * (odds - 1) = (1 - fee) * odds + fee
+    """
+    return (1 - POLYMARKET_FEE_RATE) * odds + POLYMARKET_FEE_RATE
+
+
 def find_value(
     event_id: str,
     market: str,
@@ -94,9 +104,12 @@ def find_value(
     """
     if fair_odds <= 1 or provider_odds <= 1:
         return None
-    
-    # Calculate edge
-    edge = (provider_odds / fair_odds) - 1
+
+    # For Polymarket, use effective odds after 2% fee on profit
+    effective_odds = polymarket_effective_odds(provider_odds) if provider == "polymarket" else provider_odds
+
+    # Calculate edge using effective (post-fee) odds
+    edge = (effective_odds / fair_odds) - 1
     edge_pct = edge * 100
     
     if edge_pct < min_edge_pct:

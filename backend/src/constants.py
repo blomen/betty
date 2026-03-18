@@ -22,6 +22,10 @@ ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS | frozenset({
 # Sharp/reference providers for fair odds
 SHARP_PROVIDERS = frozenset({'pinnacle'})
 
+# Polymarket fee: 2% on net profit (winnings minus cost).
+# Effective odds after fee = (1 - fee) * odds + fee
+POLYMARKET_FEE_RATE = 0.02
+
 # Providers that store the extended market set (enrichment + map markets).
 # Pinnacle: sharp baseline for all markets.
 # Polymarket: needs map markets for value comparison vs Pinnacle.

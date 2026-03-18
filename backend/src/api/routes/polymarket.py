@@ -12,6 +12,7 @@ from sqlalchemy import func
 from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
 from ...analysis.devig import devig_multiplicative
+from ...analysis.value import polymarket_effective_odds
 from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
 from ...matching.normalizer import normalize_team_name, generate_canonical_id
 from ...matching.matcher import get_team_match_score
@@ -131,7 +132,8 @@ async def get_polymarket_value(
         # Add stake recommendation
         if stake_calculator and profile:
             try:
-                edge_raw = (poly_odds_val / fair_odds_val - 1) if fair_odds_val > 1 else 0
+                effective = polymarket_effective_odds(poly_odds_val)
+                edge_raw = (effective / fair_odds_val - 1) if fair_odds_val > 1 else 0
                 min_odds = 0.0 if (not bonus_status or bonus_status.get("is_cleared", True)) else bonus_status.get("min_odds", BONUS_MIN_ODDS)
 
                 stake_rec = stake_calculator.calculate(
@@ -344,12 +346,13 @@ async def get_polymarket_matched(
 
         edges.sort(key=lambda x: x["edge_pct"], reverse=True)
 
-        # Calculate Polymarket edges vs Pinnacle fair odds
+        # Calculate Polymarket edges vs Pinnacle fair odds (post-fee)
         polymarket_edges = []
         for outcome, poly_odd in poly_odds_lookup.items():
             pinnacle_odd = pinnacle_odds_lookup.get(outcome)
             if pinnacle_odd and pinnacle_odd > 0 and poly_odd > 0:
-                edge_pct = (poly_odd / pinnacle_odd - 1) * 100
+                effective = polymarket_effective_odds(poly_odd)
+                edge_pct = (effective / pinnacle_odd - 1) * 100
                 polymarket_edges.append({
                     "outcome": outcome,
                     "polymarket_odds": poly_odd,
@@ -791,10 +794,11 @@ async def get_mybets(
         profit_usdc = round(b.profit / usdc_rate, 2) if usdc_rate > 0 else b.profit
         payout_usdc = round(b.payout / usdc_rate, 2) if usdc_rate > 0 else b.payout
 
-        # Compute edge from fair odds at placement
+        # Compute edge from fair odds at placement (post-fee)
         edge_pct = None
         if b.fair_odds_at_placement and b.fair_odds_at_placement > 1 and b.odds > 0:
-            edge_pct = round((b.odds / b.fair_odds_at_placement - 1) * 100, 2)
+            effective = polymarket_effective_odds(b.odds)
+            edge_pct = round((effective / b.fair_odds_at_placement - 1) * 100, 2)
 
         bet_items.append({
             "id": b.id,
@@ -846,11 +850,12 @@ async def get_mybets(
     roi_pct = round(total_profit / total_staked * 100, 2) if total_staked > 0 else 0
     win_rate = round(wins / len(settled) * 100, 1) if settled else 0
 
-    # Average edge at placement (computed from fair_odds_at_placement)
+    # Average edge at placement (computed from fair_odds_at_placement, post-fee)
     edges = []
     for b in all_bets:
         if b.fair_odds_at_placement and b.fair_odds_at_placement > 1 and b.odds > 0:
-            edges.append((b.odds / b.fair_odds_at_placement - 1) * 100)
+            effective = polymarket_effective_odds(b.odds)
+            edges.append((effective / b.fair_odds_at_placement - 1) * 100)
     avg_edge = round(sum(edges) / len(edges), 2) if edges else 0
 
     # Average provider CLV (same-market, Polymarket closing price)
