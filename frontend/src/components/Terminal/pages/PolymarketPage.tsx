@@ -14,12 +14,12 @@ import type { PolymarketValueBet, PolymarketRewardMarket, Bet, Provider } from '
 
 const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
 
-/** Count Polymarket bets that need manual settlement (auto-settle couldn't handle them). */
+/** Count Polymarket bets that need manual settlement. */
 function countManualSettleBets(bets: Bet[]): number {
   const now = Date.now();
 
   return bets.filter(polyBetFilter).filter(b => {
-    // Only count bets on finished events that auto-settle couldn't determine
+    // Only count bets on finished events that need manual settlement
     const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
     if (!startMs || startMs > now) return false;  // Upcoming — not settleable yet
 
@@ -28,7 +28,7 @@ function countManualSettleBets(bets: Bet[]): number {
 
     if (!isFinished) return false;  // Still playing — not settleable yet
 
-    // If auto-settle can determine result, it will handle it — don't count
+    // If predicted result exists, it's pre-filled in the settle UI — don't count as needing attention
     if (b.predicted_result) return false;
 
     return true;  // Finished but no predicted result → needs manual settle
@@ -253,16 +253,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   // Rewards state
   const [rewardsSearchInput, setRewardsSearchInput] = useState('');
   const rewardsSearch = useDeferredValue(rewardsSearchInput);
-
-  // ──────────────────── Auto-settle on mount ────────────────────
-  const autoSettleRan = useRef(false);
-  useEffect(() => {
-    if (autoSettleRan.current) return;
-    autoSettleRan.current = true;
-    api.autoSettleBets().then(res => {
-      if (res.settled > 0) console.info(`[Poly] Auto-settled ${res.settled} bets`);
-    }).catch(() => {});
-  }, []);
 
   // ──────────────────── Value Bets ────────────────────
 
@@ -542,7 +532,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* ═══════════════ MY BETS TAB ═══════════════ */}
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" autoSettle />
+        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" />
       )}
 
       {/* ═══════════════ MANUAL TAB ═══════════════ */}

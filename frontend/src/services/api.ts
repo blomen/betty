@@ -550,17 +550,6 @@ export const api = {
     }, 2, 30000);
   },
 
-  async autoSettleBets(): Promise<{
-    success: boolean;
-    polymarket_scores?: { matched: number; updated: number; skipped: number };
-    checked: number;
-    settled: number;
-    skipped: number;
-    results: Array<{ bet_id: number; result: string; payout: number; score: string }>;
-  }> {
-    return fetchJson('/bets/auto-settle', { method: 'POST' });
-  },
-
   async editBet(
     betId: number,
     data: { stake?: number; odds?: number; result?: string; payout?: number }
@@ -892,8 +881,8 @@ export const api = {
 
   // ============ Market Data / Scanner ============
 
-  async getCandles(symbol = 'NQ', interval = '5m', date?: string): Promise<import('@/types/market').CandlesResponse> {
-    const params = new URLSearchParams({ symbol, interval });
+  async getCandles(symbol = 'NQ', interval = '5m', date?: string, days = 5): Promise<import('@/types/market').CandlesResponse> {
+    const params = new URLSearchParams({ symbol, interval, days: String(days) });
     if (date) params.set('date', date);
     return fetchJson(`/trading/market/candles?${params}`);
   },
@@ -967,6 +956,10 @@ export const api = {
 
   async getCotData(limit = 4): Promise<any[]> {
     return fetchJson(`/trading/market/cot?limit=${limit}`);
+  },
+
+  async getFootprint(period = 300, limit = 20): Promise<any> {
+    return fetchJson(`/trading/market/footprint?period=${period}&limit=${limit}`);
   },
 
   async getTopOfBook(): Promise<{ bid_price: number; bid_size: number; ask_price: number; ask_size: number; spread: number; ts: string | null }> {

@@ -397,7 +397,7 @@ class ExtractionScheduler:
         # Cleanup tier — purge stale events/odds every 6 hours
         await self.start_cleanup_tier()
 
-        # Settlement tier — auto-settle bets from Pinnacle live scores every 2 min
+        # CLV snapshot tier — snapshot closing odds every 2 min
         await self.start_settlement_tier()
 
         # Trading daily/weekly auto-reset (checks every 60s, acts at market boundaries)
@@ -895,13 +895,12 @@ class ExtractionScheduler:
 
         return await loop.run_in_executor(None, _do_cleanup)
 
-    # ── Settlement tier (auto-settle bets from Pinnacle live scores) ───
+    # ── CLV snapshot tier (closing odds for started events) ───
 
     async def start_settlement_tier(self, interval_seconds: int = 120):
-        """Start periodic auto-settlement (every 2 minutes).
+        """Start periodic CLV snapshots (every 2 minutes).
 
-        Settles pending bets on events that Pinnacle marked as finished.
-        Also snapshots closing odds for started events.
+        Snapshots closing odds for started events.
         Runs independently — no pipeline lock needed, just a DB session.
         """
         if self._settlement_task and not self._settlement_task.done():
@@ -914,7 +913,7 @@ class ExtractionScheduler:
         )
 
     async def _settlement_loop(self, interval_seconds: int):
-        """Recurring loop for auto-settlement."""
+        """Recurring loop for CLV snapshots."""
         # Wait before first run — let extraction populate data first
         try:
             await asyncio.sleep(120)  # 2 min initial delay
@@ -923,9 +922,6 @@ class ExtractionScheduler:
 
         while True:
             try:
-                # CLV snapshots only — Polymarket auto-settle disabled
-                # (balance drifts from reality due to fee/resolution mismatches;
-                #  user settles bets manually via the UI)
                 self._run_settlement()
             except asyncio.CancelledError:
                 logger.info("[Scheduler:settlement] Loop cancelled")
@@ -939,13 +935,12 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Snapshot closing odds for CLV + auto-settle Polymarket bets."""
+        """Snapshot closing odds for CLV tracking."""
         from src.services.bet_service import BetService
         from src.db.models import get_session
 
         session = get_session()
         try:
-            # CLV snapshots (Pinnacle auto-settle still disabled — scores unreliable)
             bet_service = BetService(session)
             clv_stats = bet_service.snapshot_closing_odds()
             session.commit()

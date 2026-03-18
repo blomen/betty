@@ -388,20 +388,6 @@ async def close_started_bets(service: BetService = Depends(_get_service)):
     return {"success": True, **result}
 
 
-@router.post("/auto-settle")
-async def auto_settle_bets(db: Session = Depends(get_db)):
-    """Disabled — Polymarket bets must be settled manually.
-
-    Auto-settlement caused balance drift because it credited theoretical payouts
-    (stake * odds) without accounting for Polymarket fees or resolution timing.
-    Use POST /bets/{id}/settle for manual settlement instead.
-    """
-    return {
-        "success": False,
-        "error": "Auto-settlement disabled. Settle Polymarket bets manually via POST /bets/{id}/settle.",
-    }
-
-
 @router.post("/batch")
 async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_writer)):
     """

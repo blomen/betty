@@ -1189,6 +1189,26 @@ class MarketTrade(Base):
     )
 
 
+class MarketCandle(Base):
+    """Persisted OHLCV candle bars — backfilled from Databento + appended live."""
+    __tablename__ = "market_candles"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    interval = Column(String, nullable=False)   # "1m" | "5m" | "15m"
+    ts = Column(DateTime, nullable=False)        # bucket-start UTC
+    o = Column(Float, nullable=False)
+    h = Column(Float, nullable=False)
+    l = Column(Float, nullable=False)
+    c = Column(Float, nullable=False)
+    v = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "interval", "ts", name="uq_market_candle"),
+        Index("ix_market_candles_symbol_interval_ts", "symbol", "interval", "ts"),
+    )
+
+
 class MarketLevel(Base):
     """Computed structural level for a session."""
     __tablename__ = "market_levels"
@@ -1417,7 +1437,7 @@ def _run_migrations(engine):
                 except sqlite3.OperationalError:
                     pass
 
-        # Add point + settlement_source to bets (for auto-settlement)
+        # Add point + settlement_source to bets
         for col, col_type in [("point", "FLOAT"), ("settlement_source", "TEXT")]:
             try:
                 cursor.execute(f"SELECT {col} FROM bets LIMIT 1")
