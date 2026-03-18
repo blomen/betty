@@ -28,6 +28,7 @@ class MonitoredLevel:
     status: LevelStatus = LevelStatus.WATCHING
     touched_at: float = 0.0
     cluster: list[str] = field(default_factory=list)
+    approach_price: float | None = None  # price when WATCHING → APPROACHING
 
     def distance_ticks(self, price: float) -> float:
         return (price - self.price) / TICK_SIZE
@@ -55,6 +56,11 @@ class LevelMonitor:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._db_session_factory = None
         self._level_context_lock: asyncio.Lock | None = None
+        try:
+            from src.ml.level_touch.outcomes import OutcomeTracker
+            self._outcome_tracker = OutcomeTracker()
+        except Exception:
+            self._outcome_tracker = None
 
     def load_levels(self, expanded_session: dict) -> None:
         """Load levels from an ExpandedSession dict. Called on compute_session()."""
@@ -93,6 +99,8 @@ class LevelMonitor:
         self._level_context_lock = asyncio.Lock()
         self._loop = loop
         self._db_session_factory = db_session_factory
+        if self._outcome_tracker is not None:
+            self._outcome_tracker.set_context(loop, db_session_factory)
 
     @staticmethod
     def _categorize(name: str) -> str:
@@ -138,6 +146,7 @@ class LevelMonitor:
             elif dist <= self.APPROACHING_TICKS:
                 if old_status == LevelStatus.WATCHING:
                     level.status = LevelStatus.APPROACHING
+                    level.approach_price = price
                     self._on_level_approaching(level, price, dist)
 
             elif old_status in (LevelStatus.AT_LEVEL, LevelStatus.APPROACHING):
@@ -277,6 +286,9 @@ class LevelMonitor:
                 lambda: asyncio.ensure_future(self._emit_level_context(level.name, level.price))
             )
 
+        # ML feature extraction + outcome tracking
+        self._handle_ml_touch(level, price, snapshot)
+
     async def _emit_level_context(self, level_name: str, level_price: float) -> None:
         """Fetch ML predictions and macro data, emit as follow-up event.
 
@@ -322,6 +334,136 @@ class LevelMonitor:
                 })
             except Exception as e:
                 logger.warning("Failed to emit level_context for %s: %s", level_name, e)
+
+    def _get_approach_direction(self, level: MonitoredLevel) -> str:
+        if level.approach_price is not None and level.approach_price < level.price:
+            return "from_below"
+        return "from_above"
+
+    def _handle_ml_touch(self, level: MonitoredLevel, price: float, orderflow_snapshot: dict) -> None:
+        """Extract ML features, optionally predict, register with outcome tracker."""
+        try:
+            from datetime import datetime
+            from src.ml.features.level_touch_features import extract_level_touch_features
+            from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features
+
+            approach_dir = self._get_approach_direction(level)
+            direction = "long" if approach_dir == "from_below" else "short"
+
+            # Get orderflow signals for the approach direction
+            of_signals = None
+            if self._candle_flow_fn:
+                from .orderflow import compute_signals
+                candles = self._candle_flow_fn()
+                if candles and len(candles) >= 3:
+                    of_signals = compute_signals(candles, direction, lookback=10)
+
+            # Compute temporal derivatives from candle data
+            temporal = {}
+            candle_patterns = {}
+            if self._candle_flow_fn:
+                candles = self._candle_flow_fn()
+                if candles:
+                    candle_dicts = []
+                    for c in candles:
+                        candle_dicts.append({
+                            "delta": getattr(c, "delta", 0),
+                            "volume": getattr(c, "volume", 0),
+                            "tick_count": getattr(c, "tick_count", 0),
+                            "spread": getattr(c, "spread", 0),
+                            "body_ratio": getattr(c, "body_ratio", 0),
+                            "stacked_imbalance_count": (
+                                len(getattr(c, "stacked_imbalances", [])) if hasattr(c, "stacked_imbalances") else 0
+                            ),
+                            "open": getattr(c, "open", 0),
+                            "close": getattr(c, "close", 0),
+                        })
+                    temporal = compute_temporal_derivatives(candle_dicts)
+                    candle_patterns = compute_candle_pattern_features(candle_dicts)
+
+            # Build feature dict
+            features = extract_level_touch_features(
+                level_type=level.name.lower().replace(" ", "_").replace("+", "").replace("-", ""),
+                level_category=level.category,
+                approach_direction=approach_dir,
+                level_confluence=len(level.cluster),
+                # Orderflow signals
+                delta=of_signals.delta if of_signals else None,
+                delta_aligned=of_signals.delta_aligned if of_signals else None,
+                delta_divergence=of_signals.delta_divergence if of_signals else None,
+                delta_unwind=of_signals.delta_unwind if of_signals else None,
+                cvd=of_signals.cvd if of_signals else None,
+                cvd_trend=of_signals.cvd_trend if of_signals else None,
+                vsa_absorption=of_signals.vsa_absorption if of_signals else None,
+                tick_vol_accelerating=of_signals.tick_vol_accelerating if of_signals else None,
+                trapped_traders=of_signals.trapped_traders if of_signals else None,
+                passive_active_ratio=of_signals.passive_active_ratio if of_signals else None,
+                big_trades_count=of_signals.big_trades_count if of_signals else None,
+                big_trades_net_delta=of_signals.big_trades_net_delta if of_signals else None,
+                stop_run_detected=of_signals.stop_run_detected if of_signals else None,
+                imbalance_ratio_max=of_signals.imbalance_ratio_max if of_signals else None,
+                stacked_imbalance_count=of_signals.stacked_imbalance_count if of_signals else None,
+                stacked_imbalance_direction=of_signals.stacked_imbalance_direction if of_signals else None,
+                # Temporal derivatives
+                **temporal,
+                # Candle patterns
+                **candle_patterns,
+            )
+
+            # Optional: Run ML prediction if model loaded
+            prediction = None
+            confidence = None
+            try:
+                from src.ml.serving.predictor import get_predictor
+                predictor = get_predictor()
+                if predictor.is_loaded("level_classifier"):
+                    pred_result = predictor.predict("level_classifier", features)
+                    if pred_result and isinstance(pred_result, dict):
+                        prediction = pred_result.get("class_name")
+                        confidence = pred_result.get("confidence")
+
+                        # Confidence gating
+                        ACTIONABLE = {"strong_reversal", "strong_continuation"}
+                        threshold = 0.50 if prediction in ACTIONABLE else 0.35
+                        surfaced = prediction if confidence and confidence > threshold else "uncertain"
+
+                        self._publish({
+                            "type": "ml_prediction",
+                            "level": level.name,
+                            "predicted": surfaced,
+                            "raw_predicted": prediction,
+                            "confidence": confidence,
+                            "probabilities": pred_result.get("probabilities", {}),
+                        })
+
+                        from src.ml.level_touch import set_last_prediction
+                        set_last_prediction({
+                            "level": level.name,
+                            "predicted": surfaced,
+                            "raw_predicted": prediction,
+                            "confidence": confidence,
+                            "probabilities": pred_result.get("probabilities", {}),
+                            "timestamp": time.time(),
+                        })
+            except Exception:
+                logger.debug("ML prediction not available", exc_info=True)
+
+            # Register with outcome tracker
+            if self._outcome_tracker is not None:
+                self._outcome_tracker.register_touch(
+                    symbol="NQ",
+                    level_name=level.name,
+                    level_type=level.name.lower().replace(" ", "_"),
+                    level_price=level.price,
+                    approach_direction=approach_dir,
+                    touch_ts=time.time(),
+                    session_date=datetime.now().strftime("%Y-%m-%d"),
+                    features=features,
+                    prediction=prediction,
+                    prediction_confidence=confidence,
+                )
+        except Exception:
+            logger.exception("ML feature extraction failed for %s", level.name)
 
     def _on_level_rejected(self, level: MonitoredLevel, price: float) -> None:
         self._publish({
