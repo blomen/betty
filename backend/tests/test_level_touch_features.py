@@ -298,3 +298,59 @@ def test_candle_pattern_group():
     assert features["consecutive_same_direction"] == 3
     assert features["highest_volume_candle_position"] == 2
     assert features["range_expansion"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Tests for compute.py — temporal derivatives and candle pattern computation
+# ---------------------------------------------------------------------------
+
+from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features
+
+
+def test_compute_temporal_derivatives_basic():
+    candles = []
+    for i in range(10):
+        candles.append({
+            "delta": 100 + i * 20,
+            "volume": 500 + i * 50,
+            "tick_count": 80 + i * 5,
+            "spread": 2.0 - i * 0.1,
+            "body_ratio": 0.5 - i * 0.02,
+            "stacked_imbalance_count": i // 3,
+        })
+    result = compute_temporal_derivatives(candles)
+    assert result["delta_slope_5m"] is not None
+    assert result["delta_slope_10m"] is not None
+    assert result["cvd_acceleration"] is not None
+    assert result["volume_roc_5m"] is not None
+    assert result["spread_compression"] is not None
+    assert result["absorption_building"] is not None
+    assert result["delta_slope_5m"] > 0  # delta increasing
+    assert result["spread_compression"] < 1.0  # spread decreasing
+
+
+def test_compute_temporal_derivatives_insufficient_candles():
+    candles = [{"delta": 100, "volume": 500, "tick_count": 80,
+                "spread": 2.0, "body_ratio": 0.5, "stacked_imbalance_count": 0}]
+    result = compute_temporal_derivatives(candles)
+    assert result["delta_slope_5m"] is None
+    assert result["cvd_acceleration"] is None
+
+
+def test_compute_candle_pattern_features():
+    candles = [
+        {"open": 100, "close": 101, "volume": 500, "spread": 1.0, "body_ratio": 0.8},
+        {"open": 101, "close": 102, "volume": 600, "spread": 1.5, "body_ratio": 0.7},
+        {"open": 102, "close": 101.5, "volume": 700, "spread": 2.0, "body_ratio": 0.05},
+    ]
+    result = compute_candle_pattern_features(candles)
+    assert result["last_3_candles_direction"] == 2  # 2 up candles
+    assert result["last_candle_is_doji"] is True  # body_ratio < 0.1
+    assert result["consecutive_same_direction"] == 1  # last is down, only 1
+    assert result["highest_volume_candle_position"] is not None
+    assert result["range_expansion"] is not None
+
+
+def test_compute_candle_pattern_empty():
+    result = compute_candle_pattern_features([])
+    assert result["last_3_candles_direction"] is None
