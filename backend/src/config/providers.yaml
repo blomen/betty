@@ -991,49 +991,49 @@ boosts:
     type: altenar
     integration: betiniase2
     primary_provider: betinia
-    shared_with: []
+    shared_with: [campobet, swiper, lodur, dbet, quickcasino]
     enabled: true
-    note: "Altenar — each brand has its own integration returning brand-specific boosts."
+    note: "Altenar primary — scrapes once, shares boosts with all Altenar brands."
 
   campobet:
     type: altenar
     integration: campose
     primary_provider: campobet
     shared_with: []
-    enabled: true
-    note: "Altenar — own integration, brand-specific boosts."
+    enabled: false
+    note: "Altenar — receives shared boosts from betinia (rate limit prevents independent scrape)."
 
   swiper:
     type: altenar
     integration: swiperse
     primary_provider: swiper
     shared_with: []
-    enabled: true
-    note: "Altenar — own integration, brand-specific boosts."
+    enabled: false
+    note: "Altenar — receives shared boosts from betinia (rate limit prevents independent scrape)."
 
   lodur:
     type: altenar
     integration: lodurse
     primary_provider: lodur
     shared_with: []
-    enabled: true
-    note: "Altenar — own integration, brand-specific boosts."
+    enabled: false
+    note: "Altenar — receives shared boosts from betinia (rate limit prevents independent scrape)."
 
   dbet:
     type: altenar
     integration: dbet
     primary_provider: dbet
     shared_with: []
-    enabled: true
-    note: "Altenar — own integration, brand-specific boosts."
+    enabled: false
+    note: "Altenar — receives shared boosts from betinia (rate limit prevents independent scrape)."
 
   quickcasino:
     type: altenar
     integration: quickcasinose
     primary_provider: quickcasino
     shared_with: []
-    enabled: true
-    note: "Altenar — own integration, brand-specific boosts."
+    enabled: false
+    note: "Altenar — receives shared boosts from betinia (rate limit prevents independent scrape)."
 
   # ═══════════════════════════════════════════════════════
   # OBG/GECKO V2 BOOST PAGES — same globalbonuses API as Betsson
