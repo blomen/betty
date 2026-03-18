@@ -54,6 +54,7 @@ class LevelMonitor:
         self._open_positions: list[dict] = []  # [{trade_id, direction, entry, stop, targets: [{name, price, hit}]}]
         self._loop: asyncio.AbstractEventLoop | None = None
         self._db_session_factory = None
+        self._level_context_lock: asyncio.Lock | None = None
 
     def load_levels(self, expanded_session: dict) -> None:
         """Load levels from an ExpandedSession dict. Called on compute_session()."""
@@ -89,6 +90,7 @@ class LevelMonitor:
         logger.info("LevelMonitor loaded %d levels", len(self._levels))
 
     def set_async_context(self, loop, db_session_factory) -> None:
+        self._level_context_lock = asyncio.Lock()
         self._loop = loop
         self._db_session_factory = db_session_factory
 
@@ -276,13 +278,25 @@ class LevelMonitor:
             )
 
     async def _emit_level_context(self, level_name: str, level_price: float) -> None:
-        """Fetch ML predictions and macro data, emit as follow-up event."""
-        try:
-            from ..services.market_service import MarketService
-            db = self._db_session_factory()
+        """Fetch ML predictions and macro data, emit as follow-up event.
+
+        Uses a lock to prevent concurrent calls from exhausting the DB pool —
+        get_indicators() and fetch_macro_snapshot() hold sessions for seconds.
+        """
+        if self._level_context_lock and self._level_context_lock.locked():
+            return  # Already running, skip duplicate
+        async with self._level_context_lock:
             try:
-                svc = MarketService(db)
-                indicators = await svc.get_indicators()
+                from ..services.market_service import MarketService
+                # Get indicators (holds DB session briefly, then releases)
+                db = self._db_session_factory()
+                try:
+                    svc = MarketService(db)
+                    indicators = await svc.get_indicators()
+                finally:
+                    db.close()
+
+                # Macro fetch is pure HTTP — no DB session needed
                 macro_data = {}
                 try:
                     from ..market_data.macro_provider import fetch_macro_snapshot
@@ -295,6 +309,7 @@ class LevelMonitor:
                     }
                 except Exception:
                     pass
+
                 self._publish({
                     "type": "level_context",
                     "level": level_name,
@@ -305,10 +320,8 @@ class LevelMonitor:
                     },
                     "macro": macro_data,
                 })
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning("Failed to emit level_context for %s: %s", level_name, e)
+            except Exception as e:
+                logger.warning("Failed to emit level_context for %s: %s", level_name, e)
 
     def _on_level_rejected(self, level: MonitoredLevel, price: float) -> None:
         self._publish({
