@@ -1,16 +1,13 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
-// Eager: core pages always in main bundle
-import {
-  ValuePage,
-  DutchPage,
-  ReversePage,
-  PolymarketPage,
-  BankrollPage,
-  WelcomePage,
-} from './pages';
-// Lazy: secondary/heavy pages split into separate chunks
+// All pages lazy-loaded for fast startup
+const ValuePage = lazy(() => import('./pages/ValuePage').then(m => ({ default: m.ValuePage })));
+const DutchPage = lazy(() => import('./pages/DutchPage').then(m => ({ default: m.DutchPage })));
+const ReversePage = lazy(() => import('./pages/ReversePage').then(m => ({ default: m.ReversePage })));
+const PolymarketPage = lazy(() => import('./pages/PolymarketPage').then(m => ({ default: m.PolymarketPage })));
+const BankrollPage = lazy(() => import('./pages/BankrollPage').then(m => ({ default: m.BankrollPage })));
+const WelcomePage = lazy(() => import('./pages/WelcomePage').then(m => ({ default: m.WelcomePage })));
 const BetsPage = lazy(() => import('./pages/BetsPage').then(m => ({ default: m.BetsPage })));
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
@@ -122,7 +119,11 @@ export function TerminalWindow() {
 
   // Welcome page — full screen, no sidebar/tabs
   if (showWelcome) {
-    return <WelcomePage onProfileSelected={handleProfileSelected} />;
+    return (
+      <Suspense fallback={<div className="h-full bg-bg" />}>
+        <WelcomePage onProfileSelected={handleProfileSelected} />
+      </Suspense>
+    );
   }
 
   const tabs = TABS_BY_CATEGORY[activeCategory] || [];
