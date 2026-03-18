@@ -66,6 +66,11 @@ MODEL_CONFIGS = {
         "min_samples": 20, "domain": "extraction",
         "source_type": "pinnacle_coverage", "task": "analysis",
     },
+    # M8: Level touch classifier (uses own tables, not ml_features)
+    "level_classifier": {
+        "min_samples": 300, "domain": "trading",
+        "source_type": "level_touch", "task": "multiclass",
+    },
 }
 
 MODELS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "models"
@@ -79,20 +84,27 @@ class TrainingOrchestrator:
         from src.ml.feature_store import get_training_data
         ready = {}
         for name, config in self.model_configs.items():
-            data = get_training_data(session, config["domain"], config["source_type"])
-            ready[name] = len(data) >= config["min_samples"]
+            if config.get("source_type") == "level_touch":
+                count = _count_level_touch_rows(session)
+                ready[name] = count >= config["min_samples"]
+            else:
+                data = get_training_data(session, config["domain"], config["source_type"])
+                ready[name] = len(data) >= config["min_samples"]
         return ready
 
     def train_model(self, session: Session, model_name: str) -> dict | None:
         config = self.model_configs.get(model_name)
         if not config:
             return None
+        trainer_fn = _get_trainer(model_name)
+        if trainer_fn is None:
+            return None
+        if config.get("source_type") == "level_touch":
+            # level_classifier loads its own data — skip ml_features threshold check
+            return trainer_fn(None, session)
         from src.ml.feature_store import get_training_data
         data = get_training_data(session, config["domain"], config["source_type"])
         if len(data) < config["min_samples"]:
-            return None
-        trainer_fn = _get_trainer(model_name)
-        if trainer_fn is None:
             return None
         return trainer_fn(data, session)
 
@@ -154,6 +166,7 @@ def _get_trainer(model_name: str):
         "provider_priority": lambda data, s: _train_provider_priority(data, s),
         "timeout_tuner": lambda data, s: _train_timeout_tuner(data, s),
         "coverage_optimizer": lambda data, s: _train_coverage_optimizer(data, s),
+        "level_classifier": lambda data, s: _train_level_classifier(s),
     }
     return trainers.get(model_name)
 
@@ -221,3 +234,36 @@ def _train_timeout_tuner(data, session):
 def _train_coverage_optimizer(data, session):
     from src.ml.optimizer.coverage import CoverageOptimizer
     return CoverageOptimizer().check_and_train(session)
+
+
+def _count_level_touch_rows(session) -> int:
+    """Count labeled level-touch rows available for training."""
+    from src.db.models import LevelTouchOutcome, LevelTouchFeature
+    return (
+        session.query(LevelTouchOutcome)
+        .join(LevelTouchFeature, LevelTouchFeature.touch_outcome_id == LevelTouchOutcome.id)
+        .filter(LevelTouchOutcome.outcome.isnot(None))
+        .count()
+    )
+
+
+def _train_level_classifier(session):
+    """Train level classifier — data from level_touch tables, not ml_features."""
+    import json
+    from src.ml.models.level_classifier import LevelClassifierModel
+    from src.db.models import LevelTouchOutcome, LevelTouchFeature
+
+    rows = (
+        session.query(LevelTouchOutcome, LevelTouchFeature)
+        .join(LevelTouchFeature, LevelTouchFeature.touch_outcome_id == LevelTouchOutcome.id)
+        .filter(LevelTouchOutcome.outcome.isnot(None))
+        .order_by(LevelTouchOutcome.touch_ts)
+        .all()
+    )
+    data = []
+    for outcome, feature in rows:
+        data.append({
+            "features": json.loads(feature.features) if isinstance(feature.features, str) else feature.features,
+            "outcome": outcome.outcome,
+        })
+    return LevelClassifierModel().train(data)

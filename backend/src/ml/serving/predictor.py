@@ -79,7 +79,11 @@ class Predictor:
         model = model_data.get("model")
 
         try:
-            X = np.array([[features.get(f, 0.0) for f in feature_names]])
+            if model_name == "level_classifier":
+                from src.ml.models.level_classifier import _encode_features
+                X = _encode_features(features).reshape(1, -1)
+            else:
+                X = np.array([[features.get(f, 0.0) for f in feature_names]])
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="X does not have valid feature names")
                 if task == "calibration":
@@ -95,10 +99,19 @@ class Predictor:
                     return None
                 if task == "multiclass":
                     proba = model.predict_proba(X)[0]
-                    return {
-                        "class": int(np.argmax(proba)),
+                    best_idx = int(np.argmax(proba))
+                    result: dict = {
+                        "class": best_idx,
                         "probabilities": proba.tolist(),
                     }
+                    classes = model_data.get("classes")
+                    if classes:
+                        result["class_name"] = classes[best_idx]
+                        result["confidence"] = float(proba[best_idx])
+                        result["probabilities"] = {
+                            cls: float(p) for cls, p in zip(classes, proba)
+                        }
+                    return result
                 elif task == "classification":
                     proba = model.predict_proba(X)
                     return float(proba[0][1])
