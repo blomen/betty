@@ -26,6 +26,13 @@ When price hits a structural level (VAH, VAL, POC, VWAP bands, PDH/PDL, IB, orde
 "Reversal" = price moves back from the level in the direction it came from.
 "Continuation" = price pushes through the level in the direction of approach.
 
+**Outcome measurement formula:**
+- When approached from below: `continuation_ticks = (max_price_in_window - level_price) / tick_size`, `reversal_ticks = (level_price - min_price_in_window) / tick_size`
+- When approached from above: `continuation_ticks = (level_price - min_price_in_window) / tick_size`, `reversal_ticks = (max_price_in_window - level_price) / tick_size`
+- Dominant direction = whichever of continuation/reversal has more ticks. Tick thresholds applied to dominant direction to pick class. If both < 8 ticks → chop.
+
+**RTH boundary rule:** Touches within 30 minutes of RTH close (15:30 ET or later) are excluded from training data. The observation window must fit entirely within RTH (09:30-16:00 ET).
+
 ---
 
 ## Section 1: Data Collection Layer
@@ -35,6 +42,8 @@ When price hits a structural level (VAH, VAL, POC, VWAP bands, PDH/PDL, IB, orde
 Extends `LevelMonitor`. On each `level_touched` event:
 
 1. Records the touch: level name, price, timestamp, approach direction (from above/below)
+   - **Approach direction** is determined by comparing price at WATCHING→APPROACHING transition to the level price. If price was below the level when approaching started → `from_below`. If above → `from_above`. This requires extending `MonitoredLevel` with an `approach_price` field set at the WATCHING→APPROACHING transition.
+   - `compute_signals()` is called with `direction` mapped from approach: `from_below` → `"long"`, `from_above` → `"short"`. This makes `delta_aligned` mean "delta supports continuation through the level."
 2. Starts a 30-minute observation window (background asyncio task)
 3. After 30 min, reads candles/ticks from that window and classifies:
    - Measures max excursion through the level (continuation) and max excursion away (reversal)
@@ -81,8 +90,8 @@ level_touch_features:
 |---------|--------|-------------|
 | `level_type` | MonitoredLevel | Categorical: poc, vah, val, vwap, vwap_1sd, vwap_2sd, vwap_3sd, pdh, pdl, ib_high, ib_low, order_block, fvg, naked_poc, tokyo, london, weekly, monthly |
 | `level_category` | MonitoredLevel | band / prior / overnight / structure / session |
-| `level_strength` | VP hierarchy | Weighted strength score from `compute_vp_hierarchy()` |
-| `level_confluence` | VP hierarchy | Number of overlapping levels in cluster |
+| `level_strength` | VP hierarchy | Weighted strength score from `compute_vp_hierarchy()`. Null for backfill (requires multi-TF VP). |
+| `level_confluence` | VP hierarchy / LevelMonitor | Number of overlapping levels in cluster. Live: from MonitoredLevel.cluster. Backfill: count levels within 5 ticks. |
 | `approach_direction` | Tick data | from_above (0) or from_below (1) |
 | `distance_from_poc` | Session | Ticks between this level and current session POC |
 | `distance_from_vwap` | Session | Ticks between this level and VWAP |
@@ -147,7 +156,7 @@ Captures how signals evolved on approach, not just their value at touch.
 | `session_elapsed_pct` | Clock | % of RTH session elapsed (0-100) |
 | `minutes_since_open` | Clock | Minutes since 09:30 ET |
 | `developing_poc_direction` | levels.py | POC migrating up / down / flat |
-| `prior_touch_outcome` | DB | Outcome of last touch on this same level today |
+| `prior_touch_count` | DB | Number of times this level was touched earlier today (avoids 30-min lookahead dependency) |
 
 ### Macro Context (5 features)
 
@@ -186,12 +195,17 @@ For each date in historical range:
        - Naked POCs from prior sessions
     3. Build level set (same logic as LevelMonitor.load_levels())
     4. Walk through candles chronologically:
-       a. For each candle, check if price crossed any level
+       a. For each candle, detect level crossings:
+          - From below: `prev_close < level_price <= candle_high` → approach_direction = from_below
+          - From above: `prev_close > level_price >= candle_low` → approach_direction = from_above
+          - When multiple levels crossed in one candle, use level closest to `prev_close` as first touch
+          - Touch ordering within a single 1m candle is approximate (inherent backfill limitation)
        b. On cross → "virtual touch" event
        c. Extract features from candles available UP TO that point (no lookahead)
        d. Look ahead 30 min of candles → classify outcome
        e. Write feature row + outcome row to DB
     5. Deduplicate: same level can only be touched once per 30-min window
+    6. Exclude touches after 15:30 ET (observation window must fit within RTH)
 ```
 
 ### Backfill vs Live Feature Availability
@@ -204,7 +218,15 @@ For each date in historical range:
 | Time-to-level | Exact (tick timestamps) | Estimated from candle timestamps |
 | Book data (bid/ask) | Available | Not available |
 
-~8 features will be null for backfill data. XGBoost handles missing values natively. Each row flagged with `is_backfill: bool`.
+**Null features for backfill (~13 total):**
+- Tick-level: `big_trades_count`, `big_trades_net_delta`, `passive_active_ratio`, `imbalance_ratio_max`, `stacked_imbalance_count`, `stacked_imbalance_direction`, `tick_vol_accelerating`, `tick_rate_roc` (~8 orderflow features)
+- Temporal: `time_to_level_seconds` (no tick timestamps)
+- VP hierarchy: `level_strength` (requires multi-TF composites)
+- Macro: `vix_level`, `vix_change`, `regime_score` (~3 macro features, unless historical VIX is fetched — see below)
+
+XGBoost handles missing values natively (routes left/right at splits). Each row flagged with `is_backfill: bool`.
+
+**Optional: Historical macro data.** The backfill pipeline can optionally fetch historical VIX via yfinance per session date, reducing null macro features from 3 to 0. This adds ~1 API call per date but significantly improves macro feature coverage.
 
 ### Optional: Databento Tick Re-fetch
 
@@ -246,7 +268,7 @@ save_model()                     # backend/data/models/level_classifier.joblib
 
 **Key decisions:**
 - **Temporal split** — always train on older data, validate on newer. No random shuffle.
-- **Class weighting** — `sample_weight` to balance (chop will be overrepresented).
+- **Class weighting** — `sample_weight` to balance (chop will be overrepresented). **Fallback:** If any class has fewer than 300 samples, collapse to 3 classes (reversal / chop / continuation) for initial training. Re-expand to 5 classes once dataset grows from live collection.
 - **Hyperparameter tuning** — Optuna with 5-fold time-series cross-validation (expanding window).
 - **Feature importance** — SHAP values exported to `backend/data/models/feature_importance.json`.
 
@@ -294,7 +316,10 @@ Emit SSE: "ml_prediction" with class, confidence, probabilities, top features
 Store prediction in level_touch_features row for accuracy tracking
 ```
 
-**Confidence threshold:** Only surface predictions with confidence > 0.4. Below that, emit "uncertain".
+**Confidence threshold:** Confidence = `max(predict_proba)` across all 5 classes.
+- **Actionable classes** (strong_reversal, strong_continuation): surface only if class probability > 0.50
+- **Informational classes** (weak_reversal, weak_continuation, chop): surface if max probability > 0.35
+- Below threshold → emit "uncertain" with full probability distribution still available
 
 ### 4e. API & Frontend
 
