@@ -235,6 +235,10 @@ class Bet(Base):
     closing_odds = Column(Float, nullable=True)       # Odds at event start
     clv_pct = Column(Float, nullable=True)            # Closing line value %
 
+    # Provider-specific CLV (e.g., Polymarket closing price — true same-market CLV)
+    provider_closing_odds = Column(Float, nullable=True)  # Same-provider odds at event start
+    provider_clv_pct = Column(Float, nullable=True)       # (bet.odds / provider_closing_odds - 1) * 100
+
     __table_args__ = (
         Index('ix_bet_profile_result', 'profile_id', 'result'),
         Index('ix_bet_event_id', 'event_id'),
@@ -1519,6 +1523,17 @@ def _run_migrations(engine):
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
+
+        # Add provider CLV columns to bets (Polymarket same-market CLV)
+        for col, col_type in [("provider_closing_odds", "FLOAT"), ("provider_clv_pct", "FLOAT")]:
+            try:
+                cursor.execute(f"SELECT {col} FROM bets LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    cursor.execute(f"ALTER TABLE bets ADD COLUMN {col} {col_type}")
+                    raw.commit()
+                except sqlite3.OperationalError:
+                    pass
 
 
 # ============ ML Feature Store ============
