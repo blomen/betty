@@ -757,6 +757,7 @@ async def get_polymarket_rewards(
 @router.get("/mybets")
 async def get_mybets(
     status: Optional[str] = None,
+    exclude_bonus: bool = False,
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
@@ -771,6 +772,8 @@ async def get_mybets(
     )
     if status:
         query = query.filter(Bet.result == status)
+    if exclude_bonus:
+        query = query.filter(Bet.is_bonus != True)
 
     bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
@@ -809,6 +812,10 @@ async def get_mybets(
             "placed_at": b.placed_at.isoformat() + "Z" if b.placed_at else None,
             "edge_pct": edge_pct,
             "fair_odds": b.fair_odds_at_placement,
+            "clv_pct": b.clv_pct,
+            "closing_odds": b.closing_odds,
+            "provider_closing_odds": b.provider_closing_odds,
+            "provider_clv_pct": b.provider_clv_pct,
             "settlement_source": b.settlement_source,
             "home_team": event.home_team if event else None,
             "away_team": event.away_team if event else None,
@@ -818,11 +825,14 @@ async def get_mybets(
             "start_time": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
         })
 
-    # Aggregate stats
-    all_bets = db.query(Bet).filter(
+    # Aggregate stats (same bonus filter as the list)
+    stats_query = db.query(Bet).filter(
         Bet.profile_id == profile.id,
         Bet.provider_id == "polymarket",
-    ).all()
+    )
+    if exclude_bonus:
+        stats_query = stats_query.filter(Bet.is_bonus != True)
+    all_bets = stats_query.all()
 
     settled = [b for b in all_bets if b.result in ("won", "lost", "void")]
     wins = sum(1 for b in settled if b.result == "won")
@@ -843,6 +853,14 @@ async def get_mybets(
             edges.append((b.odds / b.fair_odds_at_placement - 1) * 100)
     avg_edge = round(sum(edges) / len(edges), 2) if edges else 0
 
+    # Average provider CLV (same-market, Polymarket closing price)
+    provider_clvs = [b.provider_clv_pct for b in all_bets if b.provider_clv_pct is not None]
+    avg_provider_clv = round(sum(provider_clvs) / len(provider_clvs), 2) if provider_clvs else None
+
+    # Average Pinnacle CLV (cross-market edge)
+    pinnacle_clvs = [b.clv_pct for b in all_bets if b.clv_pct is not None]
+    avg_pinnacle_clv = round(sum(pinnacle_clvs) / len(pinnacle_clvs), 2) if pinnacle_clvs else None
+
     return {
         "bets": bet_items,
         "count": len(bet_items),
@@ -859,5 +877,7 @@ async def get_mybets(
             "total_profit_usdc": total_profit_usdc,
             "roi_pct": roi_pct,
             "avg_edge": avg_edge,
+            "avg_provider_clv": avg_provider_clv,
+            "avg_pinnacle_clv": avg_pinnacle_clv,
         },
     }
