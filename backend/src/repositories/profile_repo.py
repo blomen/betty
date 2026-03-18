@@ -161,7 +161,8 @@ class ProfileRepo:
 
         days_remaining = None
         if record.expires_at and record.bonus_status in active_statuses:
-            delta = record.expires_at - datetime.now(timezone.utc)
+            exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
+            delta = exp - datetime.now(timezone.utc)
             days_remaining = max(0, delta.days)
 
         return {

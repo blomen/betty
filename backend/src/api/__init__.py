@@ -171,6 +171,14 @@ async def lifespan(app: FastAPI):
     if root_logger.level > logging.DEBUG:
         root_logger.setLevel(logging.DEBUG)
 
+    # Eagerly warm up singletons / heavy imports so the first API request is fast
+    from ..config.loader import load_config
+    load_config()
+    try:
+        import numpy  # noqa: F401 — imported by ml.serving.predictor on first use
+    except ImportError:
+        pass
+
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
@@ -228,24 +236,20 @@ async def lifespan(app: FastAPI):
                     db.close()
                 logger.info("COT data refreshed: %d reports", len(reports))
         except Exception as e:
-            logger.warning("COT refresh failed on startup: %s", e)
-    else:
-        logger.info("DATABENTO_API_KEY not set — live stream disabled")
+            logger.warning("COT refresh failed: %s", e)
 
-    # Auto-start market compute + scan scheduler (always-on, every 5 min)
-    from ..market_data.scheduler import MarketScanScheduler
-    market_scheduler = MarketScanScheduler(interval_minutes=5)
-    market_scheduler.start()
+        logger.info("Trading features started: Databento stream + level monitor + COT")
+    else:
+        logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
     yield  # App is running
 
-    # Graceful shutdown: stop all scheduler tiers
-    logger.info("Shutting down: stopping scheduler tiers...")
-    market_scheduler.stop()
-    scheduler.stop_all()
+    # Graceful shutdown
+    logger.info("Shutting down...")
     if _databento_stream:
         await _databento_stream.stop()
-    logger.info("Scheduler stopped.")
+    scheduler.stop_all()
+    logger.info("Shutdown complete.")
 
 
 app = FastAPI(
