@@ -303,7 +303,8 @@ class BetService:
         """
         Calculate Closing Line Value for a settled bet.
 
-        CLV = (bet_odds / current_pinnacle_odds - 1) * 100
+        Pinnacle CLV = (bet_odds / pinnacle_closing_odds - 1) * 100
+        Provider CLV = (bet_odds / provider_closing_odds - 1) * 100  (Polymarket only)
 
         Positive CLV means the bet was placed at better odds than the
         closing line — the #1 indicator of sharp betting skill.
@@ -311,92 +312,134 @@ class BetService:
         if not bet.event_id or not bet.outcome or not bet.market:
             return None
 
-        # Don't overwrite if snapshot_closing_odds already captured better data
+        # --- Pinnacle CLV (cross-market) ---
+        pinnacle_clv = None
         if bet.closing_odds is not None:
-            clv = (bet.odds / bet.closing_odds - 1) * 100
-            return round(clv, 2)
-
-        # Look up current Pinnacle odds for same event/market/outcome
-        query = self.db.query(Odds).filter(
-            Odds.event_id == bet.event_id,
-            Odds.provider_id.in_(SHARP_PROVIDERS),
-            Odds.market == bet.market,
-            Odds.outcome == bet.outcome,
-        )
-        # For spread/total, match the point to avoid comparing wrong lines
-        if bet.market in ("spread", "total") and bet.point is not None:
-            query = query.filter(Odds.point == bet.point)
-
-        pinnacle_odds = query.first()
-
-        if not pinnacle_odds or pinnacle_odds.odds <= 1.0:
-            return None
-
-        # Store closing odds for reference
-        bet.closing_odds = pinnacle_odds.odds
-
-        # CLV% = (bet_odds / closing_odds - 1) * 100
-        clv = (bet.odds / pinnacle_odds.odds - 1) * 100
-        return round(clv, 2)
-
-    def snapshot_closing_odds(self) -> dict:
-        """
-        For all pending bets on events that have already started (start_time <= now),
-        snapshot the current Pinnacle odds as closing_odds and compute CLV.
-
-        This should be called periodically (e.g., during extraction cleanup) to
-        capture CLV before the odds/events are cleaned up from the database.
-
-        Returns: {"processed": int, "updated": int}
-        """
-        now = datetime.now(timezone.utc)
-
-        # Find pending bets where closing_odds is not yet set,
-        # joined with events that have already started
-        pending_bets = (
-            self.db.query(Bet)
-            .join(Event, Event.id == Bet.event_id)
-            .filter(
-                Bet.result == "pending",
-                Bet.closing_odds.is_(None),
-                Bet.event_id.isnot(None),
-                Event.start_time.isnot(None),
-                Event.start_time <= now,
-            )
-            .all()
-        )
-
-        processed = 0
-        updated = 0
-
-        for bet in pending_bets:
-            processed += 1
-            if not bet.outcome or not bet.market:
-                continue
-
+            # snapshot_closing_odds already captured it
+            pinnacle_clv = round((bet.odds / bet.closing_odds - 1) * 100, 2)
+        else:
+            # Look up current Pinnacle odds for same event/market/outcome
             query = self.db.query(Odds).filter(
                 Odds.event_id == bet.event_id,
                 Odds.provider_id.in_(SHARP_PROVIDERS),
                 Odds.market == bet.market,
                 Odds.outcome == bet.outcome,
             )
-            # For spread/total, match the point to avoid comparing wrong lines
             if bet.market in ("spread", "total") and bet.point is not None:
                 query = query.filter(Odds.point == bet.point)
 
             pinnacle_odds = query.first()
 
-            if not pinnacle_odds or pinnacle_odds.odds <= 1.0:
+            if pinnacle_odds and pinnacle_odds.odds > 1.0:
+                bet.closing_odds = pinnacle_odds.odds
+                pinnacle_clv = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
+
+        # --- Provider CLV (same-market, Polymarket only) ---
+        if bet.provider_id == "polymarket" and bet.provider_closing_odds is None:
+            provider_query = self.db.query(Odds).filter(
+                Odds.event_id == bet.event_id,
+                Odds.provider_id == "polymarket",
+                Odds.market == bet.market,
+                Odds.outcome == bet.outcome,
+            )
+            if bet.market in ("spread", "total") and bet.point is not None:
+                provider_query = provider_query.filter(Odds.point == bet.point)
+
+            poly_odds = provider_query.first()
+
+            if poly_odds and poly_odds.odds > 1.0:
+                bet.provider_closing_odds = poly_odds.odds
+                bet.provider_clv_pct = round((bet.odds / poly_odds.odds - 1) * 100, 2)
+        elif bet.provider_closing_odds is not None and bet.provider_clv_pct is None:
+            # Snapshot captured odds but not CLV — compute now
+            bet.provider_clv_pct = round((bet.odds / bet.provider_closing_odds - 1) * 100, 2)
+
+        return pinnacle_clv
+
+    def snapshot_closing_odds(self) -> dict:
+        """
+        For all pending bets on events that have already started (start_time <= now),
+        snapshot the current Pinnacle odds as closing_odds and compute CLV.
+        For Polymarket bets, also snapshot the Polymarket closing price as
+        provider_closing_odds for true same-market CLV.
+
+        This should be called periodically (e.g., during extraction cleanup) to
+        capture CLV before the odds/events are cleaned up from the database.
+
+        Returns: {"processed": int, "updated": int, "provider_clv_updated": int}
+        """
+        now = datetime.now(timezone.utc)
+
+        # Find pending bets on started events — need either Pinnacle or provider CLV
+        pending_bets = (
+            self.db.query(Bet)
+            .join(Event, Event.id == Bet.event_id)
+            .filter(
+                Bet.result == "pending",
+                Bet.event_id.isnot(None),
+                Event.start_time.isnot(None),
+                Event.start_time <= now,
+            )
+            .filter(
+                # Need Pinnacle CLV, or provider CLV for Polymarket bets
+                (Bet.closing_odds.is_(None)) |
+                ((Bet.provider_id == "polymarket") & (Bet.provider_closing_odds.is_(None)))
+            )
+            .all()
+        )
+
+        processed = 0
+        updated = 0
+        provider_clv_updated = 0
+
+        for bet in pending_bets:
+            processed += 1
+            if not bet.outcome or not bet.market:
                 continue
 
-            bet.closing_odds = pinnacle_odds.odds
-            bet.clv_pct = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
-            updated += 1
+            # --- Pinnacle CLV (cross-market edge) ---
+            if bet.closing_odds is None:
+                query = self.db.query(Odds).filter(
+                    Odds.event_id == bet.event_id,
+                    Odds.provider_id.in_(SHARP_PROVIDERS),
+                    Odds.market == bet.market,
+                    Odds.outcome == bet.outcome,
+                )
+                if bet.market in ("spread", "total") and bet.point is not None:
+                    query = query.filter(Odds.point == bet.point)
 
-        if updated > 0:
-            logger.info(f"[BetService] Snapshot closing odds: {updated}/{processed} bets updated")
+                pinnacle_odds = query.first()
 
-        return {"processed": processed, "updated": updated}
+                if pinnacle_odds and pinnacle_odds.odds > 1.0:
+                    bet.closing_odds = pinnacle_odds.odds
+                    bet.clv_pct = round((bet.odds / pinnacle_odds.odds - 1) * 100, 2)
+                    updated += 1
+
+            # --- Provider CLV (same-market, Polymarket only) ---
+            if bet.provider_id == "polymarket" and bet.provider_closing_odds is None:
+                provider_query = self.db.query(Odds).filter(
+                    Odds.event_id == bet.event_id,
+                    Odds.provider_id == "polymarket",
+                    Odds.market == bet.market,
+                    Odds.outcome == bet.outcome,
+                )
+                if bet.market in ("spread", "total") and bet.point is not None:
+                    provider_query = provider_query.filter(Odds.point == bet.point)
+
+                poly_odds = provider_query.first()
+
+                if poly_odds and poly_odds.odds > 1.0:
+                    bet.provider_closing_odds = poly_odds.odds
+                    bet.provider_clv_pct = round((bet.odds / poly_odds.odds - 1) * 100, 2)
+                    provider_clv_updated += 1
+
+        if updated > 0 or provider_clv_updated > 0:
+            logger.info(
+                f"[BetService] Snapshot closing odds: {updated}/{processed} Pinnacle, "
+                f"{provider_clv_updated} provider CLV updated"
+            )
+
+        return {"processed": processed, "updated": updated, "provider_clv_updated": provider_clv_updated}
 
     def edit_bet(
         self,
