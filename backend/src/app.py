@@ -285,5 +285,98 @@ def value():
     show_value_bets()
 
 
+@app.command()
+def ml_backfill(
+    start: str = typer.Option("2025-01-01", help="Start date YYYY-MM-DD"),
+    end: Optional[str] = typer.Option(None, help="End date YYYY-MM-DD (default: today)"),
+    symbol: str = typer.Option("NQ", help="Symbol"),
+):
+    """Backfill level touch training data from historical candles."""
+    from src.ml.level_touch.backfill import run_backfill
+    from src.db.models import get_session_factory, init_db
+
+    init_db()
+    factory = get_session_factory()
+
+    console.print(f"[cyan]Starting backfill for {symbol} from {start} to {end or 'today'}...[/cyan]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Running backfill...", total=None)
+        total = run_backfill(
+            db_session_factory=factory,
+            start_date=start,
+            end_date=end,
+            symbol=symbol,
+        )
+        progress.update(task, description=f"Done: {total} rows written")
+
+    console.print(f"[green]Backfill complete:[/green] {total} training rows written for {symbol}")
+
+
+@app.command()
+def ml_train_level_classifier(
+    symbol: str = typer.Option("NQ", help="Symbol"),
+):
+    """Train the level touch classifier model."""
+    from src.ml.models.level_classifier import LevelClassifierModel
+    from src.db.models import LevelTouchOutcome, LevelTouchFeature, get_session, init_db
+    import json
+
+    init_db()
+    session = get_session()
+
+    console.print(f"[cyan]Loading training data for {symbol}...[/cyan]")
+
+    try:
+        # Join LevelTouchOutcome with LevelTouchFeature to get feature+outcome pairs
+        rows = (
+            session.query(LevelTouchOutcome, LevelTouchFeature)
+            .join(LevelTouchFeature, LevelTouchFeature.touch_outcome_id == LevelTouchOutcome.id)
+            .filter(
+                LevelTouchOutcome.symbol == symbol,
+                LevelTouchOutcome.outcome.isnot(None),
+            )
+            .all()
+        )
+    finally:
+        session.close()
+
+    if not rows:
+        console.print("[yellow]No training data found. Run ml-backfill first.[/yellow]")
+        return
+
+    console.print(f"[cyan]Found {len(rows)} training samples — training model...[/cyan]")
+
+    data = [
+        {
+            "features": json.loads(feat.features) if isinstance(feat.features, str) else feat.features,
+            "outcome": outcome.outcome,
+        }
+        for outcome, feat in rows
+    ]
+
+    model = LevelClassifierModel()
+    result = model.train(data)
+
+    if result is None:
+        console.print("[yellow]Training failed: insufficient data (need 300+ samples).[/yellow]")
+        return
+
+    table = Table(title="Level Classifier Training Result")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Training samples", str(result["training_data_count"]))
+    table.add_row("Validation score", f"{result['validation_score']:.4f}")
+    table.add_row("Baseline (random)", f"{result['baseline_metric']:.4f}")
+    table.add_row("Model saved to", result["file_path"])
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
