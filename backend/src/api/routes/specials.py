@@ -17,6 +17,7 @@ from ...paths import get_bundle_dir
 from ..deps import get_db
 from ...db.models import SpecialOdds
 from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
+from ...analysis.llm_enrichment import get_llm_health
 
 # Ensure scripts/ package is importable (lives in bundle root / backend/)
 _backend_root = str(get_bundle_dir())
@@ -206,6 +207,7 @@ async def get_specials(
         "matched_count": matched_count,
         "llm_count": llm_count,
         "scraped_at": scraped_at,
+        "llm_health": get_llm_health(),
         "filters": {
             "sports": sports,
             "providers": providers,

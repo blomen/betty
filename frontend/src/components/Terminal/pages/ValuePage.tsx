@@ -125,7 +125,6 @@ const OpportunityRow = memo(function OpportunityRow({
   const isPending = pendingBet?.groupKey === group.key;
 
   const getDotClass = (opp: any) => {
-    if (opp.is_daily_capped) return 'bg-error';
     if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
     if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
     return 'bg-muted/40';
@@ -171,7 +170,7 @@ const OpportunityRow = memo(function OpportunityRow({
         </td>
         <td className="text-right text-sm min-w-0">
           <span className="inline-flex items-center gap-1.5 justify-end">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${opps.every((o: any) => o.is_daily_capped) ? 'bg-error' : (rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-error'}`} />
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-muted/40'}`} />
             {providerCount <= 3 ? (
               <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
             ) : (
@@ -271,7 +270,7 @@ const OpportunityRow = memo(function OpportunityRow({
                       <span className="truncate">
                         <ProviderName name={selOpp.provider1} />
                         {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                        {(selOpp as any).is_daily_capped ? ' [CAP]' : selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
                       </span>
                       <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
@@ -283,8 +282,7 @@ const OpportunityRow = memo(function OpportunityRow({
                         {opps.map((opp, i) => {
                           const oppStake = localStakeOverride ?? opp.final_stake;
                           const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
-                          const tag = (opp as any).is_daily_capped ? ' [CAP]'
-                            : opp.bonus_status === 'trigger_needed' ? ' [TRG]'
+                          const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                             : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                             : opp.skip_reason ? ` (${opp.skip_reason})`
                             : '';
@@ -770,6 +768,30 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
         </div>
       )}
+
+      {/* LLM enrichment health warning */}
+      {(() => {
+        const h = specialsData?.llm_health;
+        if (!h || h.status === 'ok') return null;
+        const isError = h.status === 'error';
+        const msgs: string[] = [];
+        if (h.anthropic_status === 'usage_limit') msgs.push('Anthropic API usage limit reached');
+        else if (h.anthropic_status === 'auth_error') msgs.push('Anthropic API key invalid');
+        else if (h.anthropic_status === 'rate_limited') msgs.push('Anthropic API rate limited');
+        else if (h.anthropic_status === 'missing_key') msgs.push('ANTHROPIC_API_KEY not set');
+        if (msgs.length === 0 && h.last_error) msgs.push(h.last_error);
+        if (msgs.length === 0 && isError) msgs.push('LLM enrichment failed');
+        const borderCls = isError ? 'border-error/30 bg-error/10' : 'border-amber-500/30 bg-amber-500/10';
+        const textCls = isError ? 'text-error' : 'text-amber-400';
+        const iconCls = isError ? 'text-error' : 'text-amber-400';
+        return (
+          <div className={`px-3 py-1.5 ${borderCls} border text-xs flex items-center gap-2`}>
+            <span className={`font-bold ${iconCls}`}>!</span>
+            <span className={textCls}>FAIR/PROB/STAKE columns unavailable — {msgs.join(', ')}</span>
+            {h.last_run_at && <span className="text-muted ml-auto">Last attempt: {new Date(h.last_run_at).toLocaleString()}</span>}
+          </div>
+        );
+      })()}
 
       {sortedBoosts.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">

@@ -1,11 +1,11 @@
 """
 LLM-based probability estimation for odds boosts.
 
-Uses Claude Haiku + Brave Search to research player stats, team form,
-and historical data to estimate true probabilities for boosted bets.
+Uses Claude Haiku to estimate true probabilities for boosted bets
+based on its training knowledge of sports statistics and betting markets.
 
 Called after the simple boost-edge enrichment (ev_enrichment.py) as a
-separate async pass. Skipped gracefully if API keys are not configured.
+separate async pass. Skipped gracefully if ANTHROPIC_API_KEY is not set.
 
 LLM results are persisted in the `llm_boost_cache` table so each boost
 is only researched once, surviving backend restarts and specials purges.
@@ -16,7 +16,6 @@ import hashlib
 import logging
 import os
 import re
-import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -29,16 +28,32 @@ logger = logging.getLogger(__name__)
 
 LLM_MODEL = "claude-haiku-4-5-20251001"
 LLM_MAX_TOKENS = 1024
-BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 MAX_CONCURRENT_LLM = 10
 MAX_BOOSTS_PER_RUN = 500
-BRAVE_RATE_LIMIT_DELAY = 1.1  # seconds between Brave requests (free: 1 req/sec)
 
 
-# ── In-memory rate-limit state ────────────────────────────────────────
+# ── LLM health status (surfaced to frontend) ─────────────────────────
 
-_brave_last_call: float = 0.0  # timestamp of last Brave API call
-_brave_lock: asyncio.Lock | None = None  # lazy-init per event loop
+_llm_health: dict = {
+    "status": "unknown",          # ok | error | skipped
+    "anthropic_status": None,     # ok | usage_limit | auth_error | rate_limited | missing_key | error
+    "last_error": None,           # human-readable error message
+    "last_success_at": None,      # ISO timestamp of last successful enrichment
+    "last_run_at": None,          # ISO timestamp of last run attempt
+    "enriched_count": 0,          # boosts enriched in last run
+    "carried_count": 0,           # boosts carried from cache in last run
+    "candidate_count": 0,         # boosts that needed enrichment in last run
+}
+
+
+def get_llm_health() -> dict:
+    """Return current LLM enrichment health status for API consumers."""
+    return dict(_llm_health)
+
+
+def _update_health(**kwargs) -> None:
+    """Update LLM health status fields."""
+    _llm_health.update(kwargs)
 
 
 def _cache_key(title: str, boosted_odds: float, event: str = "") -> str:
@@ -155,74 +170,16 @@ def _is_llm_candidate(special: dict) -> bool:
     return bool(special.get("boosted_odds"))
 
 
-# ── Brave Search ───────────────────────────────────────────────────────
-
-async def _brave_search(query: str, client: httpx.AsyncClient) -> str:
-    """Run a Brave Search query, return top 5 result snippets as text."""
-    global _brave_last_call, _brave_lock
-    api_key = os.environ.get("BRAVE_API_KEY")
-    if not api_key:
-        return ""
-    if _brave_lock is None:
-        _brave_lock = asyncio.Lock()
-    try:
-        # Rate limit: 1 request/sec on free plan
-        async with _brave_lock:
-            elapsed = time.time() - _brave_last_call
-            if elapsed < BRAVE_RATE_LIMIT_DELAY:
-                await asyncio.sleep(BRAVE_RATE_LIMIT_DELAY - elapsed)
-            _brave_last_call = time.time()
-        response = await client.get(
-            BRAVE_SEARCH_ENDPOINT,
-            headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-            params={"q": query, "count": 5, "freshness": "pw"},
-            timeout=10.0,
-        )
-        if response.status_code != 200:
-            logger.debug(f"Brave search failed ({response.status_code}) for: {query[:80]}")
-            return ""
-        data = response.json()
-        results = data.get("web", {}).get("results", [])
-        snippets = []
-        for r in results[:5]:
-            title = r.get("title", "")
-            desc = r.get("description", "")
-            if title or desc:
-                snippets.append(f"- {title}: {desc}")
-        return "\n".join(snippets)
-    except Exception as e:
-        logger.debug(f"Brave search error: {e}")
-        return ""
-
-
-def _build_search_queries(special: dict) -> list[str]:
-    """Build 1-2 targeted search queries for a boost."""
-    title = special.get("title", "")
-    event = special.get("event", "")
-    sport = special.get("sport", "unknown")
-    league = special.get("league", "")
-
-    today = datetime.now(timezone.utc).strftime("%Y")
-    queries = []
-    if event:
-        teams = event.replace(" vs ", " ").replace(" - ", " ")
-        ctx = f"{league} " if league else f"{sport} "
-        queries.append(f"{teams} {ctx}match prediction odds {today}")
-    if title and title != event:
-        queries.append(f"{title} {sport} statistics probability")
-    return queries[:2]
-
-
 # ── LLM prompt ─────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted odds offer and search results about the event, estimate the TRUE probability of the outcome occurring. Also identify when the event takes place.
+SYSTEM_PROMPT = """You are a sports betting probability analyst. Given a boosted odds offer, estimate the TRUE probability of the outcome occurring using your knowledge. Also identify when the event takes place.
 
 RULES:
 - Base your estimate on statistics, recent form, and market context
 - Be CONSERVATIVE — overestimating probability loses money in betting. When uncertain, lean toward lower probability
 - For player props (goalscorer, assists, etc.), use base rates and player statistics
 - Express your probability as a decimal between 0.01 and 0.99
-- Determine the event start time from search results, event context, or league schedules
+- Determine the event start time from event context or league schedules
 - BOOKMAKER ANCHOR: The ORIGINAL ODDS reflect the bookmaker's probability estimate (with ~5-10% margin). Your estimate should NOT differ from the bookmaker implied probability by more than 15 percentage points. If you estimate 65% but the bookmaker implies 30%, you are almost certainly wrong — recheck your analysis
 - STAT DISAMBIGUATION: Read market labels carefully. "Shots on target" (skott på mål) ≠ "total shots" — shots on target is typically 30-40% of total shots. "Corners" ≠ "goals". Always verify you are analyzing the EXACT stat in the market title
 
@@ -267,7 +224,7 @@ Example for single:
 - H2H: 3-1 in last 4 meetings"""
 
 
-def _build_user_prompt(special: dict, search_results: str) -> str:
+def _build_user_prompt(special: dict) -> str:
     title = special.get("title", "")
     event = special.get("event", "")
     sport = special.get("sport", "")
@@ -294,11 +251,6 @@ def _build_user_prompt(special: dict, search_results: str) -> str:
         parts.append(f"ORIGINAL ODDS: {original_odds} (bookmaker implied: {100/original_odds:.0f}%)")
     if boost_pct:
         parts.append(f"BOOST PERCENTAGE: +{boost_pct:.0f}%")
-
-    if search_results:
-        parts.append(f"\nSEARCH RESULTS:\n{search_results}")
-    else:
-        parts.append("\n(No search results available — use your knowledge)")
 
     parts.append("\nEstimate the true probability and identify the event start time.")
     return "\n".join(parts)
@@ -538,26 +490,26 @@ def _parse_llm_response(text: str, boost_title: str = "") -> Optional[dict]:
 
 # ── Single-boost research ─────────────────────────────────────────────
 
+_anthropic_dead = False  # short-circuit when Anthropic API is confirmed dead
+_anthropic_error_msg: Optional[str] = None  # error message from API
+
+
 async def _research_single_boost(
     special: dict,
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
 ) -> Optional[dict]:
+    global _anthropic_dead, _anthropic_error_msg
     async with semaphore:
+        if _anthropic_dead:
+            return None
         title = special.get("title", "")[:60]
         try:
-            # Brave searches
-            queries = _build_search_queries(special)
-            search_texts = []
-            for q in queries:
-                result = await _brave_search(q, client)
-                if result:
-                    search_texts.append(result)
-            search_combined = "\n\n".join(search_texts)
-
-            # Claude Haiku call
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
+                _anthropic_dead = True
+                _update_health(anthropic_status="missing_key",
+                               last_error="ANTHROPIC_API_KEY not set")
                 return None
 
             response = await client.post(
@@ -571,15 +523,41 @@ async def _research_single_boost(
                     "model": LLM_MODEL,
                     "max_tokens": LLM_MAX_TOKENS,
                     "system": SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": _build_user_prompt(special, search_combined)}],
+                    "messages": [{"role": "user", "content": _build_user_prompt(special)}],
                 },
                 timeout=30.0,
             )
 
             if response.status_code != 200:
-                logger.warning(f"LLM API error {response.status_code} for: {title}")
+                # Parse error details from response
+                try:
+                    err_data = response.json()
+                    err_msg = err_data.get("error", {}).get("message", f"HTTP {response.status_code}")
+                except Exception:
+                    err_msg = f"HTTP {response.status_code}"
+
+                # Detect fatal errors — stop wasting API calls
+                if response.status_code == 400 and "usage limit" in err_msg.lower():
+                    _anthropic_dead = True
+                    _anthropic_error_msg = err_msg
+                    _update_health(anthropic_status="usage_limit", last_error=err_msg)
+                    logger.error(f"Anthropic API usage limit reached — disabling LLM enrichment: {err_msg}")
+                elif response.status_code in (401, 403):
+                    _anthropic_dead = True
+                    _anthropic_error_msg = err_msg
+                    _update_health(anthropic_status="auth_error", last_error=err_msg)
+                    logger.error(f"Anthropic API auth error — disabling: {err_msg}")
+                elif response.status_code == 429:
+                    _anthropic_dead = True
+                    _anthropic_error_msg = err_msg
+                    _update_health(anthropic_status="rate_limited", last_error=err_msg)
+                    logger.warning(f"Anthropic API rate limited — disabling: {err_msg}")
+                else:
+                    logger.warning(f"LLM API error {response.status_code} for: {title}")
+
                 return None
 
+            _update_health(anthropic_status="ok")
             data = response.json()
             text = data.get("content", [{}])[0].get("text", "")
             boost_title = special.get("title", "")
@@ -673,8 +651,19 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
 
     Skipped if ANTHROPIC_API_KEY is not set.
     """
+    global _anthropic_dead, _anthropic_error_msg
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Reset per-run short-circuit flags (allow retry each scrape cycle)
+    _anthropic_dead = False
+    _anthropic_error_msg = None
+
+    _update_health(last_run_at=now_iso)
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.info("LLM enrichment skipped: ANTHROPIC_API_KEY not set")
+        _update_health(status="skipped", anthropic_status="missing_key",
+                       last_error="ANTHROPIC_API_KEY not set")
         return specials
 
     # Carry forward existing LLM results from persistent cache
@@ -691,6 +680,10 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     candidates = [s for s in specials if _is_llm_candidate(s) and s.get("llm_probability") is None]
     if not candidates:
         logger.info(f"LLM enrichment: 0 new candidates ({carried} carried from cache)")
+        _update_health(status="ok", carried_count=carried, enriched_count=0,
+                       candidate_count=0)
+        if carried > 0:
+            _update_health(last_success_at=now_iso)
         return specials
 
     # Prioritize highest edge/boost, cap to MAX_BOOSTS_PER_RUN
@@ -700,10 +693,9 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
     )
     candidates = candidates[:MAX_BOOSTS_PER_RUN]
 
-    has_brave = bool(os.environ.get("BRAVE_API_KEY"))
     logger.info(
         f"LLM enrichment: researching {len(candidates)} new boosts, "
-        f"{carried} carried from cache (brave={'yes' if has_brave else 'no'})"
+        f"{carried} carried from cache"
     )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
@@ -807,4 +799,17 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
         f"LLM enrichment: {enriched_count}/{len(candidates)} "
         f"successfully researched (total cached: {carried + enriched_count})"
     )
+
+    # Update health status based on results
+    _update_health(
+        enriched_count=enriched_count,
+        carried_count=carried,
+        candidate_count=len(candidates),
+    )
+    if enriched_count > 0:
+        _update_health(status="ok", last_success_at=now_iso)
+    elif _anthropic_dead:
+        _update_health(status="error", last_error=_anthropic_error_msg or "Anthropic API unavailable")
+    elif enriched_count == 0 and len(candidates) > 0:
+        _update_health(status="error", last_error=f"0/{len(candidates)} boosts enriched — all API calls failed")
     return specials

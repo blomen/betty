@@ -63,12 +63,25 @@ export interface SpecialsFilters {
   categories: string[];
 }
 
+export interface LlmHealth {
+  status: string;              // ok | error | skipped | unknown
+  anthropic_status: string | null;
+  last_error: string | null;
+  last_success_at: string | null;
+  last_run_at: string | null;
+  enriched_count: number;
+  carried_count: number;
+  candidate_count: number;
+}
+
 export interface SpecialsResponse {
   specials: SpecialItem[];
   count: number;
   ev_positive_count: number;
   matched_count: number;
+  llm_count?: number;
   scraped_at: string | null;
+  llm_health?: LlmHealth;
   filters?: SpecialsFilters;
 }
 
@@ -894,6 +907,13 @@ export const api = {
   /** Get expanded session with all analytical layers (replaces getMarketSession for dashboard) */
   async getExpandedSession(): Promise<import('@/types/market').ExpandedSession> {
     return fetchJson('/trading/market/session');
+  },
+
+  async getVolumeProfile(timeframe = 'session', symbol = 'NQ'): Promise<{
+    timeframe: string; poc: number; vah: number; val: number; anchor?: string;
+    levels: Array<{ price: number; volume: number }>;
+  }> {
+    return fetchJson(`/trading/market/volume-profile?symbol=${symbol}&timeframe=${timeframe}`);
   },
 
   /** Get live indicators — orderflow + ML predictions (replaces getConfirmations) */
