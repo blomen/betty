@@ -491,6 +491,9 @@ def store_polymarket_event(
 
             outcome_meta = outcome.get('provider_meta', {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
+            # Swap poly_home/poly_away in metadata to match canonical home/away
+            if teams_swapped and provider_meta and 'poly_home' in provider_meta and 'poly_away' in provider_meta:
+                provider_meta['poly_home'], provider_meta['poly_away'] = provider_meta['poly_away'], provider_meta['poly_home']
             if odds_batch:
                 odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
             else:
