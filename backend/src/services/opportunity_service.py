@@ -8,7 +8,7 @@ from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
 from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT
-from ..db.models import Event, Provider, Odds
+from ..db.models import Bet, Event, Provider, Odds
 from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
@@ -75,12 +75,31 @@ class OpportunityService:
             limit=limit,
         )
 
-        # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
+        # Fetch active profile once (used for pending-bet filter + stake calculator)
         stake_calculator = None
         profile = None
-        if type in ('value', 'dutch', 'reverse', 'reverse_value') and rows:
+        try:
+            profile = self.profile_repo.get_active()
+        except Exception:
+            pass
+
+        # Exclude opportunities where user already has a pending bet (same event+market+outcome+point)
+        if rows and profile:
+            pending = self.db.query(Bet.event_id, Bet.market, Bet.outcome, Bet.point).filter(
+                Bet.profile_id == profile.id,
+                Bet.result == "pending",
+                Bet.event_id.isnot(None),
+            ).all()
+            if pending:
+                pending_keys = {(b.event_id, b.market, b.outcome, b.point) for b in pending}
+                rows = [
+                    (opp, ev) for opp, ev in rows
+                    if (opp.event_id, opp.market, opp.outcome1, opp.point) not in pending_keys
+                ]
+
+        # Initialize stake calculator for value/dutch/reverse/reverse_value bets using profile risk settings
+        if type in ('value', 'dutch', 'reverse', 'reverse_value') and rows and profile:
             try:
-                profile = self.profile_repo.get_active()
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
                     bankroll=bankroll,
