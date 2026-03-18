@@ -3,8 +3,8 @@ import { api } from '@/services/api';
 import { useMarketStream } from '@/hooks/useMarketStream';
 import { useLevelMonitor } from '@/hooks/useLevelMonitor';
 import { useSound } from '@/hooks/useSound';
-import { MonitorPage } from './MonitorPage';
-import { ExecutePage } from './ExecutePage';
+import { L1Page } from './L1Page';
+import { L2Page } from './L2Page';
 import type { ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData, OrderflowSnapshot } from '@/types/market';
 
 // ---- Demo data for testing when backend is offline ----
@@ -104,17 +104,16 @@ const DEMO_BATTLE: BattleScreenData = {
 // ---------------------------------------------------
 
 interface Props {
-  activeSubTab: 'tradingMonitor' | 'tradingExecute';
-  onSwitchToExecute: () => void;
+  activeSubTab: 'tradingL1' | 'tradingL2';
 }
 
-export function TradingContainer({ activeSubTab, onSwitchToExecute }: Props) {
+export function TradingContainer({ activeSubTab }: Props) {
   const [session, setSession] = useState<ExpandedSession | null>(null);
   const [positions] = useState<PositionRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const { lastTick, connected, esRef } = useMarketStream();
-  const { levels, activeBattle, battleActive, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
+  const { lastTick, book, lastCandle, connected, esRef } = useMarketStream();
+  const { levels, activeBattle, battleActive, latestPrediction, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
   const { unlock, play } = useSound();
   const prevBattle = useRef(false);
   const lastBattleRef = useRef<BattleScreenData | null>(null);
@@ -124,14 +123,13 @@ export function TradingContainer({ activeSubTab, onSwitchToExecute }: Props) {
     if (activeBattle) lastBattleRef.current = activeBattle;
   }, [activeBattle]);
 
-  // Play sound + auto-switch when battle activates
+  // Play sound when battle activates
   useEffect(() => {
     if (battleActive && !prevBattle.current) {
       play('at_level');
-      onSwitchToExecute();
     }
     prevBattle.current = battleActive;
-  }, [battleActive, play, onSwitchToExecute]);
+  }, [battleActive, play]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -230,7 +228,6 @@ export function TradingContainer({ activeSubTab, onSwitchToExecute }: Props) {
 
   const handleLevelClick = (levelName: string) => {
     switchBattleLevel(levelName);
-    onSwitchToExecute();
   };
 
   const currentPrice = lastTick?.price ?? session?.price_position?.last_price ?? null;
@@ -240,28 +237,32 @@ export function TradingContainer({ activeSubTab, onSwitchToExecute }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0" onClick={unlock}>
-      {activeSubTab === 'tradingMonitor' ? (
-        <MonitorPage
+      {activeSubTab === 'tradingL1' ? (
+        <L1Page
+          lastTick={lastTick}
+          book={book}
+          lastCandle={lastCandle}
+          connected={connected}
+          session={session}
+        />
+      ) : (
+        <L2Page
           session={session}
           levels={levels}
           currentPrice={currentPrice}
           connected={connected}
           pricePos={pricePos}
           onLevelClick={handleLevelClick}
-        />
-      ) : (
-        <ExecutePage
           activeBattle={activeBattle}
           lastBattle={lastBattleRef.current}
           battleActive={battleActive}
-          levels={levels}
-          currentPrice={currentPrice}
-          connected={connected}
           onDismissBattle={dismissBattle}
           onTakeTrade={handleTakeTrade}
           positions={positions}
           onScale={handleScale}
           onClose={handleClose}
+          lastTick={lastTick}
+          latestPrediction={latestPrediction}
         />
       )}
     </div>

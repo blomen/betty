@@ -198,7 +198,7 @@ export interface MarketContext {
   structure_hl?: number;
   structure_lh?: number;
   day_type?: 'trend' | 'normal' | 'normal_variation' | 'neutral' | 'composite';
-  vp_old_macro_start?: number;
+  vp_current_start?: number;
   vp_ongoing_macro_start?: number;
   vp_leg_start?: number;
 }
@@ -229,14 +229,27 @@ export interface NakedPOC {
   price: number;
 }
 
+export interface VPCluster {
+  price: number;
+  strength: number;
+  zone_high: number;
+  zone_low: number;
+  confluence: number;
+  distance: number | null;
+  sources: Array<{ tf: string; type: string; price: number }>;
+}
+
 export interface ProfilesData {
   session: VPLevel;
   weekly?: VPLevel | null;
+  monthly?: VPLevel | null;
   leg?: VPLevel | null;
   macro?: VPLevel | null;
+  current?: VPLevel | null;
   developing_poc: number | null;
   developing_poc_direction: 'up' | 'down' | 'flat';
   naked_pocs: NakedPOC[];
+  hierarchy?: VPCluster[];
 }
 
 /** Structural level from MarketLevel table */
@@ -387,6 +400,16 @@ export interface BattleScreenData {
   suggested_entry: number;
   suggested_stop: number;
   targets: { name: string; price: number }[];
+}
+
+export interface MlPrediction {
+  level: string;
+  predicted: string;
+  raw_predicted?: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+  top_features?: Array<{ name: string; contribution: number }>;
+  timestamp: number;
 }
 
 export interface PositionRow {

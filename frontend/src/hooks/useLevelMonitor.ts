@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
-  MonitoredLevel, BattleScreenData,
+  MonitoredLevel, BattleScreenData, MlPrediction,
   LevelTouchedEvent, LevelApproachingEvent, OrderflowUpdateEvent, LevelRejectedEvent,
 } from '@/types/market';
 
@@ -8,6 +8,7 @@ interface LevelMonitorState {
   levels: MonitoredLevel[];
   activeBattle: BattleScreenData | null;
   battleActive: boolean;
+  latestPrediction: MlPrediction | null;
 }
 
 export function useLevelMonitor(
@@ -18,6 +19,7 @@ export function useLevelMonitor(
     levels: [],
     activeBattle: null,
     battleActive: false,
+    latestPrediction: null,
   });
 
   const levelStatusRef = useRef<Map<string, MonitoredLevel>>(new Map());
@@ -158,6 +160,11 @@ export function useLevelMonitor(
       });
     };
 
+    const onMlPrediction = (e: MessageEvent) => {
+      const data: MlPrediction = JSON.parse(e.data);
+      setState(prev => ({ ...prev, latestPrediction: data }));
+    };
+
     const onPositionTarget = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
       setState(prev => ({
@@ -186,6 +193,7 @@ export function useLevelMonitor(
     es.addEventListener('level_rejected', onRejected);
     es.addEventListener('level_context', onContext);
     es.addEventListener('position_at_target', onPositionTarget);
+    es.addEventListener('ml_prediction', onMlPrediction);
 
     return () => {
       es.removeEventListener('level_approaching', onApproaching);
@@ -194,6 +202,7 @@ export function useLevelMonitor(
       es.removeEventListener('level_rejected', onRejected);
       es.removeEventListener('level_context', onContext);
       es.removeEventListener('position_at_target', onPositionTarget);
+      es.removeEventListener('ml_prediction', onMlPrediction);
     };
   }, [esRef, sessionData]);
 
@@ -214,6 +223,7 @@ export function useLevelMonitor(
     levels: state.levels,
     activeBattle: state.activeBattle,
     battleActive: state.battleActive,
+    latestPrediction: state.latestPrediction,
     dismissBattle,
     switchBattleLevel,
     seedLevels,
