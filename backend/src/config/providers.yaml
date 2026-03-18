@@ -910,11 +910,11 @@ active:
   - nordicbet
   - spelklubben  # OBG platform — re-enabled 2026-02-10
   - bethard
-  # ComeOn Group (4: comeon, lyllo, hajper, snabbare) — snabbare consolidated (identical odds confirmed 2026-03-14)
+  # ComeOn Group (4: comeon, lyllo, hajper, snabbare) — comeon is best extractor (275ev/589s vs hajper 152/738s, snabbare 96/544s, lyllo 93/900s)
   - comeon
-  # - hajper  # disabled (1 value bet, 534-771s browser time)
-  - lyllo
-  # - snabbare  # CONSOLIDATED: identical odds to comeon, fanned out via PLATFORM_GROUPS
+  # - hajper    # TESTED 2026-03-18: 152 events, 738s — worse than comeon
+  # - lyllo     # TESTED 2026-03-18: 93 events, 900s timeout — worst of all
+  # - snabbare  # TESTED 2026-03-18: 96 events, 544s — consolidated via PLATFORM_GROUPS
 
 
 # ============================================================================
