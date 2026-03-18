@@ -475,7 +475,7 @@ class Opportunity(Base):
     """
     __tablename__ = "opportunities"
     __table_args__ = (
-        Index("ix_opp_upsert", "event_id", "market", "outcome1", "provider1_id", "type"),
+        Index("ix_opp_upsert_unique", "event_id", "market", "outcome1", "provider1_id", "type", unique=True),
         Index("ix_opp_active_edge", "is_active", "edge_pct"),
         Index("ix_opp_type_active", "type", "is_active"),
         Index("ix_opp_provider1_type", "provider1_id", "type"),
@@ -1247,9 +1247,17 @@ class MarketContext(Base):
     # Gate 3: Day type
     day_type = Column(String, nullable=True)  # "trend", "normal", "normal_variation", "neutral", "composite"
     # VP anchors (Unix timestamps)
-    vp_old_macro_start = Column(Integer, nullable=True)
+    vp_old_macro_start = Column(Integer, nullable=True)  # repurposed as "current" anchor
     vp_ongoing_macro_start = Column(Integer, nullable=True)
     vp_leg_start = Column(Integer, nullable=True)
+
+    @property
+    def vp_current_start(self):
+        return self.vp_old_macro_start
+
+    @vp_current_start.setter
+    def vp_current_start(self, value):
+        self.vp_old_macro_start = value
 
     __table_args__ = (
         UniqueConstraint("symbol", name="uq_market_context_symbol"),
@@ -1380,10 +1388,18 @@ def _run_migrations(engine):
             except sqlite3.OperationalError:
                 pass
 
-        # Add index for per-provider opportunity upsert lookups
+        # Replace non-unique index with unique constraint (prevents duplicate opportunities)
         try:
+            cursor.execute("DROP INDEX IF EXISTS ix_opp_upsert")
+            # Deduplicate existing rows: keep the one with highest id (most recent)
+            cursor.execute("""
+                DELETE FROM opportunities WHERE id NOT IN (
+                    SELECT MAX(id) FROM opportunities
+                    GROUP BY event_id, market, outcome1, provider1_id, type
+                )
+            """)
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS ix_opp_upsert "
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_opp_upsert_unique "
                 "ON opportunities (event_id, market, outcome1, provider1_id, type)"
             )
             raw.commit()
@@ -1825,6 +1841,36 @@ class ProviderRecommendation(Base):
         Index("idx_recommendations_provider", "provider_id"),
         Index("idx_recommendations_status", "status"),
     )
+
+
+class LevelTouchOutcome(Base):
+    __tablename__ = "level_touch_outcomes"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(Text, nullable=False)
+    touch_ts = Column(Float, nullable=False)
+    level_name = Column(Text, nullable=False)
+    level_type = Column(Text, nullable=False)
+    level_price = Column(Float, nullable=False)
+    approach_direction = Column(Text, nullable=False)
+    outcome = Column(Text)
+    max_continuation_ticks = Column(Float)
+    max_reversal_ticks = Column(Float)
+    outcome_measured_at = Column(Float)
+    session_date = Column(Text, nullable=False)
+    is_backfill = Column(Integer, default=0)
+    prediction = Column(Text)
+    prediction_confidence = Column(Float)
+
+
+class LevelTouchFeature(Base):
+    __tablename__ = "level_touch_features"
+
+    id = Column(Integer, primary_key=True)
+    touch_outcome_id = Column(Integer, ForeignKey("level_touch_outcomes.id"), nullable=False)
+    features = Column(Text, nullable=False)
+    feature_version = Column(Integer, default=1)
+    created_at = Column(Float)
 
 
 def init_db() -> None:

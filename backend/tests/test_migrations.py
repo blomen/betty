@@ -70,3 +70,16 @@ def test_migrate_is_idempotent(raw_db):
     run_migrations(raw_db)
     cursor = raw_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ml_features'")
     assert cursor.fetchone() is not None
+
+
+def test_level_touch_tables_created():
+    from src.ml.migrations import run_migrations
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    run_migrations(conn)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='level_touch_outcomes'")
+    assert cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='level_touch_features'")
+    assert cursor.fetchone() is not None
+    conn.close()

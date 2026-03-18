@@ -177,6 +177,8 @@ def _create_ml_model_registry(conn: sqlite3.Connection) -> None:
 
 def _add_opportunity_columns(conn: sqlite3.Connection) -> None:
     """Add ML feature columns to the opportunities table (idempotent)."""
+    if not _table_exists(conn, "opportunities"):
+        return
     new_columns = [
         ("prob_sum", "REAL"),
         ("odds_ratio", "REAL"),
@@ -403,6 +405,41 @@ def _create_market_sessions(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_market_sessions_date ON market_sessions(date)")
 
 
+def _create_level_touch_tables(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS level_touch_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            touch_ts REAL NOT NULL,
+            level_name TEXT NOT NULL,
+            level_type TEXT NOT NULL,
+            level_price REAL NOT NULL,
+            approach_direction TEXT NOT NULL,
+            outcome TEXT,
+            max_continuation_ticks REAL,
+            max_reversal_ticks REAL,
+            outcome_measured_at REAL,
+            session_date TEXT NOT NULL,
+            is_backfill INTEGER DEFAULT 0,
+            prediction TEXT,
+            prediction_confidence REAL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lto_session ON level_touch_outcomes(session_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lto_outcome ON level_touch_outcomes(outcome)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS level_touch_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            touch_outcome_id INTEGER NOT NULL REFERENCES level_touch_outcomes(id),
+            features TEXT NOT NULL,
+            feature_version INTEGER DEFAULT 1,
+            created_at REAL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ltf_outcome ON level_touch_features(touch_outcome_id)")
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run all ML-related migrations against the given SQLite connection.
@@ -424,4 +461,5 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _create_devig_method_log(conn)
     _create_betting_outcome_log(conn)
     _create_market_sessions(conn)
+    _create_level_touch_tables(conn)
     conn.commit()
