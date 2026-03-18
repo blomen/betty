@@ -46,10 +46,11 @@ async def get_candles(
     symbol: str = Query(default="NQ"),
     interval: str = Query(default="5m", pattern="^(1m|5m|15m)$"),
     date: str = Query(default=None),
+    days: int = Query(default=5, ge=1, le=365),
     svc: MarketService = Depends(_svc),
 ):
-    """Return OHLCV candles for charting."""
-    return await svc.get_candles(symbol, interval, date)
+    """Return OHLCV candles for charting from market_candles DB."""
+    return await svc.get_candles(symbol, interval, date, days)
 
 
 @router.get("/signals")
@@ -204,7 +205,7 @@ async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
         "structure_hl": ctx.structure_hl,
         "structure_lh": ctx.structure_lh,
         "day_type": ctx.day_type,
-        "vp_old_macro_start": ctx.vp_old_macro_start,
+        "vp_current_start": ctx.vp_old_macro_start,
         "vp_ongoing_macro_start": ctx.vp_ongoing_macro_start,
         "vp_leg_start": ctx.vp_leg_start,
     }
@@ -214,12 +215,96 @@ async def get_context(symbol: str = "NQ", svc: MarketService = Depends(_svc)):
 async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = Depends(_svc)):
     """Update market context — accepts ISO date strings for VP anchors."""
     from datetime import datetime as dt_cls
-    for field in ["vp_leg_start", "vp_ongoing_macro_start"]:
+    # Map vp_current_start → vp_old_macro_start (repurposed column)
+    if "vp_current_start" in data:
+        data["vp_old_macro_start"] = data.pop("vp_current_start")
+    for field in ["vp_leg_start", "vp_ongoing_macro_start", "vp_old_macro_start"]:
         if field in data and isinstance(data[field], str):
             parsed = dt_cls.strptime(data[field], "%Y-%m-%d")
             data[field] = int(parsed.timestamp())
     svc.repo.upsert_context(symbol, data)
     return {"status": "ok", "symbol": symbol}
+
+
+@router.get("/volume-profile")
+async def get_volume_profile(
+    symbol: str = Query(default="NQ"),
+    timeframe: str = Query(default="session", pattern="^(session|weekly|monthly|macro|leg|current)$"),
+    svc: MarketService = Depends(_svc),
+):
+    """Return full VP curve (price→volume pairs) for a given timeframe."""
+    return await svc.get_volume_profile_curve(symbol, timeframe)
+
+
+@router.get("/footprint")
+async def get_footprint(
+    request: Request,
+    period: int = Query(default=300, description="Candle period in seconds (60, 300)"),
+    limit: int = Query(default=20, le=50, description="Number of candles to return"),
+):
+    """Get footprint matrix — per-price-level buy/sell volume for recent candles.
+
+    This is the core orderflow visualization: for each candle, shows
+    buy vs sell volume at every price level, diagonal imbalances, and
+    stacked imbalances.
+    """
+    stream = _get_live_stream(request)
+    if not stream:
+        return {"error": "Live stream not available"}
+
+    from ...market_data.orderflow import build_candle_flow
+
+    ticks = list(stream.buffer.ticks)
+    if len(ticks) < 10:
+        return {"candles": [], "message": "Insufficient tick data"}
+
+    candles = build_candle_flow(ticks, period_seconds=period)
+    candles = candles[-limit:]
+
+    return {
+        "candles": [
+            {
+                "ts": c.ts.isoformat(),
+                "o": c.open,
+                "h": c.high,
+                "l": c.low,
+                "c": c.close,
+                "volume": c.volume,
+                "buy_volume": c.buy_volume,
+                "sell_volume": c.sell_volume,
+                "delta": c.delta,
+                "delta_pct": round(c.delta_pct, 1),
+                "price_levels": [
+                    {
+                        "price": pl.price,
+                        "buy_vol": pl.buy_volume,
+                        "sell_vol": pl.sell_volume,
+                    }
+                    for pl in c.price_levels
+                ],
+                "diagonal_imbalances": [
+                    {
+                        "price": d.price,
+                        "direction": d.direction,
+                        "ratio": d.ratio,
+                    }
+                    for d in c.diagonal_imbalances
+                ],
+                "stacked_imbalances": [
+                    {
+                        "direction": s.direction,
+                        "price_low": s.price_low,
+                        "price_high": s.price_high,
+                        "count": s.count,
+                    }
+                    for s in c.stacked_imbalances
+                ],
+            }
+            for c in candles
+        ],
+        "period": period,
+        "count": len(candles),
+    }
 
 
 @router.get("/book")
@@ -267,6 +352,21 @@ async def backfill_trades(
         end=end_date,
     )
     return {"status": "ok", "ticks_inserted": count, "symbol": symbol}
+
+
+@router.get("/ml/prediction")
+async def get_ml_prediction():
+    """Get latest ML prediction for level touch."""
+    from src.ml.serving.predictor import get_predictor
+    predictor = get_predictor()
+    if not predictor.is_loaded("level_classifier"):
+        return {"status": "model_not_loaded", "prediction": None}
+
+    from src.ml.level_touch import get_last_prediction
+    prediction = get_last_prediction()
+    if prediction:
+        return {"status": "ok", "prediction": prediction}
+    return {"status": "no_recent_prediction", "prediction": None}
 
 
 @router.get("/cot")
