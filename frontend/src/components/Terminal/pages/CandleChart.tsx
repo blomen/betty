@@ -20,41 +20,42 @@ const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
 
 // VP overlay config: which timeframes to show, with colors
-// Only daily VP overlay for now — verified
 const VP_OVERLAYS = [
   { tf: 'session', color: [168, 85, 247],  label: 'D' },   // purple
+  { tf: 'weekly',  color: [236, 72, 153],  label: 'W' },   // pink
+  { tf: 'monthly', color: [234, 179, 8],   label: 'M' },   // yellow
 ] as const;
 
-// Session box definitions (ET times as hour*60+minute)
-// Tokyo: 20:00 ET (prior day) → 02:00 ET (current day)
-// London: 03:00 → 08:30 ET
-// New York (RTH): 09:30 → 16:00 ET
+// Session box definitions (CET/CEST times as hour*60+minute)
+// Tokyo: 00:00 → 08:00 CET  (Globex open → London open)
+// London: 08:00 → 15:30 CET  (London open → NY open)
+// New York: 15:30 → 22:00 CET  (NY open → close)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 20 * 60,  endMin: 26 * 60,      color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },  // cyan
-  { name: 'London',   startMin: 3 * 60,   endMin: 8 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },  // green
-  { name: 'New York', startMin: 9 * 60 + 30, endMin: 16 * 60,   color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },  // red
+  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },  // cyan
+  { name: 'London',   startMin: 8 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },  // green
+  { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },  // red
 ] as const;
 
-// Accurate ET offset using Intl API — handles DST transitions correctly
-const _etFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
+// Accurate CET/CEST offset using Intl API — handles DST transitions correctly
+const _cetFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Europe/Stockholm',
   year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', hour12: false,
 });
 
-function _parseETDate(epoch: number): { year: number; month: number; day: number; hour: number; minute: number } {
-  const parts = _etFormatter.formatToParts(new Date(epoch * 1000));
+function _parseCETDate(epoch: number): { year: number; month: number; day: number; hour: number; minute: number } {
+  const parts = _cetFormatter.formatToParts(new Date(epoch * 1000));
   const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value || '0', 10);
   return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute') };
 }
 
-function epochToETMinute(epoch: number): number {
-  const { hour, minute } = _parseETDate(epoch);
+function epochToCETMinute(epoch: number): number {
+  const { hour, minute } = _parseCETDate(epoch);
   return hour * 60 + minute;
 }
 
-function epochToETDate(epoch: number): string {
-  const { year, month, day } = _parseETDate(epoch);
+function epochToCETDate(epoch: number): string {
+  const { year, month, day } = _parseCETDate(epoch);
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
@@ -83,6 +84,7 @@ function toLocalEpoch(utcEpoch: number): number {
 interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
+  hiddenLevels?: Set<string>;
 }
 
 function toLine(c: CandleData): LineData<Time> {
@@ -103,35 +105,20 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
 
   const boxes: SessionBox[] = [];
 
-  // Group candles by ET date
+  // Group candles by CET date — all sessions are simple intra-day ranges
   const dateGroups = new Map<string, CandleData[]>();
   for (const c of candles) {
-    const etDate = epochToETDate(c.t);
-    if (!dateGroups.has(etDate)) dateGroups.set(etDate, []);
-    dateGroups.get(etDate)!.push(c);
+    const cetDate = epochToCETDate(c.t);
+    if (!dateGroups.has(cetDate)) dateGroups.set(cetDate, []);
+    dateGroups.get(cetDate)!.push(c);
   }
 
-  for (const [etDate, dayCandles] of dateGroups) {
+  for (const [, dayCandles] of dateGroups) {
     for (const def of SESSION_DEFS) {
-      // Tokyo wraps midnight: startMin=20:00 (1200), endMin=26:00 (1560 = 02:00 next day)
       const sessionCandles = dayCandles.filter(c => {
-        let etMin = epochToETMinute(c.t);
-        if (def.name === 'Tokyo') {
-          // For Tokyo, also include candles from the previous ET date that are >= 20:00
-          // This group contains candles for this ET date, so we look at 00:00-02:00
-          return etMin < (def.endMin - 24 * 60); // 0 to 120 (02:00)
-        }
-        return etMin >= def.startMin && etMin < def.endMin;
+        const cetMin = epochToCETMinute(c.t);
+        return cetMin >= def.startMin && cetMin < def.endMin;
       });
-
-      // For Tokyo evening part, need to look at the previous date's candles >= 20:00
-      if (def.name === 'Tokyo') {
-        // Find previous date
-        const prevDate = new Date(new Date(etDate).getTime() - 86400000).toISOString().slice(0, 10);
-        const prevCandles = dateGroups.get(prevDate) || [];
-        const eveningCandles = prevCandles.filter(c => epochToETMinute(c.t) >= def.startMin);
-        sessionCandles.push(...eveningCandles);
-      }
 
       if (sessionCandles.length < 2) continue;
 
@@ -156,7 +143,7 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
   return boxes;
 }
 
-export function CandleChart({ lastCandle, session }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -175,6 +162,12 @@ export function CandleChart({ lastCandle, session }: Props) {
   // VP overlay data
   const vpDataRef = useRef<Map<string, VPData>>(new Map());
   const [vpLoaded, setVpLoaded] = useState(0); // trigger redraws
+  const hiddenRef = useRef(hiddenLevels);
+  hiddenRef.current = hiddenLevels;
+
+  // Session levels overlay data (per-day PDH/PDL, IB, Tokyo, London)
+  const sessionLevelsRef = useRef<import('@/types/market').SessionLevelDay[]>([]);
+  const [slLoaded, setSlLoaded] = useState(false);
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -230,32 +223,99 @@ export function CandleChart({ lastCandle, session }: Props) {
       }
     }
 
-    // --- VP histogram on right edge ---
+    // --- VP histograms on right edge (daily / weekly / monthly stacked) ---
     const vpMap = vpDataRef.current;
-    const vp = vpMap.get('session');
-    if (vp && vp.levels.length) {
+    const priceScaleWidth = 65;
+    const xRight = rect.width - priceScaleWidth;
+    const maxBarWidth = 80;
+
+    // Draw in reverse order so daily (most important) renders on top
+    const hidden = hiddenRef.current;
+    // VP hidden keys: vp_session, vp_weekly, vp_monthly
+    for (let oi = VP_OVERLAYS.length - 1; oi >= 0; oi--) {
+      const overlay = VP_OVERLAYS[oi];
+      if (hidden?.has(`vp_${overlay.tf}`)) continue;
+      const vp = vpMap.get(overlay.tf);
+      if (!vp || !vp.levels.length) continue;
+
       const maxVol = Math.max(...vp.levels.map(l => l.volume));
-      if (maxVol > 0) {
-        const maxBarWidth = 80;
-        const priceScaleWidth = 65;
-        const xRight = rect.width - priceScaleWidth;
+      if (maxVol <= 0) continue;
 
-        for (const level of vp.levels) {
-          const y = pSeries.priceToCoordinate(level.price);
-          if (y === null || y < 0 || y > rect.height) continue;
+      const [r, g, b] = overlay.color;
 
-          const barW = (level.volume / maxVol) * maxBarWidth;
-          const inVA = level.price >= vp.val && level.price <= vp.vah;
-          const isPOC = level.price === vp.poc;
+      for (const level of vp.levels) {
+        const y = pSeries.priceToCoordinate(level.price);
+        if (y === null || y < 0 || y > rect.height) continue;
 
-          ctx.fillStyle = isPOC
-            ? 'rgba(168, 85, 247, 0.6)'
-            : inVA
-              ? 'rgba(168, 85, 247, 0.2)'
-              : 'rgba(168, 85, 247, 0.06)';
+        const barW = (level.volume / maxVol) * maxBarWidth;
+        const isPOC = level.price === vp.poc;
+        const inVA = level.price >= vp.val && level.price <= vp.vah;
 
-          ctx.fillRect(xRight - barW, y - 1, barW, 2);
-        }
+        ctx.fillStyle = isPOC
+          ? `rgba(${r}, ${g}, ${b}, 0.6)`
+          : inVA
+            ? `rgba(${r}, ${g}, ${b}, 0.2)`
+            : `rgba(${r}, ${g}, ${b}, 0.06)`;
+
+        ctx.fillRect(xRight - barW, y - 1, barW, 2);
+      }
+    }
+
+    // --- Session level lines (time-scoped horizontal lines) ---
+    const slDays = sessionLevelsRef.current;
+    const slHidden = hiddenRef.current;
+
+    const levelDefs: Array<{
+      key: string;
+      field: 'pdh' | 'pdl' | 'ib_high' | 'ib_low' | 'tokyo_high' | 'tokyo_low' | 'london_high' | 'london_low';
+      label: string;
+      color: string;
+      dash: number[];
+      startField: 'day_start' | 'ib_end' | 'tokyo_end' | 'london_end';
+      endField: 'day_end';
+    }> = [
+      { key: 'pdh', field: 'pdh', label: 'PDH', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
+      { key: 'pdl', field: 'pdl', label: 'PDL', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
+      { key: 'ibh', field: 'ib_high', label: 'IBH', color: '#F59E0B', dash: [3, 3], startField: 'ib_end', endField: 'day_end' },
+      { key: 'ibl', field: 'ib_low', label: 'IBL', color: '#F59E0B', dash: [3, 3], startField: 'ib_end', endField: 'day_end' },
+      { key: 'tokyo_h', field: 'tokyo_high', label: 'TKY H', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
+      { key: 'tokyo_l', field: 'tokyo_low', label: 'TKY L', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
+      { key: 'london_h', field: 'london_high', label: 'LDN H', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
+      { key: 'london_l', field: 'london_low', label: 'LDN L', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
+    ];
+
+    for (const day of slDays) {
+      for (const def of levelDefs) {
+        if (slHidden?.has(def.key)) continue;
+        const price = day[def.field];
+        if (price == null) continue;
+
+        const startEpoch = day[def.startField];
+        const endEpoch = day[def.endField];
+
+        const x1 = timeScale.timeToCoordinate(toLocalEpoch(startEpoch) as Time);
+        const x2 = timeScale.timeToCoordinate(toLocalEpoch(endEpoch) as Time);
+        const y = pSeries.priceToCoordinate(price);
+
+        if (x1 === null || x2 === null || y === null) continue;
+        if (x2 < 0 || x1 > rect.width) continue;
+
+        ctx.save();
+        ctx.strokeStyle = def.color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash(def.dash);
+        ctx.beginPath();
+        ctx.moveTo(Math.max(0, x1), y);
+        ctx.lineTo(Math.min(rect.width, x2), y);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.font = '9px monospace';
+        ctx.fillStyle = def.color;
+        ctx.textAlign = 'left';
+        const labelX = Math.max(2, x1 + 3);
+        ctx.fillText(def.label, labelX, y - 3);
+        ctx.restore();
       }
     }
   }, []);
@@ -380,21 +440,36 @@ export function CandleChart({ lastCandle, session }: Props) {
     };
   }, [drawOverlays]);
 
-  // Fetch daily VP curve data
+  // Fetch VP curve data for all timeframes (daily, weekly, monthly)
   useEffect(() => {
     let cancelled = false;
-    api.getVolumeProfile().then(data => {
-      if (!cancelled && data.levels?.length) {
-        vpDataRef.current.set('session', data);
-        setVpLoaded(n => n + 1);
+    for (const overlay of VP_OVERLAYS) {
+      api.getVolumeProfile('NQ', overlay.tf).then(data => {
+        if (!cancelled && data.levels?.length) {
+          vpDataRef.current.set(overlay.tf, data);
+          setVpLoaded(n => n + 1);
+          drawOverlays();
+        }
+      }).catch(() => { /* skip if not available */ });
+    }
+    return () => { cancelled = true; };
+  }, [session, drawOverlays]); // refetch when session updates
+
+  // Fetch session levels for multi-day overlay
+  useEffect(() => {
+    let cancelled = false;
+    api.getSessionLevels('NQ', INITIAL_DAYS + 2).then(res => {
+      if (!cancelled && res.days?.length) {
+        sessionLevelsRef.current = res.days;
+        setSlLoaded(true);
         drawOverlays();
       }
     }).catch(() => { /* skip if not available */ });
     return () => { cancelled = true; };
-  }, [session, drawOverlays]); // refetch when session updates
+  }, [session, drawOverlays]);
 
-  // Redraw when VP data loads
-  useEffect(() => { drawOverlays(); }, [vpLoaded, drawOverlays]);
+  // Redraw when VP data loads or visibility changes
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
@@ -477,6 +552,11 @@ export function CandleChart({ lastCandle, session }: Props) {
     });
     vwapSeriesRefs.current = [];
 
+    // Skip if VWAP hidden
+    if (hiddenLevels?.has('vwap')) {
+      return;
+    }
+
     // Fetch tick-level VWAP from backend
     let cancelled = false;
     api.getDevelopingVwap('NQ', '1m').then(res => {
@@ -485,7 +565,7 @@ export function CandleChart({ lastCandle, session }: Props) {
       const toLD = (arr: typeof res.vwap, key: keyof typeof arr[0]): LineData<Time>[] =>
         arr.map(p => ({ time: toLocalEpoch(p.t) as Time, value: p[key] as number }));
 
-      const addLine = (color: string, width: 1 | 2, style: number, data: LineData<Time>[]) => {
+      const addLine = (color: string, width: 1 | 2, style: number, title: string, data: LineData<Time>[]) => {
         const s = chartRef.current!.addSeries(LineSeries, {
           color,
           lineWidth: width,
@@ -493,20 +573,24 @@ export function CandleChart({ lastCandle, session }: Props) {
           lastValueVisible: true,
           priceLineVisible: false,
           crosshairMarkerVisible: false,
-        });
+          title,
+          zOrder: -1,  // render behind price
+        } as any);
         s.setData(data);
         vwapSeriesRefs.current.push(s);
       };
 
-      addLine('#06B6D4', 2, LineStyle.Solid, toLD(res.vwap, 'vwap'));       // VWAP
-      addLine('rgba(6,182,212,0.5)', 1, LineStyle.Solid, toLD(res.vwap, 'sd1_u'));  // +1SD
-      addLine('rgba(6,182,212,0.5)', 1, LineStyle.Solid, toLD(res.vwap, 'sd1_l'));  // -1SD
-      addLine('rgba(6,182,212,0.25)', 1, LineStyle.Dashed, toLD(res.vwap, 'sd2_u')); // +2SD
-      addLine('rgba(6,182,212,0.25)', 1, LineStyle.Dashed, toLD(res.vwap, 'sd2_l')); // -2SD
+      addLine('#EAB308', 2, LineStyle.Solid, 'VWAP', toLD(res.vwap, 'vwap'));
+      addLine('rgba(234,179,8,0.5)', 1, LineStyle.Solid, '+\u03C3', toLD(res.vwap, 'sd1_u'));
+      addLine('rgba(234,179,8,0.5)', 1, LineStyle.Solid, '-\u03C3', toLD(res.vwap, 'sd1_l'));
+      addLine('rgba(234,179,8,0.25)', 1, LineStyle.Dashed, '+2\u03C3', toLD(res.vwap, 'sd2_u'));
+      addLine('rgba(234,179,8,0.25)', 1, LineStyle.Dashed, '-2\u03C3', toLD(res.vwap, 'sd2_l'));
+      addLine('rgba(234,179,8,0.15)', 1, LineStyle.Dotted, '+3\u03C3', toLD(res.vwap, 'sd3_u'));
+      addLine('rgba(234,179,8,0.15)', 1, LineStyle.Dotted, '-3\u03C3', toLD(res.vwap, 'sd3_l'));
     }).catch(err => console.warn('Failed to load VWAP:', err));
 
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, hiddenLevels]);
 
   // Static reference lines: IB, PDH/PDL, dPOC (these are flat — correct for structural levels)
   useEffect(() => {
@@ -522,26 +606,11 @@ export function CandleChart({ lastCandle, session }: Props) {
     const s = session.session;
     const p = session.profiles;
 
+    const h = hiddenLevels;
     const add = (key: string, price: number | undefined | null, color: string, title: string, style = LineStyle.Dashed, width: 1 | 2 = 1) => {
-      if (price == null || price === 0) return;
+      if (price == null || price === 0 || h?.has(key)) return;
       priceLineRefs.current[key] = series.createPriceLine({ price, color, lineWidth: width, lineStyle: style, axisLabelVisible: true, title });
     };
-
-    // Initial Balance
-    add('ibh', s.ib_high, '#F59E0B', 'IBH', LineStyle.Dotted);
-    add('ibl', s.ib_low,  '#F59E0B', 'IBL', LineStyle.Dotted);
-
-    // Prior Day High/Low
-    add('pdh', s.pdh, '#FB923C', 'PDH', LineStyle.Dashed);
-    add('pdl', s.pdl, '#FB923C', 'PDL', LineStyle.Dashed);
-
-    // Tokyo Session High/Low
-    add('tokyo_h', s.tokyo_high, '#06B6D4', 'TKY H', LineStyle.Dotted);
-    add('tokyo_l', s.tokyo_low,  '#06B6D4', 'TKY L', LineStyle.Dotted);
-
-    // London Session High/Low
-    add('london_h', s.london_high, '#10B981', 'LDN H', LineStyle.Dotted);
-    add('london_l', s.london_low,  '#10B981', 'LDN L', LineStyle.Dotted);
 
     // Daily Volume Profile
     add('d_poc', p?.session?.poc, '#A855F7', 'dPOC', LineStyle.Solid, 2);
@@ -557,7 +626,7 @@ export function CandleChart({ lastCandle, session }: Props) {
     add('m_poc', p?.monthly?.poc, '#F59E0B', 'mPOC', LineStyle.Solid, 2);
     add('m_vah', p?.monthly?.vah, '#F59E0B', 'mVAH', LineStyle.Dashed, 1);
     add('m_val', p?.monthly?.val, '#F59E0B', 'mVAL', LineStyle.Dashed, 1);
-  }, [session]);
+  }, [session, hiddenLevels]);
 
   return (
     <div className="relative w-full h-full">

@@ -922,11 +922,15 @@ export const api = {
     return fetchJson('/trading/market/session');
   },
 
-  async getVolumeProfile(symbol = 'NQ'): Promise<{
+  async getVolumeProfile(symbol = 'NQ', timeframe = 'session'): Promise<{
     timeframe: string; poc: number; vah: number; val: number;
     levels: Array<{ price: number; volume: number }>;
   }> {
-    return fetchJson(`/trading/market/volume-profile?symbol=${symbol}`);
+    return fetchJson(`/trading/market/volume-profile?symbol=${symbol}&timeframe=${timeframe}`);
+  },
+
+  async getSessionLevels(symbol = 'NQ', days = 5): Promise<import('@/types/market').SessionLevelsResponse> {
+    return fetchJson(`/trading/market/session-levels?symbol=${symbol}&days=${days}`);
   },
 
   /** Get live indicators — orderflow + ML predictions (replaces getConfirmations) */

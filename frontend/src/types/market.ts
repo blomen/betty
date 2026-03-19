@@ -239,6 +239,8 @@ export interface NakedPOC {
 
 export interface ProfilesData {
   session: VPLevel;
+  weekly?: VPLevel;
+  monthly?: VPLevel;
   developing_poc: number | null;
   developing_poc_direction: 'up' | 'down' | 'flat';
   naked_pocs: NakedPOC[];
@@ -324,6 +326,34 @@ export interface CandlesResponse {
   symbol: string;
   interval: string;
   date: string;
+}
+
+/** Per-day session levels with CET epoch boundaries for time-scoped chart drawing */
+export interface SessionLevelDay {
+  date: string;
+  pdh: number | null;
+  pdl: number | null;
+  ib_high: number | null;
+  ib_low: number | null;
+  tokyo_high: number | null;
+  tokyo_low: number | null;
+  london_high: number | null;
+  london_low: number | null;
+  tokyo_start: number;
+  tokyo_end: number;
+  london_start: number;
+  london_end: number;
+  ib_start: number;
+  ib_end: number;
+  ny_start: number;
+  ny_end: number;
+  day_start: number;
+  day_end: number;
+}
+
+export interface SessionLevelsResponse {
+  days: SessionLevelDay[];
+  symbol: string;
 }
 
 // --- Level Battle Station types ---
