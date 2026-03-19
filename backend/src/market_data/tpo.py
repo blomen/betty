@@ -111,3 +111,88 @@ def compute_tpo_profile(
         poor_high=poor_high, poor_low=poor_low,
         ib_tpo_count=ib_tpo_count,
     )
+
+
+def classify_tpo_shape(profile: TPOProfile) -> str:
+    """Classify the TPO profile shape based on distribution of letters.
+
+    Returns one of: "p-shape", "b-shape", "d-shape", or "balanced".
+    - p-shape: >65% of total TPO count above midpoint (concentration at top)
+    - b-shape: >65% of total TPO count below midpoint (concentration at bottom)
+    - d-shape: elongated range (>30 price levels) with roughly even distribution
+    - balanced: everything else
+    """
+    if not profile.letters:
+        return "balanced"
+
+    sorted_prices = sorted(profile.letters.keys())
+    n = len(sorted_prices)
+    total_tpos = sum(len(v) for v in profile.letters.values())
+
+    if total_tpos == 0:
+        return "balanced"
+
+    midpoint = (sorted_prices[0] + sorted_prices[-1]) / 2
+
+    above_count = sum(len(profile.letters[p]) for p in sorted_prices if p > midpoint)
+    below_count = sum(len(profile.letters[p]) for p in sorted_prices if p < midpoint)
+
+    if above_count / total_tpos > 0.65:
+        return "p-shape"
+    if below_count / total_tpos > 0.65:
+        return "b-shape"
+    if n > 30:
+        return "d-shape"
+    return "balanced"
+
+
+def compute_rotation_factor(bars_30m: list[dict]) -> tuple[float, int]:
+    """Compute the rotation factor from 30-min bars.
+
+    Rotation = how many 30-min periods extend the session high or low range.
+    Returns (factor, count) where factor = rotations / (total_periods - 1).
+    Single bar → (0.0, 0).
+    """
+    if len(bars_30m) <= 1:
+        return (0.0, 0)
+
+    session_high = bars_30m[0]["high"]
+    session_low = bars_30m[0]["low"]
+    rotations = 0
+
+    for bar in bars_30m[1:]:
+        if bar["high"] > session_high:
+            rotations += 1
+            session_high = bar["high"]
+        if bar["low"] < session_low:
+            rotations += 1
+            session_low = bar["low"]
+
+    factor = rotations / (len(bars_30m) - 1)
+    return (factor, rotations)
+
+
+def detect_excess(profile: TPOProfile) -> tuple[bool, bool]:
+    """Detect excess (sharp rejection) at session extremes.
+
+    Excess = single TPO print at the extreme, indicating sharp rejection.
+    - excess_high: top 2 prices each have only 1 letter
+    - excess_low: bottom 2 prices each have only 1 letter
+    Returns (excess_high, excess_low). Empty profile → (False, False).
+    """
+    if not profile.letters:
+        return (False, False)
+
+    sorted_prices = sorted(profile.letters.keys())
+
+    if len(sorted_prices) < 2:
+        top_2 = sorted_prices
+        bottom_2 = sorted_prices
+    else:
+        top_2 = sorted_prices[-2:]
+        bottom_2 = sorted_prices[:2]
+
+    excess_high = all(len(profile.letters[p]) == 1 for p in top_2)
+    excess_low = all(len(profile.letters[p]) == 1 for p in bottom_2)
+
+    return (excess_high, excess_low)
