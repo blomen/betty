@@ -91,6 +91,9 @@ class ReplayEngine:
         # Active levels: list of (name, LevelType, price)
         self._active_levels: list[tuple[str, LevelType, float]] = []
 
+        # VWAP is RTH-only: reset at 09:30 ET
+        self._rth_vwap_started: bool = False
+
         # Debounce set: tracks "name_price" keys of currently-touched levels
         # A key is removed when price moves away beyond the proximity threshold
         self._touched_keys: set[str] = set()
@@ -155,8 +158,19 @@ class ReplayEngine:
             # 1. Update candle aggregator → detect 1m bar closes
             completed_bars = self._candle_agg.update(tick)
 
-            # 2. Update running accumulators
-            self._vwap.update(price, tick["size"])
+            # 2. Update running accumulators (RTH VWAP: reset at 09:30 ET)
+            tick_et = tick["ts"].astimezone(ET) if tick["ts"].tzinfo else tick["ts"]
+            is_rth = time(9, 30) <= tick_et.time() < time(16, 0)
+
+            if is_rth and not self._rth_vwap_started:
+                # First RTH tick: reset VWAP to start fresh from session open
+                self._vwap.reset()
+                self._rth_vwap_started = True
+
+            if is_rth:
+                self._vwap.update(price, tick["size"])
+
+            # VP uses all ticks (full session profile)
             self._vp.update(price, tick["size"])
 
             # 3. Buffer tick for orderflow CandleFlow construction

@@ -23,6 +23,14 @@ export interface MarketSession {
   ib_low?: number;
   ib_range?: number;
 
+  // Session structural levels
+  pdh?: number;
+  pdl?: number;
+  tokyo_high?: number;
+  tokyo_low?: number;
+  london_high?: number;
+  london_low?: number;
+
   // Overnight
   overnight_high?: number;
   overnight_low?: number;
