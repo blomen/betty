@@ -1187,4 +1187,20 @@ export const api = {
     return fetchJson(`/postmortem/recompute?${params}`, { method: 'POST' });
   },
 
+  // ============ Mirror ============
+
+  async getMirrorStatus(): Promise<{ running: boolean; provider: string | null; status: string; since: string | null }> {
+    return fetchJson('/mirror/status');
+  },
+
+  async startMirror(provider = 'spelklubben', discovery = false): Promise<{ running: boolean; provider: string; status: string; since: string }> {
+    const params = new URLSearchParams({ provider });
+    if (discovery) params.set('discovery', 'true');
+    return fetchJson(`/mirror/start?${params}`, { method: 'POST' });
+  },
+
+  async stopMirror(): Promise<{ running: boolean; provider: string | null; status: string }> {
+    return fetchJson('/mirror/stop', { method: 'POST' });
+  },
+
 };

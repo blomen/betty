@@ -1,6 +1,8 @@
+import { useState, useEffect } from 'react';
 import { TabIcon } from './TabBar';
+import { api } from '../../services/api';
 
-export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingMonitor' | 'tradingExecute' | 'tradingBankroll' | 'tradingStats';
+export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingL2' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {
@@ -38,6 +40,64 @@ function SidebarButton({
   );
 }
 
+function MirrorButton() {
+  const [running, setRunning] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api.getMirrorStatus().then((s: { running: boolean }) => setRunning(s.running)).catch(() => {});
+    const id = setInterval(() => {
+      api.getMirrorStatus().then((s: { running: boolean }) => setRunning(s.running)).catch(() => {});
+    }, 10_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const toggle = async () => {
+    setLoading(true);
+    try {
+      if (running) {
+        await api.stopMirror();
+        setRunning(false);
+      } else {
+        await api.startMirror();
+        setRunning(true);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={loading}
+      className={`w-12 h-12 flex items-center justify-center mb-1 border-2 transition ${
+        running
+          ? 'border-success text-success'
+          : 'border-transparent text-muted hover:border-muted hover:text-text'
+      } ${loading ? 'opacity-50' : ''}`}
+      title={running ? 'Stop Mirror' : 'Start Mirror'}
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        {running ? (
+          <>
+            <circle cx="12" cy="12" r="10" />
+            <line x1="10" y1="15" x2="10" y2="9" />
+            <line x1="14" y1="15" x2="14" y2="9" />
+          </>
+        ) : (
+          <>
+            <circle cx="12" cy="12" r="10" />
+            <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
+          </>
+        )}
+      </svg>
+    </button>
+  );
+}
+
 export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isProfileActive, onSettingsClick, isSettingsActive }: SidebarProps) {
   const isOverlay = isProfileActive || isSettingsActive;
 
@@ -70,6 +130,9 @@ export function Sidebar({ activeCategory, onCategoryChange, onProfileClick, isPr
       <div className="flex-1 flex items-center justify-center">
         <span className="text-muted2 text-[10px] select-none">──</span>
       </div>
+
+      {/* Mirror toggle */}
+      <MirrorButton />
 
       {/* Settings */}
       <SidebarButton

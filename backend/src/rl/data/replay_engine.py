@@ -31,9 +31,9 @@ from ...market_data.levels import (
 from ...market_data.tpo import (
     compute_tpo_profile,
     classify_tpo_shape,
-    compute_rotation_factor,
     detect_excess,
 )
+from ...market_data.metrics import compute_rotation_factor
 from ...market_data.orderflow import (
     build_candle_flow,
     compute_signals,
@@ -115,15 +115,114 @@ class ReplayEngine:
         self._prior_monthly_high: float | None = None
         self._prior_monthly_low: float | None = None
 
+        # Precomputed cross-session levels (injected before replay)
+        self._precomputed: dict | None = None
+
+        # Running session high/low for naked POC invalidation
+        self._session_high: float | None = None
+        self._session_low: float | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def get_prior_session_for_chaining(self) -> dict:
+        """Extract computed levels to pass as prior_session_levels to next session.
+
+        Call after replay_session() completes. Returns the dict format expected
+        by _load_prior_levels(): pdh, pdl, weekly_high/low, monthly_high/low.
+
+        PDH/PDL = this session's RTH high/low (computed from all RTH bars).
+        """
+        sl = self._session_levels
+        bars_1m = self._candle_agg.get_completed_1m()
+
+        # Compute RTH high/low from bars (09:30-16:00 ET)
+        rth_high = None
+        rth_low = None
+        for bar in bars_1m:
+            bar_ts = bar["ts"]
+            if isinstance(bar_ts, str):
+                bar_ts = datetime.fromisoformat(bar_ts)
+            if bar_ts.tzinfo is None:
+                bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+            bar_et = bar_ts.astimezone(ET)
+            bar_time = bar_et.time()
+            if time(9, 30) <= bar_time < time(16, 0):
+                h, l = bar["high"], bar["low"]
+                rth_high = max(rth_high or h, h)
+                rth_low = min(rth_low or l, l)
+
+        return {
+            "pdh": rth_high,
+            "pdl": rth_low,
+            "weekly_high": max(filter(None, [sl.weekly_high, rth_high])) if any([sl.weekly_high, rth_high]) else None,
+            "weekly_low": min(filter(None, [sl.weekly_low, rth_low])) if any([sl.weekly_low, rth_low]) else None,
+            "monthly_high": max(filter(None, [sl.monthly_high, rth_high])) if any([sl.monthly_high, rth_high]) else None,
+            "monthly_low": min(filter(None, [sl.monthly_low, rth_low])) if any([sl.monthly_low, rth_low]) else None,
+        }
+
+    def get_level_snapshot(self) -> dict:
+        """Return current computed levels for visual verification.
+
+        Call after replay_session() to inspect what the engine computed.
+        Returns all session levels, VWAP, VP, structural levels, and
+        the active level list used for touch detection.
+        """
+        vwap_bands = self._vwap.get()
+        vp = self._vp.get()
+        sl = self._session_levels
+
+        return {
+            "session_levels": {
+                "pdh": sl.pdh,
+                "pdl": sl.pdl,
+                "tokyo_high": sl.tokyo_high,
+                "tokyo_low": sl.tokyo_low,
+                "london_high": sl.london_high,
+                "london_low": sl.london_low,
+                "ib_high": sl.ib_high,
+                "ib_low": sl.ib_low,
+                "weekly_high": sl.weekly_high,
+                "weekly_low": sl.weekly_low,
+                "monthly_high": sl.monthly_high,
+                "monthly_low": sl.monthly_low,
+            },
+            "vwap": {
+                "vwap": vwap_bands.vwap if vwap_bands else None,
+                "sd1_upper": vwap_bands.sd1_upper if vwap_bands else None,
+                "sd1_lower": vwap_bands.sd1_lower if vwap_bands else None,
+                "sd2_upper": vwap_bands.sd2_upper if vwap_bands else None,
+                "sd2_lower": vwap_bands.sd2_lower if vwap_bands else None,
+                "sd3_upper": vwap_bands.sd3_upper if vwap_bands else None,
+                "sd3_lower": vwap_bands.sd3_lower if vwap_bands else None,
+            },
+            "volume_profile": {
+                "poc": vp.poc if vp else None,
+                "vah": vp.vah if vp else None,
+                "val": vp.val if vp else None,
+            },
+            "fvgs": [
+                {"low": f.price_low, "high": f.price_high, "direction": f.direction}
+                for f in self._fvgs
+            ],
+            "order_blocks": [
+                {"low": ob.price_low, "high": ob.price_high, "direction": ob.direction}
+                for ob in self._order_blocks
+            ],
+            "swing_points": self._swing_points,
+            "active_levels": [
+                {"name": name, "type": lt.value, "price": price}
+                for name, lt, price in self._active_levels
+            ],
+        }
 
     def replay_session(
         self,
         ticks: list[Any],
         session_date: datetime,
         prior_session_levels: dict | None = None,
+        precomputed_levels: dict | None = None,
     ) -> list[Episode]:
         """Replay a full session of ticks and return all labelled episodes.
 
@@ -146,6 +245,9 @@ class ReplayEngine:
         if prior_session_levels:
             self._load_prior_levels(prior_session_levels)
 
+        if precomputed_levels:
+            self._precomputed = precomputed_levels
+
         # Normalise ticks to dicts once for uniform access
         norm_ticks: list[dict] = [_normalise_tick(t) for t in ticks]
 
@@ -154,6 +256,8 @@ class ReplayEngine:
 
         for i, tick in enumerate(norm_ticks):
             price: float = tick["price"]
+            self._session_high = max(self._session_high or price, price)
+            self._session_low = min(self._session_low or price, price)
 
             # 1. Update candle aggregator → detect 1m bar closes
             completed_bars = self._candle_agg.update(tick)
@@ -277,6 +381,14 @@ class ReplayEngine:
                 self._candle_flows, direction="long", lookback=10
             )
 
+        # Invalidate naked POCs that the current session has swept through
+        if (self._precomputed and self._precomputed.get("naked_pocs")
+                and self._session_high is not None):
+            self._precomputed["naked_pocs"] = [
+                n for n in self._precomputed["naked_pocs"]
+                if not (self._session_low <= n["price"] <= self._session_high)
+            ]
+
         # Rebuild the active levels list
         self._rebuild_active_levels()
 
@@ -342,6 +454,27 @@ class ReplayEngine:
         _add_optional(levels, "swing_hl", LevelType.SWING_POINT, sp.get("last_hl"))
         _add_optional(levels, "swing_lh", LevelType.SWING_POINT, sp.get("last_lh"))
         _add_optional(levels, "swing_ll", LevelType.SWING_POINT, sp.get("last_ll"))
+
+        # --- Precomputed cross-session levels ---
+        if self._precomputed:
+            # Only inject Globex/overnight HL after RTH has started (avoid look-ahead bias)
+            if self._rth_vwap_started:
+                _add_optional(levels, "globex_high", LevelType.GLOBEX_HL, self._precomputed.get("globex_high"))
+                _add_optional(levels, "globex_low", LevelType.GLOBEX_HL, self._precomputed.get("globex_low"))
+                _add_optional(levels, "overnight_high", LevelType.OVERNIGHT_HL, self._precomputed.get("overnight_high"))
+                _add_optional(levels, "overnight_low", LevelType.OVERNIGHT_HL, self._precomputed.get("overnight_low"))
+
+            for naked in self._precomputed.get("naked_pocs", []):
+                levels.append(("naked_poc", LevelType.NAKED_POC, naked["price"]))
+
+            _add_optional(levels, "poc_daily", LevelType.POC_DAILY, self._precomputed.get("poc_daily"))
+            _add_optional(levels, "poc_weekly", LevelType.POC_WEEKLY, self._precomputed.get("poc_weekly"))
+            _add_optional(levels, "poc_monthly", LevelType.POC_MONTHLY, self._precomputed.get("poc_monthly"))
+            _add_optional(levels, "poc_macro", LevelType.POC_MACRO, self._precomputed.get("poc_macro"))
+
+            for sp_low, sp_high in self._precomputed.get("single_print_zones", []):
+                mid = (sp_low + sp_high) / 2.0
+                levels.append(("single_print", LevelType.SINGLE_PRINT, mid))
 
         self._active_levels = levels
 
@@ -416,7 +549,10 @@ class ReplayEngine:
         if bars_30m:
             profile = compute_tpo_profile(bars_30m, tick_size=TICK_SIZE)
             shape = classify_tpo_shape(profile)
-            rotation_factor, rotation_count = compute_rotation_factor(bars_30m)
+            highs_30m = [b["high"] for b in bars_30m]
+            lows_30m = [b["low"] for b in bars_30m]
+            rotation_factor = compute_rotation_factor(highs_30m, lows_30m)
+            rotation_count = len(bars_30m)
             excess_high, excess_low = detect_excess(profile)
             tpo_profile_dict = {
                 "poc": profile.poc,
@@ -466,16 +602,31 @@ class ReplayEngine:
         bars_1m: list[dict],
         session_date: datetime,
     ) -> dict:
-        """Compute session_context dict for structure_features.py."""
-        # RTH open in ET: 09:30
+        """Compute session_context dict for structure_features.py.
+
+        Keys must match what structure_features.py reads:
+          minutes_since_rth, minute_of_day, session_volume_pct,
+          daily_range_pct, session_type, ib_broken (str: "up"/"down"/"none")
+        """
         ts_et = ts.astimezone(ET) if ts.tzinfo else ts.replace(tzinfo=timezone.utc).astimezone(ET)
         rth_open = ts_et.replace(hour=9, minute=30, second=0, microsecond=0)
         minutes_since_open = max(0.0, (ts_et - rth_open).total_seconds() / 60.0)
 
-        # Session volume as fraction of total (proxy: completed bars vs all bars)
+        # Minute of day for time-of-day sin/cos encoding
+        minute_of_day = ts_et.hour * 60 + ts_et.minute
+
+        # Session type based on time of day (ET)
+        t = ts_et.time()
+        if time(9, 30) <= t < time(16, 0):
+            session_type = "rth"
+        elif time(3, 0) <= t < time(9, 30):
+            session_type = "london"
+        else:
+            session_type = "globex"
+
+        # Session volume as fraction of total
         total_volume = sum(b.get("volume", 0) for b in bars_1m)
-        # We don't have a "total expected" reference, so use raw volume normalised
-        session_volume_pct = min(1.0, total_volume / max(1, total_volume))  # always 1.0; callers normalise by avg
+        session_volume_pct = min(1.0, total_volume / max(1, total_volume))
 
         # Daily range percentage
         if bars_1m:
@@ -483,26 +634,27 @@ class ReplayEngine:
             session_low = min(b["low"] for b in bars_1m)
             daily_range_pct = (session_high - session_low) / max(1e-6, session_low)
         else:
-            session_high = 0.0
-            session_low = 0.0
             daily_range_pct = 0.0
 
-        # IB breakout status
+        # IB breakout status as string ("up", "down", "none")
         sl = self._session_levels
         ib_high = sl.ib_high
         ib_low = sl.ib_low
-        ib_broken = False
-        if ib_high is not None and ib_low is not None:
-            price_now = bars_1m[-1]["close"] if bars_1m else 0.0
-            ib_broken = price_now > ib_high or price_now < ib_low
+        ib_broken_str = "none"
+        if ib_high is not None and ib_low is not None and bars_1m:
+            price_now = bars_1m[-1]["close"]
+            if price_now > ib_high:
+                ib_broken_str = "up"
+            elif price_now < ib_low:
+                ib_broken_str = "down"
 
         return {
-            "minutes_since_rth_open": minutes_since_open,
+            "minutes_since_rth": minutes_since_open,
+            "minute_of_day": minute_of_day,
             "session_volume_pct": session_volume_pct,
             "daily_range_pct": daily_range_pct,
-            "ib_high": ib_high,
-            "ib_low": ib_low,
-            "ib_broken": ib_broken,
+            "session_type": session_type,
+            "ib_broken": ib_broken_str,
         }
 
     # ------------------------------------------------------------------
