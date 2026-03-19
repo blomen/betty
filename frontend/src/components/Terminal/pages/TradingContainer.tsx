@@ -262,6 +262,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           onScale={handleScale}
           onClose={handleClose}
           lastTick={lastTick}
+          book={book}
           latestPrediction={latestPrediction}
           latestFeatures={latestFeatures}
         />

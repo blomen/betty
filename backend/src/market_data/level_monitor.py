@@ -412,6 +412,14 @@ class LevelMonitor:
                 **candle_patterns,
             )
 
+            # Add buy/sell volume from last candle (for book gauges on frontend)
+            if self._candle_flow_fn:
+                candles = self._candle_flow_fn()
+                if candles:
+                    last_c = candles[-1]
+                    features["buy_volume"] = getattr(last_c, "buy_volume", None)
+                    features["sell_volume"] = getattr(last_c, "sell_volume", None)
+
             # Cache features for live refresh on orderflow_update
             self._last_ml_features = features
             self._active_level_name = level.name
@@ -528,6 +536,11 @@ class LevelMonitor:
                     if candle_dicts:
                         features["last_candle_delta"] = candle_dicts[-1].get("delta")
                         features["last_candle_body_ratio"] = candle_dicts[-1].get("body_ratio")
+                    # Refresh buy/sell volume from latest CandleFlow
+                    if candles:
+                        last_c = candles[-1]
+                        features["buy_volume"] = getattr(last_c, "buy_volume", None)
+                        features["sell_volume"] = getattr(last_c, "sell_volume", None)
             except Exception:
                 pass
 

@@ -522,6 +522,87 @@ export function featureCandleToGauges(f: Record<string, any>): GaugeBarProps[] {
   ];
 }
 
+/** Book + Volume gauges — bid/ask depth, buy/sell volume, spread */
+export function featureBookToGauges(book: { bid_price?: number; bid_size?: number; ask_price?: number; ask_size?: number; spread?: number } | null, f: Record<string, any>): GaugeBarProps[] {
+  const bidSz = book?.bid_size ?? null;
+  const askSz = book?.ask_size ?? null;
+  const spread = book?.spread ?? null;
+  const buyVol = f.buy_volume ?? null;
+  const sellVol = f.sell_volume ?? null;
+  const totalVol = (buyVol != null && sellVol != null) ? buyVol + sellVol : null;
+  const buyPct = totalVol && totalVol > 0 ? buyVol / totalVol : null;
+  const lastDelta = f.last_candle_delta ?? null;
+  const bodyRatio = f.last_candle_body_ratio ?? null;
+  const deltaAligned = f.delta_aligned ?? null;
+  const deltaDivergence = f.delta_divergence ?? null;
+
+  return [
+    {
+      label: 'BID SIZE',
+      fill: bidSz != null ? cap(bidSz / 200) : 0,
+      value: bidSz != null ? `${bidSz}` : '--',
+      assessment: bidSz == null ? 'N/A' : bidSz > 100 ? 'THICK' : bidSz > 30 ? 'NORMAL' : 'THIN',
+      color: bidSz == null ? 'dim' : bidSz > 100 ? 'green' : 'dim',
+    },
+    {
+      label: 'ASK SIZE',
+      fill: askSz != null ? cap(askSz / 200) : 0,
+      value: askSz != null ? `${askSz}` : '--',
+      assessment: askSz == null ? 'N/A' : askSz > 100 ? 'THICK' : askSz > 30 ? 'NORMAL' : 'THIN',
+      color: askSz == null ? 'dim' : askSz > 100 ? 'red' : 'dim',
+    },
+    {
+      label: 'SPREAD',
+      fill: spread != null ? cap(spread / 2) : 0,
+      value: spread != null ? spread.toFixed(2) : '--',
+      assessment: spread == null ? 'N/A' : spread <= 0.25 ? 'TIGHT' : spread > 0.75 ? 'WIDE' : 'NORMAL',
+      color: spread == null ? 'dim' : spread <= 0.25 ? 'green' : spread > 0.75 ? 'red' : 'amber',
+    },
+    {
+      label: 'BUY VOL',
+      fill: buyPct != null ? cap(buyPct) : 0,
+      value: buyVol != null ? `${Math.round(buyVol)}` : '--',
+      assessment: buyPct == null ? 'N/A' : buyPct > 0.6 ? 'DOMINANT' : buyPct > 0.45 ? 'BALANCED' : 'WEAK',
+      color: buyPct == null ? 'dim' : buyPct > 0.55 ? 'green' : buyPct < 0.45 ? 'red' : 'amber',
+    },
+    {
+      label: 'SELL VOL',
+      fill: buyPct != null ? cap(1 - buyPct) : 0,
+      value: sellVol != null ? `${Math.round(sellVol)}` : '--',
+      assessment: buyPct == null ? 'N/A' : buyPct < 0.4 ? 'DOMINANT' : buyPct < 0.55 ? 'BALANCED' : 'WEAK',
+      color: buyPct == null ? 'dim' : buyPct < 0.45 ? 'red' : buyPct > 0.55 ? 'green' : 'amber',
+    },
+    {
+      label: 'LAST Δ',
+      fill: lastDelta != null ? cap(Math.abs(lastDelta) / 500) : 0,
+      value: lastDelta != null ? (lastDelta > 0 ? `+${lastDelta}` : `${lastDelta}`) : '--',
+      assessment: lastDelta == null ? 'N/A' : lastDelta > 50 ? 'BUY PUSH' : lastDelta < -50 ? 'SELL PUSH' : 'NEUTRAL',
+      color: lastDelta == null ? 'dim' : lastDelta > 0 ? 'green' : lastDelta < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'BODY',
+      fill: bodyRatio != null ? cap(bodyRatio) : 0,
+      value: bodyRatio != null ? bodyRatio.toFixed(2) : '--',
+      assessment: bodyRatio == null ? 'N/A' : bodyRatio < 0.2 ? 'ABSORB' : bodyRatio > 0.7 ? 'CONVICTN' : 'NORMAL',
+      color: bodyRatio == null ? 'dim' : bodyRatio < 0.3 ? 'amber' : 'dim',
+    },
+    {
+      label: 'Δ ALIGN',
+      fill: deltaAligned ? 0.9 : 0.0,
+      value: deltaAligned == null ? '--' : deltaAligned ? 'YES' : 'NO',
+      assessment: deltaAligned == null ? 'N/A' : deltaAligned ? 'CONFIRMED' : 'DIVERGENT',
+      color: deltaAligned == null ? 'dim' : deltaAligned ? 'green' : 'red',
+    },
+    {
+      label: 'Δ DIVERG',
+      fill: deltaDivergence ? 0.9 : 0.0,
+      value: deltaDivergence == null ? '--' : deltaDivergence ? 'YES' : 'NO',
+      assessment: deltaDivergence == null ? 'N/A' : deltaDivergence ? 'EXHAUSTION' : 'NONE',
+      color: deltaDivergence == null ? 'dim' : deltaDivergence ? 'amber' : 'dim',
+    },
+  ];
+}
+
 /** Level-context gauges — 7 bars */
 export function featureLevelToGauges(f: Record<string, any>): GaugeBarProps[] {
   const lvlType = f.level_type ?? null;
