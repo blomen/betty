@@ -55,6 +55,7 @@ export function CandleChart({ lastCandle, session }: Props) {
   const [noData, setNoData] = useState(false);
   const priceLineRefs = useRef<Record<string, any>>({});
   const anchorSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const vwapSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
 
   // Scroll-back state
   const candlesRef = useRef<CandleData[]>([]);
@@ -327,7 +328,104 @@ export function CandleChart({ lastCandle, session }: Props) {
     chartRef.current?.timeScale().scrollToRealTime();
   }, [noData, session]);
 
-  // Reference lines: VWAP, IB, and all volume profile POC/VAH/VAL
+  // Developing VWAP + SD bands (computed from candle data)
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    // Remove old VWAP series
+    vwapSeriesRefs.current.forEach(s => {
+      try { chart.removeSeries(s); } catch {}
+    });
+    vwapSeriesRefs.current = [];
+
+    const candles = candlesRef.current;
+    if (!candles.length) return;
+
+    // Compute developing VWAP from candle data (HLC/3 for now, tick-based later)
+    const vwapData: LineData<Time>[] = [];
+    const sd1UpperData: LineData<Time>[] = [];
+    const sd1LowerData: LineData<Time>[] = [];
+    const sd2UpperData: LineData<Time>[] = [];
+    const sd2LowerData: LineData<Time>[] = [];
+
+    let cumTPV = 0;   // cumulative (typical_price * volume)
+    let cumVol = 0;    // cumulative volume
+    let cumTP2V = 0;   // cumulative (typical_price^2 * volume)
+
+    // Find RTH start: look for the candle closest to 13:30 UTC (09:30 ET)
+    // Reset VWAP at RTH open each day
+    let lastDate = '';
+
+    for (const c of candles) {
+      const d = new Date(c.t * 1000);
+      const dateStr = d.toISOString().slice(0, 10);
+      const utcHour = d.getUTCHours();
+      const utcMin = d.getUTCMinutes();
+      const minuteOfDay = utcHour * 60 + utcMin;
+
+      // RTH is ~13:30-20:00 UTC (09:30-16:00 ET, summer)
+      // or ~14:30-21:00 UTC (09:30-16:00 ET, winter)
+      // Use a simple heuristic: reset at first candle after 13:00 UTC on new day
+      if (dateStr !== lastDate && minuteOfDay >= 780) {
+        cumTPV = 0;
+        cumVol = 0;
+        cumTP2V = 0;
+        lastDate = dateStr;
+      }
+
+      // Skip pre-RTH candles (before ~13:00 UTC)
+      if (minuteOfDay < 780) continue;
+      // Skip post-RTH candles (after ~21:00 UTC)
+      if (minuteOfDay >= 1260) continue;
+
+      const tp = (c.h + c.l + c.c) / 3;
+      const vol = c.v || 1;
+
+      cumTPV += tp * vol;
+      cumVol += vol;
+      cumTP2V += tp * tp * vol;
+
+      if (cumVol === 0) continue;
+
+      const vwap = cumTPV / cumVol;
+      const variance = Math.max(0, (cumTP2V / cumVol) - vwap * vwap);
+      const sd = Math.sqrt(variance);
+
+      const t = c.t as Time;
+      vwapData.push({ time: t, value: vwap });
+      sd1UpperData.push({ time: t, value: vwap + sd });
+      sd1LowerData.push({ time: t, value: vwap - sd });
+      sd2UpperData.push({ time: t, value: vwap + 2 * sd });
+      sd2LowerData.push({ time: t, value: vwap - 2 * sd });
+    }
+
+    if (!vwapData.length) return;
+
+    // Create line series for VWAP and bands
+    const addLine = (color: string, width: 1 | 2, style: number, data: LineData<Time>[]) => {
+      const s = chart.addSeries(LineSeries, {
+        color,
+        lineWidth: width,
+        lineStyle: style,
+        lastValueVisible: true,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(data);
+      vwapSeriesRefs.current.push(s);
+      return s;
+    };
+
+    addLine('#06B6D4', 2, LineStyle.Solid, vwapData);        // VWAP
+    addLine('rgba(6,182,212,0.5)', 1, LineStyle.Solid, sd1UpperData);  // +1SD
+    addLine('rgba(6,182,212,0.5)', 1, LineStyle.Solid, sd1LowerData);  // -1SD
+    addLine('rgba(6,182,212,0.25)', 1, LineStyle.Dashed, sd2UpperData); // +2SD
+    addLine('rgba(6,182,212,0.25)', 1, LineStyle.Dashed, sd2LowerData); // -2SD
+
+  }, [session, lastCandle]);
+
+  // Static reference lines: IB, PDH/PDL, dPOC (these are flat — correct for structural levels)
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series) return;
@@ -345,15 +443,6 @@ export function CandleChart({ lastCandle, session }: Props) {
       if (price == null || price === 0) return;
       priceLineRefs.current[key] = series.createPriceLine({ price, color, lineWidth: width, lineStyle: style, axisLabelVisible: true, title });
     };
-
-    // --- Verified levels only ---
-
-    // VWAP + SD bands
-    add('vwap', s.vwap, '#06B6D4', 'VWAP', LineStyle.Solid, 2);
-    add('vwap_1sd_u', s.vwap_1sd_upper, '#06B6D4', '+1SD', LineStyle.Dashed, 1);
-    add('vwap_1sd_l', s.vwap_1sd_lower, '#06B6D4', '-1SD', LineStyle.Dashed, 1);
-    add('vwap_2sd_u', s.vwap_2sd_upper, '#0891B2', '+2SD', LineStyle.Dotted, 1);
-    add('vwap_2sd_l', s.vwap_2sd_lower, '#0891B2', '-2SD', LineStyle.Dotted, 1);
 
     // Initial Balance
     add('ibh', s.ib_high, '#F59E0B', 'IBH', LineStyle.Dotted);
