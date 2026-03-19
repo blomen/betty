@@ -603,7 +603,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     priceLineRefs.current = {};
 
     if (!session) return;
-    const s = session.session;
     const p = session.profiles;
 
     const h = hiddenLevels;
