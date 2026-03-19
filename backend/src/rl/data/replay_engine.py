@@ -28,12 +28,7 @@ from ...market_data.levels import (
     detect_swing_points,
     SessionLevels,
 )
-from ...market_data.tpo import (
-    compute_tpo_profile,
-    classify_tpo_shape,
-    detect_excess,
-)
-from ...market_data.metrics import compute_rotation_factor
+from ...market_data.tpo import build_full_tpo_profile
 from ...market_data.orderflow import (
     build_candle_flow,
     compute_signals,
@@ -547,27 +542,27 @@ class ReplayEngine:
         # TPO profile from 30m bars
         tpo_profile_dict: dict | None = None
         if bars_30m:
-            profile = compute_tpo_profile(bars_30m, tick_size=TICK_SIZE)
-            shape = classify_tpo_shape(profile)
-            highs_30m = [b["high"] for b in bars_30m]
-            lows_30m = [b["low"] for b in bars_30m]
-            rotation_factor = compute_rotation_factor(highs_30m, lows_30m)
-            rotation_count = len(bars_30m)
-            excess_high, excess_low = detect_excess(profile)
+            profile = build_full_tpo_profile(bars_30m, tick_size=TICK_SIZE)
             tpo_profile_dict = {
                 "poc": profile.poc,
                 "vah": profile.vah,
                 "val": profile.val,
-                "shape": shape,
-                "rotation_factor": rotation_factor,
-                "rotation_count": rotation_count,
-                "excess_high": excess_high,
-                "excess_low": excess_low,
+                "shape": profile.profile_shape,
+                "rotation_factor": profile.rotation_factor,
+                "rotation_count": profile.rotation_factor,
+                "excess_high": profile.upper_excess > 0,
+                "excess_low": profile.lower_excess > 0,
+                "upper_excess_ticks": profile.upper_excess,
+                "lower_excess_ticks": profile.lower_excess,
                 "poor_high": profile.poor_high,
                 "poor_low": profile.poor_low,
                 "single_prints": profile.single_prints,
                 "ledges": profile.ledges,
                 "ib_tpo_count": profile.ib_tpo_count,
+                "opening_type": profile.opening_type,
+                "opening_direction": profile.opening_direction,
+                "ib_high": profile.ib_high,
+                "ib_low": profile.ib_low,
             }
 
         # Session context

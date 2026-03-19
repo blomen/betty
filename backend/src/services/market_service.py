@@ -19,7 +19,7 @@ from ..market_data.orderflow import build_candle_flow, compute_signals
 from ..market_data.scanner import MarketScanner
 from ..market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
 from ..market_data.setups.detector import DetectorContext, run_all_detectors
-from ..market_data.tpo import compute_tpo_profile
+from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m
 from ..repositories.market_repo import MarketRepo
 
 logger = logging.getLogger(__name__)
@@ -275,7 +275,7 @@ class MarketService:
         bars_30m = self._aggregate_bars_30m(bars)
 
         # TPO profile from 30-min bars
-        tpo = compute_tpo_profile(bars_30m)
+        tpo = build_full_tpo_profile(bars_30m)
 
         # Session metrics: RF from 30-min highs/lows
         highs_30m = [b["high"] for b in bars_30m]
@@ -1369,32 +1369,7 @@ class MarketService:
 
     @staticmethod
     def _aggregate_bars_30m(bars) -> list[dict]:
-        """Aggregate 1-min BarData objects into 30-min OHLCV dicts."""
-        if not bars:
-            return []
-        result = []
-        chunk = []
-        for b in bars:
-            chunk.append(b)
-            if len(chunk) == 30:
-                result.append({
-                    "high": max(c.high for c in chunk),
-                    "low": min(c.low for c in chunk),
-                    "open": chunk[0].open,
-                    "close": chunk[-1].close,
-                    "volume": sum(c.volume for c in chunk),
-                })
-                chunk = []
-        # Handle remaining bars
-        if chunk:
-            result.append({
-                "high": max(c.high for c in chunk),
-                "low": min(c.low for c in chunk),
-                "open": chunk[0].open,
-                "close": chunk[-1].close,
-                "volume": sum(c.volume for c in chunk),
-            })
-        return result
+        return aggregate_bars_30m(bars)
 
     @staticmethod
     def _session_levels_to_rows(
