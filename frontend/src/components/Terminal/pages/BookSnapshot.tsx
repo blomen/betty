@@ -1,24 +1,92 @@
+import { useCallback } from 'react';
 import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel } from '@/types/market';
+
+// Level groups: toggling a group toggles all its children
+const LEVEL_GROUPS: Record<string, string[]> = {
+  vwap: ['vwap'],
+  ib: ['ibh', 'ibl'],
+  pd: ['pdh', 'pdl'],
+  tokyo: ['tokyo_h', 'tokyo_l'],
+  london: ['london_h', 'london_l'],
+  daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
+  weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
+  monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
+};
 
 interface Props {
   book: StreamBookEvent | null;
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
+  hiddenLevels: Set<string>;
+  setHiddenLevels: React.Dispatch<React.SetStateAction<Set<string>>>;
 }
 
-export function BookSnapshot({ session }: Props) {
+export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) {
   const s = session?.session;
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
 
+  const toggle = useCallback((key: string) => {
+    setHiddenLevels(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, [setHiddenLevels]);
+
+  const toggleGroup = useCallback((group: string) => {
+    const keys = LEVEL_GROUPS[group];
+    if (!keys) return;
+    setHiddenLevels(prev => {
+      const next = new Set(prev);
+      const allHidden = keys.every(k => next.has(k));
+      keys.forEach(k => allHidden ? next.delete(k) : next.add(k));
+      return next;
+    });
+  }, [setHiddenLevels]);
+
+  const toggleAll = useCallback(() => {
+    setHiddenLevels(prev => {
+      const allKeys = Object.values(LEVEL_GROUPS).flat();
+      const allHidden = allKeys.every(k => prev.has(k));
+      return new Set(allHidden ? [] : allKeys);
+    });
+  }, [setHiddenLevels]);
+
+  const toggleCluster = useCallback((groups: string[]) => {
+    const keys = groups.flatMap(g => LEVEL_GROUPS[g] ?? []);
+    setHiddenLevels(prev => {
+      const next = new Set(prev);
+      const allHidden = keys.every(k => next.has(k));
+      keys.forEach(k => allHidden ? next.delete(k) : next.add(k));
+      return next;
+    });
+  }, [setHiddenLevels]);
+
+  const isGroupHidden = (group: string) => {
+    const keys = LEVEL_GROUPS[group];
+    return keys ? keys.every(k => hiddenLevels.has(k)) : false;
+  };
+
+  const isClusterHidden = (groups: string[]) =>
+    groups.every(g => isGroupHidden(g));
+
+  const allHidden = Object.values(LEVEL_GROUPS).flat().every(k => hiddenLevels.has(k));
+
   return (
     <div className="flex flex-col h-full min-h-0 text-xs font-mono overflow-y-auto">
 
-      {/* VWAP — verified */}
+      {/* Master toggle */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
+        <span className="text-[10px] text-muted uppercase tracking-wider">Levels</span>
+        <EyeBtn hidden={allHidden} onClick={toggleAll} />
+      </div>
+
+      {/* VWAP */}
       {s?.vwap != null && (
-        <Section label="VWAP">
+        <Section label="VWAP" hidden={isGroupHidden('vwap')} onToggle={() => toggleGroup('vwap')}>
           <div className="flex items-baseline justify-between">
-            <span className="text-cyan-400 text-sm font-bold">{s.vwap.toFixed(2)}</span>
+            <span className="text-yellow-400 text-sm font-bold">{s.vwap.toFixed(2)}</span>
             {pricePos?.vwap_deviation_sd != null && (
               <span className={`text-[11px] ${
                 Math.abs(pricePos.vwap_deviation_sd) > 2 ? 'text-red-400' :
@@ -40,53 +108,146 @@ export function BookSnapshot({ session }: Props) {
                   <span className="text-[10px] text-muted2">-2SD {s.vwap_2sd_lower.toFixed(2)}</span>
                 </div>
               )}
-              {s.vwap_3sd_upper != null && s.vwap_3sd_lower != null && (
-                <div className="flex justify-between">
-                  <span className="text-[10px] text-muted2">+3SD {s.vwap_3sd_upper.toFixed(2)}</span>
-                  <span className="text-[10px] text-muted2">-3SD {s.vwap_3sd_lower.toFixed(2)}</span>
-                </div>
-              )}
             </div>
           )}
         </Section>
       )}
 
-      {/* Session Levels — verified */}
-      <Section label="Session">
-        {s?.ib_high != null && s?.ib_low != null ? (
-          <>
-            <Row label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />
-            <Row label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />
-            <Row label="IB Range" value={(s.ib_high - s.ib_low).toFixed(2)} />
-          </>
-        ) : (
-          <Placeholder text="Waiting for IB (09:30-10:30 ET)" />
-        )}
-        {s?.pdh != null && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" />}
-        {s?.pdl != null && <Row label="PDL" value={s.pdl.toFixed(2)} color="text-orange-400" />}
-        {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-pink-400" />}
-        {s?.tokyo_low != null && <Row label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-pink-400" />}
-        {s?.london_high != null && <Row label="London H" value={s.london_high.toFixed(2)} color="text-blue-400" />}
-        {s?.london_low != null && <Row label="London L" value={s.london_low.toFixed(2)} color="text-blue-400" />}
-      </Section>
+      {/* Session Levels */}
+      <div className={`px-3 py-2 border-b border-border ${isClusterHidden(['ib', 'pd', 'tokyo', 'london']) ? 'opacity-40' : ''}`}>
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">Session</button>
+          <EyeBtn hidden={isClusterHidden(['ib', 'pd', 'tokyo', 'london'])} onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} />
+        </div>
 
-      {/* Volume Profile — daily only (fixed range: session start → now) */}
-      <Section label="Volume Profile">
-        <VPRow label="Daily" vp={profiles?.session} color="text-purple-400" />
+        {/* IB */}
+        <LevelGroup label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
+          {s?.ib_high != null && s?.ib_low != null ? (
+            <>
+              <ToggleRow label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" levelKey="ibh" hidden={hiddenLevels.has('ibh')} toggle={toggle} />
+              <ToggleRow label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" levelKey="ibl" hidden={hiddenLevels.has('ibl')} toggle={toggle} />
+              <Row label="IB Range" value={(s.ib_high - s.ib_low).toFixed(2)} />
+            </>
+          ) : (
+            <Placeholder text="Waiting for IB (15:30-16:30 CET)" />
+          )}
+        </LevelGroup>
+
+        {/* PDH/PDL */}
+        <LevelGroup label="PD" hidden={isGroupHidden('pd')} onToggle={() => toggleGroup('pd')}>
+          {s?.pdh != null && <ToggleRow label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" levelKey="pdh" hidden={hiddenLevels.has('pdh')} toggle={toggle} />}
+          {s?.pdl != null && <ToggleRow label="PDL" value={s.pdl.toFixed(2)} color="text-orange-400" levelKey="pdl" hidden={hiddenLevels.has('pdl')} toggle={toggle} />}
+        </LevelGroup>
+
+        {/* Tokyo */}
+        <LevelGroup label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
+          {s?.tokyo_high != null && <ToggleRow label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-400" levelKey="tokyo_h" hidden={hiddenLevels.has('tokyo_h')} toggle={toggle} />}
+          {s?.tokyo_low != null && <ToggleRow label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-400" levelKey="tokyo_l" hidden={hiddenLevels.has('tokyo_l')} toggle={toggle} />}
+        </LevelGroup>
+
+        {/* London */}
+        <LevelGroup label="London" hidden={isGroupHidden('london')} onToggle={() => toggleGroup('london')}>
+          {s?.london_high != null && <ToggleRow label="London H" value={s.london_high.toFixed(2)} color="text-emerald-400" levelKey="london_h" hidden={hiddenLevels.has('london_h')} toggle={toggle} />}
+          {s?.london_low != null && <ToggleRow label="London L" value={s.london_low.toFixed(2)} color="text-emerald-400" levelKey="london_l" hidden={hiddenLevels.has('london_l')} toggle={toggle} />}
+        </LevelGroup>
+      </div>
+
+      {/* Volume Profile — multi-timeframe */}
+      <div className={`px-3 py-2 border-b border-border last:border-b-0 ${isClusterHidden(['daily_vp', 'weekly_vp', 'monthly_vp']) ? 'opacity-40' : ''}`}>
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">Volume Profile</button>
+          <EyeBtn hidden={isClusterHidden(['daily_vp', 'weekly_vp', 'monthly_vp'])} onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} />
+        </div>
+
+        <LevelGroup label="Daily" hidden={isGroupHidden('daily_vp')} onToggle={() => toggleGroup('daily_vp')}>
+          <VPRow vp={profiles?.session} color="text-purple-400" />
+        </LevelGroup>
+
+        <LevelGroup label="Weekly" hidden={isGroupHidden('weekly_vp')} onToggle={() => toggleGroup('weekly_vp')}>
+          <VPRow vp={profiles?.weekly} color="text-pink-400" />
+        </LevelGroup>
+
+        <LevelGroup label="Monthly" hidden={isGroupHidden('monthly_vp')} onToggle={() => toggleGroup('monthly_vp')}>
+          <VPRow vp={profiles?.monthly} color="text-yellow-400" />
+        </LevelGroup>
+
         {profiles?.developing_poc != null && (
           <Row label="devPOC" value={profiles.developing_poc.toFixed(2)} color="text-white" />
         )}
-      </Section>
+      </div>
 
     </div>
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+// --- UI building blocks ---
+
+function EyeBtn({ hidden, onClick }: { hidden: boolean; onClick: () => void }) {
   return (
-    <div className="px-3 py-2 border-b border-border last:border-b-0">
-      <div className="text-[10px] text-muted uppercase tracking-wider mb-2">{label}</div>
+    <button
+      onClick={onClick}
+      className="text-muted2 hover:text-text transition-colors p-0.5"
+      title={hidden ? 'Show' : 'Hide'}
+    >
+      {hidden ? <EyeOffIcon /> : <EyeIcon />}
+    </button>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+
+function Section({ label, hidden, onToggle, children }: { label: string; hidden: boolean; onToggle: () => void; children: React.ReactNode }) {
+  return (
+    <div className={`px-3 py-2 border-b border-border ${hidden ? 'opacity-40' : ''}`}>
+      <div className="flex items-center justify-between mb-2">
+        <button onClick={onToggle} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">{label}</button>
+        <EyeBtn hidden={hidden} onClick={onToggle} />
+      </div>
       {children}
+    </div>
+  );
+}
+
+function LevelGroup({ label, hidden, onToggle, children }: { label: string; hidden: boolean; onToggle: () => void; children: React.ReactNode }) {
+  return (
+    <div className={`mb-1.5 ${hidden ? 'opacity-40' : ''}`}>
+      <div className="flex items-center justify-between mb-0.5">
+        <button onClick={onToggle} className="text-[10px] text-muted2 font-bold hover:text-text transition-colors cursor-pointer">{label}</button>
+        <EyeBtn hidden={hidden} onClick={onToggle} />
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ToggleRow({ label, value, color, levelKey, hidden, toggle }: {
+  label: string; value: string; color?: string; levelKey: string; hidden: boolean; toggle: (k: string) => void;
+}) {
+  return (
+    <div className={`flex items-center justify-between ${hidden ? 'opacity-40' : ''}`}>
+      <div className="flex items-center gap-1">
+        <button onClick={() => toggle(levelKey)} className="text-muted2 hover:text-text transition-colors p-0">
+          {hidden ? <EyeOffIcon /> : <EyeIcon />}
+        </button>
+        <span className="text-muted2 text-[10px]">{label}</span>
+      </div>
+      <span className={`text-[11px] ${color ?? 'text-text'}`}>{value}</span>
     </div>
   );
 }
@@ -100,24 +261,13 @@ function Row({ label, value, color }: { label: string; value: string; color?: st
   );
 }
 
-function VPRow({ label, vp, color, anchor }: {
-  label: string;
-  vp?: VPLevel | null;
-  color: string;
-  anchor?: string;
-}) {
+function VPRow({ vp, color }: { vp?: VPLevel | null; color: string }) {
   if (!vp) return null;
   return (
-    <div className="mb-1.5">
-      <div className="flex items-center justify-between">
-        <span className={`text-[10px] ${color} font-bold`}>{label}</span>
-        {anchor && <span className="text-[9px] text-muted2">{anchor}</span>}
-      </div>
-      <div className="grid grid-cols-3 gap-x-1 text-[10px]">
-        <span className="text-muted2">VAH <span className="text-text">{vp.vah.toFixed(0)}</span></span>
-        <span className="text-muted2">POC <span className={color}>{vp.poc.toFixed(0)}</span></span>
-        <span className="text-muted2">VAL <span className="text-text">{vp.val.toFixed(0)}</span></span>
-      </div>
+    <div className="grid grid-cols-3 gap-x-1 text-[10px]">
+      <span className="text-muted2">VAH <span className="text-text">{vp.vah.toFixed(0)}</span></span>
+      <span className="text-muted2">POC <span className={color}>{vp.poc.toFixed(0)}</span></span>
+      <span className="text-muted2">VAL <span className="text-text">{vp.val.toFixed(0)}</span></span>
     </div>
   );
 }
