@@ -270,8 +270,9 @@ def _compute_levels_for_date(
     bars = [to_dict(c) for c in candles]
 
     # --- Volume Profile ---
-    trades = [{"price": b["close"], "size": b.get("volume", 1)} for b in bars]
+    from ...market_data.levels import bars_to_trades
     try:
+        trades = bars_to_trades(bars)
         vp = compute_volume_profile(trades)
         if vp.poc and vp.poc > 0:
             levels.append({"name": "POC", "price": vp.poc, "type": "poc", "category": "session"})
