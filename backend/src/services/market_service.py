@@ -85,23 +85,46 @@ class MarketService:
             return True
         return False
 
+    @staticmethod
+    def _filter_halt(rows: list) -> list:
+        """Remove rows during the daily CME halt (17:00-18:00 ET / 22:00-23:00 CET)."""
+        from zoneinfo import ZoneInfo
+        _ET = ZoneInfo("US/Eastern")
+        filtered = []
+        for r in rows:
+            ts = r.ts if hasattr(r, 'ts') else None
+            if ts is None:
+                filtered.append(r)
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts.astimezone(_ET).hour == 17:
+                continue
+            filtered.append(r)
+        return filtered
+
     async def _get_session_bars(self, symbol: str) -> list[dict]:
         """Get today's complete 1m bars for VP. DB first, backfill from Databento if gaps.
 
-        A full Globex session (22h) should have ~1300 1m bars. If DB has < 70%
+        Anchored from 00:00 CET (midnight Stockholm time). A full session
+        (Tokyo + London + NY ≈ 22h) should have ~1300 1m bars. If DB has < 70%
         coverage, fetches from Databento and persists to DB so it only happens once.
         """
+        from zoneinfo import ZoneInfo
+        _CET = ZoneInfo("Europe/Stockholm")
+
         now = datetime.now(timezone.utc)
-        # Globex open: yesterday ~22:00 UTC (18:00 ET during EDT)
-        d_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=2)
+        # Start from 00:00 CET today
+        today_cet = now.astimezone(_CET).date()
+        d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
         d_end = now
 
         # Expected bars: minutes from session start to now minus ~60 min halt
         elapsed_minutes = max(1, int((d_end - d_start).total_seconds() / 60))
         expected_bars = max(1, elapsed_minutes - 60)
 
-        # Try DB first
-        rows = self.repo.get_candles(symbol, "1m", d_start, d_end)
+        # Try DB first (filter out 17:00-18:00 ET halt)
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, d_end))
         db_bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
         coverage = len(db_bars) / expected_bars if expected_bars > 0 else 0
 
@@ -489,6 +512,16 @@ class MarketService:
             profiles = {
                 "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
             }
+
+        # Weekly and monthly VP
+        for tf in ("weekly", "monthly"):
+            try:
+                tf_bars = await self._get_period_bars(symbol, tf)
+                if tf_bars:
+                    tf_vp = compute_volume_profile(bars_to_trades(tf_bars))
+                    profiles[tf] = {"poc": tf_vp.poc, "vah": tf_vp.vah, "val": tf_vp.val}
+            except Exception as e:
+                logger.warning("%s VP failed: %s", tf, e)
 
         # Developing POC
         dev_poc = compute_developing_poc(bar_dicts_with_vol)
@@ -1037,10 +1070,12 @@ class MarketService:
     _vp_cache: dict[tuple, tuple] = {}
 
     async def get_volume_profile_curve(self, symbol: str = "NQ", timeframe: str = "session") -> dict:
-        """Return daily VP curve (price→volume) for charting. Cached for 60s.
+        """Return VP curve (price→volume) for charting. Cached for 60s.
 
-        Fixed range: today's Globex session start to now.
-        Uses _get_session_bars which backfills from Databento if DB has gaps.
+        Timeframes:
+        - session: today from 00:00 CET to now
+        - weekly: current week (Mon 00:00 CET) to now
+        - monthly: current month (1st 00:00 CET) to now
         """
         import time as _time
 
@@ -1049,15 +1084,18 @@ class MarketService:
         if cached and _time.time() < cached[1]:
             return cached[0]
 
-        bars = await self._get_session_bars(symbol)
+        if timeframe == "session":
+            bars = await self._get_session_bars(symbol)
+        else:
+            bars = await self._get_period_bars(symbol, timeframe)
 
         if not bars:
-            return {"timeframe": "session", "levels": [], "poc": 0, "vah": 0, "val": 0}
+            return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
 
         vp = compute_volume_profile(bars_to_trades(bars))
 
         result = {
-            "timeframe": "session",
+            "timeframe": timeframe,
             "poc": vp.poc,
             "vah": vp.vah,
             "val": vp.val,
@@ -1066,28 +1104,46 @@ class MarketService:
         MarketService._vp_cache[cache_key] = (result, _time.time() + 60)
         return result
 
+    async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
+        """Get 1m bars for weekly or monthly VP from DB."""
+        from zoneinfo import ZoneInfo
+        _CET = ZoneInfo("Europe/Stockholm")
+
+        now = datetime.now(timezone.utc)
+        today_cet = now.astimezone(_CET).date()
+
+        if timeframe == "weekly":
+            # Monday 00:00 CET of current week
+            start_date = today_cet - timedelta(days=today_cet.weekday())
+        else:  # monthly
+            start_date = today_cet.replace(day=1)
+
+        d_start = datetime(start_date.year, start_date.month, start_date.day, tzinfo=_CET).astimezone(timezone.utc)
+
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
+        logger.info("VP %s bars: %d from DB (%s to now)", timeframe, len(rows), start_date)
+        return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
+
     async def get_developing_vwap(self, symbol: str = "NQ", interval: str = "1m") -> dict:
-        """Return developing VWAP time series from 1m candle data (RTH only).
+        """Return developing VWAP time series from 1m candle data.
+
+        Anchored from 00:00 CET (daily reset at midnight CET) — includes all
+        sessions (Tokyo + London + New York).
 
         Uses stored 1m candles from DB for speed (3M ticks too slow to query).
-        Computes VWAP from typical price (HLC/3) weighted by volume — approximation
-        but instant response and close to tick-level VWAP.
+        Computes VWAP from typical price (HLC/3) weighted by volume.
         """
         import math
         from zoneinfo import ZoneInfo
-        _ET = ZoneInfo("US/Eastern")
+        _CET = ZoneInfo("Europe/Stockholm")
 
-        today = date.today()
-        # Fetch 1m candles from midnight UTC (covers full globex + RTH)
-        start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
+        # Start from 00:00 CET today
+        today_cet = now.astimezone(_CET).date()
+        start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET)
 
-        rows = self.repo.get_candles(symbol, "1m", start, now)
-        logger.info("VWAP: got %d 1m candles from DB for %s", len(rows), symbol)
-
-        # Filter to RTH only (09:30-16:00 ET) and compute developing VWAP
-        rth_start = datetime.min.time().replace(hour=9, minute=30)
-        rth_end = datetime.min.time().replace(hour=16, minute=0)
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start, now))
+        logger.info("VWAP: got %d 1m candles from DB for %s (from 00:00 CET)", len(rows), symbol)
 
         cum_pv = 0.0
         cum_vol = 0
@@ -1098,10 +1154,6 @@ class MarketService:
             ts = r.ts
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            ts_et = ts.astimezone(_ET)
-
-            if not (rth_start <= ts_et.time() < rth_end):
-                continue
 
             tp = (r.h + r.l + r.c) / 3
             vol = r.v or 1
@@ -1129,8 +1181,91 @@ class MarketService:
                 "sd3_l": round(vwap - 3 * sd, 2),
             })
 
-        logger.info("VWAP: computed %d RTH points from 1m candles", len(series))
+        logger.info("VWAP: computed %d points from 1m candles (00:00 CET anchor)", len(series))
         return {"vwap": series, "symbol": symbol, "count": len(series)}
+
+    async def get_session_levels(self, symbol: str = "NQ", days: int = 5) -> dict:
+        """Compute session levels (PDH/PDL, IB, Tokyo, London) from 1m candles for multiple days.
+
+        Returns per-day levels with CET epoch boundaries so the frontend can draw
+        time-scoped horizontal lines. Computes on-the-fly from market_candles —
+        same logic used by RL backtesting.
+        """
+        from zoneinfo import ZoneInfo
+        from collections import defaultdict
+
+        _CET = ZoneInfo("Europe/Stockholm")
+
+        now = datetime.now(timezone.utc)
+        today_cet = now.astimezone(_CET).date()
+
+        # Fetch enough 1m candles to cover `days` trading days + 1 extra for PDH/PDL
+        pad_days = days + (days // 5) * 2 + 3  # pad for weekends
+        start_dt = datetime(
+            today_cet.year, today_cet.month, today_cet.day,
+            tzinfo=_CET,
+        ) - timedelta(days=pad_days)
+        start_utc = start_dt.astimezone(timezone.utc)
+
+        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start_utc, now))
+        if not rows:
+            return {"days": [], "symbol": symbol}
+
+        # Convert DB rows to bar dicts for compute_session_levels()
+        bars = [
+            {"ts": r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc), "high": r.h, "low": r.l}
+            for r in rows
+        ]
+
+        # Group bars by CET date
+        bars_by_date: dict[str, list[dict]] = defaultdict(list)
+        for b in bars:
+            cet_date = b["ts"].astimezone(_CET).date().isoformat()
+            bars_by_date[cet_date].append(b)
+
+        # Get sorted dates (most recent first), limit to requested days
+        sorted_dates = sorted(bars_by_date.keys(), reverse=True)[:days]
+
+        def _cet_epoch(d, h, m):
+            return int(datetime(d.year, d.month, d.day, h, m, tzinfo=_CET).timestamp())
+
+        result_days = []
+        for date_str in sorted_dates:
+            # Include previous day's bars for PDH/PDL computation
+            prev_date = (datetime.strptime(date_str, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+            all_bars = bars_by_date.get(prev_date, []) + bars_by_date[date_str]
+
+            dt_parsed = datetime.strptime(date_str, "%Y-%m-%d")
+            session_date = dt_parsed.replace(hour=12, tzinfo=ZoneInfo("US/Eastern"))
+            sl = compute_session_levels(all_bars, session_date)
+
+            # CET epoch boundaries for frontend time-scoping
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+            result_days.append({
+                "date": date_str,
+                "pdh": sl.pdh,
+                "pdl": sl.pdl,
+                "ib_high": sl.ib_high,
+                "ib_low": sl.ib_low,
+                "tokyo_high": sl.tokyo_high,
+                "tokyo_low": sl.tokyo_low,
+                "london_high": sl.london_high,
+                "london_low": sl.london_low,
+                # Time boundaries (CET epochs) for drawing scoped lines
+                "tokyo_start": _cet_epoch(d, 0, 0),
+                "tokyo_end": _cet_epoch(d, 8, 0),
+                "london_start": _cet_epoch(d, 8, 0),
+                "london_end": _cet_epoch(d, 15, 30),
+                "ib_start": _cet_epoch(d, 15, 30),
+                "ib_end": _cet_epoch(d, 16, 30),
+                "ny_start": _cet_epoch(d, 15, 30),
+                "ny_end": _cet_epoch(d, 22, 0),
+                "day_start": _cet_epoch(d, 0, 0),
+                "day_end": _cet_epoch(d, 22, 0),
+            })
+
+        return {"days": result_days, "symbol": symbol}
 
     async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5) -> dict:
         """Return OHLCV candle array for charting from market_candles DB.

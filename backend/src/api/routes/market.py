@@ -302,10 +302,21 @@ async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = De
 @router.get("/volume-profile")
 async def get_volume_profile(
     symbol: str = Query(default="NQ"),
+    timeframe: str = Query(default="session", regex="^(session|weekly|monthly)$"),
     svc: MarketService = Depends(_svc),
 ):
-    """Return daily VP curve (price→volume pairs) — fixed range from session start to now."""
-    return await svc.get_volume_profile_curve(symbol)
+    """Return VP curve (price→volume pairs) for session/weekly/monthly."""
+    return await svc.get_volume_profile_curve(symbol, timeframe=timeframe)
+
+
+@router.get("/session-levels")
+async def get_session_levels(
+    symbol: str = Query(default="NQ"),
+    days: int = Query(default=5, ge=1, le=30),
+    svc: MarketService = Depends(_svc),
+):
+    """Return per-day session levels (PDH/PDL, IB, Tokyo, London) with time boundaries."""
+    return await svc.get_session_levels(symbol, days)
 
 
 @router.get("/footprint")
