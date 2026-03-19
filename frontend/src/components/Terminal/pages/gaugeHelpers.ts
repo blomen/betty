@@ -603,6 +603,66 @@ export function featureBookToGauges(book: { bid_price?: number; bid_size?: numbe
   ];
 }
 
+/** Open Interest / COT gauges — from weekly CFTC data */
+export function featureCotToGauges(
+  current: { open_interest: number; net_commercial: number; net_non_commercial: number; net_non_reportable: number } | null,
+  previous: { open_interest: number; net_commercial: number; net_non_commercial: number } | null,
+): GaugeBarProps[] {
+  if (!current) return [];
+
+  const oi = current.open_interest;
+  const oiChg = previous ? oi - previous.open_interest : null;
+  const netComm = current.net_commercial;
+  const netSpec = current.net_non_commercial;
+  const netCommChg = previous ? netComm - previous.net_commercial : null;
+  const netSpecChg = previous ? netSpec - previous.net_non_commercial : null;
+
+  return [
+    {
+      label: 'OPEN INT',
+      fill: cap(oi / 600000),  // NQ OI typically 200k-500k
+      value: oi >= 1000 ? `${(oi / 1000).toFixed(0)}k` : `${oi}`,
+      assessment: oi > 400000 ? 'HIGH' : oi > 250000 ? 'NORMAL' : 'LOW',
+      color: 'amber',
+    },
+    {
+      label: 'OI CHG',
+      fill: oiChg != null ? cap(Math.abs(oiChg) / 50000) : 0,
+      value: oiChg != null ? (oiChg > 0 ? `+${(oiChg / 1000).toFixed(1)}k` : `${(oiChg / 1000).toFixed(1)}k`) : '--',
+      assessment: oiChg == null ? 'N/A' : oiChg > 10000 ? 'EXPANDING' : oiChg < -10000 ? 'SHRINKING' : 'STABLE',
+      color: oiChg == null ? 'dim' : oiChg > 0 ? 'green' : oiChg < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'NET SPEC',
+      fill: cap(0.5 + netSpec / 200000),  // Symmetric around 0
+      value: netSpec >= 1000 || netSpec <= -1000 ? `${(netSpec / 1000).toFixed(1)}k` : `${netSpec}`,
+      assessment: netSpec > 50000 ? 'LONG' : netSpec < -50000 ? 'SHORT' : 'NEUTRAL',
+      color: netSpec > 20000 ? 'green' : netSpec < -20000 ? 'red' : 'amber',
+    },
+    {
+      label: 'SPEC CHG',
+      fill: netSpecChg != null ? cap(Math.abs(netSpecChg) / 30000) : 0,
+      value: netSpecChg != null ? (netSpecChg > 0 ? `+${(netSpecChg / 1000).toFixed(1)}k` : `${(netSpecChg / 1000).toFixed(1)}k`) : '--',
+      assessment: netSpecChg == null ? 'N/A' : netSpecChg > 5000 ? 'ADDING' : netSpecChg < -5000 ? 'CUTTING' : 'FLAT',
+      color: netSpecChg == null ? 'dim' : netSpecChg > 0 ? 'green' : netSpecChg < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'NET COMM',
+      fill: cap(0.5 + netComm / 200000),
+      value: netComm >= 1000 || netComm <= -1000 ? `${(netComm / 1000).toFixed(1)}k` : `${netComm}`,
+      assessment: netComm > 50000 ? 'HEDGING L' : netComm < -50000 ? 'HEDGING S' : 'NEUTRAL',
+      color: netComm > 20000 ? 'green' : netComm < -20000 ? 'red' : 'amber',
+    },
+    {
+      label: 'COMM CHG',
+      fill: netCommChg != null ? cap(Math.abs(netCommChg) / 30000) : 0,
+      value: netCommChg != null ? (netCommChg > 0 ? `+${(netCommChg / 1000).toFixed(1)}k` : `${(netCommChg / 1000).toFixed(1)}k`) : '--',
+      assessment: netCommChg == null ? 'N/A' : netCommChg > 5000 ? 'ADDING' : netCommChg < -5000 ? 'CUTTING' : 'FLAT',
+      color: netCommChg == null ? 'dim' : netCommChg > 0 ? 'green' : netCommChg < 0 ? 'red' : 'dim',
+    },
+  ];
+}
+
 /** Level-context gauges — 7 bars */
 export function featureLevelToGauges(f: Record<string, any>): GaugeBarProps[] {
   const lvlType = f.level_type ?? null;

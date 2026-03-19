@@ -6,9 +6,9 @@ import { PositionManager } from './PositionManager';
 import {
   featureOrderflowToGauges, featureTemporalToGauges, featureSessionToGauges,
   featureMacroToGauges, featureCandleToGauges, featureLevelToGauges,
-  featureBookToGauges,
+  featureBookToGauges, featureCotToGauges,
 } from './gaugeHelpers';
-import { getMlHealth } from '@/services/api';
+import { getMlHealth, api } from '@/services/api';
 import type {
   ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData,
   PricePosition, StreamTickEvent, StreamBookEvent, MlPrediction,
@@ -131,6 +131,14 @@ export function L2Page({
     };
   }, [levels, cp]);
 
+  // COT / Open Interest data (weekly, fetched on mount)
+  const [cotData, setCotData] = useState<any[]>([]);
+  useEffect(() => {
+    api.getCotData(2).then(setCotData).catch(() => {});
+  }, []);
+  const cotCurrent = cotData[0] ?? null;
+  const cotPrevious = cotData[1] ?? null;
+
   // Build all gauge groups from features
   const f = latestFeatures?.features ?? {};
   const bookGauges = featureBookToGauges(book, f);
@@ -140,7 +148,8 @@ export function L2Page({
   const sessionGauges = featureSessionToGauges(f);
   const macroGauges = featureMacroToGauges(f);
   const levelGauges = featureLevelToGauges(f);
-  const hasData = latestFeatures != null || book != null;
+  const cotGauges = featureCotToGauges(cotCurrent, cotPrevious);
+  const hasData = latestFeatures != null || book != null || cotGauges.length > 0;
 
   // Importance highlights from SHAP
   const importanceMap = useMemo(() => {
@@ -248,6 +257,11 @@ export function L2Page({
               <Section title="MACRO" count={macroGauges.length} open={true}>
                 {macroGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
               </Section>
+              {cotGauges.length > 0 && (
+                <Section title="OPEN INTEREST / COT" count={cotGauges.length} open={true}>
+                  {cotGauges.map(g => <GaugeBar key={g.label} {...g} />)}
+                </Section>
+              )}
               <Section title="LEVEL" count={levelGauges.length} open={true}>
                 {levelGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
               </Section>
