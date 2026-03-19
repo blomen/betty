@@ -114,8 +114,8 @@ function Section({ title, count, open: defaultOpen, children }: {
 }
 
 export function L2Page({
-  session, levels, currentPrice, connected, pricePos, onLevelClick,
-  activeBattle, lastBattle, onDismissBattle, onTakeTrade,
+  session: _session, levels, currentPrice, connected, pricePos, onLevelClick: _onLevelClick,
+  activeBattle, lastBattle, onDismissBattle: _onDismissBattle, onTakeTrade,
   positions, onScale, onClose, lastTick, book, latestPrediction, latestFeatures,
 }: Props) {
   const cp = currentPrice ?? 0;

@@ -115,8 +115,6 @@ const OpportunityRow = memo(function OpportunityRow({
   const effectiveOdds = localOddsOverride ?? rep.odds1;
   const effectiveStake = localStakeOverride ?? rep.final_stake;
   const hasStake = effectiveStake != null && effectiveStake > 0;
-  const isOddsOverridden = localOddsOverride !== null;
-  const isStakeOverridden = localStakeOverride !== null;
   const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
     ? (effectiveOdds / rep.fair_odds - 1) * 100
     : rep.edge_pct ?? 0;
