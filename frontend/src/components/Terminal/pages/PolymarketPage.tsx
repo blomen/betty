@@ -1,7 +1,9 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo, useCallback } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { api } from '@/services/api';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -227,7 +229,8 @@ const PolyRow = memo(function PolyRow({
 
 export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<PolyTab>('value');
+  const { placeBet } = useBetMutations();
+  const [activeTab, setActiveTab] = usePersistedState<PolyTab>('bbq_poly_tab', 'value');
 
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -245,13 +248,13 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   } | null>(null);
 
   // Track placed market+outcome combos for immediate removal from list
-  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_poly_placedKeys', new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [searchInput, setSearchInput] = useState('');
+  const [searchInput, setSearchInput] = usePersistedState('bbq_poly_search', '');
   const search = useDeferredValue(searchInput);
 
   // Rewards state
-  const [rewardsSearchInput, setRewardsSearchInput] = useState('');
+  const [rewardsSearchInput, setRewardsSearchInput] = usePersistedState('bbq_poly_rewardsSearch', '');
   const rewardsSearch = useDeferredValue(rewardsSearchInput);
 
   // ──────────────────── Value Bets ────────────────────
@@ -266,7 +269,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   // Sync placedKeys and myBetsCount from bets query data
@@ -274,7 +277,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     if (!betsData?.bets) return;
     const keys = new Set<string>();
     for (const b of betsData.bets) {
-      if (b.event_id && b.provider === 'polymarket') {
+      if (b.event_id) {
         keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
       }
     }
@@ -293,10 +296,12 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
   });
   const rewards = rewardsData?.rewards ?? [];
 
-  const handleSelectOpp = (idx: number) => {
-    setSelectedOpp(selectedOpp === idx ? null : idx);
+  const handleSelectOpp = useCallback((idx: number) => {
+    setSelectedOpp(prev => prev === idx ? null : idx);
     setPendingBet(null);
-  };
+  }, []);
+
+  const handleCancelPending = useCallback(() => setPendingBet(null), []);
 
   const getOddsKey = useCallback((vb: PolymarketValueBet) =>
     `${vb.event_id}|${vb.outcome}|${vb.market}|${vb.point ?? ''}`, []);
@@ -333,7 +338,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     setBetError(null);
 
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         event_id: vb.event_id,
         provider_id: 'polymarket',
         market: vb.market,
@@ -355,7 +360,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       setPendingBet(null);
       setSelectedOpp(null);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'polymarket'] });
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -363,7 +367,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     } finally {
       setIsPlacing(false);
     }
-  }, [pendingBet, getOddsKey, stakeOverride, queryClient]);
+  }, [pendingBet, getOddsKey, stakeOverride, queryClient, placeBet]);
 
   // Prefer Polymarket's own team names (e.g., "Bulls") over canonical display names ("Chicago Bulls")
   const polyName = useCallback((vb: PolymarketValueBet | PolymarketRewardMarket, side: 'home' | 'away') =>
@@ -425,7 +429,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     ttk:   (vb: PolymarketValueBet) => getTTKFromNow(vb.start_time) ?? 99999,
   }), []);
   const { sorted: sortedBets, sort: polySort, toggle: togglePolySort } =
-    useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' });
+    useTableSort<PolymarketValueBet, PolySortCol>(activeValueBets, polySortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_poly_sort');
 
   // ──────────────────── Virtualization ────────────────────
 
@@ -480,7 +484,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     ttk:    (r: PolymarketRewardMarket) => getTTKFromNow(r.start_time) ?? 99999,
   }), []);
   const { sorted: sortedRewards, sort: rewardSort, toggle: toggleRewardSort } =
-    useTableSort<PolymarketRewardMarket, RewardSortCol>(filteredRewards, rewardSortExtractors, { column: 'comp', direction: 'asc' });
+    useTableSort<PolymarketRewardMarket, RewardSortCol>(filteredRewards, rewardSortExtractors, { column: 'comp', direction: 'asc' }, 'bbq_poly_rewardSort');
 
   const compBadge = (comp: number) => {
     // 0-1 scale: lower = less competition = better for rewards
@@ -532,7 +536,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* ═══════════════ MY BETS TAB ═══════════════ */}
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" />
+        <MyBetsSection filter={polyBetFilter} colorKey="polymarket" persistKey="poly" />
       )}
 
       {/* ═══════════════ MANUAL TAB ═══════════════ */}
@@ -683,7 +687,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                     const idx = virtualRow.index;
                     return (
                       <PolyRow
-                        key={`${vb.event_id}-${vb.outcome}`}
+                        key={`${vb.event_id}-${vb.market}-${vb.outcome}-${idx}`}
                         vb={vb}
                         idx={idx}
                         isSelected={selectedOpp === idx}
@@ -692,7 +696,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                         onSelect={handleSelectOpp}
                         onStartPlace={startPlaceBet}
                         onConfirmPlace={confirmPlaceBet}
-                        onCancelPending={() => setPendingBet(null)}
+                        onCancelPending={handleCancelPending}
                         polyName={polyName}
                         resolveOutcome={resolveOutcome}
                         getOddsKey={getOddsKey}
