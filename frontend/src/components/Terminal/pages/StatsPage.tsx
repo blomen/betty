@@ -19,7 +19,7 @@ export function StatsPage() {
   const [mlTraining, setMlTraining] = useState(false);
 
   const { data: statsData, isLoading: statsLoading } = useQuery({
-    queryKey: ['bankroll-stats'],
+    queryKey: ['bankroll', 'stats'],
     queryFn: () => api.getBankrollStats(),
   });
   const stats: BankrollStats | null = statsData ?? null;
@@ -43,9 +43,9 @@ export function StatsPage() {
   const providers: Provider[] = providersData?.providers ?? [];
 
   const { data: bonusStatus } = useQuery({
-    queryKey: ['bankroll-status'],
+    queryKey: ['bankroll', 'status'],
     queryFn: () => api.getBankrollStatus().catch(() => null),
-    staleTime: 60_000,
+    staleTime: 30_000,
   });
   const activeBonuses: [string, BonusProgressEntry][] = bonusStatus
     ? Object.entries(bonusStatus.bonus_progress).filter(
@@ -78,6 +78,7 @@ export function StatsPage() {
   const providerStats = (() => {
     const grouped: Record<string, Bet[]> = {};
     for (const bet of bets) {
+      if (bet.is_bonus) continue; // Exclude bonus/freebet bets
       const pid = bet.provider;
       if (!grouped[pid]) grouped[pid] = [];
       grouped[pid].push(bet);
@@ -221,8 +222,7 @@ export function StatsPage() {
               <tr>
                 <td colSpan={3}>
                   <div className="flex items-center gap-3 text-xs">
-                    <span className="text-muted">Profit breakdown:</span>
-                    <span className="text-text">{stats.bet_profit.toFixed(0)} kr bets</span>
+                    <span className="text-muted">Bonus P&L:</span>
                     {stats.freebet_profit > 0 && (
                       <span className="text-accent">+{stats.freebet_profit.toFixed(0)} kr freebets</span>
                     )}
@@ -267,7 +267,7 @@ export function StatsPage() {
       )}
 
       {/* CLV Trend Chart */}
-      <CLVChart bets={bets} />
+      <CLVChart bets={bets.filter(b => !b.is_bonus)} />
 
       {/* Active Wagering Window */}
       {activeBonuses.length > 0 && (
