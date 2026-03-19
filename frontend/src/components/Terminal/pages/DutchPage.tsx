@@ -10,6 +10,8 @@ import { SortableHeader } from '../SortableHeader';
 import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { usePersistedState, usePersistedRecordOfSets } from '@/hooks/usePersistedState';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import type { Provider, Bet } from '@/types';
 
 type DutchTab = 'dutch' | 'mybets';
@@ -381,9 +383,10 @@ const DutchRow = memo(function DutchRow({
 
 export function DutchPage({ providers = [] }: DutchPageProps) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<DutchTab>('dutch');
+  const { placeBet, placeBatchBets } = useBetMutations();
+  const [activeTab, setActiveTab] = usePersistedState<DutchTab>('bbq_dutch_tab', 'dutch');
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
-  const [searchInput, setSearchInput] = useState('');
+  const [searchInput, setSearchInput] = usePersistedState('bbq_dutch_search', '');
   const search = useDeferredValue(searchInput);
 
   // Place bet state (kept at page level for toasts / query invalidation)
@@ -391,7 +394,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const [placingLeg, setPlacingLeg] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
   const [betError, setBetError] = useState<string | null>(null);
-  const [placedLegs, setPlacedLegs] = useState<Record<number, Set<number>>>({});
+  const [placedLegs, setPlacedLegs] = usePersistedRecordOfSets<number, number>('bbq_dutch_placedLegs', {});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
   const { data: dutchData, isLoading } = useQuery({
@@ -404,7 +407,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   // Sync myBetsCount from bets query data
@@ -447,7 +450,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     ttk:    (d: DutchOpp) => getTTKFromNow(d.starts_at) ?? 99999,
   }), []);
   const { sorted: sortedDutch, sort: dutchSort, toggle: toggleDutchSort } =
-    useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' });
+    useTableSort<DutchOpp, DutchSortCol>(filtered, dutchSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_dutch_sort');
 
   // Virtualizer
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -482,7 +485,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     setBetSuccess(null);
 
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         event_id: opp.event_id,
         provider_id: leg.provider,
         market: opp.market,
@@ -506,7 +509,6 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${effectiveOdds.toFixed(2)} (${formatProviderName(leg.provider)})`);
       setTimeout(() => setBetSuccess(null), 5000);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bet';
       setBetError(msg);
@@ -552,7 +554,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     setBetSuccess(null);
 
     try {
-      const res = await api.createBatchBets(batchLegs);
+      const res = await placeBatchBets.mutateAsync(batchLegs);
 
       const successIdxs = new Set<number>();
       const errors: string[] = [];
@@ -577,7 +579,6 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
 
       setTimeout(() => { setBetSuccess(null); setBetError(null); }, 8000);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bets';
       setBetError(msg);
@@ -622,7 +623,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       </div>
 
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={dutchBetFilter} colorKey="dutch" />
+        <MyBetsSection filter={dutchBetFilter} colorKey="dutch" persistKey="dutch" />
       )}
 
       {activeTab === 'dutch' && <>
