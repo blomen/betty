@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { api } from '@/services/api';
 import { displayTeamName } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
@@ -346,15 +348,16 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
 // ── Main page — History only ────────────────────────────────────────
 
 export function BetsPage() {
+  const { editBet } = useBetMutations();
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
   const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
   // Sort & search (for history table)
-  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
+  const [sort, setSort] = usePersistedState<{ key: SortKey; dir: SortDir } | null>('bbq_bets_sort', null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = usePersistedState('bbq_bets_search', '');
 
   // Inline editing state
   const [editingBetId, setEditingBetId] = useState<number | null>(null);
@@ -367,7 +370,7 @@ export function BetsPage() {
   const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
   // Bet history collapsed state
-  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', false);
 
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
@@ -503,7 +506,7 @@ export function BetsPage() {
     }
 
     try {
-      await api.editBet(betId, changes);
+      await editBet.mutateAsync({ betId, data: changes });
       cancelEditing();
       fetchBets();
       fetchStats();
@@ -526,7 +529,7 @@ export function BetsPage() {
     const amount = parseFloat(cashoutAmount);
     if (isNaN(amount) || amount < 0) return;
     try {
-      await api.editBet(betId, { result: 'void', payout: amount });
+      await editBet.mutateAsync({ betId, data: { result: 'void', payout: amount } });
       cancelCashout();
       fetchBets();
       fetchStats();
@@ -604,7 +607,6 @@ export function BetsPage() {
             {(bankrollStats.freebet_profit > 0 || bankrollStats.bonus_profit > 0) && (
               <>
                 <span className="text-muted">|</span>
-                <span className="text-muted">Bet P&L: <span className="text-text">{bankrollStats.bet_profit.toFixed(0)}</span></span>
                 {bankrollStats.freebet_profit > 0 && (
                   <span className="text-accent">+{bankrollStats.freebet_profit.toFixed(0)} fb</span>
                 )}
@@ -623,7 +625,7 @@ export function BetsPage() {
           {bets.length > 0 && currentBankroll > 0 && (
             <BankrollChart bets={bets} currentBankroll={currentBankroll} totalStaked={bankrollStats?.total_staked} />
           )}
-          <CLVChart bets={bets} />
+          <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
       </div>
 
