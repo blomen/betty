@@ -274,6 +274,28 @@ def extract(
 
 
 @app.command()
+def mirror(
+    provider: str = typer.Argument("spelklubben", help="Provider to mirror bets from"),
+    stop: bool = typer.Option(False, "--stop", help="Stop the mirror"),
+):
+    """Start/stop bet mirroring — delegates to running API server."""
+    import httpx
+
+    base = "http://localhost:8000/api/mirror"
+    try:
+        if stop:
+            r = httpx.post(f"{base}/stop", timeout=10)
+        else:
+            r = httpx.post(f"{base}/start", params={"provider": provider}, timeout=30)
+        r.raise_for_status()
+        print(r.json())
+    except httpx.ConnectError:
+        print("Error: Backend server not running. Start it first.")
+    except httpx.HTTPStatusError as e:
+        print(f"Error: {e.response.json().get('detail', e.response.text)}")
+
+
+@app.command()
 def stats():
     """Show database statistics."""
     init_db()
