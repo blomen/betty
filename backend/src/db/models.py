@@ -184,7 +184,7 @@ class Bet(Base):
     outcome = Column(String)                    # "home"
     odds = Column(Float, nullable=False)        # 2.10
     point = Column(Float, nullable=True)        # Spread/total line (e.g., -1.5, 2.5)
-    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost"
+    bet_type = Column(String, nullable=True)    # "value", "dutch", "reverse", "polymarket", "boost", "mirror"
 
     # Stake (in native currency: SEK for Swedish providers, USD for Polymarket)
     stake = Column(Float, nullable=False)       # 100.00
@@ -269,6 +269,23 @@ class Bet(Base):
         if self.stake == 0:
             return 0.0
         return (self.profit / self.stake) * 100
+
+
+class BetTrace(Base):
+    """Raw API trace from intercepted bet placement. Append-only."""
+    __tablename__ = "bet_traces"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False)
+    provider_id = Column(String, nullable=False)
+    request_url = Column(String, nullable=False)
+    request_body = Column(String, nullable=True)   # JSON string
+    response_body = Column(String, nullable=True)   # JSON string
+    bet_id = Column(Integer, ForeignKey("bets.id"), nullable=True)
+    provider_bet_id = Column(String, nullable=True, index=True)
+    parse_status = Column(String, nullable=False)  # "ok", "failed", "unmatched", "rejected"
+
+    bet = relationship("Bet", backref="traces")
 
 
 class BetPostmortem(Base):
