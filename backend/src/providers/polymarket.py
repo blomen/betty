@@ -139,35 +139,93 @@ class PolymarketRetriever(Retriever):
         # Spread buffer: cents added to price to account for slippage (0 when using ask prices)
         self.spread_buffer = config.get("params", {}).get("spread_buffer_cents", 0) / 100.0
         self.use_clob_prices = config.get("params", {}).get("use_clob_prices", True)
+        # Fill size in USD for depth-adjusted VWAP pricing (walks the order book)
+        self.fill_size_usd = config.get("params", {}).get("fill_size_usd", 25)
+        # Minimum available depth (USD) to consider a market liquid enough
+        self.min_depth_usd = config.get("params", {}).get("min_depth_usd", 10)
         self._cached_events: list = None  # Cache all events to avoid re-fetching
         self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
-        self._clob_prices: dict = {}  # token_id -> ask price (populated during extraction)
+        self._clob_prices: dict = {}  # token_id -> depth-adjusted VWAP (populated during extraction)
+        self._clob_depth: dict = {}  # token_id -> available depth in USD on ask side
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
 
     def _price_to_odds(self, price: float) -> float:
-        """Convert a probability price to decimal odds with spread adjustment.
+        """Convert a probability price to decimal odds.
 
-        Adds spread_buffer to approximate the executable buy price (ask),
-        since Gamma API / CLOB midpoints understate the actual cost.
+        Price is already depth-adjusted (VWAP from order book) when CLOB is enabled.
         """
         adjusted = min(price + self.spread_buffer, 0.99)
         return round(1 / adjusted, 3) if adjusted > 0.01 else 100.0
 
+    def _is_liquid(self, token_id: str) -> bool:
+        """Check if a token has sufficient order book depth."""
+        if not token_id or not self.use_clob_prices:
+            return True  # Can't check depth without CLOB, allow through
+        depth = self._clob_depth.get(token_id, 0)
+        return depth >= self.min_depth_usd
+
     def _get_clob_price(self, token_id: str, gamma_price: float) -> float:
-        """Get best price for a token: CLOB ask price if available, else Gamma."""
+        """Get depth-adjusted VWAP for a token: CLOB book price if available, else Gamma."""
         return self._clob_prices.get(token_id, gamma_price)
 
-    async def _fetch_clob_prices(self, token_ids: list[str]):
-        """Batch-fetch CLOB ask prices using the POST /prices endpoint.
+    def _get_clob_depth_usd(self, token_id: str) -> float:
+        """Get total available depth in USD on the ask side for a token."""
+        return self._clob_depth.get(token_id, 0)
 
-        Fetches the actual ask price (what you'd pay to buy shares) via side=SELL,
-        which returns the best resting sell order price — matching the Polymarket
-        website display. Replaces the old /midpoints approach that understated cost.
+    @staticmethod
+    def _calc_vwap_from_asks(asks: list[dict], fill_size_usd: float) -> tuple[float, float]:
+        """Walk the ask side of the order book to calculate depth-adjusted VWAP.
 
-        POST /prices body: [{token_id, side: "SELL"}, ...]
-        Response: {token_id: {"SELL": "0.24"}, ...}
+        Args:
+            asks: List of {"price": "0.46", "size": "150"} sorted ascending by price.
+            fill_size_usd: Target fill amount in USD.
+
+        Returns:
+            (vwap_price, total_depth_usd): The volume-weighted average price to fill
+            the target size, and the total available depth in USD.
+        """
+        total_cost = 0.0
+        total_shares = 0.0
+        total_depth_usd = 0.0
+
+        for level in asks:
+            try:
+                price = float(level["price"])
+                size = float(level["size"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if price <= 0 or size <= 0:
+                continue
+
+            level_cost = price * size  # USD cost to fill this entire level
+            total_depth_usd += level_cost
+
+            if total_shares * (total_cost / total_shares if total_shares else price) < fill_size_usd:
+                # How many more USD do we need?
+                remaining_usd = fill_size_usd - (total_cost if total_cost else 0)
+                fillable_cost = min(level_cost, remaining_usd)
+                fillable_shares = fillable_cost / price
+                total_cost += fillable_cost
+                total_shares += fillable_shares
+
+        if total_shares <= 0:
+            return 0.0, total_depth_usd
+
+        vwap = total_cost / total_shares
+        return vwap, total_depth_usd
+
+    async def _fetch_clob_books(self, token_ids: list[str]):
+        """Fetch order book depth for each token and compute VWAP pricing.
+
+        Uses GET /book?token_id=XXX to get the full order book, then walks the
+        ask side to calculate the volume-weighted average price for fill_size_usd.
+        This replaces the old POST /prices approach that only returned top-of-book.
+
+        Stores results in:
+        - self._clob_prices: token_id -> VWAP price (depth-adjusted)
+        - self._clob_depth: token_id -> total ask-side depth in USD
         """
         import aiohttp
         import asyncio
@@ -176,43 +234,43 @@ class PolymarketRetriever(Retriever):
             return
 
         unique_tokens = list(set(token_ids))
-        BATCH_SIZE = 100
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(20)  # CLOB allows 1500/10s
+        fill_size = self.fill_size_usd
 
-        async def fetch_batch(session: aiohttp.ClientSession, batch: list[str]):
+        async def fetch_book(session: aiohttp.ClientSession, token_id: str):
             async with semaphore:
                 try:
-                    url = f"{self.clob_url}/prices"
-                    body = [{"token_id": tid, "side": "SELL"} for tid in batch]
-                    async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    url = f"{self.clob_url}/book"
+                    params = {"token_id": token_id}
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            if isinstance(data, dict):
-                                for tid, price_val in data.items():
-                                    try:
-                                        if isinstance(price_val, dict):
-                                            price = float(price_val.get("SELL", price_val.get("sell", 0)))
-                                        else:
-                                            price = float(price_val)
-                                        if 0.01 < price < 0.99:
-                                            self._clob_prices[str(tid)] = price
-                                    except (ValueError, TypeError):
-                                        pass
-                        else:
-                            logger.debug(f"[{self.provider_id}] CLOB /prices returned {resp.status}")
+                            asks = data.get("asks", [])
+                            if asks:
+                                vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
+                                if 0.01 < vwap < 0.99:
+                                    self._clob_prices[token_id] = vwap
+                                    self._clob_depth[token_id] = depth_usd
+                        elif resp.status != 404:
+                            logger.debug(f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}...")
                 except Exception as e:
-                    logger.debug(f"[{self.provider_id}] CLOB batch prices failed: {e}")
+                    logger.debug(f"[{self.provider_id}] CLOB /book failed for {token_id[:12]}...: {e}")
 
         try:
-            batches = [unique_tokens[i:i + BATCH_SIZE] for i in range(0, len(unique_tokens), BATCH_SIZE)]
             async with aiohttp.ClientSession() as session:
-                await asyncio.gather(*[fetch_batch(session, batch) for batch in batches])
+                # Process in chunks to avoid overwhelming the connection pool
+                CHUNK_SIZE = 50
+                for i in range(0, len(unique_tokens), CHUNK_SIZE):
+                    chunk = unique_tokens[i:i + CHUNK_SIZE]
+                    await asyncio.gather(*[fetch_book(session, tid) for tid in chunk])
+
+            thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
             logger.debug(
-                f"[{self.provider_id}] CLOB ask prices: {len(self._clob_prices)}/{len(unique_tokens)} tokens "
-                f"({len(batches)} batch requests)"
+                f"[{self.provider_id}] CLOB book depth: {len(self._clob_prices)}/{len(unique_tokens)} tokens "
+                f"(fill_size=${fill_size}, thin_markets={thin_count})"
             )
         except Exception as e:
-            logger.warning(f"[{self.provider_id}] CLOB price fetch failed: {e}")
+            logger.warning(f"[{self.provider_id}] CLOB book fetch failed, falling back to Gamma prices: {e}")
 
     def parse(self, data: Any, sport: str) -> List[StandardEvent]:
         """Parse API response - delegates to _parse_all."""
@@ -335,14 +393,14 @@ class PolymarketRetriever(Retriever):
                 f"[{self.provider_id}] Pre-filtered to {len(set(needed_token_ids))} tokens "
                 f"(from {sum(len(m.get('markets', [])) for m in all_raw)} total markets)"
             )
-            await self._fetch_clob_prices(needed_token_ids)
+            await self._fetch_clob_books(needed_token_ids)
 
         # Phase 3: Parse events (using CLOB ask prices)
         all_events = self._parse_all(all_raw)
 
         logger.debug(
             f"[{self.provider_id}] Fetched {len(all_events)} events total from Polymarket "
-            f"({page} pages, clob_ask_prices={len(self._clob_prices)})"
+            f"({page} pages, clob_depth_prices={len(self._clob_prices)})"
         )
         return all_events
 
@@ -1016,6 +1074,9 @@ class PolymarketRetriever(Retriever):
                         if prices[yes_idx] > 0.02 and prices[no_idx] > 0.02:
                             yes_token = clob_ids[yes_idx] if yes_idx < len(clob_ids) else None
                             no_token = clob_ids[no_idx] if no_idx < len(clob_ids) else None
+                            # Skip if either side has insufficient depth
+                            if not self._is_liquid(yes_token) or not self._is_liquid(no_token):
+                                return None
                             yes_price = self._get_clob_price(yes_token, prices[yes_idx]) if yes_token else prices[yes_idx]
                             no_price = self._get_clob_price(no_token, prices[no_idx]) if no_token else prices[no_idx]
                             return {
@@ -1039,6 +1100,8 @@ class PolymarketRetriever(Retriever):
                     if name_lower in ("over", "under"):
                         continue
                     token_id = clob_ids[i] if i < len(clob_ids) else None
+                    if not self._is_liquid(token_id):
+                        return None  # Skip entire market if any outcome is illiquid
                     price = self._get_clob_price(token_id, p) if token_id else p
                     formatted_outcomes.append({
                         "name": name,
@@ -1139,6 +1202,8 @@ class PolymarketRetriever(Retriever):
                 else:
                     point = -favored_point
                 token_id = clob_ids[i] if i < len(clob_ids) else None
+                if not self._is_liquid(token_id):
+                    return None
                 price = self._get_clob_price(token_id, p) if token_id else p
                 result_outcomes.append({
                     "name": norm,
@@ -1215,6 +1280,8 @@ class PolymarketRetriever(Retriever):
                     continue
                 name_lower = name.lower().strip()
                 token_id = clob_ids[i] if i < len(clob_ids) else None
+                if not self._is_liquid(token_id):
+                    return None
                 if name_lower == "over":
                     price = self._get_clob_price(token_id, p) if token_id else p
                     result_outcomes.append({
@@ -1299,6 +1366,8 @@ class PolymarketRetriever(Retriever):
                 if norm not in ('home', 'away'):
                     continue
                 token_id = clob_ids[i] if i < len(clob_ids) else None
+                if not self._is_liquid(token_id):
+                    return None
                 price = self._get_clob_price(token_id, p) if token_id else p
                 formatted_outcomes.append({
                     "name": norm,
@@ -1369,6 +1438,8 @@ class PolymarketRetriever(Retriever):
                 # Determine from position: outcome[0] = favored team (listed first in question)
                 point = favored_point if i == 0 else -favored_point
                 token_id = clob_ids[i] if i < len(clob_ids) else None
+                if not self._is_liquid(token_id):
+                    return None
                 price = self._get_clob_price(token_id, p) if token_id else p
                 result_outcomes.append({
                     "name": norm,
@@ -1445,7 +1516,10 @@ class PolymarketRetriever(Retriever):
             clob_ids = self._parse_clob_token_ids(m)
             token_id = clob_ids[yes_idx] if yes_idx < len(clob_ids) else None
 
-            # Use CLOB midpoint if available, apply spread buffer
+            if not self._is_liquid(token_id):
+                continue  # Skip illiquid sub-market
+
+            # Use CLOB depth-adjusted VWAP if available
             price = self._get_clob_price(token_id, yes_price) if token_id else yes_price
             odds = self._price_to_odds(price)
 

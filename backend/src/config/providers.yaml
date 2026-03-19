@@ -229,11 +229,15 @@ providers:
     exchange_rate_sek: 10.50
     params:
       game_bets_tag_id: 100639
-      # Spread buffer (cents) added to ask price for slippage. 0 = no buffer.
-      # Now using CLOB ask prices directly (POST /prices side=SELL), so no buffer needed.
+      # Spread buffer (cents) added to price for slippage. 0 = no buffer.
       spread_buffer_cents: 0
-      # Use CLOB /prices API for actual ask prices (true/false)
+      # Use CLOB order book for depth-adjusted VWAP pricing (true/false)
       use_clob_prices: true
+      # Target fill size in USD — VWAP calculated by walking the ask side of the order book.
+      # Thin markets where this walks up significantly will show worse (realistic) odds.
+      fill_size_usd: 25
+      # Minimum available depth (USD) on ask side. Markets below this are skipped.
+      min_depth_usd: 10
 
   # --------------------------------------------------------------------------
   # Kambi API providers (same API, different brands)
@@ -1025,8 +1029,8 @@ boosts:
     url: "https://www.bethard.com/sv/sports/oddsboost"
     primary_provider: bethard
     shared_with: []
-    enabled: true
-    note: "OBG — /sv/sports/oddsboost loads playground iframe with globalbonuses + event-market APIs."
+    enabled: false
+    note: "OBG — /sv/sports/oddsboost loads playground iframe with globalbonuses + event-market APIs. Disabled 2026-03-19: iframe loads CSS only, Angular SPA not rendering boost cards."
 
   spelklubben:
     type: gecko_v2
