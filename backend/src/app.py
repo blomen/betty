@@ -20,6 +20,7 @@ from .db.models import init_db, get_session, Event, Odds, Provider, Bet, Profile
 from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 from .analysis.scanner import OpportunityScanner
+from src.rl.cli import rl_app
 
 # Fix Windows console encoding for Unicode support
 if sys.platform == "win32":
@@ -28,6 +29,7 @@ if sys.platform == "win32":
 
 console = Console(force_terminal=True)
 app = typer.Typer(help="BankrollBBQ - Betting Analytics Platform")
+app.add_typer(rl_app, name="rl")
 
 
 def show_banner():
