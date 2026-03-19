@@ -60,9 +60,6 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
     return keys ? keys.every(k => hiddenLevels.has(k)) : false;
   };
 
-  const isClusterHidden = (groups: string[]) =>
-    groups.every(g => isGroupHidden(g));
-
   const allHidden = Object.values(LEVEL_GROUPS).flat().every(k => hiddenLevels.has(k));
 
   return (
@@ -106,11 +103,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
       )}
 
       {/* Session Levels */}
-      <div className={`px-3 py-2 border-b border-border ${isClusterHidden(['ib', 'pd', 'tokyo', 'london']) ? 'opacity-40' : ''}`}>
-        <div className="flex items-center justify-between mb-2">
-          <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">Session</button>
-          <EyeBtn hidden={isClusterHidden(['ib', 'pd', 'tokyo', 'london'])} onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} />
-        </div>
+      <div className="px-3 py-2 border-b border-border">
+        <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">Session</button>
 
         <Group label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
           {s?.ib_high != null && s?.ib_low != null ? (
@@ -141,11 +135,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
       </div>
 
       {/* Volume Profile — multi-timeframe */}
-      <div className={`px-3 py-2 border-b border-border last:border-b-0 ${isClusterHidden(['daily_vp', 'weekly_vp', 'monthly_vp']) ? 'opacity-40' : ''}`}>
-        <div className="flex items-center justify-between mb-2">
-          <button onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">Volume Profile</button>
-          <EyeBtn hidden={isClusterHidden(['daily_vp', 'weekly_vp', 'monthly_vp'])} onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} />
-        </div>
+      <div className="px-3 py-2 border-b border-border last:border-b-0">
+        <button onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">Volume Profile</button>
 
         <Group label="Daily" hidden={isGroupHidden('daily_vp')} onToggle={() => toggleGroup('daily_vp')}>
           <VPRow vp={profiles?.session} color="text-purple-400" />
