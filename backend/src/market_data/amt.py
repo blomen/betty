@@ -771,10 +771,26 @@ def build_session_analysis(
     if not bars:
         return analysis
 
-    # Volume profile (RTH bars only)
+    # Volume profile (RTH bars only — filter using ET time, not UTC)
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("US/Eastern")
     h, m = map(int, rth_open.split(":"))
     open_time = time(h, m)
-    rth_bars = [b for b in bars if hasattr(b.timestamp, "time") and b.timestamp.time() >= open_time]
+    close_time = time(16, 0)
+
+    def _is_rth(bar: BarData) -> bool:
+        ts = bar.timestamp
+        if not hasattr(ts, "time"):
+            return False
+        if ts.tzinfo is not None:
+            ts_et = ts.astimezone(_ET)
+        else:
+            # Naive timestamps assumed UTC
+            from datetime import timezone
+            ts_et = ts.replace(tzinfo=timezone.utc).astimezone(_ET)
+        return open_time <= ts_et.time() < close_time
+
+    rth_bars = [b for b in bars if _is_rth(b)]
 
     if rth_bars:
         analysis.volume_profile = compute_volume_profile(rth_bars, tick_size)
@@ -785,7 +801,7 @@ def build_session_analysis(
         # Previous day profile
         prev_profile = None
         if prev_bars:
-            prev_rth = [b for b in prev_bars if hasattr(b.timestamp, "time") and b.timestamp.time() >= open_time]
+            prev_rth = [b for b in prev_bars if _is_rth(b)]
             if prev_rth:
                 prev_profile = compute_volume_profile(prev_rth, tick_size)
                 analysis.prev_poc = prev_profile.poc
