@@ -113,7 +113,7 @@ export function TradingContainer({ activeSubTab }: Props) {
   const [loading, setLoading] = useState(true);
 
   const { lastTick, book, lastCandle, connected, esRef } = useMarketStream();
-  const { levels, activeBattle, battleActive, latestPrediction, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
+  const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
   const { unlock, play } = useSound();
   const prevBattle = useRef(false);
   const lastBattleRef = useRef<BattleScreenData | null>(null);
@@ -263,6 +263,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           onClose={handleClose}
           lastTick={lastTick}
           latestPrediction={latestPrediction}
+          latestFeatures={latestFeatures}
         />
       )}
     </div>

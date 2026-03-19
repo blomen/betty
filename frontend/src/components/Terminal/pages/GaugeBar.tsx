@@ -1,3 +1,5 @@
+import React from 'react';
+
 interface GaugeBarProps {
   label: string;
   /** 0-1 fill amount */
@@ -8,6 +10,8 @@ interface GaugeBarProps {
   assessment: string;
   /** Color variant based on direction confirmation */
   color: 'green' | 'red' | 'amber' | 'dim';
+  /** 0-1 from SHAP, highlights model attention */
+  importance?: number;
 }
 
 const COLOR_MAP = {
@@ -19,12 +23,14 @@ const COLOR_MAP = {
 
 export type { GaugeBarProps };
 
-export function GaugeBar({ label, fill, value, assessment, color }: GaugeBarProps) {
+export const GaugeBar = React.memo(function GaugeBar({ label, fill, value, assessment, color, importance }: GaugeBarProps) {
   const c = COLOR_MAP[color];
   const pct = Math.min(100, Math.max(0, fill * 100));
 
   return (
-    <div className="flex items-center gap-2 font-mono text-xs min-w-[220px]">
+    <div className={`flex items-center gap-2 font-mono text-xs min-w-[220px] ${
+      importance && importance > 0.05 ? 'border-l-2 border-cyan-500/60 pl-1' : ''
+    }`}>
       <span className="w-16 text-zinc-400 text-right shrink-0">{label}</span>
       <div className="flex-1 h-3 bg-zinc-800 rounded-sm overflow-hidden border border-zinc-700">
         <div className={`h-full ${c.bar} transition-all duration-300`} style={{ width: `${pct}%` }} />
@@ -33,4 +39,4 @@ export function GaugeBar({ label, fill, value, assessment, color }: GaugeBarProp
       <span className={`w-16 text-right ${c.label} font-bold shrink-0`}>{assessment}</span>
     </div>
   );
-}
+});

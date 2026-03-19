@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
-  MonitoredLevel, BattleScreenData, MlPrediction,
+  MonitoredLevel, BattleScreenData, MlPrediction, MlFeatureSnapshot,
   LevelTouchedEvent, LevelApproachingEvent, OrderflowUpdateEvent, LevelRejectedEvent,
 } from '@/types/market';
 
@@ -9,6 +9,7 @@ interface LevelMonitorState {
   activeBattle: BattleScreenData | null;
   battleActive: boolean;
   latestPrediction: MlPrediction | null;
+  latestFeatures: MlFeatureSnapshot | null;
 }
 
 export function useLevelMonitor(
@@ -20,6 +21,7 @@ export function useLevelMonitor(
     activeBattle: null,
     battleActive: false,
     latestPrediction: null,
+    latestFeatures: null,
   });
 
   const levelStatusRef = useRef<Map<string, MonitoredLevel>>(new Map());
@@ -165,6 +167,11 @@ export function useLevelMonitor(
       setState(prev => ({ ...prev, latestPrediction: data }));
     };
 
+    const onMlFeatures = (e: MessageEvent) => {
+      const data: MlFeatureSnapshot = JSON.parse(e.data);
+      setState(prev => ({ ...prev, latestFeatures: data }));
+    };
+
     const onPositionTarget = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
       setState(prev => ({
@@ -194,6 +201,7 @@ export function useLevelMonitor(
     es.addEventListener('level_context', onContext);
     es.addEventListener('position_at_target', onPositionTarget);
     es.addEventListener('ml_prediction', onMlPrediction);
+    es.addEventListener('ml_features', onMlFeatures);
 
     return () => {
       es.removeEventListener('level_approaching', onApproaching);
@@ -203,6 +211,7 @@ export function useLevelMonitor(
       es.removeEventListener('level_context', onContext);
       es.removeEventListener('position_at_target', onPositionTarget);
       es.removeEventListener('ml_prediction', onMlPrediction);
+      es.removeEventListener('ml_features', onMlFeatures);
     };
   }, [esRef, sessionData]);
 
@@ -224,6 +233,7 @@ export function useLevelMonitor(
     activeBattle: state.activeBattle,
     battleActive: state.battleActive,
     latestPrediction: state.latestPrediction,
+    latestFeatures: state.latestFeatures,
     dismissBattle,
     switchBattleLevel,
     seedLevels,

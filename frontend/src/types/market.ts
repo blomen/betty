@@ -427,3 +427,22 @@ export interface PositionRow {
   next_target: { name: string; price: number } | null;
   status: 'running' | 'at_target' | 'stopped' | 'closed';
 }
+
+export interface MlFeatureSnapshot {
+  level: string;
+  features: Record<string, number | string | boolean | null>;
+  timestamp: number;
+}
+
+export interface MlHealth {
+  model_loaded: boolean;
+  version: number | null;
+  training_data_count: number;
+  validation_score: number | null;
+  baseline_metric: number | null;
+  class_distribution: Record<string, number>;
+  recent_accuracy: { last_50?: number; sample_count?: number };
+  top_features: Array<{ name: string; importance: number }>;
+  use_fallback: boolean;
+  trained_at: string | null;
+}

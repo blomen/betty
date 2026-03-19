@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { LevelTable } from './LevelTable';
 import { ContextSidebar } from './ContextSidebar';
 import { NearbyLevelStrip } from './NearbyLevelStrip';
@@ -7,8 +7,16 @@ import { FootprintChart } from './FootprintChart';
 import { TickTape } from './TickTape';
 import { TradeActionBar } from './TradeActionBar';
 import { PositionManager } from './PositionManager';
-import { orderflowToGauges, structureToGauges, mlToGauges } from './gaugeHelpers';
-import type { ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData, PricePosition, StreamTickEvent, MlPrediction } from '@/types/market';
+import {
+  orderflowToGauges, structureToGauges, mlToGauges,
+  featureOrderflowToGauges, featureTemporalToGauges, featureSessionToGauges,
+  featureMacroToGauges, featureCandleToGauges, featureLevelToGauges,
+} from './gaugeHelpers';
+import { getMlHealth } from '@/services/api';
+import type {
+  ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData,
+  PricePosition, StreamTickEvent, MlPrediction, MlFeatureSnapshot, MlHealth,
+} from '@/types/market';
 
 interface Props {
   session: ExpandedSession | null;
@@ -27,6 +35,7 @@ interface Props {
   onClose: (tradeId: number) => void;
   lastTick: StreamTickEvent | null;
   latestPrediction: MlPrediction | null;
+  latestFeatures: MlFeatureSnapshot | null;
 }
 
 function predictionColor(predicted: string): string {
@@ -112,10 +121,83 @@ function MlPredictionPanel({ prediction }: { prediction: MlPrediction | null }) 
   );
 }
 
+function ModelHealthPanel() {
+  const [health, setHealth] = useState<MlHealth | null>(null);
+
+  useEffect(() => {
+    const load = () => getMlHealth().then(setHealth).catch(() => {});
+    load();
+    const iv = setInterval(load, 60_000);
+    return () => clearInterval(iv);
+  }, []);
+
+  if (!health || !health.model_loaded) return null;
+
+  const totalSamples = Object.values(health.class_distribution).reduce((a, b) => a + b, 0);
+  const maxCount = Math.max(...Object.values(health.class_distribution), 1);
+
+  return (
+    <div className="border border-border bg-panel p-2 space-y-1">
+      <div className="text-zinc-500 text-[10px] uppercase tracking-wider">Model Health</div>
+      <div className="text-[10px] font-mono text-zinc-400">
+        {totalSamples} samples | acc: {health.recent_accuracy.last_50 ? Math.round(health.recent_accuracy.last_50 * 100) + '%' : '--'}
+        {health.validation_score != null && ` | val: ${Math.round(health.validation_score * 100)}%`}
+      </div>
+
+      {/* Class distribution bars */}
+      <div className="space-y-0.5">
+        {Object.entries(health.class_distribution).map(([cls, cnt]) => (
+          <div key={cls} className="flex items-center gap-1">
+            <span className="text-[9px] font-mono text-zinc-500 w-20 truncate">{cls}</span>
+            <div className="flex-1 h-1 bg-zinc-800 rounded-sm overflow-hidden">
+              <div className="h-full bg-zinc-600" style={{ width: `${(cnt / maxCount) * 100}%` }} />
+            </div>
+            <span className="text-[9px] font-mono text-zinc-600 w-6 text-right">{cnt}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Top features */}
+      {health.top_features.length > 0 && (
+        <div className="border-t border-zinc-800 pt-1 space-y-0.5">
+          <div className="text-zinc-600 text-[9px]">Feature Importance</div>
+          {health.top_features.slice(0, 5).map((f) => (
+            <div key={f.name} className="flex items-center gap-1">
+              <span className="text-[9px] font-mono text-zinc-500 w-20 truncate">{f.name}</span>
+              <div className="flex-1 h-1 bg-zinc-800 rounded-sm overflow-hidden">
+                <div className="h-full bg-cyan-600/60" style={{ width: `${f.importance * 100 / (health.top_features[0]?.importance || 1) * 100}%` }} />
+              </div>
+              <span className="text-[9px] font-mono text-cyan-600 w-6 text-right">{Math.round(f.importance * 100)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleSection({ title, count, defaultOpen, children }: {
+  title: string; count: number; defaultOpen: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between text-zinc-500 text-[10px] uppercase tracking-wider py-1 hover:text-zinc-300"
+      >
+        <span>{title} ({count})</span>
+        <span>{open ? '▼' : '▸'}</span>
+      </button>
+      {open && <div className="space-y-0.5">{children}</div>}
+    </div>
+  );
+}
+
 export function L2Page({
   session, levels, currentPrice, connected, pricePos, onLevelClick,
   activeBattle, lastBattle, onDismissBattle, onTakeTrade,
-  positions, onScale, onClose, lastTick, latestPrediction,
+  positions, onScale, onClose, lastTick, latestPrediction, latestFeatures,
 }: Props) {
   const cp = currentPrice ?? 0;
   const battle = activeBattle ?? lastBattle;
@@ -134,6 +216,77 @@ export function L2Page({
   const structGauges = battle ? structureToGauges(battle.structure) : [];
   const mlGauges = battle ? mlToGauges(battle.ml, battle.macro, battle.confluence) : [];
   const hasGauges = ofGauges.length > 0 || structGauges.length > 0 || mlGauges.length > 0;
+
+  // Feature-based gauges from ml_features SSE
+  const f = latestFeatures?.features ?? {};
+  const ofGaugesFromFeatures = featureOrderflowToGauges(f);
+  const temporalGauges = featureTemporalToGauges(f);
+  const sessionGauges = featureSessionToGauges(f);
+  const macroGauges = featureMacroToGauges(f);
+  const candleGauges = featureCandleToGauges(f);
+  const levelGauges = featureLevelToGauges(f);
+
+  // Importance map from latestPrediction.top_features (SHAP contributions)
+  const importanceMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (latestPrediction?.top_features) {
+      const labelMap: Record<string, string> = {
+        delta: 'DELTA',
+        cvd: 'CVD',
+        vsa_absorption: 'ABSORB',
+        stacked_imbalance_count: 'IMBAL',
+        big_trades_count: 'BIG',
+        trapped_traders: 'TRAPPED',
+        stop_run_detected: 'STOP RUN',
+        passive_active_ratio: 'PA RATIO',
+        delta_slope_5m: 'Δ SLP 5M',
+        delta_slope_10m: 'Δ SLP 10M',
+        cvd_acceleration: 'CVD ACCEL',
+        volume_roc_5m: 'VOL ROC',
+        tick_roc_5m: 'TICK ROC',
+        spread_compression: 'SPREAD',
+        price_velocity: 'PX VEL',
+        absorption_building: 'ABSORB CT',
+        imbalance_trend: 'IMBAL Δ',
+        market_type: 'MKT TYPE',
+        opening_type: 'OPEN TYPE',
+        ib_range: 'IB RANGE',
+        ib_range_vs_aspr: 'IB/ASPR',
+        aspr_percentile: 'ASPR %',
+        rotation_factor: 'ROT FACTR',
+        value_migration: 'VAL MIGR',
+        distance_from_vah: 'vs VAH',
+        distance_from_val: 'vs VAL',
+        distance_from_poc: 'vs POC',
+        price_in_va: 'IN VA',
+        session_elapsed_pct: 'ELAPSED',
+        minutes_since_open: 'MIN OPEN',
+        developing_poc_direction: 'DEV POC',
+        prior_touch_count: 'TOUCHES',
+        vix_level: 'VIX',
+        vix_change: 'VIX CHG',
+        macro_regime: 'REGIME',
+        regime_score: 'REG SCORE',
+        macro_bias: 'BIAS',
+        last_3_candles_direction: 'LAST 3',
+        recent_doji: 'DOJI',
+        consecutive_same_direction: 'CONSEC',
+        highest_volume_candle_position: 'HI VOL',
+        range_expansion: 'RANGE EXP',
+        level_type: 'LVL TYPE',
+        level_category: 'LVL CAT',
+        level_strength: 'STRENGTH',
+        level_confluence: 'CONFLNCE',
+        approach_direction: 'APPROACH',
+        distance_from_vwap: 'DIST VWAP',
+      };
+      for (const feat of latestPrediction.top_features) {
+        const label = labelMap[feat.name] || feat.name.toUpperCase();
+        map[label] = Math.abs(feat.contribution);
+      }
+    }
+    return map;
+  }, [latestPrediction]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-2">
@@ -178,7 +331,7 @@ export function L2Page({
       {/* Nearby Level Strip */}
       <NearbyLevelStrip above={nearbyLevels.above} below={nearbyLevels.below} />
 
-      {/* 3-column grid: Levels | Gauges + Signals | Context */}
+      {/* 3-column grid: Levels | Footprint + Gauges | Context */}
       <div className="flex-1 grid grid-cols-[3fr_4fr_3fr] gap-3 min-h-0">
         {/* Left — Level Table */}
         <div className="border border-border bg-panel overflow-y-auto min-h-0">
@@ -191,16 +344,38 @@ export function L2Page({
           />
         </div>
 
-        {/* Center — Footprint + Gauges */}
+        {/* Center — Footprint + Feature Gauges */}
         <div className="flex flex-col gap-2 min-h-0">
-          {/* Footprint Chart — top */}
-          <div className="border border-border bg-panel min-h-0 flex-1 overflow-hidden">
+          {/* Footprint Chart — shrinks to give gauges room */}
+          <div className="border border-border bg-panel min-h-[120px] max-h-[200px] overflow-hidden flex-shrink-0">
             <FootprintChart period={300} limit={8} refreshMs={10_000} />
           </div>
 
-          {/* Gauges — bottom (compact when battle active) */}
-          {hasGauges && (
-            <div className={`border border-border bg-panel p-2 flex-shrink-0 overflow-y-auto max-h-[200px] ${isStale ? 'opacity-60' : ''}`}>
+          {/* Feature Gauge Panel — takes remaining space, scrollable */}
+          <div className={`border border-border bg-panel p-2 flex-1 overflow-y-auto min-h-0 ${isStale ? 'opacity-60' : ''}`}>
+            {latestFeatures ? (
+              <div className="space-y-1">
+                <CollapsibleSection title="ORDERFLOW" count={ofGaugesFromFeatures.length} defaultOpen={true}>
+                  {ofGaugesFromFeatures.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+                <CollapsibleSection title="TEMPORAL" count={temporalGauges.length} defaultOpen={true}>
+                  {temporalGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+                <CollapsibleSection title="CANDLE" count={candleGauges.length} defaultOpen={true}>
+                  {candleGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+                <CollapsibleSection title="SESSION" count={sessionGauges.length} defaultOpen={false}>
+                  {sessionGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+                <CollapsibleSection title="MACRO" count={macroGauges.length} defaultOpen={false}>
+                  {macroGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+                <CollapsibleSection title="LEVEL" count={levelGauges.length} defaultOpen={false}>
+                  {levelGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+                </CollapsibleSection>
+              </div>
+            ) : hasGauges ? (
+              /* Existing battle-based gauges as fallback */
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 {ofGauges.length > 0 && (
                   <div>
@@ -221,17 +396,24 @@ export function L2Page({
                   </div>
                 )}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="text-zinc-600 text-xs text-center py-4">
+                Approach a level to see ML features
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Right — Time & Sales + ML Prediction + Context */}
+        {/* Right — Time & Sales + ML Prediction + Model Health + Context */}
         <div className="flex flex-col gap-2 min-h-0">
           <div className="border border-border bg-panel min-h-0 flex-1 overflow-hidden">
             <TickTape lastTick={lastTick} />
           </div>
           <div className="flex-shrink-0">
             <MlPredictionPanel prediction={latestPrediction} />
+          </div>
+          <div className="flex-shrink-0">
+            <ModelHealthPanel />
           </div>
           <div className="border border-border bg-panel min-h-0 flex-shrink-0 overflow-y-auto max-h-[40%]">
             <ContextSidebar session={session} />

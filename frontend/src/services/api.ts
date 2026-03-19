@@ -19,6 +19,7 @@ import type {
   ProviderLimit,
   BettingSnapshot,
 } from '@/types';
+import type { MlHealth } from '@/types/market';
 
 // ============ Oddsboost Types ============
 
@@ -120,6 +121,11 @@ export interface ExtractionSettingsResponse {
 }
 
 const API_BASE = '/api';
+
+export async function getMlHealth(): Promise<MlHealth> {
+  const res = await fetch(`${API_BASE}/trading/market/ml/health`);
+  return res.json();
+}
 
 // Configuration for fetch with retry
 const DEFAULT_TIMEOUT_MS = 45000; // 45 seconds — generous for slow PCs under extraction load

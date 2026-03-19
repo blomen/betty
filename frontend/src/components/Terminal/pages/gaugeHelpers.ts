@@ -133,3 +133,464 @@ export function mlToGauges(ml: BattleScreenData['ml'], macro: BattleScreenData['
     },
   ];
 }
+
+// ============================================================
+// Feature-dict transformers (from ml_features SSE snapshot)
+// ============================================================
+
+function fmt(v: any, decimals = 1): string {
+  if (v == null) return '--';
+  if (typeof v === 'boolean') return v ? 'YES' : 'NO';
+  if (typeof v === 'number') return v.toFixed(decimals);
+  return String(v);
+}
+
+function cap(v: number): number {
+  return Math.min(1, Math.max(0, v));
+}
+
+/** Orderflow gauges built from feature dict (used when no OrderflowSnapshot available) */
+export function featureOrderflowToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const delta = f.delta ?? null;
+  const cvd = f.cvd ?? null;
+  const absorption = f.vsa_absorption ?? false;
+  const imbalCount = f.stacked_imbalance_count ?? 0;
+  const imbalDir = f.stacked_imbalance_direction ?? 'neutral';
+  const bigCount = f.big_trades_count ?? 0;
+  const bigNetDelta = f.big_trades_net_delta ?? 0;
+  const trapped = f.trapped_traders ?? false;
+  const stopRun = f.stop_run_detected ?? false;
+  const paRatio = f.passive_active_ratio ?? null;
+
+  return [
+    {
+      label: 'DELTA',
+      fill: delta != null ? cap(Math.abs(delta) / 5000) : 0,
+      value: delta != null ? (delta > 0 ? `+${delta}` : `${delta}`) : '--',
+      assessment: delta == null ? 'N/A' : delta > 200 ? 'BULLISH' : delta < -200 ? 'BEARISH' : 'FLAT',
+      color: delta == null ? 'dim' : delta > 0 ? 'green' : delta < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'CVD',
+      fill: cvd != null ? cap(Math.abs(cvd) / 10000) : 0,
+      value: cvd != null ? (cvd > 0 ? `+${Math.round(cvd)}` : `${Math.round(cvd)}`) : '--',
+      assessment: cvd == null ? 'N/A' : cvd > 500 ? 'RISING' : cvd < -500 ? 'FALLING' : 'FLAT',
+      color: cvd == null ? 'dim' : cvd > 0 ? 'green' : cvd < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'ABSORB',
+      fill: absorption ? 1.0 : 0.0,
+      value: absorption ? 'YES' : '--',
+      assessment: absorption ? 'HIGH' : 'NONE',
+      color: absorption ? 'amber' : 'dim',
+    },
+    {
+      label: 'IMBAL',
+      fill: cap(imbalCount / 5),
+      value: imbalCount ? `${imbalDir} x${imbalCount}` : '--',
+      assessment: imbalCount >= 3 ? 'STACKING' : imbalCount ? 'BUILDING' : 'NONE',
+      color: imbalDir === 'buy' ? 'green' : imbalDir === 'sell' ? 'red' : 'dim',
+    },
+    {
+      label: 'BIG',
+      fill: cap(bigCount / 10),
+      value: bigCount ? `${bigCount}` : '--',
+      assessment: bigNetDelta > 0 ? 'BUY SIDE' : bigNetDelta < 0 ? 'SELL SIDE' : 'NONE',
+      color: bigNetDelta > 0 ? 'green' : bigNetDelta < 0 ? 'red' : 'dim',
+    },
+    {
+      label: 'TRAPPED',
+      fill: trapped ? 0.9 : 0.0,
+      value: trapped ? 'YES' : '--',
+      assessment: trapped ? 'DETECTED' : 'NONE',
+      color: trapped ? 'amber' : 'dim',
+    },
+    {
+      label: 'STOP RUN',
+      fill: stopRun ? 0.9 : 0.0,
+      value: stopRun ? 'YES' : '--',
+      assessment: stopRun ? 'DETECTED' : 'NONE',
+      color: stopRun ? 'amber' : 'dim',
+    },
+    {
+      label: 'PA RATIO',
+      fill: paRatio != null ? cap(paRatio / 4) : 0,
+      value: paRatio != null ? paRatio.toFixed(1) : '--',
+      assessment: paRatio == null ? 'N/A' : paRatio > 2 ? 'PASSIVE' : paRatio > 1 ? 'BALANCED' : 'ACTIVE',
+      color: paRatio != null && paRatio > 2 ? 'amber' : 'dim',
+    },
+  ];
+}
+
+/** Temporal/momentum gauges — 9 bars */
+export function featureTemporalToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const slp5 = f.delta_slope_5m ?? null;
+  const slp10 = f.delta_slope_10m ?? null;
+  const cvdAccel = f.cvd_acceleration ?? null;
+  const volRoc = f.volume_roc_5m ?? null;
+  const tickRoc = f.tick_roc_5m ?? null;
+  const spreadComp = f.spread_compression ?? null;
+  const pxVel = f.price_velocity ?? null;
+  const absorptionBuilding = f.absorption_building ?? 0;
+  const imbalTrend = f.imbalance_trend ?? null;
+
+  return [
+    {
+      label: 'Δ SLP 5M',
+      fill: slp5 != null ? cap(Math.abs(slp5) / 50) : 0,
+      value: fmt(slp5),
+      assessment: slp5 == null ? 'N/A' : Math.abs(slp5) < 2 ? 'FLAT' : slp5 > 0 ? 'ACCEL' : 'DECEL',
+      color: slp5 == null ? 'dim' : slp5 > 0 ? 'green' : 'red',
+    },
+    {
+      label: 'Δ SLP 10M',
+      fill: slp10 != null ? cap(Math.abs(slp10) / 50) : 0,
+      value: fmt(slp10),
+      assessment: slp10 == null ? 'N/A' : Math.abs(slp10) < 2 ? 'FLAT' : slp10 > 0 ? 'ACCEL' : 'DECEL',
+      color: slp10 == null ? 'dim' : slp10 > 0 ? 'green' : 'red',
+    },
+    {
+      label: 'CVD ACCEL',
+      fill: cvdAccel != null ? cap(Math.abs(cvdAccel) / 2000) : 0,
+      value: fmt(cvdAccel, 0),
+      assessment: cvdAccel == null ? 'N/A' : Math.abs(cvdAccel) < 100 ? 'FLAT' : cvdAccel > 0 ? 'RISING' : 'FALLING',
+      color: cvdAccel == null ? 'dim' : cvdAccel > 0 ? 'green' : 'red',
+    },
+    {
+      label: 'VOL ROC',
+      fill: volRoc != null ? cap((volRoc - 0.5) / 1.5) : 0,
+      value: fmt(volRoc),
+      assessment: volRoc == null ? 'N/A' : volRoc > 1.5 ? 'SURGING' : volRoc > 1.1 ? 'RISING' : volRoc < 0.8 ? 'FADING' : 'NORMAL',
+      color: volRoc == null ? 'dim' : volRoc > 1.1 ? 'green' : volRoc < 0.8 ? 'red' : 'amber',
+    },
+    {
+      label: 'TICK ROC',
+      fill: tickRoc != null ? cap((tickRoc - 0.5) / 1.5) : 0,
+      value: fmt(tickRoc),
+      assessment: tickRoc == null ? 'N/A' : tickRoc > 1.5 ? 'SURGING' : tickRoc > 1.1 ? 'RISING' : tickRoc < 0.8 ? 'FADING' : 'NORMAL',
+      color: tickRoc == null ? 'dim' : tickRoc > 1.1 ? 'green' : tickRoc < 0.8 ? 'red' : 'amber',
+    },
+    {
+      label: 'SPREAD',
+      fill: spreadComp != null ? cap(1 - spreadComp) : 0,
+      value: fmt(spreadComp),
+      assessment: spreadComp == null ? 'N/A' : spreadComp < 0.7 ? 'TIGHT' : spreadComp > 1.3 ? 'WIDE' : 'NORMAL',
+      color: spreadComp == null ? 'dim' : spreadComp < 0.7 ? 'green' : spreadComp > 1.3 ? 'red' : 'amber',
+    },
+    {
+      label: 'PX VEL',
+      fill: pxVel != null ? cap(Math.abs(pxVel) / 5) : 0,
+      value: fmt(pxVel),
+      assessment: pxVel == null ? 'N/A' : Math.abs(pxVel) > 2 ? 'FAST' : 'SLOW',
+      color: pxVel == null ? 'dim' : Math.abs(pxVel) > 2 ? 'amber' : 'dim',
+    },
+    {
+      label: 'ABSORB CT',
+      fill: cap((absorptionBuilding || 0) / 10),
+      value: fmt(absorptionBuilding, 0),
+      assessment: (absorptionBuilding || 0) >= 4 ? 'HIGH' : (absorptionBuilding || 0) >= 2 ? 'MODERATE' : 'LOW',
+      color: (absorptionBuilding || 0) >= 2 ? 'amber' : 'dim',
+    },
+    {
+      label: 'IMBAL Δ',
+      fill: imbalTrend != null ? cap(Math.abs(imbalTrend) / 5) : 0,
+      value: fmt(imbalTrend),
+      assessment: imbalTrend == null ? 'N/A' : Math.abs(imbalTrend) < 0.5 ? 'STABLE' : imbalTrend > 0 ? 'BUILDING' : 'FADING',
+      color: imbalTrend == null ? 'dim' : imbalTrend > 0 ? 'green' : imbalTrend < 0 ? 'red' : 'dim',
+    },
+  ];
+}
+
+/** Session/market-profile gauges — 15 bars */
+export function featureSessionToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const mktType = f.market_type ?? null;
+  const openType = f.opening_type ?? null;
+  const ibRange = f.ib_range ?? null;
+  const ibVsAspr = f.ib_range_vs_aspr ?? null;
+  const asprPct = f.aspr_percentile ?? null;
+  const rotFactor = f.rotation_factor ?? null;
+  const valMigr = f.value_migration ?? null;
+  const vsVah = f.distance_from_vah ?? null;
+  const vsVal = f.distance_from_val ?? null;
+  const vsPoc = f.distance_from_poc ?? null;
+  const inVa = f.price_in_va ?? null;
+  const elapsed = f.session_elapsed_pct ?? null;
+  const minOpen = f.minutes_since_open ?? null;
+  const devPoc = f.developing_poc_direction ?? null;
+  const touches = f.prior_touch_count ?? null;
+
+  return [
+    {
+      label: 'MKT TYPE',
+      fill: mktType === 'trending_up' || mktType === 'trending_down' ? 0.9 : mktType === 'balanced' ? 0.4 : 0,
+      value: mktType ? String(mktType) : '--',
+      assessment: mktType ? String(mktType).toUpperCase().replace('_', ' ') : 'N/A',
+      color: mktType === 'trending_up' ? 'green' : mktType === 'trending_down' ? 'red' : mktType === 'balanced' ? 'amber' : 'dim',
+    },
+    {
+      label: 'OPEN TYPE',
+      fill: openType === 'OD' ? 0.9 : openType === 'OTD' ? 0.7 : openType === 'ORR' ? 0.8 : openType === 'OA' ? 0.5 : 0,
+      value: openType ? String(openType) : '--',
+      assessment: openType ? String(openType).toUpperCase() : 'N/A',
+      color: openType === 'OD' ? 'green' : openType === 'OTD' ? 'amber' : openType === 'ORR' ? 'red' : openType === 'OA' ? 'amber' : 'dim',
+    },
+    {
+      label: 'IB RANGE',
+      fill: ibRange != null ? cap(ibRange / 100) : 0,
+      value: ibRange != null ? ibRange.toFixed(1) : '--',
+      assessment: ibRange == null ? 'N/A' : ibRange > 50 ? 'WIDE' : ibRange < 20 ? 'NARROW' : 'NORMAL',
+      color: ibRange == null ? 'dim' : ibRange > 50 ? 'red' : ibRange < 20 ? 'green' : 'amber',
+    },
+    {
+      label: 'IB/ASPR',
+      fill: ibVsAspr != null ? cap(ibVsAspr / 3) : 0,
+      value: fmt(ibVsAspr),
+      assessment: ibVsAspr == null ? 'N/A' : ibVsAspr > 1.5 ? 'EXPANDED' : ibVsAspr < 0.7 ? 'COMPRESSED' : 'NORMAL',
+      color: ibVsAspr == null ? 'dim' : ibVsAspr > 1.5 ? 'amber' : ibVsAspr < 0.7 ? 'green' : 'dim',
+    },
+    {
+      label: 'ASPR %',
+      fill: asprPct != null ? cap(asprPct / 100) : 0,
+      value: asprPct != null ? `${Math.round(asprPct)}%` : '--',
+      assessment: asprPct == null ? 'N/A' : asprPct > 70 ? 'HIGH' : asprPct < 30 ? 'LOW' : 'AVG',
+      color: asprPct == null ? 'dim' : 'amber',
+    },
+    {
+      label: 'ROT FACTR',
+      fill: rotFactor != null ? cap(Math.abs(rotFactor) / 10) : 0,
+      value: fmt(rotFactor),
+      assessment: rotFactor == null ? 'N/A' : Math.abs(rotFactor) > 3 ? 'DIRECTIONAL' : 'ROTATIONAL',
+      color: rotFactor == null ? 'dim' : Math.abs(rotFactor) > 3 ? 'amber' : 'dim',
+    },
+    {
+      label: 'VAL MIGR',
+      fill: 0.5,
+      value: valMigr ? String(valMigr) : '--',
+      assessment: valMigr ? String(valMigr).toUpperCase() : 'N/A',
+      color: valMigr === 'up' ? 'green' : valMigr === 'down' ? 'red' : valMigr === 'overlapping' ? 'amber' : 'dim',
+    },
+    {
+      label: 'vs VAH',
+      fill: vsVah != null ? cap(0.5 + vsVah / 50) : 0,
+      value: vsVah != null ? (vsVah > 0 ? `+${vsVah.toFixed(1)}` : vsVah.toFixed(1)) : '--',
+      assessment: vsVah == null ? 'N/A' : Math.abs(vsVah) < 5 ? 'AT VAH' : vsVah > 0 ? 'ABOVE' : 'BELOW',
+      color: vsVah == null ? 'dim' : Math.abs(vsVah) < 5 ? 'amber' : 'dim',
+    },
+    {
+      label: 'vs VAL',
+      fill: vsVal != null ? cap(0.5 + vsVal / 50) : 0,
+      value: vsVal != null ? (vsVal > 0 ? `+${vsVal.toFixed(1)}` : vsVal.toFixed(1)) : '--',
+      assessment: vsVal == null ? 'N/A' : Math.abs(vsVal) < 5 ? 'AT VAL' : vsVal > 0 ? 'ABOVE' : 'BELOW',
+      color: vsVal == null ? 'dim' : Math.abs(vsVal) < 5 ? 'amber' : 'dim',
+    },
+    {
+      label: 'vs POC',
+      fill: vsPoc != null ? cap(0.5 + vsPoc / 50) : 0,
+      value: vsPoc != null ? (vsPoc > 0 ? `+${vsPoc.toFixed(1)}` : vsPoc.toFixed(1)) : '--',
+      assessment: vsPoc == null ? 'N/A' : Math.abs(vsPoc) < 5 ? 'AT POC' : vsPoc > 0 ? 'ABOVE' : 'BELOW',
+      color: vsPoc == null ? 'dim' : Math.abs(vsPoc) < 5 ? 'amber' : 'dim',
+    },
+    {
+      label: 'IN VA',
+      fill: inVa ? 1.0 : 0.0,
+      value: inVa == null ? '--' : inVa ? 'YES' : 'NO',
+      assessment: inVa == null ? 'N/A' : inVa ? 'IN VA' : 'OUT',
+      color: inVa ? 'green' : inVa === false ? 'dim' : 'dim',
+    },
+    {
+      label: 'ELAPSED',
+      fill: elapsed != null ? cap(elapsed / 100) : 0,
+      value: elapsed != null ? `${Math.round(elapsed)}%` : '--',
+      assessment: elapsed == null ? 'N/A' : elapsed < 30 ? 'EARLY' : elapsed < 70 ? 'MID' : 'LATE',
+      color: elapsed == null ? 'dim' : 'amber',
+    },
+    {
+      label: 'MIN OPEN',
+      fill: minOpen != null ? cap(minOpen / 390) : 0,
+      value: minOpen != null ? `${Math.round(minOpen)}m` : '--',
+      assessment: minOpen == null ? 'N/A' : `${Math.round(minOpen)}min`,
+      color: minOpen == null ? 'dim' : 'dim',
+    },
+    {
+      label: 'DEV POC',
+      fill: 0.5,
+      value: devPoc ? String(devPoc) : '--',
+      assessment: devPoc ? String(devPoc).toUpperCase() : 'N/A',
+      color: devPoc === 'up' ? 'green' : devPoc === 'down' ? 'red' : devPoc === 'flat' ? 'dim' : 'dim',
+    },
+    {
+      label: 'TOUCHES',
+      fill: touches != null ? cap(touches / 5) : 0,
+      value: touches != null ? `${touches}` : '--',
+      assessment: touches == null ? 'N/A' : touches > 2 ? 'RETESTING' : touches === 0 ? 'FIRST' : `${touches}x`,
+      color: touches != null && touches > 2 ? 'amber' : 'dim',
+    },
+  ];
+}
+
+/** Macro regime gauges — 5 bars */
+export function featureMacroToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const vix = f.vix_level ?? null;
+  const vixChg = f.vix_change ?? null;
+  const regime = f.macro_regime ?? null;
+  const regScore = f.regime_score ?? null;
+  const bias = f.macro_bias ?? null;
+
+  return [
+    {
+      label: 'VIX',
+      fill: cap((vix ?? 20) / 40),
+      value: vix != null ? vix.toFixed(1) : '--',
+      assessment: vix == null ? 'N/A' : vix < 18 ? 'LOW' : vix > 25 ? 'HIGH' : 'NORMAL',
+      color: vix == null ? 'dim' : vix < 18 ? 'green' : vix > 25 ? 'red' : 'amber',
+    },
+    {
+      label: 'VIX CHG',
+      fill: vixChg != null ? cap(Math.abs(vixChg) / 10) : 0,
+      value: vixChg != null ? (vixChg > 0 ? `+${vixChg.toFixed(2)}` : vixChg.toFixed(2)) : '--',
+      assessment: vixChg == null ? 'N/A' : vixChg > 1 ? 'RISK OFF' : vixChg < -1 ? 'RISK ON' : 'STABLE',
+      color: vixChg == null ? 'dim' : vixChg > 0 ? 'red' : vixChg < 0 ? 'green' : 'dim',
+    },
+    {
+      label: 'REGIME',
+      fill: 0.5,
+      value: regime ? String(regime) : '--',
+      assessment: regime ? String(regime).toUpperCase().replace('_', ' ') : 'N/A',
+      color: regime === 'risk_on' ? 'green' : regime === 'risk_off' ? 'red' : regime === 'mixed' ? 'amber' : 'dim',
+    },
+    {
+      label: 'REG SCORE',
+      fill: regScore != null ? cap((regScore + 1) / 2) : 0.5,
+      value: fmt(regScore),
+      assessment: regScore == null ? 'N/A' : regScore > 0.5 ? 'BULLISH' : regScore < -0.5 ? 'BEARISH' : 'NEUTRAL',
+      color: regScore == null ? 'dim' : regScore > 0.3 ? 'green' : regScore < -0.3 ? 'red' : 'amber',
+    },
+    {
+      label: 'BIAS',
+      fill: 0.5,
+      value: bias ? String(bias) : '--',
+      assessment: bias ? String(bias).toUpperCase() : 'N/A',
+      color: bias === 'bull' ? 'green' : bias === 'bear' ? 'red' : bias === 'neutral' ? 'amber' : 'dim',
+    },
+  ];
+}
+
+/** Candle pattern gauges — 5 bars */
+export function featureCandleToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const last3 = f.last_3_candles_direction ?? null;
+  const doji = f.recent_doji ?? null;
+  const consec = f.consecutive_same_direction ?? null;
+  const hiVolPos = f.highest_volume_candle_position ?? null;
+  const rangeExp = f.range_expansion ?? null;
+
+  return [
+    {
+      label: 'LAST 3',
+      fill: last3 != null ? cap(Math.abs(last3) / 3) : 0,
+      value: fmt(last3, 0),
+      assessment: last3 == null ? 'N/A' : last3 > 1 ? 'UP BIAS' : last3 < -1 ? 'DOWN BIAS' : 'MIXED',
+      color: last3 == null ? 'dim' : last3 > 1 ? 'green' : last3 < -1 ? 'red' : 'amber',
+    },
+    {
+      label: 'DOJI',
+      fill: doji ? 1.0 : 0.0,
+      value: doji == null ? '--' : doji ? 'YES' : 'NO',
+      assessment: doji == null ? 'N/A' : doji ? 'INDECISION' : 'NONE',
+      color: doji ? 'amber' : 'dim',
+    },
+    {
+      label: 'CONSEC',
+      fill: consec != null ? cap(consec / 6) : 0,
+      value: fmt(consec, 0),
+      assessment: consec == null ? 'N/A' : (consec ?? 0) >= 3 ? 'MOMENTUM' : `${consec ?? 0}`,
+      color: consec != null && consec >= 3 ? 'green' : 'dim',
+    },
+    {
+      label: 'HI VOL',
+      fill: hiVolPos != null ? cap(hiVolPos / 9) : 0,
+      value: fmt(hiVolPos, 0),
+      assessment: hiVolPos == null ? 'N/A' : hiVolPos >= 7 ? 'RECENT' : hiVolPos <= 2 ? 'OLD' : `BAR ${hiVolPos}`,
+      color: hiVolPos == null ? 'dim' : hiVolPos >= 7 ? 'green' : 'dim',
+    },
+    {
+      label: 'RANGE EXP',
+      fill: rangeExp != null ? cap(rangeExp / 3) : 0,
+      value: fmt(rangeExp),
+      assessment: rangeExp == null ? 'N/A' : rangeExp > 1.5 ? 'EXPANDING' : rangeExp < 0.7 ? 'CONTRACTING' : 'NORMAL',
+      color: rangeExp == null ? 'dim' : rangeExp > 1.5 ? 'green' : rangeExp < 0.7 ? 'red' : 'amber',
+    },
+  ];
+}
+
+/** Level-context gauges — 7 bars */
+export function featureLevelToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const lvlType = f.level_type ?? null;
+  const lvlCat = f.level_category ?? null;
+  const strength = f.level_strength ?? null;
+  const confluence = f.level_confluence ?? null;
+  const approach = f.approach_direction ?? null;
+  const distPoc = f.distance_from_poc ?? null;
+  const distVwap = f.distance_from_vwap ?? null;
+
+  function levelCatColor(cat: string | null): GaugeBarProps['color'] {
+    if (!cat) return 'dim';
+    const c = String(cat).toLowerCase();
+    if (c === 'session') return 'amber';
+    if (c === 'band') return 'amber';
+    if (c === 'prior') return 'amber';
+    if (c === 'structure') return 'green';
+    return 'dim';
+  }
+
+  return [
+    {
+      label: 'LVL TYPE',
+      fill: lvlType ? 0.5 : 0,
+      value: lvlType ? String(lvlType).toUpperCase() : '--',
+      assessment: lvlType ? String(lvlType).toUpperCase() : 'N/A',
+      color: 'amber',
+    },
+    {
+      label: 'LVL CAT',
+      fill: lvlCat ? 0.5 : 0,
+      value: lvlCat ? String(lvlCat) : '--',
+      assessment: lvlCat ? String(lvlCat).toUpperCase() : 'N/A',
+      color: levelCatColor(lvlCat),
+    },
+    {
+      label: 'STRENGTH',
+      fill: strength != null ? cap(strength / 20) : 0,
+      value: fmt(strength),
+      assessment: strength == null ? 'N/A' : strength > 10 ? 'STRONG' : strength > 5 ? 'MODERATE' : 'WEAK',
+      color: strength == null ? 'dim' : strength > 10 ? 'green' : strength > 5 ? 'amber' : 'dim',
+    },
+    {
+      label: 'CONFLNCE',
+      fill: confluence != null ? cap(confluence / 4) : 0,
+      value: fmt(confluence, 0),
+      assessment: confluence == null ? 'N/A' : confluence >= 3 ? 'STRONG' : confluence >= 1 ? 'MODERATE' : 'SINGLE',
+      color: confluence == null ? 'dim' : confluence >= 3 ? 'green' : confluence >= 1 ? 'amber' : 'dim',
+    },
+    {
+      label: 'APPROACH',
+      fill: approach ? 0.7 : 0,
+      value: approach ? String(approach) : '--',
+      assessment: approach ? String(approach).toUpperCase().replace('_', ' ') : 'N/A',
+      color: approach === 'from_below' ? 'green' : approach === 'from_above' ? 'red' : 'dim',
+    },
+    {
+      label: 'DIST POC',
+      fill: distPoc != null ? cap(Math.abs(distPoc) / 100) : 0,
+      value: distPoc != null ? `${Math.round(Math.abs(distPoc))}t` : '--',
+      assessment: distPoc == null ? 'N/A' : Math.abs(distPoc) < 10 ? 'NEAR' : Math.abs(distPoc) > 50 ? 'FAR' : `${Math.round(Math.abs(distPoc))}t`,
+      color: distPoc == null ? 'dim' : Math.abs(distPoc) < 10 ? 'amber' : 'dim',
+    },
+    {
+      label: 'DIST VWAP',
+      fill: distVwap != null ? cap(Math.abs(distVwap) / 100) : 0,
+      value: distVwap != null ? `${Math.round(Math.abs(distVwap))}t` : '--',
+      assessment: distVwap == null ? 'N/A' : Math.abs(distVwap) < 10 ? 'NEAR' : Math.abs(distVwap) > 50 ? 'FAR' : `${Math.round(Math.abs(distVwap))}t`,
+      color: distVwap == null ? 'dim' : Math.abs(distVwap) < 10 ? 'amber' : 'dim',
+    },
+  ];
+}
