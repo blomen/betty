@@ -170,7 +170,8 @@ def compute_tpo_profile(
 def classify_tpo_shape(profile: TPOProfile) -> str:
     """Classify the TPO profile shape based on distribution of letters.
 
-    Returns one of: "p-shape", "b-shape", "d-shape", or "balanced".
+    Returns one of: "B-shape", "p-shape", "b-shape", "d-shape", or "balanced".
+    - B-shape: two distinct distribution clusters with a valley between them
     - p-shape: >65% of total TPO count above midpoint (concentration at top)
     - b-shape: >65% of total TPO count below midpoint (concentration at bottom)
     - d-shape: elongated range (>30 price levels) with roughly even distribution
@@ -186,6 +187,21 @@ def classify_tpo_shape(profile: TPOProfile) -> str:
     if total_tpos == 0:
         return "balanced"
 
+    # B-shape: two peaks with valley between them
+    counts = [len(profile.letters[p]) for p in sorted_prices]
+    peak_count = max(counts)
+
+    if peak_count >= 3 and n >= 10:
+        valley_threshold = peak_count * 0.40
+        peak_threshold = peak_count * 0.60
+        for i in range(2, n - 2):
+            if counts[i] <= valley_threshold:
+                left_peak = max(counts[:i])
+                right_peak = max(counts[i + 1:])
+                if left_peak >= peak_threshold and right_peak >= peak_threshold:
+                    return "B-shape"
+
+    # Existing logic
     midpoint = (sorted_prices[0] + sorted_prices[-1]) / 2
 
     above_count = sum(len(profile.letters[p]) for p in sorted_prices if p > midpoint)
@@ -226,27 +242,29 @@ def compute_rotation_factor(bars_30m: list[dict]) -> tuple[float, int]:
     return (factor, rotations)
 
 
-def detect_excess(profile: TPOProfile) -> tuple[bool, bool]:
+def detect_excess(profile: TPOProfile) -> tuple[int, int]:
     """Detect excess (sharp rejection) at session extremes.
 
-    Excess = single TPO print at the extreme, indicating sharp rejection.
-    - excess_high: top 2 prices each have only 1 letter
-    - excess_low: bottom 2 prices each have only 1 letter
-    Returns (excess_high, excess_low). Empty profile → (False, False).
+    Counts consecutive single-print levels from each extreme inward.
+    Returns (upper_count, lower_count). Empty profile → (0, 0).
     """
     if not profile.letters:
-        return (False, False)
+        return (0, 0)
 
     sorted_prices = sorted(profile.letters.keys())
 
-    if len(sorted_prices) < 2:
-        top_2 = sorted_prices
-        bottom_2 = sorted_prices
-    else:
-        top_2 = sorted_prices[-2:]
-        bottom_2 = sorted_prices[:2]
+    upper = 0
+    for p in reversed(sorted_prices):
+        if len(profile.letters[p]) == 1:
+            upper += 1
+        else:
+            break
 
-    excess_high = all(len(profile.letters[p]) == 1 for p in top_2)
-    excess_low = all(len(profile.letters[p]) == 1 for p in bottom_2)
+    lower = 0
+    for p in sorted_prices:
+        if len(profile.letters[p]) == 1:
+            lower += 1
+        else:
+            break
 
-    return (excess_high, excess_low)
+    return (upper, lower)

@@ -1,6 +1,9 @@
 """Tests for extended TPO engine functions."""
 import pytest
-from src.market_data.tpo import _period_letter, TPOProfile, compute_tpo_profile
+from src.market_data.tpo import (
+    _period_letter, TPOProfile, compute_tpo_profile,
+    classify_tpo_shape, detect_excess,
+)
 
 
 class TestPeriodLetter:
@@ -101,3 +104,72 @@ class TestComputeTPOProfileExtended:
         bars = [_make_bar(100, 100.25, 100, 100.25) for _ in range(27)]
         profile = compute_tpo_profile(bars, tick_size=0.25)
         assert "AA" in profile.letters[100.0]
+
+
+class TestClassifyTPOShapeBShape:
+    def test_double_distribution_is_B_shape(self):
+        """Two peaks with a valley between them -> B-shape."""
+        letters = {}
+        # Lower cluster: 98-103, heavy TPOs
+        for p_int in range(392, 413):  # 98.0 to 103.0 in 0.25 steps
+            p = p_int * 0.25
+            letters[p] = ["A", "B", "C", "D", "E", "F", "G"]
+        # Valley: 103.25-106.75, minimal TPOs
+        for p_int in range(413, 428):
+            p = p_int * 0.25
+            letters[p] = ["D"]
+        # Upper cluster: 107-112, heavy TPOs
+        for p_int in range(428, 449):
+            p = p_int * 0.25
+            letters[p] = ["E", "F", "G", "H", "I", "J", "K"]
+        profile = TPOProfile(
+            letters=letters, poc=100.5, vah=112.0, val=98.0,
+            single_prints=[], ledges=[], poor_high=False, poor_low=False,
+            ib_tpo_count=0,
+        )
+        assert classify_tpo_shape(profile) == "B-shape"
+
+    def test_single_cluster_not_B_shape(self):
+        letters = {}
+        for p_int in range(400, 421):
+            p = p_int * 0.25
+            count = max(1, 7 - abs(p_int - 410))
+            letters[p] = [chr(65 + j) for j in range(count)]
+        profile = TPOProfile(
+            letters=letters, poc=102.5, vah=104.0, val=101.0,
+            single_prints=[], ledges=[], poor_high=False, poor_low=False,
+            ib_tpo_count=0,
+        )
+        assert classify_tpo_shape(profile) != "B-shape"
+
+
+class TestDetectExcessTickCounts:
+    def test_returns_int_counts(self):
+        letters = {
+            100.0: ["A"],
+            100.25: ["A"],
+            100.5: ["A", "B", "C"],
+            100.75: ["A", "B"],
+            101.0: ["A"],
+        }
+        profile = TPOProfile(
+            letters=letters, poc=100.5, vah=100.75, val=100.25,
+            single_prints=[100.0, 100.25, 101.0], ledges=[],
+            poor_high=False, poor_low=False, ib_tpo_count=0,
+        )
+        upper, lower = detect_excess(profile)
+        assert isinstance(upper, int)
+        assert isinstance(lower, int)
+        assert upper == 1
+        assert lower == 2
+
+    def test_truthy_compat(self):
+        letters = {100.0: ["A"], 100.25: ["A", "B"]}
+        profile = TPOProfile(
+            letters=letters, poc=100.25, vah=100.25, val=100.0,
+            single_prints=[100.0], ledges=[],
+            poor_high=False, poor_low=False, ib_tpo_count=0,
+        )
+        upper, lower = detect_excess(profile)
+        assert not upper
+        assert lower
