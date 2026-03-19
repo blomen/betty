@@ -12,7 +12,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, time
+from datetime import datetime, timedelta, timezone, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -95,6 +95,10 @@ class ReplayEngine:
         # A key is removed when price moves away beyond the proximity threshold
         self._touched_keys: set[str] = set()
 
+        # Cooldown: minimum 30 seconds between episodes to avoid noise
+        self._last_episode_ts: datetime | None = None
+        self._episode_cooldown = timedelta(seconds=30)
+
         # Orderflow: per-candle tick buffer and completed CandleFlow list
         self._candle_ticks: list[dict] = []
         self._candle_flows: list[CandleFlow] = []
@@ -165,10 +169,24 @@ class ReplayEngine:
             # 5. Check which active levels are touched
             newly_touched = self._check_level_touch(price)
 
-            # 6. Emit an episode for each newly-touched level
-            for level_name, level_type, level_price in newly_touched:
-                # Forward ticks: everything after the current tick
-                forward_raw = norm_ticks[i + 1:]
+            # 6. Emit ONE episode per tick with 30s cooldown between episodes.
+            # Multiple simultaneous touches show up as confluence in the
+            # observation vector; we only need one training sample per moment.
+            if not newly_touched:
+                continue
+            # Cooldown: skip if too soon after last episode
+            if self._last_episode_ts is not None:
+                elapsed = (tick["ts"] - self._last_episode_ts).total_seconds()
+                if elapsed < self._episode_cooldown.total_seconds():
+                    continue
+
+            level_name, level_type, level_price = newly_touched[0]
+            if True:  # single-episode block
+                # Forward ticks: cap at ~30 min of data (TIMEOUT_MINUTES)
+                # NQ averages ~6k ticks/min, 30 min ≈ 180k ticks max.
+                # Use 20k tick cap as practical upper bound.
+                max_forward = min(len(norm_ticks) - i - 1, 20_000)
+                forward_raw = norm_ticks[i + 1 : i + 1 + max_forward]
                 forward_objs = [_TickView(t) for t in forward_raw]
 
                 state = self._build_state(tick, level_type, session_date, date_str)
@@ -182,6 +200,7 @@ class ReplayEngine:
                     touch_ts=tick["ts"],
                 )
                 episodes.append(episode)
+                self._last_episode_ts = tick["ts"]
                 log.debug(
                     "Episode at %s: %s @ %.2f → best=%s",
                     tick["ts"],
@@ -200,34 +219,37 @@ class ReplayEngine:
     # ------------------------------------------------------------------
 
     def _on_bar_close(self, session_date: datetime) -> None:
-        """Called once per completed 1m bar. Recomputes all structural levels."""
+        """Called once per completed 1m bar. Recomputes structural levels."""
         bars_1m = self._candle_agg.get_completed_1m()
+        bar_count = len(bars_1m)
 
-        # Recompute session levels from all completed bars
-        computed = compute_session_levels(bars_1m, session_date)
+        # Recompute session levels every 15 bars (levels don't change every minute)
+        # Always compute on first 60 bars (IB period is critical)
+        if bar_count <= 60 or bar_count % 15 == 0:
+            computed = compute_session_levels(bars_1m, session_date)
 
-        # Merge prior session data (PDH/PDL, weekly, monthly) that compute_session_levels
-        # cannot derive from bars alone (they come from the prior session dict).
-        if self._prior_pdh is not None and computed.pdh is None:
-            computed.pdh = self._prior_pdh
-        if self._prior_pdl is not None and computed.pdl is None:
-            computed.pdl = self._prior_pdl
-        if self._prior_weekly_high is not None and computed.weekly_high is None:
-            computed.weekly_high = self._prior_weekly_high
-        if self._prior_weekly_low is not None and computed.weekly_low is None:
-            computed.weekly_low = self._prior_weekly_low
-        if self._prior_monthly_high is not None and computed.monthly_high is None:
-            computed.monthly_high = self._prior_monthly_high
-        if self._prior_monthly_low is not None and computed.monthly_low is None:
-            computed.monthly_low = self._prior_monthly_low
+            # Merge prior session data (PDH/PDL, weekly, monthly)
+            if self._prior_pdh is not None and computed.pdh is None:
+                computed.pdh = self._prior_pdh
+            if self._prior_pdl is not None and computed.pdl is None:
+                computed.pdl = self._prior_pdl
+            if self._prior_weekly_high is not None and computed.weekly_high is None:
+                computed.weekly_high = self._prior_weekly_high
+            if self._prior_weekly_low is not None and computed.weekly_low is None:
+                computed.weekly_low = self._prior_weekly_low
+            if self._prior_monthly_high is not None and computed.monthly_high is None:
+                computed.monthly_high = self._prior_monthly_high
+            if self._prior_monthly_low is not None and computed.monthly_low is None:
+                computed.monthly_low = self._prior_monthly_low
 
-        self._session_levels = computed
+            self._session_levels = computed
 
-        # Detect SMC structures from recent bars (last 100 bars for performance)
-        recent_bars = bars_1m[-100:]
-        self._fvgs = detect_fvgs(recent_bars)
-        self._order_blocks = detect_order_blocks(recent_bars)
-        self._swing_points = detect_swing_points(recent_bars)
+        # Detect SMC structures every 15 bars (last 50 bars lookback)
+        if bar_count % 15 == 0:
+            recent_bars = bars_1m[-50:]
+            self._fvgs = detect_fvgs(recent_bars)
+            self._order_blocks = detect_order_blocks(recent_bars)
+            self._swing_points = detect_swing_points(recent_bars)
 
         # Build CandleFlow from ticks accumulated since last bar close
         if self._candle_ticks:
@@ -263,14 +285,15 @@ class ReplayEngine:
             levels.append(("vwap_sd3_upper", LevelType.VWAP_SD3, vwap_bands.sd3_upper))
             levels.append(("vwap_sd3_lower", LevelType.VWAP_SD3, vwap_bands.sd3_lower))
 
-        # --- Volume profile: POC, VAH, VAL, single prints ---
+        # --- Volume profile: POC, VAH, VAL (skip single prints as levels — too noisy) ---
         vp = self._vp.get()
         if vp is not None:
             levels.append(("poc_session", LevelType.POC_SESSION, vp.poc))
             levels.append(("vah", LevelType.VAH, vp.vah))
             levels.append(("val", LevelType.VAL, vp.val))
-            for sp_low, _sp_high in vp.single_prints:
-                levels.append(("single_print", LevelType.SINGLE_PRINT, sp_low))
+            # Single prints excluded as individual levels (too noisy — 200+
+            # per session). They're still used as features in the observation
+            # vector via the VP profile data.
 
         # --- Session structural levels ---
         sl = self._session_levels
@@ -287,10 +310,12 @@ class ReplayEngine:
         _add_optional(levels, "monthly_high", LevelType.MONTHLY_HL, sl.monthly_high)
         _add_optional(levels, "monthly_low", LevelType.MONTHLY_HL, sl.monthly_low)
 
-        # --- Fair Value Gaps (midpoint) ---
+        # --- Fair Value Gaps (midpoint) — only significant gaps (≥2 ticks wide) ---
         for fvg in self._fvgs:
-            mid = (fvg.price_low + fvg.price_high) / 2.0
-            levels.append(("fvg", LevelType.FVG, mid))
+            gap_size = fvg.price_high - fvg.price_low
+            if gap_size >= TICK_SIZE * 2:
+                mid = (fvg.price_low + fvg.price_high) / 2.0
+                levels.append(("fvg", LevelType.FVG, mid))
 
         # --- Order blocks (midpoint) ---
         for ob in self._order_blocks:
@@ -327,7 +352,10 @@ class ReplayEngine:
 
         for name, level_type, level_price in self._active_levels:
             dist = abs(price - level_price)
-            key = f"{name}_{level_price}"
+            # Snap level_price to tick grid for debounce key — prevents
+            # VWAP/VP micro-shifts from creating new keys each tick
+            snapped = round(level_price / TICK_SIZE) * TICK_SIZE
+            key = f"{name}_{snapped}"
 
             if dist <= _TOUCH_PROXIMITY:
                 still_close.add(key)

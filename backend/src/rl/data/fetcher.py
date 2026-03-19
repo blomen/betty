@@ -105,7 +105,9 @@ def fetch_ticks(
         rows: list[dict] = []
         skipped = 0
         for rec in data:
-            side_char = getattr(rec, "side", "")
+            side_raw = getattr(rec, "side", "")
+            # Databento SDK returns Side enum (Side.ASK, Side.BID, Side.NONE)
+            side_char = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
             if side_char not in ("A", "B"):
                 if side_char != "":
                     logger.warning(

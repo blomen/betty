@@ -138,8 +138,11 @@ def replay(
             if not ticks:
                 continue
 
-            # session_date as UTC datetime for replay engine
-            session_dt = datetime(session_date.year, session_date.month, session_date.day, tzinfo=timezone.utc)
+            # session_date as ET noon — ensures .astimezone(ET).date() gives the correct day
+            # (UTC midnight would convert to previous day in ET due to UTC-4/5 offset)
+            from zoneinfo import ZoneInfo
+            _ET = ZoneInfo("US/Eastern")
+            session_dt = datetime(session_date.year, session_date.month, session_date.day, 12, 0, 0, tzinfo=_ET)
 
             try:
                 episodes = engine.replay_session(ticks, session_dt)
