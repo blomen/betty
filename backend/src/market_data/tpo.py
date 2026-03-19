@@ -4,6 +4,16 @@ from datetime import datetime
 import string
 
 
+def _period_letter(index: int) -> str:
+    """Convert a 0-based period index to a TPO letter.
+
+    0-25 → A-Z, 26 → AA, 27 → AB, 52 → BA, etc.
+    """
+    if index < 26:
+        return chr(65 + index)
+    return chr(65 + (index // 26) - 1) + chr(65 + (index % 26))
+
+
 @dataclass
 class TPOProfile:
     """Time Price Opportunity profile for a session."""
@@ -16,6 +26,18 @@ class TPOProfile:
     poor_high: bool  # Thin tail at session high
     poor_low: bool   # Thin tail at session low
     ib_tpo_count: int  # Letters in first 2 brackets (A+B)
+    # Extended fields
+    tpo_counts: dict[float, int] = field(default_factory=dict)
+    ib_high: float = 0.0
+    ib_low: float = 0.0
+    rotation_factor: int = 0
+    profile_shape: str = "balanced"
+    opening_type: str = "OA"
+    opening_direction: str = "neutral"
+    upper_excess: int = 0
+    lower_excess: int = 0
+    session_high: float = 0.0
+    session_low: float = 0.0
 
 
 TPO_LETTERS = list(string.ascii_uppercase)
@@ -39,7 +61,7 @@ def compute_tpo_profile(
     letters: dict[float, list[str]] = {}
 
     for i, bar in enumerate(bars_30m):
-        letter = TPO_LETTERS[i] if i < len(TPO_LETTERS) else TPO_LETTERS[-1]
+        letter = _period_letter(i)
         low = round(bar["low"] / tick_size) * tick_size
         high = round(bar["high"] / tick_size) * tick_size
 
