@@ -87,3 +87,30 @@ def filter_single_print_zones(
             zones.append((group[0], group[-1]))
 
     return zones
+
+
+# ---------------------------------------------------------------------------
+# Task 2: composite_histogram + poc_from_histogram
+# ---------------------------------------------------------------------------
+
+def composite_histogram(summaries: list[SessionSummary]) -> dict[float, int]:
+    """Merge volume histograms from multiple SessionSummaries by adding bucket volumes.
+
+    Histogram keys are strings like "100.00"; they are parsed to float and
+    re-snapped to a 0.25 tick grid before merging.
+    """
+    merged: dict[float, int] = {}
+    tick = 0.25
+    for s in summaries:
+        for key, vol in s.histogram.items():
+            price = float(key)
+            snapped = round(price / tick) * tick
+            merged[snapped] = merged.get(snapped, 0) + vol
+    return merged
+
+
+def poc_from_histogram(histogram: dict[float, int]) -> float | None:
+    """Return the price with the highest volume, or None if the histogram is empty."""
+    if not histogram:
+        return None
+    return max(histogram, key=histogram.__getitem__)

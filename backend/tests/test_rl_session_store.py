@@ -11,6 +11,8 @@ import pytest
 from src.rl.data.session_store import (
     SessionSummary,
     filter_single_print_zones,
+    composite_histogram,
+    poc_from_histogram,
 )
 
 
@@ -109,3 +111,41 @@ class TestFilterSinglePrintZones:
         result = filter_single_print_zones(prints, tick_size=0.25, min_consecutive=3)
         assert len(result) == 1
         assert result[0] == pytest.approx((100.0, 100.75))
+
+
+# ---------------------------------------------------------------------------
+# Task 2: composite_histogram + poc_from_histogram
+# ---------------------------------------------------------------------------
+
+class TestCompositeHistogram:
+    def test_single_session(self):
+        s = _make_summary("2026-01-01", histogram={"100.00": 50, "100.25": 30})
+        result = composite_histogram([s])
+        assert result[100.00] == 50
+        assert result[100.25] == 30
+
+    def test_two_sessions_additive(self):
+        s1 = _make_summary("2026-01-01", histogram={"100.00": 50, "100.25": 30})
+        s2 = _make_summary("2026-01-02", histogram={"100.00": 20, "100.50": 40})
+        result = composite_histogram([s1, s2])
+        assert result[100.00] == 70   # 50 + 20
+        assert result[100.25] == 30   # only s1
+        assert result[100.50] == 40   # only s2
+
+    def test_empty_list(self):
+        assert composite_histogram([]) == {}
+
+
+class TestPocFromHistogram:
+    def test_basic(self):
+        histo = {100.0: 10, 100.25: 50, 100.50: 30}
+        assert poc_from_histogram(histo) == pytest.approx(100.25)
+
+    def test_empty_returns_none(self):
+        assert poc_from_histogram({}) is None
+
+    def test_tie_returns_a_value(self):
+        # When two bins are equal, must still return one of them (not crash)
+        histo = {100.0: 100, 100.25: 100}
+        result = poc_from_histogram(histo)
+        assert result in (100.0, 100.25)
