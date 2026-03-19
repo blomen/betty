@@ -1,13 +1,12 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import {
   createChart,
-  CandlestickSeries,
   HistogramSeries,
   LineSeries,
+  AreaSeries,
   LineStyle,
   type IChartApi,
   type ISeriesApi,
-  type CandlestickData,
   type HistogramData,
   type LineData,
   type Time,
@@ -33,8 +32,8 @@ interface Props {
   session: ExpandedSession | null;
 }
 
-function toCandlestick(c: CandleData): CandlestickData<Time> {
-  return { time: c.t as Time, open: c.o, high: c.h, low: c.l, close: c.c };
+function toLine(c: CandleData): LineData<Time> {
+  return { time: c.t as Time, value: c.c };
 }
 
 function toVolume(c: CandleData): HistogramData<Time> {
@@ -50,7 +49,7 @@ export function CandleChart({ lastCandle, session }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const priceSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const [noData, setNoData] = useState(false);
   const priceLineRefs = useRef<Record<string, any>>({});
@@ -70,8 +69,8 @@ export function CandleChart({ lastCandle, session }: Props) {
   const drawVPOverlay = useCallback(() => {
     const canvas = canvasRef.current;
     const chart = chartRef.current;
-    const series = candleSeriesRef.current;
-    if (!canvas || !chart || !series) return;
+    const pSeries = priceSeriesRef.current;
+    if (!canvas || !chart || !pSeries) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -98,7 +97,7 @@ export function CandleChart({ lastCandle, session }: Props) {
     const xRight = rect.width - priceScaleWidth;
 
     for (const level of vp.levels) {
-      const y = series.priceToCoordinate(level.price);
+      const y = pSeries.priceToCoordinate(level.price);
       if (y === null || y < 0 || y > rect.height) continue;
 
       const barW = (level.volume / maxVol) * maxBarWidth;
@@ -149,13 +148,14 @@ export function CandleChart({ lastCandle, session }: Props) {
       handleScroll: { vertTouchDrag: false },
     });
 
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a',
-      downColor: '#ef5350',
-      borderUpColor: '#26a69a',
-      borderDownColor: '#ef5350',
-      wickUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
+    const priceSeries = chart.addSeries(AreaSeries, {
+      lineColor: '#E0E0E0',
+      lineWidth: 1,
+      topColor: 'rgba(255, 255, 255, 0.04)',
+      bottomColor: 'rgba(255, 255, 255, 0.0)',
+      lastValueVisible: true,
+      priceLineVisible: true,
+      crosshairMarkerVisible: true,
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -176,7 +176,7 @@ export function CandleChart({ lastCandle, session }: Props) {
     });
 
     chartRef.current = chart;
-    candleSeriesRef.current = candleSeries;
+    priceSeriesRef.current = priceSeries;
     volumeSeriesRef.current = volumeSeries;
     anchorSeriesRef.current = anchorSeries;
 
@@ -186,7 +186,7 @@ export function CandleChart({ lastCandle, session }: Props) {
         const res = await api.getCandles('NQ', INTERVAL, undefined, INITIAL_DAYS);
         if (res.candles?.length) {
           candlesRef.current = res.candles;
-          candleSeries.setData(res.candles.map(toCandlestick));
+          priceSeries.setData(res.candles.map(toLine));
           volumeSeries.setData(res.candles.map(toVolume));
           chart.timeScale().scrollToRealTime();
           setNoData(false);
@@ -211,7 +211,7 @@ export function CandleChart({ lastCandle, session }: Props) {
       observer.disconnect();
       chart.remove();
       chartRef.current = null;
-      candleSeriesRef.current = null;
+      priceSeriesRef.current = null as any;
       volumeSeriesRef.current = null;
       anchorSeriesRef.current = null;
     };
@@ -284,7 +284,7 @@ export function CandleChart({ lastCandle, session }: Props) {
           if (newCandles.length === 0) { exhaustedRef.current = true; return; }
 
           candlesRef.current = [...newCandles, ...candlesRef.current];
-          candleSeriesRef.current?.setData(candlesRef.current.map(toCandlestick));
+          priceSeriesRef.current?.setData(candlesRef.current.map(toLine));
           volumeSeriesRef.current?.setData(candlesRef.current.map(toVolume));
         })
         .catch(err => console.warn('Failed to load older candles:', err))
@@ -299,8 +299,8 @@ export function CandleChart({ lastCandle, session }: Props) {
 
   // Live candle updates
   useEffect(() => {
-    if (!lastCandle || !candleSeriesRef.current || !volumeSeriesRef.current) return;
-    candleSeriesRef.current.update(toCandlestick(lastCandle));
+    if (!lastCandle || !priceSeriesRef.current || !volumeSeriesRef.current) return;
+    priceSeriesRef.current.update(toLine(lastCandle));
     volumeSeriesRef.current.update(toVolume(lastCandle));
 
     const existing = candlesRef.current;
@@ -427,7 +427,7 @@ export function CandleChart({ lastCandle, session }: Props) {
 
   // Static reference lines: IB, PDH/PDL, dPOC (these are flat — correct for structural levels)
   useEffect(() => {
-    const series = candleSeriesRef.current;
+    const series = priceSeriesRef.current;
     if (!series) return;
 
     Object.values(priceLineRefs.current).forEach(line => {
