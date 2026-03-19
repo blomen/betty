@@ -56,6 +56,8 @@ class LevelMonitor:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._db_session_factory = None
         self._level_context_lock: asyncio.Lock | None = None
+        self._last_ml_features: dict | None = None
+        self._active_level_name: str | None = None
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
             self._outcome_tracker = OutcomeTracker()
@@ -410,6 +412,18 @@ class LevelMonitor:
                 **candle_patterns,
             )
 
+            # Cache features for live refresh on orderflow_update
+            self._last_ml_features = features
+            self._active_level_name = level.name
+
+            # Emit full feature snapshot for gauge dashboard
+            self._publish({
+                "type": "ml_features",
+                "level": level.name,
+                "features": features,
+                "timestamp": time.time(),
+            })
+
             # Optional: Run ML prediction if model loaded
             prediction = None
             confidence = None
@@ -466,11 +480,58 @@ class LevelMonitor:
             logger.exception("ML feature extraction failed for %s", level.name)
 
     def _on_level_rejected(self, level: MonitoredLevel, price: float) -> None:
+        if self._active_level_name == level.name:
+            self._last_ml_features = None
+            self._active_level_name = None
         self._publish({
             "type": "level_rejected",
             "level": level.name,
             "level_price": level.price,
         })
+
+    def _recompute_live_features(self, of_snapshot: dict, price: float) -> dict:
+        """Refresh live-changing features (orderflow + temporal + candle) on cached base."""
+        features = dict(self._last_ml_features)  # shallow copy
+        long_of = of_snapshot.get("long", {})
+
+        # Refresh orderflow fields from fresh snapshot
+        of_keys = [
+            "delta", "delta_aligned", "delta_divergence", "delta_unwind",
+            "cvd", "cvd_trend", "vsa_absorption", "tick_vol_accelerating",
+            "trapped_traders", "passive_active_ratio", "big_trades_count",
+            "big_trades_net_delta", "stop_run_detected", "imbalance_ratio_max",
+            "stacked_imbalance_count", "stacked_imbalance_direction",
+        ]
+        for k in of_keys:
+            if k in long_of:
+                features[k] = long_of[k]
+
+        # Refresh temporal derivatives + candle patterns from fresh candles
+        if self._candle_flow_fn:
+            try:
+                from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features
+                candles = self._candle_flow_fn()
+                if candles:
+                    candle_dicts = [{
+                        "delta": getattr(c, "delta", 0),
+                        "volume": getattr(c, "volume", 0),
+                        "tick_count": getattr(c, "tick_count", 0),
+                        "spread": getattr(c, "spread", 0),
+                        "body_ratio": getattr(c, "body_ratio", 0),
+                        "stacked_imbalance_count": len(getattr(c, "stacked_imbalances", [])) if hasattr(c, "stacked_imbalances") else 0,
+                        "open": getattr(c, "open", 0),
+                        "close": getattr(c, "close", 0),
+                    } for c in candles]
+                    features.update(compute_temporal_derivatives(candle_dicts))
+                    features.update(compute_candle_pattern_features(candle_dicts))
+                    # Refresh last candle specifics
+                    if candle_dicts:
+                        features["last_candle_delta"] = candle_dicts[-1].get("delta")
+                        features["last_candle_body_ratio"] = candle_dicts[-1].get("body_ratio")
+            except Exception:
+                pass
+
+        return features
 
     def _emit_orderflow_update(self, price: float) -> None:
         snapshot = self._compute_orderflow_snapshot()
@@ -481,3 +542,17 @@ class LevelMonitor:
                 "ts": time.time(),
                 "orderflow": snapshot,
             })
+
+            # Emit refreshed ML feature snapshot for gauge dashboard
+            if self._last_ml_features is not None:
+                try:
+                    updated = self._recompute_live_features(snapshot, price)
+                    self._last_ml_features = updated
+                    self._publish({
+                        "type": "ml_features",
+                        "level": self._active_level_name,
+                        "features": updated,
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass

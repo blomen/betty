@@ -369,6 +369,88 @@ async def get_ml_prediction():
     return {"status": "no_recent_prediction", "prediction": None}
 
 
+@router.get("/ml/health")
+async def get_ml_health():
+    """Get ML level classifier model health and training stats."""
+    import json
+    from src.ml.serving.predictor import get_predictor
+    from src.db.models import get_db, LevelTouchOutcome
+    from sqlalchemy import func
+
+    result = {
+        "model_loaded": False,
+        "version": None,
+        "training_data_count": 0,
+        "validation_score": None,
+        "baseline_metric": None,
+        "class_distribution": {},
+        "recent_accuracy": {},
+        "top_features": [],
+        "use_fallback": False,
+        "trained_at": None,
+    }
+
+    predictor = get_predictor()
+    if predictor.is_loaded("level_classifier"):
+        result["model_loaded"] = True
+        model_data = predictor.models.get("level_classifier", {})
+        model_obj = model_data.get("model")
+        classes = model_data.get("classes", [])
+        feature_names = model_data.get("feature_names", [])
+        result["use_fallback"] = model_data.get("use_fallback", False)
+
+        # Feature importances from LightGBM
+        if model_obj and hasattr(model_obj, "feature_importances_"):
+            importances = model_obj.feature_importances_
+            pairs = sorted(
+                zip(feature_names, importances),
+                key=lambda x: x[1], reverse=True,
+            )
+            total = sum(importances) or 1
+            result["top_features"] = [
+                {"name": n, "importance": round(float(v / total), 4)}
+                for n, v in pairs[:10]
+            ]
+
+    # Class distribution + recent accuracy from DB
+    try:
+        db = next(get_db())
+        try:
+            # Class distribution
+            dist = (
+                db.query(LevelTouchOutcome.outcome, func.count())
+                .filter(LevelTouchOutcome.outcome.isnot(None))
+                .group_by(LevelTouchOutcome.outcome)
+                .all()
+            )
+            result["class_distribution"] = {cls: cnt for cls, cnt in dist}
+            result["training_data_count"] = sum(cnt for _, cnt in dist)
+
+            # Recent accuracy (prediction vs actual on last 50)
+            recent = (
+                db.query(LevelTouchOutcome.prediction, LevelTouchOutcome.outcome)
+                .filter(
+                    LevelTouchOutcome.outcome.isnot(None),
+                    LevelTouchOutcome.prediction.isnot(None),
+                )
+                .order_by(LevelTouchOutcome.touch_ts.desc())
+                .limit(50)
+                .all()
+            )
+            if recent:
+                correct = sum(1 for pred, actual in recent if pred == actual)
+                result["recent_accuracy"] = {
+                    "last_50": round(correct / len(recent), 3),
+                    "sample_count": len(recent),
+                }
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return result
+
+
 @router.get("/cot")
 async def get_cot_data(limit: int = Query(default=4, le=52)):
     """Get latest COT report data."""
