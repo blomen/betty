@@ -594,12 +594,11 @@ providers:
       - ice_hockey
       - tennis
       - handball
-      - cricket
       - esports
       - mma
-      - boxing
-      # Removed: volleyball (0 events, 41.7s wasted), rugby (0 events, 9.3s),
-      #          darts (0 events, 9.0s), table_tennis, american_football (no leagues found)
+      # Removed: boxing (0ev/4s), cricket (1ev/2odds/9s),
+      #          volleyball (0ev/42s), rugby (0ev/9s), darts (0ev/9s),
+      #          table_tennis (0ev), american_football (no leagues)
     bonus:
       type: bonusdeposit
       amount: 600
@@ -631,14 +630,10 @@ providers:
       - basketball
       - tennis
       - ice_hockey
-      - american_football
-      - baseball
       - esports
-      - mma
-      - handball
-      - rugby
-      - cricket
-      - table_tennis
+      # Removed: american_football (0 events), baseball (1ev/0odds/11s), cricket (1ev/2odds/50s),
+      #          mma (30ev/0odds/80s), handball (20ev/0odds/13s), rugby (59ev/0odds/246s),
+      #          table_tennis (0 events) — total ~500s wasted per extraction
 
   hajper:
     id: hajper
@@ -660,12 +655,9 @@ providers:
       - football
       - basketball
       - ice_hockey
-      - american_football
-      - baseball
-      - mma
-      - esports
-      - handball
-      - table_tennis
+      # Removed: american_football (0 events), baseball (24ev/0odds/166s), mma (17ev/0odds/138s),
+      #          esports (5ev/0odds/87s), handball (8ev/0odds/75s), table_tennis (0 events)
+      #          — total ~466s wasted per extraction
 
   lyllo:
     id: lyllo
@@ -687,15 +679,11 @@ providers:
       - football
       - basketball
       - ice_hockey
-      - american_football
-      - baseball
-      - mma
-      - esports
-      - handball
       - tennis
-      - table_tennis
-      - rugby
-      - cricket
+      - esports
+      # Removed: american_football (0 events), baseball (0 events), mma (0 odds),
+      #          handball (0 odds), rugby (0 odds), cricket (0 events),
+      #          table_tennis (0 events) — same dead sports as comeon
 
   # --------------------------------------------------------------------------
   # BetConstruct / Swarm WebSocket providers
@@ -713,14 +701,11 @@ providers:
       - basketball
       - tennis
       - ice_hockey
-      - american_football
       - baseball
-      - table_tennis
       - handball
       - volleyball
-      - mma
-      - boxing
-      - esports
+      # Removed: american_football (0 events), table_tennis (0 events), esports (0 events/3s),
+      #          mma (0 events/5s), boxing (28 ML only, 0 spread/total, 0 opps ever)
     bonus:
       type: bonusdeposit
       amount: 800
@@ -775,11 +760,9 @@ providers:
       - basketball
       - ice_hockey
       - handball
-      - tennis
       - esports
       - mma
-      - american_football
-      - baseball
+      # Removed: tennis (0 events/10s), american_football (0 events), baseball (16ev/12ML/0spr/0tot/6s)
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -800,16 +783,15 @@ providers:
     sport_timeout: 300  # Loads ALL sports on first call (~180s pagination), needs full timeout
     supported_sports:
       - football
-      - basketball
       - tennis
       - ice_hockey
-      - american_football
-      - baseball
       - mma
-      - esports
       - handball
       - volleyball
-      - table_tennis
+      # Removed: basketball (0 events), esports (0 events), table_tennis (0 events),
+      #          american_football (0 events), baseball (0 events/75s pagination waste)
+      # Note: tipwin loads ALL sports at once (page.route interception), so removing
+      # sports won't speed up pagination — but avoids pointless DB writes/matching
     bonus:
       type: bonusdeposit
       amount: 1000

@@ -219,9 +219,18 @@ class AnalyticsEngine:
         coverage_gaps = compute_coverage_gaps(session)
         scheduling = compute_scheduling_efficiency(session)
 
-        # Build per-provider diagnostic data from provider_run_metrics
-        # Note: table uses events_processed and odds_processed (not events_extracted)
+        # Build per-provider diagnostic data from recent provider_run_metrics
+        # Uses last 10 runs per provider (not all-time) to avoid stale historical data
+        # dragging down match rates after issues have been fixed.
         provider_metrics = session.execute(text("""
+            WITH recent AS (
+                SELECT provider_id, duration_seconds, events_processed,
+                    events_matched, spread_count, total_count,
+                    ROW_NUMBER() OVER (PARTITION BY provider_id ORDER BY start_time DESC) as rn
+                FROM provider_run_metrics
+                WHERE provider_id NOT IN ('pinnacle', 'polymarket')
+                  AND status = 'success'
+            )
             SELECT provider_id,
                 AVG(duration_seconds) as avg_duration,
                 AVG(events_processed) as avg_events,
@@ -230,8 +239,8 @@ class AnalyticsEngine:
                     ELSE 0 END) as avg_match_rate,
                 SUM(spread_count) as spread_count,
                 SUM(total_count) as total_count
-            FROM provider_run_metrics
-            WHERE provider_id NOT IN ('pinnacle', 'polymarket')
+            FROM recent
+            WHERE rn <= 10
             GROUP BY provider_id
         """)).fetchall()
 
@@ -256,6 +265,8 @@ class AnalyticsEngine:
             }
 
             recommendations = diagnose_provider(diag_data)
+            triggered_categories = {rec["category"] for rec in recommendations}
+
             for rec in recommendations:
                 created = mgr.create(
                     provider_id=pid,
@@ -266,6 +277,17 @@ class AnalyticsEngine:
                     diagnostic_data=rec.get("diagnostic_data"),
                 )
                 all_recs.append(created)
+
+            # Auto-resolve open recommendations for categories that no longer trigger
+            for open_rec in mgr.get_active(provider_id=pid):
+                if open_rec.category not in triggered_categories and open_rec.status == "open":
+                    mgr.update_status(open_rec.id, "resolved", after_metric=avg_mr)
+
+        # Auto-resolve recs for providers with no recent metrics (disabled/removed)
+        diagnosed_providers = {row[0] for row in provider_metrics}
+        for open_rec in mgr.get_active():
+            if open_rec.provider_id not in diagnosed_providers and open_rec.status == "open":
+                mgr.update_status(open_rec.id, "resolved")
 
         session.flush()
 
