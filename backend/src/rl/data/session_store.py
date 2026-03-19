@@ -13,6 +13,8 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .accumulators import IncrementalVolumeProfile
+
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
@@ -166,3 +168,92 @@ def find_naked_pocs(
             naked.append({"date": date, "price": poc})
 
     return naked
+
+
+# ---------------------------------------------------------------------------
+# Task 4: build_session_summary
+# ---------------------------------------------------------------------------
+
+def _parse_ts(ts: str) -> datetime:
+    """Parse an ISO 8601 timestamp to a timezone-aware datetime in ET."""
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(_ET)
+
+
+def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
+    """Build a SessionSummary from a list of tick dicts.
+
+    Each tick must have keys: ts_event (ISO 8601 str), price (float), size (int).
+    RTH = 09:30-16:00 ET; everything else is ETH.
+    """
+    if not ticks:
+        return SessionSummary(
+            date=date_str,
+            poc=0.0,
+            vah=0.0,
+            val=0.0,
+            histogram={},
+        )
+
+    vp = IncrementalVolumeProfile(tick_size=0.25)
+    rth_high: float | None = None
+    rth_low: float | None = None
+    eth_high: float | None = None
+    eth_low: float | None = None
+
+    for tick in ticks:
+        price: float = float(tick["price"])
+        size: int = int(tick["size"])
+        dt = _parse_ts(tick["ts_event"])
+        t = dt.time()
+
+        is_rth = _RTH_START <= t < _RTH_END
+
+        vp.update(price, size)
+
+        if is_rth:
+            rth_high = price if rth_high is None else max(rth_high, price)
+            rth_low = price if rth_low is None else min(rth_low, price)
+        else:
+            eth_high = price if eth_high is None else max(eth_high, price)
+            eth_low = price if eth_low is None else min(eth_low, price)
+
+    profile = vp.get()
+    if profile is None:
+        return SessionSummary(
+            date=date_str,
+            poc=0.0,
+            vah=0.0,
+            val=0.0,
+            histogram={},
+            rth_high=rth_high,
+            rth_low=rth_low,
+            eth_high=eth_high,
+            eth_low=eth_low,
+        )
+
+    # Build canonical histogram from the internal accumulator state
+    histogram: dict[str, int] = {
+        f"{price:.2f}": vol
+        for price, vol in vp._histogram.items()
+    }
+
+    # Filter single prints into zones
+    single_print_zones = filter_single_print_zones(
+        profile.single_prints, tick_size=0.25, min_consecutive=3
+    )
+
+    return SessionSummary(
+        date=date_str,
+        poc=profile.poc,
+        vah=profile.vah,
+        val=profile.val,
+        histogram=histogram,
+        rth_high=rth_high,
+        rth_low=rth_low,
+        eth_high=eth_high,
+        eth_low=eth_low,
+        single_print_zones=single_print_zones,
+    )

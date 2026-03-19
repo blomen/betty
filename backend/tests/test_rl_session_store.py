@@ -14,6 +14,7 @@ from src.rl.data.session_store import (
     composite_histogram,
     poc_from_histogram,
     find_naked_pocs,
+    build_session_summary,
 )
 
 
@@ -202,3 +203,68 @@ class TestFindNakedPocs:
         result = find_naked_pocs(summaries, current_date="2026-01-03")
         dates = [r["date"] for r in result]
         assert "2026-01-01" in dates
+
+
+# ---------------------------------------------------------------------------
+# Task 4: build_session_summary
+# ---------------------------------------------------------------------------
+
+class TestBuildSessionSummary:
+    def _rth_ts(self, time_str: str) -> str:
+        """Build an ISO timestamp during RTH (09:30-16:00 ET on 2026-01-15)."""
+        return f"2026-01-15T{time_str}-05:00"
+
+    def _eth_ts(self, time_str: str) -> str:
+        """Build an ISO timestamp during ETH (before 09:30 ET on 2026-01-15)."""
+        return f"2026-01-15T{time_str}-05:00"
+
+    def test_basic_session(self):
+        ticks = [
+            _make_tick(self._rth_ts("10:00:00"), 100.0, 50),
+            _make_tick(self._rth_ts("11:00:00"), 100.25, 200),
+            _make_tick(self._rth_ts("12:00:00"), 100.50, 30),
+        ]
+        result = build_session_summary("2026-01-15", ticks)
+        assert result.date == "2026-01-15"
+        assert result.poc == pytest.approx(100.25)  # highest volume
+        assert result.vah >= result.poc
+        assert result.val <= result.poc
+
+    def test_rth_range_tracked(self):
+        ticks = [
+            _make_tick(self._rth_ts("09:30:00"), 100.0, 10),
+            _make_tick(self._rth_ts("12:00:00"), 105.0, 10),
+            _make_tick(self._rth_ts("15:59:00"), 99.0, 10),
+        ]
+        result = build_session_summary("2026-01-15", ticks)
+        assert result.rth_high == pytest.approx(105.0)
+        assert result.rth_low == pytest.approx(99.0)
+
+    def test_eth_range_from_pre_rth(self):
+        ticks = [
+            _make_tick("2026-01-15T06:00:00-05:00", 98.0, 10),
+            _make_tick("2026-01-15T08:00:00-05:00", 102.0, 10),
+            _make_tick(self._rth_ts("10:00:00"), 100.0, 100),
+        ]
+        result = build_session_summary("2026-01-15", ticks)
+        assert result.eth_high == pytest.approx(102.0)
+        assert result.eth_low == pytest.approx(98.0)
+
+    def test_empty_ticks(self):
+        result = build_session_summary("2026-01-15", [])
+        assert result.date == "2026-01-15"
+        assert result.poc == 0.0
+        assert result.rth_high is None
+        assert result.rth_low is None
+
+    def test_canonical_histogram_keys(self):
+        ticks = [
+            _make_tick(self._rth_ts("10:00:00"), 100.0, 50),
+            _make_tick(self._rth_ts("11:00:00"), 100.25, 30),
+        ]
+        result = build_session_summary("2026-01-15", ticks)
+        # All keys must be "price:.2f" strings
+        for key in result.histogram:
+            assert isinstance(key, str)
+            # Should be parseable as float and re-format to same string
+            assert f"{float(key):.2f}" == key
