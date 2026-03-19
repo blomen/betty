@@ -13,6 +13,7 @@ from src.rl.data.session_store import (
     filter_single_print_zones,
     composite_histogram,
     poc_from_histogram,
+    find_naked_pocs,
 )
 
 
@@ -149,3 +150,55 @@ class TestPocFromHistogram:
         histo = {100.0: 100, 100.25: 100}
         result = poc_from_histogram(histo)
         assert result in (100.0, 100.25)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: find_naked_pocs
+# ---------------------------------------------------------------------------
+
+class TestFindNakedPocs:
+    def test_all_naked_when_no_overlap(self):
+        # Two sessions with POCs outside each other's RTH range
+        summaries = {
+            "2026-01-01": _make_summary("2026-01-01", poc=100.0, rth_high=101.0, rth_low=99.0),
+            "2026-01-02": _make_summary("2026-01-02", poc=100.0, rth_high=102.0, rth_low=103.0),
+        }
+        # current_date = "2026-01-03", look back at 01 and 02
+        result = find_naked_pocs(summaries, current_date="2026-01-03")
+        # 2026-01-01 POC at 100.0: is it inside [103, 102]? No -- naked
+        # 2026-01-02 POC at 100.0: no later session to test -> naked
+        assert any(r["date"] == "2026-01-01" for r in result)
+
+    def test_touched_by_later_session(self):
+        # POC of 01-01 lies within the RTH range of 01-02 -> NOT naked
+        summaries = {
+            "2026-01-01": _make_summary("2026-01-01", poc=100.0, rth_high=101.0, rth_low=99.0),
+            "2026-01-02": _make_summary("2026-01-02", poc=105.0, rth_high=101.0, rth_low=99.0),
+        }
+        result = find_naked_pocs(summaries, current_date="2026-01-03")
+        dates = [r["date"] for r in result]
+        assert "2026-01-01" not in dates
+
+    def test_empty_summaries(self):
+        assert find_naked_pocs({}, current_date="2026-01-01") == []
+
+    def test_max_lookback_limits_sessions(self):
+        # Build 25 sessions, only the last 20 should be considered
+        summaries = {}
+        for i in range(1, 26):
+            date = f"2026-01-{i:02d}"
+            summaries[date] = _make_summary(date, poc=float(i), rth_high=float(i) + 0.5, rth_low=float(i) - 0.5)
+        result = find_naked_pocs(summaries, current_date="2026-01-26", max_lookback_sessions=20)
+        result_dates = {r["date"] for r in result}
+        # Session 1 (day 1) is outside lookback of 20 -> should NOT appear
+        assert "2026-01-01" not in result_dates
+
+    def test_none_rth_range_treated_as_not_touching(self):
+        # If a later session has None RTH range, it cannot "touch" a POC
+        summaries = {
+            "2026-01-01": _make_summary("2026-01-01", poc=100.0, rth_high=101.0, rth_low=99.0),
+            "2026-01-02": _make_summary("2026-01-02", poc=105.0, rth_high=None, rth_low=None),
+        }
+        result = find_naked_pocs(summaries, current_date="2026-01-03")
+        dates = [r["date"] for r in result]
+        assert "2026-01-01" in dates

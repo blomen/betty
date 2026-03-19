@@ -114,3 +114,55 @@ def poc_from_histogram(histogram: dict[float, int]) -> float | None:
     if not histogram:
         return None
     return max(histogram, key=histogram.__getitem__)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: find_naked_pocs
+# ---------------------------------------------------------------------------
+
+def find_naked_pocs(
+    summaries: dict[str, SessionSummary],
+    current_date: str,
+    max_lookback_sessions: int = 20,
+) -> list[dict]:
+    """Find POCs that have not been touched by any subsequent session's RTH range.
+
+    Parameters
+    ----------
+    summaries:
+        Dict keyed by date string (YYYY-MM-DD).
+    current_date:
+        The current session date (exclusive upper bound).
+    max_lookback_sessions:
+        How many prior sessions to consider.
+
+    Returns
+    -------
+    List of {"date": str, "price": float} dicts for each naked POC.
+    """
+    if not summaries:
+        return []
+
+    # All prior sessions, sorted ascending
+    prior_dates = sorted(d for d in summaries if d < current_date)
+    # Respect max_lookback_sessions
+    prior_dates = prior_dates[-max_lookback_sessions:]
+
+    naked: list[dict] = []
+    for date in prior_dates:
+        poc = summaries[date].poc
+        is_naked = True
+        # Check all sessions after this one (but still before current_date)
+        for later_date in prior_dates:
+            if later_date <= date:
+                continue
+            later = summaries[later_date]
+            if later.rth_high is None or later.rth_low is None:
+                continue
+            if later.rth_low <= poc <= later.rth_high:
+                is_naked = False
+                break
+        if is_naked:
+            naked.append({"date": date, "price": poc})
+
+    return naked
