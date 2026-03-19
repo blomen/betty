@@ -347,7 +347,7 @@ class LevelMonitor:
         try:
             from datetime import datetime
             from src.ml.features.level_touch_features import extract_level_touch_features
-            from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features
+            from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features, compute_approach_volume_features
 
             approach_dir = self._get_approach_direction(level)
             direction = "long" if approach_dir == "from_below" else "short"
@@ -382,6 +382,15 @@ class LevelMonitor:
                         })
                     temporal = compute_temporal_derivatives(candle_dicts)
                     candle_patterns = compute_candle_pattern_features(candle_dicts)
+                    # Approach volume: how volume behaves coming into the level
+                    approach_vol_dicts = [{
+                        "volume": getattr(c, "volume", 0),
+                        "delta": getattr(c, "delta", 0),
+                        "buy_volume": getattr(c, "buy_volume", 0),
+                        "sell_volume": getattr(c, "sell_volume", 0),
+                    } for c in candles]
+                    approach_vol = compute_approach_volume_features(approach_vol_dicts)
+                    temporal.update(approach_vol)
 
             # Build feature dict
             features = extract_level_touch_features(
@@ -517,7 +526,7 @@ class LevelMonitor:
         # Refresh temporal derivatives + candle patterns from fresh candles
         if self._candle_flow_fn:
             try:
-                from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features
+                from src.ml.level_touch.compute import compute_temporal_derivatives, compute_candle_pattern_features, compute_approach_volume_features
                 candles = self._candle_flow_fn()
                 if candles:
                     candle_dicts = [{
@@ -531,6 +540,14 @@ class LevelMonitor:
                         "close": getattr(c, "close", 0),
                     } for c in candles]
                     features.update(compute_temporal_derivatives(candle_dicts))
+                    # Approach volume features
+                    approach_vol_dicts = [{
+                        "volume": getattr(c, "volume", 0),
+                        "delta": getattr(c, "delta", 0),
+                        "buy_volume": getattr(c, "buy_volume", 0),
+                        "sell_volume": getattr(c, "sell_volume", 0),
+                    } for c in candles]
+                    features.update(compute_approach_volume_features(approach_vol_dicts))
                     features.update(compute_candle_pattern_features(candle_dicts))
                     # Refresh last candle specifics
                     if candle_dicts:

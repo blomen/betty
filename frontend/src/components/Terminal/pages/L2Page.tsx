@@ -6,7 +6,7 @@ import { PositionManager } from './PositionManager';
 import {
   featureOrderflowToGauges, featureTemporalToGauges, featureSessionToGauges,
   featureMacroToGauges, featureCandleToGauges, featureLevelToGauges,
-  featureBookToGauges, featureCotToGauges,
+  featureBookToGauges, featureApproachVolToGauges, featureCotToGauges,
 } from './gaugeHelpers';
 import { getMlHealth, api } from '@/services/api';
 import type {
@@ -142,6 +142,7 @@ export function L2Page({
   // Build all gauge groups from features
   const f = latestFeatures?.features ?? {};
   const bookGauges = featureBookToGauges(book, f);
+  const approachVolGauges = featureApproachVolToGauges(f);
   const ofGauges = featureOrderflowToGauges(f);
   const temporalGauges = featureTemporalToGauges(f);
   const candleGauges = featureCandleToGauges(f);
@@ -170,6 +171,9 @@ export function L2Page({
         level_confluence: 'CONFLNCE', delta_aligned: 'Δ ALIGN',
         delta_divergence: 'Δ DIVERG', last_candle_delta: 'LAST Δ',
         last_candle_body_ratio: 'BODY',
+        approach_vol_slope: 'VOL SLOPE', approach_vol_ratio: 'VOL INTO',
+        approach_delta_slope: 'Δ INTO', approach_buy_pct_trend: 'BUY% TRND',
+        approach_vol_accel: 'VOL ACCEL', approach_big_vol_count: 'BIG VOL',
       };
       for (const feat of latestPrediction.top_features) {
         const label = labelMap[feat.name] || feat.name.toUpperCase().replace(/_/g, ' ');
@@ -238,6 +242,9 @@ export function L2Page({
             <div className="space-y-1">
               <Section title="BOOK & VOLUME" count={bookGauges.length} open={true}>
                 {bookGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
+              </Section>
+              <Section title="APPROACH VOLUME" count={approachVolGauges.length} open={true}>
+                {approachVolGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}
               </Section>
               <Section title="ORDERFLOW" count={ofGauges.length} open={true}>
                 {ofGauges.map(g => <GaugeBar key={g.label} {...g} importance={importanceMap[g.label]} />)}

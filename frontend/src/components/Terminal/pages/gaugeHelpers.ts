@@ -603,6 +603,61 @@ export function featureBookToGauges(book: { bid_price?: number; bid_size?: numbe
   ];
 }
 
+/** Approach volume gauges — how volume behaves coming into the level */
+export function featureApproachVolToGauges(f: Record<string, any>): GaugeBarProps[] {
+  const volSlope = f.approach_vol_slope ?? null;
+  const volRatio = f.approach_vol_ratio ?? null;
+  const deltaSlope = f.approach_delta_slope ?? null;
+  const buyPctTrend = f.approach_buy_pct_trend ?? null;
+  const volAccel = f.approach_vol_accel ?? null;
+  const bigVolCt = f.approach_big_vol_count ?? null;
+
+  return [
+    {
+      label: 'VOL SLOPE',
+      fill: volSlope != null ? cap(Math.abs(volSlope) / 200) : 0,
+      value: volSlope != null ? (volSlope > 0 ? `+${volSlope.toFixed(1)}` : volSlope.toFixed(1)) : '--',
+      assessment: volSlope == null ? 'N/A' : volSlope > 20 ? 'SURGING' : volSlope < -20 ? 'FADING' : 'STEADY',
+      color: volSlope == null ? 'dim' : volSlope > 20 ? 'green' : volSlope < -20 ? 'red' : 'amber',
+    },
+    {
+      label: 'VOL INTO',
+      fill: volRatio != null ? cap(volRatio / 3) : 0,
+      value: volRatio != null ? `${volRatio.toFixed(2)}x` : '--',
+      assessment: volRatio == null ? 'N/A' : volRatio > 1.5 ? 'CONVICTN' : volRatio < 0.7 ? 'EXHAUST' : 'NORMAL',
+      color: volRatio == null ? 'dim' : volRatio > 1.3 ? 'green' : volRatio < 0.7 ? 'red' : 'amber',
+    },
+    {
+      label: 'Δ INTO',
+      fill: deltaSlope != null ? cap(Math.abs(deltaSlope) / 100) : 0,
+      value: deltaSlope != null ? (deltaSlope > 0 ? `+${deltaSlope.toFixed(1)}` : deltaSlope.toFixed(1)) : '--',
+      assessment: deltaSlope == null ? 'N/A' : deltaSlope > 10 ? 'BUY PUSH' : deltaSlope < -10 ? 'SELL PUSH' : 'FLAT',
+      color: deltaSlope == null ? 'dim' : deltaSlope > 10 ? 'green' : deltaSlope < -10 ? 'red' : 'dim',
+    },
+    {
+      label: 'BUY% TRND',
+      fill: buyPctTrend != null ? cap(0.5 + buyPctTrend * 50) : 0,
+      value: buyPctTrend != null ? (buyPctTrend > 0 ? `+${(buyPctTrend * 100).toFixed(1)}%` : `${(buyPctTrend * 100).toFixed(1)}%`) : '--',
+      assessment: buyPctTrend == null ? 'N/A' : buyPctTrend > 0.005 ? 'BUYERS↑' : buyPctTrend < -0.005 ? 'SELLERS↑' : 'BALANCED',
+      color: buyPctTrend == null ? 'dim' : buyPctTrend > 0.003 ? 'green' : buyPctTrend < -0.003 ? 'red' : 'amber',
+    },
+    {
+      label: 'VOL ACCEL',
+      fill: volAccel != null ? cap(Math.abs(volAccel) / 2) : 0,
+      value: volAccel != null ? (volAccel > 0 ? `+${volAccel.toFixed(2)}` : volAccel.toFixed(2)) : '--',
+      assessment: volAccel == null ? 'N/A' : volAccel > 0.3 ? 'ACCEL' : volAccel < -0.3 ? 'DECEL' : 'STEADY',
+      color: volAccel == null ? 'dim' : volAccel > 0.3 ? 'green' : volAccel < -0.3 ? 'red' : 'amber',
+    },
+    {
+      label: 'BIG VOL',
+      fill: bigVolCt != null ? cap(bigVolCt / 5) : 0,
+      value: bigVolCt != null ? `${bigVolCt}` : '--',
+      assessment: bigVolCt == null ? 'N/A' : bigVolCt >= 3 ? 'HEAVY' : bigVolCt >= 1 ? 'SOME' : 'NONE',
+      color: bigVolCt == null ? 'dim' : bigVolCt >= 3 ? 'amber' : 'dim',
+    },
+  ];
+}
+
 /** Open Interest / COT gauges — from weekly CFTC data */
 export function featureCotToGauges(
   current: { open_interest: number; net_commercial: number; net_non_commercial: number; net_non_reportable: number } | null,

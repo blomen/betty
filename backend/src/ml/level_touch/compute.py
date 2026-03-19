@@ -104,6 +104,89 @@ def compute_temporal_derivatives(candles, lookback: int = 10) -> dict:
     }
 
 
+def compute_approach_volume_features(candles, lookback: int = 10) -> dict:
+    """Compute volume behavior on approach to a level.
+
+    Tracks whether volume is increasing or decreasing as price moves toward
+    the level. Decreasing volume on approach = exhaustion = reversal signal.
+    Increasing volume = conviction = continuation signal.
+
+    Args:
+        candles: Recent candles leading up to the level touch.
+        lookback: Number of candles to analyze.
+
+    Returns:
+        Dict with approach volume features.
+    """
+    _null = {
+        "approach_vol_slope": None,
+        "approach_vol_ratio": None,
+        "approach_delta_slope": None,
+        "approach_buy_pct_trend": None,
+        "approach_vol_accel": None,
+        "approach_big_vol_count": None,
+    }
+
+    window = list(candles)[-lookback:]
+    if len(window) < 4:
+        return _null
+
+    volumes = [_get(c, "volume", 0) or 0 for c in window]
+    deltas = [_get(c, "delta", 0) or 0 for c in window]
+    buy_vols = [_get(c, "buy_volume", 0) or _get(c, "volume", 0) or 0 for c in window]
+    sell_vols = [_get(c, "sell_volume", 0) or 0 for c in window]
+
+    n = len(window)
+
+    # Volume slope — linear regression of volume over approach
+    # Negative slope = volume decreasing into level (exhaustion)
+    # Positive slope = volume increasing into level (conviction)
+    xs = np.arange(n, dtype=float)
+    vol_arr = np.array(volumes, dtype=float)
+    approach_vol_slope = float(np.polyfit(xs, vol_arr, 1)[0]) if n >= 2 else None
+
+    # Volume ratio — last 3 candles avg volume / prior candles avg volume
+    # < 1.0 = fading, > 1.0 = surging into level
+    last3_vol = volumes[-3:] if n >= 3 else volumes
+    prior_vol = volumes[:-3] if n > 3 else volumes[:1]
+    avg_prior = float(np.mean(prior_vol)) if prior_vol else 0
+    approach_vol_ratio = (float(np.mean(last3_vol)) / avg_prior) if avg_prior > 0 else None
+
+    # Delta slope — is buying/selling pressure increasing or decreasing?
+    delta_arr = np.array(deltas, dtype=float)
+    approach_delta_slope = float(np.polyfit(xs, delta_arr, 1)[0]) if n >= 2 else None
+
+    # Buy percentage trend — is buy share of volume growing?
+    buy_pcts = []
+    for bv, sv in zip(buy_vols, sell_vols):
+        total = bv + sv
+        buy_pcts.append(bv / total if total > 0 else 0.5)
+    bp_arr = np.array(buy_pcts, dtype=float)
+    approach_buy_pct_trend = float(np.polyfit(xs, bp_arr, 1)[0]) if n >= 2 else None
+
+    # Volume acceleration — is the rate of change itself changing?
+    # Compare vol RoC of last 3 vs prior 3
+    if n >= 6:
+        roc_recent = float(np.mean(volumes[-3:])) / max(float(np.mean(volumes[-6:-3])), 1)
+        roc_prior = float(np.mean(volumes[-6:-3])) / max(float(np.mean(volumes[:max(1, n - 6)])), 1)
+        approach_vol_accel = roc_recent - roc_prior
+    else:
+        approach_vol_accel = None
+
+    # Big volume candle count on approach — candles with vol > 1.5x average
+    avg_vol = float(np.mean(volumes)) if volumes else 0
+    approach_big_vol_count = sum(1 for v in volumes if v > avg_vol * 1.5) if avg_vol > 0 else 0
+
+    return {
+        "approach_vol_slope": round(approach_vol_slope, 4) if approach_vol_slope is not None else None,
+        "approach_vol_ratio": round(approach_vol_ratio, 4) if approach_vol_ratio is not None else None,
+        "approach_delta_slope": round(approach_delta_slope, 4) if approach_delta_slope is not None else None,
+        "approach_buy_pct_trend": round(approach_buy_pct_trend, 6) if approach_buy_pct_trend is not None else None,
+        "approach_vol_accel": round(approach_vol_accel, 4) if approach_vol_accel is not None else None,
+        "approach_big_vol_count": approach_big_vol_count,
+    }
+
+
 def compute_candle_pattern_features(candles) -> dict:
     """Compute candle pattern features from a sequence of candles.
 
