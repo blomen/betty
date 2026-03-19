@@ -24,11 +24,11 @@ function ToastItem({ toast, onDismiss }: { toast: MirroredBet; onDismiss: () => 
       ) : (
         <>
           <span className="text-success">Bet captured:</span>
-          <span className="text-fg">{toast.event}</span>
+          <span className="text-text">{toast.event}</span>
           <span className="text-muted">{toast.market} {toast.outcome}</span>
-          <span className="text-fg">@ {toast.odds?.toFixed(2)}</span>
+          <span className="text-text">@ {toast.odds?.toFixed(2)}</span>
           <span className="text-muted">—</span>
-          <span className="text-fg">{toast.stake} kr</span>
+          <span className="text-text">{toast.stake} kr</span>
           {!toast.matched && <span className="text-warning">(unmatched)</span>}
         </>
       )}
