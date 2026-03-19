@@ -107,6 +107,68 @@ def compute_volume_profile(
     return VolumeProfile(poc=poc, vah=vah, val=val, levels=levels, single_prints=single_prints)
 
 
+def bars_to_trades(bars: list[dict], tick_size: float = 0.25) -> list[dict]:
+    """Convert OHLCV bars into synthetic trades that distribute volume across each bar's range.
+
+    Instead of placing all volume at the close price (which distorts volume profiles),
+    this distributes each bar's volume evenly across all tick-grid prices from low to high.
+
+    For a bar with low=20095, high=20105, volume=500, tick_size=0.25:
+      → 41 price levels from 20095.00 to 20105.00
+      → each gets ~12 units of volume
+
+    This is the standard approximation used by TradingView, Sierra Chart, etc.
+    when tick data is unavailable.
+    """
+    trades: list[dict] = []
+    for bar in bars:
+        high = bar.get("high", 0)
+        low = bar.get("low", 0)
+        close = bar.get("close", 0)
+        volume = bar.get("volume", 1)
+
+        # Snap to tick grid
+        low_snapped = round(low / tick_size) * tick_size
+        high_snapped = round(high / tick_size) * tick_size
+
+        # Degenerate bar (no range or bad data) — fall back to close
+        if high_snapped <= low_snapped or volume <= 0:
+            trades.append({"price": close, "size": max(volume, 1)})
+            continue
+
+        # Build price list across bar range
+        prices = []
+        price = low_snapped
+        while price <= high_snapped + tick_size * 0.1:  # epsilon for float
+            prices.append(round(price, 10))
+            price += tick_size
+
+        n_levels = len(prices)
+
+        if volume < n_levels:
+            # Very low volume: place 1 unit at `volume` levels nearest to close
+            sorted_by_dist = sorted(range(n_levels), key=lambda i: abs(prices[i] - close))
+            for idx in sorted_by_dist[:volume]:
+                trades.append({"price": prices[idx], "size": 1})
+        else:
+            # Normal case: distribute evenly with remainder at center
+            vol_per_level = volume // n_levels
+            remainder = volume - vol_per_level * n_levels
+
+            sorted_by_dist = sorted(range(n_levels), key=lambda i: abs(prices[i] - close))
+            extras = [0] * n_levels
+            for idx in sorted_by_dist:
+                if remainder <= 0:
+                    break
+                extras[idx] = 1
+                remainder -= 1
+
+            for i, p in enumerate(prices):
+                trades.append({"price": p, "size": vol_per_level + extras[i]})
+
+    return trades
+
+
 def compute_vwap_bands(trades: list[dict]) -> VWAPBands | None:
     """Compute VWAP + 1/2/3 SD bands from trade ticks."""
     if not trades:
@@ -139,6 +201,79 @@ def compute_vwap_bands(trades: list[dict]) -> VWAPBands | None:
         sd3_upper=vwap + 3 * sd,
         sd3_lower=vwap - 3 * sd,
     )
+
+
+def compute_developing_vwap(
+    ticks: list[dict],
+    interval_seconds: int = 60,
+    rth_only: bool = True,
+) -> list[dict]:
+    """Compute developing VWAP + SD bands from tick data, one point per interval.
+
+    Returns a time series of VWAP snapshots that can be drawn as a curve.
+    Each tick must have: ts (datetime), price (float), size (int).
+
+    Args:
+        ticks: Trade ticks sorted by time. Each has {ts, price, size}.
+        interval_seconds: Emit one VWAP point per this many seconds (default 60 = 1m).
+        rth_only: If True, only include RTH ticks (09:30-16:00 ET) and reset at RTH open.
+
+    Returns:
+        List of dicts: [{t: epoch, vwap, sd1_u, sd1_l, sd2_u, sd2_l, sd3_u, sd3_l}, ...]
+    """
+    if not ticks:
+        return []
+
+    cum_pv = 0.0
+    cum_vol = 0
+    cum_pv2 = 0.0
+    result: list[dict] = []
+    current_bucket: int | None = None
+
+    rth_start = time(9, 30)
+    rth_end = time(16, 0)
+
+    for t in ticks:
+        ts = t["ts"]
+        if not hasattr(ts, "astimezone"):
+            continue
+
+        # Convert to ET for RTH filtering
+        ts_et = ts.astimezone(ET)
+        t_time = ts_et.time()
+
+        if rth_only and not (rth_start <= t_time < rth_end):
+            continue
+
+        price = t["price"]
+        size = t["size"]
+
+        cum_pv += price * size
+        cum_vol += size
+        cum_pv2 += price * price * size
+
+        # Bucket by interval
+        epoch = int(ts.timestamp())
+        bucket = epoch // interval_seconds
+
+        if bucket != current_bucket and cum_vol > 0:
+            current_bucket = bucket
+            vwap = cum_pv / cum_vol
+            variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
+            sd = math.sqrt(variance)
+
+            result.append({
+                "t": bucket * interval_seconds,
+                "vwap": round(vwap, 2),
+                "sd1_u": round(vwap + sd, 2),
+                "sd1_l": round(vwap - sd, 2),
+                "sd2_u": round(vwap + 2 * sd, 2),
+                "sd2_l": round(vwap - 2 * sd, 2),
+                "sd3_u": round(vwap + 3 * sd, 2),
+                "sd3_l": round(vwap - 3 * sd, 2),
+            })
+
+    return result
 
 
 def compute_session_levels(
@@ -378,6 +513,84 @@ def detect_naked_pocs(
     return naked
 
 
+def compute_vp_hierarchy(profiles: dict, current_price: float | None = None, cluster_radius: float = 5.0) -> list[dict]:
+    """Score and rank all VP levels by timeframe weight and confluence.
+
+    Each level gets:
+      - base weight from timeframe (monthly > macro > weekly > leg > daily)
+      - type weight (POC = 2x, VAH/VAL = 1x)
+      - confluence bonus when multiple levels cluster within cluster_radius
+
+    Returns sorted list of level clusters (strongest first):
+      [{"price": float, "strength": float, "sources": [{"tf": str, "type": str, "price": float}], "zone_high": float, "zone_low": float}]
+    """
+    TF_WEIGHTS = {"monthly": 5, "macro": 4, "weekly": 3, "current": 2, "leg": 2, "session": 1}
+    TYPE_WEIGHTS = {"poc": 2.0, "vah": 1.0, "val": 1.0}
+
+    # Collect all individual levels
+    raw_levels: list[dict] = []
+    for tf, weight in TF_WEIGHTS.items():
+        vp = profiles.get(tf)
+        if not vp:
+            continue
+        for level_type, type_w in TYPE_WEIGHTS.items():
+            price = vp.get(level_type) if isinstance(vp, dict) else getattr(vp, level_type, None)
+            if price and price > 0:
+                raw_levels.append({
+                    "price": price,
+                    "tf": tf,
+                    "type": level_type,
+                    "base_weight": weight * type_w,
+                })
+
+    if not raw_levels:
+        return []
+
+    # Sort by price for clustering
+    raw_levels.sort(key=lambda x: x["price"])
+
+    # Cluster nearby levels (within cluster_radius)
+    clusters: list[dict] = []
+    used = set()
+
+    for i, lvl in enumerate(raw_levels):
+        if i in used:
+            continue
+        cluster_sources = [lvl]
+        used.add(i)
+
+        for j in range(i + 1, len(raw_levels)):
+            if j in used:
+                continue
+            if abs(raw_levels[j]["price"] - lvl["price"]) <= cluster_radius:
+                cluster_sources.append(raw_levels[j])
+                used.add(j)
+
+        prices = [s["price"] for s in cluster_sources]
+        avg_price = sum(prices) / len(prices)
+        base_strength = sum(s["base_weight"] for s in cluster_sources)
+
+        # Confluence multiplier: 2 levels = 1.5x, 3+ = 2x
+        n = len(cluster_sources)
+        confluence_mult = 1.0 if n == 1 else 1.5 if n == 2 else 2.0
+
+        strength = base_strength * confluence_mult
+
+        clusters.append({
+            "price": round(avg_price, 2),
+            "strength": round(strength, 1),
+            "zone_high": max(prices),
+            "zone_low": min(prices),
+            "sources": [{"tf": s["tf"], "type": s["type"], "price": s["price"]} for s in cluster_sources],
+            "confluence": n,
+            "distance": round(abs(avg_price - current_price), 2) if current_price else None,
+        })
+
+    # Sort by strength descending
+    clusters.sort(key=lambda x: x["strength"], reverse=True)
+    return clusters
+
+
 def compute_developing_poc(bars: list[dict], tick_size: float = 0.25) -> dict:
     """Track POC migration by comparing current POC vs POC from first half.
 
@@ -393,14 +606,11 @@ def compute_developing_poc(bars: list[dict], tick_size: float = 0.25) -> dict:
     if not bars:
         return {"developing_poc": None, "prior_poc": None, "direction": "flat"}
 
-    def bars_to_trades(b: list[dict]) -> list[dict]:
-        return [{"price": bar["close"], "size": bar.get("volume", 1)} for bar in b]
-
-    current_vp = compute_volume_profile(bars_to_trades(bars), tick_size)
+    current_vp = compute_volume_profile(bars_to_trades(bars, tick_size), tick_size)
     current_poc = current_vp.poc
 
     half = max(1, len(bars) // 2)
-    first_half_vp = compute_volume_profile(bars_to_trades(bars[:half]), tick_size)
+    first_half_vp = compute_volume_profile(bars_to_trades(bars[:half], tick_size), tick_size)
     prior_poc = first_half_vp.poc
 
     if current_poc is None or prior_poc is None or (current_poc == 0 and prior_poc == 0):

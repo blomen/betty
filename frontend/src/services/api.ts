@@ -906,6 +906,13 @@ export const api = {
     return fetchJson(`/trading/market/candles?${params}`);
   },
 
+  async getDevelopingVwap(symbol = 'NQ', interval = '1m'): Promise<{
+    vwap: Array<{ t: number; vwap: number; sd1_u: number; sd1_l: number; sd2_u: number; sd2_l: number; sd3_u: number; sd3_l: number }>;
+    symbol: string; count: number;
+  }> {
+    return fetchJson(`/trading/market/vwap?symbol=${symbol}&interval=${interval}`);
+  },
+
   async getMarketSession(): Promise<import('@/types/market').MarketSession> {
     return fetchJson('/trading/market/session');
   },

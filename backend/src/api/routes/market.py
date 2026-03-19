@@ -53,6 +53,16 @@ async def get_candles(
     return await svc.get_candles(symbol, interval, date, days)
 
 
+@router.get("/vwap")
+async def get_developing_vwap(
+    symbol: str = Query(default="NQ"),
+    interval: str = Query(default="1m", pattern="^(1m|5m)$"),
+    svc: MarketService = Depends(_svc),
+):
+    """Return developing VWAP time series from tick data (RTH only)."""
+    return await svc.get_developing_vwap(symbol, interval)
+
+
 @router.get("/signals")
 async def get_active_signals(svc: MarketService = Depends(_svc)):
     """Get currently active trading signals."""
@@ -174,6 +184,69 @@ async def get_levels(
         }
         for l in levels
     ]
+
+
+@router.get("/levels/replay")
+async def get_replay_levels(
+    date: str = Query(description="Session date YYYY-MM-DD"),
+):
+    """Replay a historical session and return all computed levels for visual verification.
+
+    This endpoint runs the RL ReplayEngine on historical tick data and returns
+    the exact session levels, VWAP, VP, FVGs, OBs, and swing points that the
+    RL agent would see during training — enabling visual verification before training.
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime as dt_cls
+
+    # Check for pre-computed JSON first (from CLI verify-levels)
+    data_dir = Path(__file__).resolve().parents[3] / "data" / "rl"
+    cached = data_dir / f"levels_{date}.json"
+    if cached.exists():
+        with open(cached) as f:
+            return json.load(f)
+
+    # Otherwise replay on-the-fly from parquet
+    try:
+        import pandas as pd
+        from zoneinfo import ZoneInfo
+        from ...rl.data.fetcher import TICKS_DIR
+        from ...rl.data.replay_engine import ReplayEngine
+
+        target = pd.Timestamp(date)
+        month_str = target.strftime("%Y-%m")
+        pfile = TICKS_DIR / f"NQ_{month_str}.parquet"
+
+        if not pfile.exists():
+            return {"error": f"No tick data for {month_str}. Run 'rl fetch' first."}
+
+        df = pd.read_parquet(pfile)
+        df["_date"] = pd.to_datetime(df["timestamp"]).dt.date
+        target_date = target.date()
+        day_df = df[df["_date"] == target_date].drop(columns=["_date"])
+
+        if day_df.empty:
+            return {"error": f"No ticks for {date}"}
+
+        ticks = day_df.rename(columns={"timestamp": "ts"}).to_dict(orient="records")
+
+        _ET = ZoneInfo("US/Eastern")
+        session_dt = dt_cls(target_date.year, target_date.month, target_date.day, 12, 0, 0, tzinfo=_ET)
+
+        engine = ReplayEngine()
+        episodes = engine.replay_session(ticks, session_dt)
+        snapshot = engine.get_level_snapshot()
+
+        snapshot["episodes_count"] = len(episodes)
+        snapshot["ticks_count"] = len(ticks)
+        snapshot["date"] = date
+
+        return snapshot
+    except ImportError:
+        return {"error": "pandas not available — use CLI 'rl verify-levels' instead"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.get("/levels/live")
