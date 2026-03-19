@@ -257,3 +257,136 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
         eth_low=eth_low,
         single_print_zones=single_print_zones,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 5: JSON I/O + compute_precomputed_levels
+# ---------------------------------------------------------------------------
+
+def save_summaries(summaries: dict[str, SessionSummary], path: Path) -> None:
+    """Write dict[str, SessionSummary] to JSON file.
+
+    single_print_zones tuples are serialized as lists.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, dict] = {}
+    for date, s in summaries.items():
+        data[date] = {
+            "date": s.date,
+            "poc": s.poc,
+            "vah": s.vah,
+            "val": s.val,
+            "histogram": s.histogram,
+            "rth_high": s.rth_high,
+            "rth_low": s.rth_low,
+            "eth_high": s.eth_high,
+            "eth_low": s.eth_low,
+            "single_print_zones": [list(z) for z in s.single_print_zones],
+        }
+
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_summaries(path: Path) -> dict[str, SessionSummary]:
+    """Load dict[str, SessionSummary] from JSON file.
+
+    Returns empty dict if file not found.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    result: dict[str, SessionSummary] = {}
+    for date, d in data.items():
+        result[date] = SessionSummary(
+            date=d["date"],
+            poc=d["poc"],
+            vah=d["vah"],
+            val=d["val"],
+            histogram=d["histogram"],
+            rth_high=d.get("rth_high"),
+            rth_low=d.get("rth_low"),
+            eth_high=d.get("eth_high"),
+            eth_low=d.get("eth_low"),
+            single_print_zones=[tuple(z) for z in d.get("single_print_zones", [])],
+        )
+    return result
+
+
+def _composite_poc(summaries: dict[str, SessionSummary], dates: list[str]) -> float | None:
+    """Return POC from composite histogram of the given session dates."""
+    selected = [summaries[d] for d in dates if d in summaries]
+    if not selected:
+        return None
+    histo = composite_histogram(selected)
+    return poc_from_histogram(histo)
+
+
+def compute_precomputed_levels(
+    summaries: dict[str, SessionSummary],
+    current_date: str,
+) -> dict:
+    """Compute cross-session levels for injection into the replay engine.
+
+    Returns
+    -------
+    Dict with keys:
+      naked_pocs, poc_daily, poc_weekly, poc_monthly, poc_macro,
+      globex_high, globex_low, overnight_high, overnight_low, single_print_zones
+    """
+    # All prior sessions (before current_date), sorted ascending
+    prior_dates = sorted(d for d in summaries if d < current_date)
+
+    # --- poc_daily: previous session's POC ---
+    poc_daily: float | None = None
+    if prior_dates:
+        poc_daily = summaries[prior_dates[-1]].poc
+
+    # --- poc_weekly: composite from last 5 prior sessions (require >= 3) ---
+    poc_weekly: float | None = None
+    weekly_dates = prior_dates[-5:]
+    if len(weekly_dates) >= 3:
+        poc_weekly = _composite_poc(summaries, weekly_dates)
+
+    # --- poc_monthly: composite from last 20 prior sessions (require >= 10) ---
+    poc_monthly: float | None = None
+    monthly_dates = prior_dates[-20:]
+    if len(monthly_dates) >= 10:
+        poc_monthly = _composite_poc(summaries, monthly_dates)
+
+    # --- poc_macro: composite from all prior (require >= 10) ---
+    poc_macro: float | None = None
+    if len(prior_dates) >= 10:
+        poc_macro = _composite_poc(summaries, prior_dates)
+
+    # --- Globex / overnight HL from current session's ETH range ---
+    current = summaries.get(current_date)
+    globex_high: float | None = current.eth_high if current else None
+    globex_low: float | None = current.eth_low if current else None
+
+    # --- Naked POCs ---
+    naked_pocs = find_naked_pocs(summaries, current_date)
+
+    # --- Single print zones: union from all prior sessions ---
+    all_spz: list[tuple[float, float]] = []
+    for d in prior_dates:
+        all_spz.extend(summaries[d].single_print_zones)
+
+    return {
+        "naked_pocs": naked_pocs,
+        "poc_daily": poc_daily,
+        "poc_weekly": poc_weekly,
+        "poc_monthly": poc_monthly,
+        "poc_macro": poc_macro,
+        "globex_high": globex_high,
+        "globex_low": globex_low,
+        "overnight_high": globex_high,  # alias for NQ
+        "overnight_low": globex_low,
+        "single_print_zones": all_spz,
+    }

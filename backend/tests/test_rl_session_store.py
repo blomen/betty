@@ -15,6 +15,9 @@ from src.rl.data.session_store import (
     poc_from_histogram,
     find_naked_pocs,
     build_session_summary,
+    save_summaries,
+    load_summaries,
+    compute_precomputed_levels,
 )
 
 
@@ -268,3 +271,113 @@ class TestBuildSessionSummary:
             assert isinstance(key, str)
             # Should be parseable as float and re-format to same string
             assert f"{float(key):.2f}" == key
+
+
+# ---------------------------------------------------------------------------
+# Task 5: save_summaries / load_summaries / compute_precomputed_levels
+# ---------------------------------------------------------------------------
+
+class TestSummaryIO:
+    def test_roundtrip(self):
+        summaries = {
+            "2026-01-01": _make_summary(
+                "2026-01-01",
+                poc=100.25,
+                vah=101.0,
+                val=99.5,
+                histogram={"100.00": 50, "100.25": 100},
+                rth_high=101.0,
+                rth_low=99.5,
+                eth_high=101.5,
+                eth_low=98.0,
+                single_print_zones=[(99.0, 99.25)],
+            )
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sessions.json"
+            save_summaries(summaries, path)
+            loaded = load_summaries(path)
+
+        s = loaded["2026-01-01"]
+        assert s.date == "2026-01-01"
+        assert s.poc == pytest.approx(100.25)
+        assert s.vah == pytest.approx(101.0)
+        assert s.val == pytest.approx(99.5)
+        assert s.histogram == {"100.00": 50, "100.25": 100}
+        assert s.rth_high == pytest.approx(101.0)
+        assert s.rth_low == pytest.approx(99.5)
+        assert s.eth_high == pytest.approx(101.5)
+        assert s.eth_low == pytest.approx(98.0)
+        assert len(s.single_print_zones) == 1
+        assert s.single_print_zones[0] == pytest.approx((99.0, 99.25))
+
+    def test_nonexistent_file_returns_empty(self):
+        result = load_summaries(Path("/nonexistent/path/sessions.json"))
+        assert result == {}
+
+
+class TestComputePrecomputedLevels:
+    def _build_summaries(self, n: int, base_poc: float = 100.0) -> dict[str, SessionSummary]:
+        """Build n sessions with incrementing dates starting 2026-01-01."""
+        summaries = {}
+        for i in range(n):
+            date = f"2026-01-{i+1:02d}"
+            poc = base_poc + i
+            summaries[date] = _make_summary(
+                date,
+                poc=poc,
+                rth_high=poc + 1.0,
+                rth_low=poc - 1.0,
+                eth_high=poc + 2.0,
+                eth_low=poc - 2.0,
+                histogram={f"{poc:.2f}": 100},
+            )
+        return summaries
+
+    def test_all_keys_present(self):
+        summaries = self._build_summaries(12)
+        current_date = "2026-01-13"
+        result = compute_precomputed_levels(summaries, current_date)
+        expected_keys = {
+            "naked_pocs", "poc_daily", "poc_weekly", "poc_monthly", "poc_macro",
+            "globex_high", "globex_low", "overnight_high", "overnight_low",
+            "single_print_zones",
+        }
+        assert set(result.keys()) == expected_keys
+
+    def test_poc_daily_is_previous_session(self):
+        summaries = self._build_summaries(5, base_poc=100.0)
+        # Sessions: 01-01 poc=100, 01-02 poc=101, ..., 01-05 poc=104
+        current_date = "2026-01-06"
+        result = compute_precomputed_levels(summaries, current_date)
+        # Previous session = 2026-01-05, poc=104.0
+        assert result["poc_daily"] == pytest.approx(104.0)
+
+    def test_globex_from_current_session(self):
+        summaries = self._build_summaries(5, base_poc=100.0)
+        # Add the "current" session (today) with known ETH range
+        current_date = "2026-01-06"
+        summaries[current_date] = _make_summary(
+            current_date,
+            poc=105.0,
+            eth_high=107.0,
+            eth_low=103.0,
+            histogram={"105.00": 100},
+        )
+        result = compute_precomputed_levels(summaries, current_date)
+        assert result["globex_high"] == pytest.approx(107.0)
+        assert result["globex_low"] == pytest.approx(103.0)
+        assert result["overnight_high"] == pytest.approx(107.0)
+        assert result["overnight_low"] == pytest.approx(103.0)
+
+    def test_no_prior_sessions_returns_none_pocs(self):
+        # Only the current session exists -> no previous data
+        current_date = "2026-01-01"
+        summaries = {
+            current_date: _make_summary(current_date, poc=100.0, eth_high=101.0, eth_low=99.0)
+        }
+        result = compute_precomputed_levels(summaries, current_date)
+        assert result["poc_daily"] is None
+        assert result["poc_weekly"] is None
+        assert result["poc_monthly"] is None
+        assert result["poc_macro"] is None
