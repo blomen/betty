@@ -12,7 +12,7 @@ from ..config.trading_loader import get_market_data_config, get_scanner_config, 
 from ..db.models import TradingSignal
 from ..market_data.amt import build_session_analysis, SessionAnalysis
 from ..market_data.base import MarketDataProvider
-from ..market_data.levels import compute_session_levels, compute_volume_profile, compute_vwap_bands, bars_to_trades, VolumeProfile, VWAPBands, SessionLevels
+from ..market_data.levels import compute_session_levels, compute_volume_profile, compute_vwap_bands, bars_to_trades, normalize_volume_per_day, VolumeProfile, VWAPBands, SessionLevels
 from ..market_data.macro_provider import fetch_macro_snapshot
 from ..market_data.metrics import compute_rotation_factor, compute_aspr, compute_aspr_percentile, detect_value_migration
 from ..market_data.orderflow import build_candle_flow, compute_signals
@@ -270,13 +270,13 @@ class MarketService:
         weekly_bars = await self._fetch_weekly_bars(symbol)
         weekly_vp = None
         if weekly_bars and len(weekly_bars) >= 780:
-            weekly_vp = compute_volume_profile(bars_to_trades(weekly_bars))
+            weekly_vp = compute_volume_profile(bars_to_trades(normalize_volume_per_day(weekly_bars)))
 
         # Monthly composite VP (min 5 trading days of 1-hour bars)
         monthly_bars = await self._fetch_monthly_bars(symbol)
         monthly_vp = None
         if monthly_bars and len(monthly_bars) >= 35:
-            monthly_vp = compute_volume_profile(bars_to_trades(monthly_bars))
+            monthly_vp = compute_volume_profile(bars_to_trades(normalize_volume_per_day(monthly_bars)))
 
         # Persist levels as MarketLevel rows for the /levels endpoint
         level_rows = self._session_levels_to_rows(session_levels, session_data, weekly_vp, monthly_vp)
@@ -408,6 +408,13 @@ class MarketService:
                 "tpo_poc": sj.get("tpo_poc"),
                 "tpo_vah": sj.get("tpo_vah"),
                 "tpo_val": sj.get("tpo_val"),
+                # Session levels from DB columns (not in session_json)
+                "pdh": session_row.pdh,
+                "pdl": session_row.pdl,
+                "tokyo_high": session_row.tokyo_high,
+                "tokyo_low": session_row.tokyo_low,
+                "london_high": session_row.london_high,
+                "london_low": session_row.london_low,
             },
             "macro": macro,
             "structure": structure,
@@ -447,7 +454,7 @@ class MarketService:
         if not weekly_bars:
             weekly_bars = await self._fetch_weekly_bars(symbol)
         if weekly_bars and len(weekly_bars) >= 35:
-            weekly_vp = compute_volume_profile(bars_to_trades(weekly_bars))
+            weekly_vp = compute_volume_profile(bars_to_trades(normalize_volume_per_day(weekly_bars)))
             profiles["weekly"] = {"poc": weekly_vp.poc, "vah": weekly_vp.vah, "val": weekly_vp.val}
 
         # Monthly composite (DB 5m candles primary)
@@ -458,7 +465,7 @@ class MarketService:
         if not monthly_bars:
             monthly_bars = await self._fetch_monthly_bars(symbol)
         if monthly_bars and len(monthly_bars) >= 35:
-            monthly_vp = compute_volume_profile(bars_to_trades(monthly_bars))
+            monthly_vp = compute_volume_profile(bars_to_trades(normalize_volume_per_day(monthly_bars)))
             profiles["monthly"] = {"poc": monthly_vp.poc, "vah": monthly_vp.vah, "val": monthly_vp.val}
 
         # Leg and Macro profiles
@@ -1072,20 +1079,33 @@ class MarketService:
                 bars = await self._fetch_bars_for_date(symbol, today.isoformat())
 
         elif timeframe == "weekly":
-            # Current week: Sunday ~22:00 UTC to now (use 5m — complete historical)
+            # Current week: Sunday evening to now. Use 1m (real volume) over 5m (shell bars)
             monday = today - timedelta(days=today.weekday())
             w_start = datetime(monday.year, monday.month, monday.day, 0, 0, 0) - timedelta(days=1, hours=2)
-            rows = self.repo.get_candles(symbol, "5m", w_start, now)
-            bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
+            rows = self.repo.get_candles(symbol, "1m", w_start, now)
+            bars = [{"ts": r.ts, "high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
+            if len(bars) < 100:
+                rows = self.repo.get_candles(symbol, "5m", w_start, now)
+                bars = [{"ts": r.ts, "high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
             if not bars:
                 bars = await self._fetch_weekly_bars(symbol)
 
         elif timeframe == "monthly":
-            # Current month: end of prev month to now (use 5m — complete historical)
+            # Current month: use 1m where available, 5m for older dates
             first_of_month = today.replace(day=1)
             m_start = datetime(first_of_month.year, first_of_month.month, 1, 0, 0, 0) - timedelta(days=1)
-            rows = self.repo.get_candles(symbol, "5m", m_start, now)
-            bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
+            # Check 1m coverage
+            _1m_rows = self.repo.get_candles(symbol, "1m", m_start, now)
+            if _1m_rows and len(_1m_rows) > 100:
+                _1m_start_ts = _1m_rows[0].ts
+                # Older dates from 5m (complete historical)
+                _5m_rows = self.repo.get_candles(symbol, "5m", m_start, _1m_start_ts)
+                bars_old = [{"ts": r.ts, "high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in _5m_rows]
+                bars_new = [{"ts": r.ts, "high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in _1m_rows]
+                bars = bars_old + bars_new
+            else:
+                rows = self.repo.get_candles(symbol, "5m", m_start, now)
+                bars = [{"ts": r.ts, "high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in rows]
             if not bars:
                 bars = await self._fetch_monthly_bars(symbol)
 
@@ -1105,6 +1125,10 @@ class MarketService:
         if not bars:
             return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
 
+        # Normalize volume per day for multi-day profiles so no single day dominates
+        if timeframe in ("weekly", "monthly", "macro", "leg", "current"):
+            bars = normalize_volume_per_day(bars)
+
         vp = compute_volume_profile(bars_to_trades(bars))
 
         # Cache TTL: session=60s, weekly/monthly=300s
@@ -1121,41 +1145,69 @@ class MarketService:
         return result
 
     async def get_developing_vwap(self, symbol: str = "NQ", interval: str = "1m") -> dict:
-        """Return developing VWAP time series from tick data (RTH only).
+        """Return developing VWAP time series from 1m candle data (RTH only).
 
-        Fetches today's ticks from Databento and computes cumulative VWAP
-        at each 1m (or 5m) interval. Returns array for direct chart plotting.
+        Uses stored 1m candles from DB for speed (3M ticks too slow to query).
+        Computes VWAP from typical price (HLC/3) weighted by volume — approximation
+        but instant response and close to tick-level VWAP.
         """
-        from ..market_data.levels import compute_developing_vwap
-
-        config = get_market_data_config()
-        provider = _get_provider()
-        sessions_cfg = config.get("sessions", {})
+        import math
+        from zoneinfo import ZoneInfo
+        _ET = ZoneInfo("US/Eastern")
 
         today = date.today()
-        # Fetch from globex open to now (need all ticks, filter to RTH in compute)
-        globex_start = datetime.combine(
-            today - timedelta(days=1),
-            datetime.strptime(sessions_cfg.get("globex_open", "18:00"), "%H:%M").time()
-        )
-        now = datetime.now()
+        # Fetch 1m candles from midnight UTC (covers full globex + RTH)
+        start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
 
-        sym = config.get("symbol", "NQ.FUT")
-        try:
-            ticks = await provider.get_ticks(sym, globex_start, now)
-        except Exception as e:
-            logger.warning("get_ticks failed for VWAP: %s", e)
-            return {"vwap": [], "symbol": symbol}
+        rows = self.repo.get_candles(symbol, "1m", start, now)
+        logger.info("VWAP: got %d 1m candles from DB for %s", len(rows), symbol)
 
-        # Convert to dict format expected by compute_developing_vwap
-        tick_dicts = [
-            {"ts": t.timestamp, "price": t.price, "size": t.size}
-            for t in ticks
-        ]
+        # Filter to RTH only (09:30-16:00 ET) and compute developing VWAP
+        rth_start = datetime.min.time().replace(hour=9, minute=30)
+        rth_end = datetime.min.time().replace(hour=16, minute=0)
 
-        interval_seconds = 300 if interval == "5m" else 60
-        series = compute_developing_vwap(tick_dicts, interval_seconds=interval_seconds, rth_only=True)
+        cum_pv = 0.0
+        cum_vol = 0
+        cum_pv2 = 0.0
+        series: list[dict] = []
 
+        for r in rows:
+            ts = r.ts
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts_et = ts.astimezone(_ET)
+
+            if not (rth_start <= ts_et.time() < rth_end):
+                continue
+
+            tp = (r.h + r.l + r.c) / 3
+            vol = r.v or 1
+
+            cum_pv += tp * vol
+            cum_vol += vol
+            cum_pv2 += tp * tp * vol
+
+            if cum_vol == 0:
+                continue
+
+            vwap = cum_pv / cum_vol
+            variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
+            sd = math.sqrt(variance)
+
+            epoch = int(ts.timestamp())
+            series.append({
+                "t": epoch,
+                "vwap": round(vwap, 2),
+                "sd1_u": round(vwap + sd, 2),
+                "sd1_l": round(vwap - sd, 2),
+                "sd2_u": round(vwap + 2 * sd, 2),
+                "sd2_l": round(vwap - 2 * sd, 2),
+                "sd3_u": round(vwap + 3 * sd, 2),
+                "sd3_l": round(vwap - 3 * sd, 2),
+            })
+
+        logger.info("VWAP: computed %d RTH points from 1m candles", len(series))
         return {"vwap": series, "symbol": symbol, "count": len(series)}
 
     async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5) -> dict:

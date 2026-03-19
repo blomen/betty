@@ -169,6 +169,19 @@ def bars_to_trades(bars: list[dict], tick_size: float = 0.25) -> list[dict]:
     return trades
 
 
+def normalize_volume_per_day(bars: list[dict], target_vol_per_day: int = 100_000) -> list[dict]:
+    """Equalize each bar's contribution for composite (multi-day) profiles.
+
+    When live data capture has uneven volume across days (e.g., 2M today vs 75k
+    yesterday due to incomplete capture), use time-at-price instead of volume-at-price.
+    Each bar contributes 1 unit of volume — this is equivalent to a TPO profile,
+    which is the correct approach when volume data quality varies across days.
+    """
+    if not bars:
+        return bars
+    return [{**b, "volume": 1} for b in bars]
+
+
 def compute_vwap_bands(trades: list[dict]) -> VWAPBands | None:
     """Compute VWAP + 1/2/3 SD bands from trade ticks."""
     if not trades:
@@ -229,6 +242,7 @@ def compute_developing_vwap(
     cum_pv2 = 0.0
     result: list[dict] = []
     current_bucket: int | None = None
+    current_date: str | None = None  # Track ET date for daily reset
 
     rth_start = time(9, 30)
     rth_end = time(16, 0)
@@ -238,12 +252,21 @@ def compute_developing_vwap(
         if not hasattr(ts, "astimezone"):
             continue
 
-        # Convert to ET for RTH filtering
+        # Convert to ET for RTH filtering and daily reset
         ts_et = ts.astimezone(ET)
         t_time = ts_et.time()
+        t_date = ts_et.strftime("%Y-%m-%d")
 
         if rth_only and not (rth_start <= t_time < rth_end):
             continue
+
+        # Reset at each new RTH session (new ET date)
+        if t_date != current_date:
+            cum_pv = 0.0
+            cum_vol = 0
+            cum_pv2 = 0.0
+            current_bucket = None
+            current_date = t_date
 
         price = t["price"]
         size = t["size"]
