@@ -18,6 +18,7 @@ from .market import router as market_router
 from .settings import router as settings_router
 from .limits import router as limits_router
 from .postmortem import router as postmortem_router
+from .mirror import router as mirror_router
 
 __all__ = [
     'providers_router',
@@ -38,4 +39,5 @@ __all__ = [
     'settings_router',
     'limits_router',
     'postmortem_router',
+    'mirror_router',
 ]

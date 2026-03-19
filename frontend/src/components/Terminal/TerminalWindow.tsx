@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
 import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
+import { usePersistedState } from '@/hooks/usePersistedState';
 // All pages lazy-loaded for fast startup
 const ValuePage = lazy(() => import('./pages/ValuePage').then(m => ({ default: m.ValuePage })));
 const DutchPage = lazy(() => import('./pages/DutchPage').then(m => ({ default: m.DutchPage })));
@@ -16,20 +17,23 @@ const TradingContainer = lazy(() => import('./pages/TradingContainer').then(m =>
 const TradingStatsPage = lazy(() => import('./pages/TradingStatsPage').then(m => ({ default: m.TradingStatsPage })));
 import { api } from '@/services/api';
 import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
+import { BetMirrorToast } from './BetMirrorToast';
 
 export function TerminalWindow() {
-  const [activeCategory, setActiveCategory] = useState<CategoryName>('sports');
-  const [activeTab, setActiveTab] = useState<TabName>('value');
+  const [activeCategory, setActiveCategory] = usePersistedState<CategoryName>('bbq_activeCategory', 'sports');
+  const [activeTab, setActiveTab] = usePersistedState<TabName>('bbq_activeTab', 'value');
   const [isProfileActive, setIsProfileActive] = useState(false);
   const [isSettingsActive, setIsSettingsActive] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
+  // Track if trading page has been visited — once mounted, keep alive
+  const [tradingMounted, setTradingMounted] = useState(false);
 
   // On mount: check if we should skip the welcome page
   useEffect(() => {
     const checkSession = async () => {
       // If sessionStorage says we already selected a profile this session, skip welcome
-      if (sessionStorage.getItem('bbq_session_active') === '1') {
+      if (localStorage.getItem('bbq_session_active') === '1') {
         setShowWelcome(false);
         setWelcomeChecked(true);
         return;
@@ -39,7 +43,7 @@ export function TerminalWindow() {
       try {
         const { active } = await api.getProfiles();
         if (active) {
-          sessionStorage.setItem('bbq_session_active', '1');
+          localStorage.setItem('bbq_session_active', '1');
           setShowWelcome(false);
           setWelcomeChecked(true);
           return;
@@ -82,7 +86,16 @@ export function TerminalWindow() {
     setActiveTab('settings');
   }, []);
 
+  const isTradingTab = activeTab === 'tradingL1' || activeTab === 'tradingL2';
+
+  // Once user visits trading, keep TradingContainer mounted forever
+  useEffect(() => {
+    if (isTradingTab && !tradingMounted) setTradingMounted(true);
+  }, [isTradingTab, tradingMounted]);
+
   const renderPage = () => {
+    // Trading tabs handled separately (kept alive below)
+    if (isTradingTab) return null;
     switch (activeTab) {
       case 'value':
         return <ValuePage />;
@@ -100,9 +113,6 @@ export function TerminalWindow() {
         return <ProfilePage />;
       case 'settings':
         return <SettingsPage />;
-      case 'tradingL1':
-      case 'tradingL2':
-        return <TradingContainer activeSubTab={activeTab as 'tradingL1' | 'tradingL2'} />;
       case 'tradingBankroll':
         return <TradingBankrollPage />;
       case 'tradingStats':
@@ -145,16 +155,26 @@ export function TerminalWindow() {
         )}
         <ConnectionErrorBar />
         <ErrorNotificationBar />
+        <BetMirrorToast />
         <div className="flex-1 flex flex-col min-h-0 p-4 overflow-hidden">
           <Suspense fallback={<div className="p-4 text-muted text-sm animate-blink">█</div>}>
-            {isOverlay ? (
-              renderPage()
-            ) : tabs.length > 0 ? (
-              renderPage()
-            ) : (
-              <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-                Coming soon.
+            {/* TradingContainer stays mounted once visited — hidden via CSS when on other tabs */}
+            {tradingMounted && (
+              <div className={`flex-1 flex flex-col min-h-0 ${isTradingTab ? '' : 'hidden'}`}>
+                <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingL1') as 'tradingL1' | 'tradingL2'} />
               </div>
+            )}
+            {/* Non-trading pages render normally */}
+            {!isTradingTab && (
+              isOverlay ? (
+                renderPage()
+              ) : tabs.length > 0 ? (
+                renderPage()
+              ) : (
+                <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
+                  Coming soon.
+                </div>
+              )
             )}
           </Suspense>
         </div>

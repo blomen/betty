@@ -43,6 +43,7 @@ from .routes import (
     market_router,
     limits_router,
     postmortem_router,
+    mirror_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -451,6 +452,7 @@ app.include_router(market_router)
 app.include_router(settings_router)
 app.include_router(limits_router)
 app.include_router(postmortem_router)
+app.include_router(mirror_router)
 
 
 # Version endpoint
