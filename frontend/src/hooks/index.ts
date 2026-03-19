@@ -1,5 +1,5 @@
 // Export all hooks from a single entry point
-export { useBankroll } from './useBankroll';
+export { useBankrollQuery } from './useBankrollQuery';
 export { useProfiles } from './useProfiles';
 export { useTableSort } from './useTableSort';
 export { useMultiSort } from './useMultiSort';

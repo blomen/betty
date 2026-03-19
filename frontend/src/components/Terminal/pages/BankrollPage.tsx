@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card } from './Card';
 import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
@@ -7,7 +7,9 @@ import { formatProviderName, formatProviderWithPlatform } from '@/utils/formatte
 import { ProviderName } from '../ProviderName';
 import { useTableSort } from '@/hooks/useTableSort';
 import { TabIcon, TAB_COLORS } from '../TabBar';
-import type { BankrollExposure, Provider, ProviderExposure } from '@/types';
+import type { ProviderExposure } from '@/types';
+import { useBankrollQuery } from '@/hooks/useBankrollQuery';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 type BankrollSortCol = 'provider' | 'balance' | 'pending' | 'available' | 'withdraw';
 
@@ -22,14 +24,12 @@ const bankrollSortExtractors: Record<BankrollSortCol, (p: ProviderExposure) => n
   withdraw: (p) => p.is_locked ? 0 : p.available,
 };
 
-interface BankrollPageProps {
-  providers?: Provider[];
-  onRefresh?: () => void;
-}
+export function BankrollPage() {
+  const queryClient = useQueryClient();
+  const { exposure, adjustBalance, setBalance, transferFunds, depositWithBonus, isLoading } = useBankrollQuery();
+  const { data: providersData } = useQuery({ queryKey: ['providers'], queryFn: () => api.getProviders() });
+  const providers = providersData?.providers ?? [];
 
-export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
-  const [exposure, setExposure] = useState<BankrollExposure | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState('');
   const [depositResult, setDepositResult] = useState<{
@@ -66,23 +66,6 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
     navUrl: string | null;
     windowName: string;
   } | null>(null);
-
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const exposureData = await api.getBankrollExposure();
-      setExposure(exposureData);
-    } catch (err) {
-      console.error('Failed to fetch bankroll data:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
 
 
   // Clear deposit result after 5 seconds
@@ -150,7 +133,7 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
 
     try {
       if (withBonus) {
-        const result = await api.depositWithBonus(providerId, amount);
+        const result = await depositWithBonus.mutateAsync({ providerId, amount });
         let msg = `Deposited ${fmtAmount(providerId, result.deposit)}`;
         if (result.bonus_claimed > 0) {
           msg += ` + ${fmtAmount(providerId, result.bonus_claimed)} bonus`;
@@ -161,7 +144,7 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
         msg += `. New balance: ${fmtAmount(providerId, result.new_balance)}`;
         setDepositResult({ success: true, message: msg });
       } else {
-        await api.adjustBalance(providerId, amount);
+        await adjustBalance.mutateAsync({ providerId, amount });
         setDepositResult({
           success: true,
           message: `Deposited ${fmtAmount(providerId, amount)}`,
@@ -170,8 +153,6 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
       setPendingDeposit(null);
       setAdjustingProvider(null);
       setAdjustAmount('');
-      fetchData();
-      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -186,15 +167,13 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
     if (isNaN(amount) || amount <= 0) return;
 
     try {
-      await api.adjustBalance(providerId, -amount);
+      await adjustBalance.mutateAsync({ providerId, amount: -amount });
       setDepositResult({
         success: true,
         message: `Withdrew ${fmtAmount(providerId, amount)}`,
       });
       setAdjustingProvider(null);
       setAdjustAmount('');
-      fetchData();
-      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -208,15 +187,13 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
     if (isNaN(balance) || balance < 0) return;
 
     try {
-      const result = await api.setBalance(providerId, balance);
+      const result = await setBalance.mutateAsync({ providerId, balance });
       setDepositResult({
         success: true,
         message: `Balance set to ${fmtAmount(providerId, balance)} (was ${fmtAmount(providerId, result.old_balance)})`,
       });
       setAdjustingProvider(null);
       setAdjustAmount('');
-      fetchData();
-      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -237,8 +214,8 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
     if (!transferTo) return;
 
     try {
-      const result = await api.transferFunds(transferPopup.fromProviderId, transferTo, amount, withBonus);
-      const toName = exposure?.providers.find(p => p.provider_id === transferTo)?.provider_name || transferTo;
+      const result = await transferFunds.mutateAsync({ fromProviderId: transferPopup.fromProviderId, toProviderId: transferTo, amount, withBonus });
+      const toName = exposure.providers.find(p => p.provider_id === transferTo)?.provider_name || transferTo;
       let msg = `Transferred ${amount.toFixed(0)} kr from ${formatProviderName(transferPopup.fromName)} to ${formatProviderName(toName)}`;
       if (result.bonus_claimed > 0) {
         msg += ` + ${result.bonus_claimed.toFixed(0)} kr bonus`;
@@ -250,8 +227,6 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
       setTransferPopup(null);
       setTransferAmount('');
       setTransferTo('');
-      fetchData();
-      onRefresh?.();
     } catch (err) {
       setDepositResult({
         success: false,
@@ -266,7 +241,7 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
   // Sort provider balances table — default by bonus priority (freebet > bonusdeposit > none)
   const providerList = useMemo(() => exposure?.providers ?? [], [exposure]);
   const { sorted: tableSorted, sort: provSort, toggle: toggleProvSort } =
-    useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'balance', direction: 'desc' });
+    useTableSort<ProviderExposure, BankrollSortCol>(providerList, bankrollSortExtractors, { column: 'balance', direction: 'desc' }, 'bbq_bankroll_sort');
 
   // When no column sort is active, sort by bonus priority: freebet first, then bonusdeposit, then rest
   const sortedProviders = useMemo(() => {
@@ -369,7 +344,8 @@ export function BankrollPage({ providers = [], onRefresh }: BankrollPageProps) {
                               e.stopPropagation();
                               try {
                                 await api.claimBonus(provider.provider_id);
-                                onRefresh?.();
+                                queryClient.invalidateQueries({ queryKey: ['providers'] });
+                                queryClient.invalidateQueries({ queryKey: ['bankroll'] });
                               } catch (err) {
                                 setDepositResult({ success: false, message: err instanceof Error ? err.message : 'Failed to claim bonus' });
                               }
