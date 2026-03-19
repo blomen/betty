@@ -52,7 +52,10 @@ export function useBetMutations() {
         };
       });
       invalidateBankrollAndOpps();
-      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      // Defer heavy bets list refetch so UI stays responsive after optimistic update
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['bets'] });
+      }, 500);
     },
   });
 
@@ -61,7 +64,9 @@ export function useBetMutations() {
     retry: false,
     onSuccess: () => {
       invalidateBankrollAndOpps();
-      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['bets'] });
+      }, 500);
     },
   });
 

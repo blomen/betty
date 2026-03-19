@@ -1,7 +1,7 @@
 """Bets API routes."""
 
+import asyncio
 import logging
-import time
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -369,7 +369,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
                     f"{_BET_COMMIT_MAX_RETRIES}), retrying in {wait:.1f}s"
                 )
                 db.rollback()
-                time.sleep(wait)
+                await asyncio.sleep(wait)
             else:
                 logger.error(f"[Bets] Commit failed after {attempt + 1} attempts: {e}")
                 raise
@@ -452,7 +452,7 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
                     wait = _BET_COMMIT_BACKOFF_BASE * (2 ** attempt)
                     logger.warning(f"[Bets:batch] Leg {i} commit blocked (attempt {attempt + 1})")
                     db.rollback()
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                 else:
                     results.append({
                         "leg_index": i,
