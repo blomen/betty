@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef, Fragment } from 'react';
 import { api } from '@/services/api';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { formatProviderName, formatProviderWithPlatform, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
@@ -69,6 +70,7 @@ function saveDutchAnchorSettings(providers: Set<string>, stake: string, limitedO
 }
 
 export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
+  const { placeBet, placeBatchBets } = useBetMutations();
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [search] = useState('');
 
@@ -253,7 +255,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
     setBetSuccess(null);
 
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         event_id: opp.event_id,
         provider_id: leg.provider,
         market: opp.market,
@@ -317,7 +319,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
     setBetSuccess(null);
 
     try {
-      const res = await api.createBatchBets(batchLegs);
+      const res = await placeBatchBets.mutateAsync(batchLegs);
 
       const successIdxs = new Set<number>();
       const errors: string[] = [];
