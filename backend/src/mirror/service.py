@@ -110,13 +110,13 @@ class MirrorService:
 
             # Update confirmation_id on the created bet
             if "error" not in bet_result:
-                bet_obj = db.query(Bet).get(bet_result["id"])
+                bet_obj = db.query(Bet).get(bet_result["bet_id"])
                 if bet_obj:
                     bet_obj.confirmation_id = confirmation_id
 
             db.commit()
 
-            bet_id = bet_result.get("id")
+            bet_id = bet_result.get("bet_id")
             parse_status = "ok" if event_id else "unmatched"
             if "error" in bet_result:
                 parse_status = "failed"
