@@ -127,11 +127,43 @@ def compute_tpo_profile(
     # IB TPO count: letters A and B
     ib_tpo_count = sum(1 for p in sorted_prices for l in letters[p] if l in ("A", "B"))
 
+    # --- Extended fields ---
+    tpo_counts = {p: len(v) for p, v in letters.items()}
+
+    # IB high/low: max high / min low of first 2 bars
+    ib_bars = bars_30m[:2]
+    ib_high = max(b["high"] for b in ib_bars)
+    ib_low = min(b["low"] for b in ib_bars)
+
+    # Session high/low
+    session_high = max(b["high"] for b in bars_30m)
+    session_low = min(b["low"] for b in bars_30m)
+
+    # Upper excess: consecutive single-print levels from top down
+    upper_excess = 0
+    for p in reversed(sorted_prices):
+        if len(letters[p]) == 1:
+            upper_excess += 1
+        else:
+            break
+
+    # Lower excess: consecutive single-print levels from bottom up
+    lower_excess = 0
+    for p in sorted_prices:
+        if len(letters[p]) == 1:
+            lower_excess += 1
+        else:
+            break
+
     return TPOProfile(
         letters=letters, poc=poc, vah=vah, val=val,
         single_prints=single_prints, ledges=ledges,
         poor_high=poor_high, poor_low=poor_low,
         ib_tpo_count=ib_tpo_count,
+        tpo_counts=tpo_counts,
+        ib_high=ib_high, ib_low=ib_low,
+        session_high=session_high, session_low=session_low,
+        upper_excess=upper_excess, lower_excess=lower_excess,
     )
 
 
