@@ -2,7 +2,7 @@
 import pytest
 from src.market_data.tpo import (
     _period_letter, TPOProfile, compute_tpo_profile,
-    classify_tpo_shape, detect_excess,
+    classify_tpo_shape, detect_excess, classify_opening_type,
 )
 
 
@@ -173,3 +173,58 @@ class TestDetectExcessTickCounts:
         upper, lower = detect_excess(profile)
         assert not upper
         assert lower
+
+
+class TestClassifyOpeningType:
+    def test_open_drive_up(self):
+        bars = [
+            _make_bar(100, 105, 99, 104),
+            _make_bar(104, 110, 103, 109),
+            _make_bar(109, 112, 107, 111),
+            _make_bar(111, 113, 110, 112),
+        ]
+        otype, direction = classify_opening_type(bars)
+        assert otype == "OD"
+        assert direction == "up"
+
+    def test_open_test_drive(self):
+        bars = [
+            _make_bar(100, 105, 99, 104),
+            _make_bar(104, 104, 100, 101),
+            _make_bar(101, 108, 101, 107),
+            _make_bar(107, 109, 106, 108),
+        ]
+        otype, direction = classify_opening_type(bars)
+        assert otype == "OTD"
+        assert direction == "up"
+
+    def test_open_rejection_reverse(self):
+        bars = [
+            _make_bar(100, 105, 99, 104),
+            _make_bar(104, 108, 103, 107),
+            _make_bar(107, 107, 97, 98),
+            _make_bar(98, 99, 95, 96),
+        ]
+        otype, direction = classify_opening_type(bars)
+        assert otype == "ORR"
+
+    def test_open_auction(self):
+        bars = [
+            _make_bar(100, 103, 99, 101),
+            _make_bar(101, 104, 100, 102),
+            _make_bar(102, 103, 99, 100),
+            _make_bar(100, 102, 98, 101),
+        ]
+        otype, direction = classify_opening_type(bars)
+        assert otype == "OA"
+
+    def test_fewer_than_4_bars(self):
+        bars = [_make_bar(100, 105, 99, 104)]
+        otype, direction = classify_opening_type(bars)
+        assert otype == "OA"
+        assert direction == "neutral"
+
+    def test_empty_bars(self):
+        otype, direction = classify_opening_type([])
+        assert otype == "OA"
+        assert direction == "neutral"

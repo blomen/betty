@@ -268,3 +268,68 @@ def detect_excess(profile: TPOProfile) -> tuple[int, int]:
             break
 
     return (upper, lower)
+
+
+def classify_opening_type(bars_30m: list[dict]) -> tuple[str, str]:
+    """Classify session opening type from first 4 periods.
+
+    Returns (opening_type, direction) where:
+    - OD  = Open Drive: aggressive move from open, no retracement
+    - OTD = Open Test Drive: initial move, retrace, then drive
+    - ORR = Open Rejection Reverse: initial move then full reversal
+    - OA  = Open Auction: balanced, no clear directional conviction
+    """
+    if len(bars_30m) < 4:
+        return ("OA", "neutral")
+
+    a, b, c, d = bars_30m[0], bars_30m[1], bars_30m[2], bars_30m[3]
+
+    if a["close"] > a["open"]:
+        a_dir = "up"
+    elif a["close"] < a["open"]:
+        a_dir = "down"
+    else:
+        return ("OA", "neutral")
+
+    session_range = max(x["high"] for x in bars_30m[:4]) - min(x["low"] for x in bars_30m[:4])
+    if session_range == 0:
+        return ("OA", "neutral")
+
+    ab_range = max(a["high"], b["high"]) - min(a["low"], b["low"])
+
+    if a_dir == "up":
+        a_opens_near_extreme = (a["open"] - min(x["low"] for x in bars_30m[:4])) / session_range <= 0.25
+        b_extends = b["high"] > a["high"] and b["low"] >= a["low"]
+        c_holds = c["low"] >= min(a["low"], b["low"]) + ab_range * 0.50 if ab_range > 0 else False
+        if a_opens_near_extreme and b_extends and c_holds:
+            return ("OD", "up")
+        # ORR before OTD: full reversal is stronger signal
+        b_continues = b["high"] >= a["high"]
+        cd_reverses = (c["close"] < a["low"] or d["close"] < a["low"]) and (
+            min(c["low"], d["low"]) < a["low"] - ab_range * 0.25
+        )
+        if b_continues and cd_reverses:
+            return ("ORR", "down")
+        b_retraces = b["low"] < a["high"] and b["low"] >= a["low"]
+        c_drives = c["high"] > a["high"]
+        if b_retraces and c_drives:
+            return ("OTD", "up")
+    else:  # down
+        a_opens_near_extreme = (max(x["high"] for x in bars_30m[:4]) - a["open"]) / session_range <= 0.25
+        b_extends = b["low"] < a["low"] and b["high"] <= a["high"]
+        c_holds = c["high"] <= max(a["high"], b["high"]) - ab_range * 0.50 if ab_range > 0 else False
+        if a_opens_near_extreme and b_extends and c_holds:
+            return ("OD", "down")
+        # ORR before OTD
+        b_continues = b["low"] <= a["low"]
+        cd_reverses = (c["close"] > a["high"] or d["close"] > a["high"]) and (
+            max(c["high"], d["high"]) > a["high"] + ab_range * 0.25
+        )
+        if b_continues and cd_reverses:
+            return ("ORR", "up")
+        b_retraces = b["high"] > a["low"] and b["high"] <= a["high"]
+        c_drives = c["low"] < a["low"]
+        if b_retraces and c_drives:
+            return ("OTD", "down")
+
+    return ("OA", a_dir)
