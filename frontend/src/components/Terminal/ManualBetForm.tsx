@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { api } from '@/services/api';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import type { Provider } from '@/types';
 
 const ACCENT_STYLES: Record<string, { checkbox: string; button: string }> = {
@@ -18,6 +18,7 @@ interface ManualBetFormProps {
 }
 
 export function ManualBetForm({ providers, onSuccess, onError, providerFilter, accentColor = 'tabValue', betType = 'manual' }: ManualBetFormProps) {
+  const { placeBet } = useBetMutations();
   const styles = ACCENT_STYLES[accentColor] ?? ACCENT_STYLES.tabValue;
   const [providerId, setProviderId] = useState('');
   const [description, setDescription] = useState('');
@@ -36,7 +37,7 @@ export function ManualBetForm({ providers, onSuccess, onError, providerFilter, a
     }
     setIsSubmitting(true);
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         provider_id: providerId,
         outcome: description,
         odds: oddsNum,
