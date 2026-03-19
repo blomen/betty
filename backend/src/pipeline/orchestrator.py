@@ -171,7 +171,8 @@ class ExtractionPipeline:
         never_live_events = []
         for ev in never_live_candidates:
             hours = self.SPORT_DURATION_HOURS.get(ev.sport, self.DEFAULT_DURATION_HOURS)
-            if ev.start_time < now - timedelta(hours=hours):
+            st = ev.start_time if ev.start_time.tzinfo else ev.start_time.replace(tzinfo=timezone.utc)
+            if st < now - timedelta(hours=hours):
                 never_live_events.append(ev)
 
         # Merge (deduplicate by id)

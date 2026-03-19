@@ -199,8 +199,85 @@ async def lifespan(app: FastAPI):
             api_key=databento_key,
             db_session_factory=_get_db_session,
         )
+
+        # Seed CandleFlow from last DB candle so live updates continue
+        # rather than starting fresh (which causes fake wicks on chart).
+        from ..repositories.market_repo import MarketRepo as _MR
+        _seed_db = _get_db_session()
+        try:
+            for _flow, _interval in [
+                (_databento_stream._candle_flow, "5m"),
+                (_databento_stream._candle_flow_1m, "1m"),
+            ]:
+                _last = _MR(_seed_db).get_latest_candle("NQ", _interval)
+                if _last:
+                    _ts = _last.ts.replace(tzinfo=timezone.utc) if not _last.ts.tzinfo else _last.ts
+                    _flow.seed(int(_ts.timestamp()), _last.o, _last.h, _last.l, _last.c, _last.v)
+                    logger.info("Seeded %s CandleFlow from DB: bucket=%s", _interval, _ts)
+        finally:
+            _seed_db.close()
+
         await _databento_stream.start()
         app.state.databento_stream = _databento_stream
+
+        # Backfill market_candles once from Databento historical.
+        # On every startup: fetch only the missing gap per interval.
+        # History never changes, so existing rows are skipped.
+        async def _backfill_candles():
+            from ..market_data.databento_provider import DabentoProvider
+            from ..repositories.market_repo import MarketRepo
+            from ..config.trading_loader import get_market_data_config
+            from datetime import timedelta
+
+            config = get_market_data_config()
+            symbol = "NQ"
+            db_symbol = config.get("symbol", "NQ.c.0")
+            now = datetime.now(timezone.utc)
+            fetch_end = now - timedelta(minutes=30)  # Databento ~15-30 min delay
+
+            # 5m: full history from 2010 (already backfilled, only forward gap)
+            # 1m: 30 days max (5x more data, don't need years of 1m bars)
+            interval_targets = {
+                "5m": datetime(2010, 6, 6, tzinfo=timezone.utc),
+                "1m": now - timedelta(days=36),
+            }
+
+            inner = DabentoProvider(config)
+
+            for interval, target_start in interval_targets.items():
+                db = _get_db_session()
+                try:
+                    repo = MarketRepo(db)
+                    oldest = repo.get_oldest_candle(symbol, interval)
+                    latest = repo.get_latest_candle(symbol, interval)
+                finally:
+                    db.close()
+
+                fetch_start = target_start
+                if oldest:
+                    oldest_ts = oldest.ts if oldest.ts.tzinfo else oldest.ts.replace(tzinfo=timezone.utc)
+                    if oldest_ts <= target_start + timedelta(days=1):
+                        fetch_start = latest.ts if latest.ts.tzinfo else latest.ts.replace(tzinfo=timezone.utc)
+
+                logger.info("Candle backfill %s: %s → %s", interval, fetch_start.date(), fetch_end.date())
+                try:
+                    bars = await asyncio.wait_for(
+                        inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
+                        timeout=300.0,
+                    )
+                    if bars:
+                        db = _get_db_session()
+                        try:
+                            inserted = MarketRepo(db).bulk_insert_candles(symbol, interval, bars)
+                            logger.info("Candle backfill %s: %d new (%d fetched)", interval, inserted, len(bars))
+                        finally:
+                            db.close()
+                    else:
+                        logger.warning("Candle backfill %s: no bars returned", interval)
+                except Exception as e:
+                    logger.warning("Candle backfill %s failed: %s", interval, e)
+
+        asyncio.create_task(_backfill_candles())
 
         # Initialize Level Monitor for proximity-based level alerts
         from ..market_data.level_monitor import LevelMonitor

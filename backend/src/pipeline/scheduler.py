@@ -183,6 +183,34 @@ class ExtractionScheduler:
             logger.warning(f"[Scheduler] Could not check last extraction time: {e}")
             return None
 
+    def _get_last_completed_run(self, category: str, provider_ids: list[str]) -> datetime | None:
+        """Check extraction_runs for the last COMPLETED run of this category.
+
+        Only counts runs with end_time set (i.e., not interrupted).
+        For grouped categories (sharp), matches by trigger=category.
+        For ungrouped (api_soft), checks provider_run_metrics for the specific provider.
+        """
+        try:
+            from src.db.models import get_session
+            from sqlalchemy import text
+            with get_session() as session:
+                # Grouped categories (sharp) have trigger matching the category name
+                row = session.execute(text(
+                    "SELECT MAX(end_time) FROM extraction_runs "
+                    "WHERE trigger = :cat AND end_time IS NOT NULL"
+                ), {"cat": category}).scalar()
+                if row:
+                    result = row if isinstance(row, datetime) else datetime.fromisoformat(str(row))
+                    if result.tzinfo is None:
+                        result = result.replace(tzinfo=timezone.utc)
+                    return result
+
+                # Fallback: check Odds.updated_at (for providers without extraction_runs)
+                return self._get_last_extraction_time(provider_ids)
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not check last completed run: {e}")
+            return self._get_last_extraction_time(provider_ids)
+
     async def _provider_loop(self, schedule: ProviderSchedule):
         """Extraction loop for a single provider (or grouped sharp providers)."""
         # Wait for sharp if not sharp category
@@ -194,23 +222,25 @@ class ExtractionScheduler:
             except asyncio.TimeoutError:
                 logger.warning(f"[Scheduler:{schedule.provider_id}] Sharp timeout (120s), starting anyway")
 
-        # On startup, check if data is still fresh from a previous run
+        # On startup, check if the last extraction RUN completed successfully.
+        # Uses extraction_runs.end_time (not Odds.updated_at) to avoid treating
+        # interrupted extractions as "fresh" — a partial write shouldn't delay retry.
         providers = schedule.providers or [schedule.provider_id]
-        last_extraction = await asyncio.get_running_loop().run_in_executor(
-            None, self._get_last_extraction_time, providers
+        last_completed = await asyncio.get_running_loop().run_in_executor(
+            None, self._get_last_completed_run, schedule.category, providers
         )
-        if last_extraction:
-            age_seconds = (datetime.now(timezone.utc) - last_extraction).total_seconds()
+        if last_completed:
+            age_seconds = (datetime.now(timezone.utc) - last_completed).total_seconds()
             remaining = schedule.interval_seconds - age_seconds
             if remaining > 0:
                 logger.info(
-                    f"[Scheduler:{schedule.provider_id}] Data is {age_seconds:.0f}s old, "
+                    f"[Scheduler:{schedule.provider_id}] Last completed run {age_seconds:.0f}s ago, "
                     f"sleeping {remaining:.0f}s before first run"
                 )
-                schedule.last_completed = last_extraction
+                schedule.last_completed = last_completed
                 update_provider_state(schedule.provider_id, {
                     "running": False,
-                    "last_completed": last_extraction.isoformat(),
+                    "last_completed": last_completed.isoformat(),
                     "category": schedule.category,
                 })
                 try:
@@ -219,9 +249,13 @@ class ExtractionScheduler:
                     return
             else:
                 logger.info(
-                    f"[Scheduler:{schedule.provider_id}] Data is {age_seconds:.0f}s old "
+                    f"[Scheduler:{schedule.provider_id}] Last completed run {age_seconds:.0f}s ago "
                     f"(stale), running immediately"
                 )
+        else:
+            logger.info(
+                f"[Scheduler:{schedule.provider_id}] No completed run found, running immediately"
+            )
 
         while schedule.running:
             start = datetime.now(timezone.utc)
@@ -879,10 +913,9 @@ class ExtractionScheduler:
                                 Event.id.in_(batch)
                             ).delete(synchronize_session=False)
 
-                # 5. Deactivate remaining opportunities (will be refreshed during next scan)
-                stats["deactivated"] = session.query(Opportunity).filter(
-                    Opportunity.is_active == True
-                ).update({"is_active": False})
+                # 5. Skip blanket deactivation — the analyzer handles incremental
+                #    deactivation per-event during extraction.  Deactivating all here
+                #    would wipe valid data between extraction runs / across restarts.
 
                 session.commit()
             except Exception:

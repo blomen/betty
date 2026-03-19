@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..db.models import MarketSession, TradingSignal, MarketTrade, MarketLevel, MarketContext, SessionMetric
+from ..db.models import MarketSession, TradingSignal, MarketTrade, MarketLevel, MarketContext, SessionMetric, MarketCandle
 
 
 class MarketRepo:
@@ -111,6 +111,73 @@ class MarketRepo:
             MarketTrade.ts >= start,
             MarketTrade.ts <= end,
         ).order_by(MarketTrade.ts).all()
+
+    # ---- MarketCandle ----
+
+    def get_candles(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[MarketCandle]:
+        return self.db.query(MarketCandle).filter(
+            MarketCandle.symbol == symbol,
+            MarketCandle.interval == interval,
+            MarketCandle.ts >= start,
+            MarketCandle.ts <= end,
+        ).order_by(MarketCandle.ts).all()
+
+    def get_latest_candle(self, symbol: str, interval: str) -> MarketCandle | None:
+        return (
+            self.db.query(MarketCandle)
+            .filter_by(symbol=symbol, interval=interval)
+            .order_by(MarketCandle.ts.desc())
+            .first()
+        )
+
+    def get_oldest_candle(self, symbol: str, interval: str) -> MarketCandle | None:
+        return (
+            self.db.query(MarketCandle)
+            .filter_by(symbol=symbol, interval=interval)
+            .order_by(MarketCandle.ts.asc())
+            .first()
+        )
+
+    def upsert_candle(self, symbol: str, interval: str, ts: datetime, o: float, h: float, l: float, c: float, v: int):
+        """Insert or replace a single candle (used for live closed-candle writes)."""
+        row = self.db.query(MarketCandle).filter_by(symbol=symbol, interval=interval, ts=ts).first()
+        if row:
+            row.o = o
+            row.h = h
+            row.l = l
+            row.c = c
+            row.v = v
+        else:
+            self.db.add(MarketCandle(symbol=symbol, interval=interval, ts=ts, o=o, h=h, l=l, c=c, v=v))
+        self.db.commit()
+
+    def bulk_insert_candles(self, symbol: str, interval: str, bars: list) -> int:
+        """Insert bars from Databento backfill, skipping timestamps that already exist.
+
+        bars: list of BarData objects with .timestamp, .open, .high, .low, .close, .volume
+        Returns number of rows inserted.
+        """
+        if not bars:
+            return 0
+        start, end = bars[0].timestamp, bars[-1].timestamp
+        existing = {
+            row.ts
+            for row in self.db.query(MarketCandle.ts).filter(
+                MarketCandle.symbol == symbol,
+                MarketCandle.interval == interval,
+                MarketCandle.ts >= start,
+                MarketCandle.ts <= end,
+            ).all()
+        }
+        new_rows = [
+            MarketCandle(symbol=symbol, interval=interval, ts=b.timestamp, o=b.open, h=b.high, l=b.low, c=b.close, v=b.volume)
+            for b in bars
+            if b.timestamp not in existing
+        ]
+        if new_rows:
+            self.db.bulk_save_objects(new_rows)
+            self.db.commit()
+        return len(new_rows)
 
     # ---- MarketLevel ----
 

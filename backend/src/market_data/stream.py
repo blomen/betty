@@ -128,27 +128,65 @@ class TickWriter:
 
 
 class CandleFlow:
-    """Aggregates ticks into a running OHLCV candle for the current 5-min bucket."""
+    """Aggregates ticks into a running OHLCV candle for a configurable time bucket."""
 
-    BUCKET_SECONDS = 300  # 5 minutes
-    EMIT_INTERVAL = 5.0   # seconds between candle event emissions
+    # Reject ticks more than this fraction away from last known price (bad prints)
+    MAX_TICK_DEVIATION = 0.01  # 1% — ~240 pts on NQ
+    # After this many consecutive rejects, accept the tick (legitimate gap)
+    MAX_CONSECUTIVE_REJECTS = 20
 
-    def __init__(self):
+    def __init__(self, bucket_seconds: int = 300, emit_interval: float = 5.0):
+        self.BUCKET_SECONDS = bucket_seconds
+        self.EMIT_INTERVAL = emit_interval
         self._bucket_start: int = 0
         self._o = self._h = self._l = self._c = 0.0
         self._v = 0
         self._dirty = False
         self._last_emit: float = 0.0
+        self._consecutive_rejects = 0
+
+    def seed(self, bucket_start: int, o: float, h: float, l: float, c: float, v: int):
+        """Seed from a DB candle so the first live update continues rather than resets."""
+        self._bucket_start = bucket_start
+        self._o = o
+        self._h = h
+        self._l = l
+        self._c = c
+        self._v = v
 
     def _bucket_for(self, epoch: float) -> int:
         return int(epoch) // self.BUCKET_SECONDS * self.BUCKET_SECONDS
 
-    def update(self, price: float, size: int, epoch: float) -> dict | None:
-        """Feed a tick. Returns a candle event dict if it's time to emit, else None."""
+    def _is_outlier(self, price: float) -> bool:
+        """Reject ticks that deviate too far from last known price (bad prints)."""
+        if self._c == 0.0:
+            return False  # no reference yet
+        if abs(price - self._c) / self._c > self.MAX_TICK_DEVIATION:
+            self._consecutive_rejects += 1
+            if self._consecutive_rejects >= self.MAX_CONSECUTIVE_REJECTS:
+                # Too many rejects in a row — likely a legitimate gap, accept it
+                self._consecutive_rejects = 0
+                return False
+            return True
+        self._consecutive_rejects = 0
+        return False
+
+    def update(self, price: float, size: int, epoch: float) -> tuple[dict | None, dict | None]:
+        """Feed a tick. Returns (emit_event, closed_candle).
+
+        emit_event: periodic live update for the chart (every EMIT_INTERVAL seconds).
+        closed_candle: snapshot of the completed bucket when it rolls over (for DB persistence).
+        """
+        if self._is_outlier(price):
+            return None, None  # skip bad print
+
         bucket = self._bucket_for(epoch)
+        closed_candle = None
 
         if bucket != self._bucket_start:
-            # New bucket — reset
+            # Previous bucket just closed — capture it before resetting
+            if self._bucket_start != 0 and self._v > 0:
+                closed_candle = self.snapshot()
             self._bucket_start = bucket
             self._o = self._h = self._l = self._c = price
             self._v = size
@@ -160,13 +198,14 @@ class CandleFlow:
 
         self._dirty = True
 
+        emit = None
         now = time.monotonic()
         if now - self._last_emit >= self.EMIT_INTERVAL and self._dirty:
             self._last_emit = now
             self._dirty = False
-            return self.snapshot()
+            emit = self.snapshot()
 
-        return None
+        return emit, closed_candle
 
     def snapshot(self) -> dict:
         return {
@@ -183,6 +222,26 @@ class CandleFlow:
 class DatabentoLiveStream:
     """Manages a persistent Databento live subscription (Trades + MBP-1)."""
 
+    @staticmethod
+    def _in_globex(epoch: float) -> bool:
+        """Check if timestamp falls within CME Globex hours.
+
+        Globex: Sun 18:00 ET → Fri 17:00 ET, with daily 17:00-18:00 ET halt.
+        """
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromtimestamp(epoch, tz=ZoneInfo("US/Eastern"))
+        wd = dt.weekday()
+        hour = dt.hour
+        if wd == 5:
+            return False
+        if wd == 4 and hour >= 17:
+            return False
+        if wd == 6 and hour < 18:
+            return False
+        if hour == 17:
+            return False
+        return True
+
     def __init__(
         self,
         api_key: str,
@@ -195,11 +254,13 @@ class DatabentoLiveStream:
         self.symbol = symbol
         self.buffer = TickBuffer()
         self.book = TopOfBook()
-        self._candle_flow = CandleFlow()
+        self._candle_flow = CandleFlow()        # 5m candles (persist only)
+        self._candle_flow_1m = CandleFlow(bucket_seconds=60, emit_interval=1.0)  # 1m (emit closed + persist)
         self._level_monitor: LevelMonitor | None = None
         self._running = False
         self._task: asyncio.Task | None = None
         self._subscribers: list[asyncio.Queue] = []
+        self._db_session_factory = db_session_factory
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -238,6 +299,24 @@ class DatabentoLiveStream:
         monitor.set_tick_buffer(self.buffer)
         monitor.set_candle_flow_source(self._get_recent_candles)
 
+    async def _write_closed_candle(self, candle: dict, interval: str = "5m"):
+        """Persist a completed candle bucket to market_candles DB table."""
+        try:
+            db = self._db_session_factory()
+            try:
+                from ..repositories.market_repo import MarketRepo
+                ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
+                MarketRepo(db).upsert_candle(
+                    symbol=self.symbol.split(".")[0],
+                    interval=interval,
+                    ts=ts,
+                    o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
+                )
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to persist closed %s candle: %s", interval, e)
+
     def _get_recent_candles(self):
         """Build CandleFlow candles from recent tick buffer for orderflow computation."""
         from .orderflow import build_candle_flow
@@ -250,6 +329,7 @@ class DatabentoLiveStream:
         try:
             import databento as db
 
+            logger.info("Databento stream connecting to %s / %s ...", self.dataset, self.symbol)
             client = db.Live(key=self.api_key)
             # Subscribe to both Trades and MBP-1 (top of book)
             client.subscribe(
@@ -264,7 +344,9 @@ class DatabentoLiveStream:
                 symbols=[self.symbol],
                 stype_in="continuous",
             )
+            logger.info("Databento stream subscribed, waiting for records...")
 
+            record_count = 0
             async for record in client:
                 if not self._running:
                     break
@@ -272,7 +354,27 @@ class DatabentoLiveStream:
                 ts = datetime.fromtimestamp(record.ts_event / 1e9, tz=timezone.utc)
 
                 # Detect record type by schema
-                if hasattr(record, "side") and hasattr(record, "size"):
+                # Check MBP-1 first: it also has side+size, so levels[] disambiguates
+                if hasattr(record, "levels") and len(record.levels) >= 2:
+                    # MBP-1 record — top of book
+                    bid = record.levels[0]
+                    ask = record.levels[1]
+                    bid_px = bid.price / 1e9
+                    ask_px = ask.price / 1e9
+                    self.book.update(bid_px, bid.size, ask_px, ask.size, ts)
+
+                    event = {
+                        "type": "book",
+                        "ts": ts.isoformat(),
+                        "bid_price": bid_px,
+                        "bid_size": bid.size,
+                        "ask_price": ask_px,
+                        "ask_size": ask.size,
+                        "spread": self.book.spread,
+                    }
+                    self._publish(event)
+
+                elif hasattr(record, "side") and hasattr(record, "size"):
                     # Trades record
                     price = record.price / 1e9
                     size = record.size
@@ -294,38 +396,34 @@ class DatabentoLiveStream:
                     }
                     self._publish(event)
 
-                    # Aggregate into running candle and emit periodically
+                    # Aggregate into running candles
                     ts_epoch = record.ts_event / 1e9
-                    candle_event = self._candle_flow.update(price, record.size, ts_epoch)
-                    if candle_event:
-                        self._publish(candle_event)
+
+                    # 5m candle — persist on close (no UI emit)
+                    _, closed_5m = self._candle_flow.update(price, record.size, ts_epoch)
+                    if closed_5m and self._db_session_factory:
+                        asyncio.create_task(self._write_closed_candle(closed_5m, "5m"))
+
+                    # 1m candle — emit closed to UI + persist
+                    _, closed_1m = self._candle_flow_1m.update(price, record.size, ts_epoch)
+                    if closed_1m:
+                        if self._in_globex(closed_1m["t"]):
+                            self._publish(closed_1m)
+                        if self._db_session_factory:
+                            asyncio.create_task(self._write_closed_candle(closed_1m, "1m"))
 
                     # Level proximity check
                     if self._level_monitor:
                         self._level_monitor.on_tick(price, record.size, ts_epoch)
 
-                elif hasattr(record, "levels") and len(record.levels) >= 2:
-                    # MBP-1 record — top of book
-                    bid = record.levels[0]
-                    ask = record.levels[1]
-                    bid_px = bid.price / 1e9
-                    ask_px = ask.price / 1e9
-                    self.book.update(bid_px, bid.size, ask_px, ask.size, ts)
-
-                    event = {
-                        "type": "book",
-                        "ts": ts.isoformat(),
-                        "bid_price": bid_px,
-                        "bid_size": bid.size,
-                        "ask_price": ask_px,
-                        "ask_size": ask.size,
-                        "spread": self.book.spread,
-                    }
-                    self._publish(event)
+                record_count += 1
+                if record_count in (1, 10, 100, 1000) or record_count % 10000 == 0:
+                    logger.info("Databento stream: %d records received", record_count)
 
         except Exception as e:
-            logger.error("Databento stream error: %s", e)
+            logger.error("Databento stream error: %s", e, exc_info=True)
             if self._running:
+                logger.info("Databento stream reconnecting in 5s...")
                 await asyncio.sleep(5)
                 asyncio.create_task(self._stream_loop())
 
