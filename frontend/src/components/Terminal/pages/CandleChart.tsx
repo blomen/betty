@@ -293,28 +293,36 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const startEpoch = day[def.startField];
         const endEpoch = day[def.endField];
 
-        const x1 = timeScale.timeToCoordinate(toLocalEpoch(startEpoch) as Time);
-        const x2 = timeScale.timeToCoordinate(toLocalEpoch(endEpoch) as Time);
+        // timeToCoordinate returns null when off-screen — clamp to edges
+        const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(startEpoch) as Time);
+        const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(endEpoch) as Time);
         const y = pSeries.priceToCoordinate(price);
 
-        if (x1 === null || x2 === null || y === null) continue;
-        if (x2 < 0 || x1 > rect.width) continue;
+        if (y === null) continue;
+        // Both off-screen on same side = skip; otherwise clamp
+        if (rawX1 === null && rawX2 === null) continue;
+        const lx = rawX1 ?? 0;
+        const rx = rawX2 ?? rect.width;
+        if (rx < 0 || lx > rect.width) continue;
+
+        const drawX1 = Math.max(0, lx);
+        const drawX2 = Math.min(rect.width, rx);
 
         ctx.save();
         ctx.strokeStyle = def.color;
         ctx.lineWidth = 1;
         ctx.setLineDash(def.dash);
         ctx.beginPath();
-        ctx.moveTo(Math.max(0, x1), y);
-        ctx.lineTo(Math.min(rect.width, x2), y);
+        ctx.moveTo(drawX1, y);
+        ctx.lineTo(drawX2, y);
         ctx.stroke();
 
+        // Label at left visible edge of line
         ctx.setLineDash([]);
         ctx.font = '9px monospace';
         ctx.fillStyle = def.color;
         ctx.textAlign = 'left';
-        const labelX = Math.max(2, x1 + 3);
-        ctx.fillText(def.label, labelX, y - 3);
+        ctx.fillText(def.label, drawX1 + 3, y - 3);
         ctx.restore();
       }
     }
@@ -464,7 +472,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         setSlLoaded(true);
         drawOverlays();
       }
-    }).catch(() => { /* skip if not available */ });
+    }).catch(err => { console.warn('[SessionLevels] fetch failed:', err); });
     return () => { cancelled = true; };
   }, [session, drawOverlays]);
 
