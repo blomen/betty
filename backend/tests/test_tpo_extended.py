@@ -3,6 +3,7 @@ import pytest
 from src.market_data.tpo import (
     _period_letter, TPOProfile, compute_tpo_profile,
     classify_tpo_shape, detect_excess, classify_opening_type,
+    build_full_tpo_profile, aggregate_bars_30m,
 )
 
 
@@ -228,3 +229,59 @@ class TestClassifyOpeningType:
         otype, direction = classify_opening_type([])
         assert otype == "OA"
         assert direction == "neutral"
+
+
+class TestBuildFullTPOProfile:
+    def test_all_fields_populated(self):
+        bars = [
+            _make_bar(100, 108, 98, 106),
+            _make_bar(106, 112, 104, 110),
+            _make_bar(110, 114, 108, 113),
+            _make_bar(113, 115, 111, 114),
+            _make_bar(114, 116, 112, 115),
+        ]
+        profile = build_full_tpo_profile(bars, tick_size=0.25)
+        assert profile.poc > 0
+        assert profile.vah >= profile.val
+        assert isinstance(profile.rotation_factor, int)
+        assert profile.profile_shape in ("p-shape", "b-shape", "d-shape", "balanced", "B-shape")
+        assert profile.opening_type in ("OD", "OTD", "ORR", "OA")
+        assert profile.opening_direction in ("up", "down", "neutral")
+        assert profile.ib_high == 112.0
+        assert profile.ib_low == 98.0
+        assert profile.session_high == 116.0
+        assert profile.session_low == 98.0
+        assert profile.upper_excess >= 0
+        assert profile.lower_excess >= 0
+
+    def test_empty_bars(self):
+        profile = build_full_tpo_profile([], tick_size=0.25)
+        assert profile.poc == 0
+        assert profile.rotation_factor == 0
+        assert profile.opening_type == "OA"
+
+
+class TestAggregateBars30m:
+    def test_groups_into_30_bar_chunks(self):
+        class FakeBar:
+            def __init__(self, i):
+                self.open = 100 + i * 0.1
+                self.high = 100 + i * 0.1 + 0.5
+                self.low = 100 + i * 0.1 - 0.5
+                self.close = 100 + i * 0.1 + 0.2
+                self.volume = 10
+        bars = [FakeBar(i) for i in range(60)]
+        result = aggregate_bars_30m(bars)
+        assert len(result) == 2
+        assert "high" in result[0]
+        assert "low" in result[0]
+        assert result[0]["volume"] == 300
+
+    def test_partial_chunk_dropped(self):
+        class FakeBar:
+            def __init__(self):
+                self.open = self.high = self.low = self.close = 100
+                self.volume = 10
+        bars = [FakeBar() for _ in range(45)]
+        result = aggregate_bars_30m(bars)
+        assert len(result) == 1

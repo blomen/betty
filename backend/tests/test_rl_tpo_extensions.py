@@ -5,7 +5,6 @@ from src.market_data.tpo import (
     TPOProfile,
     compute_tpo_profile,
     classify_tpo_shape,
-    compute_rotation_factor,
     detect_excess,
 )
 
@@ -66,110 +65,52 @@ class TestClassifyTpoShape:
         assert result == "balanced"
 
 
-# ---------------------------------------------------------------------------
-# compute_rotation_factor
-# ---------------------------------------------------------------------------
-
-class TestComputeRotationFactor:
-    def test_single_bar_returns_zero(self):
-        bars = _bars_30m([(10.0, 9.0)])
-        factor, count = compute_rotation_factor(bars)
-        assert factor == 0.0
-        assert count == 0
-
-    def test_empty_bars_returns_zero(self):
-        bars = _bars_30m([])
-        factor, count = compute_rotation_factor(bars)
-        assert factor == 0.0
-        assert count == 0
-
-    def test_expanding_range_positive_factor(self):
-        # Each bar extends the range → maximum rotations
-        bars = _bars_30m([
-            (10.0, 9.0),   # initial range
-            (11.0, 8.5),   # new high and new low → 2 rotations
-            (12.0, 8.0),   # new high and new low → 2 rotations
-            (13.0, 7.5),   # new high and new low → 2 rotations
-        ])
-        factor, count = compute_rotation_factor(bars)
-        assert count == 6   # 3 bars × 2 rotations each
-        assert factor == pytest.approx(6 / 3)
-
-    def test_contracting_range_zero_rotations(self):
-        # All subsequent bars are inside the initial range → 0 rotations
-        bars = _bars_30m([
-            (20.0, 10.0),  # wide initial range
-            (15.0, 12.0),  # inside
-            (14.0, 13.0),  # inside
-            (15.5, 11.5),  # inside
-        ])
-        factor, count = compute_rotation_factor(bars)
-        assert count == 0
-        assert factor == 0.0
-
-    def test_one_sided_expansion(self):
-        # Only new highs, no new lows
-        bars = _bars_30m([
-            (10.0, 9.0),
-            (11.0, 9.0),  # new high only → 1 rotation
-            (12.0, 9.0),  # new high only → 1 rotation
-        ])
-        factor, count = compute_rotation_factor(bars)
-        assert count == 2
-        assert factor == pytest.approx(2 / 2)
-
-    def test_two_bars_single_expansion(self):
-        bars = _bars_30m([(10.0, 9.0), (11.0, 8.0)])
-        factor, count = compute_rotation_factor(bars)
-        assert count == 2
-        assert factor == pytest.approx(2.0)
-
 
 # ---------------------------------------------------------------------------
 # detect_excess
 # ---------------------------------------------------------------------------
 
 class TestDetectExcess:
-    def test_empty_profile_returns_false_false(self):
+    def test_empty_profile_returns_zero_zero(self):
         profile = compute_tpo_profile([], tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        assert excess_high is False
-        assert excess_low is False
+        assert excess_high == 0
+        assert excess_low == 0
 
     def test_single_tpo_at_high_excess_high(self):
         # A lone single-print at the top = excess high
         # Build a profile: wide body + single print sticking up at top
-        body_bars = _bars_30m([(10.0, 9.0)] * 10)   # creates density at 9.0–10.0
+        body_bars = _bars_30m([(10.0, 9.0)] * 10)   # creates density at 9.0-10.0
         spike_bar = _bars_30m([(11.0, 10.75)])        # single spike bar at top
         bars = body_bars + spike_bar
         profile = compute_tpo_profile(bars, tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        assert excess_high is True
+        assert excess_high > 0
 
     def test_single_tpo_at_low_excess_low(self):
         # A lone single-print at the bottom = excess low
-        # spike_bar covers 8.75–9.0 (2 tick levels: 8.75, 9.0)
+        # spike_bar covers 8.75-9.0 (2 tick levels: 8.75, 9.0)
         # body_bars start at 9.25 so there is no overlap with the spike
         spike_bar = _bars_30m([(9.0, 8.75)])           # single spike bar at bottom
         body_bars = _bars_30m([(10.0, 9.25)] * 10)    # density well above spike
         bars = spike_bar + body_bars
         profile = compute_tpo_profile(bars, tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        assert excess_low is True
+        assert excess_low > 0
 
     def test_multiple_touches_at_high_no_excess(self):
-        # Multiple bars touch the high → more than 1 letter → no excess
+        # Multiple bars touch the high -> more than 1 letter -> no excess
         bars = _bars_30m([(10.0, 9.0)] * 8)
         profile = compute_tpo_profile(bars, tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        # Top prices all touched by many letters → no excess
-        assert excess_high is False
+        # Top prices all touched by many letters -> no excess
+        assert excess_high == 0
 
     def test_multiple_touches_at_low_no_excess(self):
         bars = _bars_30m([(10.0, 9.0)] * 8)
         profile = compute_tpo_profile(bars, tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        assert excess_low is False
+        assert excess_low == 0
 
     def test_both_extremes_excess(self):
         # Spike at top and spike at bottom, dense middle
@@ -179,5 +120,5 @@ class TestDetectExcess:
         bars = bottom_spike + middle_bars + top_spike
         profile = compute_tpo_profile(bars, tick_size=0.25)
         excess_high, excess_low = detect_excess(profile)
-        assert excess_high is True
-        assert excess_low is True
+        assert excess_high > 0
+        assert excess_low > 0

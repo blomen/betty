@@ -1,7 +1,6 @@
 """TPO / Market Profile computation: 30-min brackets, anomalies."""
 from dataclasses import dataclass, field
-from datetime import datetime
-import string
+from .metrics import compute_rotation_factor as _metrics_rf
 
 
 def _period_letter(index: int) -> str:
@@ -39,8 +38,6 @@ class TPOProfile:
     session_high: float = 0.0
     session_low: float = 0.0
 
-
-TPO_LETTERS = list(string.ascii_uppercase)
 
 
 def compute_tpo_profile(
@@ -216,31 +213,6 @@ def classify_tpo_shape(profile: TPOProfile) -> str:
     return "balanced"
 
 
-def compute_rotation_factor(bars_30m: list[dict]) -> tuple[float, int]:
-    """Compute the rotation factor from 30-min bars.
-
-    Rotation = how many 30-min periods extend the session high or low range.
-    Returns (factor, count) where factor = rotations / (total_periods - 1).
-    Single bar → (0.0, 0).
-    """
-    if len(bars_30m) <= 1:
-        return (0.0, 0)
-
-    session_high = bars_30m[0]["high"]
-    session_low = bars_30m[0]["low"]
-    rotations = 0
-
-    for bar in bars_30m[1:]:
-        if bar["high"] > session_high:
-            rotations += 1
-            session_high = bar["high"]
-        if bar["low"] < session_low:
-            rotations += 1
-            session_low = bar["low"]
-
-    factor = rotations / (len(bars_30m) - 1)
-    return (factor, rotations)
-
 
 def detect_excess(profile: TPOProfile) -> tuple[int, int]:
     """Detect excess (sharp rejection) at session extremes.
@@ -333,3 +305,37 @@ def classify_opening_type(bars_30m: list[dict]) -> tuple[str, str]:
             return ("OTD", "down")
 
     return ("OA", a_dir)
+
+
+def aggregate_bars_30m(bars) -> list[dict]:
+    """Aggregate 1-min BarData objects into 30-min OHLCV dicts."""
+    result = []
+    chunk = []
+    for b in bars:
+        chunk.append(b)
+        if len(chunk) == 30:
+            result.append({
+                "high": max(c.high for c in chunk),
+                "low": min(c.low for c in chunk),
+                "open": chunk[0].open,
+                "close": chunk[-1].close,
+                "volume": sum(c.volume for c in chunk),
+            })
+            chunk = []
+    return result
+
+
+def build_full_tpo_profile(bars_30m: list[dict], tick_size: float = 0.25) -> TPOProfile:
+    """Build fully enriched TPO profile. Single entry point for live, backfill, and RL."""
+    profile = compute_tpo_profile(bars_30m, tick_size=tick_size)
+    if not bars_30m:
+        return profile
+    highs = [b["high"] for b in bars_30m]
+    lows = [b["low"] for b in bars_30m]
+    profile.rotation_factor = _metrics_rf(highs, lows)
+    profile.profile_shape = classify_tpo_shape(profile)
+    profile.opening_type, profile.opening_direction = classify_opening_type(bars_30m)
+    upper_ex, lower_ex = detect_excess(profile)
+    profile.upper_excess = upper_ex
+    profile.lower_excess = lower_ex
+    return profile
