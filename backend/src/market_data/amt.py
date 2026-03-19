@@ -795,8 +795,40 @@ def build_session_analysis(
     if rth_bars:
         analysis.volume_profile = compute_volume_profile(rth_bars, tick_size)
         analysis.tpo_profile = compute_tpo_profile(bars, tick_size, rth_open)
-        analysis.vwap_bands = compute_vwap_bands(rth_bars)
         analysis.initial_balance = compute_initial_balance(bars, rth_open)
+
+        # VWAP from actual tick prices (not bar typical price approximation).
+        # Real VWAP = sum(price * size) / sum(size), matching TradingView.
+        if ticks:
+            rth_ticks = [
+                t for t in ticks
+                if hasattr(t.timestamp, "astimezone")
+                and open_time <= t.timestamp.astimezone(_ET).time() < close_time
+            ]
+            if rth_ticks:
+                import math
+                cum_pv = sum(t.price * t.size for t in rth_ticks)
+                cum_vol = sum(t.size for t in rth_ticks)
+                cum_pv2 = sum(t.price * t.price * t.size for t in rth_ticks)
+                if cum_vol > 0:
+                    vwap = cum_pv / cum_vol
+                    variance = max(0, (cum_pv2 / cum_vol) - vwap * vwap)
+                    sd = math.sqrt(variance)
+                    analysis.vwap_bands = VWAPBands(
+                        vwap=round(vwap, 2),
+                        upper_1sd=round(vwap + sd, 2),
+                        lower_1sd=round(vwap - sd, 2),
+                        upper_2sd=round(vwap + 2 * sd, 2),
+                        lower_2sd=round(vwap - 2 * sd, 2),
+                        upper_3sd=round(vwap + 3 * sd, 2),
+                        lower_3sd=round(vwap - 3 * sd, 2),
+                    )
+                else:
+                    analysis.vwap_bands = compute_vwap_bands(rth_bars)
+            else:
+                analysis.vwap_bands = compute_vwap_bands(rth_bars)
+        else:
+            analysis.vwap_bands = compute_vwap_bands(rth_bars)
 
         # Previous day profile
         prev_profile = None
