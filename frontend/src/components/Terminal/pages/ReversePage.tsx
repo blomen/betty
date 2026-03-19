@@ -2,6 +2,7 @@ import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo 
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/services/api';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase } from '@/utils/betting';
 import { useMultiSort } from '@/hooks/useMultiSort';
@@ -10,6 +11,7 @@ import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import type { Opportunity, Bet, Provider } from '@/types';
 
 type ReverseTab = 'reverse' | 'mybets' | 'manual';
@@ -184,7 +186,8 @@ const ReverseRow = memo(function ReverseRow({
 
 export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<ReverseTab>('reverse');
+  const { placeBet } = useBetMutations();
+  const [activeTab, setActiveTab] = usePersistedState<ReverseTab>('bbq_reverse_tab', 'reverse');
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
@@ -200,9 +203,9 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   } | null>(null);
 
   // Track placed market+outcome+point combos for immediate removal from list
-  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_reverse_placedKeys', new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
-  const [searchInput, setSearchInput] = useState('');
+  const [searchInput, setSearchInput] = usePersistedState('bbq_reverse_search', '');
   // useDeferredValue defers search filtering so typing stays responsive
   const search = useDeferredValue(searchInput);
 
@@ -216,7 +219,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   // Sync placedKeys and myBetsCount from bets query data
@@ -266,7 +269,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
     edge:      (o: Opportunity) => o.edge_pct ?? 0,
   }), []);
   const { sorted, sort: reverseSort, toggle: toggleReverseSort } =
-    useMultiSort<Opportunity, ReverseSortCol>(filtered, reverseSortExtractors, { column: 'edge', direction: 'desc' });
+    useMultiSort<Opportunity, ReverseSortCol>(filtered, reverseSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_reverse_sort');
 
   // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity) => {
@@ -289,7 +292,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
     setBetError(null);
 
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         event_id: opp.event_id,
         provider_id: 'pinnacle',
         market: opp.market,
@@ -311,7 +314,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
       setPendingBet(null);
       setSelectedRow(null);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'reverse'] });
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -372,7 +374,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* MyBets tab */}
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={reverseBetFilter} colorKey="reverse" />
+        <MyBetsSection filter={reverseBetFilter} colorKey="reverse" persistKey="reverse" />
       )}
 
       {/* Manual tab */}
