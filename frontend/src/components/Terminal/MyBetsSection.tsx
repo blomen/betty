@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { api } from '@/services/api';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, fmtAmount, SPORT_DURATION, DEFAULT_DURATION } from '@/utils/betting';
 import { ProviderName } from './ProviderName';
 import { SearchInput } from './FilterBar';
 import { TAB_COLORS } from './TabBar';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import type { Bet } from '@/types';
 
 type BetCategory = 'upcoming' | 'live' | 'ft';
@@ -14,12 +16,15 @@ interface MyBetsSectionProps {
   filter: (bet: Bet) => boolean;
   /** Color key from TAB_COLORS (e.g. 'value', 'success', 'reverse') */
   colorKey: string;
+  /** Unique prefix for localStorage persistence (e.g. 'value', 'dutch') */
+  persistKey?: string;
 }
 
-export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
+export function MyBetsSection({ filter, colorKey, persistKey }: MyBetsSectionProps) {
+  const pk = persistKey ? `bbq_mybets_${persistKey}` : null;
   const [bets, setBets] = useState<Bet[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeCategory, setActiveCategory] = useState<BetCategory>('upcoming');
+  const [activeCategory, setActiveCategory] = usePersistedState<BetCategory>(pk ? `${pk}_category` : '', 'upcoming');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [settling, setSettling] = useState<number | null>(null);
   // Settlement selection: pre-filled from predicted_result, editable before confirm
@@ -27,11 +32,12 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   // Inline cell editing (click odds/stake to edit directly in the table)
   const [inlineEdit, setInlineEdit] = useState<{ id: number; field: 'odds' | 'stake' } | null>(null);
   const [inlineValue, setInlineValue] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = usePersistedState(pk ? `${pk}_search` : '', '');
   // Cashout state
   const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState('');
 
+  const { editBet } = useBetMutations();
   const color = TAB_COLORS[colorKey] ?? '#64748B';
 
   const fetchBets = useCallback(async () => {
@@ -64,7 +70,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
   const handleSettle = async (bet: Bet, result: 'won' | 'lost' | 'void') => {
     setSettling(bet.id);
     try {
-      await api.editBet(bet.id, { result });
+      await editBet.mutateAsync({ betId: bet.id, data: { result } });
       setExpandedId(null);
       await fetchBets();
     } catch (err) {
@@ -96,7 +102,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     if (inlineEdit.field === 'stake' && Math.abs(val - bet.stake) > 0.5) changes.stake = val;
     if (Object.keys(changes).length === 0) { cancelInlineEdit(); return; }
     try {
-      await api.editBet(inlineEdit.id, changes);
+      await editBet.mutateAsync({ betId: inlineEdit.id, data: changes });
       cancelInlineEdit();
       fetchBets();
     } catch (err) {
@@ -208,10 +214,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const newStake = bet.stake + raiseAmount;
     const newAvgOdds = (bet.stake * bet.odds + raiseAmount * currentOdds) / newStake;
     try {
-      await api.editBet(bet.id, {
-        stake: newStake,
-        odds: parseFloat(newAvgOdds.toFixed(2)),
-      });
+      await editBet.mutateAsync({ betId: bet.id, data: { stake: newStake, odds: parseFloat(newAvgOdds.toFixed(2)) } });
       fetchBets();
     } catch (err) {
       console.error('Raise failed:', err);
@@ -232,7 +235,7 @@ export function MyBetsSection({ filter, colorKey }: MyBetsSectionProps) {
     const amount = parseFloat(cashoutAmount);
     if (isNaN(amount) || amount < 0) return;
     try {
-      await api.editBet(betId, { result: 'void', payout: amount });
+      await editBet.mutateAsync({ betId, data: { result: 'void', payout: amount } });
       cancelCashout();
       setExpandedId(null);
       fetchBets();
