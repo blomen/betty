@@ -27,7 +27,7 @@ class HistoricalTick:
 
 async def fetch_ohlcv_1d(
     api_key: str,
-    symbol: str = "NQ.c.0",
+    symbol: str = "NQ.v.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -58,7 +58,7 @@ async def fetch_ohlcv_1d(
 
 async def fetch_ohlcv_1m(
     api_key: str,
-    symbol: str = "NQ.c.0",
+    symbol: str = "NQ.v.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -89,7 +89,7 @@ async def fetch_ohlcv_1m(
 
 async def fetch_trades_historical(
     api_key: str,
-    symbol: str = "NQ.c.0",
+    symbol: str = "NQ.v.0",
     start: date | None = None,
     end: date | None = None,
     dataset: str = "GLBX.MDP3",
@@ -128,7 +128,7 @@ async def fetch_trades_historical(
 async def backfill_trades_to_db(
     api_key: str,
     db_session_factory: Callable,
-    symbol: str = "NQ.c.0",
+    symbol: str = "NQ.v.0",
     start: date | None = None,
     end: date | None = None,
     batch_size: int = 1000,

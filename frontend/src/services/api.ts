@@ -922,11 +922,11 @@ export const api = {
     return fetchJson('/trading/market/session');
   },
 
-  async getVolumeProfile(timeframe = 'session', symbol = 'NQ'): Promise<{
-    timeframe: string; poc: number; vah: number; val: number; anchor?: string;
+  async getVolumeProfile(symbol = 'NQ'): Promise<{
+    timeframe: string; poc: number; vah: number; val: number;
     levels: Array<{ price: number; volume: number }>;
   }> {
-    return fetchJson(`/trading/market/volume-profile?symbol=${symbol}&timeframe=${timeframe}`);
+    return fetchJson(`/trading/market/volume-profile?symbol=${symbol}`);
   },
 
   /** Get live indicators — orderflow + ML predictions (replaces getConfirmations) */

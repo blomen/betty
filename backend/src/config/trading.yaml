@@ -182,7 +182,7 @@ daily_routine:
 market_data:
   provider: databento
   api_key_env: DATABENTO_API_KEY
-  symbol: NQ.c.0  # continuous front-month (calendar roll)
+  symbol: NQ.v.0  # continuous front-month (volume roll — matches TradingView NQ1!)
   dataset: GLBX.MDP3
   sessions:
     rth_open: "09:30"

@@ -20,7 +20,7 @@ MACRO_DIR = DATA_DIR / "macro"
 
 # Databento dataset / symbol constants
 _DATASET = "GLBX.MDP3"
-_SYMBOL = "NQ.c.0"  # continuous front-month (NQ.FUT → NQ.c.0)
+_SYMBOL = "NQ.v.0"  # continuous front-month (volume roll — matches TradingView NQ1!)
 
 
 # ---------------------------------------------------------------------------

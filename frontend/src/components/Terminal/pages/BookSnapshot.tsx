@@ -70,7 +70,7 @@ export function BookSnapshot({ session }: Props) {
         {s?.london_low != null && <Row label="London L" value={s.london_low.toFixed(2)} color="text-blue-400" />}
       </Section>
 
-      {/* Volume Profile — verified */}
+      {/* Volume Profile — daily only (fixed range: session start → now) */}
       <Section label="Volume Profile">
         <VPRow label="Daily" vp={profiles?.session} color="text-purple-400" />
         {profiles?.developing_poc != null && (

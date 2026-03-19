@@ -1,5 +1,6 @@
 """Databento market data provider for CME futures."""
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -21,10 +22,14 @@ class DabentoProvider(MarketDataProvider):
 
         self.client = db.Historical(key=api_key)
         self.dataset = config.get("dataset", "GLBX.MDP3")
-        # Convert parent symbol (NQ.FUT) to continuous front-month (NQ.c.0)
-        raw_symbol = config.get("symbol", "NQ.FUT")
-        root = raw_symbol.split(".")[0]  # "NQ"
-        self.symbol = f"{root}.c.0"  # front-month by calendar roll
+        # Use symbol from config directly (e.g. NQ.v.0 for volume roll)
+        # Legacy fallback: convert NQ.FUT → NQ.v.0
+        raw_symbol = config.get("symbol", "NQ.v.0")
+        if raw_symbol.endswith(".FUT"):
+            root = raw_symbol.split(".")[0]
+            self.symbol = f"{root}.v.0"
+        else:
+            self.symbol = raw_symbol
 
     async def get_bars(
         self, symbol: str, interval: str, start: datetime, end: datetime
@@ -39,7 +44,8 @@ class DabentoProvider(MarketDataProvider):
         }
         schema = schema_map.get(interval, "ohlcv-1m")
 
-        data = self.client.timeseries.get_range(
+        data = await asyncio.to_thread(
+            self.client.timeseries.get_range,
             dataset=self.dataset,
             symbols=[symbol],
             stype_in="continuous",
@@ -73,7 +79,8 @@ class DabentoProvider(MarketDataProvider):
         self, symbol: str, start: datetime, end: datetime
     ) -> list[TickData]:
         """Fetch tick trades with aggressor side from Databento TBBO/trades schema."""
-        data = self.client.timeseries.get_range(
+        data = await asyncio.to_thread(
+            self.client.timeseries.get_range,
             dataset=self.dataset,
             symbols=[symbol],
             stype_in="continuous",
@@ -102,7 +109,8 @@ class DabentoProvider(MarketDataProvider):
     async def get_latest_price(self, symbol: str) -> float | None:
         """Get latest price from Databento live snapshot."""
         try:
-            data = self.client.timeseries.get_range(
+            data = await asyncio.to_thread(
+                self.client.timeseries.get_range,
                 dataset=self.dataset,
                 symbols=[symbol],
                 stype_in="continuous",

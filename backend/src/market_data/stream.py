@@ -246,7 +246,7 @@ class DatabentoLiveStream:
         self,
         api_key: str,
         dataset: str = "GLBX.MDP3",
-        symbol: str = "NQ.c.0",
+        symbol: str = "NQ.v.0",
         db_session_factory: Callable | None = None,
     ):
         self.api_key = api_key

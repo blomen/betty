@@ -35,24 +35,27 @@ const SESSION_DEFS = [
   { name: 'New York', startMin: 9 * 60 + 30, endMin: 16 * 60,   color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },  // red
 ] as const;
 
-// ET offset from UTC: -5 (EST) or -4 (EDT). Approximate with -4 for March-Nov.
-function getETOffset(epoch: number): number {
-  const d = new Date(epoch * 1000);
-  const month = d.getUTCMonth(); // 0-indexed
-  // EDT: March (2) second Sunday → November (10) first Sunday
-  return (month >= 2 && month < 10) ? -4 : -5;
+// Accurate ET offset using Intl API — handles DST transitions correctly
+const _etFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+});
+
+function _parseETDate(epoch: number): { year: number; month: number; day: number; hour: number; minute: number } {
+  const parts = _etFormatter.formatToParts(new Date(epoch * 1000));
+  const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value || '0', 10);
+  return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute') };
 }
 
 function epochToETMinute(epoch: number): number {
-  const offset = getETOffset(epoch);
-  const d = new Date((epoch + offset * 3600) * 1000);
-  return d.getUTCHours() * 60 + d.getUTCMinutes();
+  const { hour, minute } = _parseETDate(epoch);
+  return hour * 60 + minute;
 }
 
 function epochToETDate(epoch: number): string {
-  const offset = getETOffset(epoch);
-  const d = new Date((epoch + offset * 3600) * 1000);
-  return d.toISOString().slice(0, 10);
+  const { year, month, day } = _parseETDate(epoch);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 interface SessionBox {
@@ -68,18 +71,27 @@ interface SessionBox {
 
 type VPData = { levels: Array<{ price: number; volume: number }>; poc: number; vah: number; val: number };
 
+// lightweight-charts displays UTC timestamps on its axis. To show local time,
+// shift each epoch by the browser's UTC offset. This makes the axis display
+// the user's local timezone (e.g., CET/CEST for Sweden) automatically,
+// including DST transitions.
+function toLocalEpoch(utcEpoch: number): number {
+  const offsetSeconds = new Date(utcEpoch * 1000).getTimezoneOffset() * -60;
+  return utcEpoch + offsetSeconds;
+}
+
 interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
 }
 
 function toLine(c: CandleData): LineData<Time> {
-  return { time: c.t as Time, value: c.c };
+  return { time: toLocalEpoch(c.t) as Time, value: c.c };
 }
 
 function toVolume(c: CandleData): HistogramData<Time> {
   const color = c.c >= c.o ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)';
-  return { time: c.t as Time, value: c.v, color };
+  return { time: toLocalEpoch(c.t) as Time, value: c.v, color };
 }
 
 function epochToDateStr(epoch: number): string {
@@ -188,8 +200,8 @@ export function CandleChart({ lastCandle, session }: Props) {
     if (candles.length > 0) {
       const boxes = detectSessionBoxes(candles);
       for (const box of boxes) {
-        const x1 = timeScale.timeToCoordinate(box.startEpoch as Time);
-        const x2 = timeScale.timeToCoordinate(box.endEpoch as Time);
+        const x1 = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
+        const x2 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
         const y1 = pSeries.priceToCoordinate(box.high);
         const y2 = pSeries.priceToCoordinate(box.low);
 
@@ -368,24 +380,16 @@ export function CandleChart({ lastCandle, session }: Props) {
     };
   }, [drawOverlays]);
 
-  // Fetch VP curve data for all overlays
-  // Fetch VP profiles in parallel (these are slow — 1-3s each)
+  // Fetch daily VP curve data
   useEffect(() => {
     let cancelled = false;
-    const fetches = VP_OVERLAYS.map(async (overlay) => {
-      try {
-        const data = await api.getVolumeProfile(overlay.tf);
-        if (!cancelled && data.levels?.length) {
-          vpDataRef.current.set(overlay.tf, data);
-        }
-      } catch { /* skip if not available */ }
-    });
-    Promise.all(fetches).then(() => {
-      if (!cancelled) {
+    api.getVolumeProfile().then(data => {
+      if (!cancelled && data.levels?.length) {
+        vpDataRef.current.set('session', data);
         setVpLoaded(n => n + 1);
         drawOverlays();
       }
-    });
+    }).catch(() => { /* skip if not available */ });
     return () => { cancelled = true; };
   }, [session, drawOverlays]); // refetch when session updates
 
@@ -456,8 +460,8 @@ export function CandleChart({ lastCandle, session }: Props) {
     const now = Math.floor(Date.now() / 1000);
 
     anchorSeriesRef.current.setData([
-      { time: (now - 7200) as Time, value: anchor + pad },
-      { time: now as Time,          value: anchor - pad },
+      { time: toLocalEpoch(now - 7200) as Time, value: anchor + pad },
+      { time: toLocalEpoch(now) as Time,          value: anchor - pad },
     ] as LineData<Time>[]);
     chartRef.current?.timeScale().scrollToRealTime();
   }, [noData, session]);
@@ -479,7 +483,7 @@ export function CandleChart({ lastCandle, session }: Props) {
       if (cancelled || !res.vwap?.length || !chartRef.current) return;
 
       const toLD = (arr: typeof res.vwap, key: keyof typeof arr[0]): LineData<Time>[] =>
-        arr.map(p => ({ time: p.t as Time, value: p[key] as number }));
+        arr.map(p => ({ time: toLocalEpoch(p.t) as Time, value: p[key] as number }));
 
       const addLine = (color: string, width: 1 | 2, style: number, data: LineData<Time>[]) => {
         const s = chartRef.current!.addSeries(LineSeries, {
@@ -530,6 +534,14 @@ export function CandleChart({ lastCandle, session }: Props) {
     // Prior Day High/Low
     add('pdh', s.pdh, '#FB923C', 'PDH', LineStyle.Dashed);
     add('pdl', s.pdl, '#FB923C', 'PDL', LineStyle.Dashed);
+
+    // Tokyo Session High/Low
+    add('tokyo_h', s.tokyo_high, '#06B6D4', 'TKY H', LineStyle.Dotted);
+    add('tokyo_l', s.tokyo_low,  '#06B6D4', 'TKY L', LineStyle.Dotted);
+
+    // London Session High/Low
+    add('london_h', s.london_high, '#10B981', 'LDN H', LineStyle.Dotted);
+    add('london_l', s.london_low,  '#10B981', 'LDN L', LineStyle.Dotted);
 
     // Daily Volume Profile
     add('d_poc', p?.session?.poc, '#A855F7', 'dPOC', LineStyle.Solid, 2);

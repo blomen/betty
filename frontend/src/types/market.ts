@@ -237,27 +237,11 @@ export interface NakedPOC {
   price: number;
 }
 
-export interface VPCluster {
-  price: number;
-  strength: number;
-  zone_high: number;
-  zone_low: number;
-  confluence: number;
-  distance: number | null;
-  sources: Array<{ tf: string; type: string; price: number }>;
-}
-
 export interface ProfilesData {
   session: VPLevel;
-  weekly?: VPLevel | null;
-  monthly?: VPLevel | null;
-  leg?: VPLevel | null;
-  macro?: VPLevel | null;
-  current?: VPLevel | null;
   developing_poc: number | null;
   developing_poc_direction: 'up' | 'down' | 'flat';
   naked_pocs: NakedPOC[];
-  hierarchy?: VPCluster[];
 }
 
 /** Structural level from MarketLevel table */

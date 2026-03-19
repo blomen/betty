@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
 
             config = get_market_data_config()
             symbol = "NQ"
-            db_symbol = config.get("symbol", "NQ.c.0")
+            db_symbol = config.get("symbol", "NQ.v.0")
             now = datetime.now(timezone.utc)
             fetch_end = now - timedelta(minutes=30)  # Databento ~15-30 min delay
 

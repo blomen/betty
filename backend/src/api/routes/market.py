@@ -302,11 +302,10 @@ async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = De
 @router.get("/volume-profile")
 async def get_volume_profile(
     symbol: str = Query(default="NQ"),
-    timeframe: str = Query(default="session", pattern="^(session|weekly|monthly|macro|leg|current)$"),
     svc: MarketService = Depends(_svc),
 ):
-    """Return full VP curve (price→volume pairs) for a given timeframe."""
-    return await svc.get_volume_profile_curve(symbol, timeframe)
+    """Return daily VP curve (price→volume pairs) — fixed range from session start to now."""
+    return await svc.get_volume_profile_curve(symbol)
 
 
 @router.get("/footprint")
