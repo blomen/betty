@@ -26,14 +26,6 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
 
-  const toggle = useCallback((key: string) => {
-    setHiddenLevels(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }, [setHiddenLevels]);
-
   const toggleGroup = useCallback((group: string) => {
     const keys = LEVEL_GROUPS[group];
     if (!keys) return;
@@ -84,7 +76,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
 
       {/* VWAP */}
       {s?.vwap != null && (
-        <Section label="VWAP" hidden={isGroupHidden('vwap')} onToggle={() => toggleGroup('vwap')}>
+        <Group label="VWAP" hidden={isGroupHidden('vwap')} onToggle={() => toggleGroup('vwap')} section>
           <div className="flex items-baseline justify-between">
             <span className="text-yellow-400 text-sm font-bold">{s.vwap.toFixed(2)}</span>
             {pricePos?.vwap_deviation_sd != null && (
@@ -110,7 +102,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
               )}
             </div>
           )}
-        </Section>
+        </Group>
       )}
 
       {/* Session Levels */}
@@ -120,36 +112,32 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
           <EyeBtn hidden={isClusterHidden(['ib', 'pd', 'tokyo', 'london'])} onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} />
         </div>
 
-        {/* IB */}
-        <LevelGroup label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
+        <Group label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
           {s?.ib_high != null && s?.ib_low != null ? (
             <>
-              <ToggleRow label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" levelKey="ibh" hidden={hiddenLevels.has('ibh')} toggle={toggle} />
-              <ToggleRow label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" levelKey="ibl" hidden={hiddenLevels.has('ibl')} toggle={toggle} />
+              <Row label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />
+              <Row label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />
               <Row label="IB Range" value={(s.ib_high - s.ib_low).toFixed(2)} />
             </>
           ) : (
             <Placeholder text="Waiting for IB (15:30-16:30 CET)" />
           )}
-        </LevelGroup>
+        </Group>
 
-        {/* PDH/PDL */}
-        <LevelGroup label="PD" hidden={isGroupHidden('pd')} onToggle={() => toggleGroup('pd')}>
-          {s?.pdh != null && <ToggleRow label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" levelKey="pdh" hidden={hiddenLevels.has('pdh')} toggle={toggle} />}
-          {s?.pdl != null && <ToggleRow label="PDL" value={s.pdl.toFixed(2)} color="text-orange-400" levelKey="pdl" hidden={hiddenLevels.has('pdl')} toggle={toggle} />}
-        </LevelGroup>
+        <Group label="PD" hidden={isGroupHidden('pd')} onToggle={() => toggleGroup('pd')}>
+          {s?.pdh != null && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" />}
+          {s?.pdl != null && <Row label="PDL" value={s.pdl.toFixed(2)} color="text-orange-400" />}
+        </Group>
 
-        {/* Tokyo */}
-        <LevelGroup label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
-          {s?.tokyo_high != null && <ToggleRow label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-400" levelKey="tokyo_h" hidden={hiddenLevels.has('tokyo_h')} toggle={toggle} />}
-          {s?.tokyo_low != null && <ToggleRow label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-400" levelKey="tokyo_l" hidden={hiddenLevels.has('tokyo_l')} toggle={toggle} />}
-        </LevelGroup>
+        <Group label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
+          {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-400" />}
+          {s?.tokyo_low != null && <Row label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-400" />}
+        </Group>
 
-        {/* London */}
-        <LevelGroup label="London" hidden={isGroupHidden('london')} onToggle={() => toggleGroup('london')}>
-          {s?.london_high != null && <ToggleRow label="London H" value={s.london_high.toFixed(2)} color="text-emerald-400" levelKey="london_h" hidden={hiddenLevels.has('london_h')} toggle={toggle} />}
-          {s?.london_low != null && <ToggleRow label="London L" value={s.london_low.toFixed(2)} color="text-emerald-400" levelKey="london_l" hidden={hiddenLevels.has('london_l')} toggle={toggle} />}
-        </LevelGroup>
+        <Group label="London" hidden={isGroupHidden('london')} onToggle={() => toggleGroup('london')}>
+          {s?.london_high != null && <Row label="London H" value={s.london_high.toFixed(2)} color="text-emerald-400" />}
+          {s?.london_low != null && <Row label="London L" value={s.london_low.toFixed(2)} color="text-emerald-400" />}
+        </Group>
       </div>
 
       {/* Volume Profile — multi-timeframe */}
@@ -159,17 +147,17 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
           <EyeBtn hidden={isClusterHidden(['daily_vp', 'weekly_vp', 'monthly_vp'])} onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} />
         </div>
 
-        <LevelGroup label="Daily" hidden={isGroupHidden('daily_vp')} onToggle={() => toggleGroup('daily_vp')}>
+        <Group label="Daily" hidden={isGroupHidden('daily_vp')} onToggle={() => toggleGroup('daily_vp')}>
           <VPRow vp={profiles?.session} color="text-purple-400" />
-        </LevelGroup>
+        </Group>
 
-        <LevelGroup label="Weekly" hidden={isGroupHidden('weekly_vp')} onToggle={() => toggleGroup('weekly_vp')}>
+        <Group label="Weekly" hidden={isGroupHidden('weekly_vp')} onToggle={() => toggleGroup('weekly_vp')}>
           <VPRow vp={profiles?.weekly} color="text-pink-400" />
-        </LevelGroup>
+        </Group>
 
-        <LevelGroup label="Monthly" hidden={isGroupHidden('monthly_vp')} onToggle={() => toggleGroup('monthly_vp')}>
+        <Group label="Monthly" hidden={isGroupHidden('monthly_vp')} onToggle={() => toggleGroup('monthly_vp')}>
           <VPRow vp={profiles?.monthly} color="text-yellow-400" />
-        </LevelGroup>
+        </Group>
 
         {profiles?.developing_poc != null && (
           <Row label="devPOC" value={profiles.developing_poc.toFixed(2)} color="text-white" />
@@ -212,19 +200,21 @@ function EyeOffIcon() {
   );
 }
 
-function Section({ label, hidden, onToggle, children }: { label: string; hidden: boolean; onToggle: () => void; children: React.ReactNode }) {
-  return (
-    <div className={`px-3 py-2 border-b border-border ${hidden ? 'opacity-40' : ''}`}>
-      <div className="flex items-center justify-between mb-2">
-        <button onClick={onToggle} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">{label}</button>
-        <EyeBtn hidden={hidden} onClick={onToggle} />
+/** Unified group component — click title or eye to toggle. `section` adds px/border for top-level sections. */
+function Group({ label, hidden, onToggle, section, children }: {
+  label: string; hidden: boolean; onToggle: () => void; section?: boolean; children: React.ReactNode;
+}) {
+  if (section) {
+    return (
+      <div className={`px-3 py-2 border-b border-border ${hidden ? 'opacity-40' : ''}`}>
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={onToggle} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">{label}</button>
+          <EyeBtn hidden={hidden} onClick={onToggle} />
+        </div>
+        {children}
       </div>
-      {children}
-    </div>
-  );
-}
-
-function LevelGroup({ label, hidden, onToggle, children }: { label: string; hidden: boolean; onToggle: () => void; children: React.ReactNode }) {
+    );
+  }
   return (
     <div className={`mb-1.5 ${hidden ? 'opacity-40' : ''}`}>
       <div className="flex items-center justify-between mb-0.5">
@@ -232,22 +222,6 @@ function LevelGroup({ label, hidden, onToggle, children }: { label: string; hidd
         <EyeBtn hidden={hidden} onClick={onToggle} />
       </div>
       {children}
-    </div>
-  );
-}
-
-function ToggleRow({ label, value, color, levelKey, hidden, toggle }: {
-  label: string; value: string; color?: string; levelKey: string; hidden: boolean; toggle: (k: string) => void;
-}) {
-  return (
-    <div className={`flex items-center justify-between ${hidden ? 'opacity-40' : ''}`}>
-      <div className="flex items-center gap-1">
-        <button onClick={() => toggle(levelKey)} className="text-muted2 hover:text-text transition-colors p-0">
-          {hidden ? <EyeOffIcon /> : <EyeIcon />}
-        </button>
-        <span className="text-muted2 text-[10px]">{label}</span>
-      </div>
-      <span className={`text-[11px] ${color ?? 'text-text'}`}>{value}</span>
     </div>
   );
 }
