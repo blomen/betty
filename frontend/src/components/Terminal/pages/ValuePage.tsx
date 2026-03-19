@@ -1,7 +1,9 @@
 import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useBetMutations } from '@/hooks/useBetMutations';
 import { api } from '@/services/api';
 import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
@@ -194,13 +196,12 @@ const OpportunityRow = memo(function OpportunityRow({
           ) : (
             <span
               onClick={() => setEditingOdds(true)}
-              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+              className="cursor-pointer px-1 py-0.5 border border-dashed border-transparent hover:border-tabValue/50 transition-colors text-text"
               title="Click to adjust odds"
             >
               {effectiveOdds.toFixed(2)}
             </span>
           )}
-          {isOddsOverridden && <button onClick={() => { setLocalOddsOverride(null); setEditingOdds(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
         <td className="text-right text-muted text-sm">
@@ -221,13 +222,12 @@ const OpportunityRow = memo(function OpportunityRow({
           ) : (
             <span
               onClick={() => setEditingStake(true)}
-              className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
+              className="cursor-pointer px-1 py-0.5 border border-dashed border-transparent hover:border-tabValue/50 transition-colors text-text"
               title="Click to adjust stake"
             >
               {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
             </span>
           )}
-          {isStakeOverridden && <button onClick={() => { setLocalStakeOverride(null); setEditingStake(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
           {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
           {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
         </td>
@@ -329,8 +329,8 @@ interface ValuePageProps {
 }
 
 export function ValuePage({ providers = [] }: ValuePageProps) {
-  const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<ValueTab>('value');
+  const { placeBet } = useBetMutations();
+  const [activeTab, setActiveTab] = usePersistedState<ValueTab>('bbq_value_tab', 'value');
 
   const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -342,13 +342,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     effectiveStake: number | null;
   } | null>(null);
 
-  const [searchInput, setSearchInput] = useState('');
+  const [searchInput, setSearchInput] = usePersistedState('bbq_value_search', '');
   const search = useDeferredValue(searchInput);
-  const [boostSearchInput, setBoostSearchInput] = useState('');
+  const [boostSearchInput, setBoostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
   const boostSearch = useDeferredValue(boostSearchInput);
   const [betError, setBetError] = useState<string | null>(null);
   const [betSuccess, setBetSuccess] = useState<string | null>(null);
-  const [selectedBetProvider, setSelectedBetProvider] = useState<Record<string, number>>({});
+  const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_selectedProvider', {});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -379,7 +379,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const [boostExpandedIdx, setBoostExpandedIdx] = useState<number | null>(null);
   const [boostStakePreview, setBoostStakePreview] = useState<StakePreviewResult | null>(null);
   const [isLoadingBoostPreview, setIsLoadingBoostPreview] = useState(false);
-  const [boostSelectedBetProvider, setBoostSelectedBetProvider] = useState<Record<string, number>>({});
+  const [boostSelectedBetProvider, setBoostSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_boostSelectedProvider', {});
   const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
   const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
   const [boostStakeOverride, setBoostStakeOverride] = useState<Record<string, number>>({});
@@ -391,10 +391,10 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     actualOdds: number;
     stake: number;
   } | null>(null);
-  const [boostPlacedKeys, setBoostPlacedKeys] = useState<Set<string>>(new Set());
+  const [boostPlacedKeys, setBoostPlacedKeys] = usePersistedState<Set<string>>('bbq_value_boostPlacedKeys', new Set());
 
   // Track placed event+provider combos for immediate removal from list
-  const [placedKeys, setPlacedKeys] = useState<Set<string>>(new Set());
+  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_value_placedKeys', new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
   const { data: opportunitiesData, isLoading } = useQuery({
@@ -413,7 +413,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
   const pendingBets = betsData?.bets ?? [];
 
@@ -503,7 +503,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
   }), []);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
-    useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' });
+    useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
 
   const filteredCount = useMemo(() =>
     sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
@@ -572,7 +572,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
   }), []);
   const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
-    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'aiEdge', direction: 'desc' });
+    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'aiEdge', direction: 'desc' }, 'bbq_value_boostSort');
 
   const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
     if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
@@ -602,7 +602,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     const { special, providerId, actualOdds, stake, groupKey } = boostPendingBet;
     setIsPlacing(true); setBetError(null);
     try {
-      await api.createBet({
+      await placeBet.mutateAsync({
         provider_id: providerId,
         market: 'boost',
         outcome: special.title,
@@ -622,7 +622,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       setBetError(err instanceof Error ? err.message : 'Failed to place bet');
       setTimeout(() => setBetError(null), 5000);
@@ -670,7 +669,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       const placedEdge = opp.fair_odds != null && opp.fair_odds > 1
         ? (actualOdds / opp.fair_odds - 1)
         : (opp.edge_pct != null ? opp.edge_pct / 100 : undefined);
-      await api.createBet({
+      await placeBet.mutateAsync({
         event_id: opp.event_id,
         provider_id: opp.provider1,
         market: opp.market,
@@ -694,7 +693,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedGroup(null);
-      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
       setBetError(msg);
@@ -745,7 +743,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
       {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
       {activeTab === 'mybets' && (
-        <MyBetsSection filter={softBetFilter} colorKey="value" />
+        <MyBetsSection filter={softBetFilter} colorKey="value" persistKey="value" />
       )}
 
       {/* Manual bet entry tab */}
