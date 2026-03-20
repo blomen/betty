@@ -44,8 +44,8 @@ def extract_orderflow_features(
     volumes = [c.volume for c in recent]
     avg_vol = sum(volumes) / len(volumes) if volumes else 1.0
 
-    # 0: delta_pct of last candle
-    delta_pct = last.delta_pct / 100.0  # normalise ±1
+    # 0: delta_pct of last candle (delta / volume as fraction)
+    delta_pct = (last.delta / max(last.volume, 1)) / 1.0  # already ±1 range
 
     # 1: normalised delta of last candle
     delta_norm = last.delta / max(avg_vol, 1.0)
@@ -97,11 +97,13 @@ def extract_orderflow_features(
         passive_active_raw = (total_vol_sum - total_abs_delta) / max(1, total_abs_delta)
         passive_active = min(passive_active_raw, 5.0) / 5.0
 
-        imbalance_max_raw = last.imbalance_ratio_max if last.diagonal_imbalances else 0.0
+        diag = getattr(last, "diagonal_imbalances", None)
+        imbalance_max_raw = getattr(last, "imbalance_ratio_max", 0.0) if diag else 0.0
         imbalance_max = min(imbalance_max_raw, 10.0) / 10.0
 
-        if last.stacked_imbalances:
-            largest_stacked = max(last.stacked_imbalances, key=lambda s: s.count)
+        stacked = getattr(last, "stacked_imbalances", None)
+        if stacked:
+            largest_stacked = max(stacked, key=lambda s: s.count)
             stacked_count = min(largest_stacked.count, 10.0) / 10.0
             stacked_dir = {"buy": 1.0, "sell": -1.0}.get(largest_stacked.direction, 0.0)
         else:
