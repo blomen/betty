@@ -320,10 +320,63 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
+    # Auto-start all mirror browsers (always-on recording)
+    from .routes.mirror import _mirrors, _load_all_providers
+    from ..mirror.service import MirrorService
+    from ..pipeline.broadcast import odds_broadcaster as _mirror_broadcaster
+
+    async def _start_all_mirrors():
+        """Auto-start mirrors for providers that have saved browser profiles.
+
+        Only opens browsers for sites you've previously logged into —
+        determined by the existence of a mirror_profiles/{provider} directory.
+        First-time providers must be started manually via the sidebar menu.
+        """
+        try:
+            from ..paths import get_app_data_dir
+            profiles_dir = get_app_data_dir() / "data" / "mirror_profiles"
+            if not profiles_dir.exists():
+                logger.info("No mirror profiles found — skipping auto-start")
+                return
+
+            providers = _load_all_providers()
+            started = 0
+            for pid, pconf in providers.items():
+                profile_dir = profiles_dir / pid
+                if not profile_dir.exists():
+                    continue
+                has_parser = pconf["type"] == "gecko_v2"
+                mirror = MirrorService(
+                    provider_id=pid,
+                    broadcaster=_mirror_broadcaster,
+                    discovery=not has_parser,
+                )
+                try:
+                    await mirror.start(site_url=pconf["url"])
+                    _mirrors[pid] = mirror
+                    started += 1
+                    logger.info(f"Mirror auto-started: {pid}")
+                except Exception as e:
+                    logger.warning(f"Mirror auto-start failed for {pid}: {e}")
+            logger.info(f"Mirror auto-start complete: {started} browsers")
+        except Exception as e:
+            logger.warning(f"Mirror auto-start failed: {e}")
+
+    asyncio.create_task(_start_all_mirrors())
+
     yield  # App is running
 
     # Graceful shutdown
     logger.info("Shutting down...")
+
+    # Stop all mirrors
+    for pid in list(_mirrors.keys()):
+        try:
+            mirror = _mirrors.pop(pid)
+            await mirror.stop()
+        except Exception as e:
+            logger.warning(f"Mirror stop failed for {pid}: {e}")
+
     if _databento_stream:
         await _databento_stream.stop()
     scheduler.stop_all()
