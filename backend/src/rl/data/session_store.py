@@ -174,9 +174,15 @@ def find_naked_pocs(
 # Task 4: build_session_summary
 # ---------------------------------------------------------------------------
 
-def _parse_ts(ts: str) -> datetime:
-    """Parse an ISO 8601 timestamp to a timezone-aware datetime in ET."""
-    dt = datetime.fromisoformat(ts)
+def _parse_ts(ts) -> datetime:
+    """Convert a timestamp (str, datetime, or pandas Timestamp) to ET datetime."""
+    if isinstance(ts, str):
+        dt = datetime.fromisoformat(ts)
+    elif hasattr(ts, "to_pydatetime"):
+        # pandas Timestamp
+        dt = ts.to_pydatetime()
+    else:
+        dt = ts
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
     return dt.astimezone(_ET)
@@ -185,7 +191,7 @@ def _parse_ts(ts: str) -> datetime:
 def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
     """Build a SessionSummary from a list of tick dicts.
 
-    Each tick must have keys: ts_event (ISO 8601 str), price (float), size (int).
+    Each tick must have keys: ts (ISO 8601 str), price (float), size (int).
     RTH = 09:30-16:00 ET; everything else is ETH.
     """
     if not ticks:
@@ -206,7 +212,7 @@ def build_session_summary(date_str: str, ticks: list[dict]) -> SessionSummary:
     for tick in ticks:
         price: float = float(tick["price"])
         size: int = int(tick["size"])
-        dt = _parse_ts(tick["ts_event"])
+        dt = _parse_ts(tick["ts"])
         t = dt.time()
 
         is_rth = _RTH_START <= t < _RTH_END

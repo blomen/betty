@@ -27,7 +27,7 @@ from src.rl.data.session_store import (
 
 def _make_tick(ts: str, price: float, size: int) -> dict:
     """Build a minimal tick dict."""
-    return {"ts_event": ts, "price": price, "size": size}
+    return {"ts": ts, "price": price, "size": size}
 
 
 def _make_summary(
