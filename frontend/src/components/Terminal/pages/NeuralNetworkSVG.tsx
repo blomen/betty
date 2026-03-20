@@ -1,7 +1,7 @@
 // NeuralNetworkSVG.tsx
 import { useMemo } from 'react';
 import {
-  NN_FEATURES, NN_GROUPS, normalizeValue, formatValue,
+  NN_FEATURES, normalizeValue, formatValue,
   type NNColor,
 } from './nnConfig';
 import type {

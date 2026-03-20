@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { NearbyLevelStrip } from './NearbyLevelStrip';
 import { TradeActionBar } from './TradeActionBar';
 import { PositionManager } from './PositionManager';
