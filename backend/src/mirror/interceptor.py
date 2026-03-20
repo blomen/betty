@@ -1,8 +1,10 @@
-"""BetInterceptor — headed Playwright browser for bet interception.
+"""BetInterceptor — headed Playwright browser for bet interception + full traffic recording.
 
 Launches a visible browser with persistent context. The user browses
-and bets normally. A response listener intercepts bet placement API
-calls and forwards them to a callback for processing.
+and bets normally. Two listeners run simultaneously:
+
+1. NetworkRecorder — captures ALL network traffic to JSONL (RL training data)
+2. Bet parser — intercepts bet placement API calls and logs them to the app
 """
 
 import asyncio
@@ -10,6 +12,8 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Awaitable
+
+from .recorder import NetworkRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +35,7 @@ class BetInterceptor:
         self.context = None
         self._playwright = None
         self._started_at = None
+        self.recorder = NetworkRecorder(provider_id)
 
         # Persistent context dir — separate from extraction browsers
         from ..paths import get_app_data_dir
@@ -60,6 +65,9 @@ class BetInterceptor:
             args=["--disable-blink-features=AutomationControlled"],
         )
 
+        # Start recording
+        self.recorder.start()
+
         # Attach listener to all current and future pages
         for page in self.context.pages:
             page.on("response", self._on_response)
@@ -71,36 +79,17 @@ class BetInterceptor:
 
         self.status = "listening"
         self._started_at = datetime.now(timezone.utc)
-        logger.info(f"[mirror:{self.provider_id}] Started — listening for bet placements")
-
-    # Skip these URL patterns in discovery mode (noisy, never bet-related)
-    _DISCOVERY_SKIP = (
-        "/analytics", "/tracking", "/pixel", "/log", "/heartbeat",
-        ".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico",
-        "/socket.io/", "/sockjs/", "/graphql",
-    )
+        logger.info(f"[mirror:{self.provider_id}] Started — recording all traffic + listening for bets")
 
     async def _on_response(self, response):
-        """Response listener — filters for bet placement endpoints."""
+        """Response listener — records everything + filters for bet placements."""
         try:
+            # Always record to JSONL (RL training data)
+            await self.recorder.record_response(response)
+
+            # Now check for bet placement (only POST requests)
             url = response.url
             if response.request.method != "POST":
-                return
-
-            # Discovery mode: log ALL POST requests (any provider type)
-            if self.discovery:
-                lower = url.lower()
-                if any(skip in lower for skip in self._DISCOVERY_SKIP):
-                    return
-                logger.info(f"[mirror:{self.provider_id}] [DISCOVERY] POST {url}")
-                try:
-                    body_text = await response.text()
-                    logger.info(f"[mirror:{self.provider_id}] [DISCOVERY] Body preview: {body_text[:500]}")
-                except Exception:
-                    body_text = ""
-                if self.on_bet_response:
-                    request_body = response.request.post_data
-                    await self.on_bet_response(url, request_body, body_text or "")
                 return
 
             # Normal mode: only Gecko /api/sb/ endpoints
@@ -142,6 +131,9 @@ class BetInterceptor:
 
         self.status = "stopped"
         self._started_at = None
+
+        # Stop recording
+        self.recorder.stop()
 
         if self.context:
             try:
