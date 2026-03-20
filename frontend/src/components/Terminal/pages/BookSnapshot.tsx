@@ -109,8 +109,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
         <Group label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
           {s?.ib_high != null && s?.ib_low != null ? (
             <>
-              <Row label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />
-              <Row label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />
+              <Row label="NYIBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />
+              <Row label="NYIBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />
               <Row label="IB Range" value={(s.ib_high - s.ib_low).toFixed(2)} />
             </>
           ) : (

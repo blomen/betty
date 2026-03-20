@@ -272,26 +272,28 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     const levelDefs: Array<{
       key: string;
-      field: 'pdh' | 'pdl' | 'ib_high' | 'ib_low' | 'tokyo_high' | 'tokyo_low' | 'london_high' | 'london_low';
+      field: 'pdh' | 'pdl' | 'tokyo_high' | 'tokyo_low' | 'london_high' | 'london_low';
       label: string;
       color: string;
       dash: number[];
-      startField: 'day_start' | 'ib_end' | 'tokyo_end' | 'london_end';
+      startField: 'day_start' | 'tokyo_end' | 'london_end';
       endField: 'day_end';
     }> = [
       { key: 'pdh', field: 'pdh', label: 'PDH', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
       { key: 'pdl', field: 'pdl', label: 'PDL', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
-      { key: 'ibh', field: 'ib_high', label: 'IBH', color: '#F59E0B', dash: [3, 3], startField: 'ib_end', endField: 'day_end' },
-      { key: 'ibl', field: 'ib_low', label: 'IBL', color: '#F59E0B', dash: [3, 3], startField: 'ib_end', endField: 'day_end' },
       { key: 'tokyo_h', field: 'tokyo_high', label: 'TKY H', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
       { key: 'tokyo_l', field: 'tokyo_low', label: 'TKY L', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
       { key: 'london_h', field: 'london_high', label: 'LDN H', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
       { key: 'london_l', field: 'london_low', label: 'LDN L', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
     ];
 
-    for (const day of slDays) {
+    // Only draw levels for the current (most recent) session
+    const currentDay = [...slDays].sort((a, b) => b.date.localeCompare(a.date))[0];
+
+    if (currentDay) {
       for (const def of levelDefs) {
         if (slHidden?.has(def.key)) continue;
+        const day = currentDay;
         const price = day[def.field];
         if (price == null) continue;
 
@@ -328,6 +330,38 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         ctx.fillStyle = def.color;
         ctx.textAlign = 'left';
         ctx.fillText(def.label, drawX1 + 3, y - 3);
+        ctx.restore();
+      }
+    }  // end if (currentDay)
+
+    // --- NY IB levels from TPO, anchored at NY open (15:30 CET) ---
+    const tpoIb = tpoRef.current;
+    if (tpoIb && !slHidden?.has('nyib') && currentDay) {
+      const ibLevels: Array<{ price: number; label: string }> = [];
+      if (tpoIb.ib_high) ibLevels.push({ price: tpoIb.ib_high, label: 'NYIBH' });
+      if (tpoIb.ib_low) ibLevels.push({ price: tpoIb.ib_low, label: 'NYIBL' });
+      // Anchor from NY open (15:30 CET) to session end (22:00 CET)
+      const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ib_start) as Time);
+      const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.day_end) as Time);
+      for (const ib of ibLevels) {
+        const y = pSeries.priceToCoordinate(ib.price);
+        if (y === null) continue;
+        const x1 = ibStartX != null ? Math.max(0, ibStartX) : 0;
+        const x2 = ibEndX != null ? Math.min(rect.width, ibEndX) : rect.width;
+        if (x2 < 0 || x1 > rect.width) continue;
+        ctx.save();
+        ctx.strokeStyle = '#F59E0B';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(x2, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '9px monospace';
+        ctx.fillStyle = '#F59E0B';
+        ctx.textAlign = 'left';
+        ctx.fillText(ib.label, x1 + 3, y - 3);
         ctx.restore();
       }
     }
