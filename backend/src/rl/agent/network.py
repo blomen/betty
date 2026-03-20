@@ -39,6 +39,23 @@ class DQNetwork(nn.Module):
         """
         return self.net(x)
 
+    def forward_with_activations(self, x: Tensor) -> dict[str, Tensor]:
+        """Forward pass capturing all intermediate activations."""
+        if x.ndim == 1:
+            x = x.unsqueeze(0)
+        inputs = x
+        layer1 = self.net[1](self.net[0](x))
+        layer2 = self.net[3](self.net[2](layer1))
+        layer3 = self.net[5](self.net[4](layer2))
+        q_values = self.net[6](layer3)
+        return {
+            "inputs": inputs,
+            "layer1": layer1,
+            "layer2": layer2,
+            "layer3": layer3,
+            "q_values": q_values,
+        }
+
     def predict(self, observation: np.ndarray) -> np.ndarray:
         """Convenience method: numpy observation → numpy Q-values (no gradient).
 
