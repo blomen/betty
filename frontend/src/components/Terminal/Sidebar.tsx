@@ -62,8 +62,8 @@ function MirrorButton() {
         await api.startMirror();
         setRunning(true);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('[mirror]', err);
     } finally {
       setLoading(false);
     }

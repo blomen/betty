@@ -42,7 +42,10 @@ class BetInterceptor:
             logger.warning(f"[mirror:{self.provider_id}] Already running")
             return
 
-        from patchright.async_api import async_playwright
+        try:
+            from patchright.async_api import async_playwright
+        except ImportError:
+            from playwright.async_api import async_playwright
         from datetime import datetime, timezone
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
