@@ -39,10 +39,12 @@ Databento Historical API
 - `price` — trade price (scaled by 1e9)
 - `size` — trade size
 - `side` — aggressor side (A/B)
-- `bid_px` — best bid price before trade (scaled by 1e9)
-- `ask_px` — best ask price before trade (scaled by 1e9)
-- `bid_sz` — best bid size before trade
-- `ask_sz` — best ask size before trade
+- `bid_px_00` — best bid price before trade (scaled by 1e9, `_00` = level 0)
+- `ask_px_00` — best ask price before trade (scaled by 1e9)
+- `bid_sz_00` — best bid size before trade
+- `ask_sz_00` — best ask size before trade
+
+Note: Databento uses zero-indexed level suffixes (`_00`) across all multi-level book schemas.
 
 **Parquet columns (after normalization):**
 ```
@@ -74,6 +76,12 @@ class IncrementalBookStats:
 
 The accumulator resets each 1m candle (same lifecycle as `CandleAggregator`). The replay engine calls `update()` on every tick that has book data, and `get()` + `reset()` on bar close.
 
+**Guard conditions:** Skip ticks where `bid <= 0`, `ask <= 0`, or `ask > price * 2` (catches both zero and INT64_MAX sentinel values from CME halts).
+
+**Rolling window ownership:** The `ReplayEngine` maintains `_book_stats_window: list[BookStats]` (last 20 candles), analogous to `_candle_flows`. On each bar close: `_book_stats_window.append(book_acc.get())`, then `book_acc.reset()`. The window is passed to `extract_book_features()` for computing multi-candle features (spread_vs_avg, spread_compression).
+
+**Warm-up:** Before 3 candles of book data have accumulated, `extract_book_features()` returns `zeros(5)`. The `spread_vs_avg` uses whatever candles are available (min 3), and `spread_compression` requires 5 candles to compute a meaningful slope — returns 0.0 until then.
+
 ### Book Features (5 dims)
 
 New observation vector segment, appended after the macro segment:
@@ -96,7 +104,7 @@ New observation vector segment, appended after the macro segment:
 
 - **bid_ask_imbalance:** Who has more size on the book. Positive = bid-heavy (buyers waiting), negative = ask-heavy (sellers waiting). This is the passive order imbalance that your strategy docs describe as a key confirmation signal.
 
-- **spread_compression:** Trend of spread over last 5 candles. Negative = spread narrowing (convergence, conviction building). Positive = spread widening (uncertainty). Computed as normalized linear regression slope.
+- **spread_compression:** Trend of spread over last 5 candles. Negative = spread narrowing (convergence, conviction building). Positive = spread widening (uncertainty). Computed as: linear regression slope of `[candle.avg_spread for candle in last_5]`, divided by `avg_spread_20_candles` for normalization, clipped to [-1, 1]. A slope of +avg_spread per candle maps to +1.0.
 
 ### Observation Vector Change
 
@@ -144,7 +152,7 @@ If ticks don't have book columns (old Parquet files without TBBO data), the book
 - `rl/config.py` — no new level types or hyperparameter changes
 - `cli.py` — no new commands (fetcher handles the schema change transparently)
 - `episode_builder.py` — unchanged, still labels by forward price action
-- Network architecture — input dim is dynamic (`OBSERVATION_DIM`), network auto-adapts
+- Network architecture — `OBSERVATION_DIM` is computed dynamically at import time; fresh network construction adapts automatically, but saved `.pt` checkpoints encode the old input dim and will fail to load
 
 ## Storage Impact
 
@@ -166,7 +174,7 @@ Existing Parquet files must be re-fetched with TBBO schema. Options:
 
 **(B) Separate filename pattern** — `NQ_YYYY-MM_tbbo.parquet`. Avoids overwriting but requires updating all consumers.
 
-**Recommendation: Option A.** One-time re-fetch, same filenames, no consumer changes. The Databento cost is the same (TBBO and trades are the same price tier on Standard plan).
+**Recommendation: Option A with opt-in `--force`.** Add `--force` flag that deletes existing files before re-fetching. Without `--force`, the fetcher skips existing files as before. One-time re-fetch when ready, same filenames, no consumer changes. Graceful degradation means old files still work (book features return zeros).
 
 ## Known Limitations
 
