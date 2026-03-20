@@ -77,8 +77,8 @@ class ExtractionScheduler:
         self._watchdog_task: Optional[asyncio.Task] = None
         # Per-provider locks prevent the same provider from overlapping with itself.
         self._provider_locks: dict[str, asyncio.Lock] = {}
-        # Browser semaphore: only 1 browser extraction at a time
-        self._browser_semaphore = asyncio.Semaphore(1)
+        # Browser lock: only 1 browser extraction at a time (FIFO guaranteed)
+        self._browser_lock = asyncio.Lock()
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
         # Sharp-ready gate: soft providers wait for sharp's first run before starting.
@@ -264,7 +264,7 @@ class ExtractionScheduler:
             try:
                 async with self._provider_locks[schedule.provider_id]:
                     if schedule.category == "browser_soft":
-                        async with self._browser_semaphore:
+                        async with self._browser_lock:
                             results = await self._run_provider_extraction(schedule)
                     else:
                         results = await self._run_provider_extraction(schedule)
