@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.pipeline.scheduler import ProviderSchedule
+from datetime import datetime, timezone, timedelta
 
 
 def test_provider_schedule_has_revival_fields():
@@ -34,3 +35,27 @@ async def test_browser_lock_is_fifo():
 
     await asyncio.gather(task_a, task_b)
     assert order == ["A", "B"], f"Expected FIFO order, got {order}"
+
+
+@pytest.mark.asyncio
+async def test_revival_scheduled_after_permanent_failure():
+    """Watchdog should schedule revival for permanently failed providers."""
+    from src.pipeline.scheduler import ExtractionScheduler
+
+    scheduler = ExtractionScheduler()
+    schedule = ProviderSchedule(
+        provider_id="test_provider",
+        category="browser_soft",
+        interval_seconds=3600,
+        consecutive_failures=3,
+        running=False,  # Watchdog already killed it
+    )
+    scheduler._schedules["test_provider"] = schedule
+
+    # Verify revival gets triggered
+    with patch.object(scheduler, '_attempt_revival', new_callable=AsyncMock) as mock_revival:
+        # Simulate one watchdog tick
+        await scheduler._check_schedules_once()
+
+        assert schedule.reviving is True
+        # _attempt_revival should have been scheduled (via create_task)

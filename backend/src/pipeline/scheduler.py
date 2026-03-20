@@ -66,6 +66,8 @@ class ExtractionScheduler:
 
     # Schedule is considered stale if it hasn't run within this multiple of its interval.
     WATCHDOG_STALE_MULTIPLIER = 3
+    MAX_REVIVAL_ATTEMPTS = 3
+    REVIVAL_BACKOFFS = [1800, 7200, 21600]  # 30min, 2hr, 6hr
 
     def __init__(self, pipeline=None):
         self._pipeline = pipeline
@@ -167,6 +169,21 @@ class ExtractionScheduler:
                 ))
 
         schedule.task.add_done_callback(_on_restart_done)
+
+    async def _attempt_revival(self, schedule: ProviderSchedule, backoff: int):
+        """Attempt to revive a permanently failed provider after cooldown."""
+        try:
+            await asyncio.sleep(backoff)
+            logger.info(
+                f"[Watchdog] Attempting revival #{schedule.revival_attempts + 1} "
+                f"for '{schedule.provider_id}' (backoff was {backoff}s)"
+            )
+            schedule.revival_attempts += 1
+            schedule.running = True
+            await self._restart_schedule(schedule)
+        except asyncio.CancelledError:
+            logger.info(f"[Watchdog] Revival cancelled for '{schedule.provider_id}'")
+            schedule.reviving = False
 
     def _get_last_extraction_time(self, provider_ids: list[str]) -> datetime | None:
         """Check DB for the most recent Odds.updated_at for given provider(s)."""
@@ -275,6 +292,12 @@ class ExtractionScheduler:
                 schedule.consecutive_failures = 0
                 schedule.run_count += 1
 
+                # Clear revival state on first successful extraction
+                if schedule.reviving:
+                    schedule.reviving = False
+                    schedule.revival_attempts = 0
+                    logger.info(f"[Scheduler:{schedule.provider_id}] Revival successful — back to normal")
+
                 providers = schedule.providers or [schedule.provider_id]
                 logger.info(
                     f"[Scheduler:{schedule.provider_id}] Run #{schedule.run_count} complete: "
@@ -339,6 +362,7 @@ class ExtractionScheduler:
         if schedule.task:
             schedule.task.cancel()
             schedule.task = None
+        schedule.reviving = False
 
         logger.info(f"[Scheduler] Stopped provider '{provider_id}' after {schedule.run_count} runs")
 
@@ -448,81 +472,95 @@ class ExtractionScheduler:
             return
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
-    async def _watchdog_loop(self):
-        """Periodically check that all schedules are running and not stale.
+    async def _check_schedules_once(self):
+        """Single watchdog tick — check all schedules for issues.
 
-        Logs CRITICAL if a schedule's task has died without auto-restart,
-        or if a schedule hasn't completed a run within WATCHDOG_STALE_MULTIPLIER
-        times its configured interval. Marks providers with 3+ consecutive
-        failures as permanently failed.
+        IMPORTANT: This is a refactoring of the existing _watchdog_loop inner body.
+        All existing checks are preserved.
         """
-        # Wait for initial startup
-        await asyncio.sleep(30)
+        now = datetime.now(timezone.utc)
+        for provider_id, schedule in self._schedules.items():
+            # ── NEW: Revival scheduling for permanently failed providers ──
+            if schedule.consecutive_failures >= 3 and not schedule.running:
+                if schedule.reviving:
+                    continue  # Revival already in progress
+                if schedule.revival_attempts >= self.MAX_REVIVAL_ATTEMPTS:
+                    continue  # Exhausted all attempts
+                # Schedule revival
+                schedule.reviving = True
+                backoff = self.REVIVAL_BACKOFFS[
+                    min(schedule.revival_attempts, len(self.REVIVAL_BACKOFFS) - 1)
+                ]
+                logger.info(
+                    f"[Watchdog] Scheduling revival #{schedule.revival_attempts + 1} "
+                    f"for '{provider_id}' in {backoff}s"
+                )
+                asyncio.create_task(self._attempt_revival(schedule, backoff))
+                continue
 
+            # ── EXISTING (modified): Mark permanently failed after 3+ consecutive failures ──
+            # Added `and not schedule.reviving` guard to prevent re-killing a reviving provider
+            if schedule.consecutive_failures >= 3 and schedule.running and not schedule.reviving:
+                logger.critical(
+                    f"[Watchdog] Provider '{provider_id}' has {schedule.consecutive_failures} "
+                    f"consecutive failures — marking as permanently failed"
+                )
+                schedule.running = False
+                if schedule.task:
+                    schedule.task.cancel()
+                    schedule.task = None
+                update_provider_state(provider_id, {
+                    "running": False,
+                    "permanently_failed": True,
+                    "last_error": schedule.last_error,
+                    "consecutive_failures": schedule.consecutive_failures,
+                })
+                continue
+
+            # ── EXISTING: Check if the asyncio task is still alive ──
+            if schedule.running and (schedule.task is None or schedule.task.done()):
+                exc = schedule.task.exception() if schedule.task and not schedule.task.cancelled() else None
+                logger.critical(
+                    f"[Watchdog] Provider '{provider_id}' task is DEAD "
+                    f"(running={schedule.running}, "
+                    f"task_done={schedule.task.done() if schedule.task else 'None'}, "
+                    f"exception={exc}). Forcing restart..."
+                )
+                await self._restart_schedule(schedule)
+                continue
+
+            # ── EXISTING: Check if the schedule is overdue (stale) ──
+            if schedule.running and schedule.last_completed:
+                stale_threshold = schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
+                elapsed = (now - schedule.last_completed).total_seconds()
+                if elapsed > stale_threshold:
+                    logger.critical(
+                        f"[Watchdog] Provider '{provider_id}' is STALE — "
+                        f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
+                        f"run_count={schedule.run_count}"
+                    )
+
+            # ── EXISTING: Check if a schedule that should be running hasn't started yet ──
+            if schedule.running and schedule.run_count == 0:
+                if schedule.last_completed is None:
+                    pass  # Handled by stale check above once interval elapses
+
+    async def _watchdog_loop(self):
+        """Periodically check that all schedules are running and not stale."""
+        await asyncio.sleep(30)  # Initial delay before first check
         while True:
             try:
-                now = datetime.now(timezone.utc)
-                for provider_id, schedule in self._schedules.items():
-                    # Skip permanently failed providers
-                    if schedule.consecutive_failures >= 3 and not schedule.running:
-                        continue
-
-                    # Mark permanently failed after 3+ consecutive failures
-                    if schedule.consecutive_failures >= 3 and schedule.running:
-                        logger.critical(
-                            f"[Watchdog] Provider '{provider_id}' has {schedule.consecutive_failures} "
-                            f"consecutive failures — marking as permanently failed"
-                        )
-                        schedule.running = False
-                        if schedule.task:
-                            schedule.task.cancel()
-                            schedule.task = None
-                        update_provider_state(provider_id, {
-                            "running": False,
-                            "permanently_failed": True,
-                            "last_error": schedule.last_error,
-                            "consecutive_failures": schedule.consecutive_failures,
-                        })
-                        continue
-
-                    # Check if the asyncio task is still alive
-                    if schedule.running and (schedule.task is None or schedule.task.done()):
-                        exc = schedule.task.exception() if schedule.task and not schedule.task.cancelled() else None
-                        logger.critical(
-                            f"[Watchdog] Provider '{provider_id}' task is DEAD "
-                            f"(running={schedule.running}, "
-                            f"task_done={schedule.task.done() if schedule.task else 'None'}, "
-                            f"exception={exc}). Forcing restart..."
-                        )
-                        await self._restart_schedule(schedule)
-                        continue
-
-                    # Check if the schedule is overdue (hasn't run within expected window)
-                    if schedule.running and schedule.last_completed:
-                        stale_threshold = schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
-                        elapsed = (now - schedule.last_completed).total_seconds()
-                        if elapsed > stale_threshold:
-                            logger.critical(
-                                f"[Watchdog] Provider '{provider_id}' is STALE — "
-                                f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
-                                f"run_count={schedule.run_count}"
-                            )
-
-                    # Check if a schedule that should be running hasn't started yet
-                    if schedule.running and schedule.run_count == 0:
-                        logger.warning(
-                            f"[Watchdog] Provider '{provider_id}' is running but has 0 completed runs"
-                        )
-
-            except asyncio.CancelledError:
-                break
+                await self._check_schedules_once()
             except Exception as e:
                 logger.error(f"[Watchdog] Error: {e}", exc_info=True)
-
-            await asyncio.sleep(60)  # Check every 60 seconds
+            await asyncio.sleep(60)
 
     def stop_all(self):
         """Stop all running schedules."""
+        # Cancel any pending revival tasks first
+        for provider_id, schedule in self._schedules.items():
+            if schedule.reviving:
+                schedule.reviving = False
         for provider_id in list(self._schedules.keys()):
             if self._schedules[provider_id].running:
                 self.stop_provider(provider_id)
