@@ -508,10 +508,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         setLoading(true);
         const res = await api.getCandles('NQ', INTERVAL, undefined, INITIAL_DAYS);
         if (res.candles?.length) {
-          const sorted = dedupeAndSort(res.candles);
+          // Ensure all timestamps are numbers (API might return strings)
+          const cleaned = res.candles.map(c => ({ ...c, t: Number(c.t) })).filter(c => !isNaN(c.t) && c.t > 0);
+          const sorted = dedupeAndSort(cleaned);
           candlesRef.current = sorted;
-          priceSeries.setData(sorted.map(toLine));
-          volumeSeries.setData(sorted.map(toVolume));
+          try {
+            priceSeries.setData(sorted.map(toLine));
+            volumeSeries.setData(sorted.map(toVolume));
+          } catch (err) {
+            console.error('Chart setData failed:', err, 'candles:', sorted.length);
+            setNoData(true);
+            return;
+          }
           chart.timeScale().scrollToRealTime();
           setNoData(false);
         } else {
@@ -618,8 +626,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
           const merged = dedupeAndSort([...newCandles, ...candlesRef.current]);
           candlesRef.current = merged;
-          priceSeriesRef.current?.setData(merged.map(toLine));
-          volumeSeriesRef.current?.setData(merged.map(toVolume));
+          try {
+            priceSeriesRef.current?.setData(merged.map(toLine));
+            volumeSeriesRef.current?.setData(merged.map(toVolume));
+          } catch (err) {
+            console.error('Chart scroll-back setData failed:', err);
+          }
         })
         .catch(err => console.warn('Failed to load older candles:', err))
         .finally(() => { fetchingRef.current = false; });
@@ -634,8 +646,16 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   // Live candle updates
   useEffect(() => {
     if (!lastCandle || !priceSeriesRef.current || !volumeSeriesRef.current) return;
-    priceSeriesRef.current.update(toLine(lastCandle));
-    volumeSeriesRef.current.update(toVolume(lastCandle));
+    // Don't update until initial data is loaded — prevents "Cannot update oldest data"
+    if (loading || candlesRef.current.length === 0) return;
+    try {
+      priceSeriesRef.current.update(toLine(lastCandle));
+      volumeSeriesRef.current.update(toVolume(lastCandle));
+    } catch (err) {
+      // Stale candle from before chart range — safe to ignore
+      console.debug('Candle update skipped:', err);
+      return;
+    }
 
     const existing = candlesRef.current;
     if (existing.length && existing[existing.length - 1].t === lastCandle.t) {
@@ -645,7 +665,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     }
     // Redraw overlays so active session box follows price in real-time
     drawOverlays();
-  }, [lastCandle, drawOverlays]);
+  }, [lastCandle, loading, drawOverlays]);
 
   // Anchor series for no-data state
   useEffect(() => {
@@ -689,6 +709,15 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         arr.map(p => ({ time: toLocalEpoch(p.t) as Time, value: p[key] as number }));
 
       const addLine = (color: string, width: 1 | 2, style: number, title: string, data: LineData<Time>[]) => {
+        // Dedupe + sort VWAP points to prevent lightweight-charts crash
+        const seen = new Set<number>();
+        const clean = data.filter(d => {
+          const t = d.time as number;
+          if (seen.has(t)) return false;
+          seen.add(t);
+          return true;
+        }).sort((a, b) => (a.time as number) - (b.time as number));
+
         const s = chartRef.current!.addSeries(LineSeries, {
           color,
           lineWidth: width,
@@ -699,7 +728,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           title,
           zOrder: -1,  // render behind price
         } as any);
-        s.setData(data);
+        s.setData(clean);
         vwapSeriesRefs.current.push(s);
       };
 
