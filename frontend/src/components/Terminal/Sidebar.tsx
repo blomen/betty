@@ -8,7 +8,7 @@ interface MirrorProvider {
   running: boolean;
 }
 
-export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingL2' | 'tradingBankroll' | 'tradingStats';
+export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingVectors' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {
@@ -92,16 +92,38 @@ function MirrorButton() {
     }
   };
 
+  const toggleAll = async () => {
+    setLoading('all');
+    try {
+      if (anyRunning) {
+        await api.stopMirror();
+      } else {
+        for (const p of providers) {
+          if (!p.running) {
+            try { await api.startMirror(p.id); } catch (err) { console.error('[mirror]', p.id, err); }
+          }
+        }
+      }
+      refresh();
+    } catch (err) {
+      console.error('[mirror]', err);
+    } finally {
+      setLoading(null);
+    }
+  };
+
   return (
     <div className="relative" ref={menuRef}>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggleAll}
+        onContextMenu={(e) => { e.preventDefault(); setOpen(!open); }}
+        disabled={loading === 'all'}
         className={`w-12 h-12 flex items-center justify-center mb-1 border-2 transition ${
           anyRunning
             ? 'border-success text-success shadow-[0_0_12px_rgba(76,175,80,0.25)] bg-success/5'
             : 'border-transparent text-muted hover:border-muted hover:text-text'
-        }`}
-        title="Mirror"
+        } ${loading === 'all' ? 'opacity-50' : ''}`}
+        title={anyRunning ? 'Stop All Mirrors (right-click: menu)' : 'Start All Mirrors (right-click: menu)'}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="10" />
@@ -114,6 +136,11 @@ function MirrorButton() {
             <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
           )}
         </svg>
+        {anyRunning && (
+          <span className="absolute -top-1 -right-1 bg-success text-bg text-[9px] font-bold w-4 h-4 flex items-center justify-center rounded-full">
+            {providers.filter(p => p.running).length}
+          </span>
+        )}
       </button>
 
       {open && (
