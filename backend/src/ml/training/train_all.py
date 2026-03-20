@@ -87,6 +87,9 @@ class TrainingOrchestrator:
             if config.get("source_type") == "level_touch":
                 count = _count_level_touch_rows(session)
                 ready[name] = count >= config["min_samples"]
+            elif config.get("domain") == "extraction":
+                # Extraction optimizers check their own tables via check_and_train
+                ready[name] = True
             else:
                 data = get_training_data(session, config["domain"], config["source_type"])
                 ready[name] = len(data) >= config["min_samples"]
@@ -99,8 +102,8 @@ class TrainingOrchestrator:
         trainer_fn = _get_trainer(model_name)
         if trainer_fn is None:
             return None
-        if config.get("source_type") == "level_touch":
-            # level_classifier loads its own data — skip ml_features threshold check
+        if config.get("source_type") == "level_touch" or config.get("domain") == "extraction":
+            # These models load their own data — skip ml_features threshold check
             return trainer_fn(None, session)
         from src.ml.feature_store import get_training_data
         data = get_training_data(session, config["domain"], config["source_type"])
@@ -218,22 +221,38 @@ def _train_macro_engine(data, session):
 
 def _train_schedule_optimizer(data, session):
     from src.ml.optimizer.schedule import ScheduleOptimizer
-    return ScheduleOptimizer().check_and_train(session)
+    result = ScheduleOptimizer().check_and_train(session)
+    if result is None:
+        return None
+    result["training_data_count"] = result.get("training_samples", 0)
+    return result
 
 
 def _train_provider_priority(data, session):
     from src.ml.optimizer.provider_priority import ProviderPriorityScorer
-    return ProviderPriorityScorer().check_and_train(session)
+    result = ProviderPriorityScorer().check_and_train(session)
+    if result is None:
+        return None
+    result["training_data_count"] = len(result.get("rankings", []))
+    return result
 
 
 def _train_timeout_tuner(data, session):
     from src.ml.optimizer.timeout import TimeoutTuner
-    return TimeoutTuner().check_and_train(session)
+    result = TimeoutTuner().check_and_train(session)
+    if result is None:
+        return None
+    result["training_data_count"] = len(result.get("recommendations", {}))
+    return result
 
 
 def _train_coverage_optimizer(data, session):
     from src.ml.optimizer.coverage import CoverageOptimizer
-    return CoverageOptimizer().check_and_train(session)
+    result = CoverageOptimizer().check_and_train(session)
+    if result is None:
+        return None
+    result["training_data_count"] = len(result.get("gaps", []))
+    return result
 
 
 def _count_level_touch_rows(session) -> int:
