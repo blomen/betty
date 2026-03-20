@@ -2,13 +2,35 @@
 
 from __future__ import annotations
 
+import datetime as _dt_mod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import typer
 
+_ET = ZoneInfo("US/Eastern")
+
 rl_app = typer.Typer(help="RL Trading Agent — fetch, replay, train, eval")
+
+
+def _assign_session_date(ts_et):
+    """Assign a tick to its futures session date based on 18:00 ET cutoff.
+
+    NQ futures sessions run 18:00 ET → 17:00 ET next day.
+    Ticks at/after 18:00 ET belong to the NEXT business day's session.
+    Weekend ticks are dropped (returns None).
+    """
+    t = ts_et.time()
+    d = ts_et.date()
+    if t.hour >= 18:
+        d = d + _dt_mod.timedelta(days=1)
+        while d.weekday() >= 5:
+            d = d + _dt_mod.timedelta(days=1)
+    if d.weekday() >= 5:
+        return None
+    return d
 
 # Paths
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "rl"
@@ -81,9 +103,13 @@ def verify_levels(
         typer.echo(f"No 'timestamp' column in {pfile.name}", err=True)
         raise typer.Exit(1)
 
-    df["_date"] = pd.to_datetime(df["timestamp"]).dt.date
+    df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+    df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+    df = df.dropna(subset=["_session_date"])
     target_date = target.date()
-    day_df = df[df["_date"] == target_date].drop(columns=["_date"])
+    day_df = df[df["_session_date"] == target_date].drop(
+        columns=["_session_date", "_ts_et"], errors="ignore"
+    )
 
     if day_df.empty:
         typer.echo(f"No ticks found for {date} in {pfile.name}", err=True)
@@ -92,8 +118,6 @@ def verify_levels(
     ticks = day_df.rename(columns={"timestamp": "ts"}).to_dict(orient="records")
     typer.echo(f"Replaying {len(ticks):,} ticks for {date} ...")
 
-    from zoneinfo import ZoneInfo
-    _ET = ZoneInfo("US/Eastern")
     session_dt = datetime(target_date.year, target_date.month, target_date.day, 12, 0, 0, tzinfo=_ET)
 
     engine = ReplayEngine()
@@ -204,10 +228,6 @@ def precompute(
 
     typer.echo(f"Processing {len(parquet_files)} tick file(s) ...")
 
-    from zoneinfo import ZoneInfo
-    import datetime as _dt_mod
-    _ET = ZoneInfo("US/Eastern")
-
     new_count = 0
     for pfile in parquet_files:
         try:
@@ -221,18 +241,6 @@ def precompute(
             continue
 
         df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
-
-        def _assign_session_date(ts_et):
-            t = ts_et.time()
-            d = ts_et.date()
-            if t.hour >= 18:
-                d = d + _dt_mod.timedelta(days=1)
-                while d.weekday() >= 5:
-                    d = d + _dt_mod.timedelta(days=1)
-            if d.weekday() >= 5:
-                return None
-            return d
-
         df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
         df = df.dropna(subset=["_session_date"])
 
@@ -344,31 +352,31 @@ def replay(
             typer.echo(f"  Skipping {pfile.name}: {exc}")
             continue
 
-        # Group ticks by date
-        if "timestamp" in df.columns:
-            df["_date"] = pd.to_datetime(df["timestamp"]).dt.date
-        else:
+        # Group ticks by futures session date (18:00 ET cutoff)
+        if "timestamp" not in df.columns:
             typer.echo(f"  Skipping {pfile.name}: no 'timestamp' column")
             continue
 
+        df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+        df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+        df = df.dropna(subset=["_session_date"])
+
         # Convert to list of dicts with 'ts' key
         df_renamed = df.rename(columns={"timestamp": "ts"})
-        dates = sorted(df_renamed["_date"].unique())
+        dates = sorted(df_renamed["_session_date"].unique())
 
         session_episodes = 0
         prior_levels: dict | None = None  # Chain session levels across days
 
         for session_date in dates:
-            day_df = df_renamed[df_renamed["_date"] == session_date].drop(columns=["_date"])
+            day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
+                columns=["_session_date", "_ts_et"], errors="ignore"
+            )
             ticks = day_df.to_dict(orient="records")
 
             if not ticks:
                 continue
 
-            # session_date as ET noon — ensures .astimezone(ET).date() gives the correct day
-            # (UTC midnight would convert to previous day in ET due to UTC-4/5 offset)
-            from zoneinfo import ZoneInfo
-            _ET = ZoneInfo("US/Eastern")
             session_dt = datetime(session_date.year, session_date.month, session_date.day, 12, 0, 0, tzinfo=_ET)
 
             precomputed = None

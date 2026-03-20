@@ -619,9 +619,13 @@ class ReplayEngine:
         else:
             session_type = "globex"
 
-        # Session volume as fraction of total
-        total_volume = sum(b.get("volume", 0) for b in bars_1m)
-        session_volume_pct = min(1.0, total_volume / max(1, total_volume))
+        # Session progress: fraction of RTH elapsed (390 minutes total)
+        # We can't know future volume, so bar count is the best proxy
+        rth_bar_count = sum(
+            1 for b in bars_1m
+            if _is_rth_bar(b)
+        )
+        session_volume_pct = min(1.0, rth_bar_count / 390.0)
 
         # Daily range percentage
         if bars_1m:
@@ -688,6 +692,19 @@ def _normalise_tick(tick: Any) -> dict:
         "size": int(tick.size),
         "side": tick.side,
     }
+
+
+def _is_rth_bar(bar: dict) -> bool:
+    """Check if a bar falls within RTH (09:30-16:00 ET)."""
+    bar_ts = bar.get("ts")
+    if bar_ts is None:
+        return False
+    if isinstance(bar_ts, str):
+        bar_ts = datetime.fromisoformat(bar_ts)
+    if bar_ts.tzinfo is None:
+        bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+    bar_et = bar_ts.astimezone(ET)
+    return time(9, 30) <= bar_et.time() < time(16, 0)
 
 
 def _add_optional(
