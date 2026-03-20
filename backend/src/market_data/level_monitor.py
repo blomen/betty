@@ -637,7 +637,6 @@ class LevelMonitor:
             "weekly_hl": LevelType.WEEKLY_HL, "monthly_hl": LevelType.MONTHLY_HL,
             "naked_poc": LevelType.NAKED_POC, "single_print": LevelType.SINGLE_PRINT,
             "fvg": LevelType.FVG, "order_block": LevelType.ORDER_BLOCK,
-            "swing_point": LevelType.SWING_POINT,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
 

@@ -30,7 +30,6 @@ class LevelType(str, Enum):
     SINGLE_PRINT = "single_print"
     FVG = "fvg"
     ORDER_BLOCK = "order_block"
-    SWING_POINT = "swing_point"
 
 
 class Action(int, Enum):

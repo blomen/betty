@@ -1,4 +1,4 @@
-// NeuralNetworkSVG.tsx — DQN 107→128→128→64→3 visualization
+// NeuralNetworkSVG.tsx — DQN 106→128→128→64→3 visualization
 import { useMemo } from 'react';
 import {
   DQN_INPUTS, DQN_SEGMENTS, HIDDEN_LAYERS, ACTION_NAMES, ACTION_COLORS,
@@ -19,7 +19,7 @@ const OUTPUT_X = 1260;
 const NODE_R = 4;
 const HIDDEN_DOT_R = 3;
 const OUTPUT_R = 16;
-const ROW_H = 10;       // tight for 107 nodes
+const ROW_H = 10;       // tight for 106 nodes
 const SEGMENT_GAP = 8;
 const TOP_PAD = 35;
 
@@ -244,7 +244,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         </g>
       ))}
 
-      {/* ── Input nodes (107) ── */}
+      {/* ── Input nodes (106) ── */}
       {DQN_INPUTS.map((def, i) => {
         const y = inputNodePositions[i];
         const brightness = inputBrightnesses[i];
@@ -363,7 +363,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         x={700} y={totalHeight - 10}
         fill="#333" fontSize="9" fontFamily="monospace" textAnchor="middle"
       >
-        DQN: 107 → 128 (ReLU) → 128 (ReLU) → 64 (ReLU) → 3 Q-values
+        DQN: 106 → 128 (ReLU) → 128 (ReLU) → 64 (ReLU) → 3 Q-values
       </text>
     </svg>
   );

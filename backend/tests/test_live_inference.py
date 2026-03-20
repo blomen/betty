@@ -1,6 +1,7 @@
 import numpy as np
 from unittest.mock import patch
 from src.rl.live_inference import DQNLiveInference
+from src.rl.features.observation import OBSERVATION_DIM
 
 
 def test_infer_returns_none_when_no_model():
@@ -14,7 +15,7 @@ def test_infer_returns_full_payload():
     """With a model loaded, infer() returns complete payload."""
     service = DQNLiveInference()
     from src.rl.agent.network import DQNetwork
-    service._network = DQNetwork(input_dim=107)
+    service._network = DQNetwork(input_dim=OBSERVATION_DIM)
     service._loaded = True
 
     state = {
@@ -33,7 +34,7 @@ def test_infer_returns_full_payload():
     result = service.infer(state)
 
     assert result is not None
-    assert len(result["inputs"]) == 107
+    assert len(result["inputs"]) == OBSERVATION_DIM
     assert len(result["activations"]["layer1"]) == 128
     assert len(result["activations"]["layer2"]) == 128
     assert len(result["activations"]["layer3"]) == 64

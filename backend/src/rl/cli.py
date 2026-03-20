@@ -170,14 +170,6 @@ def verify_levels(
     for ob in snapshot["order_blocks"][:5]:
         typer.echo(f"  OB   {ob['direction']:8s}  {ob['low']:.2f} – {ob['high']:.2f}")
 
-    sp = snapshot["swing_points"]
-    if sp:
-        typer.echo(f"\n{'─'*60}")
-        typer.echo(f"SWING STRUCTURE: {sp.get('structure', 'unknown')}")
-        for k in ["swing_high", "swing_low", "last_hh", "last_hl", "last_lh", "last_ll"]:
-            if sp.get(k) is not None:
-                typer.echo(f"  {k:20s}  {sp[k]:>12.2f}")
-
     typer.echo(f"\n{'─'*60}")
     typer.echo(f"EPISODES: {len(episodes)} level touches detected")
     for i, ep in enumerate(episodes[:10]):

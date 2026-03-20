@@ -25,7 +25,6 @@ from ...market_data.levels import (
     compute_session_levels,
     detect_fvgs,
     detect_order_blocks,
-    detect_swing_points,
     SessionLevels,
 )
 from ...market_data.tpo import build_full_tpo_profile
@@ -81,8 +80,6 @@ class ReplayEngine:
         self._session_levels: SessionLevels = SessionLevels()
         self._fvgs: list = []
         self._order_blocks: list = []
-        self._swing_points: dict = {}
-
         # Active levels: list of (name, LevelType, price)
         self._active_levels: list[tuple[str, LevelType, float]] = []
 
@@ -205,7 +202,6 @@ class ReplayEngine:
                 {"low": ob.price_low, "high": ob.price_high, "direction": ob.direction}
                 for ob in self._order_blocks
             ],
-            "swing_points": self._swing_points,
             "active_levels": [
                 {"name": name, "type": lt.value, "price": price}
                 for name, lt, price in self._active_levels
@@ -362,7 +358,6 @@ class ReplayEngine:
             recent_bars = bars_1m[-50:]
             self._fvgs = detect_fvgs(recent_bars)
             self._order_blocks = detect_order_blocks(recent_bars)
-            self._swing_points = detect_swing_points(recent_bars)
 
         # Build CandleFlow from ticks accumulated since last bar close
         if self._candle_ticks:
@@ -442,13 +437,6 @@ class ReplayEngine:
         for ob in self._order_blocks:
             mid = (ob.price_low + ob.price_high) / 2.0
             levels.append(("order_block", LevelType.ORDER_BLOCK, mid))
-
-        # --- Swing points: last HH, HL, LH, LL ---
-        sp = self._swing_points
-        _add_optional(levels, "swing_hh", LevelType.SWING_POINT, sp.get("last_hh"))
-        _add_optional(levels, "swing_hl", LevelType.SWING_POINT, sp.get("last_hl"))
-        _add_optional(levels, "swing_lh", LevelType.SWING_POINT, sp.get("last_lh"))
-        _add_optional(levels, "swing_ll", LevelType.SWING_POINT, sp.get("last_ll"))
 
         # --- Precomputed cross-session levels ---
         if self._precomputed:
