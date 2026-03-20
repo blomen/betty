@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   MonitoredLevel, BattleScreenData, MlPrediction, MlFeatureSnapshot,
   LevelTouchedEvent, LevelApproachingEvent, OrderflowUpdateEvent, LevelRejectedEvent,
+  DQNInferenceEvent,
 } from '@/types/market';
 
 interface LevelMonitorState {
@@ -10,6 +11,7 @@ interface LevelMonitorState {
   battleActive: boolean;
   latestPrediction: MlPrediction | null;
   latestFeatures: MlFeatureSnapshot | null;
+  dqnInference: DQNInferenceEvent | null;
 }
 
 export function useLevelMonitor(
@@ -22,6 +24,7 @@ export function useLevelMonitor(
     battleActive: false,
     latestPrediction: null,
     latestFeatures: null,
+    dqnInference: null,
   });
 
   const levelStatusRef = useRef<Map<string, MonitoredLevel>>(new Map());
@@ -172,6 +175,10 @@ export function useLevelMonitor(
       setState(prev => ({ ...prev, latestFeatures: data }));
     };
 
+    const onDqnInference = (e: MessageEvent) => {
+      try { setState(prev => ({ ...prev, dqnInference: JSON.parse(e.data) })); } catch {}
+    };
+
     const onPositionTarget = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
       setState(prev => ({
@@ -202,6 +209,7 @@ export function useLevelMonitor(
     es.addEventListener('position_at_target', onPositionTarget);
     es.addEventListener('ml_prediction', onMlPrediction);
     es.addEventListener('ml_features', onMlFeatures);
+    es.addEventListener('dqn_inference', onDqnInference);
 
     return () => {
       es.removeEventListener('level_approaching', onApproaching);
@@ -212,6 +220,7 @@ export function useLevelMonitor(
       es.removeEventListener('position_at_target', onPositionTarget);
       es.removeEventListener('ml_prediction', onMlPrediction);
       es.removeEventListener('ml_features', onMlFeatures);
+      es.removeEventListener('dqn_inference', onDqnInference);
     };
   }, [esRef, sessionData]);
 
@@ -234,6 +243,7 @@ export function useLevelMonitor(
     battleActive: state.battleActive,
     latestPrediction: state.latestPrediction,
     latestFeatures: state.latestFeatures,
+    dqnInference: state.dqnInference,
     dismissBattle,
     switchBattleLevel,
     seedLevels,
