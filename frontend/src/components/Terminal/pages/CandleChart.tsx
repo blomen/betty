@@ -13,7 +13,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/services/api';
-import type { CandleData, ExpandedSession } from '@/types/market';
+import type { CandleData, ExpandedSession, TPOLiveProfile } from '@/types/market';
 
 const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
@@ -85,6 +85,7 @@ interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
+  tpo?: TPOLiveProfile | null;
 }
 
 function toLine(c: CandleData): LineData<Time> {
@@ -143,7 +144,7 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
   return boxes;
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -168,6 +169,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   // Session levels overlay data (per-day PDH/PDL, IB, Tokyo, London)
   const sessionLevelsRef = useRef<import('@/types/market').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
+
+  // TPO overlay data
+  const tpoRef = useRef<TPOLiveProfile | null>(null);
+  tpoRef.current = tpo ?? null;
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -326,6 +331,35 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         ctx.restore();
       }
     }
+
+    // --- TPO histogram on right edge (orange, next to VP histograms) ---
+    const tpoData = tpoRef.current;
+    if (tpoData && !hidden?.has('vp_tpo')) {
+      const counts = tpoData.tpo_counts;
+      const prices = Object.keys(counts).map(Number);
+      if (prices.length > 0) {
+        const maxCount = Math.max(...prices.map(p => counts[String(p)]));
+        if (maxCount > 0) {
+          const tpoBarMaxWidth = 60;
+          // Offset TPO bars slightly left of VP bars to avoid overlap
+          const tpoXRight = xRight - maxBarWidth - 4;
+
+          for (const price of prices) {
+            const y = pSeries.priceToCoordinate(price);
+            if (y === null || y < 0 || y > rect.height) continue;
+
+            const count = counts[String(price)];
+            const barW = (count / maxCount) * tpoBarMaxWidth;
+            const isPOC = price === tpoData.poc;
+            const inVA = price >= tpoData.val && price <= tpoData.vah;
+
+            const alpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
+            ctx.fillStyle = `rgba(255, 107, 53, ${alpha})`;
+            ctx.fillRect(tpoXRight - barW, y - 1, barW, 2);
+          }
+        }
+      }
+    }
   }, []);
 
   // Initialize chart
@@ -476,8 +510,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     return () => { cancelled = true; };
   }, [session, drawOverlays]);
 
-  // Redraw when VP data loads or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, drawOverlays]);
+  // Redraw when VP data loads, TPO changes, or visibility changes
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, tpo, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
@@ -633,7 +667,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     add('m_poc', p?.monthly?.poc, '#F59E0B', 'mPOC', LineStyle.Solid, 2);
     add('m_vah', p?.monthly?.vah, '#F59E0B', 'mVAH', LineStyle.Dashed, 1);
     add('m_val', p?.monthly?.val, '#F59E0B', 'mVAL', LineStyle.Dashed, 1);
-  }, [session, hiddenLevels]);
+
+    // TPO Profile levels (orange #ff6b35)
+    add('t_poc', tpo?.poc, '#ff6b35', 'tPOC', LineStyle.Solid, 2);
+    add('t_vah', tpo?.vah, '#ff6b35', 'tVAH', LineStyle.Dashed, 1);
+    add('t_val', tpo?.val, '#ff6b35', 'tVAL', LineStyle.Dashed, 1);
+  }, [session, hiddenLevels, tpo]);
 
   return (
     <div className="relative w-full h-full">
