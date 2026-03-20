@@ -270,6 +270,7 @@ class LevelMonitor:
             "price": price,
             "distance_ticks": round(dist, 1),
         })
+        self._emit_dqn_inference(level, price, "approaching")
 
     def _on_level_touched(self, level: MonitoredLevel, price: float) -> None:
         snapshot = self._compute_orderflow_snapshot()
@@ -290,6 +291,7 @@ class LevelMonitor:
 
         # ML feature extraction + outcome tracking
         self._handle_ml_touch(level, price, snapshot)
+        self._emit_dqn_inference(level, price, "touched")
 
     async def _emit_level_context(self, level_name: str, level_price: float) -> None:
         """Fetch ML predictions and macro data, emit as follow-up event.
@@ -586,3 +588,74 @@ class LevelMonitor:
                     })
                 except Exception:
                     pass
+
+        # DQN inference refresh while at level
+        if self._active_level_name:
+            active = next((l for l in self._levels if l.name == self._active_level_name), None)
+            if active:
+                self._emit_dqn_inference(active, price, "approaching")
+
+    def _emit_dqn_inference(self, level: MonitoredLevel, price: float, trigger: str) -> None:
+        """Run DQN inference and emit dqn_inference SSE event."""
+        try:
+            from src.rl.live_inference import get_dqn_inference
+            dqn = get_dqn_inference()
+            if not dqn.is_loaded:
+                return
+            rl_state = self._build_rl_state(level, price)
+            result = dqn.infer(rl_state)
+            if result is not None:
+                self._publish({
+                    "type": "dqn_inference",
+                    "trigger": trigger,
+                    "level": level.name,
+                    "level_price": level.price,
+                    **result,
+                    "timestamp": time.time(),
+                })
+        except Exception:
+            logger.debug("DQN inference failed for %s", level.name, exc_info=True)
+
+    def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
+        """Assemble a state dict compatible with RL build_observation()."""
+        from src.rl.config import LevelType
+
+        # Map level name to LevelType enum
+        name_lower = level.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
+        level_type_map = {
+            "vwap": LevelType.VWAP,
+            "vwap_1sd_upper": LevelType.VWAP_SD1, "vwap_1sd_lower": LevelType.VWAP_SD1,
+            "vwap_2sd_upper": LevelType.VWAP_SD2, "vwap_2sd_lower": LevelType.VWAP_SD2,
+            "vwap_3sd_upper": LevelType.VWAP_SD3, "vwap_3sd_lower": LevelType.VWAP_SD3,
+            "poc": LevelType.POC_SESSION, "poc_daily": LevelType.POC_DAILY,
+            "poc_weekly": LevelType.POC_WEEKLY, "poc_monthly": LevelType.POC_MONTHLY,
+            "vah": LevelType.VAH, "val": LevelType.VAL,
+            "ib_high": LevelType.IB_HIGH, "ib_low": LevelType.IB_LOW,
+            "pdh": LevelType.PDH, "pdl": LevelType.PDL,
+            "tokyo_hl": LevelType.TOKYO_HL, "london_hl": LevelType.LONDON_HL,
+            "globex_hl": LevelType.GLOBEX_HL, "overnight_hl": LevelType.OVERNIGHT_HL,
+            "weekly_hl": LevelType.WEEKLY_HL, "monthly_hl": LevelType.MONTHLY_HL,
+            "naked_poc": LevelType.NAKED_POC, "single_print": LevelType.SINGLE_PRINT,
+            "fvg": LevelType.FVG, "order_block": LevelType.ORDER_BLOCK,
+            "swing_point": LevelType.SWING_POINT,
+        }
+        lt = level_type_map.get(name_lower, LevelType.VWAP)
+
+        # Get candles if available
+        candles = []
+        if self._candle_flow_fn:
+            candles = self._candle_flow_fn() or []
+
+        return {
+            "level_type": lt,
+            "price": price,
+            "candles": candles,
+            "vwap_bands": None,       # Not stored on LevelMonitor
+            "volume_profile": None,   # Not stored on LevelMonitor
+            "tpo_profile": None,      # Not stored on LevelMonitor
+            "session_levels": None,   # Not stored on LevelMonitor
+            "all_levels": [l.price for l in self._levels],
+            "orderflow_signals": None,  # Will be extracted from candles by build_observation
+            "macro": None,            # Not stored on LevelMonitor
+            "session_context": None,  # Not stored on LevelMonitor
+        }
