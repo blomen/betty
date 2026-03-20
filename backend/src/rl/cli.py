@@ -97,7 +97,18 @@ def verify_levels(
     session_dt = datetime(target_date.year, target_date.month, target_date.day, 12, 0, 0, tzinfo=_ET)
 
     engine = ReplayEngine()
-    episodes = engine.replay_session(ticks, session_dt)
+
+    # Load precomputed levels if available
+    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
+
+    summaries_path = _DATA_DIR / "session_summaries.json"
+    summaries = load_summaries(summaries_path)
+    precomputed = None
+    if summaries:
+        precomputed = compute_precomputed_levels(summaries, date)
+        typer.echo(f"Loaded precomputed levels from {len(summaries)} sessions.")
+
+    episodes = engine.replay_session(ticks, session_dt, precomputed_levels=precomputed)
     snapshot = engine.get_level_snapshot()
 
     typer.echo(f"\n{'='*60}")
