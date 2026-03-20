@@ -1201,8 +1201,12 @@ export const api = {
 
   // ============ Mirror ============
 
-  async getMirrorStatus(): Promise<{ running: boolean; provider: string | null; status: string; since: string | null }> {
+  async getMirrorStatus(): Promise<{ running: boolean; mirrors: Record<string, any> }> {
     return fetchJson('/mirror/status');
+  },
+
+  async getMirrorProviders(): Promise<{ providers: { id: string; name: string; running: boolean }[] }> {
+    return fetchJson('/mirror/providers');
   },
 
   async startMirror(provider = 'spelklubben', discovery = false): Promise<{ running: boolean; provider: string; status: string; since: string }> {
@@ -1211,8 +1215,9 @@ export const api = {
     return fetchJson(`/mirror/start?${params}`, { method: 'POST' });
   },
 
-  async stopMirror(): Promise<{ running: boolean; provider: string | null; status: string }> {
-    return fetchJson('/mirror/stop', { method: 'POST' });
+  async stopMirror(provider?: string): Promise<any> {
+    const params = provider ? `?provider=${provider}` : '';
+    return fetchJson(`/mirror/stop${params}`, { method: 'POST' });
   },
 
 };

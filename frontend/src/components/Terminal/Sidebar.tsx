@@ -1,6 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { TabIcon } from './TabBar';
 import { api } from '../../services/api';
+
+interface MirrorProvider {
+  id: string;
+  name: string;
+  running: boolean;
+}
 
 export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingL2' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
@@ -41,60 +47,97 @@ function SidebarButton({
 }
 
 function MirrorButton() {
-  const [running, setRunning] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [providers, setProviders] = useState<MirrorProvider[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const anyRunning = providers.some(p => p.running);
+
+  const refresh = () => {
+    api.getMirrorProviders()
+      .then((r: { providers: MirrorProvider[] }) => setProviders(r.providers))
+      .catch(() => {});
+  };
 
   useEffect(() => {
-    api.getMirrorStatus().then((s: { running: boolean }) => setRunning(s.running)).catch(() => {});
-    const id = setInterval(() => {
-      api.getMirrorStatus().then((s: { running: boolean }) => setRunning(s.running)).catch(() => {});
-    }, 10_000);
+    refresh();
+    const id = setInterval(refresh, 10_000);
     return () => clearInterval(id);
   }, []);
 
-  const toggle = async () => {
-    setLoading(true);
+  // Close menu on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const toggle = async (providerId: string, isRunning: boolean) => {
+    setLoading(providerId);
     try {
-      if (running) {
-        await api.stopMirror();
-        setRunning(false);
+      if (isRunning) {
+        await api.stopMirror(providerId);
       } else {
-        await api.startMirror();
-        setRunning(true);
+        await api.startMirror(providerId);
       }
+      refresh();
     } catch (err) {
       console.error('[mirror]', err);
     } finally {
-      setLoading(false);
+      setLoading(null);
     }
   };
 
   return (
-    <button
-      onClick={toggle}
-      disabled={loading}
-      className={`w-12 h-12 flex items-center justify-center mb-1 border-2 transition ${
-        running
-          ? 'border-success text-success shadow-[0_0_12px_rgba(76,175,80,0.25)] bg-success/5 animate-[mirrorPulse_2s_ease-in-out_infinite]'
-          : 'border-transparent text-muted hover:border-muted hover:text-text'
-      } ${loading ? 'opacity-50' : ''}`}
-      title={running ? 'Stop Mirror' : 'Start Mirror'}
-    >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        {running ? (
-          <>
-            <circle cx="12" cy="12" r="10" />
-            <line x1="10" y1="15" x2="10" y2="9" />
-            <line x1="14" y1="15" x2="14" y2="9" />
-          </>
-        ) : (
-          <>
-            <circle cx="12" cy="12" r="10" />
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={() => setOpen(!open)}
+        className={`w-12 h-12 flex items-center justify-center mb-1 border-2 transition ${
+          anyRunning
+            ? 'border-success text-success shadow-[0_0_12px_rgba(76,175,80,0.25)] bg-success/5'
+            : 'border-transparent text-muted hover:border-muted hover:text-text'
+        }`}
+        title="Mirror"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          {anyRunning ? (
+            <>
+              <line x1="10" y1="15" x2="10" y2="9" />
+              <line x1="14" y1="15" x2="14" y2="9" />
+            </>
+          ) : (
             <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
-          </>
-        )}
-      </svg>
-    </button>
+          )}
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute left-14 bottom-0 z-50 border-2 border-border bg-panel min-w-[180px] py-1 shadow-lg">
+          <div className="px-3 py-1 text-[10px] text-muted uppercase tracking-wider">Mirror</div>
+          {providers.map(p => (
+            <button
+              key={p.id}
+              onClick={() => toggle(p.id, p.running)}
+              disabled={loading === p.id}
+              className={`w-full px-3 py-1.5 text-xs font-mono flex items-center gap-2 hover:bg-white/5 ${
+                loading === p.id ? 'opacity-50' : ''
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${p.running ? 'bg-success' : 'bg-muted/30'}`} />
+              <span className={p.running ? 'text-text' : 'text-muted'}>{p.name}</span>
+              <span className="ml-auto text-[10px] text-muted">
+                {loading === p.id ? '...' : p.running ? 'stop' : 'start'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
