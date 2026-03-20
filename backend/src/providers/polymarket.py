@@ -248,9 +248,12 @@ class PolymarketRetriever(Retriever):
                             asks = data.get("asks", [])
                             if asks:
                                 vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
+                                # Always store depth so _is_liquid works correctly
+                                self._clob_depth[token_id] = depth_usd
+                                # Only use CLOB VWAP when in valid range; otherwise
+                                # _get_clob_price falls back to Gamma mid-price
                                 if 0.01 < vwap < 0.99:
                                     self._clob_prices[token_id] = vwap
-                                    self._clob_depth[token_id] = depth_usd
                         elif resp.status != 404:
                             logger.debug(f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}...")
                 except Exception as e:
@@ -1079,6 +1082,9 @@ class PolymarketRetriever(Retriever):
                                 return None
                             yes_price = self._get_clob_price(yes_token, prices[yes_idx]) if yes_token else prices[yes_idx]
                             no_price = self._get_clob_price(no_token, prices[no_idx]) if no_token else prices[no_idx]
+                            # Re-check after CLOB — VWAP can push price outside valid range
+                            if not (0.02 < yes_price < 0.98) or not (0.02 < no_price < 0.98):
+                                return None
                             return {
                                 "type": "moneyline",
                                 "outcomes": [
@@ -1103,6 +1109,9 @@ class PolymarketRetriever(Retriever):
                     if not self._is_liquid(token_id):
                         return None  # Skip entire market if any outcome is illiquid
                     price = self._get_clob_price(token_id, p) if token_id else p
+                    # Re-check after CLOB — VWAP can push price outside valid range
+                    if not (0.02 < price < 0.98):
+                        continue
                     formatted_outcomes.append({
                         "name": name,
                         "odds": self._price_to_odds(price),
@@ -1205,6 +1214,8 @@ class PolymarketRetriever(Retriever):
                 if not self._is_liquid(token_id):
                     return None
                 price = self._get_clob_price(token_id, p) if token_id else p
+                if not (0.02 < price < 0.98):
+                    continue
                 result_outcomes.append({
                     "name": norm,
                     "odds": self._price_to_odds(price),
@@ -1284,6 +1295,8 @@ class PolymarketRetriever(Retriever):
                     return None
                 if name_lower == "over":
                     price = self._get_clob_price(token_id, p) if token_id else p
+                    if not (0.02 < price < 0.98):
+                        continue
                     result_outcomes.append({
                         "name": "over",
                         "odds": self._price_to_odds(price),
@@ -1291,6 +1304,8 @@ class PolymarketRetriever(Retriever):
                     })
                 elif name_lower == "under":
                     price = self._get_clob_price(token_id, p) if token_id else p
+                    if not (0.02 < price < 0.98):
+                        continue
                     result_outcomes.append({
                         "name": "under",
                         "odds": self._price_to_odds(price),
@@ -1369,6 +1384,8 @@ class PolymarketRetriever(Retriever):
                 if not self._is_liquid(token_id):
                     return None
                 price = self._get_clob_price(token_id, p) if token_id else p
+                if not (0.02 < price < 0.98):
+                    continue
                 formatted_outcomes.append({
                     "name": norm,
                     "odds": self._price_to_odds(price),
@@ -1441,6 +1458,8 @@ class PolymarketRetriever(Retriever):
                 if not self._is_liquid(token_id):
                     return None
                 price = self._get_clob_price(token_id, p) if token_id else p
+                if not (0.02 < price < 0.98):
+                    continue
                 result_outcomes.append({
                     "name": norm,
                     "odds": self._price_to_odds(price),
@@ -1509,7 +1528,7 @@ class PolymarketRetriever(Retriever):
 
             yes_price = float(prices[yes_idx])
 
-            if yes_price < 0.02:  # Skip illiquid markets
+            if yes_price < 0.02 or yes_price > 0.98:  # Skip illiquid/resolved markets
                 continue
 
             # Extract Yes token ID for this sub-market
@@ -1521,6 +1540,11 @@ class PolymarketRetriever(Retriever):
 
             # Use CLOB depth-adjusted VWAP if available
             price = self._get_clob_price(token_id, yes_price) if token_id else yes_price
+
+            # Re-check after CLOB adjustment — VWAP can push price outside valid range
+            if price < 0.02 or price > 0.98:
+                continue
+
             odds = self._price_to_odds(price)
 
             # Identify market type from question
