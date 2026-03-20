@@ -277,6 +277,11 @@ class MarketService:
         # TPO profile from 30-min bars
         tpo = build_full_tpo_profile(bars_30m)
 
+        try:
+            self.store_tpo_session(tpo, symbol, target_date)
+        except Exception:
+            logger.warning("Failed to store TPO session for %s/%s", symbol, target_date, exc_info=True)
+
         # Session metrics: RF from 30-min highs/lows
         highs_30m = [b["high"] for b in bars_30m]
         lows_30m = [b["low"] for b in bars_30m]
@@ -1364,6 +1369,57 @@ class MarketService:
             }
             for s in sessions
         ]
+
+    # ---- TPO session storage ----
+
+    def store_tpo_session(self, profile, symbol: str, date_str: str):
+        """Store a completed TPO session profile to the DB."""
+        from ..db.models import MarketTPOSession
+        import json as _json
+        from dataclasses import asdict
+        session_json = _json.dumps(asdict(profile), default=str)
+
+        existing = self.db.query(MarketTPOSession).filter_by(symbol=symbol, date=date_str).first()
+        if existing:
+            for attr in ['poc', 'vah', 'val', 'ib_high', 'ib_low', 'rotation_factor',
+                          'profile_shape', 'opening_type', 'opening_direction',
+                          'upper_excess', 'lower_excess', 'session_high', 'session_low']:
+                setattr(existing, attr, getattr(profile, attr))
+            existing.session_json = session_json
+        else:
+            self.db.add(MarketTPOSession(
+                symbol=symbol, date=date_str,
+                poc=profile.poc, vah=profile.vah, val=profile.val,
+                ib_high=profile.ib_high, ib_low=profile.ib_low,
+                rotation_factor=profile.rotation_factor,
+                profile_shape=profile.profile_shape,
+                opening_type=profile.opening_type,
+                opening_direction=profile.opening_direction,
+                upper_excess=profile.upper_excess,
+                lower_excess=profile.lower_excess,
+                session_high=profile.session_high,
+                session_low=profile.session_low,
+                session_json=session_json,
+            ))
+        self.db.commit()
+
+    def get_tpo_history(self, symbol: str = "NQ", days: int = 30) -> list[dict]:
+        """Fetch historical TPO sessions for RL batch access."""
+        from ..db.models import MarketTPOSession
+        import json as _json
+        rows = (
+            self.db.query(MarketTPOSession)
+            .filter_by(symbol=symbol)
+            .order_by(MarketTPOSession.date.desc())
+            .limit(days)
+            .all()
+        )
+        result = []
+        for row in reversed(rows):
+            data = _json.loads(row.session_json)
+            data["date"] = row.date
+            result.append(data)
+        return result
 
     # ---- Helper methods for compute_session ----
 

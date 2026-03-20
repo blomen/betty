@@ -1246,6 +1246,35 @@ class MarketLevel(Base):
     )
 
 
+class MarketTPOSession(Base):
+    """Pre-computed TPO profile for a Globex session."""
+    __tablename__ = "market_tpo_sessions"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False)
+    date = Column(String, nullable=False)  # YYYY-MM-DD
+    poc = Column(Float, nullable=False)
+    vah = Column(Float, nullable=False)
+    val = Column(Float, nullable=False)
+    ib_high = Column(Float, nullable=True)
+    ib_low = Column(Float, nullable=True)
+    rotation_factor = Column(Integer, nullable=True)
+    profile_shape = Column(String, nullable=True)
+    opening_type = Column(String, nullable=True)
+    opening_direction = Column(String, nullable=True)
+    upper_excess = Column(Integer, default=0)
+    lower_excess = Column(Integer, default=0)
+    session_high = Column(Float, nullable=True)
+    session_low = Column(Float, nullable=True)
+    session_json = Column(String, nullable=False)  # Full TPOProfile as JSON
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "date", name="uq_market_tpo_session"),
+        Index("ix_market_tpo_sessions_symbol_date", "symbol", "date"),
+    )
+
+
 class MarketContext(Base):
     """Manual context gate persistence (Layer A gates)."""
     __tablename__ = "market_context"

@@ -48,6 +48,209 @@ def fetch(
 
 
 # ---------------------------------------------------------------------------
+# verify-levels
+# ---------------------------------------------------------------------------
+
+@rl_app.command("verify-levels")
+def verify_levels(
+    date: str = typer.Argument(help="Session date YYYY-MM-DD to verify"),
+) -> None:
+    """Replay a single session and print all computed levels for visual verification.
+
+    This helps confirm session levels (PDH/PDL, Tokyo, London, IB, VWAP, VP,
+    FVGs, OBs, swing points) are correct before training the RL agent.
+    """
+    import json
+    import pandas as pd
+
+    from src.rl.data.fetcher import TICKS_DIR
+    from src.rl.data.replay_engine import ReplayEngine
+
+    # Find the parquet file containing this date
+    target = pd.Timestamp(date)
+    month_str = target.strftime("%Y-%m")
+    pfile = TICKS_DIR / f"NQ_{month_str}.parquet"
+
+    if not pfile.exists():
+        typer.echo(f"Tick file not found: {pfile}", err=True)
+        typer.echo(f"Run 'rl fetch' first to download historical data.", err=True)
+        raise typer.Exit(1)
+
+    df = pd.read_parquet(pfile)
+    if "timestamp" not in df.columns:
+        typer.echo(f"No 'timestamp' column in {pfile.name}", err=True)
+        raise typer.Exit(1)
+
+    df["_date"] = pd.to_datetime(df["timestamp"]).dt.date
+    target_date = target.date()
+    day_df = df[df["_date"] == target_date].drop(columns=["_date"])
+
+    if day_df.empty:
+        typer.echo(f"No ticks found for {date} in {pfile.name}", err=True)
+        raise typer.Exit(1)
+
+    ticks = day_df.rename(columns={"timestamp": "ts"}).to_dict(orient="records")
+    typer.echo(f"Replaying {len(ticks):,} ticks for {date} ...")
+
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("US/Eastern")
+    session_dt = datetime(target_date.year, target_date.month, target_date.day, 12, 0, 0, tzinfo=_ET)
+
+    engine = ReplayEngine()
+    episodes = engine.replay_session(ticks, session_dt)
+    snapshot = engine.get_level_snapshot()
+
+    typer.echo(f"\n{'='*60}")
+    typer.echo(f"SESSION LEVELS — {date}")
+    typer.echo(f"{'='*60}")
+
+    sl = snapshot["session_levels"]
+    for name, val in sl.items():
+        if val is not None:
+            typer.echo(f"  {name:20s}  {val:>12.2f}")
+
+    typer.echo(f"\n{'─'*60}")
+    typer.echo("VWAP BANDS")
+    for name, val in snapshot["vwap"].items():
+        if val is not None:
+            typer.echo(f"  {name:20s}  {val:>12.2f}")
+
+    typer.echo(f"\n{'─'*60}")
+    typer.echo("VOLUME PROFILE")
+    for name, val in snapshot["volume_profile"].items():
+        if val is not None:
+            typer.echo(f"  {name:20s}  {val:>12.2f}")
+
+    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"ACTIVE LEVELS ({len(snapshot['active_levels'])} total)")
+    # Sort by price for easy visual checking
+    sorted_levels = sorted(snapshot["active_levels"], key=lambda x: x["price"], reverse=True)
+    for lv in sorted_levels:
+        typer.echo(f"  {lv['price']:>12.2f}  {lv['type']:20s}  {lv['name']}")
+
+    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"FVGs: {len(snapshot['fvgs'])}  |  Order Blocks: {len(snapshot['order_blocks'])}")
+    for fvg in snapshot["fvgs"][:5]:
+        typer.echo(f"  FVG  {fvg['direction']:8s}  {fvg['low']:.2f} – {fvg['high']:.2f}")
+    for ob in snapshot["order_blocks"][:5]:
+        typer.echo(f"  OB   {ob['direction']:8s}  {ob['low']:.2f} – {ob['high']:.2f}")
+
+    sp = snapshot["swing_points"]
+    if sp:
+        typer.echo(f"\n{'─'*60}")
+        typer.echo(f"SWING STRUCTURE: {sp.get('structure', 'unknown')}")
+        for k in ["swing_high", "swing_low", "last_hh", "last_hl", "last_lh", "last_ll"]:
+            if sp.get(k) is not None:
+                typer.echo(f"  {k:20s}  {sp[k]:>12.2f}")
+
+    typer.echo(f"\n{'─'*60}")
+    typer.echo(f"EPISODES: {len(episodes)} level touches detected")
+    for i, ep in enumerate(episodes[:10]):
+        typer.echo(f"  {i+1}. {ep.level_type:20s}  @ {ep.touch_ts}  best={ep.best_action}")
+
+    # Also write JSON for frontend consumption
+    out_path = _DATA_DIR / f"levels_{date}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(snapshot, f, indent=2, default=str)
+    typer.echo(f"\nJSON written to: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# precompute
+# ---------------------------------------------------------------------------
+
+@rl_app.command()
+def precompute(
+    all_months: bool = typer.Option(False, "--all", help="Process all Parquet files"),
+    month: Optional[str] = typer.Option(None, help="Process a specific month YYYY-MM"),
+) -> None:
+    """Build session summaries from tick data for cross-session level computation."""
+    import pandas as pd
+    from src.rl.data.fetcher import TICKS_DIR
+    from src.rl.data.session_store import build_session_summary, save_summaries, load_summaries
+
+    ticks_dir = TICKS_DIR
+    summaries_path = _DATA_DIR / "session_summaries.json"
+
+    existing = load_summaries(summaries_path)
+    typer.echo(f"Loaded {len(existing)} existing session summaries.")
+
+    if all_months:
+        parquet_files = sorted(ticks_dir.glob("NQ_*.parquet"))
+    elif month:
+        p = ticks_dir / f"NQ_{month}.parquet"
+        if not p.exists():
+            typer.echo(f"File not found: {p}", err=True)
+            raise typer.Exit(1)
+        parquet_files = [p]
+    else:
+        parquet_files = sorted(ticks_dir.glob("NQ_*.parquet"))
+
+    if not parquet_files:
+        typer.echo(f"No Parquet files found in {ticks_dir}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Processing {len(parquet_files)} tick file(s) ...")
+
+    from zoneinfo import ZoneInfo
+    import datetime as _dt_mod
+    _ET = ZoneInfo("US/Eastern")
+
+    new_count = 0
+    for pfile in parquet_files:
+        try:
+            df = pd.read_parquet(pfile)
+        except Exception as exc:
+            typer.echo(f"  Skipping {pfile.name}: {exc}")
+            continue
+
+        if "timestamp" not in df.columns:
+            typer.echo(f"  Skipping {pfile.name}: no 'timestamp' column")
+            continue
+
+        df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+
+        def _assign_session_date(ts_et):
+            t = ts_et.time()
+            d = ts_et.date()
+            if t.hour >= 18:
+                d = d + _dt_mod.timedelta(days=1)
+                while d.weekday() >= 5:
+                    d = d + _dt_mod.timedelta(days=1)
+            if d.weekday() >= 5:
+                return None
+            return d
+
+        df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+        df = df.dropna(subset=["_session_date"])
+
+        dates = sorted(df["_session_date"].unique())
+
+        for session_date in dates:
+            date_str = str(session_date)[:10]
+            if date_str in existing:
+                continue
+
+            day_df = df[df["_session_date"] == session_date].copy()
+            day_df["ts"] = day_df["_ts_et"]
+            ticks = day_df[["ts", "price", "size", "side"]].to_dict(orient="records")
+
+            if not ticks:
+                continue
+
+            summary = build_session_summary(date_str, ticks)
+            existing[date_str] = summary
+            new_count += 1
+
+        typer.echo(f"  {pfile.name}: processed")
+
+    save_summaries(existing, summaries_path)
+    typer.echo(f"\nDone. {new_count} new sessions added. Total: {len(existing)} sessions.")
+    typer.echo(f"Saved to: {summaries_path}")
+
+
+# ---------------------------------------------------------------------------
 # replay
 # ---------------------------------------------------------------------------
 
@@ -131,6 +334,8 @@ def replay(
         dates = sorted(df_renamed["_date"].unique())
 
         session_episodes = 0
+        prior_levels: dict | None = None  # Chain session levels across days
+
         for session_date in dates:
             day_df = df_renamed[df_renamed["_date"] == session_date].drop(columns=["_date"])
             ticks = day_df.to_dict(orient="records")
@@ -145,10 +350,24 @@ def replay(
             session_dt = datetime(session_date.year, session_date.month, session_date.day, 12, 0, 0, tzinfo=_ET)
 
             try:
-                episodes = engine.replay_session(ticks, session_dt)
+                episodes = engine.replay_session(ticks, session_dt, prior_session_levels=prior_levels)
             except Exception as exc:
                 typer.echo(f"    Warning: replay failed for {session_date}: {exc}")
                 continue
+
+            # Chain: this session's RTH range → next session's PDH/PDL
+            prior_levels = engine.get_prior_session_for_chaining()
+
+            # Reset weekly/monthly at boundaries
+            next_idx = dates.tolist().index(session_date) + 1 if hasattr(dates, 'tolist') else None
+            if next_idx and next_idx < len(dates):
+                next_date = dates[next_idx]
+                if hasattr(next_date, 'weekday') and next_date.weekday() == 0:  # Monday
+                    prior_levels["weekly_high"] = None
+                    prior_levels["weekly_low"] = None
+                if hasattr(next_date, 'day') and next_date.day == 1:  # 1st of month
+                    prior_levels["monthly_high"] = None
+                    prior_levels["monthly_low"] = None
 
             for ep in episodes:
                 normalizer.update(ep.observation)
