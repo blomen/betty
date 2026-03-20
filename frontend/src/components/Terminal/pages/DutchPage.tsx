@@ -8,6 +8,7 @@ import { ProviderName } from '../ProviderName';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableHeader } from '../SortableHeader';
 import { SearchInput, relativeTime } from '../FilterBar';
+import { useToast, ToastContainer } from '../Toast';
 import { MyBetsSection } from '../MyBetsSection';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { usePersistedState, usePersistedRecordOfSets } from '@/hooks/usePersistedState';
@@ -392,8 +393,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
   // Place bet state (kept at page level for toasts / query invalidation)
   const [isPlacing, setIsPlacing] = useState(false);
   const [placingLeg, setPlacingLeg] = useState<string | null>(null);
-  const [betSuccess, setBetSuccess] = useState<string | null>(null);
-  const [betError, setBetError] = useState<string | null>(null);
+  const { toasts, addToast, dismissToast } = useToast();
   const [placedLegs, setPlacedLegs] = usePersistedRecordOfSets<number, number>('bbq_dutch_placedLegs', {});
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
@@ -481,8 +481,6 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     const legKey = `${opp.id}|${legIdx}`;
     setIsPlacing(true);
     setPlacingLeg(legKey);
-    setBetError(null);
-    setBetSuccess(null);
 
     try {
       await placeBet.mutateAsync({
@@ -506,13 +504,11 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       });
 
       const outcomeLabel = resolveOutcome(leg.outcome, opp, opp.point, true);
-      setBetSuccess(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${effectiveOdds.toFixed(2)} (${formatProviderName(leg.provider)})`);
-      setTimeout(() => setBetSuccess(null), 5000);
+      addToast(`Recorded: ${legStake.toFixed(0)} kr on ${outcomeLabel} @ ${effectiveOdds.toFixed(2)} (${formatProviderName(leg.provider)})`, 'success');
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bet';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
+      addToast(msg, 'error');
     } finally {
       setIsPlacing(false);
       setPlacingLeg(null);
@@ -550,8 +546,6 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
 
     setIsPlacing(true);
     setPlacingLeg(`${opp.id}|all`);
-    setBetError(null);
-    setBetSuccess(null);
 
     try {
       const res = await placeBatchBets.mutateAsync(batchLegs);
@@ -569,20 +563,18 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
       setPlacedLegs(prev => ({ ...prev, [opp.id]: successIdxs }));
 
       if (res.placed_count === res.total_legs) {
-        setBetSuccess(`All ${res.placed_count} legs recorded — ${res.total_staked.toFixed(0)} kr total`);
+        addToast(`All ${res.placed_count} legs recorded — ${res.total_staked.toFixed(0)} kr total`, 'success');
       } else if (res.placed_count > 0) {
-        setBetSuccess(`${res.placed_count}/${res.total_legs} legs recorded — ${res.total_staked.toFixed(0)} kr`);
-        if (errors.length > 0) setBetError(errors.join(' · '));
+        addToast(`${res.placed_count}/${res.total_legs} legs recorded — ${res.total_staked.toFixed(0)} kr`, 'success');
+        if (errors.length > 0) addToast(errors.join(' · '), 'error');
       } else {
-        setBetError(errors.join(' · ') || 'Failed to place any legs');
+        addToast(errors.join(' · ') || 'Failed to place any legs', 'error');
       }
 
-      setTimeout(() => { setBetSuccess(null); setBetError(null); }, 8000);
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'dutch'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to place bets';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
+      addToast(msg, 'error');
     } finally {
       setIsPlacing(false);
       setPlacingLeg(null);
@@ -628,18 +620,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
 
       {activeTab === 'dutch' && <>
       {/* Feedback toasts */}
-      {betSuccess && (
-        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
-          <span>{betSuccess}</span>
-          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
-        </div>
-      )}
-      {betError && (
-        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
-          <span>{betError}</span>
-          <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-        </div>
-      )}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {isLoading && opportunities.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">

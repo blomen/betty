@@ -18,6 +18,7 @@ import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { useToast, ToastContainer } from '../Toast';
 import type { Opportunity, Provider, Bet } from '@/types';
 
 const softProviderFilter = (p: Provider) => p.id !== 'polymarket' && p.id !== 'pinnacle';
@@ -344,8 +345,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const search = useDeferredValue(searchInput);
   const [boostSearchInput, setBoostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
   const boostSearch = useDeferredValue(boostSearchInput);
-  const [betError, setBetError] = useState<string | null>(null);
-  const [betSuccess, setBetSuccess] = useState<string | null>(null);
+  const { toasts, addToast, dismissToast } = useToast();
   const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_selectedProvider', {});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
@@ -591,14 +591,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     let stake = overriddenStake ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0));
     if (stake <= 0) return;
     const odds = boostOddsOverride[groupKey] ?? special.boosted_odds;
-    setBetError(null); setBetSuccess(null);
     setBoostPendingBet({ groupKey, special, providerId, actualOdds: odds, stake });
   };
 
   const confirmBoostPlaceBet = async () => {
     if (!boostPendingBet) return;
     const { special, providerId, actualOdds, stake, groupKey } = boostPendingBet;
-    setIsPlacing(true); setBetError(null);
+    setIsPlacing(true);
     try {
       await placeBet.mutateAsync({
         provider_id: providerId,
@@ -615,14 +614,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         bet_type: 'boost',
         start_time: special.event_time ?? undefined,
       });
-      setBetSuccess(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`);
-      setTimeout(() => setBetSuccess(null), 5000);
+      addToast(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`, 'success');
       setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
       setMyBetsCount(prev => (prev ?? 0) + 1);
       setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
     } catch (err) {
-      setBetError(err instanceof Error ? err.message : 'Failed to place bet');
-      setTimeout(() => setBetError(null), 5000);
+      addToast(err instanceof Error ? err.message : 'Failed to place bet', 'error');
     } finally { setIsPlacing(false); }
   };
 
@@ -647,8 +644,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity, useFreebet: boolean, effectiveOdds: number, effectiveStake: number | null) => {
     setFreebetPopup(null);
-    setBetError(null);
-    setBetSuccess(null);
     const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
     setPendingBet({ groupKey, opp, actualOdds: effectiveOdds, useFreebet, navUrl: null, windowName: `bbq_${opp.provider1}`, effectiveStake });
   };
@@ -660,7 +655,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     const stake = effectiveStake ?? opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
-    setBetError(null);
 
     try {
       // Recalculate edge based on actual placed odds vs fair odds
@@ -683,8 +677,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       });
       const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
-      setBetSuccess(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`);
-      setTimeout(() => { setBetSuccess(null); setBetError(null); }, 5000);
+      addToast(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`, 'success');
 
       // Remove from list immediately (same market+outcome+point hidden across all providers)
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
@@ -692,9 +685,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       setPendingBet(null);
       setSelectedGroup(null);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to record bet';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
+      addToast(err instanceof Error ? err.message : 'Failed to record bet', 'error');
     } finally {
       setIsPlacing(false);
     }
@@ -746,24 +737,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
       {/* Manual bet entry tab */}
       {activeTab === 'manual' && (
-        <ManualBetForm providers={providers} providerFilter={softProviderFilter} onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
+        <ManualBetForm providers={providers} providerFilter={softProviderFilter} onSuccess={(msg) => { addToast(msg, 'success'); setActiveTab('mybets'); }} onError={(msg) => addToast(msg, 'error')} />
       )}
 
       {/* Boosts tab */}
       {activeTab === 'boosts' && <>
       {/* Feedback toasts */}
-      {betSuccess && (
-        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
-          <span>{betSuccess}</span>
-          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
-        </div>
-      )}
-      {betError && (
-        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
-          <span>{betError}</span>
-          <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-        </div>
-      )}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* LLM enrichment health warning */}
       {(() => {
@@ -946,7 +926,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                             </div>
                           )}
                           <div className="flex items-center gap-2">
-                            {betError && <span className="text-error text-xs max-w-[200px] truncate">{betError}</span>}
                             {(boostStakePreview?.skip_reason) ? (
                               <span className="text-muted text-xs bg-border px-2 py-1">{boostStakePreview.skip_reason}</span>
                             ) : bIsPending ? (
@@ -996,18 +975,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
       {activeTab === 'value' && <>
       {/* Feedback toasts */}
-      {betSuccess && (
-        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
-          <span>{betSuccess}</span>
-          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
-        </div>
-      )}
-      {betError && (
-        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
-          <span>{betError}</span>
-          <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-        </div>
-      )}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Value bets table */}
       {isLoading && opportunities.length === 0 ? (

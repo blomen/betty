@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Card } from './Card';
 import { BonusPopup } from '../BonusPopup';
 import { SortableHeader } from '../SortableHeader';
@@ -10,6 +10,7 @@ import { TabIcon, TAB_COLORS } from '../TabBar';
 import type { ProviderExposure } from '@/types';
 import { useBankrollQuery } from '@/hooks/useBankrollQuery';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useToast, ToastContainer } from '../Toast';
 
 type BankrollSortCol = 'provider' | 'balance' | 'pending' | 'available' | 'withdraw';
 
@@ -32,10 +33,7 @@ export function BankrollPage() {
 
   const [adjustingProvider, setAdjustingProvider] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState('');
-  const [depositResult, setDepositResult] = useState<{
-    success: boolean;
-    message: string;
-  } | null>(null);
+  const { toasts, addToast, dismissToast } = useToast();
   // Bonus deposit popup state
   const [bonusPopup, setBonusPopup] = useState<{
     providerId: string;
@@ -68,13 +66,6 @@ export function BankrollPage() {
   } | null>(null);
 
 
-  // Clear deposit result after 5 seconds
-  useEffect(() => {
-    if (depositResult) {
-      const timer = setTimeout(() => setDepositResult(null), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [depositResult]);
 
   // Format amount in SEK for a provider (converting non-SEK currencies)
   const fmtAmount = (providerId: string, amount: number) => {
@@ -142,22 +133,16 @@ export function BankrollPage() {
           msg += `. Freebet activated — place trigger bet`;
         }
         msg += `. New balance: ${fmtAmount(providerId, result.new_balance)}`;
-        setDepositResult({ success: true, message: msg });
+        addToast(msg, 'success');
       } else {
         await adjustBalance.mutateAsync({ providerId, amount });
-        setDepositResult({
-          success: true,
-          message: `Deposited ${fmtAmount(providerId, amount)}`,
-        });
+        addToast(`Deposited ${fmtAmount(providerId, amount)}`, 'success');
       }
       setPendingDeposit(null);
       setAdjustingProvider(null);
       setAdjustAmount('');
     } catch (err) {
-      setDepositResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Operation failed',
-      });
+      addToast(err instanceof Error ? err.message : 'Operation failed', 'error');
       setPendingDeposit(null);
     }
   };
@@ -168,17 +153,11 @@ export function BankrollPage() {
 
     try {
       await adjustBalance.mutateAsync({ providerId, amount: -amount });
-      setDepositResult({
-        success: true,
-        message: `Withdrew ${fmtAmount(providerId, amount)}`,
-      });
+      addToast(`Withdrew ${fmtAmount(providerId, amount)}`, 'success');
       setAdjustingProvider(null);
       setAdjustAmount('');
     } catch (err) {
-      setDepositResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Withdrawal failed',
-      });
+      addToast(err instanceof Error ? err.message : 'Withdrawal failed', 'error');
     }
   };
 
@@ -188,17 +167,11 @@ export function BankrollPage() {
 
     try {
       const result = await setBalance.mutateAsync({ providerId, balance });
-      setDepositResult({
-        success: true,
-        message: `Balance set to ${fmtAmount(providerId, balance)} (was ${fmtAmount(providerId, result.old_balance)})`,
-      });
+      addToast(`Balance set to ${fmtAmount(providerId, balance)} (was ${fmtAmount(providerId, result.old_balance)})`, 'success');
       setAdjustingProvider(null);
       setAdjustAmount('');
     } catch (err) {
-      setDepositResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Set balance failed',
-      });
+      addToast(err instanceof Error ? err.message : 'Set balance failed', 'error');
     }
   };
 
@@ -223,15 +196,12 @@ export function BankrollPage() {
       if (result.bonus_type === 'freebet' && result.bonus_status === 'trigger_needed') {
         msg += `. Freebet activated — place trigger bet`;
       }
-      setDepositResult({ success: true, message: msg });
+      addToast(msg, 'success');
       setTransferPopup(null);
       setTransferAmount('');
       setTransferTo('');
     } catch (err) {
-      setDepositResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Transfer failed',
-      });
+      addToast(err instanceof Error ? err.message : 'Transfer failed', 'error');
       setTransferPopup(null);
       setTransferAmount('');
       setTransferTo('');
@@ -278,12 +248,8 @@ export function BankrollPage() {
         Bankroll
       </h2>
 
-      {/* Deposit Result Message */}
-      {depositResult && (
-        <div className={`text-sm p-3 ${depositResult.success ? 'bg-success/10 text-success border border-success/20' : 'bg-error/10 text-error border border-error/20'}`}>
-          {depositResult.message}
-        </div>
-      )}
+      {/* Feedback toasts */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Overview */}
       {exposure && (
@@ -347,7 +313,7 @@ export function BankrollPage() {
                                 queryClient.invalidateQueries({ queryKey: ['providers'] });
                                 queryClient.invalidateQueries({ queryKey: ['bankroll'] });
                               } catch (err) {
-                                setDepositResult({ success: false, message: err instanceof Error ? err.message : 'Failed to claim bonus' });
+                                addToast(err instanceof Error ? err.message : 'Failed to claim bonus', 'error');
                               }
                             }}
                           >

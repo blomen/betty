@@ -12,6 +12,7 @@ import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { useToast, ToastContainer } from '../Toast';
 import type { PolymarketValueBet, PolymarketRewardMarket, Bet, Provider } from '@/types';
 
 const polyBetFilter = (b: Bet) => b.bet_type === 'polymarket' || (b.bet_type == null && b.provider === 'polymarket');
@@ -234,8 +235,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
   const [selectedOpp, setSelectedOpp] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
-  const [betSuccess, setBetSuccess] = useState<string | null>(null);
-  const [betError, setBetError] = useState<string | null>(null);
+  const { toasts, addToast, dismissToast } = useToast();
 
   // Parent-level override state (kept here for bet placement logic)
   const [oddsOverride, setOddsOverride] = useState<Record<string, number>>({});
@@ -321,8 +321,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc;
     if (!stakeUsdc || stakeUsdc <= 0) return;
     const odds = getEffectiveOdds(vb);
-    setBetError(null);
-    setBetSuccess(null);
     setPendingBet({ vb, actualCents: oddsToCents(odds) });
   }, [getOddsKey, stakeOverride, getEffectiveOdds, oddsToCents]);
 
@@ -335,7 +333,6 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     if (!stakeUsdc || stakeUsdc <= 0 || actualCents < 1) return;
     const actualOdds = 100 / actualCents;
     setIsPlacing(true);
-    setBetError(null);
 
     try {
       await placeBet.mutateAsync({
@@ -352,8 +349,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       });
       const outcomeLabel = resolveOutcome(vb);
       const confirmedStake = vb.final_stake_usdc ?? 0;
-      setBetSuccess(`Recorded: $${confirmedStake.toFixed(2)} on ${outcomeLabel} @ ${actualCents}¢ (Polymarket)`);
-      setTimeout(() => setBetSuccess(null), 5000);
+      addToast(`Recorded: $${confirmedStake.toFixed(2)} on ${outcomeLabel} @ ${actualCents}¢ (Polymarket)`, 'success');
 
       setPlacedKeys(prev => new Set(prev).add(getPlacedKey(vb)));
       setMyBetsCount(prev => (prev ?? 0) + 1);
@@ -362,8 +358,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'polymarket'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
+      addToast(msg, 'error');
     } finally {
       setIsPlacing(false);
     }
@@ -541,7 +536,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* ═══════════════ MANUAL TAB ═══════════════ */}
       {activeTab === 'manual' && (
-        <ManualBetForm providers={providers} providerFilter={polyProviderFilter} accentColor="tabPolymarket" betType="polymarket" onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
+        <ManualBetForm providers={providers} providerFilter={polyProviderFilter} accentColor="tabPolymarket" betType="polymarket" onSuccess={(msg) => { addToast(msg, 'success'); setActiveTab('mybets'); }} onError={(msg) => addToast(msg, 'error')} />
       )}
 
       {/* ═══════════════ REWARDS TAB ═══════════════ */}
@@ -641,18 +636,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
       {/* ═══════════════ VALUE BETS TAB ═══════════════ */}
       {activeTab === 'value' && <>
         {/* Feedback toasts */}
-        {betSuccess && (
-          <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
-            <span>{betSuccess}</span>
-            <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
-          </div>
-        )}
-        {betError && (
-          <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
-            <span>{betError}</span>
-            <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-          </div>
-        )}
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
         {isLoading && valueBets.length === 0 ? (
           <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>

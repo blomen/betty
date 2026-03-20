@@ -11,6 +11,7 @@ import { SearchInput, relativeTime } from '../FilterBar';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
 import { TabIcon, TAB_COLORS } from '../TabBar';
+import { useToast, ToastContainer } from '../Toast';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import type { Opportunity, Bet, Provider } from '@/types';
 
@@ -190,8 +191,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
   const [activeTab, setActiveTab] = usePersistedState<ReverseTab>('bbq_reverse_tab', 'reverse');
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
-  const [betSuccess, setBetSuccess] = useState<string | null>(null);
-  const [betError, setBetError] = useState<string | null>(null);
+  const { toasts, addToast, dismissToast } = useToast();
 
   // Two-step placement: tracks which row is awaiting confirm
   const [pendingBet, setPendingBet] = useState<{
@@ -277,8 +277,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
     const odds = opp.odds1;
-    setBetError(null);
-    setBetSuccess(null);
     setPendingBet({ oppId: opp.id, opp, actualOdds: odds, navUrl: null, windowName: 'bbq_pinnacle' });
   };
 
@@ -289,7 +287,6 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
     const stake = opp.final_stake;
     if (!stake || stake <= 0) return;
     setIsPlacing(true);
-    setBetError(null);
 
     try {
       await placeBet.mutateAsync({
@@ -306,8 +303,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
       });
 
       const outcomeLabel = resolveOppOutcome(opp);
-      setBetSuccess(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`);
-      setTimeout(() => setBetSuccess(null), 5000);
+      addToast(`Placed: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (Pinnacle)`, 'success');
 
       // Remove from list immediately
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
@@ -316,8 +312,7 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
       queryClient.invalidateQueries({ queryKey: ['opportunities', 'reverse'] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to record bet';
-      setBetError(msg);
-      setTimeout(() => setBetError(null), 5000);
+      addToast(msg, 'error');
     } finally {
       setIsPlacing(false);
     }
@@ -379,23 +374,12 @@ export function ReversePage({ providers = [] }: { providers?: Provider[] }) {
 
       {/* Manual tab */}
       {activeTab === 'manual' && (
-        <ManualBetForm providers={providers} providerFilter={reverseProviderFilter} accentColor="tabReverse" betType="reverse" onSuccess={(msg) => { setBetSuccess(msg); setActiveTab('mybets'); }} onError={setBetError} />
+        <ManualBetForm providers={providers} providerFilter={reverseProviderFilter} accentColor="tabReverse" betType="reverse" onSuccess={(msg) => { addToast(msg, 'success'); setActiveTab('mybets'); }} onError={(msg) => addToast(msg, 'error')} />
       )}
 
       {activeTab === 'reverse' && <>
       {/* Feedback toasts */}
-      {betSuccess && (
-        <div className="px-3 py-2 bg-success/10 border border-success/30 text-success text-xs flex items-center justify-between">
-          <span>{betSuccess}</span>
-          <button onClick={() => setBetSuccess(null)} className="text-success/60 hover:text-success ml-2">x</button>
-        </div>
-      )}
-      {betError && (
-        <div className="px-3 py-2 bg-error/10 border border-error/30 text-error text-xs flex items-center justify-between">
-          <span>{betError}</span>
-          <button onClick={() => setBetError(null)} className="text-error/60 hover:text-error ml-2">x</button>
-        </div>
-      )}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Table */}
       {isLoading && opportunities.length === 0 ? (
