@@ -534,6 +534,26 @@ async def get_ml_health():
     return result
 
 
+@router.get("/tpo")
+async def get_tpo_history(
+    symbol: str = Query("NQ"),
+    days: int = Query(30, ge=1, le=365),
+    svc: MarketService = Depends(_svc),
+):
+    """Historical TPO sessions for RL batch access."""
+    sessions = svc.get_tpo_history(symbol=symbol, days=days)
+    return {"sessions": sessions, "symbol": symbol, "count": len(sessions)}
+
+
+@router.get("/tpo/live")
+async def get_tpo_live(
+    symbol: str = Query("NQ"),
+    svc: MarketService = Depends(_svc),
+):
+    """Today's developing TPO profile."""
+    return svc.get_tpo_live(symbol=symbol)
+
+
 @router.get("/cot")
 async def get_cot_data(limit: int = Query(default=4, le=52)):
     """Get latest COT report data."""

@@ -1421,6 +1421,32 @@ class MarketService:
             result.append(data)
         return result
 
+    _tpo_cache: dict[str, tuple[float, dict]] = {}
+
+    def get_tpo_live(self, symbol: str = "NQ") -> dict:
+        """Compute today's developing TPO profile. Cached 60s."""
+        import time
+        from dataclasses import asdict
+        cache_key = f"tpo_live_{symbol}"
+        now = time.time()
+
+        cached = MarketService._tpo_cache.get(cache_key)
+        if cached and now - cached[0] < 60:
+            return cached[1]
+
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt.replace(hour=0, minute=0, second=0) - timedelta(hours=6)
+
+        rows = self.repo.get_candles(symbol, "1m", start_dt, end_dt)
+        bars_30m = aggregate_bars_30m(rows)
+
+        profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
+        result = asdict(profile)
+        result["date"] = end_dt.strftime("%Y-%m-%d")
+
+        MarketService._tpo_cache[cache_key] = (now, result)
+        return result
+
     # ---- Helper methods for compute_session ----
 
     @staticmethod
