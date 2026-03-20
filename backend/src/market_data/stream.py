@@ -242,6 +242,9 @@ class DatabentoLiveStream:
             return False
         return True
 
+    # Watchdog: reconnect if no records received within this many seconds
+    WATCHDOG_TIMEOUT_S = 60
+
     def __init__(
         self,
         api_key: str,
@@ -259,8 +262,12 @@ class DatabentoLiveStream:
         self._level_monitor: LevelMonitor | None = None
         self._running = False
         self._task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        self._last_record_time: float = 0.0  # monotonic timestamp of last record
         self._subscribers: list[asyncio.Queue] = []
         self._db_session_factory = db_session_factory
+        self._candle_write_queue: deque[tuple[dict, str]] = deque(maxlen=500)
+        self._candle_retry_task: asyncio.Task | None = None
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -269,10 +276,14 @@ class DatabentoLiveStream:
         if self._running:
             return
         self._running = True
+        self._last_record_time = time.monotonic()
         # Prune old ticks on startup
         if self._tick_writer:
             await self._tick_writer.start()
         self._task = asyncio.create_task(self._stream_loop())
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        if self._db_session_factory:
+            self._candle_retry_task = asyncio.create_task(self._candle_retry_loop())
         logger.info("Databento live stream started for %s", self.symbol)
 
     async def stop(self):
@@ -280,6 +291,12 @@ class DatabentoLiveStream:
         if self._task:
             self._task.cancel()
             self._task = None
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+        if self._candle_retry_task:
+            self._candle_retry_task.cancel()
+            self._candle_retry_task = None
         if self._tick_writer:
             await self._tick_writer.stop()
         logger.info("Databento live stream stopped")
@@ -300,7 +317,10 @@ class DatabentoLiveStream:
         monitor.set_candle_flow_source(self._get_recent_candles)
 
     async def _write_closed_candle(self, candle: dict, interval: str = "5m"):
-        """Persist a completed candle bucket to market_candles DB table."""
+        """Persist a completed candle bucket to market_candles DB table.
+
+        On failure (e.g. DB locked), queues the candle for retry.
+        """
         try:
             db = self._db_session_factory()
             try:
@@ -315,7 +335,62 @@ class DatabentoLiveStream:
             finally:
                 db.close()
         except Exception as e:
-            logger.warning("Failed to persist closed %s candle: %s", interval, e)
+            self._candle_write_queue.append((candle, interval))
+            logger.warning("Failed to persist closed %s candle (queued, %d pending): %s",
+                           interval, len(self._candle_write_queue), e)
+
+    async def _candle_retry_loop(self):
+        """Periodically retry persisting queued candles that failed due to DB lock."""
+        while self._running:
+            await asyncio.sleep(30)
+            if not self._candle_write_queue:
+                continue
+            batch = list(self._candle_write_queue)
+            self._candle_write_queue.clear()
+            written = 0
+            try:
+                db = self._db_session_factory()
+                try:
+                    from ..repositories.market_repo import MarketRepo
+                    repo = MarketRepo(db)
+                    sym = self.symbol.split(".")[0]
+                    for candle, interval in batch:
+                        ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
+                        repo.upsert_candle(
+                            symbol=sym, interval=interval, ts=ts,
+                            o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
+                        )
+                        written += 1
+                finally:
+                    db.close()
+                if written:
+                    logger.info("Candle retry: persisted %d/%d queued candles", written, len(batch))
+            except Exception as e:
+                # Re-queue the ones we didn't write
+                for item in batch[written:]:
+                    self._candle_write_queue.append(item)
+                logger.warning("Candle retry failed after %d/%d: %s", written, len(batch), e)
+
+    async def _watchdog_loop(self):
+        """Monitor stream health — reconnect if no records received within timeout."""
+        while self._running:
+            await asyncio.sleep(self.WATCHDOG_TIMEOUT_S)
+            if not self._running:
+                break
+            elapsed = time.monotonic() - self._last_record_time
+            if elapsed > self.WATCHDOG_TIMEOUT_S:
+                # Check if we're in Globex hours before alarming
+                now_epoch = time.time()
+                if self._in_globex(now_epoch):
+                    logger.warning(
+                        "Databento watchdog: no records for %.0fs (during Globex hours) — reconnecting",
+                        elapsed,
+                    )
+                    if self._task:
+                        self._task.cancel()
+                    self._task = asyncio.create_task(self._stream_loop())
+                else:
+                    logger.debug("Databento watchdog: no records for %.0fs (outside Globex hours — OK)", elapsed)
 
     def _get_recent_candles(self):
         """Build CandleFlow candles from recent tick buffer for orderflow computation."""
@@ -416,6 +491,7 @@ class DatabentoLiveStream:
                     if self._level_monitor:
                         self._level_monitor.on_tick(price, record.size, ts_epoch)
 
+                self._last_record_time = time.monotonic()
                 record_count += 1
                 if record_count in (1, 10, 100, 1000) or record_count % 10000 == 0:
                     logger.info("Databento stream: %d records received", record_count)

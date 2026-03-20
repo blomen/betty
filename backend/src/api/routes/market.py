@@ -302,7 +302,7 @@ async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = De
 @router.get("/volume-profile")
 async def get_volume_profile(
     symbol: str = Query(default="NQ"),
-    timeframe: str = Query(default="session", regex="^(session|weekly|monthly)$"),
+    timeframe: str = Query(default="session", pattern="^(session|weekly|monthly)$"),
     svc: MarketService = Depends(_svc),
 ):
     """Return VP curve (price→volume pairs) for session/weekly/monthly."""
@@ -457,7 +457,7 @@ async def get_ml_health():
     """Get ML level classifier model health and training stats."""
     import json
     from src.ml.serving.predictor import get_predictor
-    from src.db.models import get_db, LevelTouchOutcome
+    from src.db.models import get_session, LevelTouchOutcome
     from sqlalchemy import func
 
     result = {
@@ -497,7 +497,7 @@ async def get_ml_health():
 
     # Class distribution + recent accuracy from DB
     try:
-        db = next(get_db())
+        db = get_session()
         try:
             # Class distribution
             dist = (
