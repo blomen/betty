@@ -68,6 +68,7 @@ interface SessionBox {
   color: string;
   border: string;
   labelColor: string;
+  cetDate: string;
 }
 
 type VPData = { levels: Array<{ price: number; volume: number }>; poc: number; vah: number; val: number };
@@ -114,7 +115,7 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
     dateGroups.get(cetDate)!.push(c);
   }
 
-  for (const [, dayCandles] of dateGroups) {
+  for (const [dateStr, dayCandles] of dateGroups) {
     for (const def of SESSION_DEFS) {
       const sessionCandles = dayCandles.filter(c => {
         const cetMin = epochToCETMinute(c.t);
@@ -137,11 +138,19 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
         color: def.color,
         border: def.border,
         labelColor: def.label,
+        cetDate: dateStr,
       });
     }
   }
 
   return boxes;
+}
+
+/** Deduplicate by timestamp and sort ascending — prevents lightweight-charts "Cannot update oldest data" crash. */
+function dedupeAndSort(candles: CandleData[]): CandleData[] {
+  const map = new Map<number, CandleData>();
+  for (const c of candles) map.set(c.t, c); // last-write-wins for dupes
+  return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
 export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
@@ -151,6 +160,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   const priceSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const [noData, setNoData] = useState(false);
+  const [loading, setLoading] = useState(true);
   const priceLineRefs = useRef<Record<string, any>>({});
   const anchorSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const vwapSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
@@ -195,16 +205,20 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     // --- Session boxes ---
     const candles = candlesRef.current;
-    if (candles.length > 0) {
-      const boxes = detectSessionBoxes(candles);
+    const boxes = candles.length > 0 ? detectSessionBoxes(candles) : [];
+    if (boxes.length > 0) {
       for (const box of boxes) {
-        const x1 = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
-        const x2 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+        const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
+        const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
         const y1 = pSeries.priceToCoordinate(box.high);
         const y2 = pSeries.priceToCoordinate(box.low);
 
-        if (x1 === null || x2 === null || y1 === null || y2 === null) continue;
-        if (x2 < 0 || x1 > rect.width) continue; // off-screen
+        if (y1 === null || y2 === null) continue;
+        // Null-clamp: if one edge is off-screen, extend to chart edge
+        if (rawX1 === null && rawX2 === null) continue;
+        const x1 = rawX1 != null ? Math.max(0, rawX1) : 0;
+        const x2 = rawX2 != null ? Math.min(rect.width, rawX2) : rect.width;
+        if (x2 < 0 || x1 > rect.width) continue;
 
         const bx = Math.min(x1, x2);
         const bw = Math.abs(x2 - x1);
@@ -266,103 +280,129 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       }
     }
 
-    // --- Session level lines (time-scoped horizontal lines) ---
-    const slDays = sessionLevelsRef.current;
+    // --- Session H/L levels (persist from session end to day end) ---
     const slHidden = hiddenRef.current;
-
-    const levelDefs: Array<{
-      key: string;
-      field: 'pdh' | 'pdl' | 'tokyo_high' | 'tokyo_low' | 'london_high' | 'london_low';
-      label: string;
-      color: string;
-      dash: number[];
-      startField: 'day_start' | 'tokyo_end' | 'london_end';
-      endField: 'day_end';
-    }> = [
-      { key: 'pdh', field: 'pdh', label: 'PDH', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
-      { key: 'pdl', field: 'pdl', label: 'PDL', color: '#FB923C', dash: [6, 3], startField: 'day_start', endField: 'day_end' },
-      { key: 'tokyo_h', field: 'tokyo_high', label: 'TKY H', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
-      { key: 'tokyo_l', field: 'tokyo_low', label: 'TKY L', color: '#06B6D4', dash: [3, 3], startField: 'tokyo_end', endField: 'day_end' },
-      { key: 'london_h', field: 'london_high', label: 'LDN H', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
-      { key: 'london_l', field: 'london_low', label: 'LDN L', color: '#10B981', dash: [3, 3], startField: 'london_end', endField: 'day_end' },
-    ];
-
-    // Only draw levels for the current (most recent) session
+    const slDays = sessionLevelsRef.current;
     const currentDay = [...slDays].sort((a, b) => b.date.localeCompare(a.date))[0];
 
-    if (currentDay) {
-      for (const def of levelDefs) {
-        if (slHidden?.has(def.key)) continue;
-        const day = currentDay;
-        const price = day[def.field];
-        if (price == null) continue;
+    // Session level labels and hide-keys by session name (NY excluded — box is sufficient)
+    const sessionLevelMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
+      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4' },
+      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981' },
+    };
 
-        const startEpoch = day[def.startField];
-        const endEpoch = day[def.endField];
+    if (boxes.length > 0) {
+      // Draw session H/L lines from box end to day end (22:00 CET)
+      for (const box of boxes) {
+        const meta = sessionLevelMeta[box.name];
+        if (!meta) continue;
 
-        // timeToCoordinate returns null when off-screen — clamp to edges
-        const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(startEpoch) as Time);
-        const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(endEpoch) as Time);
-        const y = pSeries.priceToCoordinate(price);
+        // Day end = 22:00 CET: compute from box end + remaining CET minutes
+        const boxEndCETMin = epochToCETMinute(box.endEpoch);
+        const dayEndEpoch = box.endEpoch + (22 * 60 - boxEndCETMin) * 60;
 
-        if (y === null) continue;
-        // Both off-screen on same side = skip; otherwise clamp
-        if (rawX1 === null && rawX2 === null) continue;
-        const lx = rawX1 ?? 0;
-        const rx = rawX2 ?? rect.width;
-        if (rx < 0 || lx > rect.width) continue;
+        for (const { key, price, label } of [
+          { key: meta.hKey, price: box.high, label: meta.hLabel },
+          { key: meta.lKey, price: box.low, label: meta.lLabel },
+        ]) {
+          if (slHidden?.has(key)) continue;
+          const y = pSeries.priceToCoordinate(price);
+          if (y === null) continue;
 
-        const drawX1 = Math.max(0, lx);
-        const drawX2 = Math.min(rect.width, rx);
+          const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+          const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
+          if (rawX1 === null && rawX2 === null) continue;
+          const lx = rawX1 ?? 0;
+          const rx = rawX2 ?? rect.width;
+          if (rx < 0 || lx > rect.width) continue;
+          const drawX1 = Math.max(0, lx);
+          const drawX2 = Math.min(rect.width, rx);
 
-        ctx.save();
-        ctx.strokeStyle = def.color;
-        ctx.lineWidth = 1;
-        ctx.setLineDash(def.dash);
-        ctx.beginPath();
-        ctx.moveTo(drawX1, y);
-        ctx.lineTo(drawX2, y);
-        ctx.stroke();
-
-        // Label at left visible edge of line
-        ctx.setLineDash([]);
-        ctx.font = '9px monospace';
-        ctx.fillStyle = def.color;
-        ctx.textAlign = 'left';
-        ctx.fillText(def.label, drawX1 + 3, y - 3);
-        ctx.restore();
+          ctx.save();
+          ctx.strokeStyle = meta.color;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(drawX1, y);
+          ctx.lineTo(drawX2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = meta.color;
+          ctx.textAlign = 'left';
+          ctx.fillText(label, drawX1 + 3, y - 3);
+          ctx.restore();
+        }
       }
-    }  // end if (currentDay)
 
-    // --- NY IB levels from TPO, anchored at NY open (15:30 CET) ---
-    const tpoIb = tpoRef.current;
-    if (tpoIb && !slHidden?.has('nyib') && currentDay) {
+      // PDH/PDL from previous day's session boxes
+      const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
+      const prevDayBoxes = boxes.filter(b => b.cetDate < todayCET);
+      if (prevDayBoxes.length > 0) {
+        const maxDate = prevDayBoxes.reduce((max, b) => b.cetDate > max ? b.cetDate : max, prevDayBoxes[0].cetDate);
+        const lastDayBoxes = prevDayBoxes.filter(b => b.cetDate === maxDate);
+        const pdh = Math.max(...lastDayBoxes.map(b => b.high));
+        const pdl = Math.min(...lastDayBoxes.map(b => b.low));
+
+        for (const { key, price, label } of [
+          { key: 'pdh', price: pdh, label: 'PDH' },
+          { key: 'pdl', price: pdl, label: 'PDL' },
+        ]) {
+          if (slHidden?.has(key)) continue;
+          const y = pSeries.priceToCoordinate(price);
+          if (y === null) continue;
+          ctx.save();
+          ctx.strokeStyle = '#FB923C';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([6, 3]);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(rect.width, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = '#FB923C';
+          ctx.textAlign = 'left';
+          ctx.fillText(label, 3, y - 3);
+          ctx.restore();
+        }
+      }
+    }
+
+    // --- NY IB levels from session levels, anchored to NY session only ---
+    // Only show after IB period is complete (ib_end = 16:30 CET / 10:30 ET)
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const ibComplete = currentDay && nowEpoch >= currentDay.ib_end;
+    if (!slHidden?.has('nyib') && currentDay && ibComplete) {
       const ibLevels: Array<{ price: number; label: string }> = [];
-      if (tpoIb.ib_high) ibLevels.push({ price: tpoIb.ib_high, label: 'NYIBH' });
-      if (tpoIb.ib_low) ibLevels.push({ price: tpoIb.ib_low, label: 'NYIBL' });
-      // Anchor from NY open (15:30 CET) to session end (22:00 CET)
-      const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ib_start) as Time);
-      const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.day_end) as Time);
-      for (const ib of ibLevels) {
-        const y = pSeries.priceToCoordinate(ib.price);
-        if (y === null) continue;
-        const x1 = ibStartX != null ? Math.max(0, ibStartX) : 0;
-        const x2 = ibEndX != null ? Math.min(rect.width, ibEndX) : rect.width;
-        if (x2 < 0 || x1 > rect.width) continue;
-        ctx.save();
-        ctx.strokeStyle = '#F59E0B';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]);
-        ctx.beginPath();
-        ctx.moveTo(x1, y);
-        ctx.lineTo(x2, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.font = '9px monospace';
-        ctx.fillStyle = '#F59E0B';
-        ctx.textAlign = 'left';
-        ctx.fillText(ib.label, x1 + 3, y - 3);
-        ctx.restore();
+      if (currentDay.ib_high) ibLevels.push({ price: currentDay.ib_high, label: 'NYIBH' });
+      if (currentDay.ib_low) ibLevels.push({ price: currentDay.ib_low, label: 'NYIBL' });
+      // Anchor from NY open (15:30 CET) to NY close (22:00 CET)
+      const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_start) as Time);
+      const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_end) as Time);
+      // Skip if entire NY session is off-screen
+      if (ibStartX !== null || ibEndX !== null) {
+        for (const ib of ibLevels) {
+          const y = pSeries.priceToCoordinate(ib.price);
+          if (y === null) continue;
+          const x1 = ibStartX != null ? Math.max(0, ibStartX) : 0;
+          const x2 = ibEndX != null ? Math.min(rect.width, ibEndX) : rect.width;
+          if (x2 < 0 || x1 > rect.width) continue;
+          ctx.save();
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(x1, y);
+          ctx.lineTo(x2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = '#F59E0B';
+          ctx.textAlign = 'left';
+          ctx.fillText(ib.label, x1 + 3, y - 3);
+          ctx.restore();
+        }
       }
     }
 
@@ -465,11 +505,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     // Load candles immediately after chart is created
     (async () => {
       try {
+        setLoading(true);
         const res = await api.getCandles('NQ', INTERVAL, undefined, INITIAL_DAYS);
         if (res.candles?.length) {
-          candlesRef.current = res.candles;
-          priceSeries.setData(res.candles.map(toLine));
-          volumeSeries.setData(res.candles.map(toVolume));
+          const sorted = dedupeAndSort(res.candles);
+          candlesRef.current = sorted;
+          priceSeries.setData(sorted.map(toLine));
+          volumeSeries.setData(sorted.map(toVolume));
           chart.timeScale().scrollToRealTime();
           setNoData(false);
         } else {
@@ -478,6 +520,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       } catch (err) {
         console.warn('Failed to load candles:', err);
         setNoData(true);
+      } finally {
+        setLoading(false);
       }
     })();
 
@@ -572,9 +616,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           const newCandles = res.candles.filter(c => !existing.has(c.t));
           if (newCandles.length === 0) { exhaustedRef.current = true; return; }
 
-          candlesRef.current = [...newCandles, ...candlesRef.current];
-          priceSeriesRef.current?.setData(candlesRef.current.map(toLine));
-          volumeSeriesRef.current?.setData(candlesRef.current.map(toVolume));
+          const merged = dedupeAndSort([...newCandles, ...candlesRef.current]);
+          candlesRef.current = merged;
+          priceSeriesRef.current?.setData(merged.map(toLine));
+          volumeSeriesRef.current?.setData(merged.map(toVolume));
         })
         .catch(err => console.warn('Failed to load older candles:', err))
         .finally(() => { fetchingRef.current = false; });
@@ -598,7 +643,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     } else {
       existing.push(lastCandle);
     }
-  }, [lastCandle]);
+    // Redraw overlays so active session box follows price in real-time
+    drawOverlays();
+  }, [lastCandle, drawOverlays]);
 
   // Anchor series for no-data state
   useEffect(() => {
@@ -716,7 +763,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         className="absolute inset-0 w-full h-full pointer-events-none"
         style={{ zIndex: 1 }}
       />
-      {noData && !lastCandle && !session && (
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 2 }}>
+          <div className="w-5 h-5 border-2 border-muted2 border-t-accent rounded-full animate-spin" />
+        </div>
+      )}
+      {noData && !loading && !lastCandle && !session && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 2 }}>
           <span className="text-muted2 text-[10px] font-mono">No candle data available</span>
         </div>
