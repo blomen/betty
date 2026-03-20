@@ -3,20 +3,74 @@
 Parses bet placement API responses from Betsson Group sites
 (Betsson, Betsafe, NordicBet, Spelklubben).
 
-NOTE: The exact response schema will be confirmed during the discovery phase.
-Field paths in parse() are best-guess based on the Gecko events-table API
-structure and may need adjustment after a real bet placement is captured.
+Real API schema (discovered 2026-03-20):
+  Endpoint: POST /api/sb/v2/coupons
+  Request:  bets[].stake, bets[].betSelections[].marketSelectionId, bets[].betSelections[].odds
+  Response: couponStatus.couponId, couponStatus.couponStatusPollingResult
+
+  marketSelectionId format: "s-m-f-{eventId}-{marketTemplate}-{line}-{outcome}"
+  Examples:
+    s-m-f-K4Qf1s_QPkeNqhDn68MZsQ-MTG2W-3.5-over     (total over 3.5)
+    s-m-f-abc123-MW3W-home                             (1x2 home)
+    s-m-f-abc123-M2WHCP-1.5-HANDICAPHOME               (spread home -1.5)
 """
 
 import logging
+import json
 from typing import Any
-
-from ...matching.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
-# URL path segments that indicate bet placement (not odds browsing)
-_BET_URL_KEYWORDS = ("betslip", "bet/place", "coupon", "wager")
+# URL path segments that indicate bet placement
+_BET_URL_KEYWORDS = ("coupon", "betslip", "bet/place", "wager")
+
+# Market template ID → standard market type (same mapping as gecko_v2.py extractor)
+_MARKET_TEMPLATE_MAP: dict[str, str] = {
+    "MW3W": "1x2",
+    "MW2W": "moneyline",
+    "ESNRTWINNER3W": "1x2",
+    "ESNMOWINNER2W": "moneyline",
+    "ESMW2W": "moneyline",
+    "MTG2W": "total",
+    "MTG2W25": "total",
+    "TGOU": "total",
+    "TGOUOT": "total",
+    "MWOU": "total",
+    "MROU": "total",
+    "ESNMOTOTAL": "total",
+    "OUALT": "total",
+    "PTSOUROLMID": "total",
+    "MTG2WIO": "total",
+    "MTG2WP": "total",
+    "MTP": "total",
+    "M3WHCP": "spread",
+    "M2WHCP": "spread",
+    "MW2WHCP": "spread",
+    "M2WHCPIO": "spread",
+    "2WHCPROLMID": "spread",
+    "MWHCPALT": "spread",
+    "MHCPNOT": "spread",
+    "MAHCP": "spread",
+    "AHC": "spread",
+    "ESNMOHANDICAP": "spread",
+    "MSH": "spread",
+    "ESHMTHANDICAP": "spread",
+}
+
+# Selection suffixes → standard outcome
+_OUTCOME_MAP: dict[str, str] = {
+    "home": "home",
+    "away": "away",
+    "draw": "draw",
+    "over": "over",
+    "under": "under",
+    "handicaphome": "home",
+    "handicapaway": "away",
+    "handicapdraw": "draw",
+    "1": "home",
+    "2": "away",
+    "x": "draw",
+}
 
 
 class GeckoBetParser:
@@ -27,113 +81,158 @@ class GeckoBetParser:
         lower = url.lower()
         return "/api/sb/" in lower and any(kw in lower for kw in _BET_URL_KEYWORDS)
 
-    def is_rejection(self, body: dict) -> bool:
+    def is_rejection(self, response_body: dict) -> bool:
         """Check if response indicates a rejected bet."""
-        data = body.get("data", {})
+        coupon = response_body.get("couponStatus", {})
+        result = coupon.get("couponStatusPollingResult", "").lower()
+        if result in ("failed", "rejected", "error", "declined"):
+            return True
+        errors = coupon.get("couponPlacementErrors", [])
+        if errors:
+            return True
+        # Legacy format fallback
+        data = response_body.get("data", {})
         status = data.get("status", "").lower()
         return status in ("rejected", "failed", "error", "declined")
 
-    def parse(self, body: dict) -> dict[str, Any] | None:
-        """Parse a confirmed bet response into structured fields.
+    def parse(self, response_body: dict, request_body: str | None = None) -> dict[str, Any] | None:
+        """Parse a confirmed bet from request + response bodies.
+
+        The response only contains the coupon ID. Odds, stake, market, and
+        outcome are extracted from the request body.
 
         Returns dict with bet fields, or None if rejected/unparseable.
         """
-        data = body.get("data", {})
-
-        # Check for rejection
-        if self.is_rejection(body):
+        if self.is_rejection(response_body):
             return None
 
-        bet_id = data.get("betId")
-        if not bet_id:
-            logger.warning("No betId in response — cannot parse")
+        # Get confirmation ID from response
+        coupon = response_body.get("couponStatus", {})
+        coupon_id = coupon.get("couponId")
+        if not coupon_id:
+            # Legacy format fallback
+            coupon_id = response_body.get("data", {}).get("betId")
+        if not coupon_id:
+            logger.warning("No couponId in response — cannot parse")
             return None
 
-        # Extract stake
-        stakes = data.get("stakes", [])
-        stake = stakes[0].get("amount", 0.0) if stakes else 0.0
+        # Parse the request body for bet details
+        if not request_body:
+            logger.warning(f"No request body for coupon {coupon_id}")
+            return None
 
-        # Extract selection details (first selection for singles)
-        selections = data.get("selections", [])
+        try:
+            req = json.loads(request_body) if isinstance(request_body, str) else request_body
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON request body for coupon {coupon_id}")
+            return None
+
+        bets = req.get("bets", [])
+        if not bets:
+            logger.warning(f"No bets in request for coupon {coupon_id}")
+            return None
+
+        bet = bets[0]
+        stake = float(bet.get("stake", 0))
+
+        selections = bet.get("betSelections", [])
         if not selections:
-            logger.warning(f"No selections in bet {bet_id}")
+            logger.warning(f"No betSelections for coupon {coupon_id}")
             return None
 
         sel = selections[0]
-        odds = sel.get("odds", 0.0)
-        event_name = sel.get("eventName", "")
-        gecko_event_id = sel.get("eventId", "")
+        odds = float(sel.get("odds", 0))
+        selection_id = sel.get("marketSelectionId", "")
 
-        # Parse participants
-        participants = sel.get("participants", [])
-        home_team = None
-        away_team = None
-        if len(participants) >= 2:
-            sorted_p = sorted(participants, key=lambda p: p.get("side", 0))
-            home_team = normalize_team_name(sorted_p[0].get("label", ""))
-            away_team = normalize_team_name(sorted_p[1].get("label", ""))
-        elif event_name and " vs " in event_name:
-            parts = event_name.split(" vs ", 1)
-            home_team = normalize_team_name(parts[0])
-            away_team = normalize_team_name(parts[1])
-
-        # Map market type
-        market_template = sel.get("marketTemplateName", "").lower()
-        market = self._map_market(market_template)
-
-        # Map outcome
-        outcome = self._map_outcome(sel.get("selectionName", ""), home_team, away_team)
-
-        # Extract point for spread/total
-        point = sel.get("lineValue") or sel.get("handicap")
-        if point is not None:
-            point = float(point)
+        # Parse marketSelectionId: s-m-f-{eventId}-{template}-{line}-{outcome}
+        # or: s-m-f-{eventId}-{template}-{outcome}
+        parsed_sel = self._parse_selection_id(selection_id)
 
         return {
-            "confirmation_id": str(bet_id),
-            "odds": float(odds),
-            "stake": float(stake),
-            "market": market,
-            "outcome": outcome,
-            "point": point,
-            "home_team": home_team,
-            "away_team": away_team,
-            "event_name": event_name,
-            "gecko_event_id": str(gecko_event_id),
+            "confirmation_id": str(coupon_id),
+            "odds": odds,
+            "stake": stake,
+            "market": parsed_sel.get("market"),
+            "outcome": parsed_sel.get("outcome"),
+            "point": parsed_sel.get("point"),
+            "home_team": None,  # Not available in coupon API
+            "away_team": None,  # Not available in coupon API
+            "event_name": "",
+            "gecko_event_id": parsed_sel.get("event_id", ""),
         }
 
-    def _map_market(self, template_name: str) -> str | None:
-        """Map Gecko market template name to standard market type."""
-        t = template_name.lower()
-        if any(kw in t for kw in ("winner", "1x2", "match result")):
-            return "1x2" if "draw" not in t else "1x2"
-        if any(kw in t for kw in ("moneyline", "2-way")):
-            return "moneyline"
-        if any(kw in t for kw in ("total", "over/under", "over under")):
-            return "total"
-        if any(kw in t for kw in ("handicap", "spread", "hcp")):
-            return "spread"
-        return None
+    def _parse_selection_id(self, selection_id: str) -> dict[str, Any]:
+        """Parse a marketSelectionId into components.
 
-    def _map_outcome(
-        self, selection_name: str, home_team: str | None, away_team: str | None
-    ) -> str | None:
-        """Map selection name to standard outcome."""
-        lower = selection_name.lower()
-        if lower in ("draw", "x", "tie"):
-            return "draw"
-        if lower in ("over",):
-            return "over"
-        if lower in ("under",):
-            return "under"
-        # Match against team names
-        if home_team and normalize_team_name(selection_name) == home_team:
-            return "home"
-        if away_team and normalize_team_name(selection_name) == away_team:
-            return "away"
-        # Fallback: "1" = home, "2" = away
-        if lower == "1":
-            return "home"
-        if lower == "2":
-            return "away"
-        return selection_name
+        Format: s-m-f-{eventId}-{marketTemplate}-{line}-{outcome}
+        or:     s-m-f-{eventId}-{marketTemplate}-{outcome}
+
+        Examples:
+            s-m-f-K4Qf1s_QPkeNqhDn68MZsQ-MTG2W-3.5-over
+            s-m-f-abc123-MW3W-home
+        """
+        result: dict[str, Any] = {
+            "event_id": None,
+            "market": None,
+            "point": None,
+            "outcome": None,
+        }
+
+        if not selection_id:
+            return result
+
+        parts = selection_id.split("-")
+        # Skip prefix parts: s, m, f
+        # Find the event ID — it's after 'f' and before the market template
+        # Strategy: scan from the end to find known market template, then everything
+        # between 'f' and the template is the event ID
+
+        # Find index of 'f' prefix
+        try:
+            f_idx = parts.index("f")
+        except ValueError:
+            logger.debug(f"No 'f' prefix in selectionId: {selection_id}")
+            return result
+
+        # Everything after 'f' needs to be split into: eventId, template, [line], outcome
+        remaining = parts[f_idx + 1:]
+        if not remaining:
+            return result
+
+        # Scan from the end to find the market template
+        template_idx = None
+        for i, part in enumerate(remaining):
+            if part.upper() in _MARKET_TEMPLATE_MAP:
+                template_idx = i
+                break
+
+        if template_idx is None:
+            # No recognized template — event ID is everything, no market info
+            result["event_id"] = "-".join(remaining)
+            return result
+
+        # Event ID = parts before template (may contain hyphens)
+        result["event_id"] = "-".join(remaining[:template_idx]) if template_idx > 0 else None
+
+        template = remaining[template_idx].upper()
+        result["market"] = _MARKET_TEMPLATE_MAP.get(template)
+
+        after_template = remaining[template_idx + 1:]
+
+        if not after_template:
+            return result
+
+        # If market is spread/total, next part might be a line value
+        if result["market"] in ("total", "spread") and after_template:
+            try:
+                result["point"] = float(after_template[0])
+                after_template = after_template[1:]
+            except (ValueError, IndexError):
+                pass
+
+        # Remaining part is the outcome
+        if after_template:
+            outcome_raw = after_template[-1].lower()
+            result["outcome"] = _OUTCOME_MAP.get(outcome_raw, outcome_raw)
+
+        return result

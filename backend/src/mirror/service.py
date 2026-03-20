@@ -57,8 +57,8 @@ class MirrorService:
             self._notify("bet_rejected", {"provider": self.provider_id, "reason": "Bet rejected by bookmaker"})
             return
 
-        # Parse confirmed bet
-        parsed = self.parser.parse(body)
+        # Parse confirmed bet (needs both request and response bodies)
+        parsed = self.parser.parse(body, request_body)
         if parsed is None:
             logger.warning(f"[mirror:{self.provider_id}] Could not parse bet response")
             await asyncio.to_thread(self._store_trace_sync, url, request_body, response_body, "failed")
