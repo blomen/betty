@@ -47,6 +47,17 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         'table_tennis': '/sportsbook/sport/26-bordtennis',
     }
 
+    # Sport key → ComeOn API sport ID (extracted from SPORT_URL_MAP paths)
+    SPORT_API_IDS = {
+        'football': 1, 'basketball': 2, 'american_football': 3,
+        'ice_hockey': 4, 'tennis': 6, 'mma': 7, 'handball': 10,
+        'baseball': 12, 'rugby': 16, 'cricket': 17, 'table_tennis': 26,
+        'esports': 130,
+    }
+
+    API_BASE = "/sportsbook-api/api"
+    API_PARAMS = "franchiseCode=SWEDEN_COMEON&locale=sv"
+
     # Sports ordered by extraction speed (fastest first).
     # Tennis/handball/mma complete in <60s. Football/basketball often timeout at 360s.
     # Extracting fast sports first ensures we get data before provider timeout hits.
@@ -243,14 +254,138 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             pass
 
     # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
-    # Popular leagues are discovered first, so capping preserves the highest-value ones.
+    # Sorted by eventCount (highest first) so we get the most valuable leagues.
     SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 15,     # Reduced from 30 — top 15 cover ~90% of Pinnacle matches
+        "football": 20,     # Increased from 15 — API discovery is fast, more leagues = more matches
         "basketball": 15,
         "ice_hockey": 15,
         "tennis": 15,
     }
     DEFAULT_LEAGUE_CAP = 10
+
+    async def _discover_leagues_via_api(self, page, sport: str) -> list[dict]:
+        """Discover leagues using the REST API instead of accordion expansion.
+
+        Returns leagues in the same format as JS_COLLECT_LEAGUE_URLS:
+        [{id: int, name: str, href: str}, ...] sorted by eventCount descending.
+        """
+        sport_id = self.SPORT_API_IDS.get(sport)
+        if not sport_id:
+            return []
+
+        url = f"{self.site_url}{self.API_BASE}/leagues?sportId={sport_id}&{self.API_PARAMS}"
+        try:
+            leagues_raw = await asyncio.wait_for(page.evaluate(f"""async () => {{
+                const resp = await fetch('{url}');
+                if (!resp.ok) return null;
+                return await resp.json();
+            }}"""), timeout=10)
+        except Exception as e:
+            logger.warning(f"[{self.provider_id}] {sport}: API league discovery failed: {e}")
+            return []
+
+        if not leagues_raw or not isinstance(leagues_raw, list):
+            return []
+
+        # Convert API format to the format expected by scrape_league_page:
+        # API returns: {id, name, sportId, externalId, eventCount, ...}
+        # We need:     {id, name, href}  where href is the league page URL path
+        # The DOM uses the API's `id` field (not externalId) in league page URLs.
+        leagues = []
+        for lg in leagues_raw:
+            event_count = lg.get("eventCount", 0)
+            if event_count <= 0:
+                continue  # Skip empty leagues
+
+            league_id = lg.get("id")
+            name = lg.get("name", "")
+            # Slugify: "Premier League" → "premier-league"
+            slug = name.lower().replace(" ", "-").replace("/", "-").replace(",", "")
+            slug = "".join(c for c in slug if c.isalnum() or c == "-")
+            # Collapse multiple dashes
+            while "--" in slug:
+                slug = slug.replace("--", "-")
+            slug = slug.strip("-")
+
+            # Get the sport slug from SPORT_URL_MAP (e.g., "1-fotboll")
+            sport_slug = self.SPORT_URL_MAP.get(sport, "").split("/")[-1]
+
+            leagues.append({
+                "id": league_id,
+                "name": name,
+                "href": f"/sv/sportsbook/sport/{sport_slug}/leagues/{league_id}-{slug}",
+                "eventCount": event_count,
+            })
+
+        # Sort by event count (highest first) — most valuable leagues first
+        leagues.sort(key=lambda x: x["eventCount"], reverse=True)
+
+        logger.info(
+            f"[{self.provider_id}] {sport}: API discovered {len(leagues)} leagues "
+            f"with events (from {len(leagues_raw)} total)"
+        )
+        return leagues
+
+    async def _discover_leagues_via_dom(self, page, sport: str, sport_path: str) -> list[dict]:
+        """Fallback: discover leagues via DOM accordion expansion (slow)."""
+        leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
+        try:
+            await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
+            await asyncio.sleep(3)
+        except Exception as e:
+            logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport}: {e}")
+            return []
+
+        if not self._cookie_dismissed:
+            await self._dismiss_cookie_overlay(page)
+            self._cookie_dismissed = True
+
+        # Click "Alla ligor" tab
+        try:
+            await page.evaluate("""() => {
+                const tabs = document.querySelectorAll('[role="tab"]');
+                for (const tab of tabs) {
+                    if (tab.textContent.trim().toLowerCase().includes('alla ligor')) {
+                        tab.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+        # Collect popular leagues
+        all_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
+        popular_count = len(all_leagues) if all_leagues else 0
+
+        # Expand country accordions
+        try:
+            country_count = await page.evaluate(JS.JS_GET_COUNTRY_COUNT)
+            if country_count > 0:
+                logger.info(
+                    f"[{self.provider_id}] {sport}: "
+                    f"expanding {country_count} countries sequentially"
+                )
+                for i in range(country_count):
+                    clicked = await page.evaluate(JS.JS_CLICK_COUNTRY_AT_INDEX, i)
+                    if clicked:
+                        await asyncio.sleep(0.3)
+                        country_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
+                        existing_ids = {lg["id"] for lg in all_leagues}
+                        for lg in country_leagues:
+                            if lg["id"] not in existing_ids:
+                                all_leagues.append(lg)
+                                existing_ids.add(lg["id"])
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] Country expansion failed: {e}")
+
+        logger.info(
+            f"[{self.provider_id}] {sport}: DOM discovered {len(all_leagues)} leagues "
+            f"({popular_count} popular + {len(all_leagues) - popular_count} from countries)"
+        )
+        return all_leagues or []
 
     async def _extract_single_sport(
         self,
@@ -267,60 +402,17 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         page = self._page
 
-        # Step 1: Navigate to league directory
-        leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
-        try:
-            await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
-            await asyncio.sleep(3)  # SPA needs time to render league list
-        except Exception as e:
-            logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport_normalized}: {e}")
-            return []
-
         if not self._cookie_dismissed:
             await self._dismiss_cookie_overlay(page)
             self._cookie_dismissed = True
 
-        # Step 2: Click "Alla ligor" tab if not already active
-        try:
-            await page.evaluate("""() => {
-                const tabs = document.querySelectorAll('[role="tab"]');
-                for (const tab of tabs) {
-                    if (tab.textContent.trim().toLowerCase().includes('alla ligor')) {
-                        tab.click();
-                        return true;
-                    }
-                }
-                return false;
-            }""")
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
-
-        # Step 3: Collect league URLs from popular section first
-        all_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
-        popular_count = len(all_leagues) if all_leagues else 0
-
-        # Step 4: Expand country accordions ONE AT A TIME (mutually exclusive)
-        try:
-            country_count = await page.evaluate(JS.JS_GET_COUNTRY_COUNT)
-            if country_count > 0:
-                logger.debug(
-                    f"[{self.provider_id}] {sport_normalized}: "
-                    f"expanding {country_count} countries sequentially"
-                )
-                for i in range(country_count):
-                    clicked = await page.evaluate(JS.JS_CLICK_COUNTRY_AT_INDEX, i)
-                    if clicked:
-                        await asyncio.sleep(0.3)
-                        country_leagues = await page.evaluate(JS.JS_COLLECT_LEAGUE_URLS)
-                        # Merge new leagues (JS deduplicates by ID via seen Set)
-                        existing_ids = {lg["id"] for lg in all_leagues}
-                        for lg in country_leagues:
-                            if lg["id"] not in existing_ids:
-                                all_leagues.append(lg)
-                                existing_ids.add(lg["id"])
-        except Exception as e:
-            logger.debug(f"[{self.provider_id}] Country expansion failed: {e}")
+        # Step 1: Discover leagues via REST API (fast, ~1s)
+        # Falls back to DOM accordion expansion if API fails
+        t_discovery = time.time()
+        all_leagues = await self._discover_leagues_via_api(page, sport_normalized)
+        if not all_leagues:
+            logger.info(f"[{self.provider_id}] {sport_normalized}: API discovery failed, falling back to DOM")
+            all_leagues = await self._discover_leagues_via_dom(page, sport_normalized, sport_path)
 
         if not all_leagues:
             logger.warning(f"[{self.provider_id}] {sport_normalized}: no leagues found")
@@ -328,11 +420,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
 
         logger.debug(
             f"[{self.provider_id}] {sport_normalized}: "
-            f"discovered {len(all_leagues)} leagues ({popular_count} popular + "
-            f"{len(all_leagues) - popular_count} from countries)"
+            f"discovery took {time.time() - t_discovery:.1f}s"
         )
 
-        # Step 5: Filter leagues and enforce per-sport cap
+        # Step 2: Filter leagues and enforce per-sport cap
         filtered_leagues = self._filter_leagues(all_leagues, target_leagues, sport_normalized)
         league_cap = self.SPORT_LEAGUE_CAPS.get(sport_normalized, self.DEFAULT_LEAGUE_CAP)
         if len(filtered_leagues) > league_cap:
@@ -399,10 +490,11 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         Uses the same target_leagues set that Kambi uses — fuzzy substring
         matching of ComeOn's Swedish league names against Pinnacle league names.
 
-        Falls back to popular leagues (first 10) if no target_leagues provided.
+        Falls back to top leagues by event count if no target_leagues provided.
+        The league cap from SPORT_LEAGUE_CAPS is applied by the caller.
         """
         if not target_leagues:
-            return all_leagues[:10]
+            return all_leagues  # Already sorted by eventCount from API discovery
 
         filtered = []
         for league in all_leagues:
@@ -420,8 +512,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         if not filtered:
             logger.debug(
                 f"[{self.provider_id}] {sport}: league filter matched 0/{len(all_leagues)}, "
-                f"using top 10"
+                f"using all (cap applied by caller)"
             )
-            return all_leagues[:10]
+            return all_leagues
 
         return filtered
