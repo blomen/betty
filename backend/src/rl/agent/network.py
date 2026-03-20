@@ -56,6 +56,42 @@ class DQNetwork(nn.Module):
             "q_values": q_values,
         }
 
+    @torch.no_grad()
+    def extract_top_connections(
+        self, activations: dict[str, Tensor], top_n: int = 100
+    ) -> dict[str, list[dict]]:
+        """Extract strongest connections per layer transition.
+
+        Signal strength = |weight[j, i] * activation[i]| for each connection.
+        Returns top_n connections per transition, sorted by strength descending.
+        """
+        layers = [
+            ("input_l1", activations["inputs"], self.net[0]),
+            ("l1_l2",    activations["layer1"], self.net[2]),
+            ("l2_l3",    activations["layer2"], self.net[4]),
+            ("l3_output", activations["layer3"], self.net[6]),
+        ]
+        result = {}
+        for name, act, linear in layers:
+            act_1d = act[0]
+            w = linear.weight
+            signal = (w * act_1d.unsqueeze(0)).abs()
+            flat = signal.flatten()
+            k = min(top_n, flat.numel())
+            top_vals, top_idxs = flat.topk(k)
+            conns = []
+            for val, idx in zip(top_vals.tolist(), top_idxs.tolist()):
+                j = idx // w.shape[1]
+                i = idx % w.shape[1]
+                conns.append({
+                    "from_idx": i,
+                    "to_idx": j,
+                    "strength": round(val, 4),
+                    "sign": 1 if w[j, i].item() >= 0 else -1,
+                })
+            result[name] = conns
+        return result
+
     def predict(self, observation: np.ndarray) -> np.ndarray:
         """Convenience method: numpy observation → numpy Q-values (no gradient).
 
