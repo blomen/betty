@@ -142,7 +142,13 @@ class MarketService:
             raw_provider = getattr(provider, "inner", provider)
             config = get_market_data_config()
             full_symbol = config.get("symbol", "NQ.FUT")
-            fetched = await raw_provider.get_bars(full_symbol, "1m", d_start, d_end)
+            # Databento historical has ~15 min delay; clamp end to avoid 422
+            from datetime import timedelta
+            fetch_end = min(d_end, datetime.now(timezone.utc) - timedelta(minutes=15))
+            if fetch_end <= d_start:
+                logger.info("VP bars: too early for Databento backfill, using DB bars")
+                return db_bars
+            fetched = await raw_provider.get_bars(full_symbol, "1m", d_start, fetch_end)
             if fetched:
                 try:
                     inserted = self.repo.bulk_insert_candles(symbol, "1m", fetched)
@@ -1257,6 +1263,8 @@ class MarketService:
                 "date": date_str,
                 "pdh": sl.pdh,
                 "pdl": sl.pdl,
+                "pdh_time": sl.pdh_time,
+                "pdl_time": sl.pdl_time,
                 "ib_high": sl.ib_high,
                 "ib_low": sl.ib_low,
                 "tokyo_high": sl.tokyo_high,

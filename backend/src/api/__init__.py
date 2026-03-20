@@ -234,7 +234,7 @@ async def lifespan(app: FastAPI):
             symbol = "NQ"
             db_symbol = config.get("symbol", "NQ.v.0")
             now = datetime.now(timezone.utc)
-            fetch_end = now - timedelta(minutes=30)  # Databento ~15-30 min delay
+            fetch_end = now - timedelta(minutes=15)  # Databento ~15 min delay
 
             # 5m: full history from 2010 (already backfilled, only forward gap)
             # 1m: 30 days max (5x more data, don't need years of 1m bars)
@@ -260,7 +260,12 @@ async def lifespan(app: FastAPI):
                     if oldest_ts <= target_start + timedelta(days=1):
                         fetch_start = latest.ts if latest.ts.tzinfo else latest.ts.replace(tzinfo=timezone.utc)
 
-                logger.info("Candle backfill %s: %s → %s", interval, fetch_start.date(), fetch_end.date())
+                # Need at least 2 min gap to avoid Databento 422 errors
+                if fetch_start >= fetch_end - timedelta(minutes=2):
+                    logger.info("Candle backfill %s: already up to date (latest %s)", interval, fetch_start)
+                    continue
+
+                logger.info("Candle backfill %s: %s → %s", interval, fetch_start, fetch_end)
                 try:
                     bars = await asyncio.wait_for(
                         inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
@@ -269,12 +274,17 @@ async def lifespan(app: FastAPI):
                     if bars:
                         db = _get_db_session()
                         try:
-                            inserted = MarketRepo(db).bulk_insert_candles(symbol, interval, bars)
-                            logger.info("Candle backfill %s: %d new (%d fetched)", interval, inserted, len(bars))
+                            repo = MarketRepo(db)
+                            for b in bars:
+                                repo.upsert_candle(
+                                    symbol, interval, b.timestamp,
+                                    b.open, b.high, b.low, b.close, b.volume,
+                                )
+                            logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
                         finally:
                             db.close()
                     else:
-                        logger.warning("Candle backfill %s: no bars returned", interval)
+                        logger.info("Candle backfill %s: no bars in range (market closed?)", interval)
                 except Exception as e:
                     logger.warning("Candle backfill %s failed: %s", interval, e)
 
