@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel } from '@/types/market';
+import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile } from '@/types/market';
 
 // Level groups: toggling a group toggles all its children
 const LEVEL_GROUPS: Record<string, string[]> = {
@@ -11,6 +11,7 @@ const LEVEL_GROUPS: Record<string, string[]> = {
   daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
   weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
   monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
+  tpo: ['t_poc', 't_vah', 't_val', 'vp_tpo'],
 };
 
 interface Props {
@@ -19,9 +20,10 @@ interface Props {
   session: ExpandedSession | null;
   hiddenLevels: Set<string>;
   setHiddenLevels: React.Dispatch<React.SetStateAction<Set<string>>>;
+  tpo?: TPOLiveProfile | null;
 }
 
-export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) {
+export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Props) {
   const s = session?.session;
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
@@ -152,6 +154,47 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels }: Props) 
           <Row label="devPOC" value={profiles.developing_poc.toFixed(2)} color="text-white" />
         )}
       </div>
+
+      {/* TPO Profile */}
+      {tpo && (
+        <div className="px-3 py-2 border-b border-border last:border-b-0">
+          <button onClick={() => toggleGroup('tpo')} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">TPO Profile</button>
+
+          <div className={isGroupHidden('tpo') ? 'opacity-40' : ''}>
+            <div className="grid grid-cols-3 gap-x-1 text-[10px] mb-1.5">
+              <span className="text-muted2">VAH <span className="text-orange-400">{tpo.vah.toFixed(0)}</span></span>
+              <span className="text-muted2">POC <span className="text-orange-300 font-bold">{tpo.poc.toFixed(0)}</span></span>
+              <span className="text-muted2">VAL <span className="text-orange-400">{tpo.val.toFixed(0)}</span></span>
+            </div>
+
+            <Row label="Shape" value={tpo.profile_shape} color="text-orange-300" />
+            <Row
+              label="Opening"
+              value={`${tpo.opening_type} ${tpo.opening_direction === 'up' ? '\u2191' : tpo.opening_direction === 'down' ? '\u2193' : '\u2194'}`}
+              color="text-orange-300"
+            />
+            <Row
+              label="Rotation"
+              value={`${tpo.rotation_factor > 0 ? '+' : ''}${tpo.rotation_factor.toFixed(1)}`}
+              color={tpo.rotation_factor > 0 ? 'text-emerald-400' : tpo.rotation_factor < 0 ? 'text-red-400' : 'text-muted2'}
+            />
+            <Row label="IB Range" value={(tpo.ib_high - tpo.ib_low).toFixed(2)} />
+
+            {(tpo.upper_excess > 0 || tpo.lower_excess > 0) && (
+              <div className="flex gap-2 mt-1 text-[10px]">
+                {tpo.upper_excess > 0 && <span className="text-muted2">Upper excess: <span className="text-orange-300">{tpo.upper_excess}</span></span>}
+                {tpo.lower_excess > 0 && <span className="text-muted2">Lower excess: <span className="text-orange-300">{tpo.lower_excess}</span></span>}
+              </div>
+            )}
+
+            {tpo.single_prints.length > 0 && (
+              <div className="mt-1 text-[10px] text-muted2">
+                Singles: <span className="text-orange-300">{tpo.single_prints.slice(0, 5).map(p => p.toFixed(0)).join(', ')}{tpo.single_prints.length > 5 ? ` +${tpo.single_prints.length - 5}` : ''}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   );
