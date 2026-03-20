@@ -505,7 +505,7 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 106
+  inputs: number[];           // 108
   activations: {
     layer1: number[];         // 128
     layer2: number[];         // 128

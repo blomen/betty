@@ -623,20 +623,27 @@ class LevelMonitor:
         # Map level name to LevelType enum
         name_lower = level.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
         level_type_map = {
+            # Volume profile
+            "poc": LevelType.DAILY_POC, "daily_poc": LevelType.DAILY_POC,
+            "vah": LevelType.DAILY_VAH, "daily_vah": LevelType.DAILY_VAH,
+            "val": LevelType.DAILY_VAL, "daily_val": LevelType.DAILY_VAL,
+            "weekly_poc": LevelType.WEEKLY_POC, "weekly_vah": LevelType.WEEKLY_VAH, "weekly_val": LevelType.WEEKLY_VAL,
+            "monthly_poc": LevelType.MONTHLY_POC, "monthly_vah": LevelType.MONTHLY_VAH, "monthly_val": LevelType.MONTHLY_VAL,
+            # VWAP
             "vwap": LevelType.VWAP,
             "vwap_1sd_upper": LevelType.VWAP_SD1, "vwap_1sd_lower": LevelType.VWAP_SD1,
             "vwap_2sd_upper": LevelType.VWAP_SD2, "vwap_2sd_lower": LevelType.VWAP_SD2,
             "vwap_3sd_upper": LevelType.VWAP_SD3, "vwap_3sd_lower": LevelType.VWAP_SD3,
-            "poc": LevelType.POC_SESSION, "poc_daily": LevelType.POC_DAILY,
-            "poc_weekly": LevelType.POC_WEEKLY, "poc_monthly": LevelType.POC_MONTHLY,
-            "vah": LevelType.VAH, "val": LevelType.VAL,
-            "ib_high": LevelType.IB_HIGH, "ib_low": LevelType.IB_LOW,
+            # Session
             "pdh": LevelType.PDH, "pdl": LevelType.PDL,
-            "tokyo_hl": LevelType.TOKYO_HL, "london_hl": LevelType.LONDON_HL,
-            "globex_hl": LevelType.GLOBEX_HL, "overnight_hl": LevelType.OVERNIGHT_HL,
-            "weekly_hl": LevelType.WEEKLY_HL, "monthly_hl": LevelType.MONTHLY_HL,
+            "tokyo_high": LevelType.TOKYO_HIGH, "tokyo_low": LevelType.TOKYO_LOW,
+            "nyib_high": LevelType.NYIB_HIGH, "nyib_low": LevelType.NYIB_LOW,
+            # TPO
+            "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
+            "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
+            # Structure
             "naked_poc": LevelType.NAKED_POC, "single_print": LevelType.SINGLE_PRINT,
-            "fvg": LevelType.FVG, "order_block": LevelType.ORDER_BLOCK,
+            "fvg": LevelType.FVG,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
 

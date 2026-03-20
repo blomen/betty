@@ -4,32 +4,41 @@ from enum import Enum
 
 
 class LevelType(str, Enum):
-    """All level types the agent can encounter."""
-    POC_SESSION = "poc_session"
-    POC_DAILY = "poc_daily"
-    POC_WEEKLY = "poc_weekly"
-    POC_MONTHLY = "poc_monthly"
-    POC_MACRO = "poc_macro"
-    VAH = "vah"
-    VAL = "val"
+    """All level types the agent can encounter (27 total)."""
+    # Volume profile — daily
+    DAILY_POC = "daily_poc"
+    DAILY_VAH = "daily_vah"
+    DAILY_VAL = "daily_val"
+    # Volume profile — weekly
+    WEEKLY_POC = "weekly_poc"
+    WEEKLY_VAH = "weekly_vah"
+    WEEKLY_VAL = "weekly_val"
+    # Volume profile — monthly
+    MONTHLY_POC = "monthly_poc"
+    MONTHLY_VAH = "monthly_vah"
+    MONTHLY_VAL = "monthly_val"
+    # VWAP bands
     VWAP = "vwap"
     VWAP_SD1 = "vwap_sd1"
     VWAP_SD2 = "vwap_sd2"
     VWAP_SD3 = "vwap_sd3"
-    IB_HIGH = "ib_high"
-    IB_LOW = "ib_low"
+    # Session levels
     PDH = "pdh"
     PDL = "pdl"
-    TOKYO_HL = "tokyo_hl"
-    LONDON_HL = "london_hl"
-    GLOBEX_HL = "globex_hl"
-    OVERNIGHT_HL = "overnight_hl"
-    WEEKLY_HL = "weekly_hl"
-    MONTHLY_HL = "monthly_hl"
+    TOKYO_HIGH = "tokyo_high"
+    TOKYO_LOW = "tokyo_low"
+    NYIB_HIGH = "nyib_high"
+    NYIB_LOW = "nyib_low"
+    # TPO levels
+    TPOC = "tpoc"
+    TVAH = "tvah"
+    TVAL = "tval"
+    TIBH = "tibh"
+    TIBL = "tibl"
+    # Structure
     NAKED_POC = "naked_poc"
     SINGLE_PRINT = "single_print"
     FVG = "fvg"
-    ORDER_BLOCK = "order_block"
 
 
 class Action(int, Enum):

@@ -401,30 +401,30 @@ class ReplayEngine:
             levels.append(("vwap_sd3_upper", LevelType.VWAP_SD3, vwap_bands.sd3_upper))
             levels.append(("vwap_sd3_lower", LevelType.VWAP_SD3, vwap_bands.sd3_lower))
 
-        # --- Volume profile: POC, VAH, VAL (skip single prints as levels — too noisy) ---
+        # --- Volume profile: daily POC, VAH, VAL ---
         vp = self._vp.get()
         if vp is not None:
-            levels.append(("poc_session", LevelType.POC_SESSION, vp.poc))
-            levels.append(("vah", LevelType.VAH, vp.vah))
-            levels.append(("val", LevelType.VAL, vp.val))
-            # Single prints excluded as individual levels (too noisy — 200+
-            # per session). They're still used as features in the observation
-            # vector via the VP profile data.
+            levels.append(("daily_poc", LevelType.DAILY_POC, vp.poc))
+            levels.append(("daily_vah", LevelType.DAILY_VAH, vp.vah))
+            levels.append(("daily_val", LevelType.DAILY_VAL, vp.val))
 
         # --- Session structural levels ---
         sl = self._session_levels
-        _add_optional(levels, "ib_high", LevelType.IB_HIGH, sl.ib_high)
-        _add_optional(levels, "ib_low", LevelType.IB_LOW, sl.ib_low)
         _add_optional(levels, "pdh", LevelType.PDH, sl.pdh)
         _add_optional(levels, "pdl", LevelType.PDL, sl.pdl)
-        _add_optional(levels, "tokyo_high", LevelType.TOKYO_HL, sl.tokyo_high)
-        _add_optional(levels, "tokyo_low", LevelType.TOKYO_HL, sl.tokyo_low)
-        _add_optional(levels, "london_high", LevelType.LONDON_HL, sl.london_high)
-        _add_optional(levels, "london_low", LevelType.LONDON_HL, sl.london_low)
-        _add_optional(levels, "weekly_high", LevelType.WEEKLY_HL, sl.weekly_high)
-        _add_optional(levels, "weekly_low", LevelType.WEEKLY_HL, sl.weekly_low)
-        _add_optional(levels, "monthly_high", LevelType.MONTHLY_HL, sl.monthly_high)
-        _add_optional(levels, "monthly_low", LevelType.MONTHLY_HL, sl.monthly_low)
+        _add_optional(levels, "tokyo_high", LevelType.TOKYO_HIGH, sl.tokyo_high)
+        _add_optional(levels, "tokyo_low", LevelType.TOKYO_LOW, sl.tokyo_low)
+        _add_optional(levels, "nyib_high", LevelType.NYIB_HIGH, getattr(sl, "nyib_high", None))
+        _add_optional(levels, "nyib_low", LevelType.NYIB_LOW, getattr(sl, "nyib_low", None))
+
+        # --- TPO levels ---
+        tpo = self._tpo_profile if hasattr(self, "_tpo_profile") else None
+        if tpo:
+            _add_optional(levels, "tpoc", LevelType.TPOC, tpo.get("poc"))
+            _add_optional(levels, "tvah", LevelType.TVAH, tpo.get("vah"))
+            _add_optional(levels, "tval", LevelType.TVAL, tpo.get("val"))
+        _add_optional(levels, "tibh", LevelType.TIBH, getattr(sl, "ib_high", None))
+        _add_optional(levels, "tibl", LevelType.TIBL, getattr(sl, "ib_low", None))
 
         # --- Fair Value Gaps (midpoint) — only significant gaps (≥2 ticks wide) ---
         for fvg in self._fvgs:
@@ -433,27 +433,18 @@ class ReplayEngine:
                 mid = (fvg.price_low + fvg.price_high) / 2.0
                 levels.append(("fvg", LevelType.FVG, mid))
 
-        # --- Order blocks (midpoint) ---
-        for ob in self._order_blocks:
-            mid = (ob.price_low + ob.price_high) / 2.0
-            levels.append(("order_block", LevelType.ORDER_BLOCK, mid))
-
         # --- Precomputed cross-session levels ---
         if self._precomputed:
-            # Only inject Globex/overnight HL after RTH has started (avoid look-ahead bias)
-            if self._rth_vwap_started:
-                _add_optional(levels, "globex_high", LevelType.GLOBEX_HL, self._precomputed.get("globex_high"))
-                _add_optional(levels, "globex_low", LevelType.GLOBEX_HL, self._precomputed.get("globex_low"))
-                _add_optional(levels, "overnight_high", LevelType.OVERNIGHT_HL, self._precomputed.get("overnight_high"))
-                _add_optional(levels, "overnight_low", LevelType.OVERNIGHT_HL, self._precomputed.get("overnight_low"))
-
             for naked in self._precomputed.get("naked_pocs", []):
                 levels.append(("naked_poc", LevelType.NAKED_POC, naked["price"]))
 
-            _add_optional(levels, "poc_daily", LevelType.POC_DAILY, self._precomputed.get("poc_daily"))
-            _add_optional(levels, "poc_weekly", LevelType.POC_WEEKLY, self._precomputed.get("poc_weekly"))
-            _add_optional(levels, "poc_monthly", LevelType.POC_MONTHLY, self._precomputed.get("poc_monthly"))
-            _add_optional(levels, "poc_macro", LevelType.POC_MACRO, self._precomputed.get("poc_macro"))
+            # Weekly/monthly volume profiles
+            _add_optional(levels, "weekly_poc", LevelType.WEEKLY_POC, self._precomputed.get("weekly_poc"))
+            _add_optional(levels, "weekly_vah", LevelType.WEEKLY_VAH, self._precomputed.get("weekly_vah"))
+            _add_optional(levels, "weekly_val", LevelType.WEEKLY_VAL, self._precomputed.get("weekly_val"))
+            _add_optional(levels, "monthly_poc", LevelType.MONTHLY_POC, self._precomputed.get("monthly_poc"))
+            _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
+            _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
 
             for sp_low, sp_high in self._precomputed.get("single_print_zones", []):
                 mid = (sp_low + sp_high) / 2.0
