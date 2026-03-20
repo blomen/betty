@@ -402,5 +402,74 @@ def ml_train_level_classifier(
     console.print(table)
 
 
+@app.command()
+def backfill_tpo(
+    days: int = typer.Option(90, help="Number of days to backfill"),
+    symbol: str = typer.Option("NQ", help="Symbol"),
+):
+    """Backfill TPO session profiles from stored 1m candles."""
+    from datetime import date, timedelta, datetime as dt_cls, timezone as tz
+    from src.db.models import init_db, get_session_factory, MarketTPOSession
+    from src.market_data.tpo import build_full_tpo_profile, aggregate_bars_30m
+    from src.repositories.market_repo import MarketRepo
+    import json
+    from dataclasses import asdict
+
+    init_db()
+    session_factory = get_session_factory()
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+
+    with session_factory() as db:
+        repo = MarketRepo(db)
+        current = start_date
+        stored = 0
+        skipped = 0
+
+        while current <= end_date:
+            date_str = current.isoformat()
+
+            existing = db.query(MarketTPOSession).filter_by(symbol=symbol, date=date_str).first()
+            if existing:
+                skipped += 1
+                current += timedelta(days=1)
+                continue
+
+            session_start = dt_cls.strptime(date_str, "%Y-%m-%d").replace(hour=0, tzinfo=tz.utc) - timedelta(hours=6)
+            session_end = dt_cls.strptime(date_str, "%Y-%m-%d").replace(hour=23, minute=59, tzinfo=tz.utc)
+            bars = repo.get_candles(symbol, "1m", session_start, session_end)
+            if not bars:
+                current += timedelta(days=1)
+                continue
+
+            bars_30m = aggregate_bars_30m(bars)
+            if not bars_30m:
+                current += timedelta(days=1)
+                continue
+
+            profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
+
+            db.add(MarketTPOSession(
+                symbol=symbol, date=date_str,
+                poc=profile.poc, vah=profile.vah, val=profile.val,
+                ib_high=profile.ib_high, ib_low=profile.ib_low,
+                rotation_factor=profile.rotation_factor,
+                profile_shape=profile.profile_shape,
+                opening_type=profile.opening_type,
+                opening_direction=profile.opening_direction,
+                upper_excess=profile.upper_excess,
+                lower_excess=profile.lower_excess,
+                session_high=profile.session_high,
+                session_low=profile.session_low,
+                session_json=json.dumps(asdict(profile), default=str),
+            ))
+            db.commit()
+            stored += 1
+            current += timedelta(days=1)
+
+    typer.echo(f"TPO backfill complete: {stored} stored, {skipped} skipped")
+
+
 if __name__ == "__main__":
     app()
