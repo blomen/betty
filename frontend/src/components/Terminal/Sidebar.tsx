@@ -28,9 +28,9 @@ function SidebarButton({
   return (
     <button
       onClick={onClick}
-      className={`w-12 h-12 flex items-center justify-center ${
+      className={`w-12 h-12 flex items-center justify-center transition-shadow ${
         isActive
-          ? 'border-2 border-text text-text'
+          ? 'border-2 border-text text-text shadow-[0_0_12px_rgba(212,212,212,0.15)] bg-white/[0.03]'
           : 'border-2 border-transparent text-muted hover:border-muted hover:text-text'
       }`}
       title={title}
@@ -75,7 +75,7 @@ function MirrorButton() {
       disabled={loading}
       className={`w-12 h-12 flex items-center justify-center mb-1 border-2 transition ${
         running
-          ? 'border-success text-success'
+          ? 'border-success text-success shadow-[0_0_12px_rgba(76,175,80,0.25)] bg-success/5 animate-[mirrorPulse_2s_ease-in-out_infinite]'
           : 'border-transparent text-muted hover:border-muted hover:text-text'
       } ${loading ? 'opacity-50' : ''}`}
       title={running ? 'Stop Mirror' : 'Start Mirror'}

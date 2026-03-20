@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import { Sidebar, type TabName, type CategoryName } from './Sidebar';
-import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB } from './TabBar';
+import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB, TAB_COLORS } from './TabBar';
 import { usePersistedState } from '@/hooks/usePersistedState';
 // All pages lazy-loaded for fast startup
 const ValuePage = lazy(() => import('./pages/ValuePage').then(m => ({ default: m.ValuePage })));
@@ -156,7 +156,7 @@ export function TerminalWindow() {
         <ConnectionErrorBar />
         <ErrorNotificationBar />
         <BetMirrorToast />
-        <div className="flex-1 flex flex-col min-h-0 p-4 overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 p-4 overflow-hidden" style={{ '--tab-accent': TAB_COLORS[activeTab] || '#737373' } as React.CSSProperties}>
           <Suspense fallback={<div className="p-4 text-muted text-sm animate-blink">█</div>}>
             {/* TradingContainer stays mounted once visited — hidden via CSS when on other tabs */}
             {tradingMounted && (

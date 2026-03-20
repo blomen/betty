@@ -44,8 +44,11 @@ export function ConnectionErrorBar() {
   if (!offline) return null;
 
   return (
-    <div className="mx-3 mt-2 border border-error/30 bg-error/10 text-xs font-mono px-3 py-1.5 flex items-center gap-2">
-      <span className="text-error font-bold">!</span>
+    <div
+      className="mx-3 mt-2 border border-error/30 bg-gradient-to-br from-error/12 to-error/4 text-xs font-mono px-3 py-2 flex items-center gap-2 shadow-[0_0_20px_rgba(239,83,80,0.08),0_4px_12px_rgba(0,0,0,0.3)]"
+      style={{ borderLeftWidth: 3, borderLeftColor: '#EF5350' }}
+    >
+      <span className="text-error font-bold text-sm">!</span>
       <span className="text-error">Backend unreachable</span>
       <span className="text-muted">{lastError}</span>
     </div>

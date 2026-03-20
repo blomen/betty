@@ -16,8 +16,8 @@ const SPORTS_TABS: Tab[] = [
 ];
 
 const STOCKS_TABS: Tab[] = [
-  { name: 'tradingMonitor', label: 'Monitor', color: '#06B6D4' },
-  { name: 'tradingExecute', label: 'Execute', color: '#EF4444' },
+  { name: 'tradingL1', label: 'L1', color: '#06B6D4' },
+  { name: 'tradingL2', label: 'L2', color: '#EF4444' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
@@ -29,7 +29,7 @@ export const TABS_BY_CATEGORY: Record<CategoryName, Tab[]> = {
 
 export const DEFAULT_TAB: Record<CategoryName, TabName> = {
   sports: 'value',
-  stocks: 'tradingMonitor',
+  stocks: 'tradingL1',
 };
 
 // Color map for use in pages — matches SPORTS_TABS colors
@@ -45,8 +45,8 @@ export const TAB_COLORS: Record<string, string> = {
   profiles: '#A78BFA',
   settings: '#9AA0A6',
   success: '#10b981',
-  tradingMonitor: '#06B6D4',
-  tradingExecute: '#EF4444',
+  tradingL1: '#06B6D4',
+  tradingL2: '#EF4444',
   tradingBankroll: '#EC4899',
   tradingStats: '#1E88E5',
 };
@@ -121,7 +121,11 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
               uppercase tracking-wider outline-none
               ${isActive ? 'font-bold' : 'text-muted hover:text-text'}
             `}
-            style={isActive ? { backgroundColor: tab.color, color: '#0a0e0a' } : undefined}
+            style={isActive ? {
+              background: `linear-gradient(180deg, ${tab.color}, ${tab.color}dd)`,
+              color: '#0a0e0a',
+              boxShadow: `0 0 12px ${tab.color}4d, 0 2px 8px rgba(0,0,0,0.3)`,
+            } : undefined}
           >
             <span style={{ color: isActive ? '#0a0e0a' : tab.color }}>●</span>
             <span>{tab.label}</span>

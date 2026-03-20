@@ -85,6 +85,12 @@ select, input, textarea, button {
   font-family: inherit;
 }
 
+/* Input/select focus glow */
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--focus-border, var(--tab-accent, var(--accent))) 25%, transparent),
+              0 0 2px color-mix(in srgb, var(--focus-border, var(--tab-accent, var(--accent))) 15%, transparent);
+}
+
 /* Selection styling */
 ::selection {
   background-color: rgba(79, 195, 247, 0.3);
@@ -151,7 +157,7 @@ table.sq tr:hover td {
 }
 
 table.sq tr:hover td:first-child {
-  box-shadow: inset 3px 0 0 var(--muted);
+  box-shadow: inset 3px 0 0 var(--tab-accent, var(--muted));
 }
 
 table.sq tr.expanded td {
@@ -159,7 +165,7 @@ table.sq tr.expanded td {
 }
 
 table.sq tr.expanded td:first-child {
-  box-shadow: inset 3px 0 0 var(--muted);
+  box-shadow: inset 3px 0 0 var(--tab-accent, var(--muted));
 }
 
 /* Reset default table styles */
@@ -189,12 +195,14 @@ a:hover {
 .flash-up {
   color: #4ade80 !important;
   background-color: rgba(74, 222, 128, 0.15) !important;
-  transition: color 0.3s ease, background-color 0.3s ease;
+  box-shadow: inset 0 0 12px rgba(74, 222, 128, 0.1);
+  transition: color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
 }
 .flash-down {
   color: #f87171 !important;
   background-color: rgba(248, 113, 113, 0.15) !important;
-  transition: color 0.3s ease, background-color 0.3s ease;
+  box-shadow: inset 0 0 12px rgba(248, 113, 113, 0.1);
+  transition: color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 /* Row fade-in/out for added/removed opportunities */
@@ -231,4 +239,16 @@ a:hover {
 }
 .toast-fade-out {
   animation: toastFadeOut 0.5s ease forwards;
+}
+
+/* Glow accent on border-l-2 card frames */
+.border-l-2[class*="border-tab"],
+.border-l-2.border-success {
+  box-shadow: -2px 0 12px -2px var(--tab-accent, rgba(115, 115, 115, 0.2));
+}
+
+/* Mirror toggle pulse */
+@keyframes mirrorPulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(76, 175, 80, 0.25); }
+  50% { box-shadow: 0 0 20px rgba(76, 175, 80, 0.4); }
 }

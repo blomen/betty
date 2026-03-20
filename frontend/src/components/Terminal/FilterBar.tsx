@@ -113,7 +113,7 @@ export function MultiSelectDropdown({
         className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] border-2 ${
           hasFilter ? 'font-medium' : 'border-border bg-panel2 text-muted hover:text-text hover:bg-panel2/80'
         }`}
-        style={hasFilter ? { backgroundColor: hex, color: '#0a0e0a', borderColor: hex } : undefined}
+        style={hasFilter ? { backgroundColor: hex, color: '#0a0e0a', borderColor: hex, boxShadow: `0 0 8px ${hex}40` } : undefined}
       >
         <span className="text-muted2 text-[10px] uppercase tracking-wider mr-0.5">
           {label}
@@ -243,7 +243,7 @@ export function MultiSelectPills({
         className={`px-2.5 py-1 text-[11px] ${
           !allSelected ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
-        style={allSelected ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+        style={allSelected ? { background: `${hex}15`, color: hex, fontWeight: 500, boxShadow: `0 0 6px ${hex}20` } : undefined}
       >
         All
       </button>
@@ -256,7 +256,7 @@ export function MultiSelectPills({
             className={`px-2.5 py-1 text-[11px] ${
               !isActive ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
             }`}
-            style={isActive ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+            style={isActive ? { background: `${hex}15`, color: hex, fontWeight: 500, boxShadow: `0 0 6px ${hex}20` } : undefined}
           >
             {format ? format(opt) : opt}
           </button>
@@ -357,7 +357,7 @@ export function SingleSelectPills({
         className={`px-2.5 py-1 text-[11px] ${
           active !== null ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
         }`}
-        style={active === null ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+        style={active === null ? { background: `${hex}15`, color: hex, fontWeight: 500, boxShadow: `0 0 6px ${hex}20` } : undefined}
       >
         All
       </button>
@@ -368,7 +368,7 @@ export function SingleSelectPills({
           className={`px-2.5 py-1 text-[11px] ${
             active !== opt ? 'bg-panel2 text-muted hover:text-text hover:bg-panel2/80' : ''
           }`}
-          style={active === opt ? { background: `${hex}15`, color: hex, fontWeight: 500 } : undefined}
+          style={active === opt ? { background: `${hex}15`, color: hex, fontWeight: 500, boxShadow: `0 0 6px ${hex}20` } : undefined}
         >
           {format ? format(opt) : opt}
         </button>
