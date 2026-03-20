@@ -1,317 +1,370 @@
-// NeuralNetworkSVG.tsx
+// NeuralNetworkSVG.tsx — DQN 107→128→128→64→3 visualization
 import { useMemo } from 'react';
 import {
-  NN_FEATURES, normalizeValue, formatValue,
-  type NNColor,
-} from './nnConfig';
-import type {
-  MlPrediction, MlFeatureSnapshot, StreamBookEvent,
-} from '@/types/market';
+  DQN_INPUTS, DQN_SEGMENTS, HIDDEN_LAYERS, ACTION_NAMES, ACTION_COLORS,
+  getSegmentColor,
+} from './dqnConfig';
+import type { DQNInferenceEvent } from '@/types/market';
 
 interface Props {
-  features: MlFeatureSnapshot | null;
-  prediction: MlPrediction | null;
-  book: StreamBookEvent | null;
+  dqnInference: DQNInferenceEvent | null;
 }
 
 // Layout constants
-const INPUT_X = 55;
-const HIDDEN1_X = 330;
-const HIDDEN2_X = 490;
-const OUTPUT_X = 650;
-const NODE_R = 6;
-const HIDDEN_R = 7;
-const OUTPUT_R = 10;
-const ROW_H = 18;       // vertical spacing between nodes
-const GROUP_GAP = 10;    // extra gap between groups
-const TOP_PAD = 25;
+const INPUT_X = 180;
+const LAYER1_X = 540;
+const LAYER2_X = 780;
+const LAYER3_X = 1000;
+const OUTPUT_X = 1260;
+const NODE_R = 4;
+const HIDDEN_DOT_R = 3;
+const OUTPUT_R = 16;
+const ROW_H = 10;       // tight for 107 nodes
+const SEGMENT_GAP = 8;
+const TOP_PAD = 35;
 
-// Color maps
-const FILL_MAP: Record<NNColor, string> = {
-  green: '#10b981', red: '#ef4444', amber: '#f59e0b', dim: '#52525b',
-};
+// Layer display colors
+const LAYER_COLORS = ['#06b6d4', '#8b5cf6', '#a78bfa'] as const;
 
-// Output classes we expect
-const OUTPUT_CLASSES = ['continuation', 'reversal', 'rejection'];
-const OUTPUT_COLORS = ['#10b981', '#ef4444', '#f59e0b'];
+// How many representative dots to show per hidden layer
+const HIDDEN_SAMPLES = 40;
 
-export function NeuralNetworkSVG({ features, prediction, book }: Props) {
-  // Resolve raw feature values from props
-  const featureValues = useMemo(() => {
-    const f = features?.features ?? {};
-    const vals: Record<string, number> = {};
-    for (const def of NN_FEATURES) {
-      if (def.key.startsWith('book.')) {
-        const bk = def.key.split('.')[1];
-        vals[def.key] = book ? Number((book as any)[bk]) || 0 : 0;
-      } else {
-        const raw = f[def.key];
-        vals[def.key] = typeof raw === 'number' ? raw : typeof raw === 'boolean' ? (raw ? 1 : 0) : 0;
-      }
-    }
-    return vals;
-  }, [features, book]);
-
-  // SHAP importance map
-  const importanceMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    if (prediction?.top_features) {
-      for (const feat of prediction.top_features) {
-        map[feat.name] = Math.abs(feat.contribution);
-      }
-    }
-    return map;
-  }, [prediction]);
-
-  // Compute input node positions (grouped)
-  const inputNodes = useMemo(() => {
-    const nodes: Array<{ def: typeof NN_FEATURES[0]; y: number }> = [];
+export function NeuralNetworkSVG({ dqnInference }: Props) {
+  // ── Static: input node positions ──
+  const { inputNodePositions, totalHeight } = useMemo(() => {
+    const positions: number[] = [];
     let y = TOP_PAD;
-    let lastGroup = '';
-    for (const def of NN_FEATURES) {
-      if (def.group !== lastGroup) {
-        if (lastGroup) y += GROUP_GAP;
-        lastGroup = def.group;
+    let lastSeg = '';
+    for (const def of DQN_INPUTS) {
+      if (def.segment !== lastSeg) {
+        if (lastSeg) y += SEGMENT_GAP;
+        lastSeg = def.segment;
       }
-      nodes.push({ def, y });
+      positions.push(y);
       y += ROW_H;
     }
-    return nodes;
+    return { inputNodePositions: positions, totalHeight: y + 40 };
   }, []);
 
-  const totalHeight = inputNodes.length > 0
-    ? inputNodes[inputNodes.length - 1].y + 40
-    : 400;
+  // ── Static: segment label positions ──
+  const segmentLabels = useMemo(() => {
+    return DQN_SEGMENTS.map(seg => {
+      const startIdx = seg.start;
+      const endIdx = seg.end - 1;
+      const yStart = inputNodePositions[startIdx] ?? TOP_PAD;
+      const yEnd = inputNodePositions[endIdx] ?? TOP_PAD;
+      return { seg, yStart, yEnd, yMid: (yStart + yEnd) / 2 };
+    });
+  }, [inputNodePositions]);
 
-  // Hidden layer positions
-  const hidden1Count = 6;
-  const hidden2Count = 4;
-  const h1Nodes = Array.from({ length: hidden1Count }, (_, i) => ({
-    y: TOP_PAD + 30 + i * ((totalHeight - 80) / (hidden1Count - 1)),
-  }));
-  const h2Nodes = Array.from({ length: hidden2Count }, (_, i) => ({
-    y: TOP_PAD + 50 + i * ((totalHeight - 120) / (hidden2Count - 1)),
-  }));
-
-  // Output positions
-  const outputProbs = OUTPUT_CLASSES.map(cls => {
-    const prob = prediction?.probabilities?.[cls] ?? 0;
-    return { cls, prob };
-  });
-  const outYStart = totalHeight / 2 - (OUTPUT_CLASSES.length - 1) * 30;
-  const outputNodes = outputProbs.map((o, i) => ({
-    ...o,
-    y: outYStart + i * 60,
-    color: OUTPUT_COLORS[i],
-  }));
-
-  // Group label positions
-  const groupLabels = useMemo(() => {
-    const labels: Array<{ group: string; y: number; yEnd: number }> = [];
-    let currentGroup = '';
-    let startY = 0;
-    for (const node of inputNodes) {
-      if (node.def.group !== currentGroup) {
-        if (currentGroup) {
-          labels[labels.length - 1].yEnd = node.y - GROUP_GAP;
-        }
-        currentGroup = node.def.group;
-        startY = node.y;
-        labels.push({ group: currentGroup, y: startY, yEnd: startY });
+  // ── Static: hidden layer dot positions ──
+  const hiddenLayerDots = useMemo(() => {
+    return HIDDEN_LAYERS.map((size, layerIdx) => {
+      const step = Math.max(1, Math.floor(size / HIDDEN_SAMPLES));
+      const sampledIndices: number[] = [];
+      for (let i = 0; i < size; i += step) {
+        sampledIndices.push(i);
+        if (sampledIndices.length >= HIDDEN_SAMPLES) break;
       }
-    }
-    if (labels.length > 0) {
-      labels[labels.length - 1].yEnd = inputNodes[inputNodes.length - 1].y;
-    }
-    return labels;
-  }, [inputNodes]);
+      const count = sampledIndices.length;
+      const spread = totalHeight * 0.7;
+      const yStart = totalHeight * 0.15;
+      return sampledIndices.map((srcIdx, j) => ({
+        srcIdx,
+        y: yStart + (j / Math.max(count - 1, 1)) * spread,
+        layerIdx,
+      }));
+    });
+  }, [totalHeight]);
 
-  // Deterministic connection mapping (input → hidden1)
-  // Each input connects to 2 hidden1 nodes based on index
-  const connections1 = useMemo(() => {
-    const conns: Array<{ x1: number; y1: number; x2: number; y2: number; opacity: number; color: string }> = [];
-    for (let i = 0; i < inputNodes.length; i++) {
-      const node = inputNodes[i];
-      const rawVal = featureValues[node.def.key] ?? 0;
-      const norm = normalizeValue(rawVal, node.def.range);
-      const color = FILL_MAP[node.def.colorFn(rawVal)];
-      // connect to 2 hidden nodes
-      const h1a = i % hidden1Count;
-      const h1b = (i + 1) % hidden1Count;
-      const imp = importanceMap[node.def.key] ?? norm * 0.3;
-      conns.push({
-        x1: INPUT_X + NODE_R, y1: node.y,
-        x2: HIDDEN1_X - HIDDEN_R, y2: h1Nodes[h1a].y,
-        opacity: Math.max(0.08, Math.min(0.8, imp)),
-        color,
+  // ── Static: output node positions ──
+  const outputPositions = useMemo(() => {
+    const count = ACTION_NAMES.length;
+    const spread = 120;
+    const center = totalHeight / 2;
+    return ACTION_NAMES.map((name, i) => ({
+      name,
+      color: ACTION_COLORS[i],
+      y: center + (i - (count - 1) / 2) * spread,
+    }));
+  }, [totalHeight]);
+
+  // ── Dynamic: node brightnesses ──
+  const inputBrightnesses = useMemo(() => {
+    return DQN_INPUTS.map(def => {
+      const val = dqnInference?.inputs[def.index] ?? 0;
+      return Math.max(0.15, Math.min(1, Math.abs(val)));
+    });
+  }, [dqnInference]);
+
+  const hiddenBrightnesses = useMemo(() => {
+    return HIDDEN_LAYERS.map((_, layerIdx) => {
+      const actKey = (['layer1', 'layer2', 'layer3'] as const)[layerIdx];
+      const acts = dqnInference?.activations[actKey] ?? [];
+      return hiddenLayerDots[layerIdx].map(dot => {
+        const val = acts[dot.srcIdx] ?? 0;
+        return Math.max(0.1, Math.min(1, Math.abs(val)));
       });
-      if (norm > 0.2) {
-        conns.push({
-          x1: INPUT_X + NODE_R, y1: node.y,
-          x2: HIDDEN1_X - HIDDEN_R, y2: h1Nodes[h1b].y,
-          opacity: Math.max(0.05, Math.min(0.5, imp * 0.6)),
-          color,
-        });
-      }
-    }
-    return conns;
-  }, [inputNodes, featureValues, importanceMap, h1Nodes]);
+    });
+  }, [dqnInference, hiddenLayerDots]);
 
-  // Hidden1 → Hidden2
-  const connections2 = useMemo(() => {
-    const conns: Array<{ x1: number; y1: number; x2: number; y2: number; opacity: number }> = [];
-    for (let i = 0; i < hidden1Count; i++) {
-      for (let j = 0; j < hidden2Count; j++) {
-        const strength = 0.2 + 0.6 * Math.abs(Math.sin(i * 3 + j * 7));
-        conns.push({
-          x1: HIDDEN1_X + HIDDEN_R, y1: h1Nodes[i].y,
-          x2: HIDDEN2_X - HIDDEN_R, y2: h2Nodes[j].y,
-          opacity: strength * 0.6,
-        });
-      }
-    }
-    return conns;
-  }, [h1Nodes, h2Nodes]);
+  const winnerIdx = useMemo(() => {
+    if (!dqnInference) return -1;
+    const qv = dqnInference.q_values;
+    return qv.indexOf(Math.max(...qv));
+  }, [dqnInference]);
 
-  // Hidden2 → Output
-  const connections3 = useMemo(() => {
-    const conns: Array<{ x1: number; y1: number; x2: number; y2: number; opacity: number; color: string }> = [];
-    for (let i = 0; i < hidden2Count; i++) {
-      for (let j = 0; j < outputNodes.length; j++) {
-        conns.push({
-          x1: HIDDEN2_X + HIDDEN_R, y1: h2Nodes[i].y,
-          x2: OUTPUT_X - OUTPUT_R, y2: outputNodes[j].y,
-          opacity: outputNodes[j].prob * 0.9,
-          color: outputNodes[j].color,
-        });
-      }
-    }
-    return conns;
-  }, [h2Nodes, outputNodes]);
+  // ── Dynamic: connection lines ──
+  const connectionLines = useMemo(() => {
+    if (!dqnInference) return [];
+    const lines: Array<{
+      x1: number; y1: number; x2: number; y2: number;
+      color: string; strokeWidth: number; opacity: number;
+    }> = [];
 
-  const svgWidth = 780;
+    const layer1Ys = hiddenLayerDots[0].map(d => d.y);
+    const layer2Ys = hiddenLayerDots[1].map(d => d.y);
+    const layer3Ys = hiddenLayerDots[2].map(d => d.y);
+
+    // input → layer1
+    for (const conn of dqnInference.connections.input_l1) {
+      const fromY = inputNodePositions[conn.from_idx];
+      if (fromY == null) continue;
+      const toSlot = hiddenLayerDots[0].findIndex(d => d.srcIdx === conn.to_idx);
+      if (toSlot === -1) continue;
+      const toY = layer1Ys[toSlot];
+      lines.push({
+        x1: INPUT_X + NODE_R, y1: fromY,
+        x2: LAYER1_X - HIDDEN_DOT_R, y2: toY,
+        color: conn.sign === 1 ? LAYER_COLORS[0] : '#ef4444',
+        strokeWidth: Math.max(0.4, conn.strength * 3),
+        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+      });
+    }
+
+    // layer1 → layer2
+    for (const conn of dqnInference.connections.l1_l2) {
+      const fromSlot = hiddenLayerDots[0].findIndex(d => d.srcIdx === conn.from_idx);
+      if (fromSlot === -1) continue;
+      const toSlot = hiddenLayerDots[1].findIndex(d => d.srcIdx === conn.to_idx);
+      if (toSlot === -1) continue;
+      lines.push({
+        x1: LAYER1_X + HIDDEN_DOT_R, y1: layer1Ys[fromSlot],
+        x2: LAYER2_X - HIDDEN_DOT_R, y2: layer2Ys[toSlot],
+        color: conn.sign === 1 ? LAYER_COLORS[1] : '#ef4444',
+        strokeWidth: Math.max(0.4, conn.strength * 3),
+        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+      });
+    }
+
+    // layer2 → layer3
+    for (const conn of dqnInference.connections.l2_l3) {
+      const fromSlot = hiddenLayerDots[1].findIndex(d => d.srcIdx === conn.from_idx);
+      if (fromSlot === -1) continue;
+      const toSlot = hiddenLayerDots[2].findIndex(d => d.srcIdx === conn.to_idx);
+      if (toSlot === -1) continue;
+      lines.push({
+        x1: LAYER2_X + HIDDEN_DOT_R, y1: layer2Ys[fromSlot],
+        x2: LAYER3_X - HIDDEN_DOT_R, y2: layer3Ys[toSlot],
+        color: conn.sign === 1 ? LAYER_COLORS[2] : '#ef4444',
+        strokeWidth: Math.max(0.4, conn.strength * 3),
+        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+      });
+    }
+
+    // layer3 → output
+    for (const conn of dqnInference.connections.l3_output) {
+      const fromSlot = hiddenLayerDots[2].findIndex(d => d.srcIdx === conn.from_idx);
+      if (fromSlot === -1) continue;
+      const outNode = outputPositions[conn.to_idx];
+      if (!outNode) continue;
+      lines.push({
+        x1: LAYER3_X + HIDDEN_DOT_R, y1: layer3Ys[fromSlot],
+        x2: OUTPUT_X - OUTPUT_R, y2: outNode.y,
+        color: conn.sign === 1 ? outNode.color : '#ef4444',
+        strokeWidth: Math.max(0.4, conn.strength * 3),
+        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+      });
+    }
+
+    return lines;
+  }, [dqnInference, inputNodePositions, hiddenLayerDots, outputPositions]);
+
+  // Status label
+  const statusLabel = useMemo(() => {
+    if (!dqnInference) return 'WAITING FOR LEVEL';
+    if (dqnInference.trigger === 'approaching') return `APPROACHING ${dqnInference.level}`;
+    return `AT LEVEL ${dqnInference.level}`;
+  }, [dqnInference]);
+
+  // Hidden layer X positions
+  const layerXs = [LAYER1_X, LAYER2_X, LAYER3_X];
 
   return (
     <svg
-      viewBox={`0 0 ${svgWidth} ${totalHeight}`}
-      className="w-full h-full"
-      style={{ minHeight: 0 }}
+      viewBox={`0 0 1400 ${totalHeight}`}
+      className="w-full"
+      preserveAspectRatio="xMidYMin meet"
     >
       <defs>
         <filter id="nn-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="3" result="blur" />
+          <feGaussianBlur stdDeviation="2" result="blur" />
           <feComposite in="SourceGraphic" in2="blur" operator="over" />
         </filter>
       </defs>
 
-      {/* ── Connections (behind nodes) ── */}
-      {connections1.map((c, i) => (
-        <line key={`c1-${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
-          stroke={c.color} opacity={c.opacity}
-          strokeWidth={Math.max(0.4, c.opacity * 2.5)}
-          className="transition-all duration-300" />
-      ))}
-      {connections2.map((c, i) => (
-        <line key={`c2-${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
-          stroke="#06b6d4" opacity={c.opacity}
-          strokeWidth={Math.max(0.3, c.opacity * 1.8)}
-          className="transition-all duration-300" />
-      ))}
-      {connections3.map((c, i) => (
-        <line key={`c3-${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
-          stroke={c.color} opacity={c.opacity}
-          strokeWidth={Math.max(0.3, c.opacity * 2.5)}
-          className="transition-all duration-300" />
+      {/* ── Connection lines ── */}
+      {connectionLines.map((c, i) => (
+        <line
+          key={`conn-${i}`}
+          x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
+          stroke={c.color}
+          strokeWidth={c.strokeWidth}
+          opacity={c.opacity}
+          className="transition-all duration-300"
+        />
       ))}
 
-      {/* ── Group labels ── */}
-      {groupLabels.map(g => (
-        <g key={g.group}>
-          <text x="5" y={g.y - 4} fill="#444" fontSize="7" fontFamily="monospace" fontWeight="bold">
-            {g.group}
+      {/* ── Segment group bars + labels (left margin) ── */}
+      {segmentLabels.map(({ seg, yStart, yEnd, yMid }) => (
+        <g key={`seg-${seg.name}`}>
+          <line
+            x1={8} y1={yStart} x2={8} y2={yEnd}
+            stroke={seg.color} strokeWidth="2" opacity="0.5"
+          />
+          <text
+            x={14} y={yMid + 4}
+            fill={seg.color}
+            fontSize="8"
+            fontFamily="monospace"
+            fontWeight="bold"
+          >
+            {seg.name}
           </text>
-          <line x1="5" y1={g.y} x2="5" y2={g.yEnd} stroke="#27272a" strokeWidth="1" />
         </g>
       ))}
 
-      {/* ── Input nodes ── */}
-      {inputNodes.map(({ def, y }) => {
-        const rawVal = featureValues[def.key] ?? 0;
-        const norm = normalizeValue(rawVal, def.range);
-        const color = FILL_MAP[def.colorFn(rawVal)];
-        const bright = Math.max(0.15, Math.min(1, norm));
-        const displayVal = formatValue(rawVal || (features?.features?.[def.key] ?? null));
-
+      {/* ── Input nodes (107) ── */}
+      {DQN_INPUTS.map((def, i) => {
+        const y = inputNodePositions[i];
+        const brightness = inputBrightnesses[i];
+        const color = getSegmentColor(def.segment);
         return (
-          <g key={def.key}>
-            <circle cx={INPUT_X} cy={y} r={NODE_R}
-              fill={color} opacity={bright}
-              filter={bright > 0.7 ? 'url(#nn-glow)' : undefined}
-              className="transition-all duration-300" />
-            <text x={INPUT_X + NODE_R + 4} y={y + 3}
-              fill={bright > 0.4 ? color : '#555'}
-              fontSize="6.5" fontFamily="monospace">
-              {def.label} {displayVal}
+          <g key={`inp-${def.index}`}>
+            <circle
+              cx={INPUT_X} cy={y} r={NODE_R}
+              fill={color} opacity={brightness}
+              filter={brightness > 0.7 ? 'url(#nn-glow)' : undefined}
+              className="transition-all duration-300"
+            />
+            <text
+              x={INPUT_X + NODE_R + 4} y={y + 3}
+              fill={brightness > 0.4 ? color : '#444'}
+              fontSize="7"
+              fontFamily="monospace"
+            >
+              {def.label}
             </text>
           </g>
         );
       })}
 
-      {/* ── Hidden layer 1 ── */}
-      <text x={HIDDEN1_X - 15} y={TOP_PAD} fill="#333" fontSize="7" fontFamily="monospace">
-        HIDDEN 1
-      </text>
-      {h1Nodes.map((n, i) => (
-        <circle key={`h1-${i}`} cx={HIDDEN1_X} cy={n.y} r={HIDDEN_R}
-          fill="#06b6d4" opacity={0.3 + Math.random() * 0.5}
-          className="transition-all duration-500" />
-      ))}
-
-      {/* ── Hidden layer 2 ── */}
-      <text x={HIDDEN2_X - 15} y={TOP_PAD} fill="#333" fontSize="7" fontFamily="monospace">
-        HIDDEN 2
-      </text>
-      {h2Nodes.map((n, i) => (
-        <circle key={`h2-${i}`} cx={HIDDEN2_X} cy={n.y} r={HIDDEN_R}
-          fill="#8b5cf6" opacity={0.3 + Math.random() * 0.5}
-          className="transition-all duration-500" />
-      ))}
-
-      {/* ── Output nodes ── */}
-      <text x={OUTPUT_X - 10} y={TOP_PAD} fill="#333" fontSize="7" fontFamily="monospace">
-        OUTPUT
-      </text>
-      {outputNodes.map(o => {
-        const bright = Math.max(0.15, o.prob);
+      {/* ── Hidden layers ── */}
+      {HIDDEN_LAYERS.map((size, layerIdx) => {
+        const lx = layerXs[layerIdx];
+        const color = LAYER_COLORS[layerIdx];
+        const dots = hiddenLayerDots[layerIdx];
+        const brightnesses = hiddenBrightnesses[layerIdx];
+        const ys = dots.map(d => d.y);
+        const yMin = Math.min(...ys) - 12;
+        const yMax = Math.max(...ys) + 12;
         return (
-          <g key={o.cls}>
-            <circle cx={OUTPUT_X} cy={o.y} r={OUTPUT_R}
+          <g key={`layer-${layerIdx}`}>
+            {/* Bounding rect */}
+            <rect
+              x={lx - 10} y={yMin}
+              width={20} height={yMax - yMin}
+              rx={4}
+              fill={color} opacity={0.04}
+              stroke={color} strokeOpacity={0.12} strokeWidth={0.5}
+            />
+            {/* Layer label */}
+            <text
+              x={lx} y={yMin - 6}
+              fill={color} fontSize="9" fontFamily="monospace"
+              textAnchor="middle" fontWeight="bold"
+            >
+              L{layerIdx + 1} {size}
+            </text>
+            {/* Dots */}
+            {dots.map((dot, j) => (
+              <circle
+                key={`h-${layerIdx}-${j}`}
+                cx={lx} cy={dot.y} r={HIDDEN_DOT_R}
+                fill={color}
+                opacity={brightnesses[j] ?? 0.15}
+                filter={(brightnesses[j] ?? 0) > 0.7 ? 'url(#nn-glow)' : undefined}
+                className="transition-all duration-300"
+              />
+            ))}
+          </g>
+        );
+      })}
+
+      {/* ── Output nodes (3 Q-values) ── */}
+      <text
+        x={OUTPUT_X} y={outputPositions[0].y - OUTPUT_R - 20}
+        fill="#555" fontSize="9" fontFamily="monospace" textAnchor="middle"
+      >
+        Q-VALUES
+      </text>
+      {outputPositions.map((o, i) => {
+        const qVal = dqnInference?.q_values[i] ?? 0;
+        const isWinner = i === winnerIdx;
+        const bright = isWinner ? 1.0 : 0.25;
+        return (
+          <g key={`out-${o.name}`}>
+            <circle
+              cx={OUTPUT_X} cy={o.y} r={OUTPUT_R}
               fill={o.color} opacity={bright}
-              filter={bright > 0.5 ? 'url(#nn-glow)' : undefined}
-              className="transition-all duration-300" />
-            <text x={OUTPUT_X + OUTPUT_R + 6} y={o.y - 4}
-              fill={o.color} fontSize="8" fontFamily="monospace" fontWeight="bold">
-              {o.cls.toUpperCase()}
+              filter={isWinner ? 'url(#nn-glow)' : undefined}
+              className="transition-all duration-300"
+            />
+            {/* Action name above */}
+            <text
+              x={OUTPUT_X + OUTPUT_R + 10} y={o.y - 4}
+              fill={o.color} fontSize="11" fontFamily="monospace" fontWeight="bold"
+              opacity={bright}
+            >
+              {o.name}
             </text>
-            <text x={OUTPUT_X + OUTPUT_R + 6} y={o.y + 8}
-              fill={bright > 0.3 ? o.color : '#555'}
-              fontSize="10" fontFamily="monospace" fontWeight="bold">
-              {Math.round(o.prob * 100)}%
+            {/* Q-value below */}
+            <text
+              x={OUTPUT_X + OUTPUT_R + 10} y={o.y + 10}
+              fill={bright > 0.4 ? o.color : '#555'}
+              fontSize="10" fontFamily="monospace"
+            >
+              {qVal.toFixed(3)}
             </text>
           </g>
         );
       })}
 
-      {/* ── Legend ── */}
-      <g transform={`translate(${svgWidth - 170}, ${totalHeight - 55})`}>
-        <rect x="0" y="0" width="160" height="50" rx="4" fill="#111" stroke="#27272a" />
-        <circle cx="12" cy="12" r="4" fill="#10b981" opacity="0.9" />
-        <text x="22" y="15" fill="#666" fontSize="6" fontFamily="monospace">Bullish / positive</text>
-        <circle cx="12" cy="26" r="4" fill="#ef4444" opacity="0.7" />
-        <text x="22" y="29" fill="#666" fontSize="6" fontFamily="monospace">Bearish / negative</text>
-        <circle cx="12" cy="40" r="4" fill="#f59e0b" opacity="0.6" />
-        <text x="22" y="43" fill="#666" fontSize="6" fontFamily="monospace">Elevated / neutral</text>
-      </g>
+      {/* ── Status watermark ── */}
+      <text
+        x={12} y={totalHeight - 10}
+        fill="#444" fontSize="10" fontFamily="monospace"
+      >
+        {statusLabel}
+      </text>
+
+      {/* ── Architecture label ── */}
+      <text
+        x={700} y={totalHeight - 10}
+        fill="#333" fontSize="9" fontFamily="monospace" textAnchor="middle"
+      >
+        DQN: 107 → 128 (ReLU) → 128 (ReLU) → 64 (ReLU) → 3 Q-values
+      </text>
     </svg>
   );
 }
