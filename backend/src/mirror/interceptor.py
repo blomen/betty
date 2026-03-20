@@ -73,27 +73,38 @@ class BetInterceptor:
         self._started_at = datetime.now(timezone.utc)
         logger.info(f"[mirror:{self.provider_id}] Started — listening for bet placements")
 
+    # Skip these URL patterns in discovery mode (noisy, never bet-related)
+    _DISCOVERY_SKIP = (
+        "/analytics", "/tracking", "/pixel", "/log", "/heartbeat",
+        ".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico",
+        "/socket.io/", "/sockjs/", "/graphql",
+    )
+
     async def _on_response(self, response):
         """Response listener — filters for bet placement endpoints."""
         try:
             url = response.url
-            # Only POST requests to the Gecko bet API
             if response.request.method != "POST":
                 return
-            if "/api/sb/" not in url.lower():
-                return
 
-            # Discovery mode: log ALL POST requests to /api/sb/
+            # Discovery mode: log ALL POST requests (any provider type)
             if self.discovery:
+                lower = url.lower()
+                if any(skip in lower for skip in self._DISCOVERY_SKIP):
+                    return
                 logger.info(f"[mirror:{self.provider_id}] [DISCOVERY] POST {url}")
                 try:
                     body_text = await response.text()
                     logger.info(f"[mirror:{self.provider_id}] [DISCOVERY] Body preview: {body_text[:500]}")
                 except Exception:
-                    pass
+                    body_text = ""
                 if self.on_bet_response:
                     request_body = response.request.post_data
-                    await self.on_bet_response(url, request_body, body_text)
+                    await self.on_bet_response(url, request_body, body_text or "")
+                return
+
+            # Normal mode: only Gecko /api/sb/ endpoints
+            if "/api/sb/" not in url.lower():
                 return
 
             # Check if this looks like a bet placement URL

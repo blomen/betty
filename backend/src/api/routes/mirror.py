@@ -15,43 +15,62 @@ router = APIRouter(prefix="/api/mirror", tags=["mirror"])
 # Multiple mirrors can run simultaneously — one per provider
 _mirrors: dict[str, MirrorService] = {}
 
-# Cache of gecko provider configs
-_gecko_providers: dict[str, dict] | None = None
+# Cache of all provider configs for mirroring
+_all_providers: dict[str, dict] | None = None
 
 
-def _load_gecko_providers() -> dict[str, dict]:
-    """Load all Gecko V2 providers from providers.yaml."""
-    global _gecko_providers
-    if _gecko_providers is not None:
-        return _gecko_providers
+def _load_all_providers() -> dict[str, dict]:
+    """Load all providers from providers.yaml with their site URLs."""
+    global _all_providers
+    if _all_providers is not None:
+        return _all_providers
 
     config_path = get_config_dir() / "providers.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    _gecko_providers = {}
+    _all_providers = {}
     for pid, pconf in config.get("providers", {}).items():
-        if pconf.get("retriever_type") == "gecko_v2":
-            site = pconf.get("site_url", f"https://www.{pconf.get('domain', '')}")
-            init_path = pconf.get("init_path", "/sv/odds")
-            _gecko_providers[pid] = {
-                "id": pid,
-                "name": pconf.get("name", pid),
-                "url": f"{site.rstrip('/')}{init_path}",
-            }
-    return _gecko_providers
+        site = pconf.get("site_url", "")
+        domain = pconf.get("domain", "")
+        if not site and domain:
+            site = f"https://www.{domain}"
+        if not site:
+            continue
+
+        init_path = pconf.get("init_path", "")
+        # Default betting paths per provider type
+        if not init_path:
+            rtype = pconf.get("retriever_type", "")
+            if rtype == "gecko_v2":
+                init_path = "/sv/odds"
+            elif rtype == "kambi":
+                init_path = "/betting"
+            else:
+                init_path = ""
+
+        url = f"{site.rstrip('/')}{init_path}" if init_path else site.rstrip("/")
+
+        _all_providers[pid] = {
+            "id": pid,
+            "name": pconf.get("name", pid),
+            "type": pconf.get("retriever_type", "unknown"),
+            "url": url,
+        }
+    return _all_providers
 
 
 @router.get("/providers")
 async def list_mirror_providers():
-    """List providers available for mirroring with their current status."""
-    providers = _load_gecko_providers()
+    """List all providers available for mirroring with their current status."""
+    providers = _load_all_providers()
     result = []
     for pid, pconf in providers.items():
         mirror = _mirrors.get(pid)
         result.append({
             "id": pid,
             "name": pconf["name"],
+            "type": pconf["type"],
             "running": mirror.get_status()["running"] if mirror else False,
         })
     return {"providers": result}
@@ -66,15 +85,23 @@ async def start_mirror(
     if provider in _mirrors and _mirrors[provider].get_status()["running"]:
         raise HTTPException(400, f"Mirror already running for {provider}")
 
-    providers = _load_gecko_providers()
+    providers = _load_all_providers()
     pconf = providers.get(provider)
-    site_url = pconf["url"] if pconf else f"https://www.{provider}.com/sv/odds"
+    if not pconf:
+        raise HTTPException(404, f"Provider {provider} not found")
 
-    mirror = MirrorService(provider_id=provider, broadcaster=odds_broadcaster, discovery=discovery)
+    # Non-gecko providers always start in discovery mode until we have parsers
+    has_parser = pconf["type"] == "gecko_v2"
+    effective_discovery = discovery or not has_parser
+
+    site_url = pconf["url"]
+    mirror = MirrorService(provider_id=provider, broadcaster=odds_broadcaster, discovery=effective_discovery)
     await mirror.start(site_url=site_url)
     _mirrors[provider] = mirror
 
-    return mirror.get_status()
+    status = mirror.get_status()
+    status["discovery"] = effective_discovery
+    return status
 
 
 @router.post("/stop")
