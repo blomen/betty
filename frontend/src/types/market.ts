@@ -333,6 +333,8 @@ export interface SessionLevelDay {
   date: string;
   pdh: number | null;
   pdl: number | null;
+  pdh_time: number | null;
+  pdl_time: number | null;
   ib_high: number | null;
   ib_low: number | null;
   tokyo_high: number | null;
@@ -487,4 +489,35 @@ export interface MlHealth {
   top_features: Array<{ name: string; importance: number }>;
   use_fallback: boolean;
   trained_at: string | null;
+}
+
+// --- DQN Live Inference ---
+
+export interface DQNConnection {
+  from_idx: number;
+  to_idx: number;
+  strength: number;
+  sign: 1 | -1;
+}
+
+export interface DQNInferenceEvent {
+  type: 'dqn_inference';
+  trigger: 'approaching' | 'touched';
+  level: string;
+  level_price: number;
+  inputs: number[];           // 107
+  activations: {
+    layer1: number[];         // 128
+    layer2: number[];         // 128
+    layer3: number[];         // 64
+  };
+  q_values: number[];         // 3: [LONG, SHORT, SKIP]
+  action: 'LONG' | 'SHORT' | 'SKIP';
+  connections: {
+    input_l1: DQNConnection[];
+    l1_l2: DQNConnection[];
+    l2_l3: DQNConnection[];
+    l3_output: DQNConnection[];
+  };
+  timestamp: number;
 }
