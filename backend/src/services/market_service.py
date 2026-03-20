@@ -1271,6 +1271,8 @@ class MarketService:
                 "tokyo_low": sl.tokyo_low,
                 "london_high": sl.london_high,
                 "london_low": sl.london_low,
+                "ny_high": sl.ny_high,
+                "ny_low": sl.ny_low,
                 # Time boundaries (CET epochs) for drawing scoped lines
                 "tokyo_start": _cet_epoch(d, 0, 0),
                 "tokyo_end": _cet_epoch(d, 8, 0),

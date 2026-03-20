@@ -31,10 +31,10 @@ const VP_OVERLAYS = [
 // London: 08:00 → 15:30 CET  (London open → NY open)
 // New York: 15:30 → 22:00 CET  (NY open → close)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },  // cyan
-  { name: 'London',   startMin: 8 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },  // green
-  { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },  // red
-] as const;
+  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
+  { name: 'London',   startMin: 8 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
+  { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },
+];
 
 // Accurate CET/CEST offset using Intl API — handles DST transitions correctly
 const _cetFormatter = new Intl.DateTimeFormat('en-US', {
@@ -124,8 +124,8 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
 
       if (sessionCandles.length < 2) continue;
 
-      const high = Math.max(...sessionCandles.map(c => c.h));
-      const low = Math.min(...sessionCandles.map(c => c.l));
+      const high = Math.max(...sessionCandles.map(c => c.c));
+      const low = Math.min(...sessionCandles.map(c => c.c));
       const startEpoch = Math.min(...sessionCandles.map(c => c.t));
       const endEpoch = Math.max(...sessionCandles.map(c => c.t));
 
@@ -203,22 +203,28 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     const timeScale = chart.timeScale();
 
-    // --- Session boxes ---
+    // --- Session boxes (Y from candle H/L, X from candle time range) ---
     const candles = candlesRef.current;
     const boxes = candles.length > 0 ? detectSessionBoxes(candles) : [];
+    const slDays = sessionLevelsRef.current;
+    const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
+    const slByDate = new Map(slDays.map(d => [d.date, d]));
+
     if (boxes.length > 0) {
       for (const box of boxes) {
         const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
         const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
-        const y1 = pSeries.priceToCoordinate(box.high);
-        const y2 = pSeries.priceToCoordinate(box.low);
+        const rawY1 = pSeries.priceToCoordinate(box.high);
+        const rawY2 = pSeries.priceToCoordinate(box.low);
 
-        if (y1 === null || y2 === null) continue;
         // Null-clamp: if one edge is off-screen, extend to chart edge
+        if (rawY1 === null && rawY2 === null) continue;
         if (rawX1 === null && rawX2 === null) continue;
         const x1 = rawX1 != null ? Math.max(0, rawX1) : 0;
         const x2 = rawX2 != null ? Math.min(rect.width, rawX2) : rect.width;
         if (x2 < 0 || x1 > rect.width) continue;
+        const y1 = rawY1 != null ? Math.max(0, rawY1) : 0;
+        const y2 = rawY2 != null ? Math.min(rect.height, rawY2) : rect.height;
 
         const bx = Math.min(x1, x2);
         const bw = Math.abs(x2 - x1);
@@ -282,13 +288,12 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     // --- Session H/L levels (persist from session end to day end) ---
     const slHidden = hiddenRef.current;
-    const slDays = sessionLevelsRef.current;
     const currentDay = [...slDays].sort((a, b) => b.date.localeCompare(a.date))[0];
 
     // Session level labels and hide-keys by session name (NY excluded — box is sufficient)
-    const sessionLevelMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
-      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4' },
-      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981' },
+    const sessionLevelMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string; hField: 'tokyo_high' | 'london_high'; lField: 'tokyo_low' | 'london_low' }> = {
+      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4', hField: 'tokyo_high', lField: 'tokyo_low' },
+      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981', hField: 'london_high', lField: 'london_low' },
     };
 
     if (boxes.length > 0) {
@@ -297,13 +302,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         const meta = sessionLevelMeta[box.name];
         if (!meta) continue;
 
+        const sl = slByDate.get(box.cetDate);
+        // Use backend levels when available, fallback to candle-computed
+        const lineHigh = sl?.[meta.hField] ?? box.high;
+        const lineLow = sl?.[meta.lField] ?? box.low;
+
         // Day end = 22:00 CET: compute from box end + remaining CET minutes
         const boxEndCETMin = epochToCETMinute(box.endEpoch);
         const dayEndEpoch = box.endEpoch + (22 * 60 - boxEndCETMin) * 60;
 
         for (const { key, price, label } of [
-          { key: meta.hKey, price: box.high, label: meta.hLabel },
-          { key: meta.lKey, price: box.low, label: meta.lLabel },
+          { key: meta.hKey, price: lineHigh, label: meta.hLabel },
+          { key: meta.lKey, price: lineLow, label: meta.lLabel },
         ]) {
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);
@@ -652,9 +662,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       priceSeriesRef.current.update(toLine(lastCandle));
       volumeSeriesRef.current.update(toVolume(lastCandle));
     } catch (err) {
-      // Stale candle from before chart range — safe to ignore
-      console.debug('Candle update skipped:', err);
-      return;
+      // Stale or out-of-order candle — chart series can't display it,
+      // but still update the array so session boxes track the full range.
+      console.debug('Candle chart update skipped:', err);
     }
 
     const existing = candlesRef.current;

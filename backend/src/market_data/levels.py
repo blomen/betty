@@ -37,12 +37,16 @@ class VWAPBands:
 class SessionLevels:
     pdh: float | None = None
     pdl: float | None = None
+    pdh_time: int | None = None  # epoch when PDH was made
+    pdl_time: int | None = None  # epoch when PDL was made
     tokyo_high: float | None = None
     tokyo_low: float | None = None
     london_high: float | None = None
     london_low: float | None = None
     ib_high: float | None = None
     ib_low: float | None = None
+    ny_high: float | None = None
+    ny_low: float | None = None
     weekly_high: float | None = None
     weekly_low: float | None = None
     monthly_high: float | None = None
@@ -329,10 +333,15 @@ def compute_session_levels(
         h, l = bar["high"], bar["low"]
 
         # PDH/PDL: yesterday's RTH (09:30-16:00)
+        bar_epoch = int(bar_ts.timestamp())
         yesterday = today_et - timedelta(days=1)
         if bar_date == yesterday and time(9, 30) <= bar_time < time(16, 0):
-            levels.pdh = max(levels.pdh or h, h)
-            levels.pdl = min(levels.pdl or l, l)
+            if levels.pdh is None or h > levels.pdh:
+                levels.pdh = h
+                levels.pdh_time = bar_epoch
+            if levels.pdl is None or l < levels.pdl:
+                levels.pdl = l
+                levels.pdl_time = bar_epoch
 
         # Tokyo: 20:00 ET prior day to 02:00 ET current day
         if bar_date == yesterday and bar_time >= time(20, 0):
@@ -351,6 +360,11 @@ def compute_session_levels(
         if bar_date == today_et and time(9, 30) <= bar_time < time(10, 30):
             levels.ib_high = max(levels.ib_high or h, h)
             levels.ib_low = min(levels.ib_low or l, l)
+
+        # NY session: 09:30-16:00 ET (full RTH)
+        if bar_date == today_et and time(9, 30) <= bar_time < time(16, 0):
+            levels.ny_high = max(levels.ny_high or h, h)
+            levels.ny_low = min(levels.ny_low or l, l)
 
         # Weekly H/L (current week, Mon-Fri RTH)
         week_start = today_et - timedelta(days=today_et.weekday())

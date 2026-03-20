@@ -341,6 +341,8 @@ export interface SessionLevelDay {
   tokyo_low: number | null;
   london_high: number | null;
   london_low: number | null;
+  ny_high: number | null;
+  ny_low: number | null;
   tokyo_start: number;
   tokyo_end: number;
   london_start: number;
