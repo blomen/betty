@@ -59,3 +59,29 @@ async def test_revival_scheduled_after_permanent_failure():
 
         assert schedule.reviving is True
         # _attempt_revival should have been scheduled (via create_task)
+
+
+@pytest.mark.asyncio
+async def test_starvation_detection_logs_critical(caplog):
+    """Watchdog should log CRITICAL when a browser provider hasn't run in 2x its interval."""
+    from src.pipeline.scheduler import ExtractionScheduler
+    import logging
+
+    scheduler = ExtractionScheduler()
+    schedule = ProviderSchedule(
+        provider_id="slow_provider",
+        category="browser_soft",
+        interval_seconds=3600,
+        running=True,
+        last_completed=datetime.now(timezone.utc) - timedelta(seconds=8000),  # > 2x interval
+    )
+    # Give it a mock task that looks alive
+    schedule.task = MagicMock()
+    schedule.task.done.return_value = False
+    scheduler._schedules["slow_provider"] = schedule
+
+    with caplog.at_level(logging.CRITICAL):
+        await scheduler._check_schedules_once()
+
+    assert any("starving" in r.message for r in caplog.records), \
+        f"Expected CRITICAL starvation log, got: {[r.message for r in caplog.records]}"

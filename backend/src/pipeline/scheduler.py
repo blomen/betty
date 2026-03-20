@@ -540,6 +540,18 @@ class ExtractionScheduler:
                         f"run_count={schedule.run_count}"
                     )
 
+            # Starvation detection for browser providers
+            if (schedule.category == "browser_soft" and schedule.running
+                    and schedule.last_completed):
+                starvation_threshold = schedule.interval_seconds * 2
+                elapsed = (now - schedule.last_completed).total_seconds()
+                if elapsed > starvation_threshold:
+                    logger.critical(
+                        f"[Watchdog] Browser provider '{provider_id}' starving — "
+                        f"last completed {elapsed:.0f}s ago "
+                        f"(threshold: {starvation_threshold:.0f}s)"
+                    )
+
             # ── EXISTING: Check if a schedule that should be running hasn't started yet ──
             if schedule.running and schedule.run_count == 0:
                 if schedule.last_completed is None:
