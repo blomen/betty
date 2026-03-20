@@ -195,10 +195,7 @@ class BetService:
             bet_type=bet_type,
         )
 
-        # Deduct stake from balance (unless free bet)
-        # Both stake and balance are in provider's native currency — no conversion
-        if not is_bonus:
-            self.profile_repo.adjust_balance(profile.id, provider_id, -stake)
+        # Balance is managed manually via Adjust — no auto-deduct on placement
 
         # Auto-advance freebet: mark as completed when freebet is used
         if is_bonus:
@@ -252,9 +249,7 @@ class BetService:
         if clv_pct is not None:
             bet.clv_pct = clv_pct
 
-        # Add payout to balance (payout is in bet's native currency — no conversion)
-        if bet.profile_id and payout > 0:
-            self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, payout)
+        # Balance is managed manually via Adjust — no auto-credit on settlement
 
         # Record wagering progress on settlement (not placement)
         wagering_status = None
@@ -489,12 +484,7 @@ class BetService:
             bet.payout = payout
 
         # Adjust balance: reverse old payout+stake, apply new payout+stake
-        # All amounts are in bet's native currency — no conversion needed
-        if bet.profile_id:
-            # net correction = (new_payout - old_payout) - (new_stake - old_stake)
-            balance_delta = (bet.payout - old_payout) - (bet.stake - old_stake)
-            if balance_delta != 0:
-                self.profile_repo.adjust_balance(bet.profile_id, bet.provider_id, balance_delta)
+        # Balance is managed manually via Adjust — no auto-correction on edit
 
         # Recalculate CLV if closing odds exist
         if bet.closing_odds and bet.closing_odds > 1.0:
