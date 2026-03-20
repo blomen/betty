@@ -456,6 +456,26 @@ export interface MlFeatureSnapshot {
   timestamp: number;
 }
 
+export interface TPOLiveProfile {
+  date?: string;
+  poc: number;
+  vah: number;
+  val: number;
+  ib_high: number;
+  ib_low: number;
+  rotation_factor: number;
+  profile_shape: string;
+  opening_type: string;
+  opening_direction: string;
+  upper_excess: number;
+  lower_excess: number;
+  session_high: number;
+  session_low: number;
+  tpo_counts: Record<string, number>;
+  single_prints: number[];
+  letters: Record<string, string[]>;
+}
+
 export interface MlHealth {
   model_loaded: boolean;
   version: number | null;

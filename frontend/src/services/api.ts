@@ -1003,6 +1003,18 @@ export const api = {
     return fetchJson('/trading/market/book');
   },
 
+  async getTpoLive(symbol = 'NQ'): Promise<import('@/types/market').TPOLiveProfile> {
+    return fetchJson(`/trading/market/tpo/live?symbol=${symbol}`);
+  },
+
+  async getTpoHistory(symbol = 'NQ', days = 30): Promise<{
+    sessions: import('@/types/market').TPOLiveProfile[];
+    symbol: string;
+    count: number;
+  }> {
+    return fetchJson(`/trading/market/tpo?symbol=${symbol}&days=${days}`);
+  },
+
   async getMarketLevels(symbol = 'NQ', date?: string): Promise<any[]> {
     const params = date ? `?symbol=${symbol}&date=${date}` : `?symbol=${symbol}`;
     return fetchJson(`/trading/market/levels${params}`);
