@@ -305,6 +305,17 @@ def replay(
     else:
         typer.echo("No macro_daily.parquet found — macro features will be zeroed.")
 
+    # Load session summaries for precomputed levels
+    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
+
+    summaries_path = _DATA_DIR / "session_summaries.json"
+    summaries = load_summaries(summaries_path)
+    if summaries:
+        typer.echo(f"Loaded session summaries: {len(summaries)} sessions.")
+    else:
+        typer.echo("No session_summaries.json found — precomputed levels disabled.")
+        typer.echo("Run 'rl precompute' first for full level coverage.")
+
     normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
     engine = ReplayEngine(macro_data=macro_data)
 
@@ -349,8 +360,13 @@ def replay(
             _ET = ZoneInfo("US/Eastern")
             session_dt = datetime(session_date.year, session_date.month, session_date.day, 12, 0, 0, tzinfo=_ET)
 
+            precomputed = None
+            if summaries:
+                date_str = str(session_date)
+                precomputed = compute_precomputed_levels(summaries, date_str)
+
             try:
-                episodes = engine.replay_session(ticks, session_dt, prior_session_levels=prior_levels)
+                episodes = engine.replay_session(ticks, session_dt, prior_session_levels=prior_levels, precomputed_levels=precomputed)
             except Exception as exc:
                 typer.echo(f"    Warning: replay failed for {session_date}: {exc}")
                 continue
