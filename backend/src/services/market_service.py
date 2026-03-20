@@ -1234,11 +1234,17 @@ class MarketService:
         def _cet_epoch(d, h, m):
             return int(datetime(d.year, d.month, d.day, h, m, tzinfo=_CET).timestamp())
 
+        all_dates_sorted = sorted(bars_by_date.keys())  # ascending
+
         result_days = []
         for date_str in sorted_dates:
-            # Include previous day's bars for PDH/PDL computation
-            prev_date = (datetime.strptime(date_str, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
-            all_bars = bars_by_date.get(prev_date, []) + bars_by_date[date_str]
+            # Find the most recent prior trading day (skip weekends/holidays)
+            prior_bars: list[dict] = []
+            for d in reversed(all_dates_sorted):
+                if d < date_str:
+                    prior_bars = bars_by_date[d]
+                    break
+            all_bars = prior_bars + bars_by_date[date_str]
 
             dt_parsed = datetime.strptime(date_str, "%Y-%m-%d")
             session_date = dt_parsed.replace(hour=12, tzinfo=ZoneInfo("US/Eastern"))
@@ -1438,7 +1444,13 @@ class MarketService:
         start_dt = end_dt.replace(hour=0, minute=0, second=0) - timedelta(hours=6)
 
         rows = self.repo.get_candles(symbol, "1m", start_dt, end_dt)
-        bars_30m = aggregate_bars_30m(rows)
+        # Convert MarketCandle ORM objects (.o/.h/.l/.c/.v) to BarData-like objects
+        # that aggregate_bars_30m expects (.open/.high/.low/.close/.volume)
+        class _Bar:
+            __slots__ = ("open", "high", "low", "close", "volume")
+            def __init__(self, r):
+                self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
+        bars_30m = aggregate_bars_30m([_Bar(r) for r in rows])
 
         profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
         result = asdict(profile)

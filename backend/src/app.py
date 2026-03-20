@@ -443,7 +443,12 @@ def backfill_tpo(
                 current += timedelta(days=1)
                 continue
 
-            bars_30m = aggregate_bars_30m(bars)
+            # Convert MarketCandle ORM (.o/.h/.l/.c/.v) to BarData-like (.open/.high/.low/.close/.volume)
+            class _Bar:
+                __slots__ = ("open", "high", "low", "close", "volume")
+                def __init__(self, r):
+                    self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
+            bars_30m = aggregate_bars_30m([_Bar(r) for r in bars])
             if not bars_30m:
                 current += timedelta(days=1)
                 continue
