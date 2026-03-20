@@ -33,6 +33,8 @@ class ProviderSchedule:
     last_error: Optional[str] = None
     last_duration: Optional[float] = None
     consecutive_failures: int = 0
+    revival_attempts: int = 0
+    reviving: bool = False
 
 
 # Import update_provider_state (created in Task 3 — stub if not available yet)
