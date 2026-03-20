@@ -4,7 +4,7 @@ import { useMarketStream } from '@/hooks/useMarketStream';
 import { useLevelMonitor } from '@/hooks/useLevelMonitor';
 import { useSound } from '@/hooks/useSound';
 import { L1Page } from './L1Page';
-import { L2Page } from './L2Page';
+import { VectorsPage } from './VectorsPage';
 import type { ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData, OrderflowSnapshot } from '@/types/market';
 
 // ---- Demo data for testing when backend is offline ----
@@ -104,7 +104,7 @@ const DEMO_BATTLE: BattleScreenData = {
 // ---------------------------------------------------
 
 interface Props {
-  activeSubTab: 'tradingL1' | 'tradingL2';
+  activeSubTab: 'tradingL1' | 'tradingVectors';
 }
 
 export function TradingContainer({ activeSubTab }: Props) {
@@ -113,7 +113,7 @@ export function TradingContainer({ activeSubTab }: Props) {
   const [loading, setLoading] = useState(true);
 
   const { lastTick, book, lastCandle, connected, esRef } = useMarketStream();
-  const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
+  const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dqnInference, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
   const { unlock, play } = useSound();
   const prevBattle = useRef(false);
   const lastBattleRef = useRef<BattleScreenData | null>(null);
@@ -246,7 +246,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           session={session}
         />
       ) : (
-        <L2Page
+        <VectorsPage
           session={session}
           levels={levels}
           currentPrice={currentPrice}
@@ -265,6 +265,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           book={book}
           latestPrediction={latestPrediction}
           latestFeatures={latestFeatures}
+          dqnInference={dqnInference}
         />
       )}
     </div>
