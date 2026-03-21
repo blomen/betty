@@ -7,6 +7,11 @@ from datetime import datetime
 TICK_SIZE = 0.25  # NQ futures minimum tick
 
 
+IMBALANCE_THRESHOLD = 3.0   # ratio threshold for diagonal imbalance
+IMBALANCE_MIN_VOL = 5       # minimum volume on dominant side to qualify
+STACKED_MIN_COUNT = 3       # minimum consecutive imbalances to form a stack
+
+
 @dataclass
 class PriceLevelFlow:
     """Aggressor volume at a single price level within a candle."""
@@ -26,6 +31,23 @@ class PriceLevelFlow:
 
 
 @dataclass
+class DiagonalImbalance:
+    """A single price level with a diagonal imbalance (buy@N vs sell@N+1)."""
+    price: float
+    direction: str   # "buy" or "sell"
+    ratio: float     # dominant / weak (capped at 99)
+
+
+@dataclass
+class StackedImbalance:
+    """Consecutive price levels with same-direction diagonal imbalance."""
+    direction: str
+    price_low: float
+    price_high: float
+    count: int
+
+
+@dataclass
 class CandleFlow:
     """Orderflow data for a single candle."""
     ts: datetime
@@ -41,6 +63,10 @@ class CandleFlow:
     spread: float  # high - low
     # Footprint: per-price-level flow
     price_levels: list[PriceLevelFlow] = field(default_factory=list)
+
+    @property
+    def delta_pct(self) -> float:
+        return (self.delta / self.volume * 100) if self.volume else 0.0
 
     @property
     def body(self) -> float:
@@ -71,6 +97,67 @@ class CandleFlow:
         elif r <= 0.35:
             return "sell"
         return "neutral"
+
+    @property
+    def diagonal_imbalances(self) -> list[DiagonalImbalance]:
+        """Diagonal imbalance: compare buy@price vs sell@price+tick.
+
+        A buy imbalance at price N means buyers lifted the offer at N while
+        few sellers hit the bid at N+1 (price above).  This shows aggressive
+        buying pressure that wasn't met by supply one tick higher.
+        """
+        if len(self.price_levels) < 2:
+            return []
+        by_price = {pl.price: pl for pl in self.price_levels}
+        prices = sorted(by_price.keys())
+        result: list[DiagonalImbalance] = []
+        for i in range(len(prices) - 1):
+            lo = by_price[prices[i]]
+            hi = by_price[prices[i + 1]]
+            # Buy imbalance: buy@lo vs sell@hi
+            if lo.buy_volume >= IMBALANCE_MIN_VOL and lo.buy_volume > hi.sell_volume * IMBALANCE_THRESHOLD:
+                ratio = lo.buy_volume / max(1, hi.sell_volume)
+                result.append(DiagonalImbalance(price=lo.price, direction="buy", ratio=min(round(ratio, 1), 99)))
+            # Sell imbalance: sell@hi vs buy@lo
+            if hi.sell_volume >= IMBALANCE_MIN_VOL and hi.sell_volume > lo.buy_volume * IMBALANCE_THRESHOLD:
+                ratio = hi.sell_volume / max(1, lo.buy_volume)
+                result.append(DiagonalImbalance(price=hi.price, direction="sell", ratio=min(round(ratio, 1), 99)))
+        return result
+
+    @property
+    def stacked_imbalances(self) -> list[StackedImbalance]:
+        """Find runs of consecutive same-direction diagonal imbalances."""
+        diags = self.diagonal_imbalances
+        if len(diags) < STACKED_MIN_COUNT:
+            return []
+        # Sort by price
+        diags_sorted = sorted(diags, key=lambda d: d.price)
+        stacks: list[StackedImbalance] = []
+        run_start = 0
+        for i in range(1, len(diags_sorted)):
+            same_dir = diags_sorted[i].direction == diags_sorted[run_start].direction
+            consecutive = (diags_sorted[i].price - diags_sorted[i - 1].price) <= TICK_SIZE * 1.5
+            if not (same_dir and consecutive):
+                # Flush current run if long enough
+                run_len = i - run_start
+                if run_len >= STACKED_MIN_COUNT:
+                    stacks.append(StackedImbalance(
+                        direction=diags_sorted[run_start].direction,
+                        price_low=diags_sorted[run_start].price,
+                        price_high=diags_sorted[i - 1].price,
+                        count=run_len,
+                    ))
+                run_start = i
+        # Final run
+        run_len = len(diags_sorted) - run_start
+        if run_len >= STACKED_MIN_COUNT:
+            stacks.append(StackedImbalance(
+                direction=diags_sorted[run_start].direction,
+                price_low=diags_sorted[run_start].price,
+                price_high=diags_sorted[-1].price,
+                count=run_len,
+            ))
+        return stacks
 
 
 @dataclass
