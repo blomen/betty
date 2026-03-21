@@ -3,11 +3,12 @@ import {
   createChart,
   HistogramSeries,
   LineSeries,
-  AreaSeries,
+  CandlestickSeries,
   LineStyle,
   type IChartApi,
   type ISeriesApi,
   type HistogramData,
+  type CandlestickData,
   type LineData,
   type Time,
   ColorType,
@@ -27,12 +28,12 @@ const VP_OVERLAYS = [
 ] as const;
 
 // Session box definitions (CET/CEST times as hour*60+minute)
-// Tokyo: 00:00 → 08:00 CET  (Globex open → London open)
-// London: 08:00 → 15:30 CET  (London open → NY open)
+// Tokyo: 00:00 → 09:00 CET  (Globex open → London open)
+// London: 09:00 → 15:30 CET  (London open → NY open)
 // New York: 15:30 → 22:00 CET  (NY open → close)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
-  { name: 'London',   startMin: 8 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
+  { name: 'Tokyo',    startMin: 0,             endMin: 9 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
+  { name: 'London',   startMin: 9 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
   { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },
 ];
 
@@ -58,6 +59,8 @@ function epochToCETDate(epoch: number): string {
   const { year, month, day } = _parseCETDate(epoch);
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
+
+
 
 interface SessionBox {
   name: string;
@@ -89,8 +92,50 @@ interface Props {
   tpo?: TPOLiveProfile | null;
 }
 
-function toLine(c: CandleData): LineData<Time> {
-  return { time: toLocalEpoch(c.t) as Time, value: c.c };
+/**
+ * Filter fake/noisy wicks using neighbor validation + volume weighting.
+ *
+ * 1. Neighbor check: wicks can't exceed the close-price range of nearby bars
+ *    plus a tolerance proportional to volume (high vol = more tolerance).
+ * 2. Absolute cap: no single wick can exceed MAX_WICK points from the body.
+ */
+function filterWicks(candles: CandleData[]): CandleData[] {
+  if (candles.length < 3) return candles;
+  const RADIUS = 3;
+  const BASE_TOLERANCE = 0.3;
+  const MAX_WICK = 25;  // absolute max wick from body edge (points)
+
+  return candles.map((c, i) => {
+    const bodyHigh = Math.max(c.o, c.c);
+    const bodyLow = Math.min(c.o, c.c);
+
+    // Neighbor close-price range (tighter than open/close)
+    const from = Math.max(0, i - RADIUS);
+    const to = Math.min(candles.length, i + RADIUS + 1);
+    let maxClose = -Infinity, minClose = Infinity;
+    for (let j = from; j < to; j++) {
+      maxClose = Math.max(maxClose, candles[j].c);
+      minClose = Math.min(minClose, candles[j].c);
+    }
+
+    // Volume-weighted tolerance: sqrt(vol)/150, capped at 1.0
+    const volFactor = Math.min(1, Math.sqrt(Math.max(c.v || 1, 1)) / 150);
+    const neighborSpan = (maxClose - minClose) * BASE_TOLERANCE * volFactor;
+
+    // Neighbor-based clamp
+    let h = Math.min(c.h, Math.max(bodyHigh, maxClose + neighborSpan));
+    let l = Math.max(c.l, Math.min(bodyLow, minClose - neighborSpan));
+
+    // Absolute wick cap
+    h = Math.min(h, bodyHigh + MAX_WICK);
+    l = Math.max(l, bodyLow - MAX_WICK);
+
+    return { ...c, h, l };
+  });
+}
+
+function toCandle(c: CandleData): CandlestickData<Time> {
+  return { time: toLocalEpoch(c.t) as Time, open: c.o, high: c.h, low: c.l, close: c.c };
 }
 
 function toVolume(c: CandleData): HistogramData<Time> {
@@ -124,8 +169,8 @@ function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
 
       if (sessionCandles.length < 2) continue;
 
-      const high = Math.max(...sessionCandles.map(c => c.c));
-      const low = Math.min(...sessionCandles.map(c => c.c));
+      const high = Math.max(...sessionCandles.map(c => c.h));
+      const low = Math.min(...sessionCandles.map(c => c.l));
       const startEpoch = Math.min(...sessionCandles.map(c => c.t));
       const endEpoch = Math.max(...sessionCandles.map(c => c.t));
 
@@ -157,7 +202,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const priceSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const priceSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const [noData, setNoData] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -207,7 +252,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     const candles = candlesRef.current;
     const boxes = candles.length > 0 ? detectSessionBoxes(candles) : [];
     const slDays = sessionLevelsRef.current;
-    const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
     const slByDate = new Map(slDays.map(d => [d.date, d]));
 
     if (boxes.length > 0) {
@@ -296,9 +340,13 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981', hField: 'london_high', lField: 'london_low' },
     };
 
-    if (boxes.length > 0) {
+    // Only show session levels for the current CET day (reset at 00:00 CET)
+    const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
+    const todayBoxes = boxes.filter(b => b.cetDate === todayCET);
+
+    if (todayBoxes.length > 0) {
       // Draw session H/L lines from box end to day end (22:00 CET)
-      for (const box of boxes) {
+      for (const box of todayBoxes) {
         const meta = sessionLevelMeta[box.name];
         if (!meta) continue;
 
@@ -345,14 +393,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         }
       }
 
-      // PDH/PDL from previous day's session boxes
-      const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
+      // PDH/PDL scoped to today only (from day start 00:00 CET to day end 22:00 CET)
+      const todaySL = slByDate.get(todayCET);
       const prevDayBoxes = boxes.filter(b => b.cetDate < todayCET);
       if (prevDayBoxes.length > 0) {
         const maxDate = prevDayBoxes.reduce((max, b) => b.cetDate > max ? b.cetDate : max, prevDayBoxes[0].cetDate);
         const lastDayBoxes = prevDayBoxes.filter(b => b.cetDate === maxDate);
-        const pdh = Math.max(...lastDayBoxes.map(b => b.high));
-        const pdl = Math.min(...lastDayBoxes.map(b => b.low));
+        const pdh = todaySL?.pdh ?? Math.max(...lastDayBoxes.map(b => b.high));
+        const pdl = todaySL?.pdl ?? Math.min(...lastDayBoxes.map(b => b.low));
+
+        // Scope PDH/PDL to today's time range
+        const dayStartEpoch = todaySL?.day_start ?? todayBoxes[0].startEpoch;
+        const dayEndEpoch = todaySL?.day_end ?? todayBoxes[0].endEpoch + (22 * 60 - epochToCETMinute(todayBoxes[0].endEpoch)) * 60;
 
         for (const { key, price, label } of [
           { key: 'pdh', price: pdh, label: 'PDH' },
@@ -361,32 +413,42 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);
           if (y === null) continue;
+
+          const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(dayStartEpoch) as Time);
+          const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
+          if (rawX1 === null && rawX2 === null) continue;
+          const lx = rawX1 ?? 0;
+          const rx = rawX2 ?? rect.width;
+          if (rx < 0 || lx > rect.width) continue;
+          const drawX1 = Math.max(0, lx);
+          const drawX2 = Math.min(rect.width, rx);
+
           ctx.save();
           ctx.strokeStyle = '#FB923C';
           ctx.lineWidth = 1;
           ctx.setLineDash([6, 3]);
           ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(rect.width, y);
+          ctx.moveTo(drawX1, y);
+          ctx.lineTo(drawX2, y);
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
           ctx.fillStyle = '#FB923C';
           ctx.textAlign = 'left';
-          ctx.fillText(label, 3, y - 3);
+          ctx.fillText(label, drawX1 + 3, y - 3);
           ctx.restore();
         }
       }
     }
 
     // --- NY IB levels from session levels, anchored to NY session only ---
-    // Only show after IB period is complete (ib_end = 16:30 CET / 10:30 ET)
+    // Only show after IB period is complete (10:30 ET, CET varies with DST)
     const nowEpoch = Math.floor(Date.now() / 1000);
     const ibComplete = currentDay && nowEpoch >= currentDay.ib_end;
-    if (!slHidden?.has('nyib') && currentDay && ibComplete) {
-      const ibLevels: Array<{ price: number; label: string }> = [];
-      if (currentDay.ib_high) ibLevels.push({ price: currentDay.ib_high, label: 'NYIBH' });
-      if (currentDay.ib_low) ibLevels.push({ price: currentDay.ib_low, label: 'NYIBL' });
+    if (currentDay && ibComplete) {
+      const ibLevels: Array<{ price: number; label: string; key: string }> = [];
+      if (currentDay.ib_high && !slHidden?.has('ibh')) ibLevels.push({ price: currentDay.ib_high, label: 'NYIBH', key: 'ibh' });
+      if (currentDay.ib_low && !slHidden?.has('ibl')) ibLevels.push({ price: currentDay.ib_low, label: 'NYIBL', key: 'ibl' });
       // Anchor from NY open (15:30 CET) to NY close (22:00 CET)
       const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_start) as Time);
       const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_end) as Time);
@@ -480,14 +542,15 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       handleScroll: { vertTouchDrag: false },
     });
 
-    const priceSeries = chart.addSeries(AreaSeries, {
-      lineColor: '#E0E0E0',
-      lineWidth: 1,
-      topColor: 'rgba(255, 255, 255, 0.04)',
-      bottomColor: 'rgba(255, 255, 255, 0.0)',
+    const priceSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#10B981',
+      downColor: '#EF4444',
+      borderUpColor: '#10B981',
+      borderDownColor: '#EF4444',
+      wickUpColor: '#10B981',
+      wickDownColor: '#EF4444',
       lastValueVisible: true,
       priceLineVisible: true,
-      crosshairMarkerVisible: true,
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -523,7 +586,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           const sorted = dedupeAndSort(cleaned);
           candlesRef.current = sorted;
           try {
-            priceSeries.setData(sorted.map(toLine));
+            priceSeries.setData(filterWicks(sorted).map(toCandle));
             volumeSeries.setData(sorted.map(toVolume));
           } catch (err) {
             console.error('Chart setData failed:', err, 'candles:', sorted.length);
@@ -637,7 +700,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           const merged = dedupeAndSort([...newCandles, ...candlesRef.current]);
           candlesRef.current = merged;
           try {
-            priceSeriesRef.current?.setData(merged.map(toLine));
+            priceSeriesRef.current?.setData(filterWicks(merged).map(toCandle));
             volumeSeriesRef.current?.setData(merged.map(toVolume));
           } catch (err) {
             console.error('Chart scroll-back setData failed:', err);
@@ -659,7 +722,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     // Don't update until initial data is loaded — prevents "Cannot update oldest data"
     if (loading || candlesRef.current.length === 0) return;
     try {
-      priceSeriesRef.current.update(toLine(lastCandle));
+      // Filter wick using recent candles as context
+      const recent = candlesRef.current.slice(-6).concat(lastCandle);
+      const filtered = filterWicks(recent);
+      priceSeriesRef.current.update(toCandle(filtered[filtered.length - 1]));
       volumeSeriesRef.current.update(toVolume(lastCandle));
     } catch (err) {
       // Stale or out-of-order candle — chart series can't display it,
