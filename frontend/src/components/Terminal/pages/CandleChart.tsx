@@ -93,44 +93,39 @@ interface Props {
 }
 
 /**
- * Filter fake/noisy wicks using neighbor validation + volume weighting.
+ * Filter fake candle data (bodies AND wicks) using neighbor validation.
  *
- * 1. Neighbor check: wicks can't exceed the close-price range of nearby bars
- *    plus a tolerance proportional to volume (high vol = more tolerance).
- * 2. Absolute cap: no single wick can exceed MAX_WICK points from the body.
+ * Databento 1m bars can include fleeting outlier trades that create bars with
+ * extreme O/H/L/C far from the actual market price. This clamps all four OHLC
+ * values to the range established by neighboring bars' close prices.
  */
 function filterWicks(candles: CandleData[]): CandleData[] {
   if (candles.length < 3) return candles;
   const RADIUS = 3;
-  const BASE_TOLERANCE = 0.3;
-  const MAX_WICK = 25;  // absolute max wick from body edge (points)
+  const MAX_DEVIATION = 20;  // max pts any OHLC value can deviate from neighbor range
 
   return candles.map((c, i) => {
-    const bodyHigh = Math.max(c.o, c.c);
-    const bodyLow = Math.min(c.o, c.c);
-
-    // Neighbor close-price range (tighter than open/close)
+    // Build neighbor close-price range (excluding current bar)
     const from = Math.max(0, i - RADIUS);
     const to = Math.min(candles.length, i + RADIUS + 1);
     let maxClose = -Infinity, minClose = Infinity;
     for (let j = from; j < to; j++) {
+      if (j === i) continue;  // exclude self
       maxClose = Math.max(maxClose, candles[j].c);
       minClose = Math.min(minClose, candles[j].c);
     }
+    if (maxClose === -Infinity) return c;  // edge case
 
-    // Volume-weighted tolerance: sqrt(vol)/150, capped at 1.0
-    const volFactor = Math.min(1, Math.sqrt(Math.max(c.v || 1, 1)) / 150);
-    const neighborSpan = (maxClose - minClose) * BASE_TOLERANCE * volFactor;
+    const ceiling = maxClose + MAX_DEVIATION;
+    const floor = minClose - MAX_DEVIATION;
 
-    // Neighbor-based clamp
-    let h = Math.min(c.h, Math.max(bodyHigh, maxClose + neighborSpan));
-    let l = Math.max(c.l, Math.min(bodyLow, minClose - neighborSpan));
-
-    // Absolute wick cap
-    h = Math.min(h, bodyHigh + MAX_WICK);
-    l = Math.max(l, bodyLow - MAX_WICK);
-
-    return { ...c, h, l };
+    return {
+      ...c,
+      o: Math.max(floor, Math.min(ceiling, c.o)),
+      h: Math.max(floor, Math.min(ceiling, c.h)),
+      l: Math.max(floor, Math.min(ceiling, c.l)),
+      c: Math.max(floor, Math.min(ceiling, c.c)),
+    };
   });
 }
 
@@ -351,9 +346,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         if (!meta) continue;
 
         const sl = slByDate.get(box.cetDate);
-        // Use backend levels when available, fallback to candle-computed
-        const lineHigh = sl?.[meta.hField] ?? box.high;
-        const lineLow = sl?.[meta.lField] ?? box.low;
+        if (!sl) continue;  // only draw from backend-computed levels
+        const lineHigh = sl[meta.hField];
+        const lineLow = sl[meta.lField];
+        if (lineHigh == null || lineLow == null) continue;
 
         // Day end = 22:00 CET: compute from box end + remaining CET minutes
         const boxEndCETMin = epochToCETMinute(box.endEpoch);
@@ -393,22 +389,15 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         }
       }
 
-      // PDH/PDL scoped to today only (from day start 00:00 CET to day end 22:00 CET)
+      // PDH/PDL from backend session levels (full prior day 00:00-22:00 CET)
       const todaySL = slByDate.get(todayCET);
-      const prevDayBoxes = boxes.filter(b => b.cetDate < todayCET);
-      if (prevDayBoxes.length > 0) {
-        const maxDate = prevDayBoxes.reduce((max, b) => b.cetDate > max ? b.cetDate : max, prevDayBoxes[0].cetDate);
-        const lastDayBoxes = prevDayBoxes.filter(b => b.cetDate === maxDate);
-        const pdh = todaySL?.pdh ?? Math.max(...lastDayBoxes.map(b => b.high));
-        const pdl = todaySL?.pdl ?? Math.min(...lastDayBoxes.map(b => b.low));
-
-        // Scope PDH/PDL to today's time range
-        const dayStartEpoch = todaySL?.day_start ?? todayBoxes[0].startEpoch;
-        const dayEndEpoch = todaySL?.day_end ?? todayBoxes[0].endEpoch + (22 * 60 - epochToCETMinute(todayBoxes[0].endEpoch)) * 60;
+      if (todaySL?.pdh != null && todaySL?.pdl != null) {
+        const dayStartEpoch = todaySL.day_start;
+        const dayEndEpoch = todaySL.day_end;
 
         for (const { key, price, label } of [
-          { key: 'pdh', price: pdh, label: 'PDH' },
-          { key: 'pdl', price: pdl, label: 'PDL' },
+          { key: 'pdh', price: todaySL.pdh, label: 'PDH' },
+          { key: 'pdl', price: todaySL.pdl, label: 'PDL' },
         ]) {
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);

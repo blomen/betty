@@ -303,23 +303,48 @@ def compute_developing_vwap(
     return result
 
 
+CET = ZoneInfo("Europe/Stockholm")
+
+# Fixed CET session boundaries (match frontend SESSION_DEFS)
+_TOKYO_START = time(0, 0)
+_TOKYO_END = time(9, 0)      # = London open
+_LONDON_START = time(9, 0)
+_LONDON_END = time(15, 30)   # = NY open
+_NY_START = time(15, 30)
+_NY_END = time(22, 0)
+_IB_END = time(16, 30)       # NY open + 60 min
+
+
 def compute_session_levels(
     bars_1m: list[dict],
     session_date: datetime,
 ) -> SessionLevels:
     """Compute PDH/PDL, Tokyo/London H/L, IB from 1-minute bars.
 
-    All session boundaries in US/Eastern time:
-    - Tokyo: 20:00 - 02:00 ET (prior evening into early morning)
-    - London: 03:00 - 08:30 ET
-    - IB: 09:30 - 10:30 ET (first 60 min of RTH)
-    - PDH/PDL: prior calendar day's RTH range
+    All session boundaries use fixed CET times (matching chart display):
+    - Tokyo: 00:00 - 09:00 CET
+    - London: 09:00 - 15:30 CET
+    - NY / IB: 15:30 - 22:00 CET  (IB = first 60 min: 15:30-16:30)
+    - PDH/PDL: prior trading day's full session (00:00-22:00 CET)
     """
     levels = SessionLevels()
     if not bars_1m:
         return levels
 
-    today_et = session_date.astimezone(ET).date() if isinstance(session_date, datetime) else session_date
+    today_cet = session_date.astimezone(CET).date()
+
+    # Find the prior trading day's CET date from actual bar data (handles weekends)
+    prior_cet_dates = set()
+    for bar in bars_1m:
+        bar_ts = bar["ts"]
+        if isinstance(bar_ts, str):
+            bar_ts = datetime.fromisoformat(bar_ts)
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+        cet_date = bar_ts.astimezone(CET).date()
+        if cet_date < today_cet:
+            prior_cet_dates.add(cet_date)
+    prev_cet = max(prior_cet_dates) if prior_cet_dates else today_cet - timedelta(days=1)
 
     for bar in bars_1m:
         bar_ts = bar["ts"]
@@ -327,15 +352,14 @@ def compute_session_levels(
             bar_ts = datetime.fromisoformat(bar_ts)
         if bar_ts.tzinfo is None:
             bar_ts = bar_ts.replace(tzinfo=timezone.utc)
-        bar_et = bar_ts.astimezone(ET)
-        bar_date = bar_et.date()
-        bar_time = bar_et.time()
+        bar_cet = bar_ts.astimezone(CET)
+        bar_date = bar_cet.date()
+        bar_time = bar_cet.time()
         h, l = bar["high"], bar["low"]
-
-        # PDH/PDL: yesterday's RTH (09:30-16:00)
         bar_epoch = int(bar_ts.timestamp())
-        yesterday = today_et - timedelta(days=1)
-        if bar_date == yesterday and time(9, 30) <= bar_time < time(16, 0):
+
+        # PDH/PDL: prior trading day's full session (00:00-22:00 CET)
+        if bar_date == prev_cet and bar_time < _NY_END:
             if levels.pdh is None or h > levels.pdh:
                 levels.pdh = h
                 levels.pdh_time = bar_epoch
@@ -343,37 +367,38 @@ def compute_session_levels(
                 levels.pdl = l
                 levels.pdl_time = bar_epoch
 
-        # Tokyo: 20:00 ET prior day to 02:00 ET current day
-        if bar_date == yesterday and bar_time >= time(20, 0):
-            levels.tokyo_high = max(levels.tokyo_high or h, h)
-            levels.tokyo_low = min(levels.tokyo_low or l, l)
-        elif bar_date == today_et and bar_time < time(2, 0):
+        # Today's sessions
+        if bar_date != today_cet:
+            continue
+
+        # Tokyo: 00:00-09:00 CET
+        if _TOKYO_START <= bar_time < _TOKYO_END:
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
 
-        # London: 03:00-08:30 ET
-        if bar_date == today_et and time(3, 0) <= bar_time < time(8, 30):
+        # London: 09:00-15:30 CET
+        if _LONDON_START <= bar_time < _LONDON_END:
             levels.london_high = max(levels.london_high or h, h)
             levels.london_low = min(levels.london_low or l, l)
 
-        # IB: 09:30-10:30 ET
-        if bar_date == today_et and time(9, 30) <= bar_time < time(10, 30):
+        # IB: 15:30-16:30 CET (first 60 min of NY)
+        if _NY_START <= bar_time < _IB_END:
             levels.ib_high = max(levels.ib_high or h, h)
             levels.ib_low = min(levels.ib_low or l, l)
 
-        # NY session: 09:30-16:00 ET (full RTH)
-        if bar_date == today_et and time(9, 30) <= bar_time < time(16, 0):
+        # NY session: 15:30-22:00 CET
+        if _NY_START <= bar_time < _NY_END:
             levels.ny_high = max(levels.ny_high or h, h)
             levels.ny_low = min(levels.ny_low or l, l)
 
-        # Weekly H/L (current week, Mon-Fri RTH)
-        week_start = today_et - timedelta(days=today_et.weekday())
-        if week_start <= bar_date <= today_et and time(9, 30) <= bar_time < time(16, 0):
+        # Weekly H/L (current week, NY session CET)
+        week_start = today_cet - timedelta(days=today_cet.weekday())
+        if week_start <= bar_date <= today_cet and _NY_START <= bar_time < _NY_END:
             levels.weekly_high = max(levels.weekly_high or h, h)
             levels.weekly_low = min(levels.weekly_low or l, l)
 
-        # Monthly H/L (current month RTH)
-        if bar_date.year == today_et.year and bar_date.month == today_et.month and time(9, 30) <= bar_time < time(16, 0):
+        # Monthly H/L (current month, NY session CET)
+        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and _NY_START <= bar_time < _NY_END:
             levels.monthly_high = max(levels.monthly_high or h, h)
             levels.monthly_low = min(levels.monthly_low or l, l)
 
