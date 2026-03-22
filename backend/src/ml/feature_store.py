@@ -90,6 +90,52 @@ def resolve_trading_outcomes(session: Session) -> int:
     return count
 
 
+def resolve_boost_outcomes(session: Session, boost_title: str) -> int:
+    """Resolve ML feature outcomes for a settled boost bet.
+
+    Joins ml_features (source_type='boost', source_id=boost_title) to bets
+    (bet_type='boost', outcome=boost_title) to propagate settlement results.
+
+    Returns count of resolved feature rows.
+    """
+    from src.db.models import Bet
+
+    bet = session.query(Bet).filter(
+        Bet.bet_type == "boost",
+        Bet.outcome == boost_title,
+        Bet.result.isnot(None),
+    ).first()
+    if not bet:
+        return 0
+
+    rows = session.query(MlFeature).filter(
+        MlFeature.source_type == "boost",
+        MlFeature.source_id == boost_title,
+        MlFeature.outcome.is_(None),
+    ).all()
+    if not rows:
+        return 0
+
+    now = datetime.now(timezone.utc)
+
+    if bet.result == "void":
+        for row in rows:
+            session.delete(row)
+        session.flush()
+        return 0
+
+    outcome_val = 1.0 if bet.result == "won" else 0.0
+    outcome_bin = 1 if bet.result == "won" else 0
+
+    for row in rows:
+        row.outcome = outcome_val
+        row.outcome_binary = outcome_bin
+        row.resolved_at = now
+
+    session.flush()
+    return len(rows)
+
+
 def log_candle_snapshot(session: Session, signal_id: int, candles: list[dict],
                         timeframe: str = "1m") -> CandleSnapshot:
     row = CandleSnapshot(signal_id=signal_id, candles=candles, timeframe=timeframe)

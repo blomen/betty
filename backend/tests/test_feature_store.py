@@ -57,3 +57,82 @@ def test_log_candle_snapshot(db_session):
     row = db_session.query(CandleSnapshot).first()
     assert row is not None
     assert len(row.candles) == 20
+
+
+def test_resolve_boost_outcomes_won(db_session):
+    """Settling a boost bet as 'won' should set outcome_binary=1 on matching ml_features."""
+    from src.ml.feature_store import log_features, resolve_boost_outcomes
+    from src.db.models import Bet, Profile, Provider
+    db_session.add(Provider(id="unibet", name="Unibet"))
+    profile = Profile(name="test", is_active=True, bankroll=10000)
+    db_session.add(profile)
+    db_session.flush()
+    log_features(db_session, "betting", "Arsenal att vinna", "boost", {"llm_raw_probability": 0.45})
+    bet = Bet(
+        profile_id=profile.id, provider_id="unibet", market="boost",
+        outcome="Arsenal att vinna", odds=3.0, stake=100, bet_type="boost",
+        result="won", payout=300,
+    )
+    db_session.add(bet)
+    db_session.flush()
+    count = resolve_boost_outcomes(db_session, "Arsenal att vinna")
+    assert count == 1
+    from src.db.models import MlFeature
+    row = db_session.query(MlFeature).filter_by(source_type="boost").first()
+    assert row.outcome == 1.0
+    assert row.outcome_binary == 1
+    assert row.resolved_at is not None
+
+
+def test_resolve_boost_outcomes_lost(db_session):
+    from src.ml.feature_store import log_features, resolve_boost_outcomes
+    from src.db.models import Bet, Profile, Provider
+    db_session.add(Provider(id="unibet", name="Unibet"))
+    profile = Profile(name="test", is_active=True, bankroll=10000)
+    db_session.add(profile)
+    db_session.flush()
+    log_features(db_session, "betting", "Arsenal att vinna", "boost", {"llm_raw_probability": 0.45})
+    bet = Bet(
+        profile_id=profile.id, provider_id="unibet", market="boost",
+        outcome="Arsenal att vinna", odds=3.0, stake=100, bet_type="boost",
+        result="lost", payout=0,
+    )
+    db_session.add(bet)
+    db_session.flush()
+    count = resolve_boost_outcomes(db_session, "Arsenal att vinna")
+    assert count == 1
+    from src.db.models import MlFeature
+    row = db_session.query(MlFeature).filter_by(source_type="boost").first()
+    assert row.outcome == 0.0
+    assert row.outcome_binary == 0
+
+
+def test_resolve_boost_outcomes_void_deletes(db_session):
+    from src.ml.feature_store import log_features, resolve_boost_outcomes
+    from src.db.models import Bet, Profile, Provider, MlFeature
+    db_session.add(Provider(id="unibet", name="Unibet"))
+    profile = Profile(name="test", is_active=True, bankroll=10000)
+    db_session.add(profile)
+    db_session.flush()
+    log_features(db_session, "betting", "Arsenal att vinna", "boost", {"llm_raw_probability": 0.45})
+    bet = Bet(
+        profile_id=profile.id, provider_id="unibet", market="boost",
+        outcome="Arsenal att vinna", odds=3.0, stake=100, bet_type="boost",
+        result="void", payout=100,
+    )
+    db_session.add(bet)
+    db_session.flush()
+    count = resolve_boost_outcomes(db_session, "Arsenal att vinna")
+    assert count == 0
+    assert db_session.query(MlFeature).filter_by(source_type="boost").count() == 0
+
+
+def test_resolve_boost_no_settled_bet(db_session):
+    """If no settled bet exists, features should remain unresolved."""
+    from src.ml.feature_store import log_features, resolve_boost_outcomes
+    log_features(db_session, "betting", "Arsenal att vinna", "boost", {"llm_raw_probability": 0.45})
+    count = resolve_boost_outcomes(db_session, "Arsenal att vinna")
+    assert count == 0
+    from src.db.models import MlFeature
+    row = db_session.query(MlFeature).filter_by(source_type="boost").first()
+    assert row.outcome is None
