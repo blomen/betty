@@ -64,11 +64,11 @@ Remove two features that will never be populated:
 
 **Join key:** `ml_features.source_id` stores the original scraper title (set at `llm_enrichment.py:768`). `bets.outcome` also stores the original scraper title for boost bets (set by frontend at `ValuePage.tsx:636`: `outcome: special.title`). These match reliably.
 
-**New function `resolve_boost_outcomes(session, boost_title)`:**
-1. Query `ml_features` where `source_type='boost'` AND `source_id=boost_title` AND `outcome IS NULL`
+**New function `resolve_boost_outcomes(session, boost_title)`** — do NOT reuse existing `resolve_outcome()` helper (it only updates the first matching row via `.first()`). This function must handle ALL matching rows:
+1. Query ALL `ml_features` where `source_type='boost'` AND `source_id=boost_title` AND `outcome IS NULL` (use `.all()`)
 2. Query `bets` where `bet_type='boost'` AND `outcome=boost_title` AND `result IS NOT NULL`
-3. Map: `won` → `outcome=1.0, outcome_binary=1`, `lost` → `outcome=0.0, outcome_binary=0`, `void` → delete the feature row (not useful for calibration)
-4. Set `resolved_at` timestamp
+3. For each matching feature row, map: `won` → `outcome=1.0, outcome_binary=1`, `lost` → `outcome=0.0, outcome_binary=0`, `void` → delete the feature row (not useful for calibration)
+4. Set `resolved_at` timestamp on each updated row
 
 **Hook in `settle_bet()`:** After settling a bet where `bet.bet_type == 'boost'`, call `resolve_boost_outcomes(self.db, bet.outcome)`. Immediate propagation, no batch job needed.
 
