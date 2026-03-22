@@ -1,4 +1,4 @@
-import { useState, useEffect, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
+import { useState, useEffect, useCallback, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -55,6 +55,7 @@ interface OpportunityRowProps {
   providerDropdownRef: React.RefObject<HTMLDivElement | null>;
   onProviderDropdownToggle: (groupKey: string) => void;
   onProviderSelect: (groupKey: string, index: number) => void;
+  onOddsOverride: (groupKey: string, odds: number | null) => void;
   onPlaceBet: (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => void;
   pendingBet: { groupKey: string; opp: Opportunity; actualOdds: number; useFreebet: boolean; navUrl: string | null; windowName: string; effectiveStake: number | null } | null;
   isPlacing: boolean;
@@ -73,6 +74,7 @@ const OpportunityRow = memo(function OpportunityRow({
   providerDropdownRef,
   onProviderDropdownToggle,
   onProviderSelect,
+  onOddsOverride,
   onPlaceBet,
   pendingBet,
   isPlacing,
@@ -81,8 +83,12 @@ const OpportunityRow = memo(function OpportunityRow({
 }: OpportunityRowProps) {
   const { rep, opps, providers: groupProviders } = group;
 
-  // Local edit state
-  const [localOddsOverride, setLocalOddsOverride] = useState<number | null>(null);
+  // Local edit state — also notify parent for sorting/filtering
+  const [localOddsOverride, _setLocalOddsOverride] = useState<number | null>(null);
+  const setLocalOddsOverride = useCallback((val: number | null) => {
+    _setLocalOddsOverride(val);
+    onOddsOverride(group.key, val);
+  }, [onOddsOverride, group.key]);
   const [editingOdds, setEditingOdds] = useState(false);
   const [localStakeOverride, setLocalStakeOverride] = useState<number | null>(null);
   const [editingStake, setEditingStake] = useState(false);
@@ -395,6 +401,17 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_value_placedKeys', new Set());
   const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
 
+  // Lifted odds overrides: key → overridden odds value
+  const [oddsOverrides, setOddsOverrides] = useState<Map<string, number>>(new Map());
+  const handleOddsOverride = useCallback((groupKey: string, odds: number | null) => {
+    setOddsOverrides(prev => {
+      const next = new Map(prev);
+      if (odds === null) next.delete(groupKey);
+      else next.set(groupKey, odds);
+      return next;
+    });
+  }, []);
+
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
@@ -491,17 +508,31 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     return groups;
   }, [opportunities, placedKeys, search]);
 
+  // Compute dynamic edge for a group, accounting for user odds overrides
+  const getDynamicEdge = useCallback((g: GroupedOpp) => {
+    const overriddenOdds = oddsOverrides.get(g.key);
+    if (overriddenOdds != null && g.rep.fair_odds && g.rep.fair_odds > 1) {
+      return (overriddenOdds / g.rep.fair_odds - 1) * 100;
+    }
+    return g.rep.edge_pct ?? 0;
+  }, [oddsOverrides]);
+
+  // Filter out groups where user has overridden odds to negative edge (value is gone)
+  const activeGroups = useMemo(() =>
+    grouped.filter(g => getDynamicEdge(g) > 0),
+  [grouped, getDynamicEdge]);
+
   type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
   const valueSortExtractors = useMemo(() => ({
-    odds:  (g: GroupedOpp) => g.rep.odds1 ?? 0,
+    odds:  (g: GroupedOpp) => oddsOverrides.get(g.key) ?? g.rep.odds1 ?? 0,
     fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
     prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
     stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
-    edge:  (g: GroupedOpp) => g.rep.edge_pct ?? 0,
+    edge:  (g: GroupedOpp) => getDynamicEdge(g),
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
-  }), []);
+  }), [oddsOverrides, getDynamicEdge]);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
-    useMultiSort<GroupedOpp, ValueSortCol>(grouped, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
+    useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
 
   const filteredCount = useMemo(() =>
     sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
@@ -556,8 +587,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
   const boostSortExtractors = useMemo(() => ({
     odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
-    fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? 0,
-    aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? 0,
+    fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? g.rep.fair_odds ?? 0,
+    aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? (g.rep.fair_odds ? 1 / g.rep.fair_odds : 0),
     aiEdge: (g: GroupedSpecial) => {
       const s = g.rep;
       const fairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
@@ -608,7 +639,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         is_bonus: false,
         utility_score: (special.llm_edge_pct ?? special.edge_pct) != null ? (special.llm_edge_pct ?? special.edge_pct)! / 100 : undefined,
         selection_probability: special.llm_probability ?? undefined,
-        fair_odds_at_placement: special.llm_fair_odds ?? undefined,
+        fair_odds_at_placement: special.llm_fair_odds ?? special.fair_odds ?? undefined,
         boost_event: special.event ?? undefined,
         boost_title: special.llm_title ?? special.title,
         bet_type: 'boost',
@@ -751,19 +782,21 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         if (!h || h.status === 'ok') return null;
         const isError = h.status === 'error';
         const msgs: string[] = [];
-        if (h.anthropic_status === 'usage_limit') msgs.push('Anthropic API usage limit reached');
+        if (h.status === 'unknown') msgs.push('LLM enrichment not yet run');
+        else if (h.anthropic_status === 'usage_limit') msgs.push('Anthropic API usage limit reached');
         else if (h.anthropic_status === 'auth_error') msgs.push('Anthropic API key invalid');
         else if (h.anthropic_status === 'rate_limited') msgs.push('Anthropic API rate limited');
         else if (h.anthropic_status === 'missing_key') msgs.push('ANTHROPIC_API_KEY not set');
         if (msgs.length === 0 && h.last_error) msgs.push(h.last_error);
         if (msgs.length === 0 && isError) msgs.push('LLM enrichment failed');
+        if (msgs.length === 0) msgs.push('LLM enrichment unavailable');
         const borderCls = isError ? 'border-error/30 bg-error/10' : 'border-amber-500/30 bg-amber-500/10';
         const textCls = isError ? 'text-error' : 'text-amber-400';
         const iconCls = isError ? 'text-error' : 'text-amber-400';
         return (
           <div className={`px-3 py-1.5 ${borderCls} border text-xs flex items-center gap-2`}>
             <span className={`font-bold ${iconCls}`}>!</span>
-            <span className={textCls}>FAIR/PROB/STAKE columns unavailable — {msgs.join(', ')}</span>
+            <span className={textCls}>FAIR/PROB columns may be incomplete — {msgs.join(', ')}</span>
             {h.last_run_at && <span className="text-muted ml-auto">Last attempt: {new Date(h.last_run_at).toLocaleString()}</span>}
           </div>
         );
@@ -870,9 +903,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                       {isBoostOddsOverridden && <button onClick={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
                       {!isBoostOddsOverridden && s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
                     </td>
-                    <td className="text-right text-muted text-sm">{s.llm_fair_odds != null ? s.llm_fair_odds.toFixed(2) : '-'}</td>
+                    <td className="text-right text-muted text-sm">{boostFairOdds != null ? boostFairOdds.toFixed(2) : '-'}</td>
                     <td className="text-right text-muted text-sm">
-                      {s.llm_probability != null ? `${(s.llm_probability * 100).toFixed(0)}%` : '-'}
+                      {s.llm_probability != null
+                        ? `${(s.llm_probability * 100).toFixed(0)}%`
+                        : boostFairOdds != null && boostFairOdds > 1
+                          ? `${(100 / boostFairOdds).toFixed(0)}%`
+                          : '-'}
                     </td>
                     <td className="text-right">
                       {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
@@ -1039,6 +1076,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                   providerDropdownRef={providerDropdownRef}
                   onProviderDropdownToggle={(key) => setProviderDropdownOpen(prev => prev === key ? null : key)}
                   onProviderSelect={(key, i) => { setSelectedBetProvider(prev => ({ ...prev, [key]: i })); setProviderDropdownOpen(null); }}
+                  onOddsOverride={handleOddsOverride}
                   onPlaceBet={handlePlaceBetClick}
                   pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
                   isPlacing={isPlacing}

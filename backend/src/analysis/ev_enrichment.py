@@ -239,9 +239,78 @@ def _fill_pinnacle_proxy_odds(specials: list[dict], db: Session) -> int:
         if not outcome or outcome not in market_odds:
             continue
 
-        fair_odds = get_fair_odds_for_outcome(outcome, market_odds)
-        if fair_odds and fair_odds > 1.0:
-            s["original_odds"] = round(fair_odds, 3)
+        pinnacle_fair = get_fair_odds_for_outcome(outcome, market_odds)
+        if pinnacle_fair and pinnacle_fair > 1.0:
+            s["original_odds"] = round(pinnacle_fair, 3)
+            s["fair_odds"] = round(pinnacle_fair, 3)
+            count += 1
+
+    return count
+
+
+def _fill_pinnacle_fair_odds(specials: list[dict], db: Session) -> int:
+    """Fill fair_odds from Pinnacle for matched single-leg boosts that already have original_odds.
+
+    _fill_pinnacle_proxy_odds handles boosts WITHOUT original_odds (sets both original + fair).
+    This function handles boosts WITH scraped original_odds — they still need Pinnacle fair_odds
+    for the FAIR column display.
+    """
+    from ..analysis.llm_enrichment import _detect_legs_from_title
+
+    needs_fair = [
+        s for s in specials
+        if s.get("matched_event_id")
+        and s.get("original_odds")       # already has scraped original
+        and not s.get("fair_odds")        # but no fair_odds yet
+        and _detect_legs_from_title(s.get("title", "")) == 1
+    ]
+    if not needs_fair:
+        return 0
+
+    event_ids = list({s["matched_event_id"] for s in needs_fair})
+    events = db.query(Event).filter(Event.id.in_(event_ids)).all()
+    event_map = {ev.id: ev for ev in events}
+
+    pinnacle_odds = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id.in_(event_ids),
+            Odds.provider_id == "pinnacle",
+            Odds.market.in_(["1x2", "moneyline"]),
+        )
+        .all()
+    )
+    odds_by_event: dict[str, dict[str, float]] = {}
+    for o in pinnacle_odds:
+        odds_by_event.setdefault(o.event_id, {})[o.outcome] = o.odds
+
+    count = 0
+    for s in needs_fair:
+        eid = s["matched_event_id"]
+        market_odds = odds_by_event.get(eid)
+        if not market_odds or len(market_odds) < 2:
+            continue
+
+        ev = event_map.get(eid)
+        if not ev or not ev.home_team or not ev.away_team:
+            continue
+
+        title_lower = s.get("title", "").lower()
+        home_lower = ev.home_team.lower()
+        away_lower = ev.away_team.lower()
+
+        outcome = None
+        if home_lower in title_lower and away_lower not in title_lower:
+            outcome = "home"
+        elif away_lower in title_lower and home_lower not in title_lower:
+            outcome = "away"
+
+        if not outcome or outcome not in market_odds:
+            continue
+
+        pinnacle_fair = get_fair_odds_for_outcome(outcome, market_odds)
+        if pinnacle_fair and pinnacle_fair > 1.0:
+            s["fair_odds"] = round(pinnacle_fair, 3)
             count += 1
 
     return count
@@ -258,7 +327,12 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
     if proxy_count:
         logger.info(f"Pinnacle proxy: {proxy_count} boosts got synthesized original_odds")
 
-    # 3. Boost edge: boosted_odds / original_odds - 1
+    # 3. Fill Pinnacle fair_odds for matched boosts that already have scraped original_odds
+    fair_count = _fill_pinnacle_fair_odds(specials, db)
+    if fair_count:
+        logger.info(f"Pinnacle fair odds: {fair_count} boosts got fair_odds from Pinnacle")
+
+    # 4. Boost edge: boosted_odds / original_odds - 1
     count = 0
     for s in specials:
         boosted = s.get("boosted_odds")
@@ -359,6 +433,8 @@ def store_specials_to_db(specials: list[dict], session: Session) -> int:
             scraped_at=s.get("scraped_at", ""),
             # Event matching
             matched_event_id=s.get("matched_event_id"),
+            # Pinnacle fair odds (de-vigged, for FAIR column display)
+            fair_odds=s.get("fair_odds"),
             # Boost edge (simple: boosted/original)
             edge_pct=s.get("edge_pct"),
             is_positive_ev=s.get("is_positive_ev"),

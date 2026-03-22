@@ -195,6 +195,7 @@ RULES:
 - For player props (goalscorer, assists, etc.), use base rates and player statistics
 - Express your probability as a decimal between 0.01 and 0.99
 - Determine the event start time from event context or league schedules
+- HOME/AWAY CONTEXT: When HOME TEAM and AWAY TEAM are provided, use them to correctly assess home advantage. The boost SELECTION team may be home or away — check which one before adding/subtracting home advantage. Getting this wrong flips your estimate by ~10-15pp
 - BOOKMAKER ANCHOR: The ORIGINAL ODDS reflect the bookmaker's probability estimate (with ~5-10% margin). Your estimate should NOT differ from the bookmaker implied probability by more than 15 percentage points. If you estimate 65% but the bookmaker implies 30%, you are almost certainly wrong — recheck your analysis
 - STAT DISAMBIGUATION: Read market labels carefully. "Shots on target" (skott på mål) ≠ "total shots" — shots on target is typically 30-40% of total shots. "Corners" ≠ "goals". Always verify you are analyzing the EXACT stat in the market title
 
@@ -250,6 +251,8 @@ def _build_user_prompt(special: dict) -> str:
     boost_pct = special.get("boost_pct")
     event_time = special.get("event_time")
 
+    matched_event_id = special.get("matched_event_id") or ""
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     parts = [
         f"TODAY'S DATE: {today}",
@@ -257,6 +260,14 @@ def _build_user_prompt(special: dict) -> str:
         f"EVENT: {event}",
         f"SPORT: {sport}" + (f" ({league})" if league else ""),
     ]
+    # Extract home/away from matched event ID (format: sport:home:away:date)
+    if matched_event_id:
+        eid_parts = matched_event_id.split(":")
+        if len(eid_parts) >= 3:
+            home_team = eid_parts[1].replace("_", " ").title()
+            away_team = eid_parts[2].replace("_", " ").title()
+            parts.append(f"HOME TEAM: {home_team}")
+            parts.append(f"AWAY TEAM: {away_team}")
     if market_label:
         parts.append(f"MARKET: {market_label}")
     if event_time:
@@ -822,9 +833,12 @@ async def enrich_specials_with_llm(specials: list[dict], db: Optional[Session] =
         candidate_count=len(candidates),
     )
     if enriched_count > 0:
-        _update_health(status="ok", last_success_at=now_iso)
+        _update_health(status="ok", last_success_at=now_iso, last_error=None)
     elif _anthropic_dead:
         _update_health(status="error", last_error=_anthropic_error_msg or "Anthropic API unavailable")
     elif enriched_count == 0 and len(candidates) > 0:
         _update_health(status="error", last_error=f"0/{len(candidates)} boosts enriched — all API calls failed")
+    else:
+        # No candidates and no errors — clear any stale error from previous run
+        _update_health(status="ok", last_error=None)
     return specials
