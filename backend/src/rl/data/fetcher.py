@@ -197,7 +197,11 @@ def fetch_macro_history(
             if raw.empty:
                 logger.warning("yfinance returned no data for %s (%s)", col_name, ticker)
                 continue
-            series = raw["Close"].rename(col_name)
+            close = raw["Close"]
+            # yfinance >= 1.0 returns MultiIndex columns (Price, Ticker)
+            if hasattr(close, "columns"):
+                close = close.iloc[:, 0]
+            series = close.rename(col_name)
             frames.append(series)
             logger.info("Fetched %d rows for %s", len(series), col_name)
         except Exception as exc:

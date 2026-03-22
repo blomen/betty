@@ -49,26 +49,27 @@ def extract_tpo_features(
     poc = tpo_profile.get("poc", current_price)
     vah = tpo_profile.get("vah", current_price)
     val = tpo_profile.get("val", current_price)
-    va_width = tpo_profile.get("va_width", max(vah - val, 0.0))
-    time_at_price = tpo_profile.get("time_at_price", 0.0)
+    va_width = tpo_profile.get("va_width") or max(vah - val, 0.0)
+    time_at_price = tpo_profile.get("time_at_price") or tpo_profile.get("ib_tpo_count", 0.0)
     excess_high = float(bool(tpo_profile.get("excess_high", False)))
     excess_low = float(bool(tpo_profile.get("excess_low", False)))
     rotation_factor = tpo_profile.get("rotation_factor", 0.0)
     rotation_count = tpo_profile.get("rotation_count", 0)
-    shape = tpo_profile.get("shape", "balanced")
+    raw_shape = tpo_profile.get("shape", "balanced").lower().replace("-shape", "")
+    shape = raw_shape if raw_shape in ("p", "b", "d", "balanced") else "balanced"
 
-    # 0: price distance from POC in ticks (normalised to ±1 at 50 ticks)
+    # 0: price distance from POC in ticks (normalised to ±1 at 200 ticks)
     poc_dist_ticks = (current_price - poc) / TICK_SIZE
-    poc_dist_norm = np.clip(poc_dist_ticks / 50.0, -1.0, 1.0)
+    poc_dist_norm = np.clip(poc_dist_ticks / 200.0, -1.0, 1.0)
 
-    # 1: value area width normalised
-    va_width_norm = min(va_width / 100.0, 1.0)
+    # 1: value area width normalised (NQ VA can be 200+ pts = 800+ ticks)
+    va_width_norm = float(np.clip(va_width / TICK_SIZE / 400.0, 0.0, 1.0))
 
     # 2: price inside value area
     price_in_va = 1.0 if val <= current_price <= vah else 0.0
 
-    # 3: time at current price (normalised by max 26 TPO periods per session)
-    time_norm = min(float(time_at_price) / 26.0, 1.0)
+    # 3: TPO count normalised (ib_tpo_count can reach 500+)
+    time_norm = float(np.clip(float(time_at_price) / 500.0, 0.0, 1.0))
 
     # 6: rotation factor normalised
     rf_norm = np.clip(float(rotation_factor) / 26.0, -1.0, 1.0)
@@ -96,7 +97,8 @@ def extract_tpo_features(
         shape_vec[1],
         shape_vec[2],
         shape_vec[3],
-        0.0,  # reserved / padding to reach 13
+        # 12: poor high/low signal (directional: +1 poor high, -1 poor low, 0 neither)
+        float(bool(tpo_profile.get("poor_high", False))) - float(bool(tpo_profile.get("poor_low", False))),
     ], dtype=np.float32)
 
     return feats

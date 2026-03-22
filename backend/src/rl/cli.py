@@ -15,6 +15,50 @@ _ET = ZoneInfo("US/Eastern")
 rl_app = typer.Typer(help="RL Trading Agent — fetch, replay, train, eval")
 
 
+def _prepare_macro_data(macro_df) -> dict:
+    """Convert raw macro parquet (VIX, DXY, US10Y, US2Y levels) into
+    the dict format expected by extract_macro_features().
+
+    Computes daily changes, yield curve spread, and a simple regime score.
+    """
+    macro_data: dict = {}
+    prev_row = None
+    for date_idx, row in macro_df.iterrows():
+        date_str = str(date_idx)[:10]
+        vix = float(row.get("VIX", 20.0))
+        dxy = float(row.get("DXY", 100.0))
+        us10y = float(row.get("US10Y", 4.0))
+        us2y = float(row.get("US2Y", 4.0))
+
+        if prev_row is not None:
+            vix_change = vix - float(prev_row.get("VIX", vix))
+            dxy_change = (dxy / float(prev_row.get("DXY", dxy)) - 1) * 100
+            us10y_change = (us10y - float(prev_row.get("US10Y", us10y))) * 100  # bps
+            us2y_change = (us2y - float(prev_row.get("US2Y", us2y))) * 100
+        else:
+            vix_change = 0.0
+            dxy_change = 0.0
+            us10y_change = 0.0
+            us2y_change = 0.0
+
+        # Simple regime score: risk_off when VIX high + yields rising
+        regime_score = max(0.0, min(1.0, 0.5 + (vix - 20) / 40 + vix_change / 10))
+
+        macro_data[date_str] = {
+            "vix": vix,
+            "vix_change": vix_change,
+            "regime_score": regime_score,
+            "dxy_change": dxy_change,
+            "us10y_change": us10y_change,
+            "us2y_change": us2y_change,
+            "us10y": us10y,
+            "us2y": us2y,
+            "yield_curve_spread": us10y - us2y,
+        }
+        prev_row = row
+    return macro_data
+
+
 def _assign_session_date(ts_et):
     """Assign a tick to its futures session date based on 18:00 ET cutoff.
 
@@ -307,9 +351,7 @@ def replay(
     if macro_path.exists():
         try:
             macro_df = pd.read_parquet(macro_path)
-            for date_idx, row in macro_df.iterrows():
-                date_str = str(date_idx)[:10]
-                macro_data[date_str] = row.to_dict()
+            macro_data = _prepare_macro_data(macro_df)
             typer.echo(f"Loaded macro data: {len(macro_data)} days.")
         except Exception as exc:
             typer.echo(f"Warning: could not load macro data: {exc}")

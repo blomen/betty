@@ -15,8 +15,8 @@ def extract_macro_features(macro: dict | None) -> np.ndarray:
       2  regime_score        — pre-computed regime score (0-1), e.g. from HMM
       3  dxy_change          — DXY 1-day change / 1.0 (%), clipped ±3
       4  gex_placeholder     — 0.0 (gamma exposure, not yet wired up)
-      5  us10y_change        — US 10Y yield change / 0.1 (bp), clipped ±3
-      6  us2y_change         — US 2Y yield change / 0.1 (bp), clipped ±3
+      5  us10y_change        — US 10Y yield change (bps) / 10, clipped ±1
+      6  us2y_change         — US 2Y yield change (bps) / 10, clipped ±1
       7  yield_curve_spread  — (10Y - 2Y) / 2.0, clipped ±1
       8  news_placeholder    — 0.0 (news sentiment, not yet wired up)
       9  news_severity       — 0.0 (news severity, not yet wired up)
@@ -45,8 +45,8 @@ def extract_macro_features(macro: dict | None) -> np.ndarray:
         np.clip(regime_score, 0.0, 1.0),
         np.clip(dxy_change, -3.0, 3.0),
         0.0,  # GEX placeholder
-        np.clip(us10y_change / 0.1, -3.0, 3.0),
-        np.clip(us2y_change / 0.1, -3.0, 3.0),
+        np.clip(us10y_change / 10.0, -1.0, 1.0),  # ±10 bps = ±1.0
+        np.clip(us2y_change / 10.0, -1.0, 1.0),
         np.clip(yield_curve / 2.0, -1.0, 1.0),
         0.0,  # news placeholder
         0.0,  # news severity placeholder

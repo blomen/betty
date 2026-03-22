@@ -25,10 +25,10 @@ def extract_structure_features(
 
     --- Volume Profile (1-5) ---
       1  price_in_va         — 1 if price inside value area
-      2  dist_to_poc_ticks   — |price - poc| / tick_size, normalised (÷50)
-      3  dist_to_vah_ticks   — (price - vah) / tick_size, normalised (÷50)
-      4  dist_to_val_ticks   — (price - val) / tick_size, normalised (÷50)
-      5  single_print_count  — count of single prints (capped ÷20)
+      2  dist_to_poc_ticks   — |price - poc| / tick_size, normalised (÷200)
+      3  dist_to_vah_ticks   — (price - vah) / tick_size, normalised (÷200)
+      4  dist_to_val_ticks   — (price - val) / tick_size, normalised (÷200)
+      5  va_width_ticks      — (vah - val) / tick_size, normalised (÷400)
 
     --- IB Range (6-7) ---
       6  ib_range_ticks      — (ib_high - ib_low) / tick_size, normalised (÷80)
@@ -36,14 +36,14 @@ def extract_structure_features(
       8  poor_low            — 1 if price below ib_low (IB extension down)
 
     --- Market Type one-hot (9-11) ---
-      9  trend_day           — 1 if daily_range > 2× avg
-     10  range_day           — 1 if range small + price inside VA
+      9  trend_day           — 1 if daily_range_pct > 0.02 (NQ ~500pt move)
+     10  range_day           — 1 if daily_range_pct < 0.008 + inside VA
      11  neutral_day         — else
 
     --- Session Context (12-22) ---
      12  minutes_since_rth_norm — minutes since 09:30 ET / 390
      13  session_volume_pct     — session volume as pct of daily expected (0-1)
-     14  daily_range_pct        — (daily_high - daily_low) / reference_range (0-1)
+     14  daily_range_pct        — (daily_high - daily_low) / price, rescaled (÷0.03)
      15  time_of_day_sin        — sin(2π * minute_of_day / 1440)
      16  time_of_day_cos        — cos(2π * minute_of_day / 1440)
      17  session_type_rth       — one-hot RTH
@@ -70,11 +70,11 @@ def extract_structure_features(
         val = volume_profile.val
 
         feats[1] = 1.0 if val <= price <= vah else 0.0
-        feats[2] = float(np.clip(abs(price - poc) / TICK_SIZE / 50.0, 0.0, 1.0))
-        feats[3] = float(np.clip((price - vah) / TICK_SIZE / 50.0, -1.0, 1.0))
-        feats[4] = float(np.clip((price - val) / TICK_SIZE / 50.0, -1.0, 1.0))
-        sp_count = len(volume_profile.single_prints) if volume_profile.single_prints else 0
-        feats[5] = min(float(sp_count) / 20.0, 1.0)
+        feats[2] = float(np.clip(abs(price - poc) / TICK_SIZE / 200.0, 0.0, 1.0))
+        feats[3] = float(np.clip((price - vah) / TICK_SIZE / 200.0, -1.0, 1.0))
+        feats[4] = float(np.clip((price - val) / TICK_SIZE / 200.0, -1.0, 1.0))
+        va_width = max(vah - val, 0.0)
+        feats[5] = float(np.clip(va_width / TICK_SIZE / 400.0, 0.0, 1.0))
 
     # --- IB Range (feats 6-8) ---
     ib_high: float | None = None
@@ -94,10 +94,11 @@ def extract_structure_features(
     daily_range_pct = float(ctx.get("daily_range_pct", 0.5))
     price_in_va_bool = feats[1] > 0.5  # from above
 
-    if daily_range_pct > 0.75:
-        feats[9] = 1.0   # trend day
-    elif daily_range_pct < 0.4 and price_in_va_bool:
-        feats[10] = 1.0  # range day
+    # NQ daily_range_pct is (high-low)/price, typically 0.005-0.03
+    if daily_range_pct > 0.02:
+        feats[9] = 1.0   # trend day (~500pt NQ range)
+    elif daily_range_pct < 0.008 and price_in_va_bool:
+        feats[10] = 1.0  # range day (~200pt NQ range + inside VA)
     else:
         feats[11] = 1.0  # neutral
 
@@ -108,7 +109,8 @@ def extract_structure_features(
     session_volume_pct = float(ctx.get("session_volume_pct", 0.5))
     feats[13] = min(max(session_volume_pct, 0.0), 1.0)
 
-    feats[14] = min(max(daily_range_pct, 0.0), 1.0)
+    # NQ daily range is typically 0.005-0.03 of price; rescale to fill 0-1
+    feats[14] = float(np.clip(daily_range_pct / 0.03, 0.0, 1.0))
 
     minute_of_day = float(ctx.get("minute_of_day", 0))
     angle = 2.0 * math.pi * minute_of_day / 1440.0
