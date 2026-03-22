@@ -13,8 +13,9 @@ from datetime import datetime, timezone
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
-from ..db.models import Event, SpecialOdds
+from ..db.models import Event, Odds, SpecialOdds
 from ..matching.normalizer import normalize_team_name
+from .devig import get_fair_odds_for_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -180,9 +181,84 @@ def _match_boosts_to_events(specials: list[dict], db: Session) -> int:
     return matched
 
 
+def _fill_pinnacle_proxy_odds(specials: list[dict], db: Session) -> int:
+    """Synthesize original_odds from Pinnacle fair odds for boosts missing them.
+
+    Only applies to single-leg match winner bets where the boost event
+    matched a Pinnacle event and we can identify the outcome from the title.
+    """
+    from ..analysis.llm_enrichment import _detect_legs_from_title
+
+    needs_proxy = [
+        s for s in specials
+        if not s.get("original_odds")
+        and s.get("matched_event_id")
+        and _detect_legs_from_title(s.get("title", "")) == 1
+    ]
+    if not needs_proxy:
+        return 0
+
+    event_ids = list({s["matched_event_id"] for s in needs_proxy})
+    events = db.query(Event).filter(Event.id.in_(event_ids)).all()
+    event_map = {ev.id: ev for ev in events}
+
+    pinnacle_odds = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id.in_(event_ids),
+            Odds.provider_id == "pinnacle",
+            Odds.market.in_(["1x2", "moneyline"]),
+        )
+        .all()
+    )
+    odds_by_event: dict[str, dict[str, float]] = {}
+    for o in pinnacle_odds:
+        odds_by_event.setdefault(o.event_id, {})[o.outcome] = o.odds
+
+    count = 0
+    for s in needs_proxy:
+        eid = s["matched_event_id"]
+        market_odds = odds_by_event.get(eid)
+        if not market_odds or len(market_odds) < 2:
+            continue
+
+        ev = event_map.get(eid)
+        if not ev or not ev.home_team or not ev.away_team:
+            continue
+
+        title_lower = s.get("title", "").lower()
+        home_lower = ev.home_team.lower()
+        away_lower = ev.away_team.lower()
+
+        outcome = None
+        if home_lower in title_lower and away_lower not in title_lower:
+            outcome = "home"
+        elif away_lower in title_lower and home_lower not in title_lower:
+            outcome = "away"
+
+        if not outcome or outcome not in market_odds:
+            continue
+
+        fair_odds = get_fair_odds_for_outcome(outcome, market_odds)
+        if fair_odds and fair_odds > 1.0:
+            s["original_odds"] = round(fair_odds, 3)
+            count += 1
+
+    return count
+
+
 def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
     """Compute boost edge and cross-reference boost events with Events table."""
-    # Boost edge: boosted_odds / original_odds - 1
+    # 1. Cross-reference with Events table FIRST (sets matched_event_id)
+    matched = _match_boosts_to_events(specials, db)
+    logger.info(f"Event matching: {matched}/{len(specials)} boosts matched to events")
+
+    # 2. Synthesize original_odds from Pinnacle for providers that don't expose them
+    proxy_count = _fill_pinnacle_proxy_odds(specials, db)
+    if proxy_count:
+        logger.info(f"Pinnacle proxy: {proxy_count} boosts got synthesized original_odds")
+
+    # 3. Boost edge: boosted_odds / original_odds - 1
     count = 0
     for s in specials:
         boosted = s.get("boosted_odds")
@@ -192,10 +268,6 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
             s["is_positive_ev"] = s["edge_pct"] > 0
             count += 1
     logger.info(f"Boost edge: {count}/{len(specials)} computed (boosted/original)")
-
-    # Cross-reference with Events table for accurate event_time + matched_event_id
-    matched = _match_boosts_to_events(specials, db)
-    logger.info(f"Event matching: {matched}/{len(specials)} boosts matched to events")
 
     return specials
 
