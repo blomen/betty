@@ -19,8 +19,6 @@ def extract_boost_features(
     original_odds: float, boosted_odds: float,
     provider: str, hours_to_event: float = 0.0,
     llm_reasoning_length: int = 0,
-    brave_results_count: int = 0,
-    legs_matched_ratio: float = 0.0,
     day_of_week: int = 0,
 ) -> dict:
     boost_margin = (boosted_odds - original_odds) / original_odds if original_odds > 0 else 0
@@ -38,13 +36,11 @@ def extract_boost_features(
         "num_legs": num_legs,
         "has_pinnacle_match": int(has_pinnacle_match),
         "pinnacle_implied_prob": pinnacle_implied_prob or 0.0,
-        "legs_matched_ratio": legs_matched_ratio,
         "original_odds": original_odds,
         "boosted_odds": boosted_odds,
         "boost_margin": boost_margin,
         "hours_to_event": hours_to_event,
         "llm_reasoning_length": llm_reasoning_length,
-        "brave_results_count": brave_results_count,
         "keyword_anytime_scorer": keyword_anytime_scorer,
         "keyword_both_teams": keyword_both_teams,
         "keyword_over": keyword_over,

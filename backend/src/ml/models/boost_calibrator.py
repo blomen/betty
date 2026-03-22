@@ -17,9 +17,8 @@ FEATURE_NAMES = [
     "llm_raw_probability", "llm_confidence",
     "boost_type_single", "boost_type_combo", "sport",
     "num_legs", "has_pinnacle_match", "pinnacle_implied_prob",
-    "legs_matched_ratio", "original_odds", "boosted_odds",
+    "original_odds", "boosted_odds",
     "boost_margin", "hours_to_event", "llm_reasoning_length",
-    "brave_results_count",
     "keyword_anytime_scorer", "keyword_both_teams", "keyword_over",
     "day_of_week",
 ]
@@ -65,6 +64,7 @@ class BoostCalibratorModel:
                 "isotonic_model": self.isotonic_model,
                 "lgbm_model": self.lgbm_model,
                 "feature_names": self.feature_names,
+                "feature_count": len(self.feature_names),
                 "task": "calibration",
             }, file_path)
         except ImportError:
@@ -77,6 +77,14 @@ class BoostCalibratorModel:
         }
 
     def predict(self, features: dict) -> float | None:
+        if len(self.feature_names) != len(FEATURE_NAMES):
+            logger.warning(
+                f"Boost calibrator model has {len(self.feature_names)} features "
+                f"but current FEATURE_NAMES has {len(FEATURE_NAMES)}. Discarding stale model."
+            )
+            self.isotonic_model = None
+            self.lgbm_model = None
+            return None
         if self.isotonic_model is None:
             return None
         try:
