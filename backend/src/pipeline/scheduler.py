@@ -35,6 +35,7 @@ class ProviderSchedule:
     consecutive_failures: int = 0
     revival_attempts: int = 0
     reviving: bool = False
+    stagger_delay: int = 0  # Seconds to wait before first run (prevents write stampede)
 
 
 # Import update_provider_state (created in Task 3 — stub if not available yet)
@@ -81,6 +82,10 @@ class ExtractionScheduler:
         self._provider_locks: dict[str, asyncio.Lock] = {}
         # Browser lock: only 1 browser extraction at a time (FIFO guaranteed)
         self._browser_lock = asyncio.Lock()
+        # DB write lock: SQLite supports only one writer at a time (even with WAL).
+        # Serialize all soft extractions so concurrent commits don't block each other
+        # and freeze the event loop. Sharp bypasses this lock for priority scheduling.
+        self._db_write_lock = asyncio.Lock()
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
         # Sharp-ready gate: soft providers wait for sharp's first run before starting.
@@ -194,9 +199,9 @@ class ExtractionScheduler:
                 result = session.query(func.max(Odds.updated_at)).filter(
                     Odds.provider_id.in_(provider_ids)
                 ).scalar()
-                # SQLite stores naive datetimes — make timezone-aware for arithmetic
+                # SQLite stores naive datetimes in LOCAL time — convert to UTC
                 if result and result.tzinfo is None:
-                    result = result.replace(tzinfo=timezone.utc)
+                    result = result.astimezone(timezone.utc)
                 return result
         except Exception as e:
             logger.warning(f"[Scheduler] Could not check last extraction time: {e}")
@@ -221,7 +226,9 @@ class ExtractionScheduler:
                 if row:
                     result = row if isinstance(row, datetime) else datetime.fromisoformat(str(row))
                     if result.tzinfo is None:
-                        result = result.replace(tzinfo=timezone.utc)
+                        # SQLite stores naive datetimes in LOCAL time.
+                        # Interpret as local then convert to UTC for correct arithmetic.
+                        result = result.astimezone(timezone.utc)
                     return result
 
                 # Fallback: check Odds.updated_at (for providers without extraction_runs)
@@ -240,6 +247,14 @@ class ExtractionScheduler:
                 logger.info(f"[Scheduler:{schedule.provider_id}] Sharp ready, starting extraction")
             except asyncio.TimeoutError:
                 logger.warning(f"[Scheduler:{schedule.provider_id}] Sharp timeout (120s), starting anyway")
+
+        # Stagger start to avoid all soft providers hitting SQLite simultaneously
+        if schedule.stagger_delay > 0:
+            logger.info(f"[Scheduler:{schedule.provider_id}] Staggering start by {schedule.stagger_delay}s")
+            try:
+                await asyncio.sleep(schedule.stagger_delay)
+            except asyncio.CancelledError:
+                return
 
         # On startup, check if the last extraction RUN completed successfully.
         # Uses extraction_runs.end_time (not Odds.updated_at) to avoid treating
@@ -280,11 +295,16 @@ class ExtractionScheduler:
             start = datetime.now(timezone.utc)
             try:
                 async with self._provider_locks[schedule.provider_id]:
-                    if schedule.category == "browser_soft":
-                        async with self._browser_lock:
-                            results = await self._run_provider_extraction(schedule)
-                    else:
+                    if schedule.category == "sharp":
+                        # Sharp bypasses _db_write_lock for priority scheduling
                         results = await self._run_provider_extraction(schedule)
+                    elif schedule.category == "browser_soft":
+                        async with self._db_write_lock:
+                            async with self._browser_lock:
+                                results = await self._run_provider_extraction(schedule)
+                    else:
+                        async with self._db_write_lock:
+                            results = await self._run_provider_extraction(schedule)
 
                 schedule.last_completed = datetime.now(timezone.utc)
                 schedule.last_duration = (schedule.last_completed - start).total_seconds()
@@ -335,21 +355,47 @@ class ExtractionScheduler:
         logger.info(f"[Scheduler:{schedule.provider_id}] Loop stopped (running={schedule.running})")
 
     async def _run_provider_extraction(self, schedule: ProviderSchedule) -> dict:
-        """Run extraction for a single provider schedule."""
+        """Run extraction for a single provider schedule.
+
+        Sharp runs on the main event loop for lowest latency.
+        Soft providers run in a separate thread so their synchronous
+        session.commit() calls don't block the main event loop (which
+        would freeze the API and prevent sharp from cycling on time).
+        """
         from src.pipeline.orchestrator import ExtractionPipeline
 
         providers = schedule.providers or [schedule.provider_id]
         update_provider_state(schedule.provider_id, {"running": True, "category": schedule.category})
 
-        pipeline = ExtractionPipeline()
-        try:
-            results = await pipeline.run(providers=providers, tier_name=schedule.category)
-            return results
-        finally:
+        if schedule.category == "sharp":
+            # Sharp runs on main loop — fast, no long DB transactions
+            pipeline = ExtractionPipeline()
             try:
-                pipeline.session.close()
-            except Exception:
-                pass
+                return await pipeline.run(providers=providers, tier_name=schedule.category)
+            finally:
+                try:
+                    pipeline.session.close()
+                except Exception:
+                    pass
+        else:
+            # Soft providers run in a dedicated thread with their own event loop
+            # so synchronous SQLite commits don't freeze the main event loop.
+            def _run_in_thread():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                pipeline = ExtractionPipeline()
+                try:
+                    return loop.run_until_complete(
+                        pipeline.run(providers=providers, tier_name=schedule.category)
+                    )
+                finally:
+                    try:
+                        pipeline.session.close()
+                    except Exception:
+                        pass
+                    loop.close()
+
+            return await asyncio.to_thread(_run_in_thread)
 
     def stop_provider(self, provider_id: str):
         """Stop a specific provider schedule."""
@@ -443,11 +489,13 @@ class ExtractionScheduler:
                 await self._start_schedule(schedule)
             else:
                 # One schedule per provider (independent loops)
-                for provider_id in providers:
+                # Stagger starts by 10s to avoid a write stampede on SQLite
+                for i, provider_id in enumerate(providers):
                     schedule = ProviderSchedule(
                         provider_id=provider_id,
                         category=category_name,
                         interval_seconds=interval_seconds,
+                        stagger_delay=i * 10,
                     )
                     await self._start_schedule(schedule)
 
