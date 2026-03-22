@@ -286,6 +286,14 @@ class BetService:
         except Exception as e:
             logger.warning(f"Postmortem compute failed for bet {bet_id}: {e}")
 
+        # Resolve ML feature outcomes for boost bets (M4 calibrator training data)
+        if bet.bet_type == "boost" and bet.outcome:
+            try:
+                from src.ml.feature_store import resolve_boost_outcomes
+                resolve_boost_outcomes(self.db, bet.outcome)
+            except Exception as e:
+                logger.warning(f"Boost outcome resolution failed for bet {bet_id}: {e}")
+
         return {
             "success": True,
             "profit": bet.profit,
