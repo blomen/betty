@@ -30,6 +30,7 @@ LLM_MODEL = "claude-haiku-4-5-20251001"
 LLM_MAX_TOKENS = 1024
 MAX_CONCURRENT_LLM = 10
 MAX_BOOSTS_PER_RUN = 500
+CACHE_TTL_HOURS = 48
 
 
 # ── LLM health status (surfaced to frontend) ─────────────────────────
@@ -76,6 +77,7 @@ def _load_cache_from_db(db: Session) -> dict[str, dict]:
             "llm_reasoning": r.llm_reasoning,
             "llm_confidence": r.llm_confidence,
             "llm_event_time": getattr(r, "llm_event_time", None),
+            "created_at": r.created_at,
         }
     logger.debug(f"Loaded {len(cache)} LLM results from persistent cache")
     return cache
@@ -133,10 +135,23 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
     """Apply cached LLM data to matching specials. Returns (count, list of used keys)."""
     count = 0
     used_keys = []
+    now = datetime.now(timezone.utc)
     for s in specials:
         key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0), s.get("event", ""))
         prev = cache.get(key)
         if prev and prev.get("llm_probability"):
+            # TTL check — skip stale entries so they get re-researched
+            created_str = prev.get("created_at")
+            if created_str:
+                try:
+                    created_dt = datetime.fromisoformat(created_str)
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    age_hours = (now - created_dt).total_seconds() / 3600
+                    if age_hours > CACHE_TTL_HOURS:
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Can't parse — carry forward anyway
             probability = prev["llm_probability"]
             fair_odds = round(1 / probability, 3) if probability > 0 else None
             boosted_odds = s.get("boosted_odds", 0)
