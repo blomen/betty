@@ -212,11 +212,27 @@ class MirrorService:
                     info["odds"] = sels[0].get("odds")
             return info
 
-        # --- Kambi (coupon.json, player/api) ---
-        if "coupon" in url_lower and ("kambi" in url_lower or "unibet" in url_lower or ".json" in url_lower):
-            info["confirmation_id"] = str(body.get("couponId", body.get("id", "")))
-            info["odds"] = body.get("odds")
-            info["stake"] = body.get("stake")
+        # --- Kambi (coupon.json) ---
+        if "coupon" in url_lower and "kambi" in url_lower:
+            coupon = body.get("coupon", body)
+            info["confirmation_id"] = str(coupon.get("couponRef", ""))
+            # Kambi uses integer milliodds (1840 = 1.84) and centistake (140000 = 1400.00)
+            bets = coupon.get("bets", [])
+            if bets:
+                info["odds"] = bets[0].get("betOdds", 0) / 1000
+                info["stake"] = bets[0].get("stake", 0) / 100
+            events = coupon.get("events", [])
+            if events:
+                e = events[0]
+                info["event_name"] = e.get("eventName", "")
+                info["home_team"] = e.get("homeName")
+                info["away_team"] = e.get("awayName")
+            outcomes = coupon.get("outcomes", [])
+            if outcomes:
+                info["outcome"] = outcomes[0].get("label", "")
+            bet_offers = coupon.get("betOffers", [])
+            if bet_offers:
+                info["market"] = bet_offers[0].get("criterion", "")
             return info
 
         # --- Generic fallback: scan for common field names ---
@@ -372,10 +388,26 @@ class MirrorService:
             pass
         return None
 
+    # Kambi operator codes in API paths → provider ID
+    _KAMBI_OPERATOR_MAP = {
+        "ubse": "unibet",
+        "ubdk": "unibet",
+        "ubno": "unibet",
+        "ubfi": "unibet",
+        "888se": "888sport",
+        "888dk": "888sport",
+        "leose": "leovegas",
+        "expse": "expekt",
+        "speedyse": "speedybet",
+        "x3000se": "x3000",
+        "gbse": "goldenbull",
+        "1x2se": "1x2",
+    }
+
     def _detect_provider(self, url: str) -> str:
-        """Best-effort provider detection from URL domain."""
+        """Best-effort provider detection from URL domain or path."""
         url_lower = url.lower()
-        # Known Gecko V2 / Betsson Group domains
+        # Direct domain matches
         domain_map = {
             "spelklubben": "spelklubben",
             "betsson": "betsson",
@@ -385,10 +417,32 @@ class MirrorService:
             "quickcasino": "quickcasino",
             "comeon": "comeon",
             "pinnacle": "pinnacle",
+            "unibet": "unibet",
+            "888sport": "888sport",
+            "leovegas": "leovegas",
+            "expekt": "expekt",
+            "campobet": "campobet",
+            "betinia": "betinia",
+            "lodur": "lodur",
+            "swiper": "swiper",
+            "dbet": "dbet",
         }
         for keyword, provider_id in domain_map.items():
             if keyword in url_lower:
                 return provider_id
+
+        # Kambi operator code in URL path (e.g. /ubse/coupon.json)
+        if "kambi" in url_lower:
+            for code, provider_id in self._KAMBI_OPERATOR_MAP.items():
+                if f"/{code}/" in url_lower:
+                    return provider_id
+
+        # Altenar shared gateway — check for integration in URL params
+        if "altenar" in url_lower or "biahosted" in url_lower:
+            for keyword in self._KNOWN_PROVIDERS:
+                if keyword in url_lower:
+                    return keyword
+
         return "unknown"
 
     def _process_bet_sync(
