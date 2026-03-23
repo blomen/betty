@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -199,19 +200,19 @@ async def list_bets(
 
     # Pre-fetch current provider odds for pending bets (for live ODDS column)
     pending_lookups = [
-        (b.event_id, b.provider_id, b.market, b.outcome)
+        (b.event_id, b.provider_id)
         for b in bets
-        if b.result == "pending" and b.event_id and b.market and b.outcome
+        if b.result == "pending" and b.event_id
     ]
     # (event_id, provider_id, market, outcome, point) -> current odds
     current_odds_map: dict[tuple, float] = {}
     if pending_lookups:
-        provider_ids = list({t[1] for t in pending_lookups})
+        # Only fetch odds for the specific (event_id, provider_id) pairs we need
+        pending_pairs = list(set(pending_lookups))
         provider_rows = (
             db.query(Odds)
             .filter(
-                Odds.event_id.in_(event_ids),
-                Odds.provider_id.in_(provider_ids),
+                tuple_(Odds.event_id, Odds.provider_id).in_(pending_pairs),
             )
             .all()
         )
@@ -255,10 +256,8 @@ async def list_bets(
         # For settled bets, fall back to stored values
         if edge_pct is None and placed_edge_pct is not None:
             edge_pct = placed_edge_pct
-        if sel_prob is None and b.selection_probability:
-            sel_prob = b.selection_probability
 
-        # Selection probability from stored fair odds if not already set
+        # Fair win probability from stored fair odds at placement
         if sel_prob is None and b.fair_odds_at_placement and b.fair_odds_at_placement > 1.0:
             sel_prob = round(1.0 / b.fair_odds_at_placement, 4)
 

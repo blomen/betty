@@ -279,20 +279,8 @@ class BetService:
             except Exception:
                 pass  # Non-critical — planner cache will expire naturally
 
-        # Compute postmortem (synchronous, non-critical)
-        try:
-            from .postmortem_service import PostmortemService
-            PostmortemService(self.db).compute_bet(bet)
-        except Exception as e:
-            logger.warning(f"Postmortem compute failed for bet {bet_id}: {e}")
-
-        # Resolve ML feature outcomes for boost bets (M4 calibrator training data)
-        if bet.bet_type == "boost" and bet.outcome:
-            try:
-                from src.ml.feature_store import resolve_boost_outcomes
-                resolve_boost_outcomes(self.db, bet.outcome)
-            except Exception as e:
-                logger.warning(f"Boost outcome resolution failed for bet {bet_id}: {e}")
+        # Schedule postmortem + ML resolution in background (non-blocking)
+        self._schedule_post_settlement(bet_id, bet.bet_type, bet.outcome)
 
         return {
             "success": True,
@@ -301,6 +289,33 @@ class BetService:
             "clv_pct": clv_pct,
             "bonus_wagering": wagering_status if wagering_status and wagering_status.get("status") in ("in_progress", "trigger_needed") else None,
         }
+
+    @staticmethod
+    def _schedule_post_settlement(bet_id: int, bet_type: str | None, outcome: str | None):
+        """Run postmortem + ML resolution in a background thread with a fresh DB session."""
+        import threading
+
+        def _run():
+            from ..db.models import get_session
+            db = get_session()
+            try:
+                from .postmortem_service import PostmortemService
+                bet = db.query(Bet).get(bet_id)
+                if bet:
+                    PostmortemService(db).compute_bet(bet)
+
+                if bet_type == "boost" and outcome:
+                    from src.ml.feature_store import resolve_boost_outcomes
+                    resolve_boost_outcomes(db, outcome)
+
+                db.commit()
+            except Exception as e:
+                logger.warning(f"Post-settlement background task failed for bet {bet_id}: {e}")
+                db.rollback()
+            finally:
+                db.close()
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _calculate_clv(self, bet: Bet) -> float | None:
         """

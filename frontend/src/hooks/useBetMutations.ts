@@ -85,6 +85,7 @@ export function useBetMutations() {
           };
         });
         queryClient.invalidateQueries({ queryKey: ['bankroll', 'stats'] });
+        queryClient.invalidateQueries({ queryKey: ['bankroll', 'info'] });
         queryClient.invalidateQueries({ queryKey: ['bankroll', 'exposure'] });
       } else if (data.odds !== undefined || data.stake !== undefined) {
         queryClient.setQueryData<BetsResponse>(['bets', 'pending'], (old) => {
@@ -99,7 +100,11 @@ export function useBetMutations() {
           };
         });
       }
-      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      // Only invalidate specific bet queries — avoid broad ['bets'] which
+      // triggers refetches on every page (ValuePage, DutchPage, StatsPage, etc.)
+      // BetsPage handles its own refresh via manual fetchBets() calls.
+      queryClient.invalidateQueries({ queryKey: ['bets', 'pending'] });
+      queryClient.invalidateQueries({ queryKey: ['bets', 'all'] });
     },
   });
 
