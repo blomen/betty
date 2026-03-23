@@ -69,10 +69,9 @@ class MirrorService:
             logger.debug(f"[mirror] Could not parse event data: {e}")
 
     async def _handle_bet_history(self, url: str, response_body: str, request_body: str | None = None):
-        """Store bet history responses as traces for future settlement.
+        """Auto-settle pending bets from bet history responses.
 
-        Passively captures Altenar widgetBetHistory data.
-        Status codes: 1=won, 2=lost, 3=void/cancelled, 4=cashout.
+        Altenar status codes: 1=won, 2=lost, 3=void/cancelled, 4=cashout.
         """
         try:
             data = json.loads(response_body)
@@ -86,32 +85,152 @@ class MirrorService:
         provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
         logger.info(f"[mirror] Bet history intercepted: {len(bets)} bets from {provider_id}")
 
+        settled = await asyncio.to_thread(self._settle_from_history_sync, bets, provider_id)
+        if settled:
+            logger.info(f"[mirror] Auto-settled {settled} bet(s) from {provider_id}")
+
+        # Also store trace for audit
         await asyncio.to_thread(
             self._store_trace_sync, provider_id, url, request_body, response_body, "history"
         )
 
+    def _settle_from_history_sync(self, history_bets: list[dict], provider_id: str) -> int:
+        """Match Altenar bet history entries against pending bets and settle them."""
+        STATUS_MAP = {1: "won", 2: "lost", 3: "void", 4: "cashout"}
+
+        db = get_session()
+        settled_count = 0
+        try:
+            pending = db.query(Bet).filter(
+                Bet.result == "pending",
+                Bet.provider_id == provider_id,
+            ).all()
+            if not pending:
+                return 0
+
+            for hb in history_bets:
+                result = STATUS_MAP.get(hb.get("status"))
+                if not result:
+                    continue
+
+                stake = float(hb.get("totalStake", 0))
+                odds = float(hb.get("totalOdds", 0))
+                payout = float(hb.get("totalWin", 0))
+                event_name = hb.get("eventName", "")
+
+                matched_bet = None
+                for bet in pending:
+                    if bet.result != "pending":
+                        continue
+                    if abs(bet.stake - stake) > 0.01:
+                        continue
+                    if abs(bet.odds - odds) > 0.01:
+                        continue
+                    matched_bet = bet
+                    break
+
+                if not matched_bet:
+                    continue
+
+                bet_service = BetService(db)
+                bet_service.settle_bet(matched_bet.id, result, payout)
+                pending.remove(matched_bet)
+                settled_count += 1
+                logger.info(
+                    f"[mirror] Settled bet #{matched_bet.id}: {event_name} → "
+                    f"{result} (payout={payout})"
+                )
+                self._notify("bet_settled", {
+                    "bet_id": matched_bet.id, "event": event_name,
+                    "result": result, "payout": payout,
+                })
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[mirror] Error settling bets: {e}", exc_info=True)
+        finally:
+            db.close()
+        return settled_count
+
     async def _handle_financial_data(self, url: str, response_body: str):
-        """Store balance/deposit/withdraw data as traces."""
+        """Auto-sync balance from intercepted financial data."""
         try:
             data = json.loads(response_body)
         except json.JSONDecodeError:
             return
 
         provider_id = self._detect_provider(url)
+        if provider_id == "unknown":
+            return
 
-        # Classify the trace type
-        url_lower = url.lower()
-        if "balance" in url_lower or "wallets" in url_lower:
-            trace_type = "balance"
-        elif "payment-stats" in url_lower:
-            trace_type = "payment_stats"
-        else:
-            trace_type = "financial"
+        balance = self._extract_balance(provider_id, data)
+        if balance is not None:
+            await asyncio.to_thread(self._sync_balance, provider_id, balance)
 
-        logger.info(f"[mirror] Financial data intercepted: {trace_type} from {provider_id}")
+        # Store trace for audit
         await asyncio.to_thread(
-            self._store_trace_sync, provider_id, url, None, response_body, trace_type
+            self._store_trace_sync, provider_id, url, None, response_body, "balance"
         )
+
+    def _extract_balance(self, provider_id: str, data: dict) -> float | None:
+        """Extract cash balance from provider-specific response format."""
+        try:
+            # Kambi / Unibet: {"balance": {"cash": 384.10, ...}}
+            if "balance" in data and isinstance(data["balance"], dict):
+                bal = data["balance"]
+                if "cash" in bal:
+                    return float(bal["cash"])
+                if "total" in bal:
+                    return float(bal["total"])
+
+            # Altenar (quickcasino, betinia, etc.):
+            # {"result": {"cash": {"total": 243.5, ...}}}
+            result = data.get("result", {})
+            if isinstance(result, dict) and "cash" in result:
+                cash = result["cash"]
+                if isinstance(cash, dict):
+                    return float(cash.get("total", cash.get("available", 0)))
+                return float(cash)
+
+            # Gecko V2 / Spelklubben:
+            # {"Balances": {"SEK": {"Real": {"Balance": 1087.14}}}}
+            balances = data.get("Balances", {})
+            for currency, parts in balances.items():
+                if isinstance(parts, dict):
+                    real = parts.get("Real", parts.get("Total", {}))
+                    if isinstance(real, dict) and "Balance" in real:
+                        return float(real["Balance"])
+
+        except (TypeError, ValueError, KeyError) as e:
+            logger.debug(f"[mirror] Could not extract balance for {provider_id}: {e}")
+        return None
+
+    def _sync_balance(self, provider_id: str, balance: float):
+        """Update profile balance for the given provider."""
+        from ..repositories.profile_repo import ProfileRepo
+
+        db = get_session()
+        try:
+            repo = ProfileRepo(db)
+            profile = repo.get_active()
+            old_balance = repo.get_balance(profile.id, provider_id)
+            repo.set_balance(profile.id, provider_id, balance)
+            db.commit()
+            if abs((old_balance or 0) - balance) > 0.01:
+                logger.info(
+                    f"[mirror] Balance synced: {provider_id} "
+                    f"{old_balance:.2f} → {balance:.2f} SEK"
+                )
+                self._notify("balance_synced", {
+                    "provider": provider_id,
+                    "balance": balance,
+                    "previous": old_balance,
+                })
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[mirror] Balance sync failed for {provider_id}: {e}")
+        finally:
+            db.close()
 
     async def _handle_bet_response(
         self, url: str, request_body: str | None, response_body: str, page_url: str | None = None
