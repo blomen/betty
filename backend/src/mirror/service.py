@@ -145,6 +145,8 @@ class MirrorService:
                     "result": result, "payout": payout,
                 })
 
+            if settled_count:
+                db.commit()
         except Exception as e:
             db.rollback()
             logger.error(f"[mirror] Error settling bets: {e}", exc_info=True)
@@ -488,10 +490,15 @@ class MirrorService:
         except Exception as e:
             logger.error(f"[mirror] Gecko API enrichment failed for gecko_id={gecko_id}: {e}", exc_info=True)
 
-    _KNOWN_PROVIDERS = (
-        "spelklubben", "betsson", "betsafe", "nordicbet",
-        "hajper", "quickcasino", "comeon", "pinnacle", "campobet",
-    )
+    # Altenar integration codes → our provider IDs
+    _ALTENAR_INTEGRATION_MAP = {
+        "campose": "campobet",
+        "quickcasinose": "quickcasino",
+        "betiniase2": "betinia",
+        "lodurse": "lodur",
+        "dbetse": "dbet",
+        "swiperse": "swiper",
+    }
 
     def _detect_provider_from_request(self, request_body: str | None) -> str | None:
         """Extract provider from Altenar integration field in request body."""
@@ -500,9 +507,14 @@ class MirrorService:
         try:
             req = json.loads(request_body)
             integration = req.get("integration", "").lower()
-            for keyword in self._KNOWN_PROVIDERS:
-                if keyword in integration:
-                    return keyword
+            if integration:
+                # Exact match first
+                if integration in self._ALTENAR_INTEGRATION_MAP:
+                    return self._ALTENAR_INTEGRATION_MAP[integration]
+                # Fuzzy fallback — check if any known provider name is a substring
+                for keyword in self._ALTENAR_INTEGRATION_MAP.values():
+                    if keyword in integration:
+                        return keyword
         except (json.JSONDecodeError, Exception):
             pass
         return None
