@@ -11,7 +11,8 @@ from typing import Callable
 
 from ..factory import ExtractorFactory
 from sqlalchemy import func
-from ..db.models import get_session, Event, Odds, Provider
+from datetime import datetime, timedelta
+from ..db.models import get_session, Event, Odds, Provider, DeferredEvent
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
 from ..constants import SHARP_PROVIDERS, ALLOWED_SPORTS, PROVIDER_CANONICAL
@@ -67,6 +68,75 @@ class ExtractionPipeline:
         """Get set of sports with cached events (thread-safe)."""
         async with self._cache_lock:
             return set(self.event_cache.keys())
+
+    def resolve_deferred(self):
+        """Resolve deferred events against fresh Pinnacle data.
+
+        Called after Pinnacle extraction + cache warm-up. Attempts to match
+        buffered soft provider events that previously had no Pinnacle match.
+        """
+        now = datetime.utcnow()
+        sharp_sports = set(self.event_cache.keys())
+
+        if not sharp_sports:
+            return 0, 0
+
+        deferred = self.session.query(DeferredEvent).filter(
+            DeferredEvent.start_time > now,
+            DeferredEvent.sport.in_(sharp_sports),
+        ).all()
+
+        if not deferred:
+            # Cleanup expired only
+            expired = self.session.query(DeferredEvent).filter(
+                (DeferredEvent.start_time <= now)
+                | (DeferredEvent.created_at < now - timedelta(hours=6))
+            ).delete()
+            if expired:
+                self.session.commit()
+            return 0, expired
+
+        recovered = 0
+        fm = self.orchestrator_config.fuzzy_match
+
+        for de in deferred:
+            event = de.to_standard_event()
+            is_new, odds_processed, _ = store_provider_event(
+                self.session,
+                event,
+                de.provider_id,
+                event_cache=self.event_cache,
+                fuzzy_threshold=fm.threshold,
+                min_individual_score=fm.min_individual_score,
+                prefix_filter_length=fm.prefix_filter_length,
+                require_match=True,
+                sharp_odds_cache=self._sharp_odds_cache,
+                max_asymmetry_diff=fm.max_asymmetry_diff,
+                min_for_asymmetry_check=fm.min_for_asymmetry_check,
+                date_index=self.event_cache_by_date,
+            )
+
+            if is_new or odds_processed > 0:
+                self.session.delete(de)
+                recovered += 1
+            else:
+                de.attempt_count += 1
+
+        # Cleanup expired or stale (>6 hours)
+        expired = self.session.query(DeferredEvent).filter(
+            (DeferredEvent.start_time <= now)
+            | (DeferredEvent.created_at < now - timedelta(hours=6))
+        ).delete()
+
+        self.session.commit()
+
+        if recovered or expired:
+            logger.info(
+                f"Deferred resolution: {recovered} recovered, "
+                f"{expired} expired, {len(deferred) - recovered} still pending"
+            )
+
+        return recovered, expired
 
     async def clear_cache(self):
         """Clear the event cache (thread-safe)."""
@@ -593,6 +663,11 @@ class ExtractionPipeline:
 
                 # Pre-warm shared Pinnacle caches (eliminates thousands of per-event DB queries)
                 self._pre_warm_pinnacle_caches()
+
+                # Resolve deferred events against fresh Pinnacle data
+                recovered, expired = self.resolve_deferred()
+                if recovered:
+                    log_progress(f"Recovered {recovered} deferred events after Pinnacle refresh")
 
             # Extract from Polymarket (will fuzzy match against Pinnacle events)
             if polymarket:

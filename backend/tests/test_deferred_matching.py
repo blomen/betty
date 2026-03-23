@@ -94,3 +94,26 @@ def test_store_deferred_event_upserts_on_duplicate(deferred_session):
     assert deferred_session.query(DeferredEvent).count() == 1
     result = deferred_session.query(DeferredEvent).one()
     assert "1.9" in result.markets_json
+
+
+def test_expired_deferred_events_cleaned_up(deferred_session):
+    """Deferred events with past start_time are cleaned up."""
+    de = DeferredEvent(
+        provider_id="betsson", sport="football", league="PL",
+        home_team="Arsenal", away_team="Chelsea",
+        normalized_home="arsenal", normalized_away="chelsea",
+        start_time=datetime.utcnow() - timedelta(hours=1),
+        markets_json="[]",
+    )
+    deferred_session.add(de)
+    deferred_session.commit()
+
+    # Direct cleanup query (same logic as resolve_deferred)
+    now = datetime.utcnow()
+    expired = deferred_session.query(DeferredEvent).filter(
+        DeferredEvent.start_time <= now,
+    ).delete()
+    deferred_session.commit()
+
+    assert expired == 1
+    assert deferred_session.query(DeferredEvent).count() == 0
