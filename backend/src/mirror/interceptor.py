@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class BetInterceptor:
     """Manages a headed Playwright browser that intercepts bet placements."""
 
-    # Bet placement URL patterns — platform-agnostic
+    # Bet placement URL patterns — platform-agnostic (HTTP)
     # Each tuple: (url_contains, method) — method None means any
     _BET_PLACEMENT_PATTERNS = (
         # Gecko V2 (Betsson, Spelklubben, Betsafe, NordicBet, Hajper)
@@ -29,9 +29,6 @@ class BetInterceptor:
         # Altenar (QuickCasino, ComeOn, Campobet, Betinia, LodurBet)
         ("/api/widget/placeWidget", "POST"),
         ("/api/widget/placeBet", "POST"),
-        # Kambi (Unibet, 888sport, LeoVegas, Expekt)
-        ("/player/api/v2/coupon", "POST"),
-        ("/coupon.json", "POST"),
         # SBTech / Amelco
         ("/bets/place", "POST"),
         # Pinnacle
@@ -39,10 +36,13 @@ class BetInterceptor:
         ("/v1/bets/parlay", "POST"),
     )
 
+    # WebSocket URLs to monitor for bet placement frames (Kambi etc.)
+    _WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
+
     # Bet history / settlement patterns
     _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets", "widgetBetHistory")
     # Balance / deposit / withdraw patterns
-    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats")
+    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
 
     def __init__(
         self,
@@ -95,10 +95,14 @@ class BetInterceptor:
         # Start recording
         self.recorder.start()
 
-        # Attach listener to all current and future pages
-        for page in self.context.pages:
+        # Attach HTTP + WebSocket listeners to all current and future pages
+        def _attach_page(page):
             page.on("response", self._on_response)
-        self.context.on("page", lambda page: page.on("response", self._on_response))
+            page.on("websocket", self._on_websocket)
+
+        for page in self.context.pages:
+            _attach_page(page)
+        self.context.on("page", _attach_page)
 
         self.status = "listening"
         self._started_at = datetime.now(timezone.utc)
@@ -186,6 +190,58 @@ class BetInterceptor:
 
         except Exception as e:
             logger.error(f"[mirror] Error in response listener: {e}", exc_info=True)
+
+    def _on_websocket(self, ws):
+        """WebSocket listener — monitors Kambi and similar WS-based platforms."""
+        url = ws.url
+        if not any(kw in url.lower() for kw in self._WS_MONITOR_KEYWORDS):
+            return
+
+        logger.info(f"[mirror] WebSocket connected: {url}")
+
+        def _on_frame_received(payload):
+            """Handle incoming WebSocket frame (server → client)."""
+            try:
+                if not isinstance(payload, str):
+                    return
+                # Kambi WS frames are JSON — look for coupon/bet placement responses
+                if not any(kw in payload for kw in ('"couponId"', '"placeBetResult"', '"couponStatus"',
+                                                      '"couponResponse"', '"betPlaced"', '"PLACED"')):
+                    return
+
+                logger.info(f"[mirror] WS bet frame received ({len(payload)} bytes)")
+
+                if self.on_bet_response:
+                    import asyncio
+                    asyncio.ensure_future(
+                        self.on_bet_response(url, None, payload, None)
+                    )
+            except Exception as e:
+                logger.debug(f"[mirror] WS frame error: {e}")
+
+        def _on_frame_sent(payload):
+            """Handle outgoing WebSocket frame (client → server) — captures bet requests."""
+            try:
+                if not isinstance(payload, str):
+                    return
+                if not any(kw in payload for kw in ('"placeBet"', '"placeCoupon"', '"stake"')):
+                    return
+
+                logger.info(f"[mirror] WS bet request sent ({len(payload)} bytes)")
+
+                # Store the sent frame as a trace via on_bet_response
+                # The response frame handler above will capture the confirmation
+                if self.on_bet_response:
+                    import asyncio
+                    asyncio.ensure_future(
+                        self.on_bet_response(url, payload, "{}", None)
+                    )
+            except Exception as e:
+                logger.debug(f"[mirror] WS frame send error: {e}")
+
+        ws.on("framereceived", _on_frame_received)
+        ws.on("framesent", _on_frame_sent)
+        ws.on("close", lambda: logger.debug(f"[mirror] WebSocket closed: {url}"))
 
     async def stop(self):
         """Close browser and stop recording."""
