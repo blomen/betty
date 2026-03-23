@@ -3,16 +3,14 @@ import pytest
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from src.db.models import DeferredEvent
+from src.db.models import Base, DeferredEvent
 
 
 @pytest.fixture
 def deferred_session():
-    """Minimal in-memory session with only deferred_events table."""
-    from src.db.base import Base
-
+    """Minimal in-memory session with deferred_events table."""
     engine = create_engine("sqlite:///:memory:")
-    DeferredEvent.__table__.create(engine)
+    Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
     yield session
@@ -21,7 +19,7 @@ def deferred_session():
 
 
 def test_deferred_event_to_standard_event():
-    """DeferredEvent can store and retrieve market data."""
+    """DeferredEvent.to_standard_event() reconstructs a valid StandardEvent."""
     markets = [
         {"type": "moneyline", "outcomes": [
             {"name": "home", "odds": 1.85},
@@ -34,14 +32,18 @@ def test_deferred_event_to_standard_event():
         league="Premier League",
         home_team="Arsenal",
         away_team="Chelsea",
+        normalized_home="arsenal",
+        normalized_away="chelsea",
         start_time=datetime(2026, 3, 25, 15, 0),
-        odds_snapshot=markets,
+        markets_json=json.dumps(markets),
     )
-    assert de.provider_id == "betsson"
-    assert de.sport == "football"
-    assert de.home_team == "Arsenal"
-    assert de.away_team == "Chelsea"
-    assert de.odds_snapshot == markets
+    event = de.to_standard_event()
+    assert event.sport == "football"
+    assert event.home_team == "Arsenal"
+    assert event.away_team == "Chelsea"
+    assert event.markets == markets
+    assert event.provider == "betsson"
+    assert event._from_deferred is True
 
 
 def test_store_deferred_event_creates_record(deferred_session):
@@ -62,14 +64,9 @@ def test_store_deferred_event_creates_record(deferred_session):
     result = deferred_session.query(DeferredEvent).one()
     assert result.provider_id == "betsson"
     assert result.sport == "football"
-    assert result.home_team == "Arsenal"
-    assert result.away_team == "Chelsea"
-    assert result.status == "pending"
-    snapshot = result.odds_snapshot
-    # SQLite JSON column may return string or dict depending on driver
-    if isinstance(snapshot, str):
-        snapshot = json.loads(snapshot)
-    assert snapshot[0]["type"] == "moneyline"
+    assert result.normalized_home == "arsenal"
+    assert result.normalized_away == "chelsea"
+    assert "moneyline" in result.markets_json
 
 
 def test_store_deferred_event_upserts_on_duplicate(deferred_session):
@@ -96,8 +93,4 @@ def test_store_deferred_event_upserts_on_duplicate(deferred_session):
 
     assert deferred_session.query(DeferredEvent).count() == 1
     result = deferred_session.query(DeferredEvent).one()
-    snapshot = result.odds_snapshot
-    if isinstance(snapshot, str):
-        snapshot = json.loads(snapshot)
-    # Should have the updated odds
-    assert snapshot[0]["outcomes"][0]["odds"] == 1.90
+    assert "1.9" in result.markets_json

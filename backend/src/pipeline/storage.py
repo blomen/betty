@@ -717,7 +717,8 @@ def _resolve_event_id(
 
 def _store_deferred_event(session, event: StandardEvent, provider: str):
     """Buffer an unmatched soft event for later Pinnacle matching."""
-    # Parse start_time from ISO string (same pattern as store_provider_event)
+    from ..matching.normalizer import normalize_team_name
+
     try:
         start_time = datetime.fromisoformat(event.start_time) if isinstance(event.start_time, str) else event.start_time
     except (ValueError, TypeError):
@@ -726,19 +727,20 @@ def _store_deferred_event(session, event: StandardEvent, provider: str):
     if not start_time:
         return
 
-    # Check for existing pending deferred event from same provider/sport/teams/time
+    normalized_home = normalize_team_name(event.home_team)
+    normalized_away = normalize_team_name(event.away_team)
+
     existing = session.query(DeferredEvent).filter_by(
         provider_id=provider,
         sport=event.sport,
-        home_team=event.home_team,
-        away_team=event.away_team,
+        normalized_home=normalized_home,
+        normalized_away=normalized_away,
         start_time=start_time,
-        status="pending",
     ).first()
 
     if existing:
-        existing.odds_snapshot = event.markets
-        existing.retry_count = 0  # Reset on fresh data
+        existing.markets_json = json.dumps(event.markets)
+        existing.attempt_count = 0  # Reset on fresh data
     else:
         session.add(DeferredEvent(
             provider_id=provider,
@@ -746,8 +748,10 @@ def _store_deferred_event(session, event: StandardEvent, provider: str):
             league=event.league,
             home_team=event.home_team,
             away_team=event.away_team,
+            normalized_home=normalized_home,
+            normalized_away=normalized_away,
             start_time=start_time,
-            odds_snapshot=event.markets,
+            markets_json=json.dumps(event.markets),
         ))
 
 
