@@ -3,12 +3,13 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse, unquote
 
 from ..db.models import get_session, BetTrace, Bet
 from ..services.bet_service import BetService
-from ..matching.normalizer import normalize_team_name
 from .interceptor import BetInterceptor
 from .parsers.gecko import GeckoBetParser
 
@@ -18,20 +19,23 @@ logger = logging.getLogger(__name__)
 class MirrorService:
     """Coordinates BetInterceptor + parsing + BetService + Broadcaster."""
 
-    def __init__(self, provider_id: str, broadcaster=None, discovery: bool = False):
-        self.provider_id = provider_id
+    def __init__(self, broadcaster=None, provider_id: str | None = None, discovery: bool = True):
         self.broadcaster = broadcaster
+        self.provider_id = provider_id
+        self.discovery = discovery
         self.parser = GeckoBetParser()
+        # Cache: gecko_event_id → {home_team, away_team, event_name}
+        self._event_cache: dict[str, dict[str, str]] = {}
         self.interceptor = BetInterceptor(
-            provider_id=provider_id,
             on_bet_response=self._handle_bet_response,
-            discovery=discovery,
+            on_event_data=self._handle_event_data,
+            on_bet_history=self._handle_bet_history,
+            on_financial_data=self._handle_financial_data,
         )
 
     async def start(self, site_url: str | None = None):
         """Start the mirror browser."""
-        url = site_url or "https://www.spelklubben.se/sv/odds"
-        await self.interceptor.start(site_url=url)
+        await self.interceptor.start()
 
     async def stop(self):
         """Stop the mirror browser."""
@@ -41,65 +45,374 @@ class MirrorService:
         """Get current mirror status."""
         return self.interceptor.get_status()
 
-    async def _handle_bet_response(self, url: str, request_body: str | None, response_body: str):
-        """Process an intercepted bet placement response."""
+    async def _handle_event_data(self, url: str, response_body: str):
+        """Cache event participant data from events-table API responses."""
+        try:
+            data = json.loads(response_body)
+            events = data.get("data", {}).get("events", [])
+            for event in events:
+                event_id = event.get("id", "")
+                participants = event.get("participants", [])
+                if len(participants) >= 2:
+                    participants.sort(key=lambda p: p.get("side", 0))
+                    from ..matching.normalizer import normalize_team_name
+                    home_label = participants[0].get("label", "")
+                    away_label = participants[1].get("label", "")
+                    self._event_cache[event_id] = {
+                        "home_team": normalize_team_name(home_label),
+                        "away_team": normalize_team_name(away_label),
+                        "event_name": f"{home_label} vs {away_label}",
+                    }
+            if events:
+                logger.debug(f"[mirror] Cached {len(events)} event(s) from events-table response")
+        except (json.JSONDecodeError, Exception) as e:
+            logger.debug(f"[mirror] Could not parse event data: {e}")
+
+    async def _handle_bet_history(self, url: str, response_body: str, request_body: str | None = None):
+        """Store bet history responses as traces for future settlement.
+
+        Passively captures Altenar widgetBetHistory data.
+        Status codes: 1=won, 2=lost, 3=void/cancelled, 4=cashout.
+        """
+        try:
+            data = json.loads(response_body)
+        except json.JSONDecodeError:
+            return
+
+        bets = data.get("bets", [])
+        if not bets:
+            return
+
+        provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
+        logger.info(f"[mirror] Bet history intercepted: {len(bets)} bets from {provider_id}")
+
+        await asyncio.to_thread(
+            self._store_trace_sync, provider_id, url, request_body, response_body, "history"
+        )
+
+    async def _handle_financial_data(self, url: str, response_body: str):
+        """Store balance/deposit/withdraw data as traces."""
+        try:
+            data = json.loads(response_body)
+        except json.JSONDecodeError:
+            return
+
+        provider_id = self._detect_provider(url)
+
+        # Classify the trace type
+        url_lower = url.lower()
+        if "balance" in url_lower or "wallets" in url_lower:
+            trace_type = "balance"
+        elif "payment-stats" in url_lower:
+            trace_type = "payment_stats"
+        else:
+            trace_type = "financial"
+
+        logger.info(f"[mirror] Financial data intercepted: {trace_type} from {provider_id}")
+        await asyncio.to_thread(
+            self._store_trace_sync, provider_id, url, None, response_body, trace_type
+        )
+
+    async def _handle_bet_response(
+        self, url: str, request_body: str | None, response_body: str, page_url: str | None = None
+    ):
+        """Process an intercepted bet placement response — any platform."""
+        provider_id = (
+            self._detect_provider_from_request(request_body)
+            or self._detect_provider(url)
+        )
+
         try:
             body = json.loads(response_body)
         except json.JSONDecodeError:
-            logger.warning(f"[mirror:{self.provider_id}] Invalid JSON response from {url}")
-            await asyncio.to_thread(self._store_trace_sync, url, request_body, response_body, "failed")
+            logger.warning(f"[mirror] Invalid JSON response from {url}")
+            await asyncio.to_thread(self._store_trace_sync, provider_id, url, request_body, response_body, "failed")
             return
 
-        # Check for rejection
-        if self.parser.is_rejection(body):
-            logger.info(f"[mirror:{self.provider_id}] Bet rejected")
-            await asyncio.to_thread(self._store_trace_sync, url, request_body, response_body, "rejected")
-            self._notify("bet_rejected", {"provider": self.provider_id, "reason": "Bet rejected by bookmaker"})
-            return
+        # Try to extract basic bet info from any platform
+        bet_info = self._extract_bet_info(url, body, request_body)
 
-        # Parse confirmed bet (needs both request and response bodies)
-        parsed = self.parser.parse(body, request_body)
-        if parsed is None:
-            logger.warning(f"[mirror:{self.provider_id}] Could not parse bet response")
-            await asyncio.to_thread(self._store_trace_sync, url, request_body, response_body, "failed")
-            return
-
-        # Create bet and store trace in a sync thread
-        result = await asyncio.to_thread(
-            self._process_bet_sync, url, request_body, response_body, parsed
+        # Store the raw trace
+        await asyncio.to_thread(
+            self._store_trace_sync, provider_id, url, request_body, response_body, "bet_placed"
         )
 
-        # Notify frontend (back on event loop thread)
-        self._notify("bet_mirrored", result)
+        # Toast notification with whatever info we could extract
+        toast = {
+            "status": "ok",
+            "provider": provider_id,
+            "event": bet_info.get("event_name", "Unknown event"),
+            "market": bet_info.get("market"),
+            "outcome": bet_info.get("outcome"),
+            "odds": bet_info.get("odds"),
+            "stake": bet_info.get("stake"),
+            "matched": False,
+        }
+        logger.info(
+            f"[mirror] Bet recorded: {provider_id} — {toast['event']} "
+            f"@ {toast['odds']} × {toast['stake']}"
+        )
+        self._notify("bet_mirrored", toast)
+
+    def _extract_bet_info(self, url: str, body: dict, request_body: str | None) -> dict:
+        """Best-effort extraction of bet info from any platform response.
+
+        Returns dict with whatever fields could be extracted:
+        event_name, odds, stake, market, outcome, confirmation_id
+        """
+        info: dict[str, Any] = {}
+        req: dict = {}
+        if request_body:
+            try:
+                req = json.loads(request_body) if isinstance(request_body, str) else request_body
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        url_lower = url.lower()
+
+        # --- Altenar (placeWidget) ---
+        if "placewidget" in url_lower:
+            bets = body.get("bets", [])
+            if bets:
+                b = bets[0]
+                info["confirmation_id"] = str(b.get("id", ""))
+                info["odds"] = b.get("totalOdds")
+                info["stake"] = b.get("totalStake")
+                sels = b.get("selections", [])
+                if sels:
+                    s = sels[0]
+                    info["event_name"] = s.get("eventName", "")
+                    info["outcome"] = s.get("name", "")
+                    info["market"] = s.get("marketName", "")
+            # Request has richer data
+            markets = req.get("betMarkets", [])
+            if markets and not info.get("event_name"):
+                m = markets[0]
+                info["event_name"] = m.get("eventName", "")
+                odds_list = m.get("odds", [])
+                if odds_list:
+                    info["outcome"] = odds_list[0].get("selectionName", "")
+                    info["market"] = odds_list[0].get("marketName", "")
+            stakes = req.get("stakes", [])
+            if stakes and not info.get("stake"):
+                info["stake"] = stakes[0]
+            return info
+
+        # --- Gecko V2 (coupons) ---
+        if "/api/sb/" in url_lower and "coupon" in url_lower:
+            coupon = body.get("couponStatus", {})
+            info["confirmation_id"] = str(coupon.get("couponId", ""))
+            # Odds/stake/market from request
+            bets = req.get("bets", [])
+            if bets:
+                bet = bets[0]
+                info["stake"] = bet.get("stake")
+                sels = bet.get("betSelections", [])
+                if sels:
+                    info["odds"] = sels[0].get("odds")
+            return info
+
+        # --- Kambi (coupon.json, player/api) ---
+        if "coupon" in url_lower and ("kambi" in url_lower or "unibet" in url_lower or ".json" in url_lower):
+            info["confirmation_id"] = str(body.get("couponId", body.get("id", "")))
+            info["odds"] = body.get("odds")
+            info["stake"] = body.get("stake")
+            return info
+
+        # --- Generic fallback: scan for common field names ---
+        for key in ("totalStake", "stake", "amount"):
+            if key in body:
+                info["stake"] = body[key]
+                break
+            if key in req:
+                info["stake"] = req[key]
+                break
+        for key in ("totalOdds", "odds", "price"):
+            if key in body:
+                info["odds"] = body[key]
+                break
+        for key in ("eventName", "event_name", "matchName"):
+            if key in body:
+                info["event_name"] = body[key]
+                break
+
+        return info
+
+    def _extract_teams_from_page_url(self, page_url: str, parsed: dict):
+        """Extract team names from Gecko V2 event page URL slug.
+
+        Gecko event page URLs typically look like:
+          /sport/fotboll/.../team1-vs-team2-{eventId}
+          /sport/football/.../team1-v-team2-{eventId}
+        """
+        try:
+            path = unquote(urlparse(page_url).path)
+            # Match "team1-vs-team2" or "team1-v-team2" patterns in the URL
+            match = re.search(r'/([^/]+?)(?:-vs?-|%20vs?%20)([^/]+?)(?:-[a-zA-Z0-9_]{10,})?/?$', path, re.IGNORECASE)
+            if match:
+                from ..matching.normalizer import normalize_team_name
+                home = match.group(1).replace("-", " ").strip()
+                away = match.group(2).replace("-", " ").strip()
+                if len(home) > 2 and len(away) > 2:
+                    parsed["home_team"] = normalize_team_name(home)
+                    parsed["away_team"] = normalize_team_name(away)
+                    parsed["event_name"] = f"{home} vs {away}"
+                    logger.info(f"[mirror] Resolved from page URL: {parsed['event_name']}")
+        except Exception as e:
+            logger.debug(f"[mirror] Could not parse teams from page URL: {e}")
+
+    async def _enrich_from_page_title(self, parsed: dict):
+        """Extract team names from the browser page title as last resort."""
+        context = self.interceptor.context
+        if not context or not context.pages:
+            logger.debug("[mirror] No browser pages available for title extraction")
+            return
+
+        try:
+            page = context.pages[0]
+            title = await page.title()
+            if not title:
+                return
+
+            # Page titles often look like "Team1 - Team2 | Spelklubben" or "Team1 vs Team2"
+            for sep in [" - ", " vs ", " vs. ", " v "]:
+                if sep in title:
+                    parts = title.split(sep, 1)
+                    home = parts[0].strip()
+                    # Strip trailing site name after | or –
+                    away = re.split(r'\s*[|–—]\s*', parts[1])[0].strip()
+                    if len(home) > 2 and len(away) > 2:
+                        from ..matching.normalizer import normalize_team_name
+                        parsed["home_team"] = normalize_team_name(home)
+                        parsed["away_team"] = normalize_team_name(away)
+                        parsed["event_name"] = f"{home} vs {away}"
+                        logger.info(f"[mirror] Resolved from page title: {parsed['event_name']}")
+                        return
+        except Exception as e:
+            logger.debug(f"[mirror] Could not read page title: {e}")
+
+    async def _enrich_from_gecko_api(self, bet_url: str, parsed: dict):
+        """Fetch event details from Gecko API to resolve team names."""
+        gecko_id = parsed.get("gecko_event_id", "")
+        if not gecko_id:
+            return
+
+        # Derive API base from the bet URL domain
+        origin = urlparse(bet_url)
+        api_base = f"{origin.scheme}://{origin.netloc}"
+
+        # Use the interceptor's browser context to make the API call
+        context = self.interceptor.context
+        if not context:
+            logger.warning("[mirror] No browser context for Gecko API enrichment")
+            return
+        if not context.pages:
+            logger.warning("[mirror] No browser pages open for Gecko API enrichment")
+            return
+
+        try:
+            # Include required params that the real site uses
+            api_url = (
+                f"{api_base}/api/sb/v1/widgets/events-table/v2"
+                f"?categoryIds=1&eventIds=f-{gecko_id}"
+                f"&eventPhase=Prematch&eventSortBy=Popularity"
+                f"&maxMarketCount=2&priceFormats=1"
+            )
+            logger.debug(f"[mirror] Enrichment API call: {api_url}")
+            resp = await context.request.get(api_url, timeout=5000)
+            if resp.status != 200:
+                logger.warning(f"[mirror] Gecko event lookup returned HTTP {resp.status} for gecko_id={gecko_id}")
+                return
+
+            data = await resp.json()
+            events = data.get("data", {}).get("events", [])
+            if not events:
+                logger.warning(f"[mirror] No events returned for gecko_id={gecko_id} (empty response)")
+                return
+
+            event = events[0]
+            participants = event.get("participants", [])
+            if len(participants) < 2:
+                logger.warning(f"[mirror] Event {gecko_id} has <2 participants: {participants}")
+                return
+
+            participants.sort(key=lambda p: p.get("side", 0))
+            from ..matching.normalizer import normalize_team_name
+            parsed["home_team"] = normalize_team_name(participants[0].get("label", ""))
+            parsed["away_team"] = normalize_team_name(participants[1].get("label", ""))
+            parsed["event_name"] = f"{participants[0].get('label', '')} vs {participants[1].get('label', '')}"
+            logger.info(f"[mirror] Resolved via Gecko API: {parsed['event_name']}")
+
+            # Also cache for future bets on same event
+            self._event_cache[gecko_id] = {
+                "home_team": parsed["home_team"],
+                "away_team": parsed["away_team"],
+                "event_name": parsed["event_name"],
+            }
+
+        except Exception as e:
+            logger.error(f"[mirror] Gecko API enrichment failed for gecko_id={gecko_id}: {e}", exc_info=True)
+
+    _KNOWN_PROVIDERS = (
+        "spelklubben", "betsson", "betsafe", "nordicbet",
+        "hajper", "quickcasino", "comeon", "pinnacle", "campobet",
+    )
+
+    def _detect_provider_from_request(self, request_body: str | None) -> str | None:
+        """Extract provider from Altenar integration field in request body."""
+        if not request_body:
+            return None
+        try:
+            req = json.loads(request_body)
+            integration = req.get("integration", "").lower()
+            for keyword in self._KNOWN_PROVIDERS:
+                if keyword in integration:
+                    return keyword
+        except (json.JSONDecodeError, Exception):
+            pass
+        return None
+
+    def _detect_provider(self, url: str) -> str:
+        """Best-effort provider detection from URL domain."""
+        url_lower = url.lower()
+        # Known Gecko V2 / Betsson Group domains
+        domain_map = {
+            "spelklubben": "spelklubben",
+            "betsson": "betsson",
+            "betsafe": "betsafe",
+            "nordicbet": "nordicbet",
+            "hajper": "hajper",
+            "quickcasino": "quickcasino",
+            "comeon": "comeon",
+            "pinnacle": "pinnacle",
+        }
+        for keyword, provider_id in domain_map.items():
+            if keyword in url_lower:
+                return provider_id
+        return "unknown"
 
     def _process_bet_sync(
-        self, url: str, request_body: str | None, response_body: str, parsed: dict
+        self, provider_id: str, url: str, request_body: str | None, response_body: str, parsed: dict
     ) -> dict[str, Any]:
-        """Synchronous: create bet + store trace (runs in thread via asyncio.to_thread)."""
+        """Synchronous: create bet + store trace (runs in thread)."""
         db = get_session()
         try:
             confirmation_id = parsed["confirmation_id"]
 
-            # Dedup: check if this bet was already logged
-            existing = db.query(Bet).filter(
-                Bet.confirmation_id == confirmation_id
-            ).first()
+            # Dedup
+            existing = db.query(Bet).filter(Bet.confirmation_id == confirmation_id).first()
             if existing:
-                logger.info(f"[mirror:{self.provider_id}] Bet {confirmation_id} already logged (dedup)")
-                return {
-                    "status": "duplicate",
-                    "confirmation_id": confirmation_id,
-                    "provider": self.provider_id,
-                }
+                logger.info(f"[mirror] Bet {confirmation_id} already logged (dedup)")
+                return {"status": "duplicate", "confirmation_id": confirmation_id, "provider": provider_id}
 
-            # Match event in DB
+            # Match event
             event_id = self._match_event(db, parsed)
 
-            # Create bet via BetService
+            # Create bet
             bet_service = BetService(db)
             bet_result = bet_service.create_bet(
                 event_id=event_id,
-                provider_id=self.provider_id,
+                provider_id=provider_id,
                 market=parsed.get("market"),
                 outcome=parsed.get("outcome"),
                 odds=parsed["odds"],
@@ -108,7 +421,6 @@ class MirrorService:
                 bet_type="mirror",
             )
 
-            # Update confirmation_id on the created bet
             if "error" not in bet_result:
                 bet_obj = db.get(Bet, bet_result["bet_id"])
                 if bet_obj:
@@ -121,24 +433,18 @@ class MirrorService:
             if "error" in bet_result:
                 parse_status = "failed"
 
-            # Store trace
             self._store_trace(
-                db=db,
-                url=url,
-                request_body=request_body,
-                response_body=response_body,
-                parse_status=parse_status,
-                provider_bet_id=confirmation_id,
-                bet_id=bet_id,
+                db=db, provider_id=provider_id, url=url,
+                request_body=request_body, response_body=response_body,
+                parse_status=parse_status, provider_bet_id=confirmation_id, bet_id=bet_id,
             )
             db.commit()
 
-            event_display = parsed.get("event_name", "Unknown event")
             return {
                 "status": "ok" if "error" not in bet_result else "error",
                 "confirmation_id": confirmation_id,
-                "provider": self.provider_id,
-                "event": event_display,
+                "provider": provider_id,
+                "event": parsed.get("event_name", "Unknown event"),
                 "market": parsed.get("market"),
                 "outcome": parsed.get("outcome"),
                 "odds": parsed["odds"],
@@ -148,39 +454,33 @@ class MirrorService:
             }
         except Exception as e:
             db.rollback()
-            logger.error(f"[mirror:{self.provider_id}] Error processing bet: {e}", exc_info=True)
-            return {"status": "error", "error": str(e), "provider": self.provider_id}
+            logger.error(f"[mirror] Error processing bet: {e}", exc_info=True)
+            return {"status": "error", "error": str(e), "provider": provider_id}
         finally:
             db.close()
 
     def _store_trace_sync(
-        self, url: str, request_body: str | None, response_body: str, parse_status: str
+        self, provider_id: str, url: str, request_body: str | None, response_body: str, parse_status: str
     ):
         """Store trace in a new DB session (for rejected/failed bets)."""
         db = get_session()
         try:
-            self._store_trace(db, url, request_body, response_body, parse_status)
+            self._store_trace(db, provider_id, url, request_body, response_body, parse_status)
             db.commit()
         except Exception as e:
             db.rollback()
-            logger.error(f"[mirror:{self.provider_id}] Error storing trace: {e}")
+            logger.error(f"[mirror] Error storing trace: {e}")
         finally:
             db.close()
 
     def _store_trace(
-        self,
-        db,
-        url: str,
-        request_body: str | None,
-        response_body: str,
-        parse_status: str,
-        provider_bet_id: str | None = None,
-        bet_id: int | None = None,
+        self, db, provider_id: str, url: str, request_body: str | None, response_body: str,
+        parse_status: str, provider_bet_id: str | None = None, bet_id: int | None = None,
     ) -> BetTrace:
         """Insert a BetTrace record."""
         trace = BetTrace(
             timestamp=datetime.now(timezone.utc),
-            provider_id=self.provider_id,
+            provider_id=provider_id,
             request_url=url,
             request_body=request_body,
             response_body=response_body,
@@ -200,9 +500,9 @@ class MirrorService:
         home = parsed.get("home_team")
         away = parsed.get("away_team")
         if not home or not away:
+            logger.warning(f"[mirror] Cannot match — no team names resolved")
             return None
 
-        # Query events starting within next 7 days to keep candidate set small
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(days=7)
         events = db.query(Event).filter(
@@ -219,19 +519,15 @@ class MirrorService:
             home_score = fuzz.ratio(home, event.home_team or "")
             away_score = fuzz.ratio(away, event.away_team or "")
             combined = (home_score + away_score) / 2
-
             if combined > best_score:
                 best_score = combined
                 best_match = event
 
         if best_match and best_score >= 75:
-            logger.info(
-                f"[mirror:{self.provider_id}] Matched to event {best_match.id} "
-                f"(score={best_score:.0f})"
-            )
+            logger.info(f"[mirror] Matched to event {best_match.id} (score={best_score:.0f})")
             return best_match.id
 
-        logger.warning(f"[mirror:{self.provider_id}] No match for {home} vs {away} (best={best_score:.0f})")
+        logger.warning(f"[mirror] No match for {home} vs {away} (best={best_score:.0f})")
         return None
 
     def _notify(self, event_type: str, data: dict):
