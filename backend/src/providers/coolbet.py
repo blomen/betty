@@ -265,7 +265,7 @@ class CoolbetRetriever(BrowserRetriever):
             logger.error(f"[{self.provider_id}] Error extracting {sport}: {e}", exc_info=True)
             return []
 
-    CONCURRENT_CATEGORY_FETCHES = 4  # Parallel category page fetches (reduced from 8 to avoid overwhelming Camoufox)
+    CONCURRENT_CATEGORY_FETCHES = 8  # Parallel category page fetches (restored from 4 — I/O-bound, Camoufox handles fine)
 
     async def _fetch_all_categories(self, page, category_id: int) -> List[Dict]:
         """Fetch all categories with pagination (API returns 10 per page).
@@ -296,7 +296,7 @@ class CoolbetRetriever(BrowserRetriever):
         offset = CATEGORY_PAGE_SIZE  # Start after first page (0-indexed)
         consecutive_empty_batches = 0
 
-        while offset < MAX_OFFSET and consecutive_empty_batches < 2:
+        while offset < MAX_OFFSET and consecutive_empty_batches < 3:
             # Build batch of offsets to fetch concurrently
             batch_offsets = []
             for i in range(self.CONCURRENT_CATEGORY_FETCHES):
@@ -404,7 +404,7 @@ class CoolbetRetriever(BrowserRetriever):
         try:
             unique_ids = list(set(market_ids))
             all_odds = {}
-            chunk_size = 200
+            chunk_size = 500
             for i in range(0, len(unique_ids), chunk_size):
                 chunk = unique_ids[i:i + chunk_size]
                 market_arrays = [[mid] for mid in chunk]
@@ -509,7 +509,7 @@ class CoolbetRetriever(BrowserRetriever):
 
             line = raw_market.get("line")
             point = None
-            if line is not None and line != 0:
+            if line is not None:
                 try:
                     point = float(line)
                 except (ValueError, TypeError):
@@ -605,7 +605,18 @@ class CoolbetRetriever(BrowserRetriever):
             if not outcome_name:
                 continue
 
-            outcomes.append({"name": outcome_name, "odds": float(odds_val)})
+            outcome_dict = {"name": outcome_name, "odds": float(odds_val)}
+
+            # Extract point from outcome-level line field (spreads often have line=null at market level)
+            if market_type in ("spread", "total"):
+                o_line = raw_outcome.get("line")
+                if o_line is not None:
+                    try:
+                        outcome_dict["point"] = float(o_line)
+                    except (ValueError, TypeError):
+                        pass
+
+            outcomes.append(outcome_dict)
 
         return outcomes
 

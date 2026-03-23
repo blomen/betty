@@ -233,6 +233,13 @@ def build_outcomes_from_labels(
             outcomes.append(outcome)
         if not outcomes:
             return None
+        # Propagate point: if one outcome has point and the other doesn't, copy it
+        points = [o["point"] for o in outcomes if "point" in o]
+        if points:
+            shared_point = points[0]
+            for o in outcomes:
+                if "point" not in o:
+                    o["point"] = shared_point
         return {"type": "total", "outcomes": outcomes}
 
     if market_type == "spread":

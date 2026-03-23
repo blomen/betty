@@ -243,14 +243,14 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
     // --- Step 4: Click spread tab, wait, collect ---
     let spreadOdds = {};
     if (spreadPill && clickPill(spreadPill)) {
-        await sleep(600);
+        await sleep(1000);
         spreadOdds = getCardOdds();
     }
 
     // --- Step 5: Click total tab, wait, collect ---
     let totalOdds = {};
     if (totalPill && clickPill(totalPill)) {
-        await sleep(600);
+        await sleep(1000);
         totalOdds = getCardOdds();
     }
 

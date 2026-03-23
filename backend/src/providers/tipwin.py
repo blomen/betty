@@ -231,22 +231,12 @@ class TipwinRetriever(BrowserRetriever):
             )
 
             # Paginate via direct ?page=N URL navigation
-            empty_streak = 0
             for pg in range(2, max_pages + 1):
                 try:
-                    prev_count = len(api_responses)
                     page_url = f"{full_url}?page={pg}"
                     await page.goto(page_url, wait_until='domcontentloaded', timeout=10000)
                     # Route handler captures response inline — just a brief yield
                     await asyncio.sleep(0.3)
-
-                    if len(api_responses) == prev_count:
-                        empty_streak += 1
-                        if empty_streak >= 3:
-                            logger.debug(f"[{self.provider_id}] No data for {empty_streak} pages, stopping at page {pg}")
-                            break
-                    else:
-                        empty_streak = 0
 
                 except Exception as e:
                     logger.debug(f"[{self.provider_id}] Page {pg} error: {e}")

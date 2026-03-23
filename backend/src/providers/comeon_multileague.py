@@ -62,8 +62,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Tennis/handball/mma complete in <60s. Football/basketball often timeout at 360s.
     # Extracting fast sports first ensures we get data before provider timeout hits.
     SPORT_PRIORITY = [
-        'tennis', 'mma', 'handball', 'esports', 'cricket',
-        'table_tennis', 'rugby', 'baseball', 'american_football',
+        'tennis', 'esports',
         'ice_hockey', 'basketball', 'football',
     ]
 
@@ -196,9 +195,9 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         )
 
         for sport_key in sports_to_extract:
-            # Provider-level time budget: stop starting new sports at 80% of provider timeout
+            # Provider-level time budget: stop starting new sports at 90% of provider timeout
             elapsed = time.time() - provider_start
-            if elapsed > provider_timeout * 0.80:
+            if elapsed > provider_timeout * 0.90:
                 remaining = [s for s in sports_to_extract if s not in
                              [sk for sk in sports_to_extract[:sports_to_extract.index(sport_key)]]]
                 logger.warning(
@@ -256,10 +255,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
     # Max leagues to scrape per sport — prevents football (60+ leagues) from timing out.
     # Sorted by eventCount (highest first) so we get the most valuable leagues.
     SPORT_LEAGUE_CAPS: Dict[str, int] = {
-        "football": 20,     # Increased from 15 — API discovery is fast, more leagues = more matches
-        "basketball": 15,
-        "ice_hockey": 15,
-        "tennis": 15,
+        "football": 30,     # Increased from 20 — API discovery is fast, more leagues = more events
+        "basketball": 20,
+        "ice_hockey": 20,
+        "tennis": 20,
     }
     DEFAULT_LEAGUE_CAP = 10
 

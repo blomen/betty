@@ -118,7 +118,7 @@ class InterwettenRetriever(BrowserRetriever):
 
     CONCURRENT_LEAGUE_PAGES = 16
     CONCURRENT_DETAIL_PAGES = 20
-    MAX_DETAIL_EVENTS = 120
+    MAX_DETAIL_EVENTS = 250
 
     def __init__(self, config: Dict[str, Any], transport: Optional[BrowserTransport] = None):
         transport = transport or BrowserTransport(headless=False)
@@ -197,10 +197,10 @@ class InterwettenRetriever(BrowserRetriever):
                 await league_page_pool.put(worker_page)
 
         # Scrape leagues in batches with time-budget checks
-        batch_size = 20
+        batch_size = 40
         for batch_start in range(0, len(leagues), batch_size):
             elapsed = _time.time() - extract_start
-            if elapsed > sport_timeout * 0.70:
+            if elapsed > sport_timeout * 0.85:
                 logger.warning(
                     f"[{self.provider_id}] {sport}: time-budget exit at {elapsed:.0f}s "
                     f"({batch_start}/{len(leagues)} leagues, {len(all_events)} events)"

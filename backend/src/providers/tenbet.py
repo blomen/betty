@@ -656,8 +656,8 @@ class TenBetRetriever(BrowserRetriever):
             "type": "total",
             "point": point,
             "outcomes": [
-                {"name": f"Over {point}", "odds": parsed[0], "side": "over"},
-                {"name": f"Under {point}", "odds": parsed[1], "side": "under"},
+                {"name": f"Over {point}", "odds": parsed[0], "side": "over", "point": point},
+                {"name": f"Under {point}", "odds": parsed[1], "side": "under", "point": point},
             ],
         }
 
@@ -690,8 +690,8 @@ class TenBetRetriever(BrowserRetriever):
             "type": "spread",
             "point": point,
             "outcomes": [
-                {"name": f"Home {point:+g}", "odds": parsed[0], "side": "home"},
-                {"name": f"Away {-point:+g}", "odds": parsed[-1], "side": "away"},
+                {"name": f"Home {point:+g}", "odds": parsed[0], "side": "home", "point": point},
+                {"name": f"Away {-point:+g}", "odds": parsed[-1], "side": "away", "point": -point},
             ],
         }
 
@@ -879,7 +879,7 @@ class TenBetRetriever(BrowserRetriever):
             return None
         return {"type": "total", "outcomes": outcomes}
 
-    MAX_DETAIL_EVENTS = 75  # Reduced from 150 — detail enrichment was doubling football extraction time
+    MAX_DETAIL_EVENTS = 120  # Increased from 75 — point bug fix means initial DOM also gets spread/total
 
     async def _enrich_events_with_details(
         self, events: List[StandardEvent], sport: str

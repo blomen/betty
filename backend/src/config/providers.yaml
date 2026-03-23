@@ -566,13 +566,14 @@ providers:
     provider_timeout: 1200             # DOM scraping — needs headroom for slow PC
     sport_timeout: 600                 # Football has 60+ leagues, 360s too tight under load
     supported_sports:
-      - football
-      - basketball
-      - ice_hockey
-      - tennis
-      - handball
+      # Fast/small sports first — ensures coverage even if provider timeout hits
       - mma
       - esports
+      - handball
+      - tennis
+      - ice_hockey
+      - basketball
+      - football
       # Removed: american_football (0 events ever), baseball (0 events ever)
     bonus:
       type: bonusdeposit
@@ -787,13 +788,15 @@ providers:
     sport_timeout: 300  # Loads ALL sports on first call (~180s pagination), needs full timeout
     supported_sports:
       - football
+      - basketball
       - tennis
       - ice_hockey
       - mma
       - handball
       - volleyball
-      # Removed: basketball (0 events), esports (0 events), table_tennis (0 events),
+      # Removed: esports (0 events), table_tennis (0 events),
       #          american_football (0 events), baseball (0 events/75s pagination waste)
+      # Re-enabled basketball 2026-03-23: retry after pagination fix (removed empty_streak exit)
       # Note: tipwin loads ALL sports at once (page.route interception), so removing
       # sports won't speed up pagination — but avoids pointless DB writes/matching
     bonus:
