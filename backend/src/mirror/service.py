@@ -26,6 +26,8 @@ class MirrorService:
         self.parser = GeckoBetParser()
         # Cache: gecko_event_id → {home_team, away_team, event_name}
         self._event_cache: dict[str, dict[str, str]] = {}
+        # Pending settlements awaiting confirmation
+        self._pending_settlements: list[dict] = []
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
@@ -85,28 +87,47 @@ class MirrorService:
         provider_id = self._detect_provider_from_request(request_body) or self._detect_provider(url)
         logger.info(f"[mirror] Bet history intercepted: {len(bets)} bets from {provider_id}")
 
-        settled = await asyncio.to_thread(self._settle_from_history_sync, bets, provider_id)
-        if settled:
-            logger.info(f"[mirror] Auto-settled {settled} bet(s) from {provider_id}")
+        staged = await asyncio.to_thread(self._stage_settlements_sync, bets, provider_id)
+        if staged:
+            self._pending_settlements = staged  # Replace — latest history is most accurate
+            wins = [s for s in staged if s["result"] == "won"]
+            losses = [s for s in staged if s["result"] == "lost"]
+            total_staked = sum(s["stake"] for s in staged)
+            total_payout = sum(s["payout"] for s in staged)
+            net = total_payout - total_staked
+            logger.info(
+                f"[mirror] Staged {len(staged)} settlement(s) from {provider_id}: "
+                f"{len(wins)}W {len(losses)}L, net={net:+.0f} SEK — confirm via API"
+            )
+            self._notify("settlements_pending", {
+                "provider": provider_id,
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": total_staked,
+                "total_payout": total_payout,
+                "net": net,
+                "settlements": staged,
+            })
 
         # Also store trace for audit
         await asyncio.to_thread(
             self._store_trace_sync, provider_id, url, request_body, response_body, "history"
         )
 
-    def _settle_from_history_sync(self, history_bets: list[dict], provider_id: str) -> int:
-        """Match Altenar bet history entries against pending bets and settle them."""
+    def _stage_settlements_sync(self, history_bets: list[dict], provider_id: str) -> list[dict]:
+        """Match bet history against pending bets — stage for confirmation, don't commit."""
         STATUS_MAP = {1: "won", 2: "lost", 3: "void", 4: "cashout"}
 
         db = get_session()
-        settled_count = 0
+        staged: list[dict] = []
         try:
             pending = db.query(Bet).filter(
                 Bet.result == "pending",
                 Bet.provider_id == provider_id,
             ).all()
             if not pending:
-                return 0
+                return []
 
             for hb in history_bets:
                 result = STATUS_MAP.get(hb.get("status"))
@@ -132,27 +153,60 @@ class MirrorService:
                 if not matched_bet:
                     continue
 
-                bet_service = BetService(db)
-                bet_service.settle_bet(matched_bet.id, result, payout)
                 pending.remove(matched_bet)
-                settled_count += 1
-                logger.info(
-                    f"[mirror] Settled bet #{matched_bet.id}: {event_name} → "
-                    f"{result} (payout={payout})"
-                )
-                self._notify("bet_settled", {
-                    "bet_id": matched_bet.id, "event": event_name,
-                    "result": result, "payout": payout,
+                staged.append({
+                    "bet_id": matched_bet.id,
+                    "provider": provider_id,
+                    "event": event_name,
+                    "odds": odds,
+                    "stake": stake,
+                    "result": result,
+                    "payout": payout,
                 })
 
-            if settled_count:
-                db.commit()
         except Exception as e:
-            db.rollback()
-            logger.error(f"[mirror] Error settling bets: {e}", exc_info=True)
+            logger.error(f"[mirror] Error matching bets: {e}", exc_info=True)
         finally:
             db.close()
-        return settled_count
+        return staged
+
+    def confirm_settlements(self) -> dict:
+        """Apply all pending settlements to the database. Returns summary."""
+        if not self._pending_settlements:
+            return {"settled": 0, "error": "No pending settlements"}
+
+        db = get_session()
+        settled = 0
+        try:
+            bet_service = BetService(db)
+            for s in self._pending_settlements:
+                bet_service.settle_bet(s["bet_id"], s["result"], s["payout"])
+                settled += 1
+                logger.info(
+                    f"[mirror] Confirmed: bet #{s['bet_id']} {s['event']} "
+                    f"→ {s['result']} (payout={s['payout']})"
+                )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[mirror] Error confirming settlements: {e}", exc_info=True)
+            return {"settled": settled, "error": str(e)}
+        finally:
+            db.close()
+
+        summary = self._pending_settlements.copy()
+        self._pending_settlements.clear()
+        return {"settled": settled, "settlements": summary}
+
+    def reject_settlements(self) -> dict:
+        """Discard all pending settlements."""
+        count = len(self._pending_settlements)
+        self._pending_settlements.clear()
+        return {"rejected": count}
+
+    def get_pending_settlements(self) -> list[dict]:
+        """Return current pending settlements for review."""
+        return self._pending_settlements
 
     async def _handle_financial_data(self, url: str, response_body: str):
         """Auto-sync balance from intercepted financial data."""

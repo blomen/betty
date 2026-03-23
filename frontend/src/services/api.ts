@@ -18,6 +18,8 @@ import type {
   RiskAwareStake,
   ProviderLimit,
   BettingSnapshot,
+  ClusterInfo,
+  ClusterSummary,
 } from '@/types';
 import type { MlHealth } from '@/types/market';
 
@@ -494,6 +496,16 @@ export const api = {
     }
     params.set('_t', String(Date.now())); // Cache-bust: live scan, never cache
     return fetchJson(`/opportunities/dutch-workflow?${params}`);
+  },
+
+  // ============ Clusters ============
+
+  async getClusters(): Promise<{ clusters: ClusterInfo[] }> {
+    return fetchJson('/opportunities/clusters');
+  },
+
+  async getClusterSummary(cluster: string): Promise<ClusterSummary> {
+    return fetchJson(`/opportunities/cluster-summary?cluster=${encodeURIComponent(cluster)}`);
   },
 
   // ============ Bets ============
@@ -1201,23 +1213,28 @@ export const api = {
 
   // ============ Mirror ============
 
-  async getMirrorStatus(): Promise<{ running: boolean; mirrors: Record<string, any> }> {
+  async getMirrorStatus(): Promise<{ running: boolean; status: string; since: string | null }> {
     return fetchJson('/mirror/status');
   },
 
-  async getMirrorProviders(): Promise<{ providers: { id: string; name: string; running: boolean }[] }> {
-    return fetchJson('/mirror/providers');
+  async startMirror(): Promise<{ running: boolean; status: string; since: string }> {
+    return fetchJson('/mirror/start', { method: 'POST' });
   },
 
-  async startMirror(provider = 'spelklubben', discovery = false): Promise<{ running: boolean; provider: string; status: string; since: string }> {
-    const params = new URLSearchParams({ provider });
-    if (discovery) params.set('discovery', 'true');
-    return fetchJson(`/mirror/start?${params}`, { method: 'POST' });
+  async stopMirror(): Promise<any> {
+    return fetchJson('/mirror/stop', { method: 'POST' });
   },
 
-  async stopMirror(provider?: string): Promise<any> {
-    const params = provider ? `?provider=${provider}` : '';
-    return fetchJson(`/mirror/stop${params}`, { method: 'POST' });
+  async getMirrorSettlements(): Promise<{ settlements: any[] }> {
+    return fetchJson('/mirror/settlements');
+  },
+
+  async confirmMirrorSettlements(): Promise<any> {
+    return fetchJson('/mirror/settlements/confirm', { method: 'POST' });
+  },
+
+  async rejectMirrorSettlements(): Promise<any> {
+    return fetchJson('/mirror/settlements/reject', { method: 'POST' });
   },
 
 };

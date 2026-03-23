@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { api } from '../services/api';
 
 export interface MirroredBet {
   id: number;
@@ -15,11 +16,51 @@ export interface MirroredBet {
   timestamp: number;
 }
 
+export interface PendingSettlement {
+  bet_id: number;
+  provider: string;
+  event: string;
+  odds: number;
+  stake: number;
+  result: string;
+  payout: number;
+}
+
+export interface SettlementSummary {
+  provider: string;
+  count: number;
+  wins: number;
+  losses: number;
+  total_staked: number;
+  total_payout: number;
+  net: number;
+  settlements: PendingSettlement[];
+}
+
 export function useBetMirror() {
   const [toasts, setToasts] = useState<MirroredBet[]>([]);
+  const [pendingSettlements, setPendingSettlements] = useState<SettlementSummary | null>(null);
 
   const dismiss = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const confirmSettlements = useCallback(async () => {
+    try {
+      await api.confirmMirrorSettlements();
+      setPendingSettlements(null);
+    } catch (err) {
+      console.error('[mirror] confirm failed', err);
+    }
+  }, []);
+
+  const rejectSettlements = useCallback(async () => {
+    try {
+      await api.rejectMirrorSettlements();
+      setPendingSettlements(null);
+    } catch (err) {
+      console.error('[mirror] reject failed', err);
+    }
   }, []);
 
   useEffect(() => {
@@ -53,8 +94,12 @@ export function useBetMirror() {
       addToast({ ...JSON.parse(e.data), status: 'rejected' });
     });
 
+    es.addEventListener('settlements_pending', (e: MessageEvent) => {
+      setPendingSettlements(JSON.parse(e.data));
+    });
+
     return () => es.close();
   }, []);
 
-  return { toasts, dismiss };
+  return { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements };
 }

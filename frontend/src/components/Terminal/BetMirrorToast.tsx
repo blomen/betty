@@ -100,16 +100,101 @@ function ToastItem({ toast, onDismiss }: { toast: MirroredBet; onDismiss: () => 
   );
 }
 
-export function BetMirrorToast() {
-  const { toasts, dismiss } = useBetMirror();
+function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettlements }: {
+  pendingSettlements: any;
+  confirmSettlements: () => Promise<void>;
+  rejectSettlements: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
 
-  if (toasts.length === 0) return null;
+  if (!pendingSettlements) return null;
+
+  const { provider, wins, losses, total_staked, total_payout, net, settlements } = pendingSettlements;
+
+  const handleConfirm = async () => {
+    setConfirming(true);
+    await confirmSettlements();
+    setConfirming(false);
+  };
 
   return (
-    <div className="mx-3 mt-2 flex flex-col gap-1">
-      {toasts.map(toast => (
-        <ToastItem key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
-      ))}
+    <div className="mx-3 mt-2 border border-tabValue/30 bg-gradient-to-br from-tabValue/10 to-tabValue/4 text-xs font-mono overflow-hidden"
+      style={{ borderLeftWidth: 3, borderLeftColor: '#FF9800' }}>
+      <div className="px-3 py-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-1">
+          <span className="text-tabValue font-bold text-sm">$</span>
+          <span className="text-text">
+            <span className="text-tabValue font-semibold">{provider}</span>
+            {' — '}
+            {settlements.length} bet{settlements.length !== 1 ? 's' : ''} to settle:
+            {' '}
+            <span className="text-success">{wins}W</span>
+            {' '}
+            <span className="text-error">{losses}L</span>
+            {' — '}
+            staked {total_staked.toFixed(0)}
+            {' → '}
+            payout {total_payout.toFixed(0)}
+            {' = '}
+            <span className={net >= 0 ? 'text-success' : 'text-error'}>
+              {net >= 0 ? '+' : ''}{net.toFixed(0)} kr
+            </span>
+          </span>
+        </div>
+        <div className="flex gap-1.5 shrink-0">
+          <button
+            onClick={handleConfirm}
+            disabled={confirming}
+            className="px-2.5 py-1 text-xs bg-success/20 text-success border border-success/30 hover:bg-success/30 transition"
+          >
+            {confirming ? '...' : 'Confirm'}
+          </button>
+          <button
+            onClick={rejectSettlements}
+            className="px-2.5 py-1 text-xs bg-error/20 text-error border border-error/30 hover:bg-error/30 transition"
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+      {/* Breakdown rows */}
+      <div className="border-t border-muted/10 px-3 py-1.5 max-h-40 overflow-y-auto">
+        {settlements.map((s: any) => (
+          <div key={s.bet_id} className="flex items-center gap-2 py-0.5">
+            <span className={`w-4 text-center font-bold ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
+              {s.result === 'won' ? 'W' : 'L'}
+            </span>
+            <span className="text-muted w-8 text-right">#{s.bet_id}</span>
+            <span className="flex-1 text-text truncate">{s.event}</span>
+            <span className="text-muted w-10 text-right">@{s.odds}</span>
+            <span className="text-text w-10 text-right">{s.stake}kr</span>
+            <span className={`w-14 text-right ${s.result === 'won' ? 'text-success' : 'text-error'}`}>
+              {s.result === 'won' ? `+${s.payout}` : '-' + s.stake}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function BetMirrorToast() {
+  const { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements } = useBetMirror();
+
+  return (
+    <div className="flex flex-col">
+      <SettlementBanner
+        pendingSettlements={pendingSettlements}
+        confirmSettlements={confirmSettlements}
+        rejectSettlements={rejectSettlements}
+      />
+      {toasts.length > 0 && (
+        <div className="mx-3 mt-2 flex flex-col gap-1">
+          {toasts.map(toast => (
+            <ToastItem key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -69,3 +69,38 @@ async def mirror_status():
         if status["running"]:
             return status
     return {"running": False, "status": "stopped"}
+
+
+def _get_active_mirror() -> MirrorService | None:
+    """Get the first running mirror instance."""
+    for m in _mirrors.values():
+        if m.get_status()["running"]:
+            return m
+    return None
+
+
+@router.get("/settlements")
+async def get_pending_settlements():
+    """Get staged settlements awaiting confirmation."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        return {"settlements": []}
+    return {"settlements": mirror.get_pending_settlements()}
+
+
+@router.post("/settlements/confirm")
+async def confirm_settlements():
+    """Apply all pending settlements to the database."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    return mirror.confirm_settlements()
+
+
+@router.post("/settlements/reject")
+async def reject_settlements():
+    """Discard all pending settlements."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    return mirror.reject_settlements()
