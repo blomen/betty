@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from ..core import StandardEvent
-from ..db.models import Event, Odds
+from ..db.models import DeferredEvent, Event, Odds
 from ..matching import (
     parse_teams_from_title,
     normalize_market,
@@ -715,6 +715,42 @@ def _resolve_event_id(
     return default_id, False
 
 
+def _store_deferred_event(session, event: StandardEvent, provider: str):
+    """Buffer an unmatched soft event for later Pinnacle matching."""
+    # Parse start_time from ISO string (same pattern as store_provider_event)
+    try:
+        start_time = datetime.fromisoformat(event.start_time) if isinstance(event.start_time, str) else event.start_time
+    except (ValueError, TypeError):
+        return
+
+    if not start_time:
+        return
+
+    # Check for existing pending deferred event from same provider/sport/teams/time
+    existing = session.query(DeferredEvent).filter_by(
+        provider_id=provider,
+        sport=event.sport,
+        home_team=event.home_team,
+        away_team=event.away_team,
+        start_time=start_time,
+        status="pending",
+    ).first()
+
+    if existing:
+        existing.odds_snapshot = event.markets
+        existing.retry_count = 0  # Reset on fresh data
+    else:
+        session.add(DeferredEvent(
+            provider_id=provider,
+            sport=event.sport,
+            league=event.league,
+            home_team=event.home_team,
+            away_team=event.away_team,
+            start_time=start_time,
+            odds_snapshot=event.markets,
+        ))
+
+
 def store_provider_event(
     session,
     event: StandardEvent,
@@ -745,6 +781,8 @@ def store_provider_event(
     )
 
     if matched_id is None:
+        if require_match and not getattr(event, '_from_deferred', False):
+            _store_deferred_event(session, event, provider)
         return (False, 0, 0)
 
     final_id = matched_id
