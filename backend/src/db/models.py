@@ -666,6 +666,53 @@ class SportRunMetrics(Base):
     provider_metrics = relationship("ProviderRunMetrics", back_populates="sport_errors")
 
 
+# ============ Deferred Matching ============
+
+class DeferredEvent(Base):
+    """Buffer for soft provider events that couldn't match Pinnacle on first attempt."""
+    __tablename__ = "deferred_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Text, nullable=False)
+    sport = Column(Text, nullable=False)
+    league = Column(Text)
+    home_team = Column(Text, nullable=False)
+    away_team = Column(Text, nullable=False)
+    normalized_home = Column(Text, nullable=False)
+    normalized_away = Column(Text, nullable=False)
+    start_time = Column(DateTime, nullable=False)
+    markets_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=_utcnow)
+    attempt_count = Column(Integer, default=0)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_id", "sport", "normalized_home", "normalized_away", "start_time",
+            name="uq_deferred_provider_event",
+        ),
+        Index("idx_deferred_start", "start_time"),
+        Index("idx_deferred_sport", "sport"),
+    )
+
+    def to_standard_event(self):
+        """Reconstruct StandardEvent from deferred data. Sets _from_deferred to prevent re-deferral."""
+        import json
+        from src.core.retriever import StandardEvent
+        event = StandardEvent(
+            id="",
+            name=f"{self.home_team} vs {self.away_team}",
+            sport=self.sport,
+            markets=json.loads(self.markets_json),
+            provider=self.provider_id,
+            start_time=self.start_time.isoformat() if self.start_time else "",
+            home_team=self.home_team,
+            away_team=self.away_team,
+            league=self.league or "",
+        )
+        event._from_deferred = True
+        return event
+
+
 # ============ Boost Extraction Logging ============
 
 class BoostExtractionLog(Base):
