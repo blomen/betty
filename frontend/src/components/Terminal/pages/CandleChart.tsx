@@ -32,7 +32,7 @@ const VP_OVERLAYS = [
 // London: 09:00 → 15:30 CET  (London open → NY open)
 // New York: 15:30 → 22:00 CET  (NY open → close)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 0,             endMin: 9 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
+  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
   { name: 'London',   startMin: 9 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
   { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },
 ];
@@ -53,11 +53,6 @@ function _parseCETDate(epoch: number): { year: number; month: number; day: numbe
 function epochToCETMinute(epoch: number): number {
   const { hour, minute } = _parseCETDate(epoch);
   return hour * 60 + minute;
-}
-
-function epochToCETDate(epoch: number): string {
-  const { year, month, day } = _parseCETDate(epoch);
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 
@@ -92,43 +87,6 @@ interface Props {
   tpo?: TPOLiveProfile | null;
 }
 
-/**
- * Filter fake candle data (bodies AND wicks) using neighbor validation.
- *
- * Databento 1m bars can include fleeting outlier trades that create bars with
- * extreme O/H/L/C far from the actual market price. This clamps all four OHLC
- * values to the range established by neighboring bars' close prices.
- */
-function filterWicks(candles: CandleData[]): CandleData[] {
-  if (candles.length < 3) return candles;
-  const RADIUS = 3;
-  const MAX_DEVIATION = 20;  // max pts any OHLC value can deviate from neighbor range
-
-  return candles.map((c, i) => {
-    // Build neighbor close-price range (excluding current bar)
-    const from = Math.max(0, i - RADIUS);
-    const to = Math.min(candles.length, i + RADIUS + 1);
-    let maxClose = -Infinity, minClose = Infinity;
-    for (let j = from; j < to; j++) {
-      if (j === i) continue;  // exclude self
-      maxClose = Math.max(maxClose, candles[j].c);
-      minClose = Math.min(minClose, candles[j].c);
-    }
-    if (maxClose === -Infinity) return c;  // edge case
-
-    const ceiling = maxClose + MAX_DEVIATION;
-    const floor = minClose - MAX_DEVIATION;
-
-    return {
-      ...c,
-      o: Math.max(floor, Math.min(ceiling, c.o)),
-      h: Math.max(floor, Math.min(ceiling, c.h)),
-      l: Math.max(floor, Math.min(ceiling, c.l)),
-      c: Math.max(floor, Math.min(ceiling, c.c)),
-    };
-  });
-}
-
 function toCandle(c: CandleData): CandlestickData<Time> {
   return { time: toLocalEpoch(c.t) as Time, open: c.o, high: c.h, low: c.l, close: c.c };
 }
@@ -142,45 +100,62 @@ function epochToDateStr(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
 }
 
-function detectSessionBoxes(candles: CandleData[]): SessionBox[] {
-  if (candles.length < 2) return [];
+/** Build session boxes from backend-computed SessionLevelDay data (today only).
+ *  H/L come from backend 1m bars (with Databento backfill), not from chart candles.
+ *  This ensures boxes are accurate even when chart data has gaps.
+ *  Only draws boxes for today's CET date — prior days use dashed level lines instead. */
+/** Build session boxes from chart candles + backend time boundaries.
+ *  H/L and X bounds are computed from actual candles within each session window,
+ *  ensuring boxes align with visible chart data in business-time mode. */
+function buildSessionBoxes(
+  slDays: import('@/types/market').SessionLevelDay[],
+  candles: CandleData[],
+): SessionBox[] {
+  // Pick the most recent day that has actual session data (skip weekends/holidays)
+  const sorted = [...slDays].sort((a, b) => b.date.localeCompare(a.date));
+  const latest = sorted.find(d => d.ny_high != null || d.tokyo_high != null);
+  if (!latest || candles.length === 0) return [];
 
   const boxes: SessionBox[] = [];
 
-  // Group candles by CET date — all sessions are simple intra-day ranges
-  const dateGroups = new Map<string, CandleData[]>();
-  for (const c of candles) {
-    const cetDate = epochToCETDate(c.t);
-    if (!dateGroups.has(cetDate)) dateGroups.set(cetDate, []);
-    dateGroups.get(cetDate)!.push(c);
-  }
+  const mapping: Array<{
+    name: string;
+    startField: keyof import('@/types/market').SessionLevelDay;
+    endField: keyof import('@/types/market').SessionLevelDay;
+    def: typeof SESSION_DEFS[number];
+  }> = [
+    { name: 'Tokyo',    startField: 'tokyo_start',  endField: 'tokyo_end',  def: SESSION_DEFS[0] },
+    { name: 'London',   startField: 'london_start', endField: 'london_end', def: SESSION_DEFS[1] },
+    { name: 'New York', startField: 'ny_start',     endField: 'ny_end',     def: SESSION_DEFS[2] },
+  ];
 
-  for (const [dateStr, dayCandles] of dateGroups) {
-    for (const def of SESSION_DEFS) {
-      const sessionCandles = dayCandles.filter(c => {
-        const cetMin = epochToCETMinute(c.t);
-        return cetMin >= def.startMin && cetMin < def.endMin;
-      });
+  for (const m of mapping) {
+    const sessionStart = latest[m.startField] as number;
+    const sessionEnd = latest[m.endField] as number;
 
-      if (sessionCandles.length < 2) continue;
+    // Filter candles that fall within this session's time window
+    const sessionCandles = candles.filter(c => c.t >= sessionStart && c.t < sessionEnd);
+    if (sessionCandles.length === 0) continue;
 
-      const high = Math.max(...sessionCandles.map(c => c.h));
-      const low = Math.min(...sessionCandles.map(c => c.l));
-      const startEpoch = Math.min(...sessionCandles.map(c => c.t));
-      const endEpoch = Math.max(...sessionCandles.map(c => c.t));
+    // Compute H/L from actual chart candles (matches what user sees)
+    const high = Math.max(...sessionCandles.map(c => c.h));
+    const low = Math.min(...sessionCandles.map(c => c.l));
 
-      boxes.push({
-        name: def.name,
-        high,
-        low,
-        startEpoch,
-        endEpoch,
-        color: def.color,
-        border: def.border,
-        labelColor: def.label,
-        cetDate: dateStr,
-      });
-    }
+    // Use first/last candle timestamps as box boundaries (snaps to chart grid)
+    const firstT = sessionCandles[0].t;
+    const lastT = sessionCandles[sessionCandles.length - 1].t;
+
+    boxes.push({
+      name: m.name,
+      high,
+      low,
+      startEpoch: firstT,
+      endEpoch: lastT,
+      color: m.def.color,
+      border: m.def.border,
+      labelColor: m.def.label,
+      cetDate: latest.date,
+    });
   }
 
   return boxes;
@@ -243,11 +218,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     const timeScale = chart.timeScale();
 
-    // --- Session boxes (Y from candle H/L, X from candle time range) ---
-    const candles = candlesRef.current;
-    const boxes = candles.length > 0 ? detectSessionBoxes(candles) : [];
+    // --- Session boxes (H/L + time boundaries from backend SessionLevelDay) ---
     const slDays = sessionLevelsRef.current;
-    const slByDate = new Map(slDays.map(d => [d.date, d]));
+    const boxes = slDays.length > 0 ? buildSessionBoxes(slDays, candlesRef.current) : [];
+
 
     if (boxes.length > 0) {
       for (const box of boxes) {
@@ -327,29 +301,24 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
 
     // --- Session H/L levels (persist from session end to day end) ---
     const slHidden = hiddenRef.current;
-    const currentDay = [...slDays].sort((a, b) => b.date.localeCompare(a.date))[0];
-
-    // Session level labels and hide-keys by session name (NY excluded — box is sufficient)
-    const sessionLevelMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string; hField: 'tokyo_high' | 'london_high'; lField: 'tokyo_low' | 'london_low' }> = {
-      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4', hField: 'tokyo_high', lField: 'tokyo_low' },
-      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981', hField: 'london_high', lField: 'london_low' },
+    // Skip weekend/holiday days with no session data
+    const latestSL = [...slDays].sort((a, b) => b.date.localeCompare(a.date))
+      .find(d => d.ny_high != null || d.tokyo_high != null);
+    // Session H/L extension lines — use box H/L (from chart candles) for consistency
+    const sessionLineMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
+      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4' },
+      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981' },
     };
 
-    // Only show session levels for the current CET day (reset at 00:00 CET)
-    const todayCET = epochToCETDate(Math.floor(Date.now() / 1000));
-    const todayBoxes = boxes.filter(b => b.cetDate === todayCET);
-
-    if (todayBoxes.length > 0) {
-      // Draw session H/L lines from box end to day end (22:00 CET)
-      for (const box of todayBoxes) {
-        const meta = sessionLevelMeta[box.name];
+    // Draw session H/L dashed lines from box end to day end (22:00 CET)
+    if (boxes.length > 0) {
+      for (const box of boxes) {
+        const meta = sessionLineMeta[box.name];
         if (!meta) continue;
 
-        const sl = slByDate.get(box.cetDate);
-        if (!sl) continue;  // only draw from backend-computed levels
-        const lineHigh = sl[meta.hField];
-        const lineLow = sl[meta.lField];
-        if (lineHigh == null || lineLow == null) continue;
+        // Use box H/L (computed from chart candles — matches visible data)
+        const lineHigh = box.high;
+        const lineLow = box.low;
 
         // Day end = 22:00 CET: compute from box end + remaining CET minutes
         const boxEndCETMin = epochToCETMinute(box.endEpoch);
@@ -389,80 +358,69 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
         }
       }
 
-      // PDH/PDL from backend session levels (full prior day 00:00-22:00 CET)
-      const todaySL = slByDate.get(todayCET);
-      if (todaySL?.pdh != null && todaySL?.pdl != null) {
-        const dayStartEpoch = todaySL.day_start;
-        const dayEndEpoch = todaySL.day_end;
-
+      // PDH/PDL from backend session levels — latest day only (reference for current session)
+      if (latestSL && latestSL.pdh != null && latestSL.pdl != null) {
         for (const { key, price, label } of [
-          { key: 'pdh', price: todaySL.pdh, label: 'PDH' },
-          { key: 'pdl', price: todaySL.pdl, label: 'PDL' },
+          { key: 'pdh', price: latestSL.pdh, label: 'PDH' },
+          { key: 'pdl', price: latestSL.pdl, label: 'PDL' },
         ]) {
           if (slHidden?.has(key)) continue;
           const y = pSeries.priceToCoordinate(price);
           if (y === null) continue;
 
-          const rawX1 = timeScale.timeToCoordinate(toLocalEpoch(dayStartEpoch) as Time);
-          const rawX2 = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
-          if (rawX1 === null && rawX2 === null) continue;
-          const lx = rawX1 ?? 0;
-          const rx = rawX2 ?? rect.width;
-          if (rx < 0 || lx > rect.width) continue;
-          const drawX1 = Math.max(0, lx);
-          const drawX2 = Math.min(rect.width, rx);
-
+          // Extend PDH/PDL across entire visible chart (they're reference levels)
           ctx.save();
           ctx.strokeStyle = '#FB923C';
           ctx.lineWidth = 1;
           ctx.setLineDash([6, 3]);
           ctx.beginPath();
-          ctx.moveTo(drawX1, y);
-          ctx.lineTo(drawX2, y);
+          ctx.moveTo(0, y);
+          ctx.lineTo(rect.width, y);
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
           ctx.fillStyle = '#FB923C';
           ctx.textAlign = 'left';
-          ctx.fillText(label, drawX1 + 3, y - 3);
+          ctx.fillText(label, 3, y - 3);
           ctx.restore();
         }
       }
     }
 
-    // --- NY IB levels from session levels, anchored to NY session only ---
-    // Only show after IB period is complete (10:30 ET, CET varies with DST)
+    // --- NY IB levels — latest day only ---
     const nowEpoch = Math.floor(Date.now() / 1000);
-    const ibComplete = currentDay && nowEpoch >= currentDay.ib_end;
-    if (currentDay && ibComplete) {
-      const ibLevels: Array<{ price: number; label: string; key: string }> = [];
-      if (currentDay.ib_high && !slHidden?.has('ibh')) ibLevels.push({ price: currentDay.ib_high, label: 'NYIBH', key: 'ibh' });
-      if (currentDay.ib_low && !slHidden?.has('ibl')) ibLevels.push({ price: currentDay.ib_low, label: 'NYIBL', key: 'ibl' });
-      // Anchor from NY open (15:30 CET) to NY close (22:00 CET)
-      const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_start) as Time);
-      const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(currentDay.ny_end) as Time);
-      // Skip if entire NY session is off-screen
-      if (ibStartX !== null || ibEndX !== null) {
-        for (const ib of ibLevels) {
-          const y = pSeries.priceToCoordinate(ib.price);
-          if (y === null) continue;
-          const x1 = ibStartX != null ? Math.max(0, ibStartX) : 0;
-          const x2 = ibEndX != null ? Math.min(rect.width, ibEndX) : rect.width;
-          if (x2 < 0 || x1 > rect.width) continue;
-          ctx.save();
-          ctx.strokeStyle = '#F59E0B';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([3, 3]);
-          ctx.beginPath();
-          ctx.moveTo(x1, y);
-          ctx.lineTo(x2, y);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.font = '9px monospace';
-          ctx.fillStyle = '#F59E0B';
-          ctx.textAlign = 'left';
-          ctx.fillText(ib.label, x1 + 3, y - 3);
-          ctx.restore();
+    if (latestSL) {
+      const isHistorical = nowEpoch >= latestSL.day_end;
+      const ibComplete = isHistorical || nowEpoch >= latestSL.ib_end;
+      if (ibComplete && latestSL.ib_high != null && latestSL.ib_low != null) {
+        const ibLevels: Array<{ price: number; label: string; key: string }> = [];
+        if (!slHidden?.has('ibh')) ibLevels.push({ price: latestSL.ib_high, label: 'NYIBH', key: 'ibh' });
+        if (!slHidden?.has('ibl')) ibLevels.push({ price: latestSL.ib_low, label: 'NYIBL', key: 'ibl' });
+        // Anchor from NY open (15:30 CET) to NY close (22:00 CET)
+        const ibStartX = timeScale.timeToCoordinate(toLocalEpoch(latestSL.ny_start) as Time);
+        const ibEndX = timeScale.timeToCoordinate(toLocalEpoch(latestSL.ny_end) as Time);
+        if (ibStartX !== null || ibEndX !== null) {
+          for (const ib of ibLevels) {
+            const y = pSeries.priceToCoordinate(ib.price);
+            if (y === null) continue;
+            const x1 = ibStartX != null ? Math.max(0, ibStartX) : 0;
+            const x2 = ibEndX != null ? Math.min(rect.width, ibEndX) : rect.width;
+            if (x2 < 0 || x1 > rect.width) continue;
+            ctx.save();
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x1, y);
+            ctx.lineTo(x2, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.font = '9px monospace';
+            ctx.fillStyle = '#F59E0B';
+            ctx.textAlign = 'left';
+            ctx.fillText(ib.label, x1 + 3, y - 3);
+            ctx.restore();
+          }
         }
       }
     }
@@ -575,7 +533,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           const sorted = dedupeAndSort(cleaned);
           candlesRef.current = sorted;
           try {
-            priceSeries.setData(filterWicks(sorted).map(toCandle));
+            priceSeries.setData(sorted.map(toCandle));
             volumeSeries.setData(sorted.map(toVolume));
           } catch (err) {
             console.error('Chart setData failed:', err, 'candles:', sorted.length);
@@ -630,7 +588,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     };
   }, [drawOverlays]);
 
-  // Fetch VP curve data for all timeframes (daily, weekly, monthly)
+  // Fetch VP curve data for all timeframes (daily, weekly, monthly) — once on mount
   useEffect(() => {
     let cancelled = false;
     for (const overlay of VP_OVERLAYS) {
@@ -643,9 +601,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       }).catch(() => { /* skip if not available */ });
     }
     return () => { cancelled = true; };
-  }, [session, drawOverlays]); // refetch when session updates
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Fetch session levels for multi-day overlay
+  // Fetch session levels for multi-day overlay — once on mount
   useEffect(() => {
     let cancelled = false;
     api.getSessionLevels('NQ', INITIAL_DAYS + 2).then(res => {
@@ -656,7 +615,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       }
     }).catch(err => { console.warn('[SessionLevels] fetch failed:', err); });
     return () => { cancelled = true; };
-  }, [session, drawOverlays]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Redraw when VP data loads, TPO changes, or visibility changes
   useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, tpo, drawOverlays]);
@@ -689,7 +649,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
           const merged = dedupeAndSort([...newCandles, ...candlesRef.current]);
           candlesRef.current = merged;
           try {
-            priceSeriesRef.current?.setData(filterWicks(merged).map(toCandle));
+            priceSeriesRef.current?.setData(merged.map(toCandle));
             volumeSeriesRef.current?.setData(merged.map(toVolume));
           } catch (err) {
             console.error('Chart scroll-back setData failed:', err);
@@ -711,10 +671,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     // Don't update until initial data is loaded — prevents "Cannot update oldest data"
     if (loading || candlesRef.current.length === 0) return;
     try {
-      // Filter wick using recent candles as context
-      const recent = candlesRef.current.slice(-6).concat(lastCandle);
-      const filtered = filterWicks(recent);
-      priceSeriesRef.current.update(toCandle(filtered[filtered.length - 1]));
+      priceSeriesRef.current.update(toCandle(lastCandle));
       volumeSeriesRef.current.update(toVolume(lastCandle));
     } catch (err) {
       // Stale or out-of-order candle — chart series can't display it,

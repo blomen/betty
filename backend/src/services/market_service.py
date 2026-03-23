@@ -12,7 +12,12 @@ from ..config.trading_loader import get_market_data_config, get_scanner_config, 
 from ..db.models import TradingSignal
 from ..market_data.amt import build_session_analysis, SessionAnalysis
 from ..market_data.base import MarketDataProvider
-from ..market_data.levels import compute_session_levels, compute_volume_profile, compute_vwap_bands, bars_to_trades, VolumeProfile, VWAPBands, SessionLevels
+from ..market_data.levels import (
+    compute_session_levels, compute_volume_profile, compute_vwap_bands,
+    bars_to_trades, compute_volume_profile_from_bars, VolumeProfile, VWAPBands, SessionLevels,
+    _TOKYO_START, _TOKYO_END, _LONDON_START, _LONDON_END,
+    _NY_START, _NY_END, _IB_END,
+)
 from ..market_data.macro_provider import fetch_macro_snapshot
 from ..market_data.metrics import compute_rotation_factor, compute_aspr, compute_aspr_percentile, detect_value_migration
 from ..market_data.orderflow import build_candle_flow, compute_signals
@@ -132,8 +137,7 @@ class MarketService:
             logger.info("VP bars: %d from DB (%.0f%% coverage)", len(db_bars), coverage * 100)
             return db_bars
 
-        # DB has gaps — fetch from Databento (bypass parquet cache — it caches by
-        # start.date() which returns yesterday's RTH bars instead of today's Globex)
+        # DB has gaps — try Databento backfill with its own timeout
         logger.info("VP bars: DB has %d/~%d (%.0f%%) — backfilling from Databento",
                      len(db_bars), expected_bars, coverage * 100)
         try:
@@ -143,23 +147,39 @@ class MarketService:
             config = get_market_data_config()
             full_symbol = config.get("symbol", "NQ.FUT")
             # Databento historical has ~15 min delay; clamp end to avoid 422
-            from datetime import timedelta
             fetch_end = min(d_end, datetime.now(timezone.utc) - timedelta(minutes=15))
             if fetch_end <= d_start:
                 logger.info("VP bars: too early for Databento backfill, using DB bars")
-                return db_bars
-            fetched = await raw_provider.get_bars(full_symbol, "1m", d_start, fetch_end)
-            if fetched:
-                try:
-                    inserted = self.repo.bulk_insert_candles(symbol, "1m", fetched)
-                    logger.info("VP bars: got %d from Databento, inserted %d new into DB", len(fetched), inserted)
-                except Exception as e:
-                    self.db.rollback()
-                    logger.warning("VP bars: DB insert failed (OK, using fetched data): %s", e)
-                return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
-                        for b in fetched]
+            else:
+                fetched = await asyncio.wait_for(
+                    raw_provider.get_bars(full_symbol, "1m", d_start, fetch_end),
+                    timeout=25.0,
+                )
+                if fetched:
+                    try:
+                        inserted = self.repo.bulk_insert_candles(symbol, "1m", fetched)
+                        logger.info("VP bars: got %d from Databento, inserted %d new into DB", len(fetched), inserted)
+                    except Exception as e:
+                        self.db.rollback()
+                        logger.warning("VP bars: DB insert failed (OK, using fetched data): %s", e)
+                    return [{"high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
+                            for b in fetched]
+        except asyncio.TimeoutError:
+            logger.warning("Databento backfill timed out (25s)")
         except Exception as e:
-            logger.warning("Databento backfill failed: %s — using partial DB bars", e)
+            logger.warning("Databento backfill failed: %s", e)
+
+        if db_bars:
+            return db_bars
+
+        # No bars for today — fall back to previous CET day so VP shows
+        # recent data rather than stale DB session values.
+        prev_cet = today_cet - timedelta(days=1)
+        p_start = datetime(prev_cet.year, prev_cet.month, prev_cet.day, tzinfo=_CET).astimezone(timezone.utc)
+        prev_rows = self._filter_halt(self.repo.get_candles(symbol, "1m", p_start, d_start))
+        if prev_rows:
+            logger.info("VP bars: using previous day's %d bars as fallback", len(prev_rows))
+            return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v} for r in prev_rows]
 
         return db_bars
 
@@ -450,7 +470,7 @@ class MarketService:
         try:
             structure, profiles = await asyncio.wait_for(
                 self._enrich_with_bars(symbol, today, session_row, sj),
-                timeout=10.0,
+                timeout=30.0,
             )
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning("Bar enrichment failed/timed out: %s", e)
@@ -514,7 +534,7 @@ class MarketService:
         # Compute VP live from today's bars (not stale DB session values)
         bar_dicts_with_vol = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0), "volume": b.get("volume", 1)} for b in bars] if bars else []
         if bar_dicts_with_vol:
-            vp = compute_volume_profile(bars_to_trades(bar_dicts_with_vol))
+            vp = compute_volume_profile_from_bars(bar_dicts_with_vol)
             profiles = {
                 "session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}
             }
@@ -529,7 +549,7 @@ class MarketService:
             try:
                 tf_bars = await self._get_period_bars(symbol, tf)
                 if tf_bars:
-                    tf_vp = compute_volume_profile(bars_to_trades(tf_bars))
+                    tf_vp = compute_volume_profile_from_bars(tf_bars)
                     profiles[tf] = {"poc": tf_vp.poc, "vah": tf_vp.vah, "val": tf_vp.val}
             except Exception as e:
                 logger.warning("%s VP failed: %s", tf, e)
@@ -1103,7 +1123,7 @@ class MarketService:
         if not bars:
             return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
 
-        vp = compute_volume_profile(bars_to_trades(bars))
+        vp = compute_volume_profile_from_bars(bars)
 
         result = {
             "timeframe": timeframe,
@@ -1112,7 +1132,7 @@ class MarketService:
             "val": vp.val,
             "levels": [{"price": lv.price, "volume": lv.volume} for lv in vp.levels],
         }
-        MarketService._vp_cache[cache_key] = (result, _time.time() + 60)
+        MarketService._vp_cache[cache_key] = (result, _time.time() + 300)
         return result
 
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
@@ -1273,17 +1293,17 @@ class MarketService:
                 "london_low": sl.london_low,
                 "ny_high": sl.ny_high,
                 "ny_low": sl.ny_low,
-                # Time boundaries (CET epochs) for drawing scoped lines
-                "tokyo_start": _cet_epoch(d, 0, 0),
-                "tokyo_end": _cet_epoch(d, 8, 0),
-                "london_start": _cet_epoch(d, 8, 0),
-                "london_end": _cet_epoch(d, 15, 30),
-                "ib_start": _cet_epoch(d, 15, 30),
-                "ib_end": _cet_epoch(d, 16, 30),
-                "ny_start": _cet_epoch(d, 15, 30),
-                "ny_end": _cet_epoch(d, 22, 0),
+                # Time boundaries (CET epochs) from levels.py constants
+                "tokyo_start": _cet_epoch(d, _TOKYO_START.hour, _TOKYO_START.minute),
+                "tokyo_end": _cet_epoch(d, _TOKYO_END.hour, _TOKYO_END.minute),
+                "london_start": _cet_epoch(d, _LONDON_START.hour, _LONDON_START.minute),
+                "london_end": _cet_epoch(d, _LONDON_END.hour, _LONDON_END.minute),
+                "ib_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
+                "ib_end": _cet_epoch(d, _IB_END.hour, _IB_END.minute),
+                "ny_start": _cet_epoch(d, _NY_START.hour, _NY_START.minute),
+                "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
                 "day_start": _cet_epoch(d, 0, 0),
-                "day_end": _cet_epoch(d, 22, 0),
+                "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
             })
 
         return {"days": result_days, "symbol": symbol}
@@ -1292,6 +1312,7 @@ class MarketService:
         """Return OHLCV candle array for charting from market_candles DB.
 
         Stored intervals: 1m, 5m.  15m is resampled from 1m on the fly.
+        Detects gaps and triggers async backfill from Databento historical.
         """
         end_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
@@ -1313,7 +1334,102 @@ class MarketService:
         # Filter to Globex hours (skip daily 17:00-18:00 ET halt + weekends)
         candles = [c for c in candles if self._in_globex(c["t"])]
 
+        # Filter outlier highs/lows — Databento bars include extreme ticks
+        candles = self._filter_outlier_candles(candles)
+
+        # Detect gaps and trigger async backfill (non-blocking, improves next request)
+        base_interval = "1m" if interval == "15m" else interval
+        gaps = self._detect_gaps(candles, base_interval)
+        if gaps:
+            asyncio.create_task(self._backfill_gaps(symbol, base_interval, gaps))
+
         return {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
+
+    @staticmethod
+    def _filter_outlier_candles(candles: list[dict], radius: int = 4, max_dev: float = 12.0) -> list[dict]:
+        """Clamp OHLC to neighbor median range ± max_dev.
+
+        Databento OHLCV includes every tick, including outlier trades at extreme
+        prices (settlement auctions, erroneous ticks, wide-spread fleeting fills).
+        This clamps each bar's OHLC so no value can deviate more than max_dev
+        points from the Q1-Q3 range of neighboring bars' close prices.
+        """
+        if len(candles) < 3:
+            return candles
+        n = len(candles)
+        result = []
+        for i, c in enumerate(candles):
+            closes = sorted(
+                candles[j]["c"]
+                for j in range(max(0, i - radius), min(n, i + radius + 1))
+                if j != i
+            )
+            if len(closes) < 2:
+                result.append(c)
+                continue
+            q1 = closes[len(closes) // 4]
+            q3 = closes[(len(closes) * 3) // 4]
+            floor = q1 - max_dev
+            ceiling = q3 + max_dev
+            result.append({
+                **c,
+                "o": max(floor, min(ceiling, c["o"])),
+                "h": max(floor, min(ceiling, c["h"])),
+                "l": max(floor, min(ceiling, c["l"])),
+                "c": max(floor, min(ceiling, c["c"])),
+            })
+        return result
+
+    @staticmethod
+    def _detect_gaps(candles: list[dict], interval: str) -> list[tuple[int, int]]:
+        """Find gaps in candle series that exceed 2x the expected interval.
+
+        Returns list of (gap_start_epoch, gap_end_epoch) tuples.
+        Only returns gaps older than 15 min (Databento historical delay).
+        """
+        if len(candles) < 2:
+            return []
+        bucket_s = 60 if interval == "1m" else 300
+        max_gap = bucket_s * 3  # allow small gaps (2 missing bars ok)
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        min_age = 15 * 60  # Databento 15 min delay
+
+        gaps = []
+        for i in range(1, len(candles)):
+            diff = candles[i]["t"] - candles[i - 1]["t"]
+            gap_end = candles[i]["t"]
+            if diff > max_gap and (now_epoch - gap_end) > min_age:
+                gaps.append((candles[i - 1]["t"], gap_end))
+        return gaps
+
+    async def _backfill_gaps(self, symbol: str, interval: str, gaps: list[tuple[int, int]]):
+        """Async backfill detected gaps from Databento historical."""
+        try:
+            from ..market_data.databento_provider import DabentoProvider
+            config = get_market_data_config()
+            inner = DabentoProvider(config)
+            db_symbol = config.get("symbol", "NQ.v.0")
+
+            from ..db.models import get_session as _get_db_session
+            for gap_start, gap_end in gaps:
+                start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
+                end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
+                logger.info("Candle gap backfill %s: %s → %s", interval, start_dt, end_dt)
+
+                bars = await asyncio.wait_for(
+                    inner.get_bars(db_symbol, interval, start_dt, end_dt),
+                    timeout=60.0,
+                )
+                if bars:
+                    db = _get_db_session()
+                    try:
+                        repo = MarketRepo(db)
+                        count = repo.bulk_insert_candles(symbol, interval, bars)
+                        logger.info("Candle gap backfill %s: inserted %d bars", interval, count)
+                    finally:
+                        db.close()
+        except Exception as e:
+            logger.warning("Candle gap backfill failed (non-fatal): %s", e)
 
     @staticmethod
     def _in_globex(epoch: int) -> bool:
@@ -1440,22 +1556,34 @@ class MarketService:
     _tpo_cache: dict[str, tuple[float, dict]] = {}
 
     def get_tpo_live(self, symbol: str = "NQ") -> dict:
-        """Compute today's developing TPO profile. Cached 60s."""
-        import time
+        """Compute today's developing TPO profile. Cached 60s.
+
+        After 22:00 CET (session end), auto-persists the completed profile
+        to market_tpo_sessions so RL training has historical data.
+        """
+        import time as _time
         from dataclasses import asdict
+        from zoneinfo import ZoneInfo
         cache_key = f"tpo_live_{symbol}"
-        now = time.time()
+        now = _time.time()
 
         cached = MarketService._tpo_cache.get(cache_key)
         if cached and now - cached[0] < 60:
             return cached[1]
 
-        end_dt = datetime.now(timezone.utc)
-        start_dt = end_dt.replace(hour=0, minute=0, second=0) - timedelta(hours=6)
+        _CET = ZoneInfo("Europe/Stockholm")
+        now_cet = datetime.now(timezone.utc).astimezone(_CET)
+        # Compute TPO for the most recent trading day
+        # Before 22:00 CET = developing (today), after 22:00 = completed (today)
+        tpo_date = now_cet.date()
+        day_start = datetime(tpo_date.year, tpo_date.month, tpo_date.day, tzinfo=_CET)
+        day_end = day_start + timedelta(hours=22)
 
-        rows = self.repo.get_candles(symbol, "1m", start_dt, end_dt)
-        # Convert MarketCandle ORM objects (.o/.h/.l/.c/.v) to BarData-like objects
-        # that aggregate_bars_30m expects (.open/.high/.low/.close/.volume)
+        start_utc = day_start.astimezone(timezone.utc)
+        end_utc = min(day_end, datetime.now(timezone.utc).replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+        rows = self.repo.get_candles(symbol, "1m", start_utc, end_utc)
+
         class _Bar:
             __slots__ = ("open", "high", "low", "close", "volume")
             def __init__(self, r):
@@ -1464,10 +1592,77 @@ class MarketService:
 
         profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
         result = asdict(profile)
-        result["date"] = end_dt.strftime("%Y-%m-%d")
+        date_str = tpo_date.isoformat()
+        result["date"] = date_str
+
+        # Auto-persist completed sessions (after 22:00 CET or weekend)
+        session_complete = now_cet.hour >= 22 or now_cet.weekday() >= 5
+        if session_complete and len(bars_30m) >= 10:
+            persist_key = f"tpo_persisted_{symbol}_{date_str}"
+            if not MarketService._tpo_cache.get(persist_key):
+                try:
+                    self.store_tpo_session(profile, symbol, date_str)
+                    MarketService._tpo_cache[persist_key] = (now, True)
+                    logger.info("TPO session persisted: %s %s (%d bars)", symbol, date_str, len(bars_30m))
+                except Exception:
+                    logger.warning("Failed to persist TPO session", exc_info=True)
 
         MarketService._tpo_cache[cache_key] = (now, result)
         return result
+
+    def backfill_tpo_sessions(self, symbol: str = "NQ", days: int = 30) -> int:
+        """Backfill historical TPO sessions from existing 1m bar data."""
+        from dataclasses import asdict
+        from zoneinfo import ZoneInfo
+        from ..db.models import MarketTPOSession
+
+        _CET = ZoneInfo("Europe/Stockholm")
+        now = datetime.now(timezone.utc)
+        stored = 0
+
+        for offset in range(1, days + 1):
+            target = (now - timedelta(days=offset)).astimezone(_CET).date()
+            # Skip weekends
+            if target.weekday() >= 5:
+                continue
+            date_str = target.isoformat()
+
+            # Skip if already stored
+            existing = self.db.query(MarketTPOSession).filter_by(
+                symbol=symbol, date=date_str
+            ).first()
+            if existing:
+                continue
+
+            # Fetch 1m bars for the full CET day (00:00-22:00)
+            day_start = datetime(target.year, target.month, target.day, tzinfo=_CET)
+            day_end = day_start + timedelta(hours=22)
+            rows = self.repo.get_candles(
+                symbol, "1m",
+                day_start.astimezone(timezone.utc),
+                day_end.astimezone(timezone.utc),
+            )
+            if not rows:
+                continue
+
+            class _Bar:
+                __slots__ = ("open", "high", "low", "close", "volume")
+                def __init__(self, r):
+                    self.open, self.high, self.low, self.close, self.volume = r.o, r.h, r.l, r.c, r.v
+
+            bars_30m = aggregate_bars_30m([_Bar(r) for r in rows])
+            if len(bars_30m) < 10:
+                continue
+
+            profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
+            try:
+                self.store_tpo_session(profile, symbol, date_str)
+                stored += 1
+                logger.info("TPO backfill: %s %s (%d bars)", symbol, date_str, len(bars_30m))
+            except Exception:
+                logger.warning("TPO backfill failed for %s", date_str, exc_info=True)
+
+        return stored
 
     # ---- Helper methods for compute_session ----
 

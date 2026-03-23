@@ -173,6 +173,109 @@ def bars_to_trades(bars: list[dict], tick_size: float = 0.25) -> list[dict]:
     return trades
 
 
+def _accumulate_bars_into_buckets(bars: list[dict], tick_size: float = 0.25) -> dict[float, int]:
+    """Distribute bar volume into tick-level price buckets directly (no intermediate list).
+
+    Same logic as bars_to_trades → compute_volume_profile, but ~10x faster
+    because it skips creating millions of trade dicts.
+    """
+    buckets: dict[float, int] = {}
+    for bar in bars:
+        high = bar.get("high", 0)
+        low = bar.get("low", 0)
+        close = bar.get("close", 0)
+        volume = bar.get("volume", 1)
+
+        low_snapped = round(low / tick_size) * tick_size
+        high_snapped = round(high / tick_size) * tick_size
+
+        if high_snapped <= low_snapped or volume <= 0:
+            price = round(close / tick_size) * tick_size
+            buckets[price] = buckets.get(price, 0) + max(volume, 1)
+            continue
+
+        n_levels = round((high_snapped - low_snapped) / tick_size) + 1
+        vol_per_level = volume // n_levels
+        remainder = volume - vol_per_level * n_levels
+
+        price = low_snapped
+        for _ in range(n_levels):
+            p = round(price, 10)
+            buckets[p] = buckets.get(p, 0) + vol_per_level
+            price += tick_size
+
+        # Distribute remainder near close
+        if remainder > 0:
+            close_snapped = round(close / tick_size) * tick_size
+            price = close_snapped
+            given = 0
+            offset = 0
+            while given < remainder:
+                for p in (round(close_snapped + offset * tick_size, 10),
+                          round(close_snapped - offset * tick_size, 10)):
+                    if given >= remainder:
+                        break
+                    if low_snapped <= p <= high_snapped:
+                        buckets[p] = buckets.get(p, 0) + 1
+                        given += 1
+                offset += 1
+                if offset > n_levels:
+                    break
+
+    return buckets
+
+
+def compute_volume_profile_from_bars(
+    bars: list[dict],
+    tick_size: float = 0.25,
+) -> VolumeProfile:
+    """Fast VP computation directly from bars — avoids creating intermediate trade list."""
+    if not bars:
+        return VolumeProfile(poc=0, vah=0, val=0)
+
+    buckets = _accumulate_bars_into_buckets(bars, tick_size)
+
+    if not buckets:
+        return VolumeProfile(poc=0, vah=0, val=0)
+
+    poc = max(buckets, key=buckets.get)
+    total_volume = sum(buckets.values())
+
+    sorted_prices = sorted(buckets.keys())
+    poc_idx = sorted_prices.index(poc)
+    va_volume = buckets[poc]
+    va_target = total_volume * 0.70
+    lo_idx = poc_idx
+    hi_idx = poc_idx
+
+    while va_volume < va_target and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
+        expand_up = buckets.get(sorted_prices[min(hi_idx + 1, len(sorted_prices) - 1)], 0) if hi_idx < len(sorted_prices) - 1 else 0
+        expand_down = buckets.get(sorted_prices[max(lo_idx - 1, 0)], 0) if lo_idx > 0 else 0
+
+        if expand_up >= expand_down and hi_idx < len(sorted_prices) - 1:
+            hi_idx += 1
+            va_volume += buckets[sorted_prices[hi_idx]]
+        elif lo_idx > 0:
+            lo_idx -= 1
+            va_volume += buckets[sorted_prices[lo_idx]]
+        else:
+            hi_idx = min(hi_idx + 1, len(sorted_prices) - 1)
+            va_volume += buckets.get(sorted_prices[hi_idx], 0)
+
+    vah = sorted_prices[hi_idx]
+    val = sorted_prices[lo_idx]
+
+    poc_vol = buckets[poc]
+    single_prints = []
+    for i in range(1, len(sorted_prices)):
+        if buckets[sorted_prices[i]] < poc_vol * 0.05:
+            single_prints.append((sorted_prices[i], sorted_prices[i]))
+
+    levels = [VolumeProfileLevel(price=p, volume=v) for p, v in sorted(buckets.items())]
+
+    return VolumeProfile(poc=poc, vah=vah, val=val, levels=levels, single_prints=single_prints)
+
+
 def normalize_volume_per_day(bars: list[dict], target_vol_per_day: int = 100_000) -> list[dict]:
     """Equalize each bar's contribution for composite (multi-day) profiles.
 
@@ -307,7 +410,7 @@ CET = ZoneInfo("Europe/Stockholm")
 
 # Fixed CET session boundaries (match frontend SESSION_DEFS)
 _TOKYO_START = time(0, 0)
-_TOKYO_END = time(9, 0)      # = London open
+_TOKYO_END = time(8, 0)
 _LONDON_START = time(9, 0)
 _LONDON_END = time(15, 30)   # = NY open
 _NY_START = time(15, 30)
@@ -322,7 +425,7 @@ def compute_session_levels(
     """Compute PDH/PDL, Tokyo/London H/L, IB from 1-minute bars.
 
     All session boundaries use fixed CET times (matching chart display):
-    - Tokyo: 00:00 - 09:00 CET
+    - Tokyo: 00:00 - 08:00 CET
     - London: 09:00 - 15:30 CET
     - NY / IB: 15:30 - 22:00 CET  (IB = first 60 min: 15:30-16:30)
     - PDH/PDL: prior trading day's full session (00:00-22:00 CET)
@@ -371,7 +474,7 @@ def compute_session_levels(
         if bar_date != today_cet:
             continue
 
-        # Tokyo: 00:00-09:00 CET
+        # Tokyo: 00:00-08:00 CET
         if _TOKYO_START <= bar_time < _TOKYO_END:
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
@@ -668,11 +771,11 @@ def compute_developing_poc(bars: list[dict], tick_size: float = 0.25) -> dict:
     if not bars:
         return {"developing_poc": None, "prior_poc": None, "direction": "flat"}
 
-    current_vp = compute_volume_profile(bars_to_trades(bars, tick_size), tick_size)
+    current_vp = compute_volume_profile_from_bars(bars, tick_size)
     current_poc = current_vp.poc
 
     half = max(1, len(bars) // 2)
-    first_half_vp = compute_volume_profile(bars_to_trades(bars[:half], tick_size), tick_size)
+    first_half_vp = compute_volume_profile_from_bars(bars[:half], tick_size)
     prior_poc = first_half_vp.poc
 
     if current_poc is None or prior_poc is None or (current_poc == 0 and prior_poc == 0):
