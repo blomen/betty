@@ -33,6 +33,7 @@ class MirrorService:
             on_event_data=self._handle_event_data,
             on_bet_history=self._handle_bet_history,
             on_financial_data=self._handle_financial_data,
+            on_provider_detected=self._handle_provider_detected,
         )
 
     async def start(self, site_url: str | None = None):
@@ -42,6 +43,43 @@ class MirrorService:
     async def stop(self):
         """Stop the mirror browser."""
         await self.interceptor.stop()
+
+    async def _handle_provider_detected(self, provider_id: str):
+        """Fires when user navigates to a known provider site."""
+        info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
+        logger.info(
+            f"[mirror] Sync available for {provider_id}: "
+            f"balance={info['balance']}, pending={info['pending_bets']}"
+        )
+        self._notify("sync_available", {
+            "provider": provider_id,
+            "balance": info["balance"],
+            "pending_bets": info["pending_bets"],
+            "pending_stake": info["pending_stake"],
+        })
+
+    def _get_provider_sync_info(self, provider_id: str) -> dict:
+        """Get current balance + pending bet count for a provider."""
+        from ..repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            repo = ProfileRepo(db)
+            profile = repo.get_active()
+            balance = repo.get_balance(profile.id, provider_id)
+            pending = db.query(Bet).filter(
+                Bet.provider_id == provider_id,
+                Bet.result == "pending",
+            ).all()
+            return {
+                "balance": balance or 0,
+                "pending_bets": len(pending),
+                "pending_stake": sum(b.stake for b in pending),
+            }
+        except Exception as e:
+            logger.debug(f"[mirror] Could not get sync info for {provider_id}: {e}")
+            return {"balance": 0, "pending_bets": 0, "pending_stake": 0}
+        finally:
+            db.close()
 
     def get_status(self) -> dict[str, Any]:
         """Get current mirror status."""

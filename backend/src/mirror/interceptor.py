@@ -44,17 +44,39 @@ class BetInterceptor:
     # Balance / deposit / withdraw patterns
     _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
 
+    # Known provider domains → provider ID
+    _PROVIDER_DOMAINS = {
+        "campobet.se": "campobet", "quickcasino.se": "quickcasino",
+        "betinia.se": "betinia", "swiper.se": "swiper", "lodur.se": "lodur",
+        "dbet.com": "dbet", "spelklubben.se": "spelklubben",
+        "betsson.com": "betsson", "betsafe.com": "betsafe",
+        "nordicbet.com": "nordicbet", "bethard.com": "bethard",
+        "unibet.se": "unibet", "leovegas.com": "leovegas",
+        "expekt.se": "expekt", "888sport.se": "888sport",
+        "speedybet.com": "speedybet", "x3000.com": "x3000",
+        "goldenbull.se": "goldenbull", "1x2.se": "1x2",
+        "comeon.com": "comeon", "hajper.com": "hajper",
+        "lyllocasino.com": "lyllo", "snabbare.com": "snabbare",
+        "10bet.se": "10bet", "mrgreen.se": "mrgreen",
+        "betmgm.se": "betmgm", "vbet.se": "vbet",
+        "interwetten.se": "interwetten", "coolbet.com": "coolbet",
+        "tipwin.se": "tipwin", "pinnacle.com": "pinnacle",
+    }
+
     def __init__(
         self,
         on_bet_response: Callable[..., Awaitable[None]] | None = None,
         on_event_data: Callable[[str, str], Awaitable[None]] | None = None,
         on_bet_history: Callable[[str, str], Awaitable[None]] | None = None,
         on_financial_data: Callable[[str, str], Awaitable[None]] | None = None,
+        on_provider_detected: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.on_bet_response = on_bet_response
         self.on_event_data = on_event_data
         self.on_bet_history = on_bet_history
         self.on_financial_data = on_financial_data
+        self.on_provider_detected = on_provider_detected
+        self._detected_providers: set[str] = set()  # Track already-detected to avoid spam
         self.status = "stopped"
         self.context = None
         self._playwright = None
@@ -95,10 +117,12 @@ class BetInterceptor:
         # Start recording
         self.recorder.start()
 
-        # Attach HTTP + WebSocket listeners to all current and future pages
+        # Attach HTTP + WebSocket + navigation listeners to all current and future pages
         def _attach_page(page):
             page.on("response", self._on_response)
             page.on("websocket", self._on_websocket)
+            if self.on_provider_detected:
+                page.on("framenavigated", lambda frame: self._check_provider_navigation(frame))
 
         for page in self.context.pages:
             _attach_page(page)
@@ -242,6 +266,34 @@ class BetInterceptor:
         ws.on("framereceived", _on_frame_received)
         ws.on("framesent", _on_frame_sent)
         ws.on("close", lambda: logger.debug(f"[mirror] WebSocket closed: {url}"))
+
+    def _check_provider_navigation(self, frame):
+        """Detect when user navigates to a known provider site."""
+        try:
+            if frame.parent_frame:
+                return  # Only care about top-level navigation
+            url = frame.url
+            if not url or url.startswith("about:") or url.startswith("chrome:"):
+                return
+            from urllib.parse import urlparse
+            hostname = urlparse(url).hostname or ""
+            # Match against known domains (strip www.)
+            clean = hostname.removeprefix("www.").removeprefix("d-cf.").removeprefix("cloud-api.")
+            for domain, provider_id in self._PROVIDER_DOMAINS.items():
+                if clean == domain or clean.endswith("." + domain):
+                    if provider_id not in self._detected_providers:
+                        self._detected_providers.add(provider_id)
+                        logger.info(f"[mirror] Provider detected: {provider_id} ({url[:80]})")
+                        if self.on_provider_detected:
+                            import asyncio
+                            asyncio.ensure_future(self.on_provider_detected(provider_id))
+                    return
+        except Exception as e:
+            logger.debug(f"[mirror] Navigation check error: {e}")
+
+    def reset_detected_providers(self):
+        """Clear detected providers — allows re-detection after sync."""
+        self._detected_providers.clear()
 
     async def stop(self):
         """Close browser and stop recording."""

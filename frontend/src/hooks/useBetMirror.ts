@@ -37,9 +37,17 @@ export interface SettlementSummary {
   settlements: PendingSettlement[];
 }
 
+export interface SyncAvailable {
+  provider: string;
+  balance: number;
+  pending_bets: number;
+  pending_stake: number;
+}
+
 export function useBetMirror() {
   const [toasts, setToasts] = useState<MirroredBet[]>([]);
   const [pendingSettlements, setPendingSettlements] = useState<SettlementSummary | null>(null);
+  const [syncAvailable, setSyncAvailable] = useState<SyncAvailable | null>(null);
 
   const dismiss = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id));
@@ -95,11 +103,27 @@ export function useBetMirror() {
     });
 
     es.addEventListener('settlements_pending', (e: MessageEvent) => {
+      setSyncAvailable(null); // Replace sync banner with settlement breakdown
       setPendingSettlements(JSON.parse(e.data));
+    });
+
+    es.addEventListener('sync_available', (e: MessageEvent) => {
+      setSyncAvailable(JSON.parse(e.data));
+    });
+
+    es.addEventListener('balance_synced', (e: MessageEvent) => {
+      // Update sync banner with new balance if still showing
+      const data = JSON.parse(e.data);
+      setSyncAvailable(prev => prev && prev.provider === data.provider
+        ? { ...prev, balance: data.balance }
+        : prev
+      );
     });
 
     return () => es.close();
   }, []);
 
-  return { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements };
+  const dismissSync = useCallback(() => setSyncAvailable(null), []);
+
+  return { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements, syncAvailable, dismissSync };
 }

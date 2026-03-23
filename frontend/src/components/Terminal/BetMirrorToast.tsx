@@ -178,11 +178,48 @@ function SettlementBanner({ pendingSettlements, confirmSettlements, rejectSettle
   );
 }
 
+function SyncBanner({ syncAvailable, onDismiss }: {
+  syncAvailable: any;
+  onDismiss: () => void;
+}) {
+  if (!syncAvailable) return null;
+
+  const { provider, balance, pending_bets, pending_stake } = syncAvailable;
+
+  return (
+    <div className="mx-3 mt-2 border border-info/30 bg-gradient-to-br from-info/10 to-info/4 text-xs font-mono"
+      style={{ borderLeftWidth: 3, borderLeftColor: '#42A5F5' }}>
+      <div className="px-3 py-2.5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-1">
+          <span className="text-info font-bold text-sm">~</span>
+          <span className="text-text">
+            <span className="text-info font-semibold">{provider}</span>
+            {' detected — '}
+            balance: <span className="text-text font-semibold">{balance.toFixed(0)} kr</span>
+            {pending_bets > 0 && (
+              <>, {pending_bets} pending bet{pending_bets !== 1 ? 's' : ''} ({pending_stake.toFixed(0)} kr)</>
+            )}
+            {' — '}
+            <span className="text-muted">open bet history to settle</span>
+          </span>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="px-2 py-1 text-xs text-muted hover:text-text transition"
+        >
+          dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function BetMirrorToast() {
-  const { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements } = useBetMirror();
+  const { toasts, dismiss, pendingSettlements, confirmSettlements, rejectSettlements, syncAvailable, dismissSync } = useBetMirror();
 
   return (
     <div className="flex flex-col">
+      <SyncBanner syncAvailable={syncAvailable} onDismiss={dismissSync} />
       <SettlementBanner
         pendingSettlements={pendingSettlements}
         confirmSettlements={confirmSettlements}
