@@ -749,7 +749,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       <div className="flex gap-1 border-b border-border">
         {([
           { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabValue text-tabValue' },
           { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
           { id: 'manual' as ValueTab, label: 'Manual', count: null, activeClass: 'border-tabValue text-tabValue' },
         ]).map(tab => (

@@ -243,13 +243,6 @@ class BatchBuilder:
             if bet is not None:
                 candidates.append(bet)
 
-        # Collect +EV boosts from specials table
-        boost_candidates = self._collect_boosts(
-            total_bankroll, provider_balances,
-            kelly_fraction, single_bet_cap_pct, min_edge, min_stake,
-        )
-        candidates.extend(boost_candidates)
-
         return candidates
 
     def _collect_boosts(
