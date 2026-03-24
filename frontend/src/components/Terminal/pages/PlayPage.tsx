@@ -51,7 +51,8 @@ export function PlayPage(_props: PlayPageProps) {
     refetchInterval: 120_000,
   });
 
-  const { data: playSession } = useQuery<PlaySession>({
+  // PlaySession query kept for potential future use (cluster lifecycle data)
+  useQuery<PlaySession>({
     queryKey: ['play-session'],
     queryFn: () => api.getPlaySession(),
     staleTime: 30_000,
@@ -63,6 +64,9 @@ export function PlayPage(_props: PlayPageProps) {
   const summary = batchData?.summary;
   const balanceStatus = batchData?.balance_status ?? [];
   const missed = batchData?.missed_opportunities;
+  const depositRecs = (batchData as any)?.deposit_recommendations ?? [];
+  const withdrawalRecs = (batchData as any)?.withdrawal_recommendations ?? [];
+  const capitalPlan = (batchData as any)?.capital_plan;
 
   const activeBatch = useMemo(
     () => batch.filter((b) => !removedBets.has(betKey(b))),
@@ -90,14 +94,6 @@ export function PlayPage(_props: PlayPageProps) {
     () => fireableBets.reduce((sum, b) => sum + b.expected_profit, 0),
     [fireableBets],
   );
-
-  // Deploy recommendations
-  const deployRecs = useMemo(() => {
-    if (!playSession) return [];
-    return playSession.clusters
-      .filter((c) => c.needs_deposit && c.recommended_siblings.length > 0)
-      .flatMap((c) => c.recommended_siblings.map((s) => s.provider_id));
-  }, [playSession]);
 
   // ---- Handlers ----
   const removeBet = useCallback((b: BatchBet) => {
@@ -222,33 +218,138 @@ export function PlayPage(_props: PlayPageProps) {
     );
   }
 
-  function renderBalancePanel() {
-    if (balanceStatus.length === 0) return null;
+  // ---- Actions panel ----
+  function renderActionsPanel() {
+    const hasWithdrawals = withdrawalRecs.length > 0;
+    const hasDeposits = depositRecs.length > 0;
+    const hasActions = hasWithdrawals || hasDeposits;
+    if (!hasActions && !capitalPlan) return null;
+
+    const totalWithdrawable = withdrawalRecs.reduce((s: number, w: any) => s + w.amount, 0);
+    const totalDepositNeeded = depositRecs.reduce((s: number, d: any) => s + d.deposit_amount, 0);
+    const totalMissedEV = depositRecs.reduce((s: number, d: any) => s + d.missed_ev, 0);
+
+    const priorityColors: Record<string, string> = {
+      sharp: 'text-success',
+      no_wagering: 'text-blue-400',
+      fast_clear: 'text-emerald-400',
+      medium_clear: 'text-amber-400',
+      slow_clear: 'text-orange-400',
+      skip_infeasible: 'text-red-400/50 line-through',
+    };
+
+    const priorityIcons: Record<string, string> = {
+      sharp: '◆',
+      no_wagering: '●',
+      fast_clear: '▲',
+      medium_clear: '■',
+      slow_clear: '◇',
+      skip_infeasible: '✗',
+    };
 
     return (
-      <div className="border border-border bg-panel px-3 py-2">
-        <div className="text-xs text-muted font-medium mb-1.5">BALANCE ALLOCATION</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1">
-          {balanceStatus.map((bs) => {
-            const hasShortfall = bs.shortfall != null && bs.shortfall > 0;
-            return (
-              <div key={bs.provider_id} className="flex items-center gap-1.5 text-xs">
-                <span className={hasShortfall ? 'text-error' : 'text-success'}>
-                  {hasShortfall ? 'x' : 'v'}
-                </span>
-                <ProviderName name={bs.provider_id} />
-                <span className="text-muted ml-auto">
-                  {bs.balance.toFixed(0)} &rarr; {bs.remaining.toFixed(0)}
-                </span>
-                {hasShortfall && (
-                  <span className="text-error text-[10px]">
-                    needs {bs.shortfall!.toFixed(0)} ({bs.missed_bets}b, +{bs.missed_ev.toFixed(0)})
-                  </span>
-                )}
-              </div>
-            );
-          })}
+      <div className="border border-border bg-panel flex flex-col">
+        {/* Header */}
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-xs font-bold text-text tracking-wider uppercase">Capital Actions</span>
+          {capitalPlan && (
+            <span className="text-[10px] text-muted">
+              Deployed: {capitalPlan.total_deployed?.toFixed(0)} kr
+            </span>
+          )}
         </div>
+
+        {/* Step 1: Withdrawals */}
+        {hasWithdrawals && (
+          <div className="px-3 py-2 border-b border-border">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-5 h-5 rounded-full bg-success/20 text-success text-[10px] font-bold flex items-center justify-center">1</span>
+              <span className="text-xs font-medium text-success">Withdraw</span>
+              <span className="text-[10px] text-muted ml-auto">{totalWithdrawable.toFixed(0)} kr available</span>
+            </div>
+            <div className="space-y-1 ml-7">
+              {withdrawalRecs.map((w: any) => (
+                <div key={w.provider_id} className="flex items-center justify-between text-xs">
+                  <ProviderName name={w.provider_id} className="text-text" />
+                  <span className="text-success font-medium">{w.amount.toFixed(0)} kr</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Deposit recommendations */}
+        {hasDeposits && (
+          <div className="px-3 py-2 border-b border-border">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold flex items-center justify-center">
+                {hasWithdrawals ? '2' : '1'}
+              </span>
+              <span className="text-xs font-medium text-amber-400">Deposit</span>
+              <span className="text-[10px] text-muted ml-auto">{totalDepositNeeded.toFixed(0)} kr → +{totalMissedEV.toFixed(0)} EV</span>
+            </div>
+            <div className="space-y-1.5 ml-7">
+              {depositRecs
+                .filter((d: any) => d.wagering_feasible !== false)
+                .map((d: any) => (
+                <div key={d.cluster} className="flex items-center gap-2 text-xs">
+                  <span className="text-text font-medium min-w-[80px]">{d.cluster}</span>
+                  <span className="text-amber-400">{d.deposit_amount.toFixed(0)} kr</span>
+                  <span className="text-muted text-[10px]">
+                    {d.missed_bets}b +{d.missed_ev.toFixed(0)}
+                  </span>
+                  {d.sessions_to_clear != null && (
+                    <span className="text-[10px] text-muted ml-auto">
+                      {d.sessions_to_clear}s / {d.days_remaining ?? '?'}d
+                    </span>
+                  )}
+                </div>
+              ))}
+              {depositRecs.some((d: any) => d.wagering_feasible === false) && (
+                <div className="text-[10px] text-red-400/60 mt-1">
+                  Skipped: {depositRecs.filter((d: any) => !d.wagering_feasible).map((d: any) => d.cluster).join(', ')} (can't clear wagering in time)
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Fire */}
+        {fireableBets.length > 0 && (
+          <div className="px-3 py-2 border-b border-border">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-bold flex items-center justify-center">
+                {(hasWithdrawals ? 1 : 0) + (hasDeposits ? 1 : 0) + 1}
+              </span>
+              <span className="text-xs font-medium text-blue-400">Fire Batch</span>
+              <span className="text-[10px] text-success ml-auto">{fireableBets.length} bets → +{fireableEV.toFixed(0)} kr</span>
+            </div>
+          </div>
+        )}
+
+        {/* Priority legend */}
+        {capitalPlan?.targets?.length > 0 && (
+          <div className="px-3 py-2">
+            <div className="text-[10px] text-muted font-medium mb-1 uppercase tracking-wider">Priority Order</div>
+            <div className="space-y-0.5">
+              {capitalPlan.targets.map((t: any, i: number) => {
+                const label = t.priority_label || 'unknown';
+                const color = priorityColors[label] || 'text-muted';
+                const icon = priorityIcons[label] || '·';
+                return (
+                  <div key={t.cluster || t.provider_id || i} className={`flex items-center gap-1.5 text-[11px] ${color}`}>
+                    <span className="w-3 text-center">{icon}</span>
+                    <span>{t.cluster || t.provider_id}</span>
+                    {t.missed_ev > 0 && <span className="text-muted ml-auto">+{t.missed_ev.toFixed(0)}</span>}
+                    {t.sessions_to_clear != null && (
+                      <span className="text-muted text-[10px]">{t.sessions_to_clear}s</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -292,16 +393,20 @@ export function PlayPage(_props: PlayPageProps) {
       {/* Toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Batch table */}
+      {/* Main content: batch table + actions panel */}
       {batchLoading && batch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Building batch...
         </div>
       ) : activeBatch.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          No bets in batch. Click "Build Batch" to generate.
+        <div className="flex gap-2 flex-1 min-h-0">
+          <div className="flex-1 text-muted text-sm py-8 text-center border border-border bg-panel">
+            No bets in batch. Click "Build Batch" to generate.
+          </div>
+          {renderActionsPanel()}
         </div>
       ) : (
+        <div className="flex gap-2 flex-1 min-h-0">
         <div className="flex-1 min-h-0 overflow-y-auto border border-border">
           <table className="sq w-full">
             <colgroup>
@@ -361,17 +466,11 @@ export function PlayPage(_props: PlayPageProps) {
             </tbody>
           </table>
         </div>
-      )}
 
-      {/* Balance panel */}
-      {renderBalancePanel()}
-
-      {/* Deploy recommendations */}
-      {deployRecs.length > 0 && (
-        <div className="text-xs text-muted px-2">
-          Deploy: {deployRecs.map((p, i) => (
-            <span key={p}>{i > 0 && ', '}<ProviderName name={p} /> +1</span>
-          ))}
+        {/* Actions panel — side by side with batch table */}
+        <div className="w-[280px] flex-shrink-0 overflow-y-auto">
+          {renderActionsPanel()}
+        </div>
         </div>
       )}
 
