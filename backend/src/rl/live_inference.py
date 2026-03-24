@@ -10,7 +10,7 @@ import torch
 from .agent.network import DQNetwork
 from .config import Action, LevelType
 from .data.normalization import RunningNormalizer
-from .features.observation import build_observation, OBSERVATION_DIM
+from .features.observation import build_observation, OBSERVATION_DIM, CONTEXT_DIM
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class DQNLiveInference:
 
     def _load_checkpoint(self, path: Path) -> bool:
         try:
-            self._network = DQNetwork(input_dim=OBSERVATION_DIM)
+            self._network = DQNetwork(input_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM)
             checkpoint = torch.load(path, weights_only=False, map_location="cpu")
             self._network.load_state_dict(checkpoint["q_network"])
             self._network.eval()

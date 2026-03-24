@@ -302,12 +302,13 @@ class ReplayEngine:
                 fwd_start = i + 1
                 fwd_end = min(len(norm_ticks), fwd_start + 180_000)
 
-                # Last 20 ticks for micro features
-                micro_start = max(0, i - 20)
+                # Last 50 ticks for raw tick sequence (temporal stream)
+                micro_start = max(0, i - 50)
                 recent_ticks = norm_ticks[micro_start:i + 1]
 
                 state = self._build_state(tick, level_type, session_date, date_str)
                 state["recent_ticks"] = recent_ticks
+                state["approach_direction"] = approach_direction
                 observation = build_observation(state)
 
                 episode = label_outcome_from_array(
@@ -581,10 +582,33 @@ class ReplayEngine:
         else:
             day_type = "normal"
 
+        # Build 5m candle flows by grouping 1m flows in chunks of 5
+        candle_flows_5m: list = []
+        if len(self._candle_flows) >= 5:
+            for chunk_start in range(0, len(self._candle_flows) - 4, 5):
+                chunk = self._candle_flows[chunk_start:chunk_start + 5]
+                agg_high = max(c.high for c in chunk)
+                agg_low = min(c.low for c in chunk)
+                agg = CandleFlow(
+                    ts=chunk[-1].ts,
+                    open=chunk[0].open,
+                    high=agg_high,
+                    low=agg_low,
+                    close=chunk[-1].close,
+                    volume=sum(c.volume for c in chunk),
+                    buy_volume=sum(c.buy_volume for c in chunk),
+                    sell_volume=sum(c.sell_volume for c in chunk),
+                    delta=sum(c.delta for c in chunk),
+                    tick_count=sum(c.tick_count for c in chunk),
+                    spread=agg_high - agg_low,
+                )
+                candle_flows_5m.append(agg)
+
         return {
             "level_type": level_type,
             "price": price,
             "candles": recent_flows,
+            "candles_5m": candle_flows_5m[-10:] if candle_flows_5m else [],
             "vwap_bands": vwap_bands,
             "volume_profile": vp,
             "tpo_profile": tpo_profile_dict,

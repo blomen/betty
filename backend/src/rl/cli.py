@@ -486,7 +486,7 @@ def train(
     from src.rl.agent.dqn import DQNAgent
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, BATCH_SIZE
-    from src.rl.features.observation import OBSERVATION_DIM
+    from src.rl.features.observation import OBSERVATION_DIM, CONTEXT_DIM
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -504,7 +504,7 @@ def train(
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
     n = len(observations)
-    typer.echo(f"Loaded {n} episodes from {episodes_dir}")
+    typer.echo(f"Loaded {n} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
 
     # Load and apply normalizer
     normalizer_path = episodes_dir / "normalizer.json"
@@ -530,13 +530,10 @@ def train(
     val_rr = rewards_rev[train_end:val_end]
 
     typer.echo(f"Split: train={len(train_obs)}, val={len(val_obs)}, test={n - val_end}")
+    typer.echo(f"Architecture: dual-stream Dueling DQN (context_dim={CONTEXT_DIM})")
 
-    # Train a 2-action model (CONTINUATION vs REVERSAL) to predict Q-values
-    # accurately. SKIP is handled at inference via confidence threshold:
-    # only trade when max(Q_cont, Q_rev) > SKIP_THRESHOLD.
-    # This avoids the skip-collapse problem where the model learns to
-    # always skip because 0.0 > expected negative reward.
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM)
+    # Dual-stream Dueling DQN with Double DQN
+    agent = DQNAgent(observation_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM)
 
     for i in range(len(train_obs)):
         rc = float(train_rc[i])
@@ -600,7 +597,7 @@ def eval(
     from src.rl.agent.evaluate import compute_metrics, print_evaluation_report
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, EPSILON_END
-    from src.rl.features.observation import OBSERVATION_DIM
+    from src.rl.features.observation import OBSERVATION_DIM, CONTEXT_DIM
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -641,10 +638,10 @@ def eval(
     typer.echo(f"Test split: {len(test_obs)} episodes (last 17% of {n})")
     typer.echo(f"Skip threshold: {skip_threshold}")
 
-    # Load agent with greedy policy
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM, epsilon=0.0)
+    # Load agent with greedy policy (dual-stream architecture)
+    agent = DQNAgent(observation_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM, epsilon=0.0)
     agent.load(model_path)
-    agent.epsilon = 0.0  # Greedy evaluation
+    agent.epsilon = 0.0
     typer.echo(f"Loaded model: {model_path}")
 
     # Run evaluation with confidence-based skipping
