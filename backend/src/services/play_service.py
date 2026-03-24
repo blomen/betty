@@ -149,26 +149,35 @@ class PlaySessionService:
         active = active[:max_siblings]
 
         total_balance = sum(s["balance"] for s in active)
+        available = [s for s in siblings if s["lifecycle"] == "available"]
+        dormant = [s for s in siblings if s["lifecycle"] == "dormant"]
 
-        # Hide cluster if total balance < min stake and no pending bonus phases
-        if total_balance < min_stake and not any(
-            s["lifecycle"] in ("deposited", "freebet") for s in active
-        ):
+        # Hide cluster only if zero opps AND no active/available siblings
+        if unique_opps == 0 and not active and not available:
             return None
 
         urgency = max((self._sibling_urgency(s) for s in active), default=0)
+
+        # Recommend depositing if: has opps but fewer active siblings than max
+        needs_deposit = unique_opps > 0 and len(active) < max_siblings and len(available) > 0
+        # How many more siblings to recommend
+        recommended_count = min(max_siblings - len(active), len(available))
+        # Pick the recommended ones (first N available)
+        recommended = available[:recommended_count] if needs_deposit else []
 
         return {
             "id": name,
             "label": name.replace("_", " ").title(),
             "canonical": canonical,
             "active_siblings": active,
-            "available_siblings": [s for s in siblings if s["lifecycle"] == "available"],
-            "dormant_siblings": [s for s in siblings if s["lifecycle"] == "dormant"],
+            "available_siblings": available,
+            "recommended_siblings": recommended,
+            "dormant_siblings": dormant,
             "total_balance": round(total_balance, 2),
             "playable_count": len(active),
             "unique_opps": unique_opps,
             "urgency": round(urgency, 2),
+            "needs_deposit": needs_deposit,
         }
 
     @staticmethod

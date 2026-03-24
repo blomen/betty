@@ -112,10 +112,10 @@ export const ClusterPanel = memo(function ClusterPanel({
 
   return (
     <div className="space-y-2 mb-3">
-      {/* Play pills — only clusters with playable siblings (filtered server-side) */}
+      {/* Play pills */}
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[11px] text-muted mr-1">Play</span>
-        {clusters.map(c => (
+        {clusters.filter(c => c.playable_count > 0).map(c => (
           <button
             key={c.id}
             onClick={() => onClusterSelect(activeCluster === c.id ? null : c.id)}
@@ -129,6 +129,25 @@ export const ClusterPanel = memo(function ClusterPanel({
             <span className="ml-1 text-muted2">{c.playable_count}</span>
           </button>
         ))}
+        {clusters.some(c => c.needs_deposit) && (
+          <>
+            <span className="text-[11px] text-muted ml-2 mr-1">Deploy</span>
+            {clusters.filter(c => c.needs_deposit).map(c => (
+              <button
+                key={`dep-${c.id}`}
+                onClick={() => onClusterSelect(activeCluster === c.id ? null : c.id)}
+                className={`text-[11px] px-2 py-0.5 rounded border border-dashed transition-colors ${
+                  activeCluster === c.id
+                    ? 'border-success/50 bg-success/10 text-success'
+                    : 'border-border/50 text-muted/60 hover:text-muted hover:border-muted'
+                }`}
+              >
+                {c.label}
+                <span className="ml-1 text-success/60">+{c.recommended_siblings.length}</span>
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Provider queue */}
@@ -149,6 +168,19 @@ export const ClusterPanel = memo(function ClusterPanel({
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Recommended siblings to deposit on */}
+      {selectedCluster?.needs_deposit && selectedCluster.recommended_siblings.length > 0 && (
+        <div className="flex items-center gap-2 text-[11px] px-1">
+          <span className="text-muted">Deposit on:</span>
+          {selectedCluster.recommended_siblings.map(s => (
+            <span key={s.provider_id} className="text-success/80 border border-dashed border-success/30 px-2 py-0.5 rounded">
+              <ProviderName name={s.provider_id} className="inline" />
+              <span className="text-muted ml-1">({selectedCluster.unique_opps} opps)</span>
+            </span>
+          ))}
         </div>
       )}
     </div>

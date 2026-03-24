@@ -727,11 +727,13 @@ export interface PlayCluster {
   canonical: string;
   active_siblings: PlaySibling[];
   available_siblings: PlaySibling[];
+  recommended_siblings: PlaySibling[];
   dormant_siblings: PlaySibling[];
   total_balance: number;
   playable_count: number;
   unique_opps: number;
   urgency: number;
+  needs_deposit: boolean;
 }
 
 export interface PlaySession {
