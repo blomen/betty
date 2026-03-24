@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from ...services import OpportunityService
+from ...services.play_service import PlaySessionService
+from ...repositories import ProfileRepo
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
 
@@ -43,6 +45,23 @@ async def list_opportunities(
         min_value=min_value,
         limit=min(limit, 2000),
     )
+
+
+@router.get("/clusters")
+async def list_clusters(
+    service: OpportunityService = Depends(_get_service),
+):
+    """Get all available provider clusters with balance info."""
+    return {"clusters": service.get_clusters()}
+
+
+@router.get("/cluster-summary")
+async def cluster_summary(
+    cluster: str,
+    service: OpportunityService = Depends(_get_service),
+):
+    """Get provider status summary for a cluster (balance, wagering, limits)."""
+    return service.get_cluster_summary(cluster)
 
 
 @router.post("/bonus/match")
@@ -108,3 +127,13 @@ async def scan_bonus_opportunities(
         limit=limit,
         include_negative=include_negative,
     )
+
+
+@router.get("/play/session")
+async def get_play_session(db: Session = Depends(get_db)):
+    """Get session data for Play panel: clusters, siblings, lifecycle states."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    service = PlaySessionService(db)
+    return service.get_session(profile.id)
