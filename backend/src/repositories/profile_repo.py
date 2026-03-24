@@ -174,6 +174,7 @@ class ProfileRepo:
             "min_odds": record.min_odds if record.min_odds else BONUS_MIN_ODDS,
             "progress_pct": progress_pct,
             "is_cleared": is_cleared,
+            "trigger_mode": record.trigger_mode or "cumulative",
             "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
             "expires_at": record.expires_at.isoformat() if record.expires_at else None,
             "days_remaining": days_remaining,
@@ -293,6 +294,7 @@ class ProfileRepo:
         main_min_odds: float = 1.80,
         deadline_days: int | None = None,
         deposit_amount: float | None = None,
+        trigger_mode: str = "cumulative",
     ) -> dict:
         """Start two-phase bonus: trigger first, then main wagering.
 
@@ -317,6 +319,7 @@ class ProfileRepo:
             min_odds=trigger_min_odds,               # Phase 1: trigger odds
             main_min_odds=main_min_odds,             # Saved for phase 2
             deposit_amount=deposit_amount,           # Original deposit for phase 2 calc
+            trigger_mode=trigger_mode,
             claimed_at=now,
             expires_at=expires,
             updated_at=now,
@@ -386,6 +389,7 @@ class ProfileRepo:
         min_odds: float = 1.80,
         trigger_wagering: float | None = None,
         deadline_days: int | None = None,
+        trigger_mode: str = "single",
     ) -> dict:
         """Start freebet tracking — user needs to wager trigger amount to unlock."""
         record = self.db.query(ProfileProviderBonus).filter(
@@ -405,6 +409,7 @@ class ProfileRepo:
             wagering_requirement=wagering_req,
             wagered_amount=0.0,
             min_odds=min_odds,
+            trigger_mode=trigger_mode,
             claimed_at=now,
             expires_at=expires,
             updated_at=now,
