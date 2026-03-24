@@ -25,7 +25,7 @@ def extract_orderflow_features(
       5  body_ratio         — body / spread of last candle
       6  spread_ticks       — last candle spread in ticks (capped at 50)
       7  passive_active_ratio — from signals (capped at 5)
-      8  imbalance_ratio_max  — most extreme diagonal imbalance ratio (capped at 10)
+      8  imbalance_density    — diagonal imbalance count / price levels (0-1)
       9  stacked_imbalance_count — consecutive stacked levels (capped at 10)
      10  stacked_direction   — -1 sell / 0 neutral / 1 buy
      11  big_trades_count    — number of big-volume candles (capped at 10)
@@ -81,7 +81,15 @@ def extract_orderflow_features(
     # 7-14: from signals when available, else derive from candles
     if signals is not None:
         passive_active = min(signals.passive_active_ratio, 5.0) / 5.0
-        imbalance_max = min(signals.imbalance_ratio_max, 10.0) / 10.0
+        # Diagonal imbalance density: fraction of price levels showing
+        # aggressive one-sided flow (more informative than raw ratio max)
+        imbalance_max = min(signals.stacked_imbalance_count / 10.0, 1.0)
+        # Override with candle-level diagonal count if available
+        if candles:
+            _last_cf = candles[-1]
+            _n_levels = len(getattr(_last_cf, "price_levels", [])) or 1
+            _n_diags = len(getattr(_last_cf, "diagonal_imbalances", []))
+            imbalance_max = min(_n_diags / max(_n_levels - 1, 1), 1.0)
         stacked_count = min(signals.stacked_imbalance_count, 10.0) / 10.0
         stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(
             signals.stacked_imbalance_direction, 0.0
@@ -97,9 +105,9 @@ def extract_orderflow_features(
         passive_active_raw = (total_vol_sum - total_abs_delta) / max(1, total_abs_delta)
         passive_active = min(passive_active_raw, 5.0) / 5.0
 
-        diag = getattr(last, "diagonal_imbalances", None)
-        imbalance_max_raw = getattr(last, "imbalance_ratio_max", 0.0) if diag else 0.0
-        imbalance_max = min(imbalance_max_raw, 10.0) / 10.0
+        _n_levels = len(getattr(last, "price_levels", [])) or 1
+        _n_diags = len(getattr(last, "diagonal_imbalances", []))
+        imbalance_max = min(_n_diags / max(_n_levels - 1, 1), 1.0)
 
         stacked = getattr(last, "stacked_imbalances", None)
         if stacked:

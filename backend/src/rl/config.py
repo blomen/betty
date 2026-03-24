@@ -37,21 +37,17 @@ class LevelType(str, Enum):
     TIBL = "tibl"
     # Structure
     NAKED_POC = "naked_poc"
-    SINGLE_PRINT = "single_print"
-    FVG = "fvg"
 
 
 class Action(int, Enum):
-    """Agent actions."""
-    LONG = 0
-    SHORT = 1
-    SKIP = 2
+    """Agent actions — AMT semantics relative to approach direction."""
+    CONTINUATION = 0  # Trade in approach direction (momentum through level)
+    REVERSAL = 1      # Trade against approach direction (bounce off level)
+    SKIP = 2          # Don't trade
 
 
-# --- Risk Parameters (Phase 1: fixed) ---
-STOP_TICKS = 10
-TARGET_TICKS = 20
-TIMEOUT_MINUTES = 30
+# --- Risk Parameters ---
+STOP_TICKS = 10       # Used for cost normalisation (R-multiple denominator)
 TICK_SIZE = 0.25
 
 # --- DQN Hyperparameters ---
@@ -61,8 +57,11 @@ REPLAY_BUFFER_SIZE = 100_000
 EPSILON_START = 1.0
 EPSILON_END = 0.05
 EPSILON_DECAY_STEPS = 5000
-TARGET_NET_UPDATE_FREQ = 500
 GAMMA = 0.0
+
+# --- Target Network (Polyak soft update) ---
+TAU = 0.005  # Soft update coefficient: θ_target ← τ·θ_online + (1-τ)·θ_target
+TARGET_NET_UPDATE_FREQ = 1  # Apply soft update every train step
 
 # --- Network Architecture ---
 HIDDEN_LAYERS = [128, 128, 64]
@@ -72,10 +71,13 @@ OBSERVATION_DIM = None  # Computed dynamically in observation.py
 # --- Level Touch Detection ---
 AT_LEVEL_TICKS = 5
 
-# --- Reward Values ---
-REWARD_TARGET_HIT = 2.0
-REWARD_STOP_HIT = -1.0
-REWARD_TIMEOUT = 0.0
+# --- Reward (velocity-based, computed in episode_builder) ---
+# No fixed target/stop/timeout — rewards are continuous movement quality scores
+
+# --- Trading Costs (round-trip per trade, in ticks) ---
+SLIPPAGE_TICKS = 0.5   # 0.5 tick each side = 1 tick RT
+COMMISSION_TICKS = 0.5  # ~$1.04 per side on NQ ≈ 0.5 tick each side
+COST_PER_TRADE_TICKS = (SLIPPAGE_TICKS + COMMISSION_TICKS) * 2  # round-trip
 
 # --- Data ---
 DATABENTO_DATASET = "GLBX.MDP3"

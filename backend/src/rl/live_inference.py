@@ -9,11 +9,14 @@ import torch
 
 from .agent.network import DQNetwork
 from .config import Action, LevelType
+from .data.normalization import RunningNormalizer
 from .features.observation import build_observation, OBSERVATION_DIM
 
 log = logging.getLogger(__name__)
 
 _MODEL_SEARCH_DIRS = [
+    Path("data/rl/models"),
+    Path("backend/data/rl/models"),
     Path("data/rl"),
     Path("backend/data/rl"),
 ]
@@ -24,6 +27,7 @@ class DQNLiveInference:
 
     def __init__(self) -> None:
         self._network: DQNetwork | None = None
+        self._normalizer: RunningNormalizer | None = None
         self._loaded = False
 
     @property
@@ -52,6 +56,15 @@ class DQNLiveInference:
             self._network.eval()
             self._loaded = True
             log.info("DQN model loaded from %s", path)
+
+            # Load normalizer from episodes dir (sibling to models dir)
+            episodes_dir = path.parent.parent / "episodes"
+            norm_path = episodes_dir / "normalizer.json"
+            if norm_path.exists():
+                self._normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+                self._normalizer.load(norm_path)
+                log.info("Normalizer loaded from %s (count=%d)", norm_path, self._normalizer.count)
+
             return True
         except Exception:
             log.exception("Failed to load DQN checkpoint from %s", path)
@@ -76,6 +89,8 @@ class DQNLiveInference:
                 state["level_type"] = LevelType.VWAP
 
         obs = build_observation(state)
+        if self._normalizer is not None:
+            obs = self._normalizer.normalize(obs)
         obs_tensor = torch.from_numpy(obs).unsqueeze(0)
 
         with torch.no_grad():

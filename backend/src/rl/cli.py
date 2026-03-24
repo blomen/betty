@@ -373,8 +373,8 @@ def replay(
     engine = ReplayEngine(macro_data=macro_data)
 
     all_observations: list[np.ndarray] = []
-    all_rewards_long: list[float] = []
-    all_rewards_short: list[float] = []
+    all_rewards_cont: list[float] = []
+    all_rewards_rev: list[float] = []
     all_level_types: list[str] = []
 
     total_episodes = 0
@@ -441,8 +441,8 @@ def replay(
             for ep in episodes:
                 normalizer.update(ep.observation)
                 all_observations.append(ep.observation)
-                all_rewards_long.append(ep.reward_long)
-                all_rewards_short.append(ep.reward_short)
+                all_rewards_cont.append(ep.reward_continuation)
+                all_rewards_rev.append(ep.reward_reversal)
                 all_level_types.append(ep.level_type)
 
             session_episodes += len(episodes)
@@ -457,8 +457,8 @@ def replay(
     # Save .npy files
     obs_array = np.stack(all_observations).astype(np.float32)
     np.save(episodes_dir / "observations.npy", obs_array)
-    np.save(episodes_dir / "rewards_long.npy", np.array(all_rewards_long, dtype=np.float32))
-    np.save(episodes_dir / "rewards_short.npy", np.array(all_rewards_short, dtype=np.float32))
+    np.save(episodes_dir / "rewards_cont.npy", np.array(all_rewards_cont, dtype=np.float32))
+    np.save(episodes_dir / "rewards_rev.npy", np.array(all_rewards_rev, dtype=np.float32))
     np.save(episodes_dir / "level_types.npy", np.array(all_level_types))
 
     # Save normalizer
@@ -467,7 +467,7 @@ def replay(
     typer.echo(f"\nTotal episodes: {total_episodes}")
     typer.echo(f"Observation shape: {obs_array.shape}")
     typer.echo(f"Saved to: {episodes_dir}")
-    typer.echo(f"  observations.npy, rewards_long.npy, rewards_short.npy, level_types.npy")
+    typer.echo(f"  observations.npy, rewards_cont.npy, rewards_rev.npy, level_types.npy")
     typer.echo(f"  normalizer.json")
 
 
@@ -499,8 +499,8 @@ def train(
         raise typer.Exit(1)
 
     observations = np.load(episodes_dir / "observations.npy")
-    rewards_long = np.load(episodes_dir / "rewards_long.npy")
-    rewards_short = np.load(episodes_dir / "rewards_short.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
     n = len(observations)
@@ -522,35 +522,30 @@ def train(
     val_end = int(n * 0.83)
 
     train_obs = normalized_obs[:train_end]
-    train_rl = rewards_long[:train_end]
-    train_rs = rewards_short[:train_end]
+    train_rc = rewards_cont[:train_end]
+    train_rr = rewards_rev[:train_end]
 
     val_obs = normalized_obs[train_end:val_end]
-    val_rl = rewards_long[train_end:val_end]
-    val_rs = rewards_short[train_end:val_end]
+    val_rc = rewards_cont[train_end:val_end]
+    val_rr = rewards_rev[train_end:val_end]
 
     typer.echo(f"Split: train={len(train_obs)}, val={len(val_obs)}, test={n - val_end}")
 
-    # Build best actions per training episode
-    skip_reward = 0.0
+    # Train a 2-action model (CONTINUATION vs REVERSAL) to predict Q-values
+    # accurately. SKIP is handled at inference via confidence threshold:
+    # only trade when max(Q_cont, Q_rev) > SKIP_THRESHOLD.
+    # This avoids the skip-collapse problem where the model learns to
+    # always skip because 0.0 > expected negative reward.
     agent = DQNAgent(observation_dim=OBSERVATION_DIM)
 
-    # Load all training episodes into the replay buffer
     for i in range(len(train_obs)):
-        rl = float(train_rl[i])
-        rs = float(train_rs[i])
-        max_reward = max(rl, rs, skip_reward)
-        if skip_reward == max_reward:
-            best_action = Action.SKIP.value
-        elif rs == max_reward:
-            best_action = Action.SHORT.value
-        else:
-            best_action = Action.LONG.value
+        rc = float(train_rc[i])
+        rr = float(train_rr[i])
+        # Store both directions so model learns accurate Q-values
+        agent.store(train_obs[i], Action.CONTINUATION.value, rc)
+        agent.store(train_obs[i], Action.REVERSAL.value, rr)
 
-        reward = max_reward
-        agent.store(train_obs[i], best_action, reward)
-
-    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions")
+    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes × 2 actions)")
 
     if agent.buffer.size < BATCH_SIZE:
         typer.echo(f"Buffer too small ({agent.buffer.size} < {BATCH_SIZE}). Need more training data.", err=True)
@@ -563,25 +558,20 @@ def train(
         if epoch % 10 == 0:
             typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={loss:.4f}  epsilon={agent.epsilon:.3f}")
 
-    # Validation
+    # Validation: check if model predicts the better direction correctly
     typer.echo("\nRunning validation ...")
     correct = 0
     for i in range(len(val_obs)):
-        predicted_action = agent.select_action(val_obs[i])
-        rl = float(val_rl[i])
-        rs = float(val_rs[i])
-        max_reward = max(rl, rs, skip_reward)
-        if skip_reward == max_reward:
-            best_action = Action.SKIP.value
-        elif rs == max_reward:
-            best_action = Action.SHORT.value
-        else:
-            best_action = Action.LONG.value
-        if predicted_action == best_action:
+        q_values = agent.q_network.predict(val_obs[i])[0]  # (NUM_ACTIONS,)
+        predicted = int(np.argmax(q_values[:2]))  # Only CONT vs REV
+        rc = float(val_rc[i])
+        rr = float(val_rr[i])
+        actual_best = 0 if rc >= rr else 1  # CONT vs REV
+        if predicted == actual_best:
             correct += 1
 
     val_accuracy = correct / max(len(val_obs), 1)
-    typer.echo(f"  Validation accuracy: {val_accuracy:.1%} ({correct}/{len(val_obs)})")
+    typer.echo(f"  Validation accuracy (CONT vs REV): {val_accuracy:.1%} ({correct}/{len(val_obs)})")
 
     # Save model
     model_path = models_dir / f"dqn_{checkpoint}.pt"
@@ -596,8 +586,14 @@ def train(
 @rl_app.command()
 def eval(
     checkpoint: str = typer.Option("v1", help="Checkpoint name to load"),
+    skip_threshold: float = typer.Option(0.3, help="Min Q-value to trade (below = SKIP)"),
 ) -> None:
-    """Evaluate the trained DQN agent on the test split."""
+    """Evaluate the trained DQN agent on the test split.
+
+    The model predicts Q(CONT) and Q(REV). If max Q-value < skip_threshold,
+    the episode is SKIPped. This replaces the learned SKIP action which
+    tends to collapse the policy.
+    """
     import numpy as np
 
     from src.rl.agent.dqn import DQNAgent
@@ -621,8 +617,8 @@ def eval(
         raise typer.Exit(1)
 
     observations = np.load(episodes_dir / "observations.npy")
-    rewards_long = np.load(episodes_dir / "rewards_long.npy")
-    rewards_short = np.load(episodes_dir / "rewards_short.npy")
+    rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
+    rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
 
     n = len(observations)
@@ -638,11 +634,12 @@ def eval(
     # Test split: last 17%
     val_end = int(n * 0.83)
     test_obs = normalized_obs[val_end:]
-    test_rl = rewards_long[val_end:]
-    test_rs = rewards_short[val_end:]
+    test_rc = rewards_cont[val_end:]
+    test_rr = rewards_rev[val_end:]
     test_lt = level_types[val_end:]
 
     typer.echo(f"Test split: {len(test_obs)} episodes (last 17% of {n})")
+    typer.echo(f"Skip threshold: {skip_threshold}")
 
     # Load agent with greedy policy
     agent = DQNAgent(observation_dim=OBSERVATION_DIM, epsilon=0.0)
@@ -650,20 +647,28 @@ def eval(
     agent.epsilon = 0.0  # Greedy evaluation
     typer.echo(f"Loaded model: {model_path}")
 
-    # Run greedy evaluation
-    skip_reward = 0.0
+    # Run evaluation with confidence-based skipping
     episode_dicts: list[dict] = []
     for i in range(len(test_obs)):
-        action = agent.select_action(test_obs[i])
-        rl = float(test_rl[i])
-        rs = float(test_rs[i])
+        q_values = agent.q_network.predict(test_obs[i])[0]  # (NUM_ACTIONS,)
+        # Only consider CONT and REV Q-values
+        q_cont = float(q_values[Action.CONTINUATION.value])
+        q_rev = float(q_values[Action.REVERSAL.value])
+        best_q = max(q_cont, q_rev)
 
-        if action == Action.LONG.value:
-            reward = rl
-        elif action == Action.SHORT.value:
-            reward = rs
+        rc = float(test_rc[i])
+        rr = float(test_rr[i])
+
+        if best_q < skip_threshold:
+            # Low confidence — skip
+            action = Action.SKIP.value
+            reward = 0.0
+        elif q_cont >= q_rev:
+            action = Action.CONTINUATION.value
+            reward = rc
         else:
-            reward = skip_reward
+            action = Action.REVERSAL.value
+            reward = rr
 
         episode_dicts.append({
             "action": action,

@@ -25,6 +25,8 @@ from .orderflow_features import extract_orderflow_features
 from .tpo_features import extract_tpo_features
 from .structure_features import extract_structure_features
 from .macro_features import extract_macro_features
+from .setup_features import extract_setup_features
+from .micro_features import extract_micro_features
 
 # Candle window: last 5 candles × 3 features each
 _CANDLE_WINDOW = 5
@@ -51,15 +53,17 @@ def build_observation(state: dict) -> np.ndarray:
     """Assemble the full observation vector from a state dict.
 
     Segment sizes:
-        level_type one-hot   26
+        level_type one-hot   25
         orderflow            15
         structure + session  23
         tpo                  13
         candle window        15
-        confluence           5
-        macro                10
+        confluence            8
+        macro                 7
+        setup                13
+        micro (tick-level)   20
         ---
-        total               107
+        total               139
     """
     level_type: LevelType = state.get("level_type", LevelType.VWAP)
     price: float = float(state.get("price", 0.0))
@@ -80,7 +84,7 @@ def build_observation(state: dict) -> np.ndarray:
     else:
         avg_vol = 1.0
 
-    # 1. Level type one-hot (26)
+    # 1. Level type one-hot (25 — FVG/SINGLE_PRINT removed, now confluence signals)
     seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
 
     # 2. Orderflow (15)
@@ -97,27 +101,44 @@ def build_observation(state: dict) -> np.ndarray:
     # 5. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)
 
-    # 6. Confluence (5)
-    conf = encode_confluence(price, all_levels, tick_size=TICK_SIZE)
+    # 6. Confluence (8) — includes FVG/single_print overlap signals
+    fvgs = state.get("fvgs", [])
+    single_print_zones = state.get("single_print_zones", [])
+    conf = encode_confluence(
+        price, all_levels, tick_size=TICK_SIZE,
+        fvgs=fvgs, single_print_zones=single_print_zones,
+    )
     seg_confluence = np.array([
         conf["levels_within_5_ticks"] / 10.0,      # normalise: cap at 10
         conf["strongest_cluster_score"],
         conf["nearest_higher_level_dist"] / 50.0,  # already capped at 50
         conf["nearest_lower_level_dist"] / 50.0,
         conf["touched_level_hierarchy_rank"],
+        conf["fvg_overlap"],                        # 1.0 if FVG overlaps level
+        conf["fvg_width_ticks"],                    # width of overlapping FVG (0-1)
+        conf["single_print_overlap"],               # 1.0 if single print overlaps
     ], dtype=np.float32)
 
-    # 7. Macro (10)
+    # 7. Macro (7)
     seg_macro = extract_macro_features(macro)
 
+    # 8. Setup detection (9)
+    seg_setup = extract_setup_features(state)
+
+    # 9. Micro features — tick-level context at the touch point (20)
+    recent_ticks = state.get("recent_ticks", [])
+    seg_micro = extract_micro_features(recent_ticks, price)
+
     obs = np.concatenate([
-        seg_level,        # 26
+        seg_level,        # 25
         seg_orderflow,    # 15
         seg_structure,    # 23
         seg_tpo,          # 13
         seg_candles,      # 15
-        seg_confluence,   # 5
-        seg_macro,        # 10
+        seg_confluence,   # 8
+        seg_macro,        # 7
+        seg_setup,        # 9
+        seg_micro,        # 20
     ])
 
     # Sanitise: replace NaN / Inf with 0
@@ -134,11 +155,13 @@ _dummy_state: dict = {
     "vwap_bands": None,
     "volume_profile": None,
     "tpo_profile": None,
+    "tpo_profile_obj": None,
     "session_levels": None,
     "all_levels": [],
     "orderflow_signals": None,
     "macro": None,
     "session_context": None,
+    "day_type": None,
 }
 
 OBSERVATION_DIM: int = int(build_observation(_dummy_state).shape[0])

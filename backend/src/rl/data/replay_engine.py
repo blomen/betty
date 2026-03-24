@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .candle_aggregator import CandleAggregator
 from .accumulators import IncrementalVWAP, IncrementalVolumeProfile
-from .episode_builder import Episode, label_outcome
+from .episode_builder import Episode, label_outcome, label_outcome_from_array
 from ..features.observation import build_observation
 from ..config import LevelType, AT_LEVEL_TICKS, TICK_SIZE
 from ...market_data.levels import (
@@ -268,12 +268,12 @@ class ReplayEngine:
             # VP uses all ticks (full session profile)
             self._vp.update(price, tick["size"])
 
-            # 3. Buffer tick for orderflow CandleFlow construction
-            self._candle_ticks.append(tick)
-
-            # 4. On bar close: recompute structure and orderflow
+            # 3. On bar close: build CandleFlow from buffered ticks, then recompute
             for _bar in completed_bars:
                 self._on_bar_close(session_date)
+
+            # 4. Buffer tick for NEXT candle's orderflow CandleFlow construction
+            self._candle_ticks.append(tick)
 
             # 5. Check which active levels are touched
             newly_touched = self._check_level_touch(price)
@@ -291,22 +291,34 @@ class ReplayEngine:
 
             level_name, level_type, level_price = newly_touched[0]
             if True:  # single-episode block
-                # Forward ticks: cap at ~30 min of data (TIMEOUT_MINUTES)
+                # Determine approach direction: compare to price 200 ticks ago
+                # (~2 seconds of NQ data — captures the micro move into the level)
+                lookback_idx = max(0, i - 200)
+                prior_price = norm_ticks[lookback_idx]["price"]
+                approach_direction = "up" if price > prior_price else "down"
+
+                # Forward ticks: scan up to 30 min of data (TIMEOUT_MINUTES)
                 # NQ averages ~6k ticks/min, 30 min ≈ 180k ticks max.
-                # Use 20k tick cap as practical upper bound.
-                max_forward = min(len(norm_ticks) - i - 1, 20_000)
-                forward_raw = norm_ticks[i + 1 : i + 1 + max_forward]
-                forward_objs = [_TickView(t) for t in forward_raw]
+                fwd_start = i + 1
+                fwd_end = min(len(norm_ticks), fwd_start + 180_000)
+
+                # Last 20 ticks for micro features
+                micro_start = max(0, i - 20)
+                recent_ticks = norm_ticks[micro_start:i + 1]
 
                 state = self._build_state(tick, level_type, session_date, date_str)
+                state["recent_ticks"] = recent_ticks
                 observation = build_observation(state)
 
-                episode = label_outcome(
+                episode = label_outcome_from_array(
                     touch_price=price,
-                    forward_ticks=forward_objs,
+                    ticks=norm_ticks,
+                    start=fwd_start,
+                    end=fwd_end,
                     observation=observation,
                     level_type=level_type.value,
                     touch_ts=tick["ts"],
+                    approach_direction=approach_direction,
                 )
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]
@@ -426,12 +438,8 @@ class ReplayEngine:
         _add_optional(levels, "tibh", LevelType.TIBH, getattr(sl, "ib_high", None))
         _add_optional(levels, "tibl", LevelType.TIBL, getattr(sl, "ib_low", None))
 
-        # --- Fair Value Gaps (midpoint) — only significant gaps (≥2 ticks wide) ---
-        for fvg in self._fvgs:
-            gap_size = fvg.price_high - fvg.price_low
-            if gap_size >= TICK_SIZE * 2:
-                mid = (fvg.price_low + fvg.price_high) / 2.0
-                levels.append(("fvg", LevelType.FVG, mid))
+        # FVGs and single prints are NOT active levels — they are confluence
+        # signals injected into the observation vector via encode_confluence().
 
         # --- Precomputed cross-session levels ---
         if self._precomputed:
@@ -445,10 +453,6 @@ class ReplayEngine:
             _add_optional(levels, "monthly_poc", LevelType.MONTHLY_POC, self._precomputed.get("monthly_poc"))
             _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
             _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
-
-            for sp_low, sp_high in self._precomputed.get("single_print_zones", []):
-                mid = (sp_low + sp_high) / 2.0
-                levels.append(("single_print", LevelType.SINGLE_PRINT, mid))
 
         self._active_levels = levels
 
@@ -520,15 +524,26 @@ class ReplayEngine:
 
         # TPO profile from 30m bars
         tpo_profile_dict: dict | None = None
+        tpo_profile_obj = None  # TPOProfile object for setup detection
         if bars_30m:
             profile = build_full_tpo_profile(bars_30m, tick_size=TICK_SIZE)
+            tpo_profile_obj = profile  # Keep object for setup detection
+            # Compute rotation count: total direction changes in 30m bars
+            rotation_count = 0
+            if len(bars_30m) >= 2:
+                for j in range(1, len(bars_30m)):
+                    prev_dir = bars_30m[j - 1]["close"] - bars_30m[j - 1]["open"]
+                    curr_dir = bars_30m[j]["close"] - bars_30m[j]["open"]
+                    if (prev_dir > 0 and curr_dir < 0) or (prev_dir < 0 and curr_dir > 0):
+                        rotation_count += 1
+
             tpo_profile_dict = {
                 "poc": profile.poc,
                 "vah": profile.vah,
                 "val": profile.val,
                 "shape": profile.profile_shape,
                 "rotation_factor": profile.rotation_factor,
-                "rotation_count": profile.rotation_factor,
+                "rotation_count": rotation_count,
                 "excess_high": profile.upper_excess > 0,
                 "excess_low": profile.lower_excess > 0,
                 "upper_excess_ticks": profile.upper_excess,
@@ -556,6 +571,16 @@ class ReplayEngine:
         # Macro context for this date
         macro = self._macro_data.get(date_str)
 
+        # Market type for setup detectors
+        ctx = session_context or {}
+        drp = float(ctx.get("daily_range_pct", 0.01))
+        if drp > 0.02:
+            day_type = "trend"
+        elif drp < 0.008:
+            day_type = "range"
+        else:
+            day_type = "normal"
+
         return {
             "level_type": level_type,
             "price": price,
@@ -563,11 +588,18 @@ class ReplayEngine:
             "vwap_bands": vwap_bands,
             "volume_profile": vp,
             "tpo_profile": tpo_profile_dict,
+            "tpo_profile_obj": tpo_profile_obj,
             "session_levels": self._session_levels,
             "all_levels": all_level_prices,
             "orderflow_signals": of_signals,
             "macro": macro,
             "session_context": session_context,
+            "day_type": day_type,
+            "fvgs": self._fvgs,
+            "single_print_zones": (
+                self._precomputed.get("single_print_zones", [])
+                if self._precomputed else []
+            ),
         }
 
     def _build_session_context(
@@ -709,14 +741,3 @@ def _date_key(session_date: datetime | Any) -> str:
     return d.isoformat()
 
 
-class _TickView:
-    """Lightweight wrapper so raw tick dicts expose .ts and .price attributes.
-
-    Required by label_outcome(), which accesses tick.ts and tick.price.
-    """
-
-    __slots__ = ("ts", "price")
-
-    def __init__(self, tick: dict) -> None:
-        self.ts: datetime = tick["ts"]
-        self.price: float = tick["price"]

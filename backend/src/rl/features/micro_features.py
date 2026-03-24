@@ -1,0 +1,186 @@
+"""Tick-level micro features — captures the last 20 ticks at a level touch.
+
+These features give the model the immediate price action context that
+1-minute candles can't capture: approach velocity, trade sizes, buy/sell
+imbalance in the seconds leading up to the level touch.
+
+Feature layout (20 features):
+  0  approach_velocity     — ticks/second in last 20 ticks (signed)
+  1  approach_accel        — acceleration: velocity delta (last 10 vs first 10)
+  2  net_delta_norm        — net buy-sell delta / total volume
+  3  delta_trend           — delta in last 10 ticks vs first 10 (momentum shift)
+  4  max_trade_size_norm   — largest single trade / avg trade size
+  5  big_trade_ratio       — fraction of volume from trades > 2x avg
+  6  buy_volume_ratio      — buy volume / total volume (0.5 = balanced)
+  7  tick_spread_norm      — (high - low) / avg tick range in last 20
+  8  consec_direction      — max consecutive same-direction ticks / 20
+  9  reversal_count_norm   — direction changes / 20 (choppy = high)
+  10 time_compression      — 20 / elapsed_seconds (faster = more activity)
+  11 last5_velocity        — ticks/second in last 5 ticks only
+  12 last5_delta_norm      — net delta in last 5 ticks / volume
+  13 bid_side_aggression   — fraction of volume hitting bids (sell aggression)
+  14 size_at_touch_norm    — size of the tick that touched the level / avg
+  15 approach_linearity    — R² of price vs time (1.0 = straight line approach)
+  16 vol_surge             — volume in last 10 ticks / volume in first 10
+  17 price_from_open_norm  — (touch_price - session_open) / daily_range
+  18 reserved_0            — 0.0
+  19 reserved_1            — 0.0
+"""
+from __future__ import annotations
+
+import numpy as np
+
+_N_FEATURES = 20
+
+
+def extract_micro_features(
+    recent_ticks: list[dict],
+    touch_price: float,
+) -> np.ndarray:
+    """Extract 20 micro features from the last ~20 ticks before a level touch.
+
+    Each tick dict must have: ts (datetime), price (float), size (int), side ("A"|"B").
+    Returns zeros if fewer than 2 ticks available.
+    """
+    if len(recent_ticks) < 2:
+        return np.zeros(_N_FEATURES, dtype=np.float32)
+
+    ticks = recent_ticks[-20:]  # last 20
+    n = len(ticks)
+
+    prices = [t["price"] for t in ticks]
+    sizes = [t["size"] for t in ticks]
+    sides = [t.get("side", "A") for t in ticks]
+    timestamps = [t["ts"] for t in ticks]
+
+    total_vol = sum(sizes) or 1
+    avg_size = total_vol / n
+    elapsed_s = max(0.001, (timestamps[-1] - timestamps[0]).total_seconds())
+
+    # 0: approach_velocity (ticks/second, signed)
+    price_change = (prices[-1] - prices[0]) / max(0.25, 1)  # in price units
+    approach_vel = price_change / elapsed_s
+    approach_vel = np.clip(approach_vel / 5.0, -1.0, 1.0)  # normalise
+
+    # 1: approach_accel (velocity change)
+    mid = n // 2
+    if mid > 0 and n > mid:
+        t1 = max(0.001, (timestamps[mid] - timestamps[0]).total_seconds())
+        t2 = max(0.001, (timestamps[-1] - timestamps[mid]).total_seconds())
+        v1 = (prices[mid] - prices[0]) / t1
+        v2 = (prices[-1] - prices[mid]) / t2
+        accel = np.clip((v2 - v1) / 5.0, -1.0, 1.0)
+    else:
+        accel = 0.0
+
+    # 2: net_delta_norm
+    buy_vol = sum(s for s, side in zip(sizes, sides) if side == "B")
+    sell_vol = sum(s for s, side in zip(sizes, sides) if side == "A")
+    net_delta = buy_vol - sell_vol
+    net_delta_norm = np.clip(net_delta / max(total_vol, 1), -1.0, 1.0)
+
+    # 3: delta_trend (momentum shift)
+    first_half = ticks[:mid] if mid > 0 else ticks[:1]
+    second_half = ticks[mid:] if mid > 0 else ticks[1:]
+    d1 = sum(t["size"] if t.get("side") == "B" else -t["size"] for t in first_half)
+    d2 = sum(t["size"] if t.get("side") == "B" else -t["size"] for t in second_half)
+    vol_half = max(sum(t["size"] for t in first_half), 1)
+    delta_trend = np.clip((d2 - d1) / max(vol_half, 1), -1.0, 1.0)
+
+    # 4: max_trade_size_norm
+    max_size = max(sizes)
+    max_trade_norm = min(max_size / max(avg_size, 1), 5.0) / 5.0
+
+    # 5: big_trade_ratio
+    big_threshold = avg_size * 2
+    big_vol = sum(s for s in sizes if s >= big_threshold)
+    big_ratio = big_vol / max(total_vol, 1)
+
+    # 6: buy_volume_ratio
+    buy_ratio = buy_vol / max(total_vol, 1)
+
+    # 7: tick_spread_norm
+    spread = max(prices) - min(prices)
+    avg_tick_range = sum(abs(prices[i] - prices[i - 1]) for i in range(1, n)) / max(n - 1, 1)
+    spread_norm = min(spread / max(avg_tick_range * n, 0.25), 3.0) / 3.0
+
+    # 8: consec_direction (max run of same direction)
+    max_run = 1
+    run = 1
+    for i in range(1, n):
+        if (prices[i] - prices[i - 1]) * (prices[i - 1] - prices[max(0, i - 2)]) > 0:
+            run += 1
+            max_run = max(max_run, run)
+        else:
+            run = 1
+    consec_dir = max_run / max(n, 1)
+
+    # 9: reversal_count_norm
+    reversals = sum(
+        1 for i in range(2, n)
+        if (prices[i] - prices[i - 1]) * (prices[i - 1] - prices[i - 2]) < 0
+    )
+    reversal_norm = reversals / max(n - 2, 1)
+
+    # 10: time_compression (activity density)
+    time_comp = min(n / max(elapsed_s, 0.001), 100.0) / 100.0
+
+    # 11-12: last 5 ticks features
+    last5 = ticks[-5:] if n >= 5 else ticks
+    l5_elapsed = max(0.001, (last5[-1]["ts"] - last5[0]["ts"]).total_seconds())
+    l5_vel = np.clip((last5[-1]["price"] - last5[0]["price"]) / l5_elapsed / 5.0, -1.0, 1.0)
+    l5_buy = sum(t["size"] for t in last5 if t.get("side") == "B")
+    l5_sell = sum(t["size"] for t in last5 if t.get("side") == "A")
+    l5_vol = max(l5_buy + l5_sell, 1)
+    l5_delta = np.clip((l5_buy - l5_sell) / l5_vol, -1.0, 1.0)
+
+    # 13: bid_side_aggression (sell aggression)
+    bid_aggression = sell_vol / max(total_vol, 1)
+
+    # 14: size_at_touch_norm
+    touch_size = sizes[-1] / max(avg_size, 1)
+    touch_size_norm = min(touch_size, 5.0) / 5.0
+
+    # 15: approach_linearity (R² of price vs time)
+    if n >= 3:
+        t_arr = np.array([(ts - timestamps[0]).total_seconds() for ts in timestamps])
+        p_arr = np.array(prices)
+        if t_arr[-1] > 0:
+            t_norm = t_arr / t_arr[-1]
+            corr = np.corrcoef(t_norm, p_arr)
+            r_sq = corr[0, 1] ** 2 if np.isfinite(corr[0, 1]) else 0.0
+        else:
+            r_sq = 0.0
+    else:
+        r_sq = 0.0
+
+    # 16: vol_surge (second half volume / first half)
+    v1_vol = max(sum(t["size"] for t in first_half), 1)
+    v2_vol = max(sum(t["size"] for t in second_half), 1)
+    vol_surge = min(v2_vol / v1_vol, 5.0) / 5.0
+
+    feats = np.array([
+        float(approach_vel),       # 0
+        float(accel),              # 1
+        float(net_delta_norm),     # 2
+        float(delta_trend),        # 3
+        float(max_trade_norm),     # 4
+        float(big_ratio),          # 5
+        float(buy_ratio),          # 6
+        float(spread_norm),        # 7
+        float(consec_dir),         # 8
+        float(reversal_norm),      # 9
+        float(time_comp),          # 10
+        float(l5_vel),             # 11
+        float(l5_delta),           # 12
+        float(bid_aggression),     # 13
+        float(touch_size_norm),    # 14
+        float(r_sq),               # 15
+        float(vol_surge),          # 16
+        0.0,                       # 17: reserved (price_from_open)
+        0.0,                       # 18: reserved
+        0.0,                       # 19: reserved
+    ], dtype=np.float32)
+
+    feats = np.clip(feats, -5.0, 5.0)
+    return feats

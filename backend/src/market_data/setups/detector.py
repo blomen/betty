@@ -69,6 +69,10 @@ def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:
     from .break_from_balance import detect_break_from_balance
     from .double_distribution import detect_double_distribution
     from .news_directional import detect_news_directional
+    from .absorption import detect_absorption
+    from .vwap_sd2_reversal import detect_vwap_sd2_reversal
+    from .gap_logic import detect_gap_logic
+    from .pbd import detect_pbd
 
     detectors = [
         detect_poor_extreme,
@@ -80,6 +84,10 @@ def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:
         detect_break_from_balance,
         detect_double_distribution,
         detect_news_directional,
+        detect_absorption,
+        detect_vwap_sd2_reversal,
+        detect_gap_logic,
+        detect_pbd,
     ]
 
     candidates = []

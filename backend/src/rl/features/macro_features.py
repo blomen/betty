@@ -3,25 +3,22 @@ from __future__ import annotations
 
 import numpy as np
 
-_N_FEATURES = 10
+_N_FEATURES = 7
 
 
 def extract_macro_features(macro: dict | None) -> np.ndarray:
-    """Extract 10 macro-regime features.
+    """Extract 7 macro-regime features.
 
-    Feature layout (indices 0-9):
+    Feature layout (indices 0-6):
       0  vix_norm            — vix / 50 (0→1 maps 0→50 VIX)
       1  vix_change_norm     — vix_change / 10
       2  regime_score        — pre-computed regime score (0-1), e.g. from HMM
       3  dxy_change          — DXY 1-day change / 1.0 (%), clipped ±3
-      4  gex_placeholder     — 0.0 (gamma exposure, not yet wired up)
-      5  us10y_change        — US 10Y yield change (bps) / 10, clipped ±1
-      6  us2y_change         — US 2Y yield change (bps) / 10, clipped ±1
-      7  yield_curve_spread  — (10Y - 2Y) / 2.0, clipped ±1
-      8  news_placeholder    — 0.0 (news sentiment, not yet wired up)
-      9  news_severity       — 0.0 (news severity, not yet wired up)
+      4  us10y_change        — US 10Y yield change (bps) / 10, clipped ±1
+      5  us2y_change         — US 2Y yield change (bps) / 10, clipped ±1
+      6  yield_curve_spread  — (10Y - 2Y) / 2.0, clipped ±1
 
-    Returns zeros(10) if macro is None.
+    Returns zeros(7) if macro is None.
     """
     if macro is None:
         return np.zeros(_N_FEATURES, dtype=np.float32)
@@ -44,12 +41,9 @@ def extract_macro_features(macro: dict | None) -> np.ndarray:
         np.clip(vix_change / 10.0, -1.0, 1.0),
         np.clip(regime_score, 0.0, 1.0),
         np.clip(dxy_change, -3.0, 3.0),
-        0.0,  # GEX placeholder
-        np.clip(us10y_change / 10.0, -1.0, 1.0),  # ±10 bps = ±1.0
+        np.clip(us10y_change / 10.0, -1.0, 1.0),
         np.clip(us2y_change / 10.0, -1.0, 1.0),
         np.clip(yield_curve / 2.0, -1.0, 1.0),
-        0.0,  # news placeholder
-        0.0,  # news severity placeholder
     ], dtype=np.float32)
 
     return feats

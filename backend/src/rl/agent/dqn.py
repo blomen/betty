@@ -1,4 +1,5 @@
-"""DQN training agent with epsilon-greedy exploration and target network."""
+"""DQN training agent with epsilon-greedy exploration, Polyak target updates,
+and prioritized experience replay."""
 from __future__ import annotations
 
 import copy
@@ -21,20 +22,20 @@ from src.rl.config import (
     LEARNING_RATE,
     NUM_ACTIONS,
     REPLAY_BUFFER_SIZE,
+    TAU,
     TARGET_NET_UPDATE_FREQ,
 )
 
 
 class DQNAgent:
-    """Deep Q-Network agent with epsilon-greedy exploration and a frozen target network.
+    """Deep Q-Network agent with prioritized replay and Polyak soft target updates.
 
     Key design choices:
-    - Huber loss (smooth_l1_loss) instead of MSE for stability with outlier rewards.
-    - GAMMA=0.0: single-step episodes — target Q equals reward directly, no future
-      discounting needed.
+    - Huber loss (smooth_l1_loss) weighted by importance-sampling corrections.
+    - GAMMA=0.0: single-step episodes — target Q equals reward directly.
     - Linear epsilon decay from EPSILON_START to EPSILON_END over EPSILON_DECAY_STEPS.
-    - Target network is a deep copy of q_network, updated every TARGET_NET_UPDATE_FREQ
-      train steps by hard copy (no polyak averaging).
+    - Polyak soft update: θ_target ← τ·θ_online + (1-τ)·θ_target every step.
+    - Prioritized replay: transitions with higher TD error are sampled more often.
     """
 
     def __init__(
@@ -54,7 +55,7 @@ class DQNAgent:
         # Optimiser
         self.optimizer = Adam(self.q_network.parameters(), lr=LEARNING_RATE)
 
-        # Replay buffer
+        # Prioritized replay buffer
         self.buffer = ReplayBuffer(buffer_capacity)
 
         # Step counters and decay schedule
@@ -89,7 +90,10 @@ class DQNAgent:
         self.buffer.add(observation, action, reward)
 
     def train_step(self) -> float:
-        """Sample a mini-batch and perform one gradient update.
+        """Sample a prioritized mini-batch and perform one gradient update.
+
+        Uses importance-sampling weights to correct for non-uniform sampling,
+        then updates priorities based on new TD errors.
 
         Returns:
             Scalar loss value (float).
@@ -103,6 +107,8 @@ class DQNAgent:
         obs_t = torch.from_numpy(batch["observations"])          # (B, obs_dim)
         act_t = torch.from_numpy(batch["actions"]).unsqueeze(1)  # (B, 1)
         rew_t = torch.from_numpy(batch["rewards"])               # (B,)
+        weights_t = torch.from_numpy(batch["weights"])           # (B,)
+        indices = batch["indices"]                                # (B,)
 
         # Predicted Q-values for taken actions
         self.q_network.train()
@@ -112,11 +118,17 @@ class DQNAgent:
         with torch.no_grad():
             target_q = rew_t + GAMMA * self.target_network(obs_t).max(dim=1).values
 
-        loss = F.smooth_l1_loss(q_pred, target_q)
+        # Element-wise Huber loss weighted by IS weights
+        td_errors = q_pred - target_q
+        elementwise_loss = F.smooth_l1_loss(q_pred, target_q, reduction="none")
+        loss = (weights_t * elementwise_loss).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # Update priorities with new TD errors
+        self.buffer.update_priorities(indices, td_errors.detach().numpy())
 
         self.train_steps += 1
 
@@ -126,9 +138,13 @@ class DQNAgent:
             self.epsilon - self._epsilon_decay_rate,
         )
 
-        # Hard-copy target network
+        # Polyak soft target update: θ_target ← τ·θ_online + (1-τ)·θ_target
         if self.train_steps % TARGET_NET_UPDATE_FREQ == 0:
-            self.target_network.load_state_dict(self.q_network.state_dict())
+            with torch.no_grad():
+                for p_online, p_target in zip(
+                    self.q_network.parameters(), self.target_network.parameters()
+                ):
+                    p_target.data.mul_(1.0 - TAU).add_(p_online.data * TAU)
 
         return loss.item()
 
