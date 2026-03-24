@@ -269,6 +269,8 @@ class BatchBuilder:
             SpecialOdds.is_positive_ev == True,
             SpecialOdds.edge_pct > 0,
             SpecialOdds.boosted_odds.isnot(None),
+            SpecialOdds.fair_odds.isnot(None),  # Only include Pinnacle-matched boosts
+            SpecialOdds.fair_odds > 0,
         ).all()
 
         candidates = []
