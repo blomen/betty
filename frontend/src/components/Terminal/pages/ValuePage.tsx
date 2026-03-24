@@ -550,9 +550,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
-    // Only show Pinnacle-matched boosts with real edge data
-    if (!s.fair_odds || s.fair_odds <= 0) return false;
-    if (!s.is_positive_ev) return false;
+    // Only show boosts matched to a specific Pinnacle outcome with real edge
+    if (!s.fair_odds || s.fair_odds <= 1) return false;
+    if (!s.boosted_odds) return false;
+    // Real edge = boosted_odds / fair_odds - 1 (not boost% from original_odds)
+    const realEdge = (s.boosted_odds / s.fair_odds - 1) * 100;
+    if (realEdge < 2) return false;  // Skip if not actually +EV vs Pinnacle
     if (s.event_time) {
       try {
         const diff = new Date(s.event_time).getTime() - Date.now();

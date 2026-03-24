@@ -266,11 +266,11 @@ class BatchBuilder:
         from ..db.models import SpecialOdds
 
         boosts = self.db.query(SpecialOdds).filter(
-            SpecialOdds.is_positive_ev == True,
-            SpecialOdds.edge_pct > 0,
             SpecialOdds.boosted_odds.isnot(None),
-            SpecialOdds.fair_odds.isnot(None),  # Only include Pinnacle-matched boosts
+            SpecialOdds.fair_odds.isnot(None),
             SpecialOdds.fair_odds > 0,
+            SpecialOdds.matched_event_id.isnot(None),
+            SpecialOdds.matched_outcome.isnot(None),  # Must match specific outcome, not just event
         ).all()
 
         candidates = []
@@ -292,11 +292,14 @@ class BatchBuilder:
                     continue  # No funded sibling
 
             odds = boost.boosted_odds
-            fair_odds = boost.fair_odds or (boost.original_odds if boost.original_odds else 0)
-            edge_raw = (boost.edge_pct or 0) / 100.0
-
-            if edge_raw < min_edge:
+            fair_odds = boost.fair_odds
+            if not fair_odds or fair_odds <= 1:
                 continue
+
+            # Compute real edge: boosted_odds vs Pinnacle fair_odds (NOT vs original_odds)
+            edge_raw = (odds / fair_odds) - 1.0
+            if edge_raw < min_edge:
+                continue  # Not actually +EV vs Pinnacle
 
             # Bonus phase min_odds check
             if pb.lifecycle in ("wagering", "deposited"):
@@ -341,7 +344,7 @@ class BatchBuilder:
                 point=None,
                 odds=odds,
                 fair_odds=fair_odds,
-                edge_pct=boost.edge_pct or 0,
+                edge_pct=round(edge_raw * 100, 2),
                 stake=stake,
                 expected_profit=expected_profit,
                 is_bonus=False,
