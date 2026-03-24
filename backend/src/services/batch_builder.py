@@ -133,17 +133,17 @@ class BatchBuilder:
             total_bankroll, provider_balances, profile
         )
 
-        deduped = self._deduplicate(candidates, provider_balances)
-
-        # Sort: sharp first, then by expected_profit desc
+        # Sort ALL candidates: sharp first, then by expected_profit desc
+        # Don't deduplicate before allocation — dedup happens during allocation
+        # so bets distribute across siblings by remaining balance
         ranked = sorted(
-            deduped,
+            candidates,
             key=lambda b: (-TIER_PRIORITY.get(b.tier, 0), -b.expected_profit),
         )
-        for i, bet in enumerate(ranked):
-            bet.rank = i + 1
 
-        batch, missed = self._allocate(ranked, provider_balances)
+        batch, missed = self._allocate_with_dedup(ranked, provider_balances)
+        for i, bet in enumerate(batch):
+            bet.rank = i + 1
 
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
@@ -364,19 +364,33 @@ class BatchBuilder:
 
         return list(seen.values())
 
-    def _allocate(
+    def _allocate_with_dedup(
         self,
         ranked: list[BatchBet],
         provider_balances: dict[str, ProviderBalance],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Greedy balance allocation: walk ranked list, include bet if provider has
-        sufficient remaining balance, track as missed otherwise.
+        Greedy allocation with inline dedup across cluster siblings.
+
+        For each bet, check if the same (cluster, event, market, outcome, point)
+        was already placed on another sibling. If so, skip (not missed — just
+        a duplicate). This naturally distributes bets across siblings by remaining
+        balance since we process highest-balance providers first for each event.
         """
         batch: list[BatchBet] = []
         missed: list[BatchBet] = []
+        # Track placed bet keys per cluster to avoid duplicates
+        placed_keys: set[tuple] = set()
 
         for bet in ranked:
+            # Dedup key: within a cluster, only one copy per event+market+outcome+point
+            # Sharp providers use provider_id as cluster (no dedup across sharps)
+            cluster_key = bet.cluster if bet.tier == "soft" and bet.cluster else bet.provider_id
+            dedup_key = (cluster_key, bet.event_id, bet.market, bet.outcome, bet.point)
+
+            if dedup_key in placed_keys:
+                continue  # Already placed on another sibling — skip silently
+
             pb = provider_balances.get(bet.provider_id)
             if pb is None:
                 bet.skip_reason = "no balance record"
@@ -385,13 +399,19 @@ class BatchBuilder:
 
             # Freebets don't consume real balance
             if bet.is_bonus and bet.bonus_type == "freebet":
+                placed_keys.add(dedup_key)
                 batch.append(bet)
                 continue
 
             if pb.remaining >= bet.stake:
                 pb.allocated += bet.stake
+                placed_keys.add(dedup_key)
                 batch.append(bet)
             else:
+                # Don't mark as placed — another sibling might have balance
+                # Only mark as missed if no sibling can take it
+                # (this happens naturally: if sibling B has balance, its candidate
+                # will appear later in the ranked list and get placed)
                 bet.skip_reason = (
                     f"insufficient balance "
                     f"(need {bet.stake:.0f}, have {pb.remaining:.0f})"
