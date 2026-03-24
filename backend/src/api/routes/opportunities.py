@@ -3,6 +3,7 @@
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ...services import OpportunityService
@@ -140,10 +141,72 @@ async def get_play_session(db: Session = Depends(get_db)):
     return service.get_session(profile.id)
 
 
+class BuildBatchRequest(BaseModel):
+    exclude: list[str] | None = None
+
+
+class CapitalActionRequest(BaseModel):
+    type: str  # "deposit", "withdraw", "transfer"
+    provider_id: Optional[str] = None
+    from_provider_id: Optional[str] = None
+    to_provider_id: Optional[str] = None
+    amount: float
+
+
+class ConfirmCapitalRequest(BaseModel):
+    actions: list[CapitalActionRequest]
+
+
 @router.post("/play/batch")
-async def build_batch(db: Session = Depends(get_db)):
+async def build_batch(
+    body: BuildBatchRequest | None = None,
+    db: Session = Depends(get_db),
+):
     """Build optimal batch of all +EV bets with balance allocation."""
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
+    builder = BatchBuilder(db)
+    exclude = body.exclude if body else None
+    return builder.build(profile.id, exclude=exclude)
+
+
+@router.post("/play/confirm-capital")
+async def confirm_capital(
+    body: ConfirmCapitalRequest,
+    db: Session = Depends(get_db),
+):
+    """Apply capital actions (deposit/withdraw/transfer) and rebuild batch."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    for action in body.actions:
+        if action.type == "deposit":
+            if not action.provider_id:
+                raise HTTPException(400, "deposit requires provider_id")
+            profile_repo.adjust_balance(profile.id, action.provider_id, action.amount)
+
+        elif action.type == "withdraw":
+            if not action.provider_id:
+                raise HTTPException(400, "withdraw requires provider_id")
+            current = profile_repo.get_balance(profile.id, action.provider_id)
+            if current < action.amount:
+                raise HTTPException(422, f"Insufficient balance on {action.provider_id}: have {current}, need {action.amount}")
+            profile_repo.adjust_balance(profile.id, action.provider_id, -action.amount)
+
+        elif action.type == "transfer":
+            if not action.from_provider_id or not action.to_provider_id:
+                raise HTTPException(400, "transfer requires from_provider_id and to_provider_id")
+            current = profile_repo.get_balance(profile.id, action.from_provider_id)
+            if current < action.amount:
+                raise HTTPException(422, f"Insufficient balance on {action.from_provider_id}: have {current}, need {action.amount}")
+            profile_repo.adjust_balance(profile.id, action.from_provider_id, -action.amount)
+            profile_repo.adjust_balance(profile.id, action.to_provider_id, action.amount)
+
+        else:
+            raise HTTPException(400, f"Unknown action type: {action.type}")
+
+    db.commit()
+
+    # Rebuild batch with updated balances
     builder = BatchBuilder(db)
     return builder.build(profile.id)
