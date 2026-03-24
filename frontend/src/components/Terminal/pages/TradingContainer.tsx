@@ -108,9 +108,9 @@ interface Props {
 }
 
 export function TradingContainer({ activeSubTab }: Props) {
-  const [session, setSession] = useState<ExpandedSession | null>(null);
+  const [session, setSession] = useState<ExpandedSession | null>(DEMO_SESSION);
   const [positions] = useState<PositionRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   const { lastTick, book, lastCandle, connected, esRef } = useMarketStream();
   const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dqnInference, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session);
@@ -132,7 +132,6 @@ export function TradingContainer({ activeSubTab }: Props) {
   }, [battleActive, play]);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
     try {
       const [sessionRes, liveRes] = await Promise.all([
         api.getExpandedSession().catch(() => null),

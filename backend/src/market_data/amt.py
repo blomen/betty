@@ -6,12 +6,22 @@ market type classification, and opening type from bar/tick data.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from .base import BarData, TickData
+
+_ET = ZoneInfo("US/Eastern")
+
+
+def _to_et_time(ts: datetime) -> time:
+    """Convert a datetime to US/Eastern time-of-day (handles DST correctly)."""
+    if ts.tzinfo is not None:
+        return ts.astimezone(_ET).time()
+    return ts.replace(tzinfo=timezone.utc).astimezone(_ET).time()
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +318,7 @@ def compute_initial_balance(bars: list[BarData], rth_open: str = "09:30") -> Ini
 
     ib_bars = [
         b for b in bars
-        if hasattr(b.timestamp, "time") and open_time <= b.timestamp.time() < ib_end_time
+        if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < ib_end_time
     ]
 
     if not ib_bars:
@@ -438,7 +448,7 @@ def classify_opening_type(
     # Get first few bars of RTH
     rth_bars = [
         b for b in bars
-        if hasattr(b.timestamp, "time") and b.timestamp.time() >= open_time
+        if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) >= open_time
     ]
     if len(rth_bars) < 5:
         return "unknown"
@@ -551,7 +561,7 @@ def compute_tpo_profile(bars: list[BarData], tick_size: float = 0.25, rth_open: 
     open_time = time(h, m)
 
     # Filter to RTH bars only
-    rth_bars = [b for b in bars if hasattr(b.timestamp, "time") and b.timestamp.time() >= open_time]
+    rth_bars = [b for b in bars if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) >= open_time]
     if not rth_bars:
         return TPOProfile(tpo_poc=0, tpo_vah=0, tpo_val=0)
 
@@ -560,7 +570,7 @@ def compute_tpo_profile(bars: list[BarData], tick_size: float = 0.25, rth_open: 
     period_letters: dict[float, set] = {}
 
     for bar in rth_bars:
-        bar_time = bar.timestamp.time()
+        bar_time = _to_et_time(bar.timestamp)
         # Minutes since RTH open
         minutes = (bar_time.hour - h) * 60 + (bar_time.minute - m)
         if minutes < 0:
@@ -687,7 +697,7 @@ def compute_overnight_range(bars: list[BarData], rth_open: str = "09:30") -> tup
 
     overnight_bars = [
         b for b in bars
-        if hasattr(b.timestamp, "time") and b.timestamp.time() < open_time
+        if hasattr(b.timestamp, "time") and _to_et_time(b.timestamp) < open_time
     ]
 
     if not overnight_bars:
@@ -772,25 +782,14 @@ def build_session_analysis(
         return analysis
 
     # Volume profile (RTH bars only — filter using ET time, not UTC)
-    from zoneinfo import ZoneInfo
-    _ET = ZoneInfo("US/Eastern")
     h, m = map(int, rth_open.split(":"))
     open_time = time(h, m)
     close_time = time(16, 0)
 
-    def _is_rth(bar: BarData) -> bool:
-        ts = bar.timestamp
-        if not hasattr(ts, "time"):
-            return False
-        if ts.tzinfo is not None:
-            ts_et = ts.astimezone(_ET)
-        else:
-            # Naive timestamps assumed UTC
-            from datetime import timezone
-            ts_et = ts.replace(tzinfo=timezone.utc).astimezone(_ET)
-        return open_time <= ts_et.time() < close_time
-
-    rth_bars = [b for b in bars if _is_rth(b)]
+    rth_bars = [
+        b for b in bars
+        if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time
+    ]
 
     if rth_bars:
         analysis.volume_profile = compute_volume_profile(rth_bars, tick_size)
@@ -833,7 +832,7 @@ def build_session_analysis(
         # Previous day profile
         prev_profile = None
         if prev_bars:
-            prev_rth = [b for b in prev_bars if _is_rth(b)]
+            prev_rth = [b for b in prev_bars if hasattr(b.timestamp, "time") and open_time <= _to_et_time(b.timestamp) < close_time]
             if prev_rth:
                 prev_profile = compute_volume_profile(prev_rth, tick_size)
                 analysis.prev_poc = prev_profile.poc

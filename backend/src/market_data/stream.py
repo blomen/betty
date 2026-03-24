@@ -4,12 +4,17 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .level_monitor import LevelMonitor
 
 logger = logging.getLogger(__name__)
+
+# Databento historical has ~15 min delay
+DATABENTO_HISTORICAL_DELAY_M = 15
+# Minimum gap size worth backfilling (seconds)
+MIN_GAP_FOR_BACKFILL_S = 120
 
 # Batch flush config
 TICK_BATCH_SIZE = 500
@@ -268,6 +273,7 @@ class DatabentoLiveStream:
         self._db_session_factory = db_session_factory
         self._candle_write_queue: deque[tuple[dict, str]] = deque(maxlen=500)
         self._candle_retry_task: asyncio.Task | None = None
+        self._gap_backfill_task: asyncio.Task | None = None
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -284,6 +290,7 @@ class DatabentoLiveStream:
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         if self._db_session_factory:
             self._candle_retry_task = asyncio.create_task(self._candle_retry_loop())
+            self._gap_backfill_task = asyncio.create_task(self._periodic_gap_backfill_loop())
         logger.info("Databento live stream started for %s", self.symbol)
 
     async def stop(self):
@@ -297,6 +304,9 @@ class DatabentoLiveStream:
         if self._candle_retry_task:
             self._candle_retry_task.cancel()
             self._candle_retry_task = None
+        if self._gap_backfill_task:
+            self._gap_backfill_task.cancel()
+            self._gap_backfill_task = None
         if self._tick_writer:
             await self._tick_writer.stop()
         logger.info("Databento live stream stopped")
@@ -372,16 +382,38 @@ class DatabentoLiveStream:
                 logger.warning("Candle retry failed after %d/%d: %s", written, len(batch), e)
 
     async def _watchdog_loop(self):
-        """Monitor stream health — reconnect if no records received within timeout."""
+        """Monitor stream health — reconnect if no records received within timeout.
+
+        Also handles the daily halt transition: during the 17:00-18:00 ET halt
+        no records arrive, but we need to reconnect promptly at 18:00 ET rather
+        than waiting for the next watchdog cycle to notice.
+        """
+        was_in_halt = False
         while self._running:
             await asyncio.sleep(self.WATCHDOG_TIMEOUT_S)
             if not self._running:
                 break
+
+            now_epoch = time.time()
+            in_globex = self._in_globex(now_epoch)
+
+            # Detect halt → open transition: force reconnect immediately
+            from zoneinfo import ZoneInfo
+            dt_et = datetime.fromtimestamp(now_epoch, tz=ZoneInfo("US/Eastern"))
+            in_halt = dt_et.hour == 17
+            if was_in_halt and not in_halt and in_globex:
+                logger.info("Databento watchdog: post-halt transition (18:00 ET) — forcing reconnect + backfill")
+                if self._task:
+                    self._task.cancel()
+                self._task = asyncio.create_task(self._stream_loop())
+                self._last_record_time = time.monotonic()
+                was_in_halt = False
+                continue
+            was_in_halt = in_halt
+
             elapsed = time.monotonic() - self._last_record_time
             if elapsed > self.WATCHDOG_TIMEOUT_S:
-                # Check if we're in Globex hours before alarming
-                now_epoch = time.time()
-                if self._in_globex(now_epoch):
+                if in_globex:
                     logger.warning(
                         "Databento watchdog: no records for %.0fs (during Globex hours) — reconnecting",
                         elapsed,
@@ -400,7 +432,86 @@ class DatabentoLiveStream:
             return []
         return build_candle_flow(ticks, period_seconds=300)
 
+    PERIODIC_BACKFILL_INTERVAL_S = 600  # 10 minutes
+
+    async def _periodic_gap_backfill_loop(self):
+        """Check for candle gaps every 10 minutes during Globex hours.
+
+        Catches mid-session gaps that the watchdog reconnect might miss
+        (e.g. stream died briefly but reconnected without triggering backfill,
+        or Databento historical wasn't available at reconnect time).
+        """
+        while self._running:
+            await asyncio.sleep(self.PERIODIC_BACKFILL_INTERVAL_S)
+            if not self._running:
+                break
+            now_epoch = time.time()
+            if not self._in_globex(now_epoch):
+                continue
+            try:
+                await self._backfill_gap()
+            except Exception as e:
+                logger.warning("Periodic gap backfill failed (non-fatal): %s", e)
+
+    async def _backfill_gap(self):
+        """Backfill candle gaps from Databento historical after reconnect.
+
+        Finds the last candle in DB, computes the gap to now, and fetches
+        missing 1m/5m bars from Databento historical API.
+        """
+        if not self._db_session_factory:
+            return
+        try:
+            from ..repositories.market_repo import MarketRepo
+            from ..market_data.databento_provider import DabentoProvider
+            from ..config.trading_loader import get_market_data_config
+
+            db_sym = self.symbol.split(".")[0]
+            now = datetime.now(timezone.utc)
+            fetch_end = now - timedelta(minutes=DATABENTO_HISTORICAL_DELAY_M)
+
+            # Find last candle timestamp per interval
+            session = self._db_session_factory()
+            try:
+                repo = MarketRepo(session)
+                for interval in ("1m", "5m"):
+                    latest = repo.get_latest_candle(db_sym, interval)
+                    if not latest:
+                        continue
+                    latest_ts = latest.ts if latest.ts.tzinfo else latest.ts.replace(tzinfo=timezone.utc)
+                    gap_seconds = (fetch_end - latest_ts).total_seconds()
+
+                    if gap_seconds < MIN_GAP_FOR_BACKFILL_S:
+                        continue
+
+                    logger.info("Gap backfill %s: %s → %s (%.0f min gap)",
+                                interval, latest_ts, fetch_end, gap_seconds / 60)
+
+                    config = get_market_data_config()
+                    inner = DabentoProvider(config)
+                    db_symbol = config.get("symbol", "NQ.v.0")
+
+                    bars = await asyncio.wait_for(
+                        inner.get_bars(db_symbol, interval, latest_ts, fetch_end),
+                        timeout=120.0,
+                    )
+                    if bars:
+                        write_db = self._db_session_factory()
+                        try:
+                            write_repo = MarketRepo(write_db)
+                            count = write_repo.bulk_insert_candles(db_sym, interval, bars)
+                            logger.info("Gap backfill %s: inserted %d new bars", interval, count)
+                        finally:
+                            write_db.close()
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning("Gap backfill failed (non-fatal): %s", e)
+
     async def _stream_loop(self):
+        # Backfill any gap before reconnecting to live
+        await self._backfill_gap()
+
         try:
             import databento as db
 
@@ -479,8 +590,10 @@ class DatabentoLiveStream:
                     if closed_5m and self._db_session_factory:
                         asyncio.create_task(self._write_closed_candle(closed_5m, "5m"))
 
-                    # 1m candle — emit closed to UI + persist
-                    _, closed_1m = self._candle_flow_1m.update(price, record.size, ts_epoch)
+                    # 1m candle — emit live snapshots + closed to UI, persist closed
+                    emit_1m, closed_1m = self._candle_flow_1m.update(price, record.size, ts_epoch)
+                    if emit_1m and self._in_globex(emit_1m["t"]):
+                        self._publish(emit_1m)
                     if closed_1m:
                         if self._in_globex(closed_1m["t"]):
                             self._publish(closed_1m)

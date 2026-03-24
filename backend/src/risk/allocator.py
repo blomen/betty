@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..constants import PLATFORM_MAP
-from ..db.models import Bet, ProfileProviderBalance, ProfileProviderBonus, RiskConfig
+from ..db.models import Bet, ProfileProviderBalance, ProfileProviderBonus, ProfileProviderLimit, RiskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ class AllocationResult:
     daily_cap: int         # Max bets per day per platform group
     is_capped: bool        # True if at/over daily cap
     wagering_remaining: float  # Wagering requirement remaining (0 if cleared)
+    edge_routing: str | None = None  # "high_edge_unlimited", "grind_ok", or None
 
 
 class ProviderAllocator:
@@ -41,6 +42,7 @@ class ProviderAllocator:
         self._daily_bets: dict[str, int] = {}   # provider_id -> bets today
         self._wagering: dict[str, dict] = {}     # provider_id -> bonus info
         self._balances: dict[str, float] = {}    # provider_id -> balance
+        self._limits: dict[str, int] = {}        # provider_id -> limit_level
         self._daily_cap = self._load_daily_cap()
 
     def _load_daily_cap(self) -> int:
@@ -117,14 +119,44 @@ class ProviderAllocator:
         for row in rows:
             self._balances[row.provider_id] = row.balance or 0.0
 
+    def preload_limits(self) -> None:
+        """Single query: get all provider limits (highest level per provider)."""
+        rows = (
+            self.db.query(ProfileProviderLimit)
+            .filter(ProfileProviderLimit.profile_id == self.profile_id)
+            .all()
+        )
+        for row in rows:
+            existing = self._limits.get(row.provider_id, 0)
+            self._limits[row.provider_id] = max(existing, row.limit_level)
+
+    def get_balance(self, provider_id: str) -> float:
+        """Get preloaded balance for a provider."""
+        return self._balances.get(provider_id, 0.0)
+
+    def get_wagering_info(self, provider_id: str) -> dict:
+        """Get preloaded wagering info for a provider."""
+        return self._wagering.get(provider_id, {})
+
+    def get_limit_level(self, provider_id: str) -> int:
+        """Get preloaded limit level for a provider (0 = no limit)."""
+        return self._limits.get(provider_id, 0)
+
     def _count_group_bets(self, provider_id: str) -> int:
         """Count today's bets across the provider's limit platform group."""
         platform = self._get_limit_platform(provider_id)
         group = self._get_group_providers(platform)
         return sum(self._daily_bets.get(pid, 0) for pid in group)
 
-    def score_provider(self, provider_id: str) -> AllocationResult:
-        """Compute allocation score for a provider (0-100, higher = bet here)."""
+    def score_provider(self, provider_id: str, edge_pct: float | None = None) -> AllocationResult:
+        """Compute allocation score for a provider (0-100, higher = bet here).
+
+        Args:
+            provider_id: The provider to score.
+            edge_pct: Optional edge percentage for edge-based routing.
+                      High-edge bets are penalized at limited providers;
+                      low-edge bets get a bonus (good for wagering grind).
+        """
         group_bets = self._count_group_bets(provider_id)
         cap = self._daily_cap
         is_capped = cap > 0 and group_bets >= cap
@@ -156,9 +188,22 @@ class ProviderAllocator:
 
         total = wagering_score + daily_room_score + balance_score + bonus_type_score
 
+        # --- Edge-based routing (limited provider handling) ---
+        edge_routing = None
+        limit_level = self._limits.get(provider_id, 0)
+        if edge_pct is not None and limit_level >= 1:
+            if edge_pct >= 5.0 and limit_level >= 2:
+                # Don't waste high-edge bets on limited providers
+                total -= 15
+                edge_routing = "high_edge_unlimited"
+            elif edge_pct < 4.0:
+                # Low-edge bets are fine for wagering grind at limited providers
+                total += 10
+                edge_routing = "grind_ok"
+
         # Build reason string
         reason = self._build_reason(
-            remaining, status, group_bets, cap, balance
+            remaining, status, group_bets, cap, balance, limit_level, edge_routing
         )
 
         if is_capped:
@@ -176,6 +221,7 @@ class ProviderAllocator:
             daily_cap=cap,
             is_capped=is_capped,
             wagering_remaining=remaining,
+            edge_routing=edge_routing,
         )
 
     def _build_reason(
@@ -185,6 +231,8 @@ class ProviderAllocator:
         group_bets: int,
         cap: int,
         balance: float,
+        limit_level: int = 0,
+        edge_routing: str | None = None,
     ) -> str:
         """Build a concise human-readable reason for the allocation score."""
         parts = []
@@ -197,6 +245,14 @@ class ProviderAllocator:
 
         if balance <= 0:
             parts.append("No balance")
+
+        if limit_level >= 1:
+            parts.append(f"Lim L{limit_level}")
+
+        if edge_routing == "high_edge_unlimited":
+            parts.append("high-edge→unlimited")
+        elif edge_routing == "grind_ok":
+            parts.append("grind-ok")
 
         if cap > 0:
             parts.append(f"{group_bets}/{cap} today")

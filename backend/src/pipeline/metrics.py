@@ -611,7 +611,7 @@ class MetricsCollector:
                 config=run_metrics.to_dict(),
                 report=report,
             )
-            session.add(run)
+            session.merge(run)
 
             # Create provider metrics records
             for provider_id, pmetrics in run_metrics.providers.items():

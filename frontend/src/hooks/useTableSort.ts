@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useMemo, useCallback } from 'react';
+import { usePersistedState } from './usePersistedState';
 
 export type SortDirection = 'asc' | 'desc';
 
@@ -21,9 +22,11 @@ export function useTableSort<T, K extends string>(
   items: T[],
   extractors: Record<K, (item: T) => number>,
   defaultSort?: SortState<K>,
+  storageKey?: string,
 ) {
-  const [sort, setSort] = useState<SortState<K>>(
-    defaultSort ?? { column: null, direction: 'desc' },
+  const [sort, setSort] = usePersistedState<SortState<K>>(
+    storageKey ?? '',
+    defaultSort ?? { column: null, direction: 'desc' } as SortState<K>,
   );
 
   const toggle = useCallback((col: K) => {

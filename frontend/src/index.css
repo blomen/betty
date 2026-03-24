@@ -161,7 +161,7 @@ table.sq tr:hover td:first-child {
 }
 
 table.sq tr.expanded td {
-  background-color: var(--panel);
+  background-color: color-mix(in srgb, var(--tab-accent, var(--muted)) 8%, var(--panel));
 }
 
 table.sq tr.expanded td:first-child {

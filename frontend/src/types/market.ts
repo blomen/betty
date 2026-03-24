@@ -507,14 +507,14 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 108
+  inputs: number[];           // 115
   activations: {
     layer1: number[];         // 128
     layer2: number[];         // 128
     layer3: number[];         // 64
   };
-  q_values: number[];         // 3: [LONG, SHORT, SKIP]
-  action: 'LONG' | 'SHORT' | 'SKIP';
+  q_values: number[];         // 3: [CONTINUATION, REVERSAL, SKIP]
+  action: 'CONTINUATION' | 'REVERSAL' | 'SKIP';
   connections: {
     input_l1: DQNConnection[];
     l1_l2: DQNConnection[];

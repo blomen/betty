@@ -17,7 +17,7 @@ const SPORTS_TABS: Tab[] = [
 
 const STOCKS_TABS: Tab[] = [
   { name: 'tradingL1', label: 'L1', color: '#06B6D4' },
-  { name: 'tradingL2', label: 'L2', color: '#EF4444' },
+  { name: 'tradingVectors', label: 'Vectors', color: '#EF4444' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },
 ];
@@ -46,7 +46,7 @@ export const TAB_COLORS: Record<string, string> = {
   settings: '#9AA0A6',
   success: '#10b981',
   tradingL1: '#06B6D4',
-  tradingL2: '#EF4444',
+  tradingVectors: '#EF4444',
   tradingBankroll: '#EC4899',
   tradingStats: '#1E88E5',
 };

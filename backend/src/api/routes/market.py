@@ -554,6 +554,17 @@ async def get_tpo_live(
     return svc.get_tpo_live(symbol=symbol)
 
 
+@router.post("/tpo/backfill")
+async def backfill_tpo(
+    symbol: str = Query("NQ"),
+    days: int = Query(30, ge=1, le=365),
+    svc: MarketService = Depends(_svc),
+):
+    """Backfill historical TPO sessions from existing 1m bar data."""
+    stored = svc.backfill_tpo_sessions(symbol=symbol, days=days)
+    return {"stored": stored, "symbol": symbol, "days_checked": days}
+
+
 @router.get("/cot")
 async def get_cot_data(limit: int = Query(default=4, le=52)):
     """Get latest COT report data."""

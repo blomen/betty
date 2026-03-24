@@ -18,6 +18,8 @@ export function useBetMutations() {
     queryClient.invalidateQueries({ queryKey: ['bankroll', 'info'] });
     queryClient.invalidateQueries({ queryKey: ['bankroll', 'exposure'] });
     queryClient.invalidateQueries({ queryKey: ['opportunities'] });
+    queryClient.invalidateQueries({ queryKey: ['cluster-summary'] });
+    queryClient.invalidateQueries({ queryKey: ['clusters'] });
   };
 
   const placeBet = useMutation({

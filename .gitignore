@@ -40,6 +40,16 @@ backend/logs/
 # Temp/Scrap
 backend/scrap/
 
+# Screenshots / debug images
+*.png
+*.jpg
+
+# Root data dir (mirror profiles etc.)
+/data/
+
+# Superpowers brainstorm cache
+.superpowers/
+
 # Git worktrees
 .worktrees/
 

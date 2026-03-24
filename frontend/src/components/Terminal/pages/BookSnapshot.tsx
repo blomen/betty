@@ -67,7 +67,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
     <div className="flex flex-col h-full min-h-0 text-xs font-mono overflow-y-auto">
 
       {/* Master toggle */}
-      <div className="px-3 py-1.5 border-b border-border">
+      <div className="px-2 py-1 border-b border-border">
         <button onClick={toggleAll} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">Levels</button>
       </div>
 
@@ -103,8 +103,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
       )}
 
       {/* Session Levels */}
-      <div className="px-3 py-2 border-b border-border">
-        <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">Session</button>
+      <div className="px-2 py-1 border-b border-border">
+        <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
 
         <Group label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
           {s?.ib_high != null && s?.ib_low != null ? (
@@ -135,8 +135,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
       </div>
 
       {/* Volume Profile — multi-timeframe */}
-      <div className="px-3 py-2 border-b border-border last:border-b-0">
-        <button onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">Volume Profile</button>
+      <div className="px-2 py-1 border-b border-border last:border-b-0">
+        <button onClick={() => toggleCluster(['daily_vp', 'weekly_vp', 'monthly_vp'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Volume Profile</button>
 
         <Group label="Daily" hidden={isGroupHidden('daily_vp')} onToggle={() => toggleGroup('daily_vp')}>
           <VPRow vp={profiles?.session} color="text-purple-400" />
@@ -157,8 +157,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
 
       {/* TPO Profile */}
       {tpo && (
-        <div className="px-3 py-2 border-b border-border last:border-b-0">
-          <button onClick={() => toggleGroup('tpo')} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">TPO Profile</button>
+        <div className="px-2 py-1 border-b border-border last:border-b-0">
+          <button onClick={() => toggleGroup('tpo')} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">TPO Profile</button>
 
           <div className={isGroupHidden('tpo') ? 'opacity-40' : ''}>
             <div className="grid grid-cols-3 gap-x-1 text-[10px] mb-1.5">
@@ -209,15 +209,15 @@ function Group({ label, hidden, onToggle, section, children }: {
 }) {
   if (section) {
     return (
-      <div className={`px-3 py-2 border-b border-border ${hidden ? 'opacity-40' : ''}`}>
-        <button onClick={onToggle} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-2 block">{label}</button>
+      <div className={`px-2 py-1 border-b border-border ${hidden ? 'opacity-40' : ''}`}>
+        <button onClick={onToggle} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">{label}</button>
         {children}
       </div>
     );
   }
   return (
-    <div className={`mb-1.5 ${hidden ? 'opacity-40' : ''}`}>
-      <button onClick={onToggle} className="text-[10px] text-muted2 font-bold hover:text-text transition-colors cursor-pointer mb-0.5 block">{label}</button>
+    <div className={`mb-1 ${hidden ? 'opacity-40' : ''}`}>
+      <button onClick={onToggle} className="text-[10px] text-muted2 font-bold hover:text-text transition-colors cursor-pointer block">{label}</button>
       {children}
     </div>
   );

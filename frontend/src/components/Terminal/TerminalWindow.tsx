@@ -86,7 +86,7 @@ export function TerminalWindow() {
     setActiveTab('settings');
   }, []);
 
-  const isTradingTab = activeTab === 'tradingL1' || activeTab === 'tradingL2';
+  const isTradingTab = activeTab === 'tradingL1' || activeTab === 'tradingVectors';
 
   // Once user visits trading, keep TradingContainer mounted forever
   useEffect(() => {
@@ -161,7 +161,7 @@ export function TerminalWindow() {
             {/* TradingContainer stays mounted once visited — hidden via CSS when on other tabs */}
             {tradingMounted && (
               <div className={`flex-1 flex flex-col min-h-0 ${isTradingTab ? '' : 'hidden'}`}>
-                <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingL1') as 'tradingL1' | 'tradingL2'} />
+                <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingL1') as 'tradingL1' | 'tradingVectors'} />
               </div>
             )}
             {/* Non-trading pages render normally */}

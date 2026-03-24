@@ -63,6 +63,9 @@ build = [
     "pyinstaller>=6.0",
     "pywebview>=5.0",
 ]
+ml = [
+    "torch>=2.0.0",
+]
 
 [project.scripts]
 bankrollbbq = "src.cli:app"

@@ -7,8 +7,8 @@ from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
-from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT
-from ..db.models import Bet, Event, Provider, Odds
+from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP
+from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit
 from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
@@ -182,20 +182,22 @@ class OpportunityService:
 
             results.append(result)
 
-        # Compute provider allocation scores (daily caps + wagering priority)
+        # Compute provider allocation scores (daily caps + wagering priority + edge routing)
         if type == 'value' and profile and results:
             try:
                 allocator = ProviderAllocator(self.db, profile.id)
                 allocator.preload_daily_bets()
                 allocator.preload_wagering()
                 allocator.preload_balances()
+                allocator.preload_limits()
                 for result in results:
-                    alloc = allocator.score_provider(result["provider1"])
+                    alloc = allocator.score_provider(result["provider1"], edge_pct=result.get("edge_pct"))
                     result["allocation_score"] = alloc.score
                     result["allocation_reason"] = alloc.reason
                     result["daily_bets_group"] = alloc.daily_bets_group
                     result["daily_cap"] = alloc.daily_cap
                     result["is_daily_capped"] = alloc.is_capped
+                    result["edge_routing"] = alloc.edge_routing
             except Exception as e:
                 logger.warning(f"Allocation scoring failed: {e}")
 
@@ -774,3 +776,152 @@ class OpportunityService:
             result[orig_key] = updated_index.get(key)
 
         return result
+
+    def get_cluster_summary(self, cluster_name: str) -> dict:
+        """Get provider status summary for a cluster (balance, wagering, limits)."""
+        members = self._resolve_cluster_members(cluster_name)
+        if not members:
+            return {"cluster": cluster_name, "providers": [], "total_balance": 0, "total_wagering_remaining": 0}
+
+        profile = self.profile_repo.get_active()
+        if not profile:
+            return {"cluster": cluster_name, "providers": [], "total_balance": 0, "total_wagering_remaining": 0}
+
+        # Reuse allocator for batch-loaded scoring
+        allocator = ProviderAllocator(self.db, profile.id)
+        allocator.preload_daily_bets()
+        allocator.preload_wagering()
+        allocator.preload_balances()
+        allocator.preload_limits()
+
+        # Query limit_type per provider (allocator only stores level, we need type for display)
+        limit_rows = (
+            self.db.query(ProfileProviderLimit)
+            .filter(
+                ProfileProviderLimit.profile_id == profile.id,
+                ProfileProviderLimit.provider_id.in_(members),
+            )
+            .all()
+        )
+        limit_type_map: dict[str, str] = {}
+        for lr in limit_rows:
+            existing_level = allocator.get_limit_level(lr.provider_id)
+            if lr.limit_level >= existing_level:
+                limit_type_map[lr.provider_id] = lr.limit_type
+
+        providers = []
+        total_balance = 0.0
+        total_wagering = 0.0
+
+        for pid in members:
+            alloc = allocator.score_provider(pid)
+            balance = allocator.get_balance(pid)
+            wager_info = allocator.get_wagering_info(pid)
+            remaining = wager_info.get("remaining", 0)
+            bonus_amount = wager_info.get("bonus_amount", 0)
+            bonus_status = wager_info.get("status", None)
+            limit_level = allocator.get_limit_level(pid)
+
+            # Get bonus details for progress calculation
+            bonus_detail = self.profile_repo.get_bonus_status(profile.id, pid)
+            wagering_req = bonus_detail.get("wagering_requirement", 0) or 0
+            wagered = bonus_detail.get("wagered_amount", 0) or 0
+            progress_pct = (wagered / wagering_req * 100) if wagering_req > 0 else 100.0
+            min_odds = bonus_detail.get("min_odds", 0) or 0
+
+            providers.append({
+                "provider_id": pid,
+                "balance": round(balance, 2),
+                "wagering_remaining": round(remaining, 2),
+                "wagering_progress_pct": round(progress_pct, 1),
+                "bonus_status": bonus_status,
+                "bonus_amount": bonus_amount,
+                "min_odds": min_odds,
+                "daily_bets": alloc.daily_bets_group,
+                "daily_cap": alloc.daily_cap,
+                "limit_type": limit_type_map.get(pid),
+                "limit_level": limit_level if limit_level >= 1 else None,
+                "allocation_score": alloc.score,
+                "is_limited": limit_level >= 1,
+            })
+
+            total_balance += balance
+            total_wagering += remaining
+
+        # Sort: wagering_remaining DESC → balance DESC → limit_level ASC
+        providers.sort(key=lambda p: (
+            -(p["wagering_remaining"]),
+            -(p["balance"]),
+            (p["limit_level"] or 0),
+        ))
+
+        return {
+            "cluster": cluster_name,
+            "providers": providers,
+            "total_balance": round(total_balance, 2),
+            "total_wagering_remaining": round(total_wagering, 2),
+        }
+
+    def get_clusters(self) -> list[dict]:
+        """Get all available clusters with balance info for filtering."""
+        # Load all balances in one query
+        profile = None
+        balance_map: dict[str, float] = {}
+        try:
+            profile = self.profile_repo.get_active()
+            if profile:
+                from ..db.models import ProfileProviderBalance
+                rows = (
+                    self.db.query(ProfileProviderBalance)
+                    .filter(ProfileProviderBalance.profile_id == profile.id)
+                    .all()
+                )
+                balance_map = {r.provider_id: r.balance or 0.0 for r in rows}
+        except Exception:
+            pass
+
+        clusters = []
+
+        # Platform groups
+        for group_name, group_info in PLATFORM_GROUPS.items():
+            total = sum(balance_map.get(m, 0.0) for m in group_info["members"])
+            playable = sum(1 for m in group_info["members"] if balance_map.get(m, 0.0) >= 5)
+            clusters.append({
+                "id": group_name,
+                "label": group_name.replace("_", " ").title(),
+                "members": group_info["members"],
+                "canonical": group_info["canonical"],
+                "total_balance": round(total, 2),
+                "playable_count": playable,
+            })
+
+        # Standalone providers (in PLATFORM_MAP but not in any PLATFORM_GROUPS)
+        grouped_providers = set()
+        for group_info in PLATFORM_GROUPS.values():
+            grouped_providers.update(group_info["members"])
+
+        for pid, platform in PLATFORM_MAP.items():
+            if pid not in grouped_providers and pid not in ("pinnacle", "polymarket"):
+                bal = balance_map.get(pid, 0.0)
+                clusters.append({
+                    "id": pid,
+                    "label": pid.title(),
+                    "members": [pid],
+                    "canonical": pid,
+                    "total_balance": round(bal, 2),
+                    "playable_count": 1 if bal >= 5 else 0,
+                })
+
+        return clusters
+
+    def _resolve_cluster_members(self, cluster_name: str) -> list[str]:
+        """Resolve cluster name to member provider IDs."""
+        # Check platform groups first
+        if cluster_name in PLATFORM_GROUPS:
+            return PLATFORM_GROUPS[cluster_name]["members"]
+
+        # Check if it's a standalone provider
+        if cluster_name in PLATFORM_MAP and cluster_name not in ("pinnacle", "polymarket"):
+            return [cluster_name]
+
+        return []

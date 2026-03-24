@@ -17,9 +17,10 @@ import { SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
 import { MyBetsSection } from '../MyBetsSection';
 import { ManualBetForm } from '../ManualBetForm';
+import { ClusterPanel } from './ClusterPanel';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useToast, ToastContainer } from '../Toast';
-import type { Opportunity, Provider, Bet } from '@/types';
+import type { Opportunity, Provider, Bet, ClusterInfo } from '@/types';
 
 const softProviderFilter = (p: Provider) => p.id !== 'polymarket' && p.id !== 'pinnacle';
 
@@ -412,6 +413,45 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
+  // --- Cluster play mode ---
+  const [activeCluster, setActiveCluster] = usePersistedState<string | null>('bbq_cluster_mode', null);
+  const [activeClusterProvider, setActiveClusterProvider] = useState<string | null>(null);
+  const { data: clustersData } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: () => api.getClusters(),
+    staleTime: 300_000,
+  });
+  const clusters: ClusterInfo[] = clustersData?.clusters ?? [];
+
+  // Auto-select first provider when cluster changes
+  const { data: clusterSummaryData } = useQuery({
+    queryKey: ['cluster-summary', activeCluster],
+    queryFn: () => api.getClusterSummary(activeCluster!),
+    enabled: !!activeCluster,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  // Auto-select provider by day rotation — alternate between playable providers daily
+  useEffect(() => {
+    if (!clusterSummaryData?.providers?.length) return;
+    const playable = clusterSummaryData.providers.filter(p => p.balance >= 5);
+    if (!playable.length) return;
+
+    // Day-of-year determines which provider gets today's action
+    const now = new Date();
+    const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
+    const todaysProvider = playable[dayOfYear % playable.length];
+
+    if (!activeClusterProvider || activeClusterProvider !== todaysProvider.provider_id) {
+      setActiveClusterProvider(todaysProvider.provider_id);
+    }
+  }, [clusterSummaryData, activeClusterProvider]);
+
+  const handleClusterSelect = useCallback((clusterId: string | null) => {
+    setActiveCluster(clusterId);
+    setActiveClusterProvider(null);
+  }, [setActiveCluster]);
+
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
@@ -466,6 +506,13 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const hasBalance = (providerIds: string[]) =>
     providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
+  // Resolve active cluster member list for filtering
+  const clusterMembers = useMemo(() => {
+    if (!activeCluster || !clusters.length) return null;
+    const c = clusters.find(c => c.id === activeCluster);
+    return c ? new Set(c.members) : null;
+  }, [activeCluster, clusters]);
+
   const grouped = useMemo(() => {
     let result = opportunities;
     // Remove started/imminent events and events > 7 days out
@@ -476,6 +523,18 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
       result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
+    }
+    // Cluster mode: filter to active provider
+    if (activeClusterProvider) {
+      result = result.filter(o => o.provider1 === activeClusterProvider);
+      // Edge routing: if provider is limited, only show grind-ok bets
+      const provStatus = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
+      if (provStatus?.is_limited) {
+        result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
+      }
+    } else if (clusterMembers) {
+      // Cluster selected but no specific provider — show all cluster members
+      result = result.filter(o => clusterMembers.has(o.provider1));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -506,7 +565,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     return groups;
-  }, [opportunities, placedKeys, search]);
+  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, clusterSummaryData]);
 
   // Compute dynamic edge for a group, accounting for user odds overrides
   const getDynamicEdge = useCallback((g: GroupedOpp) => {
@@ -723,7 +782,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2">
+    <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -760,6 +819,29 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           </button>
         ))}
       </div>
+
+      {/* Cluster play mode panel */}
+      {activeTab === 'value' && clusters.length > 0 && (
+        <ClusterPanel
+          clusters={clusters}
+          activeCluster={activeCluster}
+          activeProvider={activeClusterProvider}
+          onClusterSelect={handleClusterSelect}
+          onProviderSelect={setActiveClusterProvider}
+        />
+      )}
+
+      {/* Limited provider grind banner */}
+      {activeTab === 'value' && activeClusterProvider && (() => {
+        const prov = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
+        if (!prov?.is_limited) return null;
+        return (
+          <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
+            <span className="font-bold">!</span>
+            <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{prov.limit_level})</span>
+          </div>
+        );
+      })()}
 
       {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
       {activeTab === 'mybets' && (

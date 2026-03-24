@@ -642,8 +642,7 @@ class LevelMonitor:
             "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
             "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
             # Structure
-            "naked_poc": LevelType.NAKED_POC, "single_print": LevelType.SINGLE_PRINT,
-            "fvg": LevelType.FVG,
+            "naked_poc": LevelType.NAKED_POC,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
 
@@ -664,4 +663,7 @@ class LevelMonitor:
             "orderflow_signals": None,  # Will be extracted from candles by build_observation
             "macro": None,            # Not stored on LevelMonitor
             "session_context": None,  # Not stored on LevelMonitor
+            "day_type": None,
+            "fvgs": [],               # FVGs passed as confluence signals
+            "single_print_zones": [],
         }
