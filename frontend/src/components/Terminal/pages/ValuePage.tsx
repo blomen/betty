@@ -412,10 +412,11 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
-  const { data: opportunitiesData, isLoading } = useQuery({
+  const { data: opportunitiesData, isLoading, isFetching } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
     placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
@@ -549,6 +550,9 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   // --- Boosts grouping & sorting ---
   const boostNonExpired = useMemo(() => specials.filter(s => {
+    // Only show Pinnacle-matched boosts with real edge data
+    if (!s.fair_odds || s.fair_odds <= 0) return false;
+    if (!s.is_positive_ev) return false;
     if (s.event_time) {
       try {
         const diff = new Date(s.event_time).getTime() - Date.now();
@@ -1015,7 +1019,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Value bets table */}
-      {isLoading && opportunities.length === 0 ? (
+      {isLoading ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
           Loading...
         </div>
