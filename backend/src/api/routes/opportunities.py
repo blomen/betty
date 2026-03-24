@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...services import OpportunityService
 from ...services.play_service import PlaySessionService
+from ...services.batch_builder import BatchBuilder
 from ...repositories import ProfileRepo
 from ..deps import get_db
 from ..schemas import BonusMatchRequest
@@ -137,3 +138,12 @@ async def get_play_session(db: Session = Depends(get_db)):
 
     service = PlaySessionService(db)
     return service.get_session(profile.id)
+
+
+@router.post("/play/batch")
+async def build_batch(db: Session = Depends(get_db)):
+    """Build optimal batch of all +EV bets with balance allocation."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    builder = BatchBuilder(db)
+    return builder.build(profile.id)
