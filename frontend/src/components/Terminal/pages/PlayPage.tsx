@@ -232,18 +232,24 @@ export function PlayPage(_props: PlayPageProps) {
     const priorityColors: Record<string, string> = {
       sharp: 'text-success',
       no_wagering: 'text-blue-400',
-      fast_clear: 'text-emerald-400',
-      medium_clear: 'text-amber-400',
-      slow_clear: 'text-orange-400',
+      fast_clear_high_vol: 'text-emerald-400',
+      fast_clear: 'text-emerald-400/70',
+      medium_clear_high_vol: 'text-amber-400',
+      medium_clear: 'text-amber-400/70',
+      slow_clear_high_vol: 'text-orange-400',
+      slow_clear_low_vol: 'text-orange-400/50',
       skip_infeasible: 'text-red-400/50 line-through',
     };
 
     const priorityIcons: Record<string, string> = {
       sharp: '◆',
       no_wagering: '●',
+      fast_clear_high_vol: '▲▲',
       fast_clear: '▲',
+      medium_clear_high_vol: '■■',
       medium_clear: '■',
-      slow_clear: '◇',
+      slow_clear_high_vol: '◇◇',
+      slow_clear_low_vol: '◇',
       skip_infeasible: '✗',
     };
 
@@ -336,11 +342,18 @@ export function PlayPage(_props: PlayPageProps) {
                 const label = t.priority_label || 'unknown';
                 const color = priorityColors[label] || 'text-muted';
                 const icon = priorityIcons[label] || '·';
+                const opps = t.unique_opps || 0;
+                const evSession = t.ev_per_session || 0;
                 return (
                   <div key={t.cluster || t.provider_id || i} className={`flex items-center gap-1.5 text-[11px] ${color}`}>
-                    <span className="w-3 text-center">{icon}</span>
-                    <span>{t.cluster || t.provider_id}</span>
-                    {t.missed_ev > 0 && <span className="text-muted ml-auto">+{t.missed_ev.toFixed(0)}</span>}
+                    <span className="w-4 text-center text-[10px]">{icon}</span>
+                    <span className="min-w-[70px]">{t.cluster || t.provider_id}</span>
+                    {opps > 0 && (
+                      <span className="text-muted text-[10px]">{opps} opps</span>
+                    )}
+                    {evSession > 0 && (
+                      <span className="text-[10px] ml-auto">+{evSession.toFixed(0)}/s</span>
+                    )}
                     {t.sessions_to_clear != null && (
                       <span className="text-muted text-[10px]">{t.sessions_to_clear}s</span>
                     )}

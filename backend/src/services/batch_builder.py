@@ -149,12 +149,16 @@ class BatchBuilder:
         for i, bet in enumerate(batch):
             bet.rank = i + 1
 
+        # Count opportunity volume per cluster (from ALL candidates, not just batch)
+        cluster_opp_stats = self._compute_cluster_opp_stats(candidates)
+
         deposit_recs = self._build_deposit_recommendations(
             provider_balances, missed, total_bankroll
         )
         withdrawal_recs = self._build_withdrawal_recommendations(provider_balances)
         capital_plan = self._build_capital_plan(
-            provider_balances, deposit_recs, withdrawal_recs, total_bankroll
+            provider_balances, deposit_recs, withdrawal_recs, total_bankroll,
+            cluster_opp_stats,
         )
 
         return {
@@ -596,6 +600,41 @@ class BatchBuilder:
 
         return recommendations
 
+    def _compute_cluster_opp_stats(self, candidates: list[BatchBet]) -> dict[str, dict]:
+        """
+        Compute opportunity volume stats per cluster from candidates.
+        Returns {cluster: {unique_opps, total_ev, avg_edge, avg_stake}}.
+        """
+        cluster_data: dict[str, dict] = {}
+        cluster_keys: dict[str, set] = {}  # for dedup counting
+
+        for c in candidates:
+            cluster = c.cluster or c.provider_id
+            if cluster not in cluster_data:
+                cluster_data[cluster] = {"edges": [], "stakes": [], "evs": []}
+                cluster_keys[cluster] = set()
+
+            opp_key = (c.event_id, c.market, c.outcome, c.point)
+            cluster_keys[cluster].add(opp_key)
+            cluster_data[cluster]["edges"].append(c.edge_pct)
+            cluster_data[cluster]["stakes"].append(c.stake)
+            cluster_data[cluster]["evs"].append(c.expected_profit)
+
+        result = {}
+        for cluster, data in cluster_data.items():
+            unique = len(cluster_keys[cluster])
+            total_ev = sum(data["evs"])
+            avg_edge = sum(data["edges"]) / len(data["edges"]) if data["edges"] else 0
+            avg_stake = sum(data["stakes"]) / len(data["stakes"]) if data["stakes"] else 0
+            result[cluster] = {
+                "unique_opps": unique,
+                "total_ev": round(total_ev, 2),
+                "avg_edge": round(avg_edge, 1),
+                "avg_stake": round(avg_stake, 0),
+                "ev_per_session": round(total_ev, 2),  # assumes drain balance = 1 session
+            }
+        return result
+
     def _build_withdrawal_recommendations(
         self,
         provider_balances: dict[str, ProviderBalance],
@@ -635,18 +674,22 @@ class BatchBuilder:
         deposit_recs: list[dict],
         withdrawal_recs: list[dict],
         total_bankroll: float,
+        cluster_opp_stats: dict[str, dict] | None = None,
     ) -> dict:
         """
         Build a capital deployment plan showing the priority order for allocating funds.
 
-        Priority:
+        Priority combines wagering speed AND opportunity volume:
         1. Sharp (Pinnacle/Polymarket) — no limiting, compound forever
-        2. Soft with cleared wagering — pure +EV, withdraw anytime
-        3. Soft with 1x wagering — clears in 1 session
-        4. Soft with low wagering (≤6x) — clears in ~5 sessions
-        5. Soft with high wagering (>6x) — only if capital abundant
-        6. Skip if wagering can't clear before deadline
+        2. High-volume + fast wagering — most EV per session
+        3. High-volume + medium wagering
+        4. Low-volume clusters
+        5. Skip if wagering can't clear before deadline
+
+        Within each tier, sort by ev_per_session (how much the cluster generates).
         """
+        opp_stats = cluster_opp_stats or {}
+
         # Funds available to redeploy
         withdrawable = sum(w["amount"] for w in withdrawal_recs)
 
@@ -659,6 +702,7 @@ class BatchBuilder:
         # Sharp providers: always fund if they have value bets
         for pid, pb in provider_balances.items():
             if pid in SHARP_PROVIDERS and pb.allocated > 0:
+                stats = opp_stats.get(pid, {})
                 targets.append({
                     "provider_id": pid,
                     "cluster": pb.cluster or pid,
@@ -667,28 +711,43 @@ class BatchBuilder:
                     "current_balance": round(pb.initial_balance, 2),
                     "needed": round(pb.allocated, 2),
                     "shortfall": round(max(0, pb.allocated - pb.initial_balance), 2),
+                    "unique_opps": stats.get("unique_opps", 0),
+                    "ev_per_session": stats.get("ev_per_session", 0),
                 })
 
-        # Sort deposit recs by priority (feasible low-wagering first)
+        # Sort deposit recs by priority (combines wagering speed + opp volume)
         for rec in deposit_recs:
             sessions = rec.get("sessions_to_clear")
             feasible = rec.get("wagering_feasible", True)
+            cluster = rec.get("cluster", "")
+            stats = opp_stats.get(cluster, {})
+            unique_opps = stats.get("unique_opps", 0)
+            ev_per_session = stats.get("ev_per_session", 0)
 
             if not feasible:
-                priority = 99  # Skip — can't clear in time
+                priority = 99
                 label = "skip_infeasible"
             elif sessions is None or sessions == 0:
-                priority = 2  # No wagering — pure +EV
+                priority = 2
                 label = "no_wagering"
+            elif sessions <= 2 and unique_opps >= 20:
+                priority = 3  # Fast clear + high volume = top soft priority
+                label = "fast_clear_high_vol"
             elif sessions <= 2:
-                priority = 3  # 1x wagering — 1-2 sessions
+                priority = 4
                 label = "fast_clear"
+            elif sessions <= 6 and unique_opps >= 20:
+                priority = 5  # Medium clear but lots of bets
+                label = "medium_clear_high_vol"
             elif sessions <= 6:
-                priority = 4  # Medium wagering
+                priority = 6
                 label = "medium_clear"
+            elif unique_opps >= 20:
+                priority = 7  # Slow clear but high volume — still worth it
+                label = "slow_clear_high_vol"
             else:
-                priority = 5  # High wagering
-                label = "slow_clear"
+                priority = 8  # Slow clear + low volume
+                label = "slow_clear_low_vol"
 
             targets.append({
                 "cluster": rec["cluster"],
@@ -697,12 +756,16 @@ class BatchBuilder:
                 "deposit_amount": rec["deposit_amount"],
                 "missed_bets": rec["missed_bets"],
                 "missed_ev": rec["missed_ev"],
+                "unique_opps": unique_opps,
+                "ev_per_session": ev_per_session,
+                "avg_edge": stats.get("avg_edge", 0),
                 "sessions_to_clear": sessions,
                 "days_remaining": rec.get("days_remaining"),
                 "wagering_feasible": feasible,
             })
 
-        targets.sort(key=lambda t: (t["priority"], -(t.get("missed_ev", 0))))
+        # Sort by priority tier, then by EV per session within tier
+        targets.sort(key=lambda t: (t["priority"], -t.get("ev_per_session", 0)))
 
         return {
             "total_deployed": round(deployed, 2),
