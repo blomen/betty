@@ -5,29 +5,17 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { useBetMutations } from '@/hooks/useBetMutations';
 import { api } from '@/services/api';
-import type { SpecialItem, StakePreviewResult } from '@/services/api';
 import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
 import { useMultiSort } from '@/hooks/useMultiSort';
-import { useTableSort } from '@/hooks/useTableSort';
 import { MultiSortableHeader } from '../MultiSortableHeader';
-import { SortableHeader } from '../SortableHeader';
 import { SearchInput, relativeTime } from '../FilterBar';
 import { BonusPopup } from '../BonusPopup';
-import { MyBetsSection } from '../MyBetsSection';
-import { ManualBetForm } from '../ManualBetForm';
+import { ClusterPanel } from './ClusterPanel';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useToast, ToastContainer } from '../Toast';
-import type { Opportunity, Provider, Bet } from '@/types';
-
-const softProviderFilter = (p: Provider) => p.id !== 'polymarket' && p.id !== 'pinnacle';
-
-type ValueTab = 'value' | 'boosts' | 'mybets' | 'manual';
-
-const softBetFilter = (b: Bet) =>
-  b.bet_type === 'value' || b.bet_type === 'boost' || b.bet_type === 'manual' ||
-  (b.bet_type == null && b.provider !== 'pinnacle' && b.provider !== 'polymarket');
+import type { Opportunity, Provider, PlayCluster } from '@/types';
 
 interface GroupedOpp {
   key: string;
@@ -35,13 +23,6 @@ interface GroupedOpp {
   opps: Opportunity[];
   providers: string[];
 }
-
-interface GroupedSpecial {
-  key: string;
-  rep: SpecialItem;
-  providers: string[];
-}
-
 
 interface OpportunityRowProps {
   group: GroupedOpp;
@@ -83,7 +64,6 @@ const OpportunityRow = memo(function OpportunityRow({
 }: OpportunityRowProps) {
   const { rep, opps, providers: groupProviders } = group;
 
-  // Local edit state — also notify parent for sorting/filtering
   const [localOddsOverride, _setLocalOddsOverride] = useState<number | null>(null);
   const setLocalOddsOverride = useCallback((val: number | null) => {
     _setLocalOddsOverride(val);
@@ -93,7 +73,6 @@ const OpportunityRow = memo(function OpportunityRow({
   const [localStakeOverride, setLocalStakeOverride] = useState<number | null>(null);
   const [editingStake, setEditingStake] = useState(false);
 
-  // Dropdown portal positioning
   const dropdownBtnRef = useRef<HTMLButtonElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ left: number; top: number } | null>(null);
   useEffect(() => {
@@ -105,7 +84,6 @@ const OpportunityRow = memo(function OpportunityRow({
     }
   }, [providerDropdownOpen]);
 
-  // Flash detection
   const prevOdds = useRef(rep.odds1);
   const [flash, setFlash] = useState<'up' | 'down' | null>(null);
   useEffect(() => {
@@ -329,13 +307,13 @@ const OpportunityRow = memo(function OpportunityRow({
   );
 });
 
-interface ValuePageProps {
+interface PlayPageProps {
   providers?: Provider[];
 }
 
-export function ValuePage({ providers = [] }: ValuePageProps) {
+export function PlayPage({ providers = [] }: PlayPageProps) {
   const { placeBet } = useBetMutations();
-  const [activeTab, setActiveTab] = usePersistedState<ValueTab>('bbq_value_tab', 'value');
+  const { toasts, addToast, dismissToast } = useToast();
 
   const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
   const [isPlacing, setIsPlacing] = useState(false);
@@ -347,12 +325,9 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     effectiveStake: number | null;
   } | null>(null);
 
-  const [searchInput, setSearchInput] = usePersistedState('bbq_value_search', '');
+  const [searchInput, setSearchInput] = usePersistedState('bbq_play_search', '');
   const search = useDeferredValue(searchInput);
-  const [boostSearchInput, setBoostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
-  const boostSearch = useDeferredValue(boostSearchInput);
-  const { toasts, addToast, dismissToast } = useToast();
-  const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_selectedProvider', {});
+  const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_play_selectedProvider', {});
   const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -368,7 +343,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     return () => document.removeEventListener('mousedown', handler);
   }, [providerDropdownOpen]);
 
-  // Two-step placement: Place → enter actual odds → Confirm
+  // Two-step placement: Place -> enter actual odds -> Confirm
   const [pendingBet, setPendingBet] = useState<{
     groupKey: string;
     opp: Opportunity;
@@ -379,29 +354,10 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     effectiveStake: number | null;
   } | null>(null);
 
-  // --- Boosts state ---
-  const [boostExpandedIdx, setBoostExpandedIdx] = useState<number | null>(null);
-  const [boostStakePreview, setBoostStakePreview] = useState<StakePreviewResult | null>(null);
-  const [isLoadingBoostPreview, setIsLoadingBoostPreview] = useState(false);
-  const [boostSelectedBetProvider, setBoostSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_boostSelectedProvider', {});
-  const [boostOddsOverride, setBoostOddsOverride] = useState<Record<string, number>>({});
-  const [boostEditingOdds, setBoostEditingOdds] = useState<string | null>(null);
-  const [boostStakeOverride, setBoostStakeOverride] = useState<Record<string, number>>({});
-  const [boostEditingStake, setBoostEditingStake] = useState<string | null>(null);
-  const [boostPendingBet, setBoostPendingBet] = useState<{
-    groupKey: string;
-    special: SpecialItem;
-    providerId: string;
-    actualOdds: number;
-    stake: number;
-  } | null>(null);
-  const [boostPlacedKeys, setBoostPlacedKeys] = usePersistedState<Set<string>>('bbq_value_boostPlacedKeys', new Set());
-
   // Track placed event+provider combos for immediate removal from list
-  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_value_placedKeys', new Set());
-  const [myBetsCount, setMyBetsCount] = useState<number | null>(null);
+  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_play_placedKeys', new Set());
 
-  // Lifted odds overrides: key → overridden odds value
+  // Lifted odds overrides: key -> overridden odds value
   const [oddsOverrides, setOddsOverrides] = useState<Map<string, number>>(new Map());
   const handleOddsOverride = useCallback((groupKey: string, odds: number | null) => {
     setOddsOverrides(prev => {
@@ -412,6 +368,73 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
+  // --- Cluster play mode (PlaySession) ---
+  const [activeCluster, setActiveCluster] = usePersistedState<string | null>('bbq_cluster_mode', null);
+  const [activeClusterProvider, setActiveClusterProvider] = useState<string | null>(null);
+  const [sessionStats, setSessionStats] = useState({ placed: 0, wagered: 0 });
+
+  const { data: playSession } = useQuery({
+    queryKey: ['play-session'],
+    queryFn: () => api.getPlaySession(),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const clusters: PlayCluster[] = playSession?.clusters ?? [];
+
+  // Urgency-based auto-selection and auto-advance
+  useEffect(() => {
+    if (!clusters.length) return;
+
+    // Auto-select most urgent cluster if none selected
+    if (!activeCluster) {
+      const first = clusters[0]; // Already sorted by urgency from backend
+      if (first) {
+        setActiveCluster(first.id);
+        const bestSibling = first.active_siblings[0];
+        if (bestSibling) setActiveClusterProvider(bestSibling.provider_id);
+      }
+      return;
+    }
+
+    // Find current cluster
+    const currentCluster = clusters.find(c => c.id === activeCluster);
+    if (!currentCluster) {
+      // Cluster disappeared (balance ran out) -- advance to next
+      const next = clusters[0];
+      if (next) {
+        setActiveCluster(next.id);
+        setActiveClusterProvider(next.active_siblings[0]?.provider_id ?? null);
+      }
+      return;
+    }
+
+    // Auto-advance sibling within cluster when balance hits 0
+    if (activeClusterProvider) {
+      const sibling = currentCluster.active_siblings.find(s => s.provider_id === activeClusterProvider);
+      if (!sibling || sibling.balance <= 0) {
+        const next = currentCluster.active_siblings.find(s => s.balance > 0 && s.provider_id !== activeClusterProvider);
+        if (next) {
+          setActiveClusterProvider(next.provider_id);
+        } else {
+          // All siblings empty -- advance to next cluster
+          const nextCluster = clusters.find(c => c.id !== activeCluster && c.total_balance > 0);
+          if (nextCluster) {
+            setActiveCluster(nextCluster.id);
+            setActiveClusterProvider(nextCluster.active_siblings[0]?.provider_id ?? null);
+          }
+        }
+      }
+    } else {
+      const first = currentCluster.active_siblings.find(s => s.balance > 0);
+      if (first) setActiveClusterProvider(first.provider_id);
+    }
+  }, [clusters, activeCluster, activeClusterProvider]);
+
+  const handleClusterSelect = useCallback((clusterId: string | null) => {
+    setActiveCluster(clusterId);
+    setActiveClusterProvider(null);
+  }, [setActiveCluster]);
+
   const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
@@ -419,12 +442,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
-  const { data: specialsData } = useQuery({
-    queryKey: ['specials'],
-    queryFn: () => api.getSpecials({}),
-    staleTime: 60_000,
-  });
-  const specials = specialsData?.specials ?? [];
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
@@ -436,11 +453,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   useEffect(() => {
     if (!pendingBets.length) return;
     const keys = new Set<string>();
-    const bKeys = new Set<string>();
     for (const b of pendingBets) {
-      if (b.market === 'boost' && b.outcome) {
-        bKeys.add(b.outcome);
-      } else if (b.event_id) {
+      if (b.event_id) {
         keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
       }
     }
@@ -449,12 +463,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       for (const k of keys) merged.add(k);
       return merged;
     });
-    setBoostPlacedKeys(prev => {
-      const merged = new Set(prev);
-      for (const k of bKeys) merged.add(k);
-      return merged;
-    });
-    setMyBetsCount(pendingBets.filter(softBetFilter).length);
   }, [pendingBets]);
 
   const balanceMap = useMemo(() => {
@@ -463,8 +471,20 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     return m;
   }, [providers]);
 
-  const hasBalance = (providerIds: string[]) =>
-    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
+  // Get current sibling data for filtering
+  const currentSibling = useMemo(() => {
+    if (!activeClusterProvider || !playSession) return null;
+    const cluster = clusters.find(c => c.id === activeCluster);
+    return cluster?.active_siblings.find(s => s.provider_id === activeClusterProvider) ?? null;
+  }, [activeClusterProvider, activeCluster, clusters, playSession]);
+
+  // Resolve active cluster member list for filtering
+  const clusterMembers = useMemo(() => {
+    if (!activeCluster || !clusters.length) return null;
+    const c = clusters.find(c => c.id === activeCluster);
+    if (!c) return null;
+    return new Set(c.active_siblings.map(s => s.provider_id));
+  }, [activeCluster, clusters]);
 
   const grouped = useMemo(() => {
     let result = opportunities;
@@ -476,6 +496,33 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     // Remove placed market+outcome+point combos (same bet at any provider)
     if (placedKeys.size > 0) {
       result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
+    }
+    // Cluster mode: filter to active provider
+    if (activeClusterProvider) {
+      result = result.filter(o => o.provider1 === activeClusterProvider);
+
+      if (currentSibling) {
+        // Edge routing: if provider is limited, only show grind-ok bets
+        if (currentSibling.limit_level != null && currentSibling.limit_level > 0) {
+          result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
+        }
+
+        // Filter by bonus phase min_odds
+        if (currentSibling.lifecycle === 'deposited' || currentSibling.lifecycle === 'wagering') {
+          const minOdds = currentSibling.min_odds ?? 1.80;
+          result = result.filter(o => o.odds1 >= minOdds);
+        }
+
+        // For single-shot trigger: only show bets if provider balance >= trigger amount
+        if (currentSibling.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single') {
+          if (currentSibling.balance < currentSibling.bonus_amount) {
+            result = [];
+          }
+        }
+      }
+    } else if (clusterMembers) {
+      // Cluster selected but no specific provider -- show all cluster members
+      result = result.filter(o => clusterMembers.has(o.provider1));
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -506,7 +553,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     return groups;
-  }, [opportunities, placedKeys, search]);
+  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, currentSibling]);
 
   // Compute dynamic edge for a group, accounting for user odds overrides
   const getDynamicEdge = useCallback((g: GroupedOpp) => {
@@ -532,7 +579,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
   }), [oddsOverrides, getDynamicEdge]);
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
-    useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
+    useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_play_sort');
 
   const filteredCount = useMemo(() =>
     sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
@@ -547,139 +594,39 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     overscan: 10,
   });
 
-  // --- Boosts grouping & sorting ---
-  const boostNonExpired = useMemo(() => specials.filter(s => {
-    if (s.event_time) {
-      try {
-        const diff = new Date(s.event_time).getTime() - Date.now();
-        if (diff <= 0) return false;                          // Already started
-        if (diff > MAX_TTK_HOURS * 3600000) return false;    // > 7 days out
-      } catch { /* keep */ }
-    }
-    if (!s.expires_at) return true;
-    try { return new Date(s.expires_at).getTime() > Date.now(); } catch { return true; }
-  }), [specials]);
-
-  const boostGrouped = useMemo(() => {
-    const groups: GroupedSpecial[] = [];
-    for (const s of boostNonExpired) {
-      const allProviders = [s.provider, ...(s.shared_providers || [])];
-      const key = `${s.provider}-${s.title}-${s.boosted_odds}-${s.event || ''}`;
-      if (boostPlacedKeys.has(key) || boostPlacedKeys.has(s.title)) continue;
-      groups.push({ key, rep: s, providers: allProviders });
-    }
-    return groups;
-  }, [boostNonExpired, boostPlacedKeys]);
-
-  const boostActiveGroups = useMemo(() => {
-    let result = boostGrouped;
-    if (boostSearch.trim()) {
-      const q = boostSearch.trim().toLowerCase();
-      result = result.filter(g =>
-        g.rep.title.toLowerCase().includes(q) ||
-        (g.rep.event && g.rep.event.toLowerCase().includes(q)) ||
-        g.providers.some(p => p.toLowerCase().includes(q))
-      );
-    }
-    return result;
-  }, [boostGrouped, boostSearch]);
-
-  type BoostSortCol = 'odds' | 'fair' | 'edge' | 'aiProb' | 'aiEdge' | 'ttk' | 'stake';
-  const boostSortExtractors = useMemo(() => ({
-    odds: (g: GroupedSpecial) => g.rep.boosted_odds ?? 0,
-    fair: (g: GroupedSpecial) => g.rep.llm_fair_odds ?? g.rep.fair_odds ?? 0,
-    aiProb: (g: GroupedSpecial) => g.rep.llm_probability ?? (g.rep.fair_odds ? 1 / g.rep.fair_odds : 0),
-    aiEdge: (g: GroupedSpecial) => {
-      const s = g.rep;
-      const fairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
-      if (fairOdds != null && fairOdds > 1 && s.boosted_odds)
-        return (s.boosted_odds / fairOdds - 1) * 100;
-      return s.llm_edge_pct ?? s.edge_pct ?? s.boost_pct ?? -999;
-    },
-    stake: (g: GroupedSpecial) => g.rep.recommended_stake ?? 0,
-    edge: (g: GroupedSpecial) => g.rep.edge_pct ?? g.rep.boost_pct ?? 0,
-    ttk: (g: GroupedSpecial) => getTTKFromNow(g.rep.event_time) ?? 99999,
-  }), []);
-  const { sorted: sortedBoosts, sort: boostSort, toggle: toggleBoostSort } =
-    useTableSort<GroupedSpecial, BoostSortCol>(boostActiveGroups, boostSortExtractors, { column: 'aiEdge', direction: 'desc' }, 'bbq_value_boostSort');
-
-  const handleBoostRowClick = async (idx: number, group: GroupedSpecial) => {
-    if (boostExpandedIdx === idx) { setBoostExpandedIdx(null); setBoostStakePreview(null); setBoostPendingBet(null); return; }
-    setBoostExpandedIdx(idx); setBoostStakePreview(null); setBoostPendingBet(null); setBoostEditingOdds(null); setBoostEditingStake(null);
-    const s = group.rep;
-    // Use LLM edge if available, otherwise boost edge
-    const edgeForStake = s.llm_edge_pct ?? s.edge_pct;
-    if (!s.boosted_odds || edgeForStake == null) return;
-    setIsLoadingBoostPreview(true);
-    try { const preview = await api.getBoostStakePreview({ edge_pct: edgeForStake, odds: s.boosted_odds, provider_id: s.provider }); setBoostStakePreview(preview); }
-    catch (err) { console.error('Failed to load stake preview:', err); }
-    finally { setIsLoadingBoostPreview(false); }
-  };
-
-  const startBoostPlaceBet = (special: SpecialItem, providerId: string, groupKey: string) => {
-    if (!special.boosted_odds) return;
-    const overriddenStake = boostStakeOverride[groupKey];
-    let stake = overriddenStake ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, special.max_stake ?? Infinity) : (special.recommended_stake ?? 0));
-    if (stake <= 0) return;
-    const odds = boostOddsOverride[groupKey] ?? special.boosted_odds;
-    setBoostPendingBet({ groupKey, special, providerId, actualOdds: odds, stake });
-  };
-
-  const confirmBoostPlaceBet = async () => {
-    if (!boostPendingBet) return;
-    const { special, providerId, actualOdds, stake, groupKey } = boostPendingBet;
-    setIsPlacing(true);
-    try {
-      await placeBet.mutateAsync({
-        provider_id: providerId,
-        market: 'boost',
-        outcome: special.title,
-        odds: actualOdds,
-        stake,
-        is_bonus: false,
-        utility_score: (special.llm_edge_pct ?? special.edge_pct) != null ? (special.llm_edge_pct ?? special.edge_pct)! / 100 : undefined,
-        selection_probability: special.llm_probability ?? undefined,
-        fair_odds_at_placement: special.llm_fair_odds ?? special.fair_odds ?? undefined,
-        boost_event: special.event ?? undefined,
-        boost_title: special.llm_title ?? special.title,
-        bet_type: 'boost',
-        start_time: special.event_time ?? undefined,
-      });
-      addToast(`Recorded: ${stake.toFixed(0)} kr on ${special.title} @ ${actualOdds.toFixed(2)} (${formatProviderName(providerId)})`, 'success');
-      setBoostPlacedKeys(prev => { const next = new Set(prev); next.add(groupKey); next.add(special.title); return next; });
-      setMyBetsCount(prev => (prev ?? 0) + 1);
-      setBoostPendingBet(null); setBoostExpandedIdx(null); setBoostStakePreview(null);
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Failed to place bet', 'error');
-    } finally { setIsPlacing(false); }
-  };
-
   const handleSelectGroup = (idx: number) => {
     setSelectedGroup(selectedGroup === idx ? null : idx);
     setPendingBet(null);
   };
 
+  // Compute effective stake override based on bonus phase
+  const stakeOverride = currentSibling?.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single'
+    ? currentSibling.bonus_amount
+    : currentSibling?.lifecycle === 'freebet'
+      ? currentSibling.bonus_amount
+      : undefined;
+
+  const isFreebetPhase = currentSibling?.lifecycle === 'freebet';
+
   const handlePlaceBetClick = (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => {
-    const stake = effectiveStake ?? opp.final_stake;
+    const stake = effectiveStake ?? stakeOverride ?? opp.final_stake;
     if (!stake || stake <= 0) return;
 
-    if (opp.bonus_status === 'freebet_available') {
-      // Show popup to choose freebet vs balance
+    if (isFreebetPhase) {
+      startPlaceBet(opp, true, effectiveOdds, stake);
+    } else if (opp.bonus_status === 'freebet_available') {
       setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake: stake });
     } else {
-      // Trigger or normal bet — start two-step flow
       startPlaceBet(opp, false, effectiveOdds, stake);
     }
   };
 
-  // Enter "awaiting confirm" state for two-step bet recording
   const startPlaceBet = (opp: Opportunity, useFreebet: boolean, effectiveOdds: number, effectiveStake: number | null) => {
     setFreebetPopup(null);
     const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
     setPendingBet({ groupKey, opp, actualOdds: effectiveOdds, useFreebet, navUrl: null, windowName: `bbq_${opp.provider1}`, effectiveStake });
   };
 
-  // Step 2: Confirm bet with actual odds
   const confirmPlaceBet = async () => {
     if (!pendingBet) return;
     const { opp, actualOdds, useFreebet, effectiveStake } = pendingBet;
@@ -688,7 +635,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     setIsPlacing(true);
 
     try {
-      // Recalculate edge based on actual placed odds vs fair odds
       const placedEdge = opp.fair_odds != null && opp.fair_odds > 1
         ? (actualOdds / opp.fair_odds - 1)
         : (opp.edge_pct != null ? opp.edge_pct / 100 : undefined);
@@ -710,9 +656,14 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
       addToast(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`, 'success');
 
+      // Track session stats
+      setSessionStats(prev => ({
+        placed: prev.placed + 1,
+        wagered: prev.wagered + stake,
+      }));
+
       // Remove from list immediately (same market+outcome+point hidden across all providers)
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
-      setMyBetsCount(prev => (prev ?? 0) + 1);
       setPendingBet(null);
       setSelectedGroup(null);
     } catch (err) {
@@ -727,290 +678,31 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
-          <TabIcon name="value" color={TAB_COLORS.value} size={16} />
-          Soft
+          <TabIcon name="play" color={TAB_COLORS.play} size={16} />
+          Play
         </h2>
-        {activeTab === 'value' && (
-          <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
-        )}
-        {activeTab === 'boosts' && (
-          <SearchInput value={boostSearchInput} onChange={setBoostSearchInput} placeholder="Search boost, provider..." accentColor="tabValue" />
-        )}
+        <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
       </div>
 
-      {/* Sub-tab selector */}
-      <div className="flex gap-1 border-b border-border">
-        {([
-          { id: 'value' as ValueTab, label: 'Value Bets', count: filteredCount, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'boosts' as ValueTab, label: 'Boosts', count: sortedBoosts.length, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'mybets' as ValueTab, label: 'My Bets', count: myBetsCount, activeClass: 'border-tabValue text-tabValue' },
-          { id: 'manual' as ValueTab, label: 'Manual', count: null, activeClass: 'border-tabValue text-tabValue' },
-        ]).map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
-              activeTab === tab.id
-                ? tab.activeClass
-                : 'border-transparent text-muted hover:text-text'
-            }`}
-          >
-            {tab.label}
-            {tab.count != null && <span className="ml-1 text-muted">({tab.count})</span>}
-          </button>
-        ))}
-      </div>
-
-      {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
-      {activeTab === 'mybets' && (
-        <MyBetsSection filter={softBetFilter} colorKey="value" persistKey="value" />
+      {/* Cluster play mode panel */}
+      {clusters.length > 0 && (
+        <ClusterPanel
+          clusters={clusters}
+          activeCluster={activeCluster}
+          activeProvider={activeClusterProvider}
+          onClusterSelect={handleClusterSelect}
+          onProviderSelect={setActiveClusterProvider}
+        />
       )}
 
-      {/* Manual bet entry tab */}
-      {activeTab === 'manual' && (
-        <ManualBetForm providers={providers} providerFilter={softProviderFilter} onSuccess={(msg) => { addToast(msg, 'success'); setActiveTab('mybets'); }} onError={(msg) => addToast(msg, 'error')} />
-      )}
-
-      {/* Boosts tab */}
-      {activeTab === 'boosts' && <>
-      {/* Feedback toasts */}
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-
-      {/* LLM enrichment health warning */}
-      {(() => {
-        const h = specialsData?.llm_health;
-        if (!h || h.status === 'ok') return null;
-        const isError = h.status === 'error';
-        const msgs: string[] = [];
-        if (h.status === 'unknown') msgs.push('LLM enrichment not yet run');
-        else if (h.anthropic_status === 'usage_limit') msgs.push('Anthropic API usage limit reached');
-        else if (h.anthropic_status === 'auth_error') msgs.push('Anthropic API key invalid');
-        else if (h.anthropic_status === 'rate_limited') msgs.push('Anthropic API rate limited');
-        else if (h.anthropic_status === 'missing_key') msgs.push('ANTHROPIC_API_KEY not set');
-        if (msgs.length === 0 && h.last_error) msgs.push(h.last_error);
-        if (msgs.length === 0 && isError) msgs.push('LLM enrichment failed');
-        if (msgs.length === 0) msgs.push('LLM enrichment unavailable');
-        const borderCls = isError ? 'border-error/30 bg-error/10' : 'border-amber-500/30 bg-amber-500/10';
-        const textCls = isError ? 'text-error' : 'text-amber-400';
-        const iconCls = isError ? 'text-error' : 'text-amber-400';
-        return (
-          <div className={`px-3 py-1.5 ${borderCls} border text-xs flex items-center gap-2`}>
-            <span className={`font-bold ${iconCls}`}>!</span>
-            <span className={textCls}>FAIR/PROB columns may be incomplete — {msgs.join(', ')}</span>
-            {h.last_run_at && <span className="text-muted ml-auto">Last attempt: {new Date(h.last_run_at).toLocaleString()}</span>}
-          </div>
-        );
-      })()}
-
-      {sortedBoosts.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          No active boosts. Boosts are scraped automatically every hour.
-        </div>
-      ) : (
-        <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div className="overflow-y-auto absolute inset-0">
-        <table className="sq w-full table-fixed">
-          <colgroup>
-            <col style={{ width: '34%' }} />
-            <col style={{ width: '15%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '7%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '9%' }} />
-            <col style={{ width: '5%' }} />
-            <col style={{ width: '8%' }} />
-          </colgroup>
-          <thead className="sticky top-0 z-10 bg-panel">
-            <tr>
-              <th>Boost</th>
-              <th className="text-right">Providers</th>
-              <SortableHeader column="odds" label="Odds" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="fair" label="Fair" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="aiProb" label="Prob" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="ttk" label="TTK" sort={boostSort} onToggle={toggleBoostSort} />
-              <SortableHeader column="stake" label="Stake" sort={boostSort} onToggle={toggleBoostSort} />
-              <th className="text-right">Upd</th>
-              <SortableHeader column="aiEdge" label="Edge" sort={boostSort} onToggle={toggleBoostSort} />
-            </tr>
-          </thead>
-          <tbody>
-            {sortedBoosts.map((group, idx) => {
-              const s = group.rep;
-              const isExpanded = boostExpandedIdx === idx;
-              const providerCount = group.providers.length;
-
-              const boostEffOdds = boostOddsOverride[group.key] ?? s.boosted_odds ?? 0;
-              const boostEffStake = boostStakeOverride[group.key] ?? s.recommended_stake ?? 0;
-              const isBoostOddsOverridden = group.key in boostOddsOverride;
-              const isBoostStakeOverridden = group.key in boostStakeOverride;
-              const boostFairOdds = s.llm_fair_odds ?? (s.fair_odds ?? null);
-              const boostDynEdge = boostFairOdds != null && boostFairOdds > 1
-                ? (boostEffOdds / boostFairOdds - 1) * 100
-                : s.llm_edge_pct ?? s.edge_pct ?? s.boost_pct ?? null;
-
-              return (
-                <Fragment key={group.key}>
-                  <tr className={`cursor-pointer group bg-tabValue/[0.03] hover:bg-tabValue/[0.07] ${isExpanded ? 'expanded' : ''}`} onClick={() => handleBoostRowClick(idx, group)}>
-                    <td>
-                      <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-text text-sm truncate" title={s.llm_title ? s.title : undefined}>{s.llm_title || s.title}</span>
-                        <button
-                          title="Copy event"
-                          className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText((s.event || '').split(/\s+vs\s+/i)[0] || s.llm_title || s.title); }}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                        </button>
-                      </div>
-                      <div className="text-muted2 text-[11px] truncate">
-                        {s.event || ''}{s.sport && s.sport !== 'unknown' ? ` · ${s.sport.replace(/_/g, ' ')}` : ''}
-                        {s.event_time ? ` · ${formatDateTime(s.event_time)}` : ''}
-                      </div>
-                    </td>
-                    <td className="text-right text-sm min-w-0">
-                      <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
-                        {providerCount === 1 ? (
-                          <span className="text-text truncate"><ProviderName name={group.providers[0]} /></span>
-                        ) : (
-                          <span className="text-text truncate">
-                            <ProviderName name={group.providers[0]} />
-                            <span className="text-muted ml-1">+{providerCount - 1}</span>
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="text-right text-sm" onClick={(e) => e.stopPropagation()}>
-                      {s.original_odds != null && <><span className="text-muted2">{s.original_odds.toFixed(2)}</span><span className="text-muted2 mx-0.5">&rarr;</span></>}
-                      {boostEditingOdds === group.key ? (
-                        <input
-                          type="number" step="0.01" autoFocus
-                          defaultValue={boostEffOdds.toFixed(2)}
-                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setBoostOddsOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingOdds(null); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingOdds(null); }}
-                        />
-                      ) : (
-                        <span
-                          onClick={() => setBoostEditingOdds(group.key)}
-                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostOddsOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-success font-medium border-transparent'}`}
-                          title="Click to adjust odds"
-                        >
-                          {boostEffOdds.toFixed(2)}
-                        </span>
-                      )}
-                      {isBoostOddsOverridden && <button onClick={() => { setBoostOddsOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingOdds(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                      {!isBoostOddsOverridden && s.boost_pct != null && <div className="text-muted2 text-[10px]">+{s.boost_pct.toFixed(0)}%</div>}
-                    </td>
-                    <td className="text-right text-muted text-sm">{boostFairOdds != null ? boostFairOdds.toFixed(2) : '-'}</td>
-                    <td className="text-right text-muted text-sm">
-                      {s.llm_probability != null
-                        ? `${(s.llm_probability * 100).toFixed(0)}%`
-                        : boostFairOdds != null && boostFairOdds > 1
-                          ? `${(100 / boostFairOdds).toFixed(0)}%`
-                          : '-'}
-                    </td>
-                    <td className="text-right">
-                      {(() => { const ttk = getTTKFromNow(s.event_time); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
-                    </td>
-                    <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-                      {boostEditingStake === group.key ? (
-                        <input
-                          type="number" step="1" autoFocus
-                          defaultValue={boostEffStake.toFixed(0)}
-                          className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-                          onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setBoostStakeOverride(prev => ({ ...prev, [group.key]: val })); setBoostEditingStake(null); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setBoostEditingStake(null); }}
-                        />
-                      ) : (
-                        <span
-                          onClick={() => setBoostEditingStake(group.key)}
-                          className={`cursor-pointer px-1 py-0.5 border border-dashed hover:border-tabValue/50 transition-colors ${isBoostStakeOverridden ? 'text-tabValue font-medium border-tabValue/30' : 'text-text border-transparent'}`}
-                          title="Click to adjust stake"
-                        >
-                          {boostEffStake > 0 ? `${Math.round(boostEffStake)} kr` : '-'}
-                        </span>
-                      )}
-                      {isBoostStakeOverridden && <button onClick={() => { setBoostStakeOverride(prev => { const next = { ...prev }; delete next[group.key]; return next; }); setBoostEditingStake(null); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
-                    </td>
-                    {(() => { const rt = relativeTime(s.scraped_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
-                    <td className="text-right font-semibold text-sm">
-                      {boostDynEdge != null ? (
-                        <span className="text-text">
-                          {boostDynEdge > 0 ? '+' : ''}{boostDynEdge.toFixed(1)}%
-                        </span>
-                      ) : <span className="text-muted2">-</span>}
-                    </td>
-                  </tr>
-                  {isExpanded && (() => {
-                    const bSelIdx = boostSelectedBetProvider[group.key] ?? 0;
-                    const bSelProvider = group.providers[bSelIdx] || group.providers[0];
-                    const bIsPending = boostPendingBet?.groupKey === group.key;
-                    const bEffStake = boostStakeOverride[group.key] ?? (boostStakePreview ? Math.min(boostStakePreview.recommended_stake, s.max_stake ?? Infinity) : (s.recommended_stake ?? 0));
-
-                    return (
-                    <tr key={`${group.key}-exp`}>
-                      <td colSpan={9} className="!p-0" onClick={e => e.stopPropagation()}>
-                        {isLoadingBoostPreview ? <div className="px-3 py-2 bg-panel text-muted text-sm">Loading...</div> : (
-                        <div className="px-3 py-2 bg-panel">
-                          {s.llm_reasoning && (
-                            <div className="text-muted2 text-[10px] leading-relaxed mb-2">
-                              <span className="uppercase tracking-wider">{s.llm_confidence || 'low'}: </span>
-                              {s.llm_reasoning.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                                <span key={i}>{i > 0 && ' · '}{line.replace(/^-\s*/, '').trim()}</span>
-                              ))}
-                            </div>
-                          )}
-                          <div className="flex items-center gap-2">
-                            {(boostStakePreview?.skip_reason) ? (
-                              <span className="text-muted text-xs bg-border px-2 py-1">{boostStakePreview.skip_reason}</span>
-                            ) : bIsPending ? (
-                              <>
-                                <button onClick={confirmBoostPlaceBet} disabled={isPlacing || boostPendingBet!.actualOdds < 1.01} className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap">{isPlacing ? '...' : 'Confirm'}</button>
-                                <span className="text-muted text-xs">@ {boostPendingBet!.actualOdds.toFixed(2)}</span>
-                                <button onClick={() => setBoostPendingBet(null)} className="px-2 py-1.5 text-xs text-muted hover:text-text">Cancel</button>
-                              </>
-                            ) : (
-                              <>
-                                <div className="relative">
-                                  <select
-                                    value={bSelIdx}
-                                    onChange={(e) => setBoostSelectedBetProvider(prev => ({ ...prev, [group.key]: parseInt(e.target.value) }))}
-                                    className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer min-w-[120px]"
-                                  >
-                                    {group.providers.map((pid, i) => (
-                                      <option key={pid} value={i}>{formatProviderName(pid)}{bEffStake > 0 ? ` ${bEffStake.toFixed(0)} kr` : ''}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                                <button
-                                  onClick={() => startBoostPlaceBet(s, bSelProvider, group.key)}
-                                  disabled={bEffStake <= 0 || isPlacing}
-                                  className="px-4 py-1.5 bg-tabValue text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                                >
-                                  {isPlacing ? '...' : 'Place Bet'}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        )}
-                      </td>
-                    </tr>
-                    );
-                  })()}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
+      {/* Limited provider grind banner */}
+      {activeClusterProvider && currentSibling && currentSibling.limit_level != null && currentSibling.limit_level > 0 && (
+        <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
+          <span className="font-bold">!</span>
+          <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{currentSibling.limit_level})</span>
         </div>
       )}
-      </>}
 
-      {activeTab === 'value' && <>
       {/* Feedback toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
@@ -1021,9 +713,11 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : sortedGroups.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {opportunities.length === 0
-            ? 'No value bets found. Run extraction first.'
-            : 'No matches for current filters.'}
+          {clusters.length === 0
+            ? 'No play session available. Configure provider profiles first.'
+            : opportunities.length === 0
+              ? 'No value bets found. Run extraction first.'
+              : 'No matches for current filters.'}
         </div>
       ) : (
         <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
@@ -1090,7 +784,16 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
         </div>
       )}
-      </>}
+
+      {/* Session stats bar */}
+      {activeClusterProvider && currentSibling && (
+        <div className="flex gap-4 text-xs text-gray-500 px-2 py-1 border-t border-gray-800">
+          <span>{currentSibling.balance ?? 0} kr left</span>
+          <span>{sessionStats.placed} placed</span>
+          <span>{sessionStats.wagered} kr wagered</span>
+          <span className="ml-auto text-muted">{filteredCount} bets available</span>
+        </div>
+      )}
 
       {/* Freebet Popup */}
       {freebetPopup && (
@@ -1135,5 +838,3 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     </div>
   );
 }
-
-

@@ -4,6 +4,7 @@ import { TabBar, TABS_BY_CATEGORY, DEFAULT_TAB, TAB_COLORS } from './TabBar';
 import { usePersistedState } from '@/hooks/usePersistedState';
 // All pages lazy-loaded for fast startup
 const ValuePage = lazy(() => import('./pages/ValuePage').then(m => ({ default: m.ValuePage })));
+const PlayPage = lazy(() => import('./pages/PlayPage').then(m => ({ default: m.PlayPage })));
 const DutchPage = lazy(() => import('./pages/DutchPage').then(m => ({ default: m.DutchPage })));
 const ReversePage = lazy(() => import('./pages/ReversePage').then(m => ({ default: m.ReversePage })));
 const PolymarketPage = lazy(() => import('./pages/PolymarketPage').then(m => ({ default: m.PolymarketPage })));
@@ -97,6 +98,8 @@ export function TerminalWindow() {
     // Trading tabs handled separately (kept alive below)
     if (isTradingTab) return null;
     switch (activeTab) {
+      case 'play':
+        return <PlayPage />;
       case 'value':
         return <ValuePage />;
       case 'dutch':
