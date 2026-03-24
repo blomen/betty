@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 
 export interface MirroredBet {
@@ -48,6 +48,7 @@ export function useBetMirror() {
   const [toasts, setToasts] = useState<MirroredBet[]>([]);
   const [pendingSettlements, setPendingSettlements] = useState<SettlementSummary | null>(null);
   const [syncAvailable, setSyncAvailable] = useState<SyncAvailable | null>(null);
+  const cooldownRef = useRef(false);
 
   const dismiss = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id));
@@ -56,11 +57,27 @@ export function useBetMirror() {
   const confirmSettlements = useCallback(async () => {
     try {
       await api.confirmMirrorSettlements();
+      const summary = pendingSettlements;
       setPendingSettlements(null);
+      cooldownRef.current = true;
+      setTimeout(() => { cooldownRef.current = false; }, 5000);
+      if (summary) {
+        const net = summary.total_payout - summary.total_staked;
+        const toast: MirroredBet = {
+          id: Date.now() + Math.random(),
+          status: 'settled',
+          provider: summary.provider,
+          event: `${summary.count} bet${summary.count !== 1 ? 's' : ''} settled: ${summary.wins}W ${summary.losses}L = ${net >= 0 ? '+' : ''}${net.toFixed(0)} kr`,
+          market: null, outcome: null, odds: 0, stake: 0, matched: false,
+          timestamp: Date.now(),
+        };
+        setToasts(prev => [...prev, toast]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), 5000);
+      }
     } catch (err) {
       console.error('[mirror] confirm failed', err);
     }
-  }, []);
+  }, [pendingSettlements]);
 
   const rejectSettlements = useCallback(async () => {
     try {
@@ -103,7 +120,8 @@ export function useBetMirror() {
     });
 
     es.addEventListener('settlements_pending', (e: MessageEvent) => {
-      setSyncAvailable(null); // Replace sync banner with settlement breakdown
+      if (cooldownRef.current) return; // Skip re-fire after confirm
+      setSyncAvailable(null);
       setPendingSettlements(JSON.parse(e.data));
     });
 

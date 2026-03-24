@@ -213,6 +213,7 @@ class MirrorService:
         if not self._pending_settlements:
             return {"settled": 0, "error": "No pending settlements"}
 
+        provider_id = self._pending_settlements[0].get("provider", "unknown")
         db = get_session()
         settled = 0
         try:
@@ -234,7 +235,16 @@ class MirrorService:
 
         summary = self._pending_settlements.copy()
         self._pending_settlements.clear()
-        return {"settled": settled, "settlements": summary}
+
+        # Notify frontend to refresh bankroll
+        self._notify("settlements_confirmed", {
+            "provider": provider_id,
+            "settled": settled,
+        })
+        # Reset provider detection so balance re-syncs on next page visit
+        self.interceptor.reset_detected_providers()
+
+        return {"settled": settled, "provider": provider_id, "settlements": summary}
 
     def reject_settlements(self) -> dict:
         """Discard all pending settlements."""
