@@ -20,7 +20,7 @@ import { ManualBetForm } from '../ManualBetForm';
 import { ClusterPanel } from './ClusterPanel';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useToast, ToastContainer } from '../Toast';
-import type { Opportunity, Provider, Bet, ClusterInfo } from '@/types';
+import type { Opportunity, Provider, Bet, PlayCluster } from '@/types';
 
 const softProviderFilter = (p: Provider) => p.id !== 'polymarket' && p.id !== 'pinnacle';
 
@@ -413,39 +413,67 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
-  // --- Cluster play mode ---
+  // --- Cluster play mode (PlaySession) ---
   const [activeCluster, setActiveCluster] = usePersistedState<string | null>('bbq_cluster_mode', null);
   const [activeClusterProvider, setActiveClusterProvider] = useState<string | null>(null);
-  const { data: clustersData } = useQuery({
-    queryKey: ['clusters'],
-    queryFn: () => api.getClusters(),
-    staleTime: 300_000,
-  });
-  const clusters: ClusterInfo[] = clustersData?.clusters ?? [];
+  const [sessionStats, setSessionStats] = useState({ placed: 0, wagered: 0 });
 
-  // Auto-select first provider when cluster changes
-  const { data: clusterSummaryData } = useQuery({
-    queryKey: ['cluster-summary', activeCluster],
-    queryFn: () => api.getClusterSummary(activeCluster!),
-    enabled: !!activeCluster,
+  const { data: playSession } = useQuery({
+    queryKey: ['play-session'],
+    queryFn: () => api.getPlaySession(),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
-  // Auto-select provider by day rotation — alternate between playable providers daily
+  const clusters: PlayCluster[] = playSession?.clusters ?? [];
+
+  // Urgency-based auto-selection and auto-advance
   useEffect(() => {
-    if (!clusterSummaryData?.providers?.length) return;
-    const playable = clusterSummaryData.providers.filter(p => p.balance >= 5);
-    if (!playable.length) return;
+    if (!clusters.length) return;
 
-    // Day-of-year determines which provider gets today's action
-    const now = new Date();
-    const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
-    const todaysProvider = playable[dayOfYear % playable.length];
-
-    if (!activeClusterProvider || activeClusterProvider !== todaysProvider.provider_id) {
-      setActiveClusterProvider(todaysProvider.provider_id);
+    // Auto-select most urgent cluster if none selected
+    if (!activeCluster) {
+      const first = clusters[0]; // Already sorted by urgency from backend
+      if (first) {
+        setActiveCluster(first.id);
+        const bestSibling = first.active_siblings[0];
+        if (bestSibling) setActiveClusterProvider(bestSibling.provider_id);
+      }
+      return;
     }
-  }, [clusterSummaryData, activeClusterProvider]);
+
+    // Find current cluster
+    const currentCluster = clusters.find(c => c.id === activeCluster);
+    if (!currentCluster) {
+      // Cluster disappeared (balance ran out) — advance to next
+      const next = clusters[0];
+      if (next) {
+        setActiveCluster(next.id);
+        setActiveClusterProvider(next.active_siblings[0]?.provider_id ?? null);
+      }
+      return;
+    }
+
+    // Auto-advance sibling within cluster when balance hits 0
+    if (activeClusterProvider) {
+      const sibling = currentCluster.active_siblings.find(s => s.provider_id === activeClusterProvider);
+      if (!sibling || sibling.balance <= 0) {
+        const next = currentCluster.active_siblings.find(s => s.balance > 0 && s.provider_id !== activeClusterProvider);
+        if (next) {
+          setActiveClusterProvider(next.provider_id);
+        } else {
+          // All siblings empty — advance to next cluster
+          const nextCluster = clusters.find(c => c.id !== activeCluster && c.total_balance > 0);
+          if (nextCluster) {
+            setActiveCluster(nextCluster.id);
+            setActiveClusterProvider(nextCluster.active_siblings[0]?.provider_id ?? null);
+          }
+        }
+      }
+    } else {
+      const first = currentCluster.active_siblings.find(s => s.balance > 0);
+      if (first) setActiveClusterProvider(first.provider_id);
+    }
+  }, [clusters, activeCluster, activeClusterProvider]);
 
   const handleClusterSelect = useCallback((clusterId: string | null) => {
     setActiveCluster(clusterId);
@@ -506,11 +534,19 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const hasBalance = (providerIds: string[]) =>
     providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
+  // Get current sibling data for filtering
+  const currentSibling = useMemo(() => {
+    if (!activeClusterProvider || !playSession) return null;
+    const cluster = clusters.find(c => c.id === activeCluster);
+    return cluster?.active_siblings.find(s => s.provider_id === activeClusterProvider) ?? null;
+  }, [activeClusterProvider, activeCluster, clusters, playSession]);
+
   // Resolve active cluster member list for filtering
   const clusterMembers = useMemo(() => {
     if (!activeCluster || !clusters.length) return null;
     const c = clusters.find(c => c.id === activeCluster);
-    return c ? new Set(c.members) : null;
+    if (!c) return null;
+    return new Set(c.active_siblings.map(s => s.provider_id));
   }, [activeCluster, clusters]);
 
   const grouped = useMemo(() => {
@@ -527,10 +563,25 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     // Cluster mode: filter to active provider
     if (activeClusterProvider) {
       result = result.filter(o => o.provider1 === activeClusterProvider);
-      // Edge routing: if provider is limited, only show grind-ok bets
-      const provStatus = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
-      if (provStatus?.is_limited) {
-        result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
+
+      if (currentSibling) {
+        // Edge routing: if provider is limited, only show grind-ok bets
+        if (currentSibling.limit_level != null && currentSibling.limit_level > 0) {
+          result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
+        }
+
+        // Filter by bonus phase min_odds
+        if (currentSibling.lifecycle === 'deposited' || currentSibling.lifecycle === 'wagering') {
+          const minOdds = currentSibling.min_odds ?? 1.80;
+          result = result.filter(o => o.odds1 >= minOdds);
+        }
+
+        // For single-shot trigger: only show bets if provider balance >= trigger amount
+        if (currentSibling.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single') {
+          if (currentSibling.balance < currentSibling.bonus_amount) {
+            result = [];
+          }
+        }
       }
     } else if (clusterMembers) {
       // Cluster selected but no specific provider — show all cluster members
@@ -565,7 +616,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
     }
     return groups;
-  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, clusterSummaryData]);
+  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, currentSibling]);
 
   // Compute dynamic edge for a group, accounting for user odds overrides
   const getDynamicEdge = useCallback((g: GroupedOpp) => {
@@ -718,16 +769,28 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     setPendingBet(null);
   };
 
+  // Compute effective stake override based on bonus phase
+  const stakeOverride = currentSibling?.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single'
+    ? currentSibling.bonus_amount
+    : currentSibling?.lifecycle === 'freebet'
+      ? currentSibling.bonus_amount
+      : undefined;
+
+  const isFreebetPhase = currentSibling?.lifecycle === 'freebet';
+
   const handlePlaceBetClick = (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => {
-    const stake = effectiveStake ?? opp.final_stake;
+    const stake = effectiveStake ?? stakeOverride ?? opp.final_stake;
     if (!stake || stake <= 0) return;
 
-    if (opp.bonus_status === 'freebet_available') {
+    if (isFreebetPhase) {
+      // In freebet phase, auto-use freebet (no popup needed)
+      startPlaceBet(opp, true, effectiveOdds, stake);
+    } else if (opp.bonus_status === 'freebet_available') {
       // Show popup to choose freebet vs balance
-      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake });
+      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake: stake });
     } else {
       // Trigger or normal bet — start two-step flow
-      startPlaceBet(opp, false, effectiveOdds, effectiveStake);
+      startPlaceBet(opp, false, effectiveOdds, stake);
     }
   };
 
@@ -768,6 +831,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
       const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
       addToast(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`, 'success');
+
+      // Track session stats
+      setSessionStats(prev => ({
+        placed: prev.placed + 1,
+        wagered: prev.wagered + stake,
+      }));
 
       // Remove from list immediately (same market+outcome+point hidden across all providers)
       setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
@@ -832,16 +901,12 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
       )}
 
       {/* Limited provider grind banner */}
-      {activeTab === 'value' && activeClusterProvider && (() => {
-        const prov = clusterSummaryData?.providers?.find(p => p.provider_id === activeClusterProvider);
-        if (!prov?.is_limited) return null;
-        return (
-          <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
-            <span className="font-bold">!</span>
-            <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{prov.limit_level})</span>
-          </div>
-        );
-      })()}
+      {activeTab === 'value' && activeClusterProvider && currentSibling && currentSibling.limit_level != null && currentSibling.limit_level > 0 && (
+        <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
+          <span className="font-bold">!</span>
+          <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{currentSibling.limit_level})</span>
+        </div>
+      )}
 
       {/* MyBets tab — all soft provider bets (value + boosts + manual) */}
       {activeTab === 'mybets' && (
@@ -1170,6 +1235,14 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
           </tbody>
         </table>
         </div>
+        </div>
+      )}
+      {/* Session stats bar */}
+      {activeClusterProvider && currentSibling && (
+        <div className="flex gap-4 text-xs text-gray-500 px-2 py-1 border-t border-gray-800">
+          <span>{currentSibling.balance ?? 0} kr left</span>
+          <span>{sessionStats.placed} placed</span>
+          <span>{sessionStats.wagered} kr wagered</span>
         </div>
       )}
       </>}
