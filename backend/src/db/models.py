@@ -395,6 +395,7 @@ class ProfileProviderBonus(Base):
     min_odds = Column(Float, default=1.80)              # Minimum odds for wagering qualification (per-provider)
     main_min_odds = Column(Float, nullable=True)        # Main wagering min_odds (used after trigger phase completes)
     deposit_amount = Column(Float, nullable=True)       # Original deposit (for trigger→main phase wagering calc)
+    trigger_mode = Column(String, default="cumulative")  # "single" or "cumulative"
 
     # Timer tracking
     claimed_at = Column(DateTime, nullable=True)        # When bonus was claimed/wagering started
@@ -1593,6 +1594,16 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN deposit_amount REAL")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add trigger_mode to profile_provider_bonuses ("single" or "cumulative")
+        try:
+            cursor.execute("SELECT trigger_mode FROM profile_provider_bonuses LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profile_provider_bonuses ADD COLUMN trigger_mode TEXT DEFAULT 'cumulative'")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass

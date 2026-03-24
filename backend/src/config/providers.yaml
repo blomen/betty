@@ -255,7 +255,8 @@ providers:
       amount: 1000
       wagering_multiplier: 1
       min_odds: 1.80
-    
+      trigger_mode: single
+
 
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.75, 100% normalization
@@ -272,6 +273,7 @@ providers:
       trigger_odds: 1.80
       wagering_multiplier: 0       # No wager after trigger
       min_odds: 1.80
+      trigger_mode: cumulative
 
 
 
@@ -290,6 +292,7 @@ providers:
       deadline_days: 90
       wagering_multiplier: 0       # No wager after trigger
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
@@ -305,7 +308,8 @@ providers:
       trigger_odds: 1.80
       wagering_multiplier: 0       # No wager after trigger
       min_odds: 1.80
-      
+      trigger_mode: cumulative
+
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   speedybet:
@@ -319,6 +323,7 @@ providers:
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   x3000:
@@ -332,6 +337,7 @@ providers:
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   goldenbull:
@@ -345,6 +351,7 @@ providers:
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   1x2:
@@ -358,6 +365,7 @@ providers:
       amount: 500
       wagering_multiplier: 12
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Altenar REST API providers
@@ -375,6 +383,7 @@ providers:
       wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
       min_odds: 1.80
       trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
+      trigger_mode: cumulative
 
   campobet:
     <<: *altenar_defaults
@@ -388,6 +397,7 @@ providers:
       wagering_multiplier: 6  # (deposit+bonus)×6 wagering after trigger
       min_odds: 1.80
       trigger_odds: 1.50  # Must wager deposit 1x at 1.50+ to unlock bonus
+      trigger_mode: cumulative
 
   swiper:
     <<: *altenar_defaults
@@ -402,6 +412,7 @@ providers:
       trigger_odds: 1.50
       wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
       min_odds: 1.80
+      trigger_mode: cumulative
 
   lodur:
     <<: *altenar_defaults
@@ -416,6 +427,7 @@ providers:
       trigger_odds: 1.50
       wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
       min_odds: 1.80
+      trigger_mode: cumulative
 
   dbet:
     <<: *altenar_defaults
@@ -428,6 +440,7 @@ providers:
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
+      trigger_mode: single
 
   quickcasino:
     <<: *altenar_defaults
@@ -442,6 +455,7 @@ providers:
       trigger_odds: 1.50
       wagering_multiplier: 6       # Wager: (dep+bonus)×6 at 1.80+ to withdraw
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Spectate providers (888/Evoke platform)
@@ -465,6 +479,7 @@ providers:
       amount: 500
       wagering_multiplier: 1
       min_odds: 1.80
+      trigger_mode: single
 
   888sport:
     id: 888sport
@@ -483,6 +498,7 @@ providers:
       trigger_odds: 1.01
       wagering_multiplier: 14      # Wager: bonus×14 at 1.80+ to withdraw
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Gecko V2 / OBG providers (browser + events-table/v2 API)
@@ -502,6 +518,7 @@ providers:
       amount: 250
       wagering_multiplier: 1
       min_odds: 1.80
+      trigger_mode: single
 
   betsafe:
     id: betsafe
@@ -514,6 +531,7 @@ providers:
       amount: 100
       wagering_multiplier: 1
       min_odds: 1.80
+      trigger_mode: single
 
   nordicbet:
     id: nordicbet
@@ -526,6 +544,7 @@ providers:
       amount: 100
       wagering_multiplier: 1
       min_odds: 1.80
+      trigger_mode: single
 
   spelklubben:
     id: spelklubben
@@ -539,6 +558,7 @@ providers:
       amount: 500
       wagering_multiplier: 15
       min_odds: 1.90
+      trigger_mode: cumulative
 
   bethard:
     id: bethard
@@ -552,6 +572,7 @@ providers:
       amount: 500
       wagering_multiplier: 15
       min_odds: 1.90
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # 10Bet (Playtech/Mojito SPA — DOM scraping)
@@ -580,6 +601,7 @@ providers:
       amount: 1000
       wagering_multiplier: 15      # 15×(dep+bonus) at 1.80+
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Snabbare (Sportradar MTS - WebSocket extraction)
@@ -610,6 +632,7 @@ providers:
       wagering_multiplier: 8       # 8×(dep+bonus) at 1.80+
       min_odds: 1.80
       deadline_days: 90
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # ComeOn Group (custom multi-league WebSocket extraction)
@@ -628,6 +651,7 @@ providers:
       amount: 500
       wagering_multiplier: 6
       min_odds: 1.80
+      trigger_mode: cumulative
     max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
@@ -654,6 +678,7 @@ providers:
       wagering_multiplier: 6          # 6×(dep+bonus) at 1.80+
       min_odds: 1.80
       deadline_days: 90
+      trigger_mode: cumulative
     max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
@@ -678,6 +703,7 @@ providers:
       wagering_multiplier: 1
       min_odds: 1.80
       deadline_days: 7             # Free bet must be used within 7 days
+      trigger_mode: single
     max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
@@ -716,6 +742,7 @@ providers:
       amount: 800
       wagering_multiplier: 10
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Interwetten (Browser DOM — dynamic league discovery + concurrent tabs)
@@ -747,6 +774,7 @@ providers:
       deadline_days: 14           # 14 days to complete wager
       wagering_multiplier: 1      # Wager: each stage wagered 1× at 1.70+ to withdraw
       min_odds: 1.70
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Coolbet (proprietary GAN Sports platform — browser-based API interception)
@@ -773,6 +801,7 @@ providers:
       amount: 1000
       wagering_multiplier: 6       # 6×bonus only (deposit has no wagering) at 1.80+
       min_odds: 1.80
+      trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
   # Tipwin (proprietary platform — browser-based API interception)
@@ -804,6 +833,7 @@ providers:
       amount: 1000
       wagering_multiplier: 7
       min_odds: 1.80
+      trigger_mode: cumulative
 
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)
