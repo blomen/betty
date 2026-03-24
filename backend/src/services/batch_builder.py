@@ -262,13 +262,20 @@ class BatchBuilder:
         provider_id = opp.provider1_id
         pb = provider_balances.get(provider_id)
 
-        # Skip if provider has no balance tracked
-        if pb is None:
-            return None
-
-        # Skip dormant / available providers
-        if pb.lifecycle in ("dormant", "available"):
-            return None
+        # If this provider has no balance, try to reroute to a funded sibling
+        if pb is None or pb.lifecycle in ("dormant", "available"):
+            cluster = _provider_to_cluster(provider_id)
+            # Find a funded sibling in the same cluster
+            funded_sibling = None
+            for pid, spb in provider_balances.items():
+                if spb.cluster == cluster and spb.lifecycle not in ("dormant", "available") and spb.remaining > 0:
+                    if funded_sibling is None or spb.remaining > provider_balances[funded_sibling].remaining:
+                        funded_sibling = pid
+            if funded_sibling:
+                provider_id = funded_sibling
+                pb = provider_balances[funded_sibling]
+            else:
+                return None  # No funded sibling in cluster
 
         odds = opp.odds1 or 0.0
         fair_odds = opp.odds2 or 0.0
