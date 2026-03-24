@@ -100,6 +100,38 @@ class ProfileRepo:
         """Get balance for a single provider. Alias for get_balance()."""
         return self.get_balance(profile_id, provider_id)
 
+    def get_avg_daily_wager(self, profile_id: int, lookback_days: int = 14) -> dict:
+        """
+        Average total stake per day over the lookback window.
+        Returns {"avg_daily_wager": float, "has_history": bool, "days_with_bets": int}.
+        """
+        from sqlalchemy import func
+        from ..db.models import Bet
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+        rows = (
+            self.db.query(
+                func.sum(Bet.stake).label("total_stake"),
+                func.count(func.distinct(func.date(Bet.placed_at))).label("days_with_bets"),
+            )
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.placed_at >= cutoff,
+                Bet.stake > 0,
+            )
+            .first()
+        )
+
+        total_stake = rows.total_stake or 0.0
+        days_with_bets = rows.days_with_bets or 0
+
+        return {
+            "avg_daily_wager": round(total_stake / lookback_days, 2) if lookback_days > 0 else 0.0,
+            "has_history": days_with_bets >= 1,
+            "days_with_bets": days_with_bets,
+        }
+
     def copy_balances(self, from_profile_id: int, to_profile_id: int) -> int:
         """Copy all balances from one profile to another. Returns count copied."""
         source_balances = self.db.query(ProfileProviderBalance).filter(
