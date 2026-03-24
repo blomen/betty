@@ -150,6 +150,9 @@ class BatchBuilder:
             "summary": self._build_summary(batch),
             "balance_status": self._build_balance_status(provider_balances, missed),
             "missed_opportunities": self._build_missed_summary(missed),
+            "deposit_recommendations": self._build_deposit_recommendations(
+                provider_balances, missed, total_bankroll
+            ),
         }
 
     # ------------------------------------------------------------------ #
@@ -498,3 +501,47 @@ class BatchBuilder:
             "lifecycle": bet.lifecycle,
             "cluster": bet.cluster,
         }
+
+    def _build_deposit_recommendations(
+        self,
+        provider_balances: dict[str, ProviderBalance],
+        missed: list[BatchBet],
+        total_bankroll: float,
+    ) -> list[dict]:
+        """
+        Calculate optimal deposit amounts per cluster.
+
+        For providers with shortfall (missed bets due to insufficient balance),
+        recommend depositing enough to cover the missed stake.
+        For unfunded clusters with opportunities, recommend a default deposit.
+        """
+        # Group missed bets by cluster
+        cluster_missed: dict[str, float] = {}  # cluster -> total missed stake
+        cluster_missed_ev: dict[str, float] = {}
+        cluster_missed_count: dict[str, int] = {}
+
+        for bet in missed:
+            cluster = bet.cluster or bet.provider_id
+            cluster_missed[cluster] = cluster_missed.get(cluster, 0) + bet.stake
+            cluster_missed_ev[cluster] = cluster_missed_ev.get(cluster, 0) + bet.expected_profit
+            cluster_missed_count[cluster] = cluster_missed_count.get(cluster, 0) + 1
+
+        # Also check funded providers with shortfall
+        for pid, pb in provider_balances.items():
+            if pb.missed_bets > 0:
+                cluster = pb.cluster or pid
+                if cluster not in cluster_missed:
+                    cluster_missed[cluster] = pb.missed_ev  # approximate
+                    cluster_missed_ev[cluster] = pb.missed_ev
+                    cluster_missed_count[cluster] = pb.missed_bets
+
+        recommendations = []
+        for cluster, needed_stake in sorted(cluster_missed.items(), key=lambda x: -x[1]):
+            recommendations.append({
+                "cluster": cluster,
+                "deposit_amount": round(needed_stake, -1),  # Round to nearest 10
+                "missed_bets": cluster_missed_count.get(cluster, 0),
+                "missed_ev": round(cluster_missed_ev.get(cluster, 0), 2),
+            })
+
+        return recommendations

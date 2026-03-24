@@ -139,14 +139,10 @@ class PlaySessionService:
                 "days_remaining": bonus_info.get("days_remaining"),
             })
 
-        # Determine max active siblings: 2 if >=30 unique opps, else 1
-        max_siblings = 2 if unique_opps >= 30 else 1
-
-        # Pick active siblings: non-dormant, non-available, sorted by urgency
+        # No sibling cap — fund every sibling you can afford
         active_states = ("deposited", "wagering", "freebet", "playing", "limited")
         active = [s for s in siblings if s["lifecycle"] in active_states]
         active.sort(key=lambda s: self._sibling_urgency(s), reverse=True)
-        active = active[:max_siblings]
 
         total_balance = sum(s["balance"] for s in active)
         available = [s for s in siblings if s["lifecycle"] == "available"]
@@ -158,12 +154,9 @@ class PlaySessionService:
 
         urgency = max((self._sibling_urgency(s) for s in active), default=0)
 
-        # Recommend depositing if: has opps but fewer active siblings than max
-        needs_deposit = unique_opps > 0 and len(active) < max_siblings and len(available) > 0
-        # How many more siblings to recommend
-        recommended_count = min(max_siblings - len(active), len(available))
-        # Pick the recommended ones (first N available)
-        recommended = available[:recommended_count] if needs_deposit else []
+        # Recommend ALL available siblings if cluster has opps
+        needs_deposit = unique_opps > 0 and len(available) > 0
+        recommended = available if needs_deposit else []
 
         return {
             "id": name,
