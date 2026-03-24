@@ -84,6 +84,10 @@ class ProviderBalance:
     bonus_amount: float = 0.0
     is_bonus_phase: bool = False    # True when in freebet_available phase
 
+    # Wagering info
+    wagering_remaining: float = 0.0
+    days_remaining: int | None = None
+
     # Missed bets stats
     missed_bets: int = 0
     missed_ev: float = 0.0
@@ -182,6 +186,8 @@ class BatchBuilder:
                 trigger_mode=bonus_info.get("trigger_mode", "cumulative"),
                 bonus_amount=bonus_info.get("bonus_amount", 0.0),
                 is_bonus_phase=is_bonus_phase,
+                wagering_remaining=max(0, (bonus_info.get("wagering_requirement", 0) or 0) - (bonus_info.get("wagered_amount", 0) or 0)),
+                days_remaining=bonus_info.get("days_remaining"),
             )
 
         return result
@@ -509,14 +515,14 @@ class BatchBuilder:
         total_bankroll: float,
     ) -> list[dict]:
         """
-        Calculate optimal deposit amounts per cluster.
+        Calculate optimal deposit amounts per cluster with wagering feasibility.
 
-        For providers with shortfall (missed bets due to insufficient balance),
-        recommend depositing enough to cover the missed stake.
-        For unfunded clusters with opportunities, recommend a default deposit.
+        Each recommendation includes sessions_to_clear so the user can judge
+        whether it's worth depositing. A "session" = one batch fire where you
+        drain the balance (wagering progressed by ~balance amount per session).
         """
         # Group missed bets by cluster
-        cluster_missed: dict[str, float] = {}  # cluster -> total missed stake
+        cluster_missed: dict[str, float] = {}
         cluster_missed_ev: dict[str, float] = {}
         cluster_missed_count: dict[str, int] = {}
 
@@ -531,17 +537,53 @@ class BatchBuilder:
             if pb.missed_bets > 0:
                 cluster = pb.cluster or pid
                 if cluster not in cluster_missed:
-                    cluster_missed[cluster] = pb.missed_ev  # approximate
+                    cluster_missed[cluster] = pb.missed_ev
                     cluster_missed_ev[cluster] = pb.missed_ev
                     cluster_missed_count[cluster] = pb.missed_bets
 
+        # Gather wagering info per cluster (worst case across siblings)
+        cluster_wagering: dict[str, dict] = {}
+        for pid, pb in provider_balances.items():
+            cluster = pb.cluster or pid
+            if pb.wagering_remaining > 0:
+                existing = cluster_wagering.get(cluster, {})
+                # Track the provider with the most wagering remaining
+                if pb.wagering_remaining > existing.get("wagering_remaining", 0):
+                    cluster_wagering[cluster] = {
+                        "wagering_remaining": pb.wagering_remaining,
+                        "days_remaining": pb.days_remaining,
+                        "provider_id": pid,
+                    }
+
         recommendations = []
         for cluster, needed_stake in sorted(cluster_missed.items(), key=lambda x: -x[1]):
+            deposit_amount = round(needed_stake, -1)
+
+            # Estimate sessions to clear wagering
+            # One session ≈ drain the balance (wagering progressed by ~deposit amount)
+            # With +EV bets, balance returns ~110% after settlements, so effective
+            # wagering per session ≈ deposit_amount
+            wag_info = cluster_wagering.get(cluster)
+            sessions_to_clear = None
+            days_remaining = None
+            wagering_feasible = True
+
+            if wag_info and wag_info["wagering_remaining"] > 0:
+                wag_per_session = max(deposit_amount, 1)
+                sessions_to_clear = int(wag_info["wagering_remaining"] / wag_per_session) + 1
+                days_remaining = wag_info.get("days_remaining")
+                # If we can't clear in time even playing every day, flag it
+                if days_remaining is not None and sessions_to_clear > days_remaining:
+                    wagering_feasible = False
+
             recommendations.append({
                 "cluster": cluster,
-                "deposit_amount": round(needed_stake, -1),  # Round to nearest 10
+                "deposit_amount": deposit_amount,
                 "missed_bets": cluster_missed_count.get(cluster, 0),
                 "missed_ev": round(cluster_missed_ev.get(cluster, 0), 2),
+                "sessions_to_clear": sessions_to_clear,
+                "days_remaining": days_remaining,
+                "wagering_feasible": wagering_feasible,
             })
 
         return recommendations
