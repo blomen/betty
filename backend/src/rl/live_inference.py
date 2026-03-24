@@ -10,7 +10,7 @@ import torch
 from .agent.network import DQNetwork
 from .config import Action, LevelType
 from .data.normalization import RunningNormalizer
-from .features.observation import build_observation, OBSERVATION_DIM, CONTEXT_DIM
+from .features.observation import build_observation, OBSERVATION_DIM
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class DQNLiveInference:
 
     def _load_checkpoint(self, path: Path) -> bool:
         try:
-            self._network = DQNetwork(input_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM)
+            self._network = DQNetwork(input_dim=OBSERVATION_DIM)
             checkpoint = torch.load(path, weights_only=False, map_location="cpu")
             self._network.load_state_dict(checkpoint["q_network"])
             self._network.eval()
@@ -90,9 +90,7 @@ class DQNLiveInference:
 
         obs = build_observation(state)
         if self._normalizer is not None:
-            from .agent.network import TICK_SEQ_LEN, TICK_FEATURES, CANDLE_1M_LEN, CANDLE_5M_LEN, CANDLE_FEATURES
-            ctx_start = TICK_SEQ_LEN * TICK_FEATURES + CANDLE_1M_LEN * CANDLE_FEATURES + CANDLE_5M_LEN * CANDLE_FEATURES
-            obs = self._normalizer.normalize(obs, context_start=ctx_start)
+            obs = self._normalizer.normalize(obs)
         obs_tensor = torch.from_numpy(obs).unsqueeze(0)
 
         with torch.no_grad():

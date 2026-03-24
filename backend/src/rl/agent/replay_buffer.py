@@ -99,6 +99,7 @@ class ReplayBuffer:
         self._observations: list[np.ndarray | None] = [None] * capacity
         self._actions: np.ndarray = np.zeros(capacity, dtype=np.int64)
         self._rewards: np.ndarray = np.zeros(capacity, dtype=np.float32)
+        self._stop_targets: np.ndarray = np.zeros(capacity, dtype=np.float32)
         self._size = 0
         self._write_idx = 0
         self._max_priority: float = 1.0
@@ -107,12 +108,13 @@ class ReplayBuffer:
     # Public API
     # ------------------------------------------------------------------
 
-    def add(self, observation: np.ndarray, action: int, reward: float) -> None:
+    def add(self, observation: np.ndarray, action: int, reward: float, stop_target: float = 10.0) -> None:
         """Store a transition with max priority (will be corrected on first sample)."""
         idx = self._write_idx
         self._observations[idx] = np.array(observation, dtype=np.float32)
         self._actions[idx] = int(action)
         self._rewards[idx] = float(reward)
+        self._stop_targets[idx] = float(stop_target)
 
         # New transitions get max priority so they're sampled at least once
         priority = self._max_priority ** self._alpha
@@ -175,6 +177,7 @@ class ReplayBuffer:
             "observations": observations,
             "actions": self._actions[indices].copy(),
             "rewards": self._rewards[indices].copy(),
+            "stop_targets": self._stop_targets[indices].copy(),
             "weights": weights.astype(np.float32),
             "indices": indices,
         }

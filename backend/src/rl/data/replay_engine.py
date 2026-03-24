@@ -311,6 +311,11 @@ class ReplayEngine:
                 state["approach_direction"] = approach_direction
                 observation = build_observation(state)
 
+                # Gather levels above and below for multi-level trailing reward
+                all_lvl_prices = [lp for _, _, lp in self._active_levels]
+                levels_above = sorted([p for p in all_lvl_prices if p > price + TICK_SIZE])
+                levels_below = sorted([p for p in all_lvl_prices if p < price - TICK_SIZE], reverse=True)
+
                 episode = label_outcome_from_array(
                     touch_price=price,
                     ticks=norm_ticks,
@@ -320,6 +325,8 @@ class ReplayEngine:
                     level_type=level_type.value,
                     touch_ts=tick["ts"],
                     approach_direction=approach_direction,
+                    levels_above=levels_above,
+                    levels_below=levels_below,
                 )
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]

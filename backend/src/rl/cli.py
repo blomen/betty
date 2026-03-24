@@ -376,6 +376,7 @@ def replay(
     all_rewards_cont: list[float] = []
     all_rewards_rev: list[float] = []
     all_level_types: list[str] = []
+    all_stop_targets: list[float] = []
 
     total_episodes = 0
 
@@ -444,6 +445,7 @@ def replay(
                 all_rewards_cont.append(ep.reward_continuation)
                 all_rewards_rev.append(ep.reward_reversal)
                 all_level_types.append(ep.level_type)
+                all_stop_targets.append(ep.optimal_stop_ticks)
 
             session_episodes += len(episodes)
 
@@ -460,6 +462,7 @@ def replay(
     np.save(episodes_dir / "rewards_cont.npy", np.array(all_rewards_cont, dtype=np.float32))
     np.save(episodes_dir / "rewards_rev.npy", np.array(all_rewards_rev, dtype=np.float32))
     np.save(episodes_dir / "level_types.npy", np.array(all_level_types))
+    np.save(episodes_dir / "stop_targets.npy", np.array(all_stop_targets, dtype=np.float32))
 
     # Save normalizer
     normalizer.save(episodes_dir / "normalizer.json")
@@ -486,7 +489,7 @@ def train(
     from src.rl.agent.dqn import DQNAgent
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, BATCH_SIZE
-    from src.rl.features.observation import OBSERVATION_DIM, CONTEXT_DIM
+    from src.rl.features.observation import OBSERVATION_DIM
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -502,6 +505,8 @@ def train(
     rewards_cont = np.load(episodes_dir / "rewards_cont.npy")
     rewards_rev = np.load(episodes_dir / "rewards_rev.npy")
     level_types = np.load(episodes_dir / "level_types.npy", allow_pickle=True)
+    stop_path = episodes_dir / "stop_targets.npy"
+    stop_targets = np.load(stop_path) if stop_path.exists() else np.full(len(observations), 10.0, dtype=np.float32)
 
     n = len(observations)
     typer.echo(f"Loaded {n} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
@@ -515,10 +520,7 @@ def train(
     else:
         typer.echo("Warning: no normalizer.json found — using raw observations.")
 
-    # Only normalize context segment (index 248+), leave temporal sequences raw
-    from src.rl.agent.network import TICK_SEQ_LEN, TICK_FEATURES, CANDLE_1M_LEN, CANDLE_5M_LEN, CANDLE_FEATURES
-    ctx_start = TICK_SEQ_LEN * TICK_FEATURES + CANDLE_1M_LEN * CANDLE_FEATURES + CANDLE_5M_LEN * CANDLE_FEATURES
-    normalized_obs = np.stack([normalizer.normalize(obs, context_start=ctx_start) for obs in observations])
+    normalized_obs = np.stack([normalizer.normalize(obs) for obs in observations])
 
     # Chronological split: 67% train, 16% val, 17% test
     train_end = int(n * 0.67)
@@ -527,23 +529,23 @@ def train(
     train_obs = normalized_obs[:train_end]
     train_rc = rewards_cont[:train_end]
     train_rr = rewards_rev[:train_end]
+    train_stops = stop_targets[:train_end]
 
     val_obs = normalized_obs[train_end:val_end]
     val_rc = rewards_cont[train_end:val_end]
     val_rr = rewards_rev[train_end:val_end]
 
     typer.echo(f"Split: train={len(train_obs)}, val={len(val_obs)}, test={n - val_end}")
-    typer.echo(f"Architecture: dual-stream Dueling DQN (context_dim={CONTEXT_DIM})")
+    typer.echo(f"Architecture: Dueling Double DQN ({OBSERVATION_DIM}-dim) + stop head")
 
-    # Dual-stream Dueling DQN with Double DQN
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM)
+    agent = DQNAgent(observation_dim=OBSERVATION_DIM)
 
     for i in range(len(train_obs)):
         rc = float(train_rc[i])
         rr = float(train_rr[i])
-        # Store both directions so model learns accurate Q-values
-        agent.store(train_obs[i], Action.CONTINUATION.value, rc)
-        agent.store(train_obs[i], Action.REVERSAL.value, rr)
+        st = float(train_stops[i])
+        agent.store(train_obs[i], Action.CONTINUATION.value, rc, stop_target=st)
+        agent.store(train_obs[i], Action.REVERSAL.value, rr, stop_target=st)
 
     typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes × 2 actions)")
 
@@ -600,7 +602,7 @@ def eval(
     from src.rl.agent.evaluate import compute_metrics, print_evaluation_report
     from src.rl.data.normalization import RunningNormalizer
     from src.rl.config import Action, EPSILON_END
-    from src.rl.features.observation import OBSERVATION_DIM, CONTEXT_DIM
+    from src.rl.features.observation import OBSERVATION_DIM
 
     episodes_dir = _EPISODES_DIR
     models_dir = _MODELS_DIR
@@ -641,8 +643,8 @@ def eval(
     typer.echo(f"Test split: {len(test_obs)} episodes (last 17% of {n})")
     typer.echo(f"Skip threshold: {skip_threshold}")
 
-    # Load agent with greedy policy (dual-stream architecture)
-    agent = DQNAgent(observation_dim=OBSERVATION_DIM, context_dim=CONTEXT_DIM, epsilon=0.0)
+    # Load agent with greedy policy
+    agent = DQNAgent(observation_dim=OBSERVATION_DIM, epsilon=0.0)
     agent.load(model_path)
     agent.epsilon = 0.0
     typer.echo(f"Loaded model: {model_path}")

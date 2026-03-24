@@ -42,16 +42,15 @@ class DQNAgent:
     def __init__(
         self,
         observation_dim: int,
-        context_dim: int | None = None,
         epsilon: float = EPSILON_START,
         buffer_capacity: int = REPLAY_BUFFER_SIZE,
+        **_kwargs,
     ) -> None:
         self.observation_dim = observation_dim
-
         self.epsilon = epsilon
 
-        # Networks — dual-stream if context_dim provided
-        self.q_network = DQNetwork(observation_dim, context_dim=context_dim)
+        # Networks
+        self.q_network = DQNetwork(observation_dim)
         self.target_network = copy.deepcopy(self.q_network)
         self.target_network.eval()
 
@@ -78,9 +77,9 @@ class DQNAgent:
         q_values = self.q_network.predict(observation)  # (1, NUM_ACTIONS)
         return int(np.argmax(q_values[0]))
 
-    def store(self, observation: np.ndarray, action: int, reward: float) -> None:
+    def store(self, observation: np.ndarray, action: int, reward: float, stop_target: float = 10.0) -> None:
         """Add a transition to the replay buffer."""
-        self.buffer.add(observation, action, reward)
+        self.buffer.add(observation, action, reward, stop_target)
 
     def train_step(self) -> float:
         """Sample a prioritized mini-batch and perform one gradient update.
@@ -93,26 +92,30 @@ class DQNAgent:
         obs_t = torch.from_numpy(batch["observations"])          # (B, obs_dim)
         act_t = torch.from_numpy(batch["actions"]).unsqueeze(1)  # (B, 1)
         rew_t = torch.from_numpy(batch["rewards"])               # (B,)
+        stop_t = torch.from_numpy(batch["stop_targets"])         # (B,)
         weights_t = torch.from_numpy(batch["weights"])           # (B,)
         indices = batch["indices"]                                # (B,)
 
-        # Predicted Q-values for taken actions
+        # Predicted Q-values and stop distance
         self.q_network.train()
-        q_pred = self.q_network(obs_t).gather(1, act_t).squeeze(1)  # (B,)
+        q_all, stop_pred = self.q_network.forward_full(obs_t)
+        q_pred = q_all.gather(1, act_t).squeeze(1)  # (B,)
 
-        # Double DQN target:
-        # 1. Online net selects best action: a* = argmax_a Q_online(s', a)
-        # 2. Target net evaluates: Q_target(s', a*)
+        # Double DQN target
         with torch.no_grad():
             online_q_next = self.q_network(obs_t)
-            best_actions = online_q_next.argmax(dim=1, keepdim=True)  # (B, 1)
+            best_actions = online_q_next.argmax(dim=1, keepdim=True)
             target_q_next = self.target_network(obs_t).gather(1, best_actions).squeeze(1)
             target_q = rew_t + GAMMA * target_q_next
 
-        # Element-wise Huber loss weighted by IS weights
+        # Q-value loss (Huber, weighted by IS)
         td_errors = q_pred - target_q
-        elementwise_loss = F.smooth_l1_loss(q_pred, target_q, reduction="none")
-        loss = (weights_t * elementwise_loss).mean()
+        q_loss = (weights_t * F.smooth_l1_loss(q_pred, target_q, reduction="none")).mean()
+
+        # Stop distance loss (MSE, weighted 0.1x so it doesn't dominate)
+        stop_loss = 0.1 * F.mse_loss(stop_pred.squeeze(1), stop_t)
+
+        loss = q_loss + stop_loss
 
         self.optimizer.zero_grad()
         loss.backward()
