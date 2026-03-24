@@ -149,14 +149,22 @@ class BatchBuilder:
         for i, bet in enumerate(batch):
             bet.rank = i + 1
 
+        deposit_recs = self._build_deposit_recommendations(
+            provider_balances, missed, total_bankroll
+        )
+        withdrawal_recs = self._build_withdrawal_recommendations(provider_balances)
+        capital_plan = self._build_capital_plan(
+            provider_balances, deposit_recs, withdrawal_recs, total_bankroll
+        )
+
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
             "summary": self._build_summary(batch),
             "balance_status": self._build_balance_status(provider_balances, missed),
             "missed_opportunities": self._build_missed_summary(missed),
-            "deposit_recommendations": self._build_deposit_recommendations(
-                provider_balances, missed, total_bankroll
-            ),
+            "deposit_recommendations": deposit_recs,
+            "withdrawal_recommendations": withdrawal_recs,
+            "capital_plan": capital_plan,
         }
 
     # ------------------------------------------------------------------ #
@@ -587,3 +595,117 @@ class BatchBuilder:
             })
 
         return recommendations
+
+    def _build_withdrawal_recommendations(
+        self,
+        provider_balances: dict[str, ProviderBalance],
+    ) -> list[dict]:
+        """
+        Recommend withdrawals from providers where wagering is cleared
+        and balance is sitting idle (excess after batch allocation).
+        """
+        withdrawals = []
+        for pid, pb in provider_balances.items():
+            # Only recommend withdrawal from soft providers with cleared wagering
+            if pid in SHARP_PROVIDERS:
+                continue
+            # Wagering must be cleared (playing/limited lifecycle, 0 wagering remaining)
+            if pb.lifecycle not in ("playing", "limited"):
+                continue
+            if pb.wagering_remaining > 0:
+                continue
+            # Only if there's excess balance after batch allocation
+            if pb.remaining <= 0:
+                continue
+
+            withdrawals.append({
+                "provider_id": pid,
+                "cluster": pb.cluster,
+                "amount": round(pb.remaining, 2),
+                "reason": "wagering_cleared",
+            })
+
+        # Sort by amount descending (withdraw largest first)
+        withdrawals.sort(key=lambda w: -w["amount"])
+        return withdrawals
+
+    def _build_capital_plan(
+        self,
+        provider_balances: dict[str, ProviderBalance],
+        deposit_recs: list[dict],
+        withdrawal_recs: list[dict],
+        total_bankroll: float,
+    ) -> dict:
+        """
+        Build a capital deployment plan showing the priority order for allocating funds.
+
+        Priority:
+        1. Sharp (Pinnacle/Polymarket) — no limiting, compound forever
+        2. Soft with cleared wagering — pure +EV, withdraw anytime
+        3. Soft with 1x wagering — clears in 1 session
+        4. Soft with low wagering (≤6x) — clears in ~5 sessions
+        5. Soft with high wagering (>6x) — only if capital abundant
+        6. Skip if wagering can't clear before deadline
+        """
+        # Funds available to redeploy
+        withdrawable = sum(w["amount"] for w in withdrawal_recs)
+
+        # Current deployment
+        deployed = sum(pb.initial_balance for pb in provider_balances.values())
+
+        # Build prioritized allocation targets
+        targets = []
+
+        # Sharp providers: always fund if they have value bets
+        for pid, pb in provider_balances.items():
+            if pid in SHARP_PROVIDERS and pb.allocated > 0:
+                targets.append({
+                    "provider_id": pid,
+                    "cluster": pb.cluster or pid,
+                    "priority": 1,
+                    "priority_label": "sharp",
+                    "current_balance": round(pb.initial_balance, 2),
+                    "needed": round(pb.allocated, 2),
+                    "shortfall": round(max(0, pb.allocated - pb.initial_balance), 2),
+                })
+
+        # Sort deposit recs by priority (feasible low-wagering first)
+        for rec in deposit_recs:
+            sessions = rec.get("sessions_to_clear")
+            feasible = rec.get("wagering_feasible", True)
+
+            if not feasible:
+                priority = 99  # Skip — can't clear in time
+                label = "skip_infeasible"
+            elif sessions is None or sessions == 0:
+                priority = 2  # No wagering — pure +EV
+                label = "no_wagering"
+            elif sessions <= 2:
+                priority = 3  # 1x wagering — 1-2 sessions
+                label = "fast_clear"
+            elif sessions <= 6:
+                priority = 4  # Medium wagering
+                label = "medium_clear"
+            else:
+                priority = 5  # High wagering
+                label = "slow_clear"
+
+            targets.append({
+                "cluster": rec["cluster"],
+                "priority": priority,
+                "priority_label": label,
+                "deposit_amount": rec["deposit_amount"],
+                "missed_bets": rec["missed_bets"],
+                "missed_ev": rec["missed_ev"],
+                "sessions_to_clear": sessions,
+                "days_remaining": rec.get("days_remaining"),
+                "wagering_feasible": feasible,
+            })
+
+        targets.sort(key=lambda t: (t["priority"], -(t.get("missed_ev", 0))))
+
+        return {
+            "total_deployed": round(deployed, 2),
+            "withdrawable": round(withdrawable, 2),
+            "targets": targets,
+        }
