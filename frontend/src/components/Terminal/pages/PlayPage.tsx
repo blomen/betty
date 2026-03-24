@@ -164,27 +164,51 @@ export function PlayPage(_props: PlayPageProps) {
   function renderBetRow(b: BatchBet, idx: number) {
     const key = betKey(b);
     const result = fireResults.get(key);
-    const eventName = `${displayTeamName(b.home_team, b.display_home)} v ${displayTeamName(b.away_team, b.display_away)}`;
-    const outcomeLabel = resolveOutcome(b.outcome, { home_team: b.home_team, away_team: b.away_team, display_home: b.display_home, display_away: b.display_away, market: b.market } as any, b.point, true);
+    const isBoost = b.market === 'boost';
+
+    // Boosts: event name is the title, outcome is the full description
+    // Regular bets: standard home v away format
+    const eventName = isBoost
+      ? (b.display_home && b.display_away ? `${b.display_home} v ${b.display_away}` : b.outcome)
+      : `${displayTeamName(b.home_team, b.display_home)} v ${displayTeamName(b.away_team, b.display_away)}`;
+    const outcomeLabel = isBoost
+      ? b.outcome
+      : resolveOutcome(b.outcome, { home_team: b.home_team, away_team: b.away_team, display_home: b.display_home, display_away: b.display_away, market: b.market } as any, b.point, true);
 
     return (
       <tr key={`${key}-${b.provider_id}-${idx}`} className={result ? (result.success ? 'bg-success/5' : 'bg-error/5') : ''}>
         <td className="text-muted text-xs">{b.rank}</td>
         <td className="text-xs">
           <ProviderName name={b.provider_id} />
+          {isBoost && (
+            <span className="ml-1 text-[9px] px-1 py-0.5 bg-purple-500/20 text-purple-400">
+              BOOST
+            </span>
+          )}
           {b.is_bonus && (
             <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">
               {b.bonus_type === 'freebet' ? 'FREE' : 'TRG'}
             </span>
           )}
         </td>
-        <td className="text-xs text-text truncate max-w-[200px]" title={eventName}>
-          {eventName}
-          <div className="text-[10px] text-muted">
-            {b.sport}{b.league ? ` · ${b.league}` : ''}{b.market !== '1x2' && b.market !== 'moneyline' ? ` · ${b.market}` : ''}
-          </div>
+        <td className="text-xs text-text truncate max-w-[250px]" title={isBoost ? b.outcome : eventName}>
+          {isBoost ? (
+            <>
+              <span className="text-purple-300">{b.outcome}</span>
+              <div className="text-[10px] text-muted">
+                {b.sport}{b.league ? ` · ${b.league}` : ''}
+              </div>
+            </>
+          ) : (
+            <>
+              {eventName}
+              <div className="text-[10px] text-muted">
+                {b.sport}{b.league ? ` · ${b.league}` : ''}{b.market !== '1x2' && b.market !== 'moneyline' ? ` · ${b.market}` : ''}
+              </div>
+            </>
+          )}
         </td>
-        <td className="text-xs text-text">{outcomeLabel}</td>
+        <td className="text-xs text-text">{isBoost ? '' : outcomeLabel}</td>
         <td className="text-right text-xs text-text font-medium">{b.odds.toFixed(2)}</td>
         <td className="text-right text-xs text-muted">{b.fair_odds.toFixed(2)}</td>
         <td className={`text-right text-xs font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
