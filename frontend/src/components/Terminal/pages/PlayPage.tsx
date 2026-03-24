@@ -1,678 +1,259 @@
-import { useState, useEffect, useCallback, useDeferredValue, useMemo, useRef, Fragment, memo } from 'react';
-import { usePersistedState } from '@/hooks/usePersistedState';
-import { createPortal } from 'react-dom';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useState, useMemo, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useBetMutations } from '@/hooks/useBetMutations';
 import { api } from '@/services/api';
-import { formatProviderName, formatDateTime, getTTKFromNow, formatTTKLabel, getTTKColor, displayTeamName, MAX_TTK_HOURS } from '@/utils/formatters';
+import { formatProviderName, displayTeamName } from '@/utils/formatters';
 import { resolveOutcome } from '@/utils/betting';
 import { ProviderName } from '../ProviderName';
-import { useMultiSort } from '@/hooks/useMultiSort';
-import { MultiSortableHeader } from '../MultiSortableHeader';
-import { SearchInput, relativeTime } from '../FilterBar';
-import { BonusPopup } from '../BonusPopup';
-import { ClusterPanel } from './ClusterPanel';
 import { TabIcon, TAB_COLORS } from '../TabBar';
 import { useToast, ToastContainer } from '../Toast';
-import type { Opportunity, Provider, PlayCluster } from '@/types';
+import type { BatchBet, BatchResult, PlaySession } from '@/types';
 
-interface GroupedOpp {
-  key: string;
-  rep: Opportunity;
-  opps: Opportunity[];
-  providers: string[];
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function betKey(b: BatchBet): string {
+  return `${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`;
 }
 
-interface OpportunityRowProps {
-  group: GroupedOpp;
-  idx: number;
-  isExpanded: boolean;
-  onToggle: (idx: number) => void;
-  placedKeys: Set<string>;
-  balanceMap: Map<string, number>;
-  selectedBetProvider: number;
-  providerDropdownOpen: boolean;
-  providerDropdownRef: React.RefObject<HTMLDivElement | null>;
-  onProviderDropdownToggle: (groupKey: string) => void;
-  onProviderSelect: (groupKey: string, index: number) => void;
-  onOddsOverride: (groupKey: string, odds: number | null) => void;
-  onPlaceBet: (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => void;
-  pendingBet: { groupKey: string; opp: Opportunity; actualOdds: number; useFreebet: boolean; navUrl: string | null; windowName: string; effectiveStake: number | null } | null;
-  isPlacing: boolean;
-  onConfirmBet: () => void;
-  onCancelBet: () => void;
-}
-
-const OpportunityRow = memo(function OpportunityRow({
-  group,
-  idx,
-  isExpanded,
-  onToggle,
-  balanceMap,
-  selectedBetProvider: selIdx,
-  providerDropdownOpen,
-  providerDropdownRef,
-  onProviderDropdownToggle,
-  onProviderSelect,
-  onOddsOverride,
-  onPlaceBet,
-  pendingBet,
-  isPlacing,
-  onConfirmBet,
-  onCancelBet,
-}: OpportunityRowProps) {
-  const { rep, opps, providers: groupProviders } = group;
-
-  const [localOddsOverride, _setLocalOddsOverride] = useState<number | null>(null);
-  const setLocalOddsOverride = useCallback((val: number | null) => {
-    _setLocalOddsOverride(val);
-    onOddsOverride(group.key, val);
-  }, [onOddsOverride, group.key]);
-  const [editingOdds, setEditingOdds] = useState(false);
-  const [localStakeOverride, setLocalStakeOverride] = useState<number | null>(null);
-  const [editingStake, setEditingStake] = useState(false);
-
-  const dropdownBtnRef = useRef<HTMLButtonElement>(null);
-  const [dropdownPos, setDropdownPos] = useState<{ left: number; top: number } | null>(null);
-  useEffect(() => {
-    if (providerDropdownOpen && dropdownBtnRef.current) {
-      const rect = dropdownBtnRef.current.getBoundingClientRect();
-      setDropdownPos({ left: rect.left, top: rect.top - 2 });
-    } else {
-      setDropdownPos(null);
-    }
-  }, [providerDropdownOpen]);
-
-  const prevOdds = useRef(rep.odds1);
-  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
-  useEffect(() => {
-    if (rep.odds1 !== prevOdds.current) {
-      setFlash(rep.odds1 > prevOdds.current ? 'up' : 'down');
-      prevOdds.current = rep.odds1;
-      const timer = setTimeout(() => setFlash(null), 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [rep.odds1]);
-
-  const isSkipped = opps.every(o => !!o.skip_reason);
-  const providerCount = groupProviders.length;
-  const effectiveOdds = localOddsOverride ?? rep.odds1;
-  const effectiveStake = localStakeOverride ?? rep.final_stake;
-  const hasStake = effectiveStake != null && effectiveStake > 0;
-  const dynamicEdge = rep.fair_odds && rep.fair_odds > 1
-    ? (effectiveOdds / rep.fair_odds - 1) * 100
-    : rep.edge_pct ?? 0;
-
-  const hasBalance = (ids: string[]) => ids.some(id => (balanceMap.get(id) ?? 0) > 0);
-
-  const selOpp = opps[selIdx] || opps[0];
-  const isPending = pendingBet?.groupKey === group.key;
-
-  const getDotClass = (opp: any) => {
-    if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
-    if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
-    return 'bg-muted/40';
-  };
-
-  const effStake = localStakeOverride ?? selOpp.final_stake;
-  const oppHasStake = effStake != null && effStake > 0;
-  const isTrigger = selOpp.bonus_status === 'trigger_needed';
-  const isFreebet = selOpp.bonus_status === 'freebet_available';
-  const skipReason = selOpp.skip_reason;
-  const isDisabled = !oppHasStake || isPlacing || !!skipReason;
-  const btnColor = isTrigger ? 'bg-warning' : isFreebet ? 'bg-accent' : 'bg-tabValue';
-  const btnLabel = isPlacing ? '...'
-    : skipReason === 'trigger_placed' ? 'Trigger placed'
-    : skipReason === 'no_balance' ? 'No balance'
-    : isTrigger ? 'Trigger'
-    : isFreebet ? 'Freebet'
-    : 'Place Bet';
-
-  return (
-    <Fragment key={group.key}>
-      <tr
-        className={`cursor-pointer group ${isSkipped ? 'opacity-50' : ''} ${isExpanded ? 'expanded' : ''}`}
-        onClick={() => !isSkipped && onToggle(idx)}
-      >
-        <td>
-          <div className="flex items-center gap-1 min-w-0">
-            <span className="text-text text-sm truncate">{displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)} vs {displayTeamName(rep.away_team, rep.display_away ?? rep.prov_away)}</span>
-            <button
-              title="Copy event"
-              className="text-muted hover:text-text transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-              onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(displayTeamName(rep.home_team, rep.display_home ?? rep.prov_home)); }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-            </button>
-            {isSkipped && (
-              <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
-            )}
-          </div>
-          <div className="text-muted2 text-[11px]">
-            {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
-          </div>
-        </td>
-        <td className="text-right text-sm min-w-0">
-          <span className="inline-flex items-center gap-1.5 justify-end">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-muted/40'}`} />
-            {providerCount <= 3 ? (
-              <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
-            ) : (
-              <span className="text-text truncate">
-                <ProviderName name={groupProviders[0]} />
-                <span className="text-muted ml-1">+{providerCount - 1}</span>
-              </span>
-            )}
-          </span>
-        </td>
-        <td className="text-right text-text text-sm truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
-        <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
-          {editingOdds ? (
-            <input
-              type="number" step="0.01" autoFocus
-              defaultValue={effectiveOdds.toFixed(2)}
-              className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-              onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val >= 1.01) setLocalOddsOverride(val); setEditingOdds(false); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingOdds(false); }}
-            />
-          ) : (
-            <span
-              onClick={() => setEditingOdds(true)}
-              className="cursor-pointer px-1 py-0.5 border border-dashed border-transparent hover:border-tabValue/50 transition-colors text-text"
-              title="Click to adjust odds"
-            >
-              {effectiveOdds.toFixed(2)}
-            </span>
-          )}
-        </td>
-        <td className="text-right text-muted text-sm">{rep.fair_odds?.toFixed(2) || '-'}</td>
-        <td className="text-right text-muted text-sm">
-          {rep.fair_odds && rep.fair_odds > 1 ? `${(100 / rep.fair_odds).toFixed(0)}%` : '-'}
-        </td>
-        <td className="text-right">
-          {(() => { const ttk = getTTKFromNow(rep.starts_at); return <span className={`text-sm ${getTTKColor(ttk)}`}>{formatTTKLabel(ttk)}</span>; })()}
-        </td>
-        <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
-          {editingStake ? (
-            <input
-              type="number" step="1" autoFocus
-              defaultValue={effectiveStake?.toFixed(0) ?? '0'}
-              className="w-16 bg-bg border border-tabValue/50 text-text text-xs px-1 py-0.5 text-right focus:outline-none focus:border-tabValue"
-              onBlur={(e) => { const val = parseFloat(e.target.value); if (!isNaN(val) && val > 0) setLocalStakeOverride(val); setEditingStake(false); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingStake(false); }}
-            />
-          ) : (
-            <span
-              onClick={() => setEditingStake(true)}
-              className="cursor-pointer px-1 py-0.5 border border-dashed border-transparent hover:border-tabValue/50 transition-colors text-text"
-              title="Click to adjust stake"
-            >
-              {hasStake ? `${effectiveStake!.toFixed(0)} kr` : '-'}
-            </span>
-          )}
-          {rep.bonus_status === 'trigger_needed' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-warning/20 text-warning">TRG</span>}
-          {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
-        </td>
-        <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(selOpp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
-      </tr>
-
-      {isExpanded && !isSkipped && (
-        <tr key={`${group.key}-expanded`}>
-          <td colSpan={10} className="!p-0" onClick={e => e.stopPropagation()}>
-            <div className="px-3 py-2 bg-panel">
-              <div className="flex items-center gap-2">
-              {isPending ? (
-                <>
-                  <button
-                    onClick={onConfirmBet}
-                    disabled={isPlacing || pendingBet!.actualOdds < 1.01}
-                    className="px-4 py-1.5 bg-success text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap"
-                  >
-                    {isPlacing ? '...' : 'Confirm'}
-                  </button>
-                  <span className="text-muted text-xs">@ {pendingBet!.actualOdds.toFixed(2)}</span>
-                  <button
-                    onClick={onCancelBet}
-                    className="px-2 py-1.5 text-xs text-muted hover:text-text"
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div className="relative" ref={providerDropdownOpen ? providerDropdownRef : undefined}>
-                    <button
-                      ref={dropdownBtnRef}
-                      type="button"
-                      onClick={() => onProviderDropdownToggle(group.key)}
-                      className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
-                    >
-                      <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
-                      <span className="truncate">
-                        <ProviderName name={selOpp.provider1} />
-                        {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
-                      </span>
-                      <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                    {providerDropdownOpen && dropdownPos && createPortal(
-                      <div
-                        style={{ position: 'fixed', left: dropdownPos.left, bottom: `calc(100vh - ${dropdownPos.top}px)`, zIndex: 9999 }}
-                        className="bg-bg border border-border shadow-lg max-h-48 overflow-y-auto min-w-[160px]"
-                      >
-                        {opps.map((opp, i) => {
-                          const oppStake = localStakeOverride ?? opp.final_stake;
-                          const s = oppStake != null && oppStake > 0 ? ` ${oppStake.toFixed(0)} kr` : '';
-                          const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
-                            : opp.bonus_status === 'freebet_available' ? ' [FREE]'
-                            : opp.skip_reason ? ` (${opp.skip_reason})`
-                            : '';
-                          return (
-                            <button
-                              key={opp.id}
-                              type="button"
-                              onClick={() => {
-                                onProviderSelect(group.key, i);
-                              }}
-                              className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
-                            >
-                              <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
-                              <span className="truncate">
-                                <ProviderName name={opp.provider1} />{s}{tag}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>,
-                      document.body
-                    )}
-                  </div>
-                  <button
-                    onClick={() => onPlaceBet(selOpp, effectiveOdds, localStakeOverride)}
-                    disabled={isDisabled}
-                    className={`px-4 py-1.5 ${btnColor} text-bg text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap`}
-                  >
-                    {btnLabel}
-                  </button>
-                </>
-              )}
-              </div>
-            </div>
-          </td>
-        </tr>
-      )}
-    </Fragment>
-  );
-});
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
 
 interface PlayPageProps {
-  providers?: Provider[];
+  providers?: { id: string; balance: number }[];
 }
 
-export function PlayPage({ providers = [] }: PlayPageProps) {
-  const { placeBet } = useBetMutations();
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export function PlayPage(_props: PlayPageProps) {
+  const { placeBatchBets } = useBetMutations();
   const { toasts, addToast, dismissToast } = useToast();
 
-  const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
-  const [isPlacing, setIsPlacing] = useState(false);
+  // ---- State ----
+  const [removedBets, setRemovedBets] = useState<Set<string>>(new Set());
+  const [fireResults, setFireResults] = useState<Map<string, { success: boolean; error?: string }>>(new Map());
+  const [isFiring, setIsFiring] = useState(false);
 
-  const [freebetPopup, setFreebetPopup] = useState<{
-    opp: Opportunity;
-    freebetAmount: number;
-    effectiveOdds: number;
-    effectiveStake: number | null;
-  } | null>(null);
+  // ---- Queries ----
+  const {
+    data: batchData,
+    isLoading: batchLoading,
+    refetch: rebuildBatch,
+    isFetching: batchFetching,
+  } = useQuery<BatchResult>({
+    queryKey: ['play-batch'],
+    queryFn: () => api.getPlayBatch(),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+  });
 
-  const [searchInput, setSearchInput] = usePersistedState('bbq_play_search', '');
-  const search = useDeferredValue(searchInput);
-  const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_play_selectedProvider', {});
-  const [providerDropdownOpen, setProviderDropdownOpen] = useState<string | null>(null);
-  const providerDropdownRef = useRef<HTMLDivElement>(null);
-
-  // Close provider dropdown on outside click
-  useEffect(() => {
-    if (!providerDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (providerDropdownRef.current && !providerDropdownRef.current.contains(e.target as Node)) {
-        setProviderDropdownOpen(null);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [providerDropdownOpen]);
-
-  // Two-step placement: Place -> enter actual odds -> Confirm
-  const [pendingBet, setPendingBet] = useState<{
-    groupKey: string;
-    opp: Opportunity;
-    actualOdds: number;
-    useFreebet: boolean;
-    navUrl: string | null;
-    windowName: string;
-    effectiveStake: number | null;
-  } | null>(null);
-
-  // Track placed event+provider combos for immediate removal from list
-  const [placedKeys, setPlacedKeys] = usePersistedState<Set<string>>('bbq_play_placedKeys', new Set());
-
-  // Lifted odds overrides: key -> overridden odds value
-  const [oddsOverrides, setOddsOverrides] = useState<Map<string, number>>(new Map());
-  const handleOddsOverride = useCallback((groupKey: string, odds: number | null) => {
-    setOddsOverrides(prev => {
-      const next = new Map(prev);
-      if (odds === null) next.delete(groupKey);
-      else next.set(groupKey, odds);
-      return next;
-    });
-  }, []);
-
-  // --- Cluster play mode (PlaySession) ---
-  const [activeCluster, setActiveCluster] = usePersistedState<string | null>('bbq_cluster_mode', null);
-  const [activeClusterProvider, setActiveClusterProvider] = useState<string | null>(null);
-  const [sessionStats, setSessionStats] = useState({ placed: 0, wagered: 0 });
-
-  const { data: playSession } = useQuery({
+  const { data: playSession } = useQuery<PlaySession>({
     queryKey: ['play-session'],
     queryFn: () => api.getPlaySession(),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
-  const clusters: PlayCluster[] = playSession?.clusters ?? [];
 
-  // Urgency-based auto-selection and auto-advance
-  useEffect(() => {
-    if (!clusters.length) return;
+  // ---- Derived data ----
+  const batch = batchData?.batch ?? [];
+  const summary = batchData?.summary;
+  const balanceStatus = batchData?.balance_status ?? [];
+  const missed = batchData?.missed_opportunities;
 
-    // Auto-select most urgent cluster if none selected
-    if (!activeCluster) {
-      const first = clusters[0]; // Already sorted by urgency from backend
-      if (first) {
-        setActiveCluster(first.id);
-        const bestSibling = first.active_siblings[0];
-        if (bestSibling) setActiveClusterProvider(bestSibling.provider_id);
-      }
-      return;
+  const activeBatch = useMemo(
+    () => batch.filter((b) => !removedBets.has(betKey(b))),
+    [batch, removedBets],
+  );
+
+  const sharpBets = useMemo(() => activeBatch.filter((b) => b.tier === 'sharp'), [activeBatch]);
+  const softBets = useMemo(() => activeBatch.filter((b) => b.tier === 'soft'), [activeBatch]);
+
+  // Build shortfall set for fire filtering
+  const shortfallProviders = useMemo(() => {
+    const s = new Set<string>();
+    for (const bs of balanceStatus) {
+      if (bs.shortfall && bs.shortfall > 0) s.add(bs.provider_id);
     }
+    return s;
+  }, [balanceStatus]);
 
-    // Find current cluster
-    const currentCluster = clusters.find(c => c.id === activeCluster);
-    if (!currentCluster) {
-      // Cluster disappeared (balance ran out) -- advance to next
-      const next = clusters[0];
-      if (next) {
-        setActiveCluster(next.id);
-        setActiveClusterProvider(next.active_siblings[0]?.provider_id ?? null);
-      }
-      return;
-    }
+  const fireableBets = useMemo(
+    () => activeBatch.filter((b) => !shortfallProviders.has(b.provider_id)),
+    [activeBatch, shortfallProviders],
+  );
 
-    // Auto-advance sibling within cluster when balance hits 0
-    if (activeClusterProvider) {
-      const sibling = currentCluster.active_siblings.find(s => s.provider_id === activeClusterProvider);
-      if (!sibling || sibling.balance <= 0) {
-        const next = currentCluster.active_siblings.find(s => s.balance > 0 && s.provider_id !== activeClusterProvider);
-        if (next) {
-          setActiveClusterProvider(next.provider_id);
-        } else {
-          // All siblings empty -- advance to next cluster
-          const nextCluster = clusters.find(c => c.id !== activeCluster && c.total_balance > 0);
-          if (nextCluster) {
-            setActiveCluster(nextCluster.id);
-            setActiveClusterProvider(nextCluster.active_siblings[0]?.provider_id ?? null);
-          }
-        }
-      }
-    } else {
-      const first = currentCluster.active_siblings.find(s => s.balance > 0);
-      if (first) setActiveClusterProvider(first.provider_id);
-    }
-  }, [clusters, activeCluster, activeClusterProvider]);
+  const fireableEV = useMemo(
+    () => fireableBets.reduce((sum, b) => sum + b.expected_profit, 0),
+    [fireableBets],
+  );
 
-  const handleClusterSelect = useCallback((clusterId: string | null) => {
-    setActiveCluster(clusterId);
-    setActiveClusterProvider(null);
-  }, [setActiveCluster]);
+  // Deploy recommendations
+  const deployRecs = useMemo(() => {
+    if (!playSession) return [];
+    return playSession.clusters
+      .filter((c) => c.needs_deposit && c.recommended_siblings.length > 0)
+      .flatMap((c) => c.recommended_siblings.map((s) => s.provider_id));
+  }, [playSession]);
 
-  const { data: opportunitiesData, isLoading } = useQuery({
-    queryKey: ['opportunities', 'value'],
-    queryFn: () => api.getOpportunities('value', true, undefined, undefined, undefined, undefined, undefined, 3),
-    placeholderData: keepPreviousData,
-  });
-  const opportunities = opportunitiesData?.opportunities ?? [];
+  // ---- Handlers ----
+  const removeBet = useCallback((b: BatchBet) => {
+    setRemovedBets((prev) => new Set(prev).add(betKey(b)));
+  }, []);
 
-  const { data: betsData } = useQuery({
-    queryKey: ['bets', 'pending'],
-    queryFn: () => api.getBets('pending', 500),
-    staleTime: 10_000,
-  });
-  const pendingBets = betsData?.bets ?? [];
+  const handleRebuild = useCallback(() => {
+    setRemovedBets(new Set());
+    setFireResults(new Map());
+    rebuildBatch();
+  }, [rebuildBatch]);
 
-  // Sync placed-bet keys from DB (merge with in-session keys)
-  useEffect(() => {
-    if (!pendingBets.length) return;
-    const keys = new Set<string>();
-    for (const b of pendingBets) {
-      if (b.event_id) {
-        keys.add(`${b.event_id}|${b.market}|${b.outcome}|${b.point ?? ''}`);
-      }
-    }
-    setPlacedKeys(prev => {
-      const merged = new Set(prev);
-      for (const k of keys) merged.add(k);
-      return merged;
-    });
-  }, [pendingBets]);
-
-  const balanceMap = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of providers) m.set(p.id, p.balance);
-    return m;
-  }, [providers]);
-
-  // Get current sibling data for filtering
-  const currentSibling = useMemo(() => {
-    if (!activeClusterProvider || !playSession) return null;
-    const cluster = clusters.find(c => c.id === activeCluster);
-    return cluster?.active_siblings.find(s => s.provider_id === activeClusterProvider) ?? null;
-  }, [activeClusterProvider, activeCluster, clusters, playSession]);
-
-  // Resolve active cluster member list for filtering
-  const clusterMembers = useMemo(() => {
-    if (!activeCluster || !clusters.length) return null;
-    const c = clusters.find(c => c.id === activeCluster);
-    if (!c) return null;
-    return new Set(c.active_siblings.map(s => s.provider_id));
-  }, [activeCluster, clusters]);
-
-  const grouped = useMemo(() => {
-    let result = opportunities;
-    // Remove started/imminent events and events > 7 days out
-    result = result.filter(o => {
-      const ttk = getTTKFromNow(o.starts_at);
-      return ttk === null || (ttk > 1 / 60 && ttk <= MAX_TTK_HOURS);
-    });
-    // Remove placed market+outcome+point combos (same bet at any provider)
-    if (placedKeys.size > 0) {
-      result = result.filter(o => !placedKeys.has(`${o.event_id}|${o.market}|${o.outcome1}|${o.point ?? ''}`));
-    }
-    // Cluster mode: filter to active provider
-    if (activeClusterProvider) {
-      result = result.filter(o => o.provider1 === activeClusterProvider);
-
-      if (currentSibling) {
-        // Edge routing: if provider is limited, only show grind-ok bets
-        if (currentSibling.limit_level != null && currentSibling.limit_level > 0) {
-          result = result.filter(o => o.edge_routing !== 'high_edge_unlimited');
-        }
-
-        // Filter by bonus phase min_odds
-        if (currentSibling.lifecycle === 'deposited' || currentSibling.lifecycle === 'wagering') {
-          const minOdds = currentSibling.min_odds ?? 1.80;
-          result = result.filter(o => o.odds1 >= minOdds);
-        }
-
-        // For single-shot trigger: only show bets if provider balance >= trigger amount
-        if (currentSibling.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single') {
-          if (currentSibling.balance < currentSibling.bonus_amount) {
-            result = [];
-          }
-        }
-      }
-    } else if (clusterMembers) {
-      // Cluster selected but no specific provider -- show all cluster members
-      result = result.filter(o => clusterMembers.has(o.provider1));
-    }
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      result = result.filter(o =>
-        (o.home_team?.toLowerCase().includes(q)) ||
-        (o.away_team?.toLowerCase().includes(q)) ||
-        (o.display_home?.toLowerCase().includes(q)) ||
-        (o.display_away?.toLowerCase().includes(q)) ||
-        (o.prov_home?.toLowerCase().includes(q)) ||
-        (o.prov_away?.toLowerCase().includes(q)) ||
-        (o.provider1?.toLowerCase().includes(q)) ||
-        (o.sport?.toLowerCase().includes(q)) ||
-        (o.league?.toLowerCase().includes(q))
-      );
-    }
-
-    const map = new Map<string, Opportunity[]>();
-    for (const opp of result) {
-      const key = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
-      const arr = map.get(key);
-      if (arr) arr.push(opp);
-      else map.set(key, [opp]);
-    }
-    const groups: GroupedOpp[] = [];
-    for (const [key, opps] of map) {
-      // Sort providers within group: highest allocation score first
-      opps.sort((a, b) => ((b as any).allocation_score ?? -1) - ((a as any).allocation_score ?? -1));
-      groups.push({ key, rep: opps[0], opps, providers: opps.map(o => o.provider1) });
-    }
-    return groups;
-  }, [opportunities, placedKeys, search, activeClusterProvider, clusterMembers, currentSibling]);
-
-  // Compute dynamic edge for a group, accounting for user odds overrides
-  const getDynamicEdge = useCallback((g: GroupedOpp) => {
-    const overriddenOdds = oddsOverrides.get(g.key);
-    if (overriddenOdds != null && g.rep.fair_odds && g.rep.fair_odds > 1) {
-      return (overriddenOdds / g.rep.fair_odds - 1) * 100;
-    }
-    return g.rep.edge_pct ?? 0;
-  }, [oddsOverrides]);
-
-  // Filter out groups where user has overridden odds to negative edge (value is gone)
-  const activeGroups = useMemo(() =>
-    grouped.filter(g => getDynamicEdge(g) > 0),
-  [grouped, getDynamicEdge]);
-
-  type ValueSortCol = 'odds' | 'fair' | 'prob' | 'stake' | 'edge' | 'ttk';
-  const valueSortExtractors = useMemo(() => ({
-    odds:  (g: GroupedOpp) => oddsOverrides.get(g.key) ?? g.rep.odds1 ?? 0,
-    fair:  (g: GroupedOpp) => g.rep.fair_odds ?? 0,
-    prob:  (g: GroupedOpp) => g.rep.fair_odds && g.rep.fair_odds > 1 ? 100 / g.rep.fair_odds : 0,
-    stake: (g: GroupedOpp) => g.rep.final_stake ?? 0,
-    edge:  (g: GroupedOpp) => getDynamicEdge(g),
-    ttk:   (g: GroupedOpp) => getTTKFromNow(g.rep.starts_at) ?? 99999,
-  }), [oddsOverrides, getDynamicEdge]);
-  const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
-    useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_play_sort');
-
-  const filteredCount = useMemo(() =>
-    sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
-  [sortedGroups]);
-
-  const valueScrollRef = useRef<HTMLDivElement>(null);
-
-  const valueVirtualizer = useVirtualizer({
-    count: sortedGroups.length,
-    getScrollElement: () => valueScrollRef.current,
-    estimateSize: (index) => selectedGroup === index ? 100 : 52,
-    overscan: 10,
-  });
-
-  const handleSelectGroup = (idx: number) => {
-    setSelectedGroup(selectedGroup === idx ? null : idx);
-    setPendingBet(null);
-  };
-
-  // Compute effective stake override based on bonus phase
-  const stakeOverride = currentSibling?.lifecycle === 'deposited' && currentSibling.trigger_mode === 'single'
-    ? currentSibling.bonus_amount
-    : currentSibling?.lifecycle === 'freebet'
-      ? currentSibling.bonus_amount
-      : undefined;
-
-  const isFreebetPhase = currentSibling?.lifecycle === 'freebet';
-
-  const handlePlaceBetClick = (opp: Opportunity, effectiveOdds: number, effectiveStake: number | null) => {
-    const stake = effectiveStake ?? stakeOverride ?? opp.final_stake;
-    if (!stake || stake <= 0) return;
-
-    if (isFreebetPhase) {
-      startPlaceBet(opp, true, effectiveOdds, stake);
-    } else if (opp.bonus_status === 'freebet_available') {
-      setFreebetPopup({ opp, freebetAmount: opp.bonus_amount ?? stake, effectiveOdds, effectiveStake: stake });
-    } else {
-      startPlaceBet(opp, false, effectiveOdds, stake);
-    }
-  };
-
-  const startPlaceBet = (opp: Opportunity, useFreebet: boolean, effectiveOdds: number, effectiveStake: number | null) => {
-    setFreebetPopup(null);
-    const groupKey = `${opp.event_id}|${opp.outcome1}|${opp.market}|${opp.point ?? ''}|${opp.odds1}`;
-    setPendingBet({ groupKey, opp, actualOdds: effectiveOdds, useFreebet, navUrl: null, windowName: `bbq_${opp.provider1}`, effectiveStake });
-  };
-
-  const confirmPlaceBet = async () => {
-    if (!pendingBet) return;
-    const { opp, actualOdds, useFreebet, effectiveStake } = pendingBet;
-    const stake = effectiveStake ?? opp.final_stake;
-    if (!stake || stake <= 0) return;
-    setIsPlacing(true);
+  const handleFire = useCallback(async () => {
+    if (fireableBets.length === 0) return;
+    setIsFiring(true);
+    setFireResults(new Map());
 
     try {
-      const placedEdge = opp.fair_odds != null && opp.fair_odds > 1
-        ? (actualOdds / opp.fair_odds - 1)
-        : (opp.edge_pct != null ? opp.edge_pct / 100 : undefined);
-      await placeBet.mutateAsync({
-        event_id: opp.event_id,
-        provider_id: opp.provider1,
-        market: opp.market,
-        outcome: opp.outcome1,
-        odds: actualOdds,
-        stake,
-        point: opp.point,
-        is_bonus: useFreebet,
-        bonus_type: useFreebet ? 'freebet' : undefined,
-        utility_score: placedEdge,
-        selection_probability: opp.fair_odds != null && opp.fair_odds > 1 ? 1 / opp.fair_odds : undefined,
-        bet_type: 'value',
-      });
-      const outcomeLabel = resolveOutcome(opp.outcome1, opp, opp.point);
-      const type = useFreebet ? 'Freebet' : opp.bonus_status === 'trigger_needed' ? 'Trigger' : 'Bet';
-      addToast(`${type}: ${stake.toFixed(0)} kr on ${outcomeLabel} @ ${actualOdds.toFixed(2)} (${formatProviderName(opp.provider1)})`, 'success');
-
-      // Track session stats
-      setSessionStats(prev => ({
-        placed: prev.placed + 1,
-        wagered: prev.wagered + stake,
+      const legs = fireableBets.map((b) => ({
+        event_id: b.event_id,
+        provider_id: b.provider_id,
+        market: b.market,
+        outcome: b.outcome,
+        odds: b.odds,
+        stake: b.stake,
+        point: b.point,
+        is_bonus: b.is_bonus,
+        bet_type: 'value' as const,
       }));
 
-      // Remove from list immediately (same market+outcome+point hidden across all providers)
-      setPlacedKeys(prev => new Set(prev).add(`${opp.event_id}|${opp.market}|${opp.outcome1}|${opp.point ?? ''}`));
-      setPendingBet(null);
-      setSelectedGroup(null);
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Failed to record bet', 'error');
-    } finally {
-      setIsPlacing(false);
-    }
-  };
+      const result = await placeBatchBets.mutateAsync(legs);
 
+      const resultMap = new Map<string, { success: boolean; error?: string }>();
+      for (const r of result.results) {
+        const matchBet = fireableBets[r.leg_index];
+        if (matchBet) {
+          resultMap.set(betKey(matchBet), { success: r.success, error: r.error });
+        }
+      }
+      setFireResults(resultMap);
+
+      addToast(
+        `Fired ${result.placed_count}/${result.total_legs} bets (${result.total_staked.toFixed(0)} kr)`,
+        result.placed_count === result.total_legs ? 'success' : 'warning',
+      );
+
+      // Auto-rebuild after a short delay
+      setTimeout(() => handleRebuild(), 2000);
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : 'Batch fire failed', 'error');
+    } finally {
+      setIsFiring(false);
+    }
+  }, [fireableBets, placeBatchBets, addToast, handleRebuild]);
+
+  const handleCopyDeposits = useCallback(() => {
+    const lines = balanceStatus
+      .filter((bs) => bs.shortfall && bs.shortfall > 0)
+      .map((bs) => `${formatProviderName(bs.provider_id)}: needs ${bs.shortfall!.toFixed(0)} kr (${bs.missed_bets} bets, +${bs.missed_ev.toFixed(0)} EV)`)
+      .join('\n');
+    if (lines) {
+      navigator.clipboard.writeText(lines);
+      addToast('Deposit needs copied', 'success');
+    }
+  }, [balanceStatus, addToast]);
+
+  // ---- Render helpers ----
+  function renderBetRow(b: BatchBet, idx: number) {
+    const key = betKey(b);
+    const result = fireResults.get(key);
+    const eventName = `${displayTeamName(b.home_team, b.display_home)} v ${displayTeamName(b.away_team, b.display_away)}`;
+    const outcomeLabel = resolveOutcome(b.outcome, { home_team: b.home_team, away_team: b.away_team, display_home: b.display_home, display_away: b.display_away, market: b.market } as any, b.point, true);
+
+    return (
+      <tr key={`${key}-${b.provider_id}-${idx}`} className={result ? (result.success ? 'bg-success/5' : 'bg-error/5') : ''}>
+        <td className="text-muted text-xs">{b.rank}</td>
+        <td className="text-xs">
+          <ProviderName name={b.provider_id} />
+          {b.is_bonus && (
+            <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">
+              {b.bonus_type === 'freebet' ? 'FREE' : 'TRG'}
+            </span>
+          )}
+        </td>
+        <td className="text-xs text-text truncate max-w-[200px]" title={eventName}>
+          {eventName}
+          <div className="text-[10px] text-muted">
+            {b.sport}{b.league ? ` · ${b.league}` : ''}{b.market !== '1x2' && b.market !== 'moneyline' ? ` · ${b.market}` : ''}
+          </div>
+        </td>
+        <td className="text-xs text-text">{outcomeLabel}</td>
+        <td className="text-right text-xs text-text font-medium">{b.odds.toFixed(2)}</td>
+        <td className="text-right text-xs text-muted">{b.fair_odds.toFixed(2)}</td>
+        <td className={`text-right text-xs font-semibold ${b.edge_pct > 0 ? 'text-success' : 'text-error'}`}>
+          {b.edge_pct > 0 ? '+' : ''}{b.edge_pct.toFixed(1)}%
+        </td>
+        <td className="text-right text-xs text-text">{b.stake.toFixed(0)} kr</td>
+        <td className={`text-right text-xs font-medium ${b.expected_profit > 0 ? 'text-success' : 'text-muted'}`}>
+          +{b.expected_profit.toFixed(0)}
+        </td>
+        <td className="text-right text-xs">
+          {result ? (
+            result.success ? (
+              <span className="text-success">OK</span>
+            ) : (
+              <span className="text-error" title={result.error}>FAIL</span>
+            )
+          ) : (
+            <button
+              onClick={() => removeBet(b)}
+              className="text-muted hover:text-error transition-colors"
+              title="Remove from batch"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </td>
+      </tr>
+    );
+  }
+
+  function renderBalancePanel() {
+    if (balanceStatus.length === 0) return null;
+
+    return (
+      <div className="border border-border bg-panel px-3 py-2">
+        <div className="text-xs text-muted font-medium mb-1.5">BALANCE ALLOCATION</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1">
+          {balanceStatus.map((bs) => {
+            const hasShortfall = bs.shortfall != null && bs.shortfall > 0;
+            return (
+              <div key={bs.provider_id} className="flex items-center gap-1.5 text-xs">
+                <span className={hasShortfall ? 'text-error' : 'text-success'}>
+                  {hasShortfall ? 'x' : 'v'}
+                </span>
+                <ProviderName name={bs.provider_id} />
+                <span className="text-muted ml-auto">
+                  {bs.balance.toFixed(0)} &rarr; {bs.remaining.toFixed(0)}
+                </span>
+                {hasShortfall && (
+                  <span className="text-error text-[10px]">
+                    needs {bs.shortfall!.toFixed(0)} ({bs.missed_bets}b, +{bs.missed_ev.toFixed(0)})
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Main render ----
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-y-auto">
       {/* Header */}
@@ -681,159 +262,150 @@ export function PlayPage({ providers = [] }: PlayPageProps) {
           <TabIcon name="play" color={TAB_COLORS.play} size={16} />
           Play
         </h2>
-        <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
+        <button
+          onClick={handleRebuild}
+          disabled={batchFetching}
+          className="px-3 py-1 text-xs font-medium border border-border text-muted hover:text-text hover:border-tabValue/50 disabled:opacity-50 transition-colors"
+        >
+          {batchFetching ? 'Building...' : 'Build Batch'}
+        </button>
       </div>
 
-      {/* Cluster play mode panel */}
-      {clusters.length > 0 && (
-        <ClusterPanel
-          clusters={clusters}
-          activeCluster={activeCluster}
-          activeProvider={activeClusterProvider}
-          onClusterSelect={handleClusterSelect}
-          onProviderSelect={setActiveClusterProvider}
-        />
-      )}
-
-      {/* Limited provider grind banner */}
-      {activeClusterProvider && currentSibling && currentSibling.limit_level != null && currentSibling.limit_level > 0 && (
-        <div className="px-3 py-1.5 border border-warning/30 bg-warning/10 text-xs text-warning flex items-center gap-2">
-          <span className="font-bold">!</span>
-          <span>Showing grind bets only — high-edge bets routed to unlimited providers (L{currentSibling.limit_level})</span>
+      {/* Summary bar */}
+      {summary && (
+        <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-panel text-xs">
+          <span className="text-text font-medium">BATCH: {activeBatch.length} bets</span>
+          <span className="text-muted">{activeBatch.reduce((s, b) => s + b.stake, 0).toFixed(0)} kr</span>
+          <span className="text-success font-medium">+{activeBatch.reduce((s, b) => s + b.expected_profit, 0).toFixed(0)} kr EV</span>
+          <span className="text-muted">|</span>
+          <span className="text-success">Sharp: {sharpBets.length} (+{sharpBets.reduce((s, b) => s + b.expected_profit, 0).toFixed(0)})</span>
+          <span className="text-tabValue">Soft: {softBets.length} (+{softBets.reduce((s, b) => s + b.expected_profit, 0).toFixed(0)})</span>
+          {missed && missed.total_bets > 0 && (
+            <>
+              <span className="text-muted">|</span>
+              <span className="text-error text-[10px]">Missed: {missed.total_bets} (+{missed.total_ev.toFixed(0)})</span>
+            </>
+          )}
         </div>
       )}
 
-      {/* Feedback toasts */}
+      {/* Toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Value bets table */}
-      {isLoading && opportunities.length === 0 ? (
+      {/* Batch table */}
+      {batchLoading && batch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          Loading...
+          Building batch...
         </div>
-      ) : sortedGroups.length === 0 ? (
+      ) : activeBatch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-          {clusters.length === 0
-            ? 'No play session available. Configure provider profiles first.'
-            : opportunities.length === 0
-              ? 'No value bets found. Run extraction first.'
-              : 'No matches for current filters.'}
+          No bets in batch. Click "Build Batch" to generate.
         </div>
       ) : (
-        <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div ref={valueScrollRef} className="overflow-y-auto absolute inset-0">
-        <table className="sq w-full table-fixed">
-          <colgroup>
-            <col style={{ width: '28%' }} />
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '11%' }} />
-            <col style={{ width: '7%' }} />
-            <col style={{ width: '7%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '8%' }} />
-            <col style={{ width: '8%' }} />
-            <col style={{ width: '6%' }} />
-          </colgroup>
-          <thead className="sticky top-0 z-10 bg-panel">
-            <tr>
-              <th>Event</th>
-              <th className="text-right">Providers</th>
-              <th className="text-right">Outcome</th>
-              <MultiSortableHeader column="odds" label="Odds" sort={valueSort} onToggle={toggleValueSort} />
-              <MultiSortableHeader column="fair" label="Fair" sort={valueSort} onToggle={toggleValueSort} />
-              <MultiSortableHeader column="prob" label="Prob" sort={valueSort} onToggle={toggleValueSort} />
-              <MultiSortableHeader column="ttk" label="TTK" sort={valueSort} onToggle={toggleValueSort} />
-              <MultiSortableHeader column="stake" label="Stake" sort={valueSort} onToggle={toggleValueSort} />
-              <MultiSortableHeader column="edge" label="Edge" sort={valueSort} onToggle={toggleValueSort} />
-              <th className="text-right">Upd</th>
-            </tr>
-          </thead>
-          <tbody style={{
-            paddingTop: valueVirtualizer.getVirtualItems()[0]?.start ?? 0,
-            paddingBottom: (() => { const items = valueVirtualizer.getVirtualItems(); return valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); })(),
-          }}>
-            {valueVirtualizer.getVirtualItems().map((virtualRow) => {
-              const group = sortedGroups[virtualRow.index];
-              const idx = virtualRow.index;
-              return (
-                <OpportunityRow
-                  key={group.key}
-                  group={group}
-                  idx={idx}
-                  isExpanded={selectedGroup === idx}
-                  onToggle={handleSelectGroup}
-                  placedKeys={placedKeys}
-                  balanceMap={balanceMap}
-                  selectedBetProvider={selectedBetProvider[group.key] ?? 0}
-                  providerDropdownOpen={providerDropdownOpen === group.key}
-                  providerDropdownRef={providerDropdownRef}
-                  onProviderDropdownToggle={(key) => setProviderDropdownOpen(prev => prev === key ? null : key)}
-                  onProviderSelect={(key, i) => { setSelectedBetProvider(prev => ({ ...prev, [key]: i })); setProviderDropdownOpen(null); }}
-                  onOddsOverride={handleOddsOverride}
-                  onPlaceBet={handlePlaceBetClick}
-                  pendingBet={pendingBet?.groupKey === group.key ? pendingBet : null}
-                  isPlacing={isPlacing}
-                  onConfirmBet={confirmPlaceBet}
-                  onCancelBet={() => setPendingBet(null)}
-                />
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto border border-border">
+          <table className="sq w-full">
+            <colgroup>
+              <col style={{ width: '3%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '28%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '4%' }} />
+            </colgroup>
+            <thead className="sticky top-0 z-10 bg-panel">
+              <tr>
+                <th className="text-left">#</th>
+                <th className="text-left">Provider</th>
+                <th className="text-left">Event</th>
+                <th className="text-left">Outcome</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Fair</th>
+                <th className="text-right">Edge%</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">EV</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {/* Sharp section */}
+              {sharpBets.length > 0 && (
+                <>
+                  <tr>
+                    <td colSpan={10} className="!py-1 !px-2">
+                      <span className="text-[10px] font-bold text-success tracking-wider uppercase">
+                        Sharp ({sharpBets.length})
+                      </span>
+                    </td>
+                  </tr>
+                  {sharpBets.map((b, i) => renderBetRow(b, i))}
+                </>
+              )}
+
+              {/* Soft section */}
+              {softBets.length > 0 && (
+                <>
+                  <tr>
+                    <td colSpan={10} className="!py-1 !px-2">
+                      <span className="text-[10px] font-bold text-tabValue tracking-wider uppercase">
+                        Soft ({softBets.length})
+                      </span>
+                    </td>
+                  </tr>
+                  {softBets.map((b, i) => renderBetRow(b, sharpBets.length + i))}
+                </>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* Session stats bar */}
-      {activeClusterProvider && currentSibling && (
-        <div className="flex gap-4 text-xs text-gray-500 px-2 py-1 border-t border-gray-800">
-          <span>{currentSibling.balance ?? 0} kr left</span>
-          <span>{sessionStats.placed} placed</span>
-          <span>{sessionStats.wagered} kr wagered</span>
-          <span className="ml-auto text-muted">{filteredCount} bets available</span>
+      {/* Balance panel */}
+      {renderBalancePanel()}
+
+      {/* Deploy recommendations */}
+      {deployRecs.length > 0 && (
+        <div className="text-xs text-muted px-2">
+          Deploy: {deployRecs.map((p, i) => (
+            <span key={p}>{i > 0 && ', '}<ProviderName name={p} /> +1</span>
+          ))}
         </div>
       )}
 
-      {/* Freebet Popup */}
-      {freebetPopup && (
-        <BonusPopup
-          title={`Freebet Available (${freebetPopup.freebetAmount.toFixed(0)} kr)`}
-          onClose={() => setFreebetPopup(null)}
-        >
-          <div className="space-y-3">
-            <table className="sq text-xs">
-              <tbody>
-                <tr>
-                  <td className="text-muted">Match</td>
-                  <td className="text-right text-text">{displayTeamName(freebetPopup.opp.home_team, freebetPopup.opp.display_home ?? freebetPopup.opp.prov_home)} vs {displayTeamName(freebetPopup.opp.away_team, freebetPopup.opp.display_away ?? freebetPopup.opp.prov_away)}</td>
-                </tr>
-                <tr>
-                  <td className="text-muted">Stake</td>
-                  <td className="text-right text-text">{(freebetPopup.effectiveStake ?? freebetPopup.opp.final_stake)?.toFixed(0)} kr @ {freebetPopup.effectiveOdds.toFixed(2)}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={() => startPlaceBet(freebetPopup.opp, true, freebetPopup.effectiveOdds, freebetPopup.effectiveStake)}
-                disabled={isPlacing}
-                className="flex-1 px-3 py-2 text-xs font-medium bg-accent text-bg hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                <div>Use Freebet</div>
-                <div className="text-[10px] opacity-70">no deduction</div>
-              </button>
-              <button
-                onClick={() => startPlaceBet(freebetPopup.opp, false, freebetPopup.effectiveOdds, freebetPopup.effectiveStake)}
-                disabled={isPlacing}
-                className="flex-1 px-3 py-2 text-xs font-medium bg-panel border border-border text-muted hover:text-text disabled:opacity-50 transition-colors"
-              >
-                <div>Use Balance</div>
-                <div className="text-[10px] opacity-70">deduct {(freebetPopup.effectiveStake ?? freebetPopup.opp.final_stake)?.toFixed(0)} kr</div>
-              </button>
-            </div>
-          </div>
-        </BonusPopup>
+      {/* Footer actions */}
+      {activeBatch.length > 0 && (
+        <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
+          <button
+            onClick={handleFire}
+            disabled={isFiring || fireableBets.length === 0}
+            className="px-4 py-2 bg-success text-bg text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {isFiring
+              ? 'Firing...'
+              : `Fire playable (${fireableBets.length} bets, +${fireableEV.toFixed(0)} EV)`}
+          </button>
+          <button
+            onClick={handleRebuild}
+            disabled={batchFetching}
+            className="px-3 py-2 text-xs font-medium border border-border text-muted hover:text-text disabled:opacity-50 transition-colors"
+          >
+            Rebuild
+          </button>
+          {balanceStatus.some((bs) => bs.shortfall && bs.shortfall > 0) && (
+            <button
+              onClick={handleCopyDeposits}
+              className="px-3 py-2 text-xs font-medium border border-border text-muted hover:text-text transition-colors"
+            >
+              Copy deposits
+            </button>
+          )}
+          <span className="ml-auto text-xs text-muted">
+            {activeBatch.length} total | {fireableBets.length} fireable | {activeBatch.length - fireableBets.length} blocked
+          </span>
+        </div>
       )}
     </div>
   );
