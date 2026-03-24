@@ -178,9 +178,9 @@ export const ClusterPanel = memo(function ClusterPanel({
           {selectedCluster.recommended_siblings.map(s => (
             <span key={s.provider_id} className="text-success/80 border border-dashed border-success/30 px-2 py-0.5 rounded">
               <ProviderName name={s.provider_id} className="inline" />
-              <span className="text-muted ml-1">({selectedCluster.unique_opps} opps)</span>
             </span>
           ))}
+          <span className="text-muted/60">same {selectedCluster.unique_opps} opps, 2x balance capacity</span>
         </div>
       )}
     </div>
