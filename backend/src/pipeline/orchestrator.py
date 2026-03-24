@@ -11,7 +11,7 @@ from typing import Callable
 
 from ..factory import ExtractorFactory
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..db.models import get_session, Event, Odds, Provider, DeferredEvent
 from .storage import store_polymarket_event, store_provider_event, OddsBatchProcessor
 from .pool_manager import ProviderPoolManager
@@ -75,7 +75,7 @@ class ExtractionPipeline:
         Called after Pinnacle extraction + cache warm-up. Attempts to match
         buffered soft provider events that previously had no Pinnacle match.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
