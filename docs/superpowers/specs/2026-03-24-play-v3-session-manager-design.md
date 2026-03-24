@@ -40,14 +40,17 @@ Scan all +EV opportunities, cross-reference with provider balances, and recommen
 | **DEPOSIT (sharp)** | Polymarket/Pinnacle has +EV bets but insufficient balance | 1 (always fund) |
 | **DEPOSIT (bonus)** | Provider has active bonus with achievable wagering deadline | 2 |
 | **DEPOSIT (new)** | Unfunded provider/cluster has +EV opportunities worth deploying to | 3 |
-| **WITHDRAW** | Dormant provider with balance but zero opportunities | 4 (optional, dimmed) |
+| **TRANSFER** | Fallback when deposits aren't possible — withdraw from excess provider, deposit to shortfall provider | 4 |
+| **WITHDRAW** | Dormant provider with balance but zero opportunities | 5 (optional, dimmed) |
 
-**No TRANSFER type.** You can't transfer between bookmakers — they're separate accounts. If money needs to move from provider A to provider B, that's a WITHDRAW from A and a DEPOSIT to B, shown as two separate actions.
+**DEPOSIT vs TRANSFER priority:** The capital plan first recommends deposits (fresh funds). If the user dismisses a deposit or total available capital is limited, the system falls back to recommending transfers — move funds from providers with excess balance (dormant, no opportunities, wagering cleared) to providers with shortfall. A TRANSFER is shown as one row ("Spectate → Kambi, 2,000 kr") but represents two manual steps (withdraw + deposit) on the user's end.
+
+**Transfer source selection:** Pick from providers with the highest excess (balance minus allocated in batch), preferring dormant/cleared providers over active ones. Never recommend transferring FROM a provider that has bets in the current batch.
 
 ### Recommendation columns
 
-- Action (DEPOSIT / WITHDRAW)
-- Provider (+ "new" tag for unfunded, bonus info if available)
+- Action (DEPOSIT / TRANSFER / WITHDRAW)
+- Provider (+ "new" tag for unfunded, bonus info if available; for TRANSFER: "Source → Target")
 - Amount
 - Unlocks (bet count)
 - Avg Edge
@@ -266,6 +269,7 @@ POST /api/play/confirm-capital
 Body: {
   "actions": [
     {"type": "deposit", "provider_id": "kambi", "amount": 2000},
+    {"type": "transfer", "from_provider_id": "spectate", "to_provider_id": "kambi", "amount": 1500},
     {"type": "withdraw", "provider_id": "spectate", "amount": 3200}
   ]
 }
