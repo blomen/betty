@@ -6,6 +6,7 @@ returns a ready-to-fire batch.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -120,13 +121,14 @@ class BatchBuilder:
         self.opp_repo = OpportunityRepo(db)
         self.profile_repo = ProfileRepo(db)
 
-    def build(self, profile_id: int) -> dict:
+    def build(self, profile_id: int, exclude: list[str] | None = None) -> dict:
         """
         Main entry point. Returns a dict with:
           - batch: list of bet dicts (ranked, allocated)
           - summary: aggregate stats
           - balance_status: per-provider status
           - missed_opportunities: summary of bets that couldn't be placed
+          - wagering_projections: projected bonus wagering progress
         """
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_total_bankroll(profile_id)
@@ -137,6 +139,14 @@ class BatchBuilder:
             total_bankroll, provider_balances, profile
         )
 
+        # Filter out excluded bets (from UI "remove" action)
+        if exclude:
+            exclude_set = set(exclude)
+            candidates = [
+                c for c in candidates
+                if f"{c.provider_id}:{c.event_id}:{c.market}:{c.outcome}:{c.point}" not in exclude_set
+            ]
+
         # Sort ALL candidates: sharp first, then by expected_profit desc
         # Don't deduplicate before allocation — dedup happens during allocation
         # so bets distribute across siblings by remaining balance
@@ -145,7 +155,19 @@ class BatchBuilder:
             key=lambda b: (-TIER_PRIORITY.get(b.tier, 0), -b.expected_profit),
         )
 
-        batch, missed = self._allocate_with_dedup(ranked, provider_balances)
+        # Split sharp and soft for different allocation strategies
+        sharp_ranked = [b for b in ranked if b.tier in ("polymarket", "pinnacle")]
+        soft_ranked = [b for b in ranked if b.tier == "soft"]
+
+        # Sharp: direct allocation (existing dedup logic)
+        sharp_batch, sharp_missed = self._allocate_with_dedup(sharp_ranked, provider_balances)
+
+        # Soft: round-robin allocation
+        soft_batch, soft_missed = self._allocate_with_round_robin(soft_ranked, provider_balances)
+
+        batch = sharp_batch + soft_batch
+        missed = sharp_missed + soft_missed
+
         for i, bet in enumerate(batch):
             bet.rank = i + 1
 
@@ -169,6 +191,7 @@ class BatchBuilder:
             "deposit_recommendations": deposit_recs,
             "withdrawal_recommendations": withdrawal_recs,
             "capital_plan": capital_plan,
+            "wagering_projections": self._compute_wagering_projections(batch, provider_balances),
         }
 
     # ------------------------------------------------------------------ #
@@ -455,6 +478,106 @@ class BatchBuilder:
 
         return batch, missed
 
+    @staticmethod
+    def _allocate_with_round_robin(
+        ranked: list[BatchBet],
+        provider_balances: dict[str, ProviderBalance],
+    ) -> tuple[list[BatchBet], list[BatchBet]]:
+        """
+        Two-pass allocation for soft tier with round-robin across cluster siblings.
+
+        For each unique opportunity (event+market+outcome+point) within a cluster,
+        assign a provider via round-robin rotation, then allocate balance.
+        """
+        batch: list[BatchBet] = []
+        missed: list[BatchBet] = []
+
+        # Group candidates by dedup key: (cluster, event_id, market, outcome, point)
+        # Keep best candidate per (dedup_key, provider_id)
+        best_per_provider: dict[tuple, dict[str, BatchBet]] = {}
+        for bet in ranked:
+            dedup_key = (bet.cluster, bet.event_id, bet.market, bet.outcome, bet.point)
+            if dedup_key not in best_per_provider:
+                best_per_provider[dedup_key] = {}
+            if bet.provider_id not in best_per_provider[dedup_key]:
+                best_per_provider[dedup_key][bet.provider_id] = bet
+
+        # Build cluster rotation iterators (include all providers, not just funded,
+        # because freebets don't consume balance)
+        cluster_siblings: dict[str, list[str]] = {}
+        for pid, pb in provider_balances.items():
+            cluster = pb.cluster or pid
+            if cluster not in cluster_siblings:
+                cluster_siblings[cluster] = []
+            cluster_siblings[cluster].append(pid)
+        for cluster in cluster_siblings:
+            cluster_siblings[cluster].sort(key=lambda pid: -provider_balances[pid].remaining)
+
+        cluster_rotation: dict[str, itertools.cycle] = {
+            cluster: itertools.cycle(siblings)
+            for cluster, siblings in cluster_siblings.items()
+            if siblings
+        }
+
+        # Walk dedup keys in ranked order (by best expected_profit)
+        sorted_keys = sorted(
+            best_per_provider.keys(),
+            key=lambda k: -max(b.expected_profit for b in best_per_provider[k].values()),
+        )
+
+        for dedup_key in sorted_keys:
+            cluster = dedup_key[0]
+            providers_for_opp = best_per_provider[dedup_key]
+            rotation = cluster_rotation.get(cluster)
+            if not rotation:
+                for bet in providers_for_opp.values():
+                    bet.skip_reason = "no funded sibling in cluster"
+                    missed.append(bet)
+                continue
+
+            siblings_count = len(cluster_siblings.get(cluster, []))
+            assigned = False
+
+            # Try round-robin first
+            for _ in range(siblings_count):
+                next_pid = next(rotation)
+                if next_pid not in providers_for_opp:
+                    continue
+                bet = providers_for_opp[next_pid]
+                pb = provider_balances[next_pid]
+
+                if bet.is_bonus and bet.bonus_type == "freebet":
+                    batch.append(bet)
+                    assigned = True
+                    break
+
+                if pb.remaining >= bet.stake:
+                    pb.allocated += bet.stake
+                    batch.append(bet)
+                    assigned = True
+                    break
+
+            # Fallback: try any provider with balance
+            if not assigned:
+                for pid, bet in providers_for_opp.items():
+                    pb = provider_balances.get(pid)
+                    if pb and pb.remaining >= bet.stake:
+                        pb.allocated += bet.stake
+                        batch.append(bet)
+                        assigned = True
+                        break
+
+            if not assigned:
+                best = max(providers_for_opp.values(), key=lambda b: b.expected_profit)
+                best.skip_reason = f"insufficient balance in cluster {cluster}"
+                pb = provider_balances.get(best.provider_id)
+                if pb:
+                    pb.missed_bets += 1
+                    pb.missed_ev += best.expected_profit
+                missed.append(best)
+
+        return batch, missed
+
     def _build_summary(self, batch: list[BatchBet]) -> dict:
         polymarket_bets = [b for b in batch if b.tier == "polymarket"]
         pinnacle_bets = [b for b in batch if b.tier == "pinnacle"]
@@ -470,6 +593,32 @@ class BatchBuilder:
             "soft_bets": len(soft_bets),
             "soft_ev": round(sum(b.expected_profit for b in soft_bets), 2),
         }
+
+    def _compute_wagering_projections(
+        self,
+        batch: list[BatchBet],
+        provider_balances: dict[str, ProviderBalance],
+    ) -> list[dict]:
+        """Compute projected wagering progress for providers with active bonuses."""
+        provider_stakes: dict[str, float] = {}
+        for bet in batch:
+            provider_stakes[bet.provider_id] = provider_stakes.get(bet.provider_id, 0) + bet.stake
+
+        projections = []
+        for pid, pb in provider_balances.items():
+            if pb.wagering_remaining <= 0:
+                continue
+            batch_stake = provider_stakes.get(pid, 0)
+            projected_remaining = max(0, pb.wagering_remaining - batch_stake)
+            projections.append({
+                "provider_id": pid,
+                "cluster": pb.cluster,
+                "wagering_remaining": round(pb.wagering_remaining, 2),
+                "batch_stake": round(batch_stake, 2),
+                "projected_remaining": round(projected_remaining, 2),
+                "days_remaining": pb.days_remaining,
+            })
+        return projections
 
     def _build_balance_status(
         self,
