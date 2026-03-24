@@ -88,6 +88,14 @@ class ProfileRepo:
         ).all()
         return sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
 
+    def get_all_balances(self, profile_id: int) -> dict[str, float]:
+        """Return dict of provider_id -> balance for all providers with balance > 0."""
+        records = self.db.query(ProfileProviderBalance).filter(
+            ProfileProviderBalance.profile_id == profile_id,
+            ProfileProviderBalance.balance > 0,
+        ).all()
+        return {r.provider_id: r.balance for r in records}
+
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a single provider. Alias for get_balance()."""
         return self.get_balance(profile_id, provider_id)
