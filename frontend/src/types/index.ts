@@ -56,6 +56,10 @@ export interface Opportunity {
   provider_meta?: Record<string, string | number> | null;
   // Freshness tracking
   odds_updated_at?: string | null;
+  // Allocation / cluster play mode
+  allocation_score?: number | null;
+  allocation_reason?: string | null;
+  edge_routing?: 'high_edge_unlimited' | 'grind_ok' | null;
 }
 
 // Events
@@ -667,4 +671,71 @@ export interface BettingSnapshot {
   bet_type_breakdown: Record<string, number>;
   market_breakdown: Record<string, number>;
   bonus_bets: number;
+}
+
+// Cluster Play Mode
+export interface ClusterInfo {
+  id: string;
+  label: string;
+  members: string[];
+  canonical: string;
+  total_balance: number;
+  playable_count: number;
+}
+
+export interface ClusterProviderStatus {
+  provider_id: string;
+  balance: number;
+  wagering_remaining: number;
+  wagering_progress_pct: number;
+  bonus_status: string | null;
+  bonus_amount: number;
+  min_odds: number;
+  daily_bets: number;
+  daily_cap: number;
+  limit_type: string | null;
+  limit_level: number | null;
+  allocation_score: number;
+  is_limited: boolean;
+}
+
+export interface ClusterSummary {
+  cluster: string;
+  providers: ClusterProviderStatus[];
+  total_balance: number;
+  total_wagering_remaining: number;
+}
+
+export interface PlaySibling {
+  provider_id: string;
+  balance: number;
+  lifecycle: 'available' | 'deposited' | 'wagering' | 'freebet' | 'playing' | 'limited' | 'dormant';
+  bonus_status: string | null;
+  trigger_mode: 'single' | 'cumulative';
+  wagering_remaining: number;
+  wagering_progress_pct: number;
+  min_odds: number | null;
+  bonus_amount: number;
+  limit_level: number | null;
+  expires_at: string | null;
+  days_remaining: number | null;
+}
+
+export interface PlayCluster {
+  id: string;
+  label: string;
+  canonical: string;
+  active_siblings: PlaySibling[];
+  available_siblings: PlaySibling[];
+  dormant_siblings: PlaySibling[];
+  total_balance: number;
+  playable_count: number;
+  unique_opps: number;
+  urgency: number;
+}
+
+export interface PlaySession {
+  clusters: PlayCluster[];
+  total_bankroll: number;
+  min_stake: number;
 }
