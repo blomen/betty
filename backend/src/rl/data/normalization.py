@@ -38,14 +38,27 @@ class RunningNormalizer:
         delta2 = x - self.mean
         self.M2 += delta * delta2
 
-    def normalize(self, x: np.ndarray) -> np.ndarray:
-        """Normalize to ~zero mean, unit variance. Returns float32."""
+    def normalize(
+        self, x: np.ndarray, context_start: int | None = None,
+    ) -> np.ndarray:
+        """Normalize to ~zero mean, unit variance. Returns float32.
+
+        If context_start is set, only normalize features from that index onward
+        (the temporal sequence portion is left as-is since the CNN handles raw
+        inputs and per-position normalization would distort padded sequences).
+        """
         x = np.asarray(x, dtype=np.float64)
         if self.count < 2:
             return x.astype(np.float32)
         std = np.sqrt(self.M2 / (self.count - 1))
         std = np.maximum(std, 1e-8)
-        return ((x - self.mean) / std).astype(np.float32)
+        result = x.copy()
+        if context_start is not None:
+            # Only normalize context portion
+            result[context_start:] = (x[context_start:] - self.mean[context_start:]) / std[context_start:]
+        else:
+            result = (x - self.mean) / std
+        return result.astype(np.float32)
 
     @property
     def variance(self) -> np.ndarray:

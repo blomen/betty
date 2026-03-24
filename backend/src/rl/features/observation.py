@@ -39,7 +39,9 @@ def _build_tick_sequence(recent_ticks: list[dict], touch_price: float) -> np.nda
     """Build (TICK_SEQ_LEN, TICK_FEATURES) tensor from raw ticks.
 
     Per tick: [price_norm, size_norm, side(±1), dt_seconds_norm]
-    price_norm = (price - touch_price) / touch_price * 1000 (basis points-ish)
+    price_norm = (price - ref_price) / ref_price * 1000 (basis points-ish)
+        where ref_price = first tick's price (NOT touch_price, so the touch tick
+        shows its actual position relative to the approach start)
     size_norm  = size / median_size (capped at 5)
     side       = +1 (buy/B) or -1 (sell/A)
     dt_norm    = seconds_since_first_tick / 60 (capped at 1)
@@ -57,11 +59,15 @@ def _build_tick_sequence(recent_ticks: list[dict], touch_price: float) -> np.nda
     median_size = sorted_sizes[len(sorted_sizes) // 2] if sorted_sizes else 1
     median_size = max(median_size, 1)
 
+    # Use first tick as price reference — not touch_price — so the last tick
+    # (the touch) shows a meaningful price delta instead of always being 0
+    ref_price = ticks[0]["price"]
+    ref_price = max(ref_price, 1.0)
     t0 = ticks[0]["ts"]
 
     for i, t in enumerate(ticks):
         row = offset + i
-        out[row, 0] = np.clip((t["price"] - touch_price) / max(touch_price, 1) * 1000, -5.0, 5.0)
+        out[row, 0] = np.clip((t["price"] - ref_price) / ref_price * 1000, -5.0, 5.0)
         out[row, 1] = np.clip(t["size"] / median_size, 0.0, 5.0)
         out[row, 2] = 1.0 if t.get("side") == "B" else -1.0
         dt = (t["ts"] - t0).total_seconds()

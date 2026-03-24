@@ -90,7 +90,9 @@ class DQNLiveInference:
 
         obs = build_observation(state)
         if self._normalizer is not None:
-            obs = self._normalizer.normalize(obs)
+            from .agent.network import TICK_SEQ_LEN, TICK_FEATURES, CANDLE_1M_LEN, CANDLE_5M_LEN, CANDLE_FEATURES
+            ctx_start = TICK_SEQ_LEN * TICK_FEATURES + CANDLE_1M_LEN * CANDLE_FEATURES + CANDLE_5M_LEN * CANDLE_FEATURES
+            obs = self._normalizer.normalize(obs, context_start=ctx_start)
         obs_tensor = torch.from_numpy(obs).unsqueeze(0)
 
         with torch.no_grad():

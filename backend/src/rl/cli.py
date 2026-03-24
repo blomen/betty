@@ -515,7 +515,10 @@ def train(
     else:
         typer.echo("Warning: no normalizer.json found — using raw observations.")
 
-    normalized_obs = np.stack([normalizer.normalize(obs) for obs in observations])
+    # Only normalize context segment (index 248+), leave temporal sequences raw
+    from src.rl.agent.network import TICK_SEQ_LEN, TICK_FEATURES, CANDLE_1M_LEN, CANDLE_5M_LEN, CANDLE_FEATURES
+    ctx_start = TICK_SEQ_LEN * TICK_FEATURES + CANDLE_1M_LEN * CANDLE_FEATURES + CANDLE_5M_LEN * CANDLE_FEATURES
+    normalized_obs = np.stack([normalizer.normalize(obs, context_start=ctx_start) for obs in observations])
 
     # Chronological split: 67% train, 16% val, 17% test
     train_end = int(n * 0.67)
