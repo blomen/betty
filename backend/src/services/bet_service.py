@@ -265,11 +265,23 @@ class BetService:
                 ProfileProviderBonus.provider_id == bet.provider_id,
                 ProfileProviderBonus.bonus_status == "trigger_needed",
             ).first()
-            if (bonus and bet.odds >= (bonus.min_odds or 1.80)
-                    and bet.stake >= (bonus.bonus_amount or 0)):
-                bonus.bonus_status = "freebet_available"
-                bonus.wagered_amount = bet.stake
-                bonus.updated_at = datetime.now(timezone.utc)
+            if bonus:
+                # Refresh so wagered_amount reflects what record_wagering() just wrote
+                self.db.refresh(bonus)
+                trigger_mode = getattr(bonus, "trigger_mode", None) or "cumulative"
+                if trigger_mode == "single":
+                    # Single-shot: one bet that meets stake + odds requirements
+                    if (bet.odds >= (bonus.min_odds or 1.80)
+                            and bet.stake >= (bonus.bonus_amount or 0)):
+                        bonus.bonus_status = "freebet_available"
+                        bonus.wagered_amount = bet.stake
+                        bonus.updated_at = datetime.now(timezone.utc)
+                else:
+                    # Cumulative: total wagered across bets meets the requirement
+                    if (bonus.wagering_requirement or 0) > 0 and (
+                            bonus.wagered_amount or 0) >= bonus.wagering_requirement:
+                        bonus.bonus_status = "freebet_available"
+                        bonus.updated_at = datetime.now(timezone.utc)
 
         # Invalidate planner cache if bonus status changed (triggers re-plan on next request)
         if bet.profile_id and wagering_status:
