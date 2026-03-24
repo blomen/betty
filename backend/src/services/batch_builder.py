@@ -21,7 +21,7 @@ from ..services.play_service import derive_lifecycle
 logger = logging.getLogger(__name__)
 
 # Tier priority: higher is ranked first
-TIER_PRIORITY = {"sharp": 1, "soft": 0}
+TIER_PRIORITY = {"polymarket": 2, "pinnacle": 1, "soft": 0}
 SHARP_PROVIDERS = frozenset({"pinnacle", "polymarket"})
 
 
@@ -438,7 +438,12 @@ class BatchBuilder:
 
         expected_profit = stake * edge_raw
 
-        tier = "sharp" if provider_id in SHARP_PROVIDERS else "soft"
+        if provider_id == "polymarket":
+            tier = "polymarket"
+        elif provider_id == "pinnacle":
+            tier = "pinnacle"
+        else:
+            tier = "soft"
         cluster = pb.cluster
 
         return BatchBet(
@@ -559,14 +564,17 @@ class BatchBuilder:
         return batch, missed
 
     def _build_summary(self, batch: list[BatchBet]) -> dict:
-        sharp_bets = [b for b in batch if b.tier == "sharp"]
+        polymarket_bets = [b for b in batch if b.tier == "polymarket"]
+        pinnacle_bets = [b for b in batch if b.tier == "pinnacle"]
         soft_bets = [b for b in batch if b.tier == "soft"]
         return {
             "total_bets": len(batch),
             "total_stake": round(sum(b.stake for b in batch), 2),
             "total_expected_profit": round(sum(b.expected_profit for b in batch), 2),
-            "sharp_bets": len(sharp_bets),
-            "sharp_ev": round(sum(b.expected_profit for b in sharp_bets), 2),
+            "polymarket_bets": len(polymarket_bets),
+            "polymarket_ev": round(sum(b.expected_profit for b in polymarket_bets), 2),
+            "pinnacle_bets": len(pinnacle_bets),
+            "pinnacle_ev": round(sum(b.expected_profit for b in pinnacle_bets), 2),
             "soft_bets": len(soft_bets),
             "soft_ev": round(sum(b.expected_profit for b in soft_bets), 2),
         }
