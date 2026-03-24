@@ -1,4 +1,4 @@
-import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession } from '@/types';
+import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult } from '@/types';
 import { fetchJson } from './client';
 
 export const opportunitiesApi = {
@@ -71,5 +71,9 @@ export const opportunitiesApi = {
 
   async getPlaySession(): Promise<PlaySession> {
     return fetchJson('/opportunities/play/session');
+  },
+
+  async getPlayBatch(): Promise<BatchResult> {
+    return fetchJson('/opportunities/play/batch', { method: 'POST' });
   },
 };

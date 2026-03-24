@@ -741,3 +741,62 @@ export interface PlaySession {
   total_bankroll: number;
   min_stake: number;
 }
+
+export interface BatchBet {
+  rank: number;
+  tier: 'sharp' | 'soft';
+  provider_id: string;
+  event_id: string;
+  market: string;
+  outcome: string;
+  point: number | null;
+  odds: number;
+  fair_odds: number;
+  edge_pct: number;
+  stake: number;
+  expected_profit: number;
+  is_bonus: boolean;
+  bonus_type: string | null;
+  home_team: string;
+  away_team: string;
+  display_home: string | null;
+  display_away: string | null;
+  sport: string;
+  league: string;
+  starts_at: string | null;
+  lifecycle: string | null;
+  cluster: string | null;
+}
+
+export interface BatchSummary {
+  total_bets: number;
+  total_stake: number;
+  total_expected_profit: number;
+  sharp_bets: number;
+  sharp_ev: number;
+  soft_bets: number;
+  soft_ev: number;
+}
+
+export interface ProviderBalanceStatus {
+  provider_id: string;
+  cluster: string | null;
+  balance: number;
+  allocated: number;
+  remaining: number;
+  excess?: number;
+  shortfall?: number;
+  missed_bets: number;
+  missed_ev: number;
+}
+
+export interface BatchResult {
+  batch: BatchBet[];
+  summary: BatchSummary;
+  balance_status: ProviderBalanceStatus[];
+  missed_opportunities: {
+    total_bets: number;
+    total_ev: number;
+    reason: string;
+  };
+}
