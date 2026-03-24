@@ -744,7 +744,7 @@ export interface PlaySession {
 
 export interface BatchBet {
   rank: number;
-  tier: 'sharp' | 'soft';
+  tier: 'polymarket' | 'pinnacle' | 'soft';
   provider_id: string;
   event_id: string;
   market: string;
@@ -757,23 +757,24 @@ export interface BatchBet {
   expected_profit: number;
   is_bonus: boolean;
   bonus_type: string | null;
-  home_team: string;
-  away_team: string;
-  display_home: string | null;
-  display_away: string | null;
+  display_home: string;
+  display_away: string;
   sport: string;
   league: string;
-  starts_at: string | null;
+  start_time: string | null;
   lifecycle: string | null;
   cluster: string | null;
+  wagering_pct?: number | null;
 }
 
 export interface BatchSummary {
   total_bets: number;
   total_stake: number;
   total_expected_profit: number;
-  sharp_bets: number;
-  sharp_ev: number;
+  polymarket_bets: number;
+  polymarket_ev: number;
+  pinnacle_bets: number;
+  pinnacle_ev: number;
   soft_bets: number;
   soft_ev: number;
 }
@@ -790,6 +791,36 @@ export interface ProviderBalanceStatus {
   missed_ev: number;
 }
 
+export interface CapitalAction {
+  type: 'deposit' | 'transfer' | 'withdraw';
+  provider_id?: string;
+  from_provider_id?: string;
+  to_provider_id?: string;
+  amount: number;
+  unlocks: number;
+  avg_edge: number;
+  expected_ev: number;
+  currency: 'SEK' | 'USDC';
+  priority: number;
+  priority_label: string;
+  bonus_info?: string;
+}
+
+export interface CapitalPlan {
+  total_deployed: number;
+  withdrawable: number;
+  actions: CapitalAction[];
+}
+
+export interface WageringProjection {
+  provider_id: string;
+  cluster: string;
+  wagering_remaining: number;
+  batch_stake: number;
+  projected_remaining: number;
+  days_remaining: number | null;
+}
+
 export interface BatchResult {
   batch: BatchBet[];
   summary: BatchSummary;
@@ -799,4 +830,6 @@ export interface BatchResult {
     total_ev: number;
     reason: string;
   };
+  capital_plan: CapitalPlan;
+  wagering_projections: WageringProjection[];
 }

@@ -73,7 +73,25 @@ export const opportunitiesApi = {
     return fetchJson('/opportunities/play/session');
   },
 
-  async getPlayBatch(): Promise<BatchResult> {
-    return fetchJson('/opportunities/play/batch', { method: 'POST' });
+  async getPlayBatch(exclude?: string[]): Promise<BatchResult> {
+    return fetchJson('/opportunities/play/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: exclude ? JSON.stringify({ exclude }) : undefined,
+    });
+  },
+
+  async confirmCapital(actions: Array<{
+    type: 'deposit' | 'transfer' | 'withdraw';
+    provider_id?: string;
+    from_provider_id?: string;
+    to_provider_id?: string;
+    amount: number;
+  }>): Promise<BatchResult> {
+    return fetchJson('/opportunities/play/confirm-capital', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions }),
+    });
   },
 };
