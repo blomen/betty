@@ -591,9 +591,9 @@ class BatchBuilder:
             cluster=bet.cluster,
         )
 
-    # Minimum bets in a cluster before round-robin kicks in.
-    # Below this threshold, all bets go to the best-funded provider.
-    ROUND_ROBIN_THRESHOLD = 10
+    # Every BETS_PER_PROVIDER bets in a cluster adds another sibling.
+    # 1-10 → 1 provider, 11-20 → 2, 21-30 → 3, etc.
+    BETS_PER_PROVIDER = 10
 
     @staticmethod
     def _allocate_with_round_robin(
@@ -601,12 +601,13 @@ class BatchBuilder:
         provider_balances: dict[str, ProviderBalance],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Two-pass allocation for soft tier with round-robin across cluster siblings.
+        Allocation for soft tier with scaled provider spreading.
 
-        Round-robin only activates when a cluster has >= ROUND_ROBIN_THRESHOLD
-        unique bets. Below that, all bets go to the best-funded provider (no
-        need to spread low volume across siblings).
+        Number of siblings used = ceil(bets / BETS_PER_PROVIDER), capped at
+        available funded siblings. Below BETS_PER_PROVIDER, single provider.
         """
+        import math
+
         batch: list[BatchBet] = []
         missed: list[BatchBet] = []
 
@@ -617,13 +618,13 @@ class BatchBuilder:
             if dedup_key not in best_per_key:
                 best_per_key[dedup_key] = bet
 
-        # Count unique bets per cluster to decide round-robin vs best-funded
+        # Count unique bets per cluster
         cluster_bet_count: dict[str, int] = {}
         for key in best_per_key:
             cluster = key[0]
             cluster_bet_count[cluster] = cluster_bet_count.get(cluster, 0) + 1
 
-        # Build cluster siblings (funded providers only)
+        # Build cluster siblings (funded providers only, sorted by balance desc)
         cluster_siblings: dict[str, list[str]] = {}
         for pid, pb in provider_balances.items():
             if pb.lifecycle in ("dormant", "available"):
@@ -632,16 +633,21 @@ class BatchBuilder:
             if cluster not in cluster_siblings:
                 cluster_siblings[cluster] = []
             cluster_siblings[cluster].append(pid)
-        # Sort by balance descending so rotation starts with best-funded
         for cluster in cluster_siblings:
             cluster_siblings[cluster].sort(key=lambda pid: -provider_balances[pid].remaining)
 
-        # Only create rotation iterators for clusters above the threshold
-        cluster_rotation: dict[str, itertools.cycle] = {
-            cluster: itertools.cycle(siblings)
-            for cluster, siblings in cluster_siblings.items()
-            if siblings and cluster_bet_count.get(cluster, 0) >= BatchBuilder.ROUND_ROBIN_THRESHOLD
-        }
+        # For each cluster, determine how many siblings to use and build rotation
+        cluster_rotation: dict[str, itertools.cycle] = {}
+        cluster_active_siblings: dict[str, list[str]] = {}
+        for cluster, siblings in cluster_siblings.items():
+            if not siblings:
+                continue
+            bet_count = cluster_bet_count.get(cluster, 0)
+            needed = math.ceil(bet_count / BatchBuilder.BETS_PER_PROVIDER)
+            active = siblings[:min(needed, len(siblings))]
+            cluster_active_siblings[cluster] = active
+            if len(active) > 1:
+                cluster_rotation[cluster] = itertools.cycle(active)
 
         # Walk opportunities in ranked order (by expected_profit descending)
         sorted_keys = sorted(
@@ -653,9 +659,9 @@ class BatchBuilder:
             template_bet = best_per_key[dedup_key]
             cluster = dedup_key[0]
             rotation = cluster_rotation.get(cluster)
-            siblings = cluster_siblings.get(cluster, [])
+            active = cluster_active_siblings.get(cluster, [])
 
-            if not siblings:
+            if not active:
                 template_bet.skip_reason = "no funded sibling in cluster"
                 missed.append(template_bet)
                 continue
@@ -663,8 +669,8 @@ class BatchBuilder:
             assigned = False
 
             if rotation:
-                # Round-robin: rotate across siblings
-                for _ in range(len(siblings)):
+                # Multiple siblings: round-robin across active set
+                for _ in range(len(active)):
                     next_pid = next(rotation)
                     pb = provider_balances[next_pid]
 
@@ -685,8 +691,8 @@ class BatchBuilder:
                         assigned = True
                         break
             else:
-                # Below threshold: use best-funded provider (first in sorted list)
-                for pid in siblings:
+                # Single provider: use best-funded (first in list)
+                for pid in active:
                     pb = provider_balances[pid]
 
                     if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
