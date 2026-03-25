@@ -127,8 +127,22 @@ def test_infeasible_bonus_skipped():
     assert len(bonus_deposits) == 0
 
 
-def test_no_actions_when_no_issues():
-    """No missed bets, no dormant balances = no actions."""
+def test_no_actions_when_fully_allocated():
+    """Fully allocated provider with no missed bets = no actions."""
+    balances = {
+        "unibet": _make_balance("unibet", "kambi", 5000, lifecycle="playing"),
+    }
+    # Simulate full allocation
+    balances["unibet"].allocated = 5000
+    plan = BatchBuilder._build_capital_plan_v3(
+        provider_balances=balances, missed=[], total_bankroll=10000,
+        cluster_opp_stats={}, avg_daily_wager=1000, has_wager_history=True,
+    )
+    assert plan["actions"] == []
+
+
+def test_idle_playing_provider_gets_withdraw():
+    """Playing provider with 0 allocated bets should get withdraw recommendation."""
     balances = {
         "unibet": _make_balance("unibet", "kambi", 5000, lifecycle="playing"),
     }
@@ -136,7 +150,10 @@ def test_no_actions_when_no_issues():
         provider_balances=balances, missed=[], total_bankroll=10000,
         cluster_opp_stats={}, avg_daily_wager=1000, has_wager_history=True,
     )
-    assert plan["actions"] == []
+    withdrawals = [a for a in plan["actions"] if a["type"] == "withdraw"]
+    assert len(withdrawals) == 1
+    assert withdrawals[0]["provider_id"] == "unibet"
+    assert withdrawals[0]["amount"] == 5000
 
 
 def test_polymarket_uses_usdc():
