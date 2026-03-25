@@ -103,34 +103,44 @@ def fetch_ticks(
             continue
 
         rows: list[dict] = []
-        skipped = 0
+        tick_rule_count = 0
+        prev_price: float = 0.0
         for rec in data:
             side_raw = getattr(rec, "side", "")
-            # Databento SDK returns Side enum (Side.ASK, Side.BID, Side.NONE)
             side_char = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
-            if side_char not in ("A", "B"):
-                if side_char != "":
-                    logger.warning(
-                        "Unknown side value %r on tick — skipping", side_char
-                    )
-                skipped += 1
-                continue
 
             ts_raw = rec.ts_event if hasattr(rec, "ts_event") else rec.hd.ts_event
             ts = datetime.fromtimestamp(int(ts_raw) / 1e9, tz=timezone.utc)
+            price = rec.price / 1e9
+
+            if side_char not in ("A", "B"):
+                # Tick rule: infer side from price change
+                # Uptick → buy aggressor (A), downtick → sell aggressor (B)
+                # Same price → inherit from previous tick
+                if price > prev_price:
+                    side_char = "A"
+                elif price < prev_price:
+                    side_char = "B"
+                else:
+                    side_char = rows[-1]["side"] if rows else "A"
+                tick_rule_count += 1
+
+            prev_price = price
 
             rows.append(
                 {
                     "timestamp": ts,
-                    "price": rec.price / 1e9,
+                    "price": price,
                     "size": int(rec.size),
-                    "side": side_char,  # "A" = ask/buy aggressor, "B" = bid/sell aggressor
+                    "side": side_char,
                 }
             )
 
-        if skipped:
-            logger.warning(
-                "%s: skipped %d tick(s) with unknown/missing side", month_label, skipped
+        if tick_rule_count:
+            logger.info(
+                "%s: inferred side via tick rule for %d/%d ticks (%.0f%%)",
+                month_label, tick_rule_count, len(rows),
+                tick_rule_count / max(len(rows), 1) * 100,
             )
 
         if not rows:
