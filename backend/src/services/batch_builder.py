@@ -965,19 +965,19 @@ class BatchBuilder:
                 })
 
         # --- Identify excess providers (balance remaining after batch allocation) ---
-        # Sources: dormant providers (full balance), or any provider with excess
-        # after allocation that has NO bets in the current batch
+        # Only providers with cleared wagering can be transfer/withdraw sources.
+        # Never transfer FROM a provider still wagering through a bonus.
         excess_providers: list[tuple[str, float]] = []  # (pid, amount)
         for pid, pb in provider_balances.items():
             if pid in SHARP_PROVIDERS:
                 continue
             if pid in providers_with_shortfall:
                 continue
+            if pb.wagering_remaining > 0:
+                continue  # Still wagering — can't withdraw
             excess = pb.remaining  # balance - allocated
             if excess <= 0:
                 continue
-            # Dormant providers: full balance available
-            # Playing/wagering with excess: only the unallocated portion
             excess_providers.append((pid, excess))
         # Sort by excess descending — withdraw largest idle balances first
         excess_providers.sort(key=lambda x: -x[1])
