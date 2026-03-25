@@ -15,9 +15,8 @@ def _make_bet(provider_id: str, cluster: str, event_id: str, edge: float, stake:
     )
 
 
-def test_round_robin_alternates_providers():
-    """Three unique events on same cluster should spread across providers."""
-    # 3 events, each available on 3 Kambi providers
+def test_below_threshold_uses_best_funded():
+    """Below ROUND_ROBIN_THRESHOLD, all bets go to best-funded provider."""
     candidates = []
     for evt in ["evt_1", "evt_2", "evt_3"]:
         for pid, edge_offset in [("unibet", 0), ("888sport", -0.2), ("leovegas", -0.5)]:
@@ -32,9 +31,29 @@ def test_round_robin_alternates_providers():
     ranked = sorted(candidates, key=lambda b: -b.expected_profit)
     batch, missed = BatchBuilder._allocate_with_round_robin(ranked, balances)
 
-    # 3 unique events = 3 bets (deduped within cluster)
     assert len(batch) == 3
-    # At least 2 different providers used (round-robin distributes)
+    # All on unibet (best-funded, below threshold so no spreading)
+    providers_used = {b.provider_id for b in batch}
+    assert providers_used == {"unibet"}
+
+
+def test_round_robin_alternates_above_threshold():
+    """Above ROUND_ROBIN_THRESHOLD, bets spread across providers."""
+    candidates = []
+    for i in range(12):  # 12 > threshold of 10
+        for pid, edge_offset in [("unibet", 0), ("888sport", -0.2), ("leovegas", -0.5)]:
+            candidates.append(_make_bet(pid, "kambi", f"evt_{i}", 5.0 + edge_offset, 100))
+
+    balances = {
+        "unibet": ProviderBalance("unibet", "kambi", 5000.0),
+        "888sport": ProviderBalance("888sport", "kambi", 5000.0),
+        "leovegas": ProviderBalance("leovegas", "kambi", 5000.0),
+    }
+
+    ranked = sorted(candidates, key=lambda b: -b.expected_profit)
+    batch, missed = BatchBuilder._allocate_with_round_robin(ranked, balances)
+
+    assert len(batch) == 12
     providers_used = {b.provider_id for b in batch}
     assert len(providers_used) >= 2
 

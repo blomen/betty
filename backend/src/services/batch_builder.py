@@ -591,6 +591,10 @@ class BatchBuilder:
             cluster=bet.cluster,
         )
 
+    # Minimum bets in a cluster before round-robin kicks in.
+    # Below this threshold, all bets go to the best-funded provider.
+    ROUND_ROBIN_THRESHOLD = 10
+
     @staticmethod
     def _allocate_with_round_robin(
         ranked: list[BatchBet],
@@ -599,10 +603,9 @@ class BatchBuilder:
         """
         Two-pass allocation for soft tier with round-robin across cluster siblings.
 
-        For each unique opportunity (event+market+outcome+point) within a cluster,
-        assign a provider via round-robin rotation. Since siblings on the same
-        platform share the same odds, any sibling can serve any opportunity — we
-        clone the bet to the rotated provider if needed.
+        Round-robin only activates when a cluster has >= ROUND_ROBIN_THRESHOLD
+        unique bets. Below that, all bets go to the best-funded provider (no
+        need to spread low volume across siblings).
         """
         batch: list[BatchBet] = []
         missed: list[BatchBet] = []
@@ -614,11 +617,17 @@ class BatchBuilder:
             if dedup_key not in best_per_key:
                 best_per_key[dedup_key] = bet
 
-        # Build cluster rotation iterators
+        # Count unique bets per cluster to decide round-robin vs best-funded
+        cluster_bet_count: dict[str, int] = {}
+        for key in best_per_key:
+            cluster = key[0]
+            cluster_bet_count[cluster] = cluster_bet_count.get(cluster, 0) + 1
+
+        # Build cluster siblings (funded providers only)
         cluster_siblings: dict[str, list[str]] = {}
         for pid, pb in provider_balances.items():
             if pb.lifecycle in ("dormant", "available"):
-                continue  # Skip unfunded providers
+                continue
             cluster = pb.cluster or pid
             if cluster not in cluster_siblings:
                 cluster_siblings[cluster] = []
@@ -627,10 +636,11 @@ class BatchBuilder:
         for cluster in cluster_siblings:
             cluster_siblings[cluster].sort(key=lambda pid: -provider_balances[pid].remaining)
 
+        # Only create rotation iterators for clusters above the threshold
         cluster_rotation: dict[str, itertools.cycle] = {
             cluster: itertools.cycle(siblings)
             for cluster, siblings in cluster_siblings.items()
-            if siblings
+            if siblings and cluster_bet_count.get(cluster, 0) >= BatchBuilder.ROUND_ROBIN_THRESHOLD
         }
 
         # Walk opportunities in ranked order (by expected_profit descending)
@@ -645,36 +655,56 @@ class BatchBuilder:
             rotation = cluster_rotation.get(cluster)
             siblings = cluster_siblings.get(cluster, [])
 
-            if not rotation or not siblings:
+            if not siblings:
                 template_bet.skip_reason = "no funded sibling in cluster"
                 missed.append(template_bet)
                 continue
 
             assigned = False
 
-            # Try each sibling via round-robin
-            for _ in range(len(siblings)):
-                next_pid = next(rotation)
-                pb = provider_balances[next_pid]
+            if rotation:
+                # Round-robin: rotate across siblings
+                for _ in range(len(siblings)):
+                    next_pid = next(rotation)
+                    pb = provider_balances[next_pid]
 
-                # Check bonus min_odds constraint
-                if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
-                    if template_bet.odds < pb.min_odds:
-                        continue
+                    if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
+                        if template_bet.odds < pb.min_odds:
+                            continue
 
-                # Freebet: doesn't consume balance
-                if template_bet.is_bonus and template_bet.bonus_type == "freebet":
-                    placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
-                    batch.append(placed)
-                    assigned = True
-                    break
+                    if template_bet.is_bonus and template_bet.bonus_type == "freebet":
+                        placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
+                        batch.append(placed)
+                        assigned = True
+                        break
 
-                if pb.remaining >= template_bet.stake:
-                    placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
-                    pb.allocated += placed.stake
-                    batch.append(placed)
-                    assigned = True
-                    break
+                    if pb.remaining >= template_bet.stake:
+                        placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
+                        pb.allocated += placed.stake
+                        batch.append(placed)
+                        assigned = True
+                        break
+            else:
+                # Below threshold: use best-funded provider (first in sorted list)
+                for pid in siblings:
+                    pb = provider_balances[pid]
+
+                    if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
+                        if template_bet.odds < pb.min_odds:
+                            continue
+
+                    if template_bet.is_bonus and template_bet.bonus_type == "freebet":
+                        placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                        batch.append(placed)
+                        assigned = True
+                        break
+
+                    if pb.remaining >= template_bet.stake:
+                        placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                        pb.allocated += placed.stake
+                        batch.append(placed)
+                        assigned = True
+                        break
 
             if not assigned:
                 template_bet.skip_reason = f"insufficient balance in cluster {cluster}"
