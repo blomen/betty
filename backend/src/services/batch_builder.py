@@ -939,38 +939,58 @@ class BatchBuilder:
         # Sort by excess descending — withdraw largest idle balances first
         excess_providers.sort(key=lambda x: -x[1])
 
-        # --- Identify shortfall targets (need deposits, not sharp) ---
-        shortfall_targets: list[dict] = [
-            a for a in actions if a["type"] == "deposit" and a["priority"] in (2, 3)
-        ]
-
-        # --- Priority 4: Transfers (excess → shortfall) ---
+        # --- Priority 4: Transfers replace deposits when excess is available ---
+        # For each soft deposit, check if we can cover it (partially or fully) via
+        # transfer from an excess provider. Reduce the deposit amount accordingly.
         remaining_excess = list(excess_providers)
-        for target in shortfall_targets:
+        transfer_actions: list[dict] = []
+
+        for target in actions:
+            if target["type"] != "deposit" or target["priority"] not in (2, 3):
+                continue
             if not remaining_excess:
                 break
-            source_pid, source_amount = remaining_excess[0]
-            transfer_amount = min(source_amount, target["amount"])
-            if transfer_amount <= 0:
-                continue
 
-            actions.append({
-                "type": "transfer",
-                "from_provider_id": source_pid,
-                "to_provider_id": target["provider_id"],
-                "amount": round(transfer_amount, 2),
-                "unlocks": target["unlocks"],
-                "avg_edge": target["avg_edge"],
-                "expected_ev": target["expected_ev"],
-                "currency": "SEK",
-                "priority": 4,
-                "priority_label": "transfer",
-            })
+            original_amount = target["amount"]
+            shortfall = original_amount
+            while shortfall > 0 and remaining_excess:
+                source_pid, source_amount = remaining_excess[0]
+                transfer_amount = min(source_amount, shortfall)
+                if transfer_amount <= 0:
+                    remaining_excess.pop(0)
+                    continue
 
-            # Reduce excess
-            remaining_excess[0] = (source_pid, source_amount - transfer_amount)
-            if remaining_excess[0][1] <= 0:
-                remaining_excess.pop(0)
+                # Proportional share of unlocks/ev based on amount covered
+                ratio = transfer_amount / original_amount if original_amount > 0 else 0
+                transfer_actions.append({
+                    "type": "transfer",
+                    "from_provider_id": source_pid,
+                    "to_provider_id": target["provider_id"],
+                    "amount": round(transfer_amount, 2),
+                    "unlocks": round(target["unlocks"] * ratio),
+                    "avg_edge": target["avg_edge"],
+                    "expected_ev": round(target["expected_ev"] * ratio, 2),
+                    "currency": "SEK",
+                    "priority": 4,
+                    "priority_label": "transfer",
+                })
+
+                shortfall -= transfer_amount
+                remaining_excess[0] = (source_pid, source_amount - transfer_amount)
+                if remaining_excess[0][1] <= 0:
+                    remaining_excess.pop(0)
+
+            # Reduce the deposit to only the remaining shortfall after transfers
+            if shortfall < original_amount:
+                covered = original_amount - shortfall
+                ratio_remaining = shortfall / original_amount if original_amount > 0 else 0
+                target["amount"] = round(max(shortfall, 0), 2)
+                target["unlocks"] = round(target["unlocks"] * ratio_remaining)
+                target["expected_ev"] = round(target["expected_ev"] * ratio_remaining, 2)
+
+        # Remove deposits that are fully covered by transfers, and 0-amount transfers
+        actions = [a for a in actions if not (a["type"] == "deposit" and a["amount"] <= 0)]
+        actions.extend([t for t in transfer_actions if t["amount"] > 1])
 
         # --- Priority 5: Withdrawals (remaining excess after transfers) ---
         # Only recommend withdrawing from dormant/cleared providers (no active bets or bonus)
