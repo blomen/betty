@@ -91,16 +91,51 @@ _MODELS_DIR = _DATA_DIR / "models"
 def fetch(
     months: int = typer.Option(6, help="Number of months of history to fetch"),
     symbol: str = typer.Option("NQ", help="Symbol to fetch (default: NQ)"),
+    only: Optional[str] = typer.Option(None, help="Comma-separated YYYY-MM months to fetch (overrides --months)"),
 ) -> None:
     """Fetch historical tick data and macro history from Databento / yfinance."""
     from src.rl.data.fetcher import fetch_ticks, fetch_macro_history
 
-    end = datetime.now(tz=timezone.utc)
-    # Extra month for bootstrap
-    start = end - timedelta(days=(months * 30 + 30))
+    if only:
+        # Parse explicit month list and build date ranges
+        from src.rl.data.fetcher import _to_utc, _month_ranges
+        import calendar
 
-    typer.echo(f"Fetching {symbol} ticks from {start.date()} to {end.date()} ...")
-    tick_files = fetch_ticks(start, end)
+        month_labels = [m.strip() for m in only.split(",")]
+        all_ranges = []
+        for label in month_labels:
+            year, month = int(label[:4]), int(label[5:7])
+            m_start = datetime(year, month, 1, tzinfo=timezone.utc)
+            _, last_day = calendar.monthrange(year, month)
+            m_end = datetime(year, month, last_day, 23, 59, 59, tzinfo=timezone.utc)
+            all_ranges.append((m_start, m_end))
+
+        # Use the full span for the fetch call (skips existing files)
+        start = min(r[0] for r in all_ranges)
+        end = max(r[1] for r in all_ranges)
+
+        typer.echo(f"Fetching {len(month_labels)} specific months for {symbol} ...")
+
+        # Temporarily filter _month_ranges to only requested months
+        import src.rl.data.fetcher as _fetcher_mod
+        _orig_month_ranges = _fetcher_mod._month_ranges
+
+        def _filtered_month_ranges(s, e):
+            all_mr = _orig_month_ranges(s, e)
+            requested = set(month_labels)
+            return [(ms, me) for ms, me in all_mr if ms.strftime("%Y-%m") in requested]
+
+        _fetcher_mod._month_ranges = _filtered_month_ranges
+        try:
+            tick_files = fetch_ticks(start, end)
+        finally:
+            _fetcher_mod._month_ranges = _orig_month_ranges
+    else:
+        end = datetime.now(tz=timezone.utc)
+        start = end - timedelta(days=(months * 30 + 30))
+        typer.echo(f"Fetching {symbol} ticks from {start.date()} to {end.date()} ...")
+        tick_files = fetch_ticks(start, end)
+
     typer.echo(f"  Tick files written: {len(tick_files)}")
     for p in tick_files:
         typer.echo(f"    {p}")
