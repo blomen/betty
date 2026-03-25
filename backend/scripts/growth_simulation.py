@@ -1,5 +1,5 @@
 """
-BankrollBBQ Growth Simulation — Pure +EV Model (All Streams)
+Firev Growth Simulation — Pure +EV Model (All Streams)
 =============================================================
 All bets are +EV. No hedging, no dutch, no churning.
 
@@ -623,7 +623,7 @@ def main():
     random.seed(42)
 
     print("=" * 78)
-    print("  BANKROLLBBQ GROWTH SIMULATION — PURE +EV MODEL (ALL STREAMS)")
+    print("  FIREV GROWTH SIMULATION — PURE +EV MODEL (ALL STREAMS)")
     print("  All bets are +EV. No hedging, no dutch, no churning.")
     print(f"  Monte Carlo: {NUM_SIMS:,} runs per scenario")
     print("=" * 78)
