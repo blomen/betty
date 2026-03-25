@@ -223,6 +223,8 @@ class BatchBuilder:
         Check for unfunded sharp providers (Pinnacle, Polymarket) that have
         active opportunities in the DB. Returns summary info for capital plan.
         """
+        from ..config import get_exchange_rate
+
         result = []
         kelly_fraction = getattr(profile, "kelly_fraction", 0.75) or 0.75
         max_stake_pct = getattr(profile, "max_stake_pct", 5.0) or 5.0
@@ -231,6 +233,9 @@ class BatchBuilder:
         for sharp_pid in ("pinnacle", "polymarket"):
             if sharp_pid in provider_balances:
                 continue  # Already funded, handled normally
+
+            is_usdc = sharp_pid == "polymarket"
+            exchange_rate = get_exchange_rate(sharp_pid) if is_usdc else 1.0
 
             # Count opportunities for this sharp provider
             opp_count = 0
@@ -258,9 +263,11 @@ class BatchBuilder:
                     )
                     if stake_result.skip_reason or stake_result.stake <= 0:
                         continue
+                    # Convert SEK stake to provider currency (USDC for Polymarket)
+                    stake_in_currency = stake_result.stake / exchange_rate if is_usdc else stake_result.stake
                     opp_count += 1
-                    total_stake += stake_result.stake
-                    total_ev += stake_result.stake * edge_raw
+                    total_stake += stake_in_currency
+                    total_ev += stake_in_currency * edge_raw
                     total_edge += opp.edge_pct or 0.0
 
             if opp_count > 0:
@@ -270,7 +277,7 @@ class BatchBuilder:
                     "total_stake": round(total_stake, 2),
                     "total_ev": round(total_ev, 2),
                     "avg_edge": round(total_edge / opp_count, 1),
-                    "currency": "USDC" if sharp_pid == "polymarket" else "SEK",
+                    "currency": "USDC" if is_usdc else "SEK",
                 })
 
         return result
