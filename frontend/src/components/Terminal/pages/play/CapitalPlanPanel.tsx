@@ -10,7 +10,7 @@ type ActionStatus = 'pending' | 'done' | 'dismissed';
 interface Props {
   capitalPlan: CapitalPlan;
   onConfirm: (actions: CapitalAction[]) => void;
-  onDismissAll: () => void;
+  onSkip: () => void;
   isLoading: boolean;
 }
 
@@ -23,37 +23,128 @@ function actionKey(action: CapitalAction, idx: number): string {
 }
 
 function formatCurrency(amount: number, currency: 'SEK' | 'USDC'): string {
-  if (currency === 'SEK') return `${amount.toFixed(0)} kr`;
-  return `${amount.toFixed(2)} USDC`;
+  if (currency === 'USDC') return `${amount.toFixed(0)} USDC`;
+  return `${amount.toFixed(0)} kr`;
 }
 
-function ActionBadge({ type }: { type: CapitalAction['type'] }) {
-  const styles: Record<CapitalAction['type'], string> = {
-    deposit:  'bg-success/20 text-success',
-    transfer: 'bg-blue-500/20 text-blue-400',
-    withdraw: 'bg-red-500/20 text-red-400',
-  };
-  return (
-    <span className={`inline-block px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${styles[type]}`}>
-      {type}
-    </span>
-  );
+const ACTION_COLORS: Record<CapitalAction['type'], { badge: string; border: string; dot: string }> = {
+  deposit:  { badge: 'bg-success/20 text-success', border: 'border-success/30', dot: 'bg-success' },
+  transfer: { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30', dot: 'bg-blue-500' },
+  withdraw: { badge: 'bg-red-500/20 text-red-400', border: 'border-red-500/30', dot: 'bg-red-500' },
+};
+
+// Provider color for sharp providers
+function providerColor(pid: string | undefined): string {
+  if (pid === 'pinnacle') return 'text-red-500';
+  if (pid === 'polymarket') return 'text-purple-500';
+  return 'text-text';
 }
 
-function ProviderLabel({ action }: { action: CapitalAction }) {
-  if (action.type === 'transfer') {
-    const from = action.from_provider_id ?? '?';
-    const to = action.to_provider_id ?? '?';
-    return (
-      <span className="text-xs text-text">
-        <span className="text-dark-400">{from}</span>
-        <span className="text-dark-400 mx-1">→</span>
-        <span className="text-text">{to}</span>
-      </span>
-    );
-  }
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function ActionNode({
+  action,
+  status,
+  onToggleDone,
+  onToggleDismiss,
+}: {
+  action: CapitalAction;
+  status: ActionStatus;
+  onToggleDone: () => void;
+  onToggleDismiss: () => void;
+}) {
+  const colors = ACTION_COLORS[action.type];
+  const isDone = status === 'done';
+  const isDismissed = status === 'dismissed';
+
   return (
-    <span className="text-xs text-text">{action.provider_id ?? '—'}</span>
+    <div className="relative py-1">
+      {/* Timeline dot */}
+      <div
+        className={`absolute -left-[21px] top-[14px] w-2.5 h-2.5 rounded-full border-2 border-dark-900 ${
+          isDone ? 'bg-success' : isDismissed ? 'bg-dark-600' : colors.dot
+        }`}
+      />
+
+      {/* Action card */}
+      <div
+        className={`flex items-center gap-3 px-3 py-2 bg-dark-800 border rounded transition-opacity ${
+          isDismissed ? 'opacity-30 border-dark-700' : isDone ? `${colors.border} bg-success/5` : colors.border
+        }`}
+      >
+        {/* Left: action info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Badge */}
+            <span className={`inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${colors.badge}`}>
+              {action.type}
+            </span>
+
+            {/* Provider */}
+            {action.type === 'transfer' ? (
+              <span className="text-xs">
+                <span className="text-dark-400">{action.from_provider_id}</span>
+                <span className="text-dark-500 mx-1">→</span>
+                <span className={providerColor(action.to_provider_id)}>{action.to_provider_id}</span>
+              </span>
+            ) : (
+              <span className={`text-xs font-medium ${providerColor(action.provider_id)}`}>
+                {action.provider_id}
+              </span>
+            )}
+
+            {/* Amount */}
+            <span className="text-xs text-text font-medium">
+              {formatCurrency(action.amount, action.currency)}
+            </span>
+          </div>
+
+          {/* Details line */}
+          <div className="text-[10px] text-dark-400 mt-0.5 flex items-center gap-2 flex-wrap">
+            {action.unlocks > 0 && (
+              <span>→ {action.unlocks} bets</span>
+            )}
+            {action.avg_edge > 0 && (
+              <span>· +{action.avg_edge.toFixed(1)}% avg</span>
+            )}
+            {action.expected_ev > 0 && (
+              <span className="text-success">· +{action.expected_ev.toFixed(0)} EV</span>
+            )}
+            {action.bonus_info && (
+              <span className="text-amber-500">· {action.bonus_info}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Right: action buttons */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={onToggleDone}
+            className={`w-7 h-7 flex items-center justify-center border rounded transition-colors ${
+              isDone
+                ? 'border-success bg-success/20 text-success'
+                : 'border-dark-600 text-dark-500 hover:border-success/50 hover:text-success'
+            }`}
+            title={isDone ? 'Mark as pending' : 'Mark as done'}
+          >
+            <span className="text-xs font-bold">✓</span>
+          </button>
+          <button
+            onClick={onToggleDismiss}
+            className={`w-7 h-7 flex items-center justify-center border rounded transition-colors ${
+              isDismissed
+                ? 'border-red-500/50 bg-red-500/10 text-red-400'
+                : 'border-dark-600 text-dark-500 hover:border-red-500/30 hover:text-red-400'
+            }`}
+            title={isDismissed ? 'Restore' : 'Skip'}
+          >
+            <span className="text-xs">✕</span>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -61,9 +152,8 @@ function ProviderLabel({ action }: { action: CapitalAction }) {
 // Component
 // ---------------------------------------------------------------------------
 
-export function CapitalPlanPanel({ capitalPlan, onConfirm, onDismissAll, isLoading }: Props) {
+export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: Props) {
   const [statuses, setStatuses] = useState<Record<string, ActionStatus>>({});
-  const [collapsed, setCollapsed] = useState(false);
 
   const keys = useMemo(
     () => capitalPlan.actions.map((a, i) => actionKey(a, i)),
@@ -74,18 +164,18 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onDismissAll, isLoadi
     return statuses[key] ?? 'pending';
   }
 
-  function setStatus(key: string, status: ActionStatus) {
-    setStatuses((prev) => ({ ...prev, [key]: status }));
-  }
-
   function toggleDone(key: string) {
-    const current = getStatus(key);
-    setStatus(key, current === 'done' ? 'pending' : 'done');
+    setStatuses(prev => ({
+      ...prev,
+      [key]: prev[key] === 'done' ? 'pending' : 'done',
+    }));
   }
 
   function toggleDismiss(key: string) {
-    const current = getStatus(key);
-    setStatus(key, current === 'dismissed' ? 'pending' : 'dismissed');
+    setStatuses(prev => ({
+      ...prev,
+      [key]: prev[key] === 'dismissed' ? 'pending' : 'dismissed',
+    }));
   }
 
   const doneActions = useMemo(
@@ -95,204 +185,111 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onDismissAll, isLoadi
   );
 
   const hasDone = doneActions.length > 0;
+  const hasActions = capitalPlan.actions.length > 0;
 
-  // Summary figures — SEK and USDC net needed (pending + done actions only)
+  // Summary: net capital needed per currency
   const { netSEK, netUSDC, totalUnlocks, totalEV } = useMemo(() => {
-    let sekNet = 0;
-    let usdcNet = 0;
-    let unlocks = 0;
-    let ev = 0;
-
+    let sek = 0, usdc = 0, unlocks = 0, ev = 0;
     capitalPlan.actions.forEach((action, i) => {
-      const st = getStatus(keys[i]);
-      if (st === 'dismissed') return;
-
+      if (getStatus(keys[i]) === 'dismissed') return;
       const sign = action.type === 'withdraw' ? -1 : 1;
-      if (action.currency === 'SEK') sekNet += sign * action.amount;
-      else usdcNet += sign * action.amount;
-
+      if (action.currency === 'USDC') usdc += sign * action.amount;
+      else sek += sign * action.amount;
       unlocks += action.unlocks;
       ev += action.expected_ev;
     });
-
-    return { netSEK: sekNet, netUSDC: usdcNet, totalUnlocks: unlocks, totalEV: ev };
+    return { netSEK: sek, netUSDC: usdc, totalUnlocks: unlocks, totalEV: ev };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capitalPlan.actions, keys, statuses]);
 
-  // Collapsed / dismissed view
-  if (collapsed) {
-    return (
-      <div className="border border-border bg-dark-900 px-3 py-2 flex items-center gap-2 text-xs text-dark-400">
-        <span>Capital plan dismissed</span>
-        <button
-          className="text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
-          onClick={() => setCollapsed(false)}
-        >
-          show
-        </button>
-      </div>
-    );
-  }
+  // Projected deployed total
+  const projectedDeployed = capitalPlan.total_deployed + netSEK;
 
   return (
-    <div className="border border-border bg-dark-900 flex flex-col">
-      {/* Header */}
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-xs font-bold text-text tracking-wider uppercase">Capital Plan</span>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] text-dark-400">
-            Deployed: {capitalPlan.total_deployed.toFixed(0)} kr
+    <div className="p-4 flex flex-col items-center">
+      {/* Constrain width for the waterfall */}
+      <div className="w-full max-w-lg">
+
+        {/* Current State box */}
+        <div className="border border-dark-600 bg-dark-800 rounded-md p-4 text-center">
+          <div className="text-[10px] text-dark-400 uppercase tracking-widest mb-1">Current Capital</div>
+          <div className="text-xl font-bold text-text">
+            {capitalPlan.total_deployed.toFixed(0)} kr
+          </div>
+          <div className="text-[10px] text-dark-400 mt-0.5">
             {capitalPlan.withdrawable > 0 && (
-              <> · Withdrawable: {capitalPlan.withdrawable.toFixed(0)} kr</>
+              <span>{capitalPlan.withdrawable.toFixed(0)} kr withdrawable</span>
             )}
-          </span>
-          <button
-            className="text-[10px] text-dark-400 hover:text-text transition-colors"
-            onClick={() => {
-              setCollapsed(true);
-              onDismissAll();
-            }}
-            title="Dismiss capital plan"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="sq w-full">
-          <thead className="sticky top-0 z-10 bg-dark-900">
-            <tr>
-              <th className="text-left text-[10px]">Action</th>
-              <th className="text-left text-[10px]">Provider</th>
-              <th className="text-right text-[10px]">Amount</th>
-              <th className="text-right text-[10px]">Unlocks</th>
-              <th className="text-right text-[10px]">Avg Edge</th>
-              <th className="text-right text-[10px]">+EV</th>
-              <th className="text-center text-[10px]">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {capitalPlan.actions.map((action, idx) => {
-              const key = keys[idx];
-              const status = getStatus(key);
-              const isDone = status === 'done';
-              const isDismissed = status === 'dismissed';
-
-              return (
-                <tr
-                  key={key}
-                  className={
-                    isDone
-                      ? 'bg-success/5 opacity-80'
-                      : isDismissed
-                      ? 'opacity-30'
-                      : ''
-                  }
-                >
-                  <td>
-                    <div className="flex items-center gap-1.5">
-                      <ActionBadge type={action.type} />
-                      {action.priority_label && (
-                        <span className="text-[9px] text-dark-400">{action.priority_label}</span>
-                      )}
-                    </div>
-                  </td>
-                  <td>
-                    <div>
-                      <ProviderLabel action={action} />
-                      {action.bonus_info && (
-                        <div className="text-[9px] text-amber-500">{action.bonus_info}</div>
-                      )}
-                    </div>
-                  </td>
-                  <td className="text-right text-xs text-text font-medium">
-                    {formatCurrency(action.amount, action.currency)}
-                  </td>
-                  <td className="text-right text-xs text-dark-400">
-                    {action.unlocks > 0 ? `${action.unlocks}` : '—'}
-                  </td>
-                  <td className="text-right text-xs text-success">
-                    {action.avg_edge > 0 ? `+${action.avg_edge.toFixed(1)}%` : '—'}
-                  </td>
-                  <td className="text-right text-xs text-success font-medium">
-                    {action.expected_ev > 0 ? `+${action.expected_ev.toFixed(0)}` : '—'}
-                  </td>
-                  <td className="text-center">
-                    <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => toggleDone(key)}
-                        className={`px-1.5 py-0.5 text-[10px] font-medium border transition-colors ${
-                          isDone
-                            ? 'border-success text-success bg-success/10'
-                            : 'border-border text-dark-400 hover:text-success hover:border-success/50'
-                        }`}
-                        title={isDone ? 'Mark as pending' : 'Mark as done'}
-                      >
-                        done
-                      </button>
-                      <button
-                        onClick={() => toggleDismiss(key)}
-                        className={`px-1.5 py-0.5 text-[10px] font-medium border transition-colors ${
-                          isDismissed
-                            ? 'border-red-500/50 text-red-400 bg-red-500/10'
-                            : 'border-border text-dark-400 hover:text-red-400 hover:border-red-500/30'
-                        }`}
-                        title={isDismissed ? 'Restore action' : 'Skip this action'}
-                      >
-                        skip
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Summary bar + Confirm */}
-      <div className="px-3 py-2 border-t border-border flex items-center gap-4 flex-wrap">
-        {/* Net needed */}
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-dark-400">Net needed:</span>
-          {netSEK !== 0 && (
-            <span className={netSEK > 0 ? 'text-amber-500 font-medium' : 'text-success font-medium'}>
-              {netSEK > 0 ? '+' : ''}{netSEK.toFixed(0)} kr
-            </span>
-          )}
-          {netUSDC !== 0 && (
-            <span className={netUSDC > 0 ? 'text-amber-500 font-medium' : 'text-success font-medium'}>
-              {netUSDC > 0 ? '+' : ''}{netUSDC.toFixed(2)} USDC
-            </span>
-          )}
-          {netSEK === 0 && netUSDC === 0 && (
-            <span className="text-dark-400">—</span>
-          )}
+          </div>
         </div>
 
-        {totalUnlocks > 0 && (
-          <div className="text-xs text-dark-400">
-            Unlocks: <span className="text-text">{totalUnlocks}</span>
+        {/* Arrow down */}
+        {hasActions && (
+          <div className="text-center text-dark-500 text-lg py-1">↓</div>
+        )}
+
+        {/* Timeline of actions */}
+        {hasActions && (
+          <div className="border-l-2 border-success/20 ml-5 pl-4">
+            {capitalPlan.actions.map((action, idx) => (
+              <ActionNode
+                key={keys[idx]}
+                action={action}
+                status={getStatus(keys[idx])}
+                onToggleDone={() => toggleDone(keys[idx])}
+                onToggleDismiss={() => toggleDismiss(keys[idx])}
+              />
+            ))}
           </div>
         )}
 
-        {totalEV > 0 && (
-          <div className="text-xs text-dark-400">
-            +EV: <span className="text-success font-medium">+{totalEV.toFixed(0)}</span>
-          </div>
-        )}
+        {/* Arrow down */}
+        <div className="text-center text-dark-500 text-lg py-1">↓</div>
 
-        {/* Confirm button */}
-        {hasDone && (
-          <button
-            onClick={() => onConfirm(doneActions)}
-            disabled={isLoading}
-            className="ml-auto px-4 py-1.5 bg-success text-bg text-xs font-bold hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {isLoading ? 'Recalculating...' : `Confirm & Recalc (${doneActions.length})`}
-          </button>
+        {/* Projected State box */}
+        <div className="border border-success/30 bg-dark-800 rounded-md p-4 text-center">
+          <div className="text-[10px] text-success uppercase tracking-widest mb-1">
+            {hasActions ? 'Projected' : 'Ready'}
+          </div>
+          <div className="text-xl font-bold text-text">
+            {projectedDeployed.toFixed(0)} kr
+            {netUSDC > 0 && (
+              <span className="text-base text-success ml-2">+ {netUSDC.toFixed(0)} USDC</span>
+            )}
+          </div>
+          {hasActions && (
+            <div className="text-[10px] text-success mt-1">
+              {totalUnlocks > 0 && <span>+{totalUnlocks} bets unlocked</span>}
+              {totalEV > 0 && <span className="ml-2">+{totalEV.toFixed(0)} EV</span>}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex items-center justify-center gap-2 mt-4">
+            {hasDone ? (
+              <button
+                onClick={() => onConfirm(doneActions)}
+                disabled={isLoading}
+                className="px-5 py-2 bg-success text-black text-xs font-bold rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {isLoading ? 'Recalculating...' : `Confirm & Calc Batch (${doneActions.length}) →`}
+              </button>
+            ) : (
+              <button
+                onClick={onSkip}
+                className="px-5 py-2 bg-success text-black text-xs font-bold rounded hover:opacity-90 transition-opacity"
+              >
+                {hasActions ? 'Skip → Calc Batch' : 'Calc Batch →'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* No actions hint */}
+        {!hasActions && (
+          <div className="text-center text-dark-400 text-[10px] mt-2">
+            All providers funded optimally. No capital actions needed.
+          </div>
         )}
       </div>
     </div>
