@@ -23,7 +23,7 @@ function actionKey(action: CapitalAction, idx: number): string {
 }
 
 function formatCurrency(amount: number, currency: 'SEK' | 'USDC'): string {
-  if (currency === 'USDC') return `${amount.toFixed(0)} USDC`;
+  if (currency === 'USDC') return `${amount.toFixed(2)} USDC`;
   return `${amount.toFixed(0)} kr`;
 }
 
@@ -254,7 +254,7 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
           <div className="text-xl font-bold text-text">
             {projectedDeployed.toFixed(0)} kr
             {netUSDC > 0 && (
-              <span className="text-base text-success ml-2">+ {netUSDC.toFixed(0)} USDC</span>
+              <span className="text-base text-success ml-2">+ {netUSDC.toFixed(2)} USDC</span>
             )}
           </div>
           {hasActions && (
