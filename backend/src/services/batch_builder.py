@@ -194,6 +194,10 @@ class BatchBuilder:
             unfunded_sharp=unfunded_sharp,
         )
 
+        # Get exchange rate for USDC → SEK conversion
+        from ..config import get_exchange_rate
+        usdc_rate = get_exchange_rate("polymarket")
+
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
             "summary": self._build_summary(batch),
@@ -201,7 +205,7 @@ class BatchBuilder:
             "missed_opportunities": self._build_missed_summary(missed),
             "deposit_recommendations": [],
             "withdrawal_recommendations": [],
-            "capital_plan": capital_plan,
+            "capital_plan": {**capital_plan, "usdc_rate": usdc_rate},
             "wagering_projections": self._compute_wagering_projections(batch, provider_balances),
         }
 

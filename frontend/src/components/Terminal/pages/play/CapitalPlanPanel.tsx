@@ -8,7 +8,7 @@ import type { CapitalAction, CapitalPlan } from '../../../../types';
 type ActionStatus = 'pending' | 'done' | 'dismissed';
 
 interface Props {
-  capitalPlan: CapitalPlan;
+  capitalPlan: CapitalPlan & { usdc_rate?: number };
   onConfirm: (actions: CapitalAction[]) => void;
   onSkip: () => void;
   isLoading: boolean;
@@ -47,11 +47,13 @@ function providerColor(pid: string | undefined): string {
 function ActionNode({
   action,
   status,
+  usdcRate,
   onToggleDone,
   onToggleDismiss,
 }: {
   action: CapitalAction;
   status: ActionStatus;
+  usdcRate: number;
   onToggleDone: () => void;
   onToggleDismiss: () => void;
 }) {
@@ -98,6 +100,11 @@ function ActionNode({
             {/* Amount */}
             <span className="text-xs text-text font-medium">
               {formatCurrency(action.amount, action.currency)}
+              {action.currency === 'USDC' && usdcRate > 0 && (
+                <span className="text-dark-400 font-normal ml-1">
+                  ({Math.round(action.amount * usdcRate)} kr)
+                </span>
+              )}
             </span>
           </div>
 
@@ -153,6 +160,7 @@ function ActionNode({
 // ---------------------------------------------------------------------------
 
 export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: Props) {
+  const usdcRate = capitalPlan.usdc_rate ?? 10.5;
   const [statuses, setStatuses] = useState<Record<string, ActionStatus>>({});
 
   const keys = useMemo(
@@ -202,8 +210,9 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capitalPlan.actions, keys, statuses]);
 
-  // Projected deployed total
-  const projectedDeployed = capitalPlan.total_deployed + netSEK;
+  // Projected deployed total (including USDC → SEK conversion)
+  const usdcInSEK = netUSDC * usdcRate;
+  const projectedDeployed = capitalPlan.total_deployed + netSEK + usdcInSEK;
 
   return (
     <div className="p-4 flex flex-col items-center">
@@ -236,6 +245,7 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
                 key={keys[idx]}
                 action={action}
                 status={getStatus(keys[idx])}
+                usdcRate={usdcRate}
                 onToggleDone={() => toggleDone(keys[idx])}
                 onToggleDismiss={() => toggleDismiss(keys[idx])}
               />
@@ -253,10 +263,12 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
           </div>
           <div className="text-xl font-bold text-text">
             {projectedDeployed.toFixed(0)} kr
-            {netUSDC > 0 && (
-              <span className="text-base text-success ml-2">+ {netUSDC.toFixed(2)} USDC</span>
-            )}
           </div>
+          {netUSDC > 0 && (
+            <div className="text-[10px] text-dark-400 mt-0.5">
+              incl. {netUSDC.toFixed(2)} USDC ({Math.round(usdcInSEK)} kr)
+            </div>
+          )}
           {hasActions && (
             <div className="text-[10px] text-success mt-1">
               {totalUnlocks > 0 && <span>+{totalUnlocks} bets unlocked</span>}
