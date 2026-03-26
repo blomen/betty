@@ -259,3 +259,44 @@ def test_delete_recipe(api_client, mirror):
 def test_delete_recipe_not_found(api_client):
     resp = api_client.delete("/api/mirror/notification-recipes/nonexistent")
     assert resp.status_code == 404
+
+
+def test_full_capture_then_replay_flow(mirror):
+    """End-to-end: capture a recipe, then replay it on provider detection."""
+    # Step 1: Simulate capturing a notification settings call
+    asyncio.get_event_loop().run_until_complete(
+        mirror._handle_notification_settings(
+            url="https://campobet.se/api/v1/preferences",
+            method="PUT",
+            request_body='{"email": false, "sms": false, "push": false}',
+            response_body='{"ok": true}',
+            content_type="application/json",
+        )
+    )
+    assert len(mirror._recipes) == 1
+
+    # Step 2: Simulate provider detection triggering replay
+    mock_response = AsyncMock()
+    mock_response.status = 200
+    mock_request = AsyncMock()
+    mock_request.fetch = AsyncMock(return_value=mock_response)
+    mirror.interceptor.context = MagicMock()
+    mirror.interceptor.context.request = mock_request
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        asyncio.get_event_loop().run_until_complete(
+            mirror._replay_notification_mute("campobet")
+        )
+
+    # Verify replay happened with correct params
+    call_args = mock_request.fetch.call_args
+    assert call_args[0][0] == "https://campobet.se/api/v1/preferences"
+    assert call_args[1]["method"] == "PUT"
+    assert "campobet" in mirror._muted_providers
+
+    # Step 3: Second visit should not replay
+    mock_request.fetch.reset_mock()
+    asyncio.get_event_loop().run_until_complete(
+        mirror._replay_notification_mute("campobet")
+    )
+    mock_request.fetch.assert_not_called()
