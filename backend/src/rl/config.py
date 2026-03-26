@@ -52,12 +52,17 @@ TICK_SIZE = 0.25
 
 # --- DQN Hyperparameters ---
 BATCH_SIZE = 64
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4
 REPLAY_BUFFER_SIZE = 1_000_000
 EPSILON_START = 1.0
 EPSILON_END = 0.05
 EPSILON_DECAY_STEPS = 5000
 GAMMA = 0.0
+
+# --- Reward Preprocessing ---
+REWARD_CLIP_MIN = -2.0
+REWARD_CLIP_MAX = 4.0
+REWARD_NORMALIZE = True  # Standardize rewards to mean=0, std=1 before training
 
 # --- Target Network (Polyak soft update) ---
 TAU = 0.005  # Soft update coefficient: θ_target ← τ·θ_online + (1-τ)·θ_target

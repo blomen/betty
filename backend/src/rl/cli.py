@@ -523,7 +523,7 @@ def train(
 
     from src.rl.agent.dqn import DQNAgent
     from src.rl.data.normalization import RunningNormalizer
-    from src.rl.config import Action, BATCH_SIZE
+    from src.rl.config import Action, BATCH_SIZE, REWARD_CLIP_MIN, REWARD_CLIP_MAX, REWARD_NORMALIZE
     from src.rl.features.observation import OBSERVATION_DIM
 
     episodes_dir = _EPISODES_DIR
@@ -545,6 +545,19 @@ def train(
 
     n = len(observations)
     typer.echo(f"Loaded {n} episodes ({observations.shape[1]}-dim) from {episodes_dir}")
+
+    # --- Reward preprocessing: clip + normalize ---
+    rewards_cont = np.clip(rewards_cont, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+    rewards_rev = np.clip(rewards_rev, REWARD_CLIP_MIN, REWARD_CLIP_MAX)
+    typer.echo(f"Rewards clipped to [{REWARD_CLIP_MIN}, {REWARD_CLIP_MAX}]")
+
+    if REWARD_NORMALIZE:
+        all_rewards = np.concatenate([rewards_cont, rewards_rev])
+        r_mean = all_rewards.mean()
+        r_std = all_rewards.std() + 1e-8
+        rewards_cont = (rewards_cont - r_mean) / r_std
+        rewards_rev = (rewards_rev - r_mean) / r_std
+        typer.echo(f"Rewards normalized: mean={r_mean:.3f}, std={r_std:.3f}")
 
     # Load and apply normalizer
     normalizer_path = episodes_dir / "normalizer.json"
@@ -582,18 +595,24 @@ def train(
         agent.store(train_obs[i], Action.CONTINUATION.value, rc, stop_target=st)
         agent.store(train_obs[i], Action.REVERSAL.value, rr, stop_target=st)
 
-    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes × 2 actions)")
+    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes x 2 actions)")
 
     if agent.buffer.size < BATCH_SIZE:
         typer.echo(f"Buffer too small ({agent.buffer.size} < {BATCH_SIZE}). Need more training data.", err=True)
         raise typer.Exit(1)
 
+    # Set up cosine annealing LR scheduler
+    from torch.optim.lr_scheduler import CosineAnnealingLR
+    scheduler = CosineAnnealingLR(agent.optimizer, T_max=epochs, eta_min=1e-5)
+
     # Training loop
-    typer.echo(f"\nTraining for {epochs} epochs ...")
+    typer.echo(f"\nTraining for {epochs} epochs (LR: 3e-4 -> 1e-5 cosine) ...")
     for epoch in range(1, epochs + 1):
         loss = agent.train_step()
+        scheduler.step()
         if epoch % 10 == 0:
-            typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={loss:.4f}  epsilon={agent.epsilon:.3f}")
+            lr = scheduler.get_last_lr()[0]
+            typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={loss:.4f}  epsilon={agent.epsilon:.3f}  lr={lr:.2e}")
 
     # Validation: check if model predicts the better direction correctly
     typer.echo("\nRunning validation ...")
@@ -623,13 +642,12 @@ def train(
 @rl_app.command()
 def eval(
     checkpoint: str = typer.Option("v1", help="Checkpoint name to load"),
-    skip_threshold: float = typer.Option(0.3, help="Min Q-value to trade (below = SKIP)"),
+    skip_threshold: float = typer.Option(0.15, help="Min Q-spread to trade (below = SKIP, model uncertain)"),
 ) -> None:
     """Evaluate the trained DQN agent on the test split.
 
-    The model predicts Q(CONT) and Q(REV). If max Q-value < skip_threshold,
-    the episode is SKIPped. This replaces the learned SKIP action which
-    tends to collapse the policy.
+    The model predicts Q(CONT) and Q(REV). If |Q_cont - Q_rev| < skip_threshold,
+    the model is uncertain about direction and the episode is SKIPped.
     """
     import numpy as np
 
@@ -691,13 +709,13 @@ def eval(
         # Only consider CONT and REV Q-values
         q_cont = float(q_values[Action.CONTINUATION.value])
         q_rev = float(q_values[Action.REVERSAL.value])
-        best_q = max(q_cont, q_rev)
+        q_spread = abs(q_cont - q_rev)
 
         rc = float(test_rc[i])
         rr = float(test_rr[i])
 
-        if best_q < skip_threshold:
-            # Low confidence — skip
+        if q_spread < skip_threshold:
+            # Model uncertain about direction — skip
             action = Action.SKIP.value
             reward = 0.0
         elif q_cont >= q_rev:
