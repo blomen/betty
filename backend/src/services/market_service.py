@@ -531,15 +531,22 @@ class MarketService:
         bar_dicts = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0)} for b in bars] if bars else []
         structure = detect_swing_points(bar_dicts, lookback=5)
 
-        # Compute VP live from today's bars (not stale DB session values)
+        # Compute VP live — prefer tick data for accuracy, fall back to bars
         bar_dicts_with_vol = [{"high": b.get("high", 0), "low": b.get("low", 0), "close": b.get("close", 0), "volume": b.get("volume", 1)} for b in bars] if bars else []
-        if bar_dicts_with_vol:
+        tick_vp = await self._compute_tick_vp(symbol)
+        if tick_vp is not None:
+            vp = tick_vp
+        elif bar_dicts_with_vol:
             vp = compute_volume_profile_from_bars(bar_dicts_with_vol)
+        else:
+            vp = None
+
+        if vp is not None:
             profiles = {
                 "session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}
             }
         else:
-            # Fallback to DB if no bars available
+            # Fallback to DB if no bars/ticks available
             profiles = {
                 "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
             }
@@ -1103,10 +1110,8 @@ class MarketService:
     async def get_volume_profile_curve(self, symbol: str = "NQ", timeframe: str = "session") -> dict:
         """Return VP curve (price→volume) for charting. Cached for 60s.
 
-        Timeframes:
-        - session: today from 00:00 CET to now
-        - weekly: current week (Mon 00:00 CET) to now
-        - monthly: current month (1st 00:00 CET) to now
+        Session VP uses tick data from market_trades for accuracy (exact trade prices).
+        Weekly/monthly use 1m bar approximation (good enough at scale).
         """
         import time as _time
 
@@ -1115,15 +1120,23 @@ class MarketService:
         if cached and _time.time() < cached[1]:
             return cached[0]
 
+        vp = None
+
         if timeframe == "session":
-            bars = await self._get_session_bars(symbol)
-        else:
-            bars = await self._get_period_bars(symbol, timeframe)
+            # Try tick-based VP first (accurate — no bar-spread approximation)
+            vp = await self._compute_tick_vp(symbol)
 
-        if not bars:
-            return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
+        if vp is None:
+            # Fall back to bar-based VP
+            if timeframe == "session":
+                bars = await self._get_session_bars(symbol)
+            else:
+                bars = await self._get_period_bars(symbol, timeframe)
 
-        vp = compute_volume_profile_from_bars(bars)
+            if not bars:
+                return {"timeframe": timeframe, "levels": [], "poc": 0, "vah": 0, "val": 0}
+
+            vp = compute_volume_profile_from_bars(bars)
 
         result = {
             "timeframe": timeframe,
@@ -1134,6 +1147,34 @@ class MarketService:
         }
         MarketService._vp_cache[cache_key] = (result, _time.time() + 300)
         return result
+
+    async def _compute_tick_vp(self, symbol: str) -> VolumeProfile | None:
+        """Compute VP from actual tick data in market_trades table.
+
+        Returns VolumeProfile if sufficient ticks exist, else None (caller falls back to bars).
+        """
+        from zoneinfo import ZoneInfo
+        _CET = ZoneInfo("Europe/Stockholm")
+
+        now = datetime.now(timezone.utc)
+        today_cet = now.astimezone(_CET).date()
+        d_start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
+
+        try:
+            trades = self.repo.get_trades(symbol, d_start, now)
+            if len(trades) < 100:
+                logger.info("Tick VP: only %d ticks, falling back to bars", len(trades))
+                return None
+
+            # Build trade dicts for compute_volume_profile (exact prices, no spreading)
+            trade_dicts = [{"price": t.price, "size": t.size} for t in trades]
+            vp = compute_volume_profile(trade_dicts)
+            logger.info("Tick VP: computed from %d ticks (POC=%.2f, VAH=%.2f, VAL=%.2f)",
+                        len(trades), vp.poc, vp.vah, vp.val)
+            return vp
+        except Exception as e:
+            logger.warning("Tick VP failed, will fall back to bars: %s", e)
+            return None
 
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
         """Get 1m bars for weekly or monthly VP from DB."""
@@ -1333,9 +1374,6 @@ class MarketService:
 
         # Filter to Globex hours (skip daily 17:00-18:00 ET halt + weekends)
         candles = [c for c in candles if self._in_globex(c["t"])]
-
-        # Filter outlier highs/lows — Databento bars include extreme ticks
-        candles = self._filter_outlier_candles(candles)
 
         # Detect gaps and trigger async backfill (non-blocking, improves next request)
         base_interval = "1m" if interval == "15m" else interval

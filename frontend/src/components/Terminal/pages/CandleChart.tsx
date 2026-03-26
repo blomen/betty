@@ -28,12 +28,12 @@ const VP_OVERLAYS = [
 ] as const;
 
 // Session box definitions (CET/CEST times as hour*60+minute)
-// Tokyo: 00:00 → 09:00 CET  (Globex open → London open)
-// London: 09:00 → 15:30 CET  (London open → NY open)
-// New York: 15:30 → 22:00 CET  (NY open → close)
+// Tokyo: 00:00 → 09:00 CET  (Asian session, overlaps London 08:00-09:00)
+// London: 08:00 → 16:30 CET  (LSE hours, overlaps Tokyo & NY)
+// New York: 15:30 → 22:00 CET  (NY open → close, overlaps London 15:30-16:30)
 const SESSION_DEFS = [
-  { name: 'Tokyo',    startMin: 0,             endMin: 8 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
-  { name: 'London',   startMin: 9 * 60,        endMin: 15 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
+  { name: 'Tokyo',    startMin: 0,             endMin: 9 * 60,        color: 'rgba(6, 182, 212, 0.12)',  border: 'rgba(6, 182, 212, 0.35)',  label: '#06B6D4' },
+  { name: 'London',   startMin: 8 * 60,        endMin: 16 * 60 + 30,  color: 'rgba(16, 185, 129, 0.12)', border: 'rgba(16, 185, 129, 0.35)', label: '#10B981' },
   { name: 'New York', startMin: 15 * 60 + 30,  endMin: 22 * 60,       color: 'rgba(239, 68, 68, 0.10)',  border: 'rgba(239, 68, 68, 0.30)',  label: '#EF4444' },
 ];
 

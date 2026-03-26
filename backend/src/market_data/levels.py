@@ -409,10 +409,11 @@ def compute_developing_vwap(
 CET = ZoneInfo("Europe/Stockholm")
 
 # Fixed CET session boundaries (match frontend SESSION_DEFS)
+# True market hours — Tokyo/London overlap 08:00-09:00, London/NY overlap 15:30-16:30
 _TOKYO_START = time(0, 0)
-_TOKYO_END = time(8, 0)
-_LONDON_START = time(9, 0)
-_LONDON_END = time(15, 30)   # = NY open
+_TOKYO_END = time(9, 0)
+_LONDON_START = time(8, 0)
+_LONDON_END = time(16, 30)
 _NY_START = time(15, 30)
 _NY_END = time(22, 0)
 _IB_END = time(16, 30)       # NY open + 60 min
@@ -425,8 +426,8 @@ def compute_session_levels(
     """Compute PDH/PDL, Tokyo/London H/L, IB from 1-minute bars.
 
     All session boundaries use fixed CET times (matching chart display):
-    - Tokyo: 00:00 - 08:00 CET
-    - London: 09:00 - 15:30 CET
+    - Tokyo: 00:00 - 09:00 CET  (overlaps London 08:00-09:00)
+    - London: 08:00 - 16:30 CET (overlaps Tokyo & NY)
     - NY / IB: 15:30 - 22:00 CET  (IB = first 60 min: 15:30-16:30)
     - PDH/PDL: prior trading day's full session (00:00-22:00 CET)
     """
@@ -474,12 +475,12 @@ def compute_session_levels(
         if bar_date != today_cet:
             continue
 
-        # Tokyo: 00:00-08:00 CET
+        # Tokyo: 00:00-09:00 CET
         if _TOKYO_START <= bar_time < _TOKYO_END:
             levels.tokyo_high = max(levels.tokyo_high or h, h)
             levels.tokyo_low = min(levels.tokyo_low or l, l)
 
-        # London: 09:00-15:30 CET
+        # London: 08:00-16:30 CET
         if _LONDON_START <= bar_time < _LONDON_END:
             levels.london_high = max(levels.london_high or h, h)
             levels.london_low = min(levels.london_low or l, l)
