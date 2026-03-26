@@ -13,40 +13,40 @@ Which data we can capture per provider when the mirror browser is active.
 
 ## Capabilities
 
-| # | Provider | Platform | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout |
-|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | campobet | Altenar | ~ | Y | Y | - | - | - |
-| 2 | quickcasino | Altenar | ~ | Y | Y | - | - | - |
-| 3 | betinia | Altenar | ~ | Y | Y | - | - | - |
-| 4 | swiper | Altenar | ~ | ~ | Y | - | - | - |
-| 5 | lodur | Altenar | ~ | ~ | Y | - | - | - |
-| 6 | dbet | Altenar | ~ | ~ | Y | - | - | - |
-| 7 | spelklubben | Gecko V2 | Y | - | ~ | - | - | - |
-| 8 | betsson | Gecko V2 | Y | - | ~ | - | - | - |
-| 9 | betsafe | Gecko V2 | Y | - | ~ | - | - | - |
-| 10 | nordicbet | Gecko V2 | Y | - | ~ | - | - | - |
-| 11 | bethard | Gecko V2 | Y | - | ~ | - | - | - |
-| 12 | unibet | Kambi | ~ | - | Y | - | - | - |
-| 13 | leovegas | Kambi | ~ | - | - | - | - | - |
-| 14 | expekt | Kambi | ~ | - | - | - | - | - |
-| 15 | 888sport | Kambi | ~ | - | - | - | - | - |
-| 16 | speedybet | Kambi | ~ | - | - | - | - | - |
-| 17 | x3000 | Kambi | ~ | - | - | - | - | - |
-| 18 | goldenbull | Kambi | ~ | - | - | - | - | - |
-| 19 | 1x2 | Kambi | ~ | - | - | - | - | - |
-| 20 | comeon | Custom | - | - | - | - | - | - |
-| 21 | hajper | Custom | - | - | - | - | - | - |
-| 22 | lyllo | Custom | - | - | - | - | - | - |
-| 23 | snabbare | Snabbare | - | - | - | - | - | - |
-| 24 | 10bet | TenBet | - | - | - | - | - | - |
-| 25 | mrgreen | Spectate | - | - | - | - | - | - |
-| 26 | betmgm | Kambi | ~ | - | - | - | - | - |
-| 27 | vbet | BetConstruct | - | - | - | - | - | - |
-| 28 | interwetten | Interwetten | - | - | - | - | - | - |
-| 29 | coolbet | Coolbet | - | - | - | - | - | - |
-| 30 | tipwin | Tipwin | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | - | N/A | - | - | - | - |
-| 32 | polymarket | Polymarket | - | N/A | - | - | - | N/A |
+| # | Provider | Platform | Bet Placement | Settle Bets | Sync Balance | Sync Open Bets | Sync Odds | Cashout | Mute Notifs |
+|---|----------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | campobet | Altenar | ~ | Y | Y | - | - | - | - |
+| 2 | quickcasino | Altenar | ~ | Y | Y | - | - | - | - |
+| 3 | betinia | Altenar | ~ | Y | Y | - | - | - | - |
+| 4 | swiper | Altenar | ~ | ~ | Y | - | - | - | - |
+| 5 | lodur | Altenar | ~ | ~ | Y | - | - | - | - |
+| 6 | dbet | Altenar | ~ | ~ | Y | - | - | - | - |
+| 7 | spelklubben | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 8 | betsson | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 9 | betsafe | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 10 | nordicbet | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 11 | bethard | Gecko V2 | Y | - | ~ | - | - | - | - |
+| 12 | unibet | Kambi | ~ | - | Y | - | - | - | Y |
+| 13 | leovegas | Kambi | ~ | - | - | - | - | - | - |
+| 14 | expekt | Kambi | ~ | - | - | - | - | - | - |
+| 15 | 888sport | Kambi | ~ | - | - | - | - | - | - |
+| 16 | speedybet | Kambi | ~ | - | - | - | - | - | - |
+| 17 | x3000 | Kambi | ~ | - | - | - | - | - | - |
+| 18 | goldenbull | Kambi | ~ | - | - | - | - | - | - |
+| 19 | 1x2 | Kambi | ~ | - | - | - | - | - | - |
+| 20 | comeon | Custom | - | - | - | - | - | - | - |
+| 21 | hajper | Custom | - | - | - | - | - | - | - |
+| 22 | lyllo | Custom | - | - | - | - | - | - | - |
+| 23 | snabbare | Snabbare | - | - | - | - | - | - | - |
+| 24 | 10bet | TenBet | - | - | - | - | - | - | - |
+| 25 | mrgreen | Spectate | - | - | - | - | - | - | - |
+| 26 | betmgm | Kambi | ~ | - | - | - | - | - | - |
+| 27 | vbet | BetConstruct | - | - | - | - | - | - | - |
+| 28 | interwetten | Interwetten | - | - | - | - | - | - | - |
+| 29 | coolbet | Coolbet | - | - | - | - | - | - | - |
+| 30 | tipwin | Tipwin | - | - | - | - | - | - | - |
+| 31 | pinnacle | Pinnacle | - | N/A | - | - | - | - | - |
+| 32 | polymarket | Polymarket | - | N/A | - | - | - | N/A | N/A |
 
 ## Platform Notes
 
