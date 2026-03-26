@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, unquote
 
+from pathlib import Path
+
 from ..db.models import get_session, BetTrace, Bet
 from ..services.bet_service import BetService
 from .interceptor import BetInterceptor
 from .parsers.gecko import GeckoBetParser
+from .recipes import NotificationRecipe, load_recipes, save_recipes
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +31,18 @@ class MirrorService:
         self._event_cache: dict[str, dict[str, str]] = {}
         # Pending settlements awaiting confirmation
         self._pending_settlements: list[dict] = []
+        # Notification mute recipes
+        self._recipes_dir: Path | None = None  # Set in tests; defaults to data dir
+        self._recipes: list[NotificationRecipe] = []
+        self._muted_providers: set[str] = set()
+        self._load_notification_recipes()
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
             on_bet_history=self._handle_bet_history,
             on_financial_data=self._handle_financial_data,
             on_provider_detected=self._handle_provider_detected,
+            on_notification_settings=self._handle_notification_settings,
         )
 
     async def start(self, site_url: str | None = None):
@@ -57,6 +66,8 @@ class MirrorService:
             "pending_bets": info["pending_bets"],
             "pending_stake": info["pending_stake"],
         })
+        # Auto-mute notifications if we have a recipe
+        await self._replay_notification_mute(provider_id)
 
     def _get_provider_sync_info(self, provider_id: str) -> dict:
         """Get current balance + pending bet count for a provider."""
@@ -316,33 +327,38 @@ class MirrorService:
         )
 
     def _extract_balance(self, provider_id: str, data: dict) -> float | None:
-        """Extract cash balance from provider-specific response format."""
+        """Extract total balance (cash + bonus) from provider-specific response format."""
         try:
-            # Kambi / Unibet: {"balance": {"cash": 384.10, ...}}
+            # Kambi / Unibet: {"balance": {"cash": 384.10, "bonus": 0, ...}}
             if "balance" in data and isinstance(data["balance"], dict):
                 bal = data["balance"]
-                if "cash" in bal:
-                    return float(bal["cash"])
+                total = float(bal.get("cash", 0)) + float(bal.get("bonus", 0))
+                if total > 0:
+                    return total
                 if "total" in bal:
                     return float(bal["total"])
 
             # Altenar (quickcasino, betinia, etc.):
-            # {"result": {"cash": {"total": 243.5, ...}}}
+            # {"result": {"cash": {"total": 243.5}, "bonus": {"total": 500}}}
             result = data.get("result", {})
             if isinstance(result, dict) and "cash" in result:
                 cash = result["cash"]
-                if isinstance(cash, dict):
-                    return float(cash.get("total", cash.get("available", 0)))
-                return float(cash)
+                cash_val = float(cash.get("total", cash.get("available", 0))) if isinstance(cash, dict) else float(cash)
+                bonus = result.get("bonus", {})
+                bonus_val = float(bonus.get("total", 0)) if isinstance(bonus, dict) else 0
+                return cash_val + bonus_val
 
             # Gecko V2 / Spelklubben:
-            # {"Balances": {"SEK": {"Real": {"Balance": 1087.14}}}}
+            # {"Balances": {"SEK": {"Real": {"Balance": 907}, "Bonus": {"Balance": 500}}}}
             balances = data.get("Balances", {})
             for currency, parts in balances.items():
                 if isinstance(parts, dict):
                     real = parts.get("Real", parts.get("Total", {}))
                     if isinstance(real, dict) and "Balance" in real:
-                        return float(real["Balance"])
+                        real_bal = float(real["Balance"])
+                        bonus_part = parts.get("Bonus", {})
+                        bonus_bal = float(bonus_part.get("Balance", 0)) if isinstance(bonus_part, dict) else 0
+                        return real_bal + bonus_bal
 
         except (TypeError, ValueError, KeyError) as e:
             logger.debug(f"[mirror] Could not extract balance for {provider_id}: {e}")
@@ -855,6 +871,101 @@ class MirrorService:
 
         logger.warning(f"[mirror] No match for {home} vs {away} (best={best_score:.0f})")
         return None
+
+    def _load_notification_recipes(self):
+        """Load recipes from disk on init."""
+        self._recipes = load_recipes(self._recipes_dir)
+        if self._recipes:
+            active = [r for r in self._recipes if r.status == "active"]
+            logger.info(f"[mirror] Loaded {len(active)} active notification recipes")
+
+    def _save_notification_recipes(self):
+        """Persist recipes to disk."""
+        save_recipes(self._recipes, self._recipes_dir)
+
+    async def _handle_notification_settings(
+        self, url: str, method: str, request_body: str | None,
+        response_body: str, content_type: str,
+    ):
+        """Capture a notification settings API call as a recipe."""
+        provider_id = self._detect_provider(url)
+        if provider_id == "unknown":
+            logger.debug(f"[mirror] Notification settings call from unknown provider: {url}")
+            return
+
+        recipe = NotificationRecipe(
+            provider_id=provider_id,
+            captured_at=datetime.now(timezone.utc).isoformat(),
+            method=method,
+            url=url,
+            content_type=content_type or "application/json",
+            body=request_body or "",
+            status="active",
+        )
+
+        # Replace existing recipe for this provider
+        self._recipes = [r for r in self._recipes if r.provider_id != provider_id]
+        self._recipes.append(recipe)
+        self._save_notification_recipes()
+
+        logger.info(f"[mirror] Captured notification mute recipe for {provider_id}: {method} {url}")
+        self._notify("notification_recipe_captured", {
+            "provider": provider_id,
+            "method": method,
+            "url": url,
+        })
+
+    async def _replay_notification_mute(self, provider_id: str):
+        """Replay a stored notification mute recipe for a provider."""
+        if provider_id in self._muted_providers:
+            return
+
+        recipe = next((r for r in self._recipes if r.provider_id == provider_id and r.status == "active"), None)
+        if not recipe:
+            return
+
+        context = self.interceptor.context
+        if not context:
+            return
+
+        try:
+            # Small delay for auth cookies to settle after navigation
+            await asyncio.sleep(2)
+
+            resp = await context.request.fetch(
+                recipe.url,
+                method=recipe.method,
+                headers={"content-type": recipe.content_type},
+                data=recipe.body if recipe.body else None,
+                timeout=10000,
+            )
+
+            if resp.status < 400:
+                self._muted_providers.add(provider_id)
+                logger.info(f"[mirror] Notifications muted for {provider_id} (HTTP {resp.status})")
+                self._notify("notifications_muted", {"provider": provider_id})
+            else:
+                recipe.status = "stale"
+                self._save_notification_recipes()
+                logger.warning(f"[mirror] Mute replay failed for {provider_id} (HTTP {resp.status}) — recipe marked stale")
+                self._notify("notifications_mute_failed", {"provider": provider_id, "status": resp.status})
+
+        except Exception as e:
+            logger.error(f"[mirror] Mute replay error for {provider_id}: {e}")
+
+    def get_notification_recipes(self) -> list[dict]:
+        """Return all recipes as dicts for API response."""
+        return [r.to_dict() for r in self._recipes]
+
+    def delete_notification_recipe(self, provider_id: str) -> bool:
+        """Delete a recipe by provider ID. Returns True if found and deleted."""
+        before = len(self._recipes)
+        self._recipes = [r for r in self._recipes if r.provider_id != provider_id]
+        if len(self._recipes) < before:
+            self._save_notification_recipes()
+            self._muted_providers.discard(provider_id)
+            return True
+        return False
 
     def _notify(self, event_type: str, data: dict):
         """Publish SSE event if broadcaster is available."""
