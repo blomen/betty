@@ -60,6 +60,7 @@ class Episode:
     reward_skip: float
     approach_direction: str
     optimal_stop_ticks: float  # distance to nearest structural level behind trade
+    state: dict | None = None  # original state dict (for backtest/session manager)
 
 
 def _measure_movement(

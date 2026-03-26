@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import torch
 import typer
 
 _ET = ZoneInfo("US/Eastern")
@@ -733,3 +734,179 @@ def eval(
 
     metrics = compute_metrics(episode_dicts)
     print_evaluation_report(metrics)
+
+
+# ---------------------------------------------------------------------------
+# backtest (SessionManager with position flipping, trailing, compounding)
+# ---------------------------------------------------------------------------
+
+@rl_app.command()
+def backtest(
+    checkpoint: str = typer.Option("v1", help="Checkpoint name to load"),
+    min_spread: float = typer.Option(0.01, help="Min Q-spread to enter a trade"),
+) -> None:
+    """Backtest the SessionManager on historical tick data.
+
+    Unlike `eval` which treats each level touch independently, backtest
+    simulates a full trading session with position flipping, trailing stops,
+    confidence-based sizing, and intraday compounding.
+    """
+    import pandas as pd
+
+    from src.rl.agent.network import DQNetwork
+    from src.rl.data.normalization import RunningNormalizer
+    from src.rl.data.replay_engine import ReplayEngine
+    from src.rl.data.fetcher import TICKS_DIR, MACRO_DIR
+    from src.rl.data.session_store import load_summaries, compute_precomputed_levels
+    from src.rl.session_manager import SessionManager, PositionSide
+    from src.rl.features.observation import OBSERVATION_DIM
+    from src.rl.config import TICK_SIZE
+
+    models_dir = _MODELS_DIR
+    model_path = models_dir / f"dqn_{checkpoint}.pt"
+    if not model_path.exists():
+        typer.echo(f"Model not found: {model_path}", err=True)
+        raise typer.Exit(1)
+
+    # Load model
+    network = DQNetwork(input_dim=OBSERVATION_DIM)
+    ckpt = torch.load(model_path, weights_only=False, map_location="cpu")
+    network.load_state_dict(ckpt["q_network"])
+    network.eval()
+
+    # Load normalizer
+    normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
+    norm_path = _EPISODES_DIR / "normalizer.json"
+    if norm_path.exists():
+        normalizer.load(norm_path)
+
+    # Load macro
+    macro_path = MACRO_DIR / "macro_daily.parquet"
+    macro_data: dict = {}
+    if macro_path.exists():
+        macro_df = pd.read_parquet(macro_path)
+        macro_data = _prepare_macro_data(macro_df)
+
+    # Load summaries
+    summaries = load_summaries(_DATA_DIR / "session_summaries.json")
+
+    # Use test split months only (last ~17% chronologically)
+    # Get all parquet files and take the last few
+    parquet_files = sorted(TICKS_DIR.glob("NQ_*.parquet"))
+    test_start = int(len(parquet_files) * 0.83)
+    test_files = parquet_files[test_start:]
+
+    if not test_files:
+        typer.echo("No test files found. Using last 3 files.", err=True)
+        test_files = parquet_files[-3:]
+
+    typer.echo(f"Backtesting on {len(test_files)} files: {[f.name for f in test_files]}")
+
+    sm = SessionManager(network, normalizer)
+    sm.MIN_Q_SPREAD = min_spread
+
+    engine = ReplayEngine(macro_data=macro_data)
+    all_sessions: list[dict] = []
+    prior_levels = None
+
+    for pfile in test_files:
+        df = pd.read_parquet(pfile)
+        if "timestamp" not in df.columns:
+            continue
+
+        df["_ts_et"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(_ET)
+        df["_session_date"] = df["_ts_et"].apply(_assign_session_date)
+        df = df.dropna(subset=["_session_date"])
+        df_renamed = df.rename(columns={"timestamp": "ts"})
+        dates = sorted(df_renamed["_session_date"].unique())
+
+        for session_date in dates:
+            day_df = df_renamed[df_renamed["_session_date"] == session_date].drop(
+                columns=["_session_date", "_ts_et"], errors="ignore"
+            )
+            ticks = day_df.to_dict(orient="records")
+            if not ticks:
+                continue
+
+            session_dt = datetime(
+                session_date.year, session_date.month, session_date.day,
+                12, 0, 0, tzinfo=_ET,
+            )
+
+            precomputed = None
+            if summaries:
+                precomputed = compute_precomputed_levels(summaries, str(session_date))
+
+            try:
+                episodes = engine.replay_session(
+                    ticks, session_dt,
+                    prior_session_levels=prior_levels,
+                    precomputed_levels=precomputed,
+                )
+            except Exception:
+                continue
+
+            prior_levels = engine.get_prior_session_for_chaining()
+
+            # Run SessionManager through the episodes
+            sm.reset_session()
+            for ep in episodes:
+                # Build state from episode's stored state
+                state = ep.state if hasattr(ep, "state") else {}
+                if not state:
+                    continue
+                price = float(state.get("price", 0.0))
+                if price <= 0:
+                    continue
+
+                signal = sm.on_level_touch(state, price)
+
+                # Check stop on each tick between episodes (simplified: use episode prices)
+                # In live trading this would be tick-by-tick
+                if sm.position.is_open:
+                    sm.on_price_update(price)
+
+            # Close at session end
+            if sm.position.is_open and ticks:
+                last_price = float(ticks[-1].get("price", 0))
+                if last_price > 0:
+                    sm.on_session_end(last_price)
+
+            summary = sm.get_session_summary()
+            summary["date"] = str(session_date)
+            all_sessions.append(summary)
+
+    # Print aggregate results
+    typer.echo(f"\n{'='*60}")
+    typer.echo(f"  SESSION MANAGER BACKTEST REPORT")
+    typer.echo(f"{'='*60}")
+
+    total_trades = sum(s["trades"] for s in all_sessions)
+    total_pnl = sum(s["total_pnl_r"] for s in all_sessions)
+    total_winners = sum(s["winners"] for s in all_sessions)
+    total_losers = sum(s["losers"] for s in all_sessions)
+    total_flips = sum(s["flips"] for s in all_sessions)
+    sessions_positive = sum(1 for s in all_sessions if s["total_pnl_r"] > 0)
+
+    wr = total_winners / max(total_trades, 1) * 100
+    avg_session_pnl = total_pnl / max(len(all_sessions), 1)
+
+    typer.echo(f"  Sessions         : {len(all_sessions)}")
+    typer.echo(f"  Sessions +       : {sessions_positive} ({sessions_positive/max(len(all_sessions),1)*100:.0f}%)")
+    typer.echo(f"  Total trades     : {total_trades}")
+    typer.echo(f"  Winners          : {total_winners}")
+    typer.echo(f"  Losers           : {total_losers}")
+    typer.echo(f"  Position flips   : {total_flips}")
+    typer.echo(f"  Win rate         : {wr:.1f}%")
+    typer.echo(f"  Total P&L        : {total_pnl:+.1f} R")
+    typer.echo(f"  Avg session P&L  : {avg_session_pnl:+.2f} R")
+    typer.echo(f"{'='*60}")
+
+    # Top 10 best and worst sessions
+    sorted_sessions = sorted(all_sessions, key=lambda s: s["total_pnl_r"], reverse=True)
+    typer.echo(f"\n  BEST SESSIONS:")
+    for s in sorted_sessions[:5]:
+        typer.echo(f"    {s['date']}  {s['total_pnl_r']:+6.1f}R  trades={s['trades']}  flips={s['flips']}")
+    typer.echo(f"\n  WORST SESSIONS:")
+    for s in sorted_sessions[-5:]:
+        typer.echo(f"    {s['date']}  {s['total_pnl_r']:+6.1f}R  trades={s['trades']}  flips={s['flips']}")

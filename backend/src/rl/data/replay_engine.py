@@ -328,6 +328,7 @@ class ReplayEngine:
                     levels_above=levels_above,
                     levels_below=levels_below,
                 )
+                episode.state = state
                 episodes.append(episode)
                 self._last_episode_ts = tick["ts"]
                 log.debug(
@@ -614,6 +615,7 @@ class ReplayEngine:
         return {
             "level_type": level_type,
             "price": price,
+            "touch_epoch": ts.timestamp(),
             "candles": recent_flows,
             "candles_5m": candle_flows_5m[-10:] if candle_flows_5m else [],
             "vwap_bands": vwap_bands,
