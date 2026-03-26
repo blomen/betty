@@ -169,9 +169,7 @@ class BetInterceptor:
             url = response.url
             method = response.request.method
 
-            # DEBUG: log all spelklubben API calls to find bet history URL
-            if "spelklubben" in url and "/api/" in url and method == "GET":
-                logger.info(f"[mirror-debug] {method} {url[:150]}")
+
 
             # Cache event data from events-table API responses (Gecko V2)
             if self.on_event_data and "events-table" in url and method == "GET":
@@ -187,13 +185,11 @@ class BetInterceptor:
             if not _is_bet_history and method == "GET" and "/count" not in url and any(kw in url for kw in self._GECKO_COUPON_HISTORY_PATTERNS):
                 _is_bet_history = True
             if self.on_bet_history and _is_bet_history:
-                logger.info(f"[mirror] Bet history URL matched: {url[:120]}")
                 try:
                     # Try text() first, fall back to body() + decode for compressed responses
                     try:
                         body_text = await response.text()
-                    except Exception as te:
-                        logger.debug(f"[mirror] text() failed ({te}), trying body()")
+                    except Exception:
                         raw = await response.body()
                         body_text = raw.decode("utf-8", errors="replace")
                     req_body = None

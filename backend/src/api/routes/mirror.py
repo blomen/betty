@@ -122,6 +122,164 @@ async def reject_settlements():
     return mirror.reject_settlements()
 
 
+@router.get("/scrape-page-bets")
+async def scrape_page_bets():
+    """Scrape bet history from the currently visible page DOM (Kambi/Unibet)."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    url = page.url
+
+    # First try: check if Kambi coupon API is available via the page's auth context
+    import re
+
+    # Try Kambi coupon history API (uses operator's session cookie)
+    kambi_bets = None
+    try:
+        kambi_resp = await page.evaluate("""async () => {
+            try {
+                const r = await fetch('/sportsbook-feeds/coupon/settled?range=ALL&locale=sv_SE', {credentials: 'include'});
+                if (r.ok) return await r.text();
+                // Try alternative endpoints
+                const r2 = await fetch('/api/sportsbook/coupon/settled', {credentials: 'include'});
+                if (r2.ok) return await r2.text();
+                return null;
+            } catch(e) { return null; }
+        }""")
+        if kambi_resp:
+            import json as _json
+            kambi_bets = _json.loads(kambi_resp)
+            logger.info(f"[mirror] Kambi coupon API returned data: {len(str(kambi_resp))} bytes")
+    except Exception as e:
+        logger.debug(f"[mirror] Kambi coupon API not available: {e}")
+
+    if kambi_bets:
+        return {"url": url, "data": {"source": "kambi_api", "raw": kambi_bets}}
+
+    # Also try fetching the full SSR page's bet history via internal API
+    try:
+        hist_resp = await page.evaluate("""async () => {
+            // Kambi operators often have an internal sportsbook-feeds endpoint
+            const urls = [
+                '/sportsbook-feeds/coupon/history?settled=true&range=ALL',
+                '/sportsbook-feeds/coupon/settled',
+            ];
+            for (const u of urls) {
+                try {
+                    const r = await fetch(u, {credentials: 'include'});
+                    if (r.ok) return {url: u, body: await r.text()};
+                } catch(e) {}
+            }
+            return null;
+        }""")
+        if hist_resp:
+            import json as _json
+            logger.info(f"[mirror] Kambi internal API hit: {hist_resp['url']} ({len(hist_resp['body'])} bytes)")
+            kambi_bets = _json.loads(hist_resp['body'])
+            return {"url": url, "data": {"source": "kambi_internal", "raw": kambi_bets}}
+    except Exception as e:
+        logger.debug(f"[mirror] Kambi internal API failed: {e}")
+
+    # Fallback: get raw text from page and parse
+    raw_text = await page.evaluate("() => document.body.innerText")
+
+    # Parse bets: "Singel @ ODDS Result DATE • TIME Kupong-Id: ID ... Insats: STAKE kr Utbetalning: PAYOUT kr"
+    bet_pattern = re.compile(
+        r'Singel\s*@\s*([\d.]+)\s+'
+        r'(Vinst|F.rlust|Oavgjord|Cashout)\s+'
+        r'(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+'
+        r'Kupong-Id:\s*(\d+)\s+'
+        r'(.*?)'
+        r'Insats:\s*([\d.,]+)\s*kr'
+        r'(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?',
+        re.DOTALL
+    )
+
+    bets = []
+    seen = set()
+    for m in bet_pattern.finditer(raw_text):
+        cid = m.group(5)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        result_raw = m.group(2)
+        if "rlust" in result_raw:
+            result = "lost"
+        elif result_raw == "Vinst":
+            result = "won"
+        elif result_raw == "Oavgjord":
+            result = "void"
+        else:
+            result = "cashout"
+        bets.append({
+            "odds": float(m.group(1)),
+            "result": result,
+            "date": m.group(3),
+            "time": m.group(4),
+            "coupon_id": cid,
+            "market_event": m.group(6).strip().replace("\n", " ")[:80],
+            "stake": float(m.group(7).replace(",", ".")),
+            "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
+        })
+
+    if not bets:
+        return {"url": url, "data": {"bets": [], "count": 0, "staged": 0}}
+
+    # Match scraped bets against pending DB bets and stage settlements
+    from ..deps import get_db as _get_db
+    from ...db.models import Bet
+    from ...repositories import ProfileRepo
+
+    db = next(_get_db())
+    try:
+        profile = ProfileRepo(db).get_active()
+        provider_id = "unibet"  # TODO: detect from URL
+
+        pending = db.query(Bet).filter(
+            Bet.profile_id == profile.id,
+            Bet.result == "pending",
+            Bet.provider_id == provider_id,
+        ).all()
+
+        staged = []
+        for pb in pending:
+            for sb in bets:
+                if abs(sb["odds"] - pb.odds) < 0.02 and abs(sb["stake"] - pb.stake) < 0.02:
+                    staged.append({
+                        "bet_id": pb.id,
+                        "provider": provider_id,
+                        "event": sb["market_event"],
+                        "odds": sb["odds"],
+                        "stake": sb["stake"],
+                        "result": sb["result"],
+                        "payout": sb["payout"],
+                    })
+                    break
+
+        # Stage in mirror service and notify via SSE
+        if staged:
+            mirror._pending_settlements = staged
+            mirror._notify("settlements_pending", {
+                "provider": provider_id,
+                "count": len(staged),
+                "wins": len([s for s in staged if s["result"] == "won"]),
+                "losses": len([s for s in staged if s["result"] == "lost"]),
+                "total_staked": sum(s["stake"] for s in staged),
+                "total_payout": sum(s["payout"] for s in staged),
+                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                "settlements": staged,
+            })
+
+    finally:
+        db.close()
+
+    return {"url": url, "data": {"bets": bets, "count": len(bets), "staged": len(staged)}}
+
+
 @router.get("/notification-recipes")
 async def get_notification_recipes():
     """List all stored notification mute recipes."""

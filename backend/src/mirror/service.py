@@ -53,6 +53,12 @@ class MirrorService:
         """Stop the mirror browser."""
         await self.interceptor.stop()
 
+    # Kambi providers use SSR bet history — need DOM scraping, not API interception
+    _SSR_PROVIDERS = frozenset({
+        "unibet", "leovegas", "expekt", "888sport", "speedybet",
+        "x3000", "goldenbull", "betmgm",
+    })
+
     async def _handle_provider_detected(self, provider_id: str):
         """Fires when user navigates to a known provider site."""
         info = await asyncio.to_thread(self._get_provider_sync_info, provider_id)
@@ -68,6 +74,155 @@ class MirrorService:
         })
         # Auto-mute notifications if we have a recipe
         await self._replay_notification_mute(provider_id)
+        # Auto-scrape bet history for SSR providers when pending bets exist
+        if provider_id in self._SSR_PROVIDERS and info["pending_bets"] > 0:
+            asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+
+    async def _auto_scrape_bet_history(self, provider_id: str):
+        """Wait for page to load, then navigate to bet history and scrape."""
+        # Wait for page to fully load
+        await asyncio.sleep(5)
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        page = context.pages[0]
+        current_url = page.url
+
+        # Navigate to bet history if not already there
+        bet_history_paths = {
+            "unibet": "/betting/sports/bethistory",
+            "leovegas": "/betting/sports/bethistory",
+            "expekt": "/betting/sports/bethistory",
+            "888sport": "/betting/sports/bethistory",
+            "speedybet": "/betting/sports/bethistory",
+            "x3000": "/betting/sports/bethistory",
+            "goldenbull": "/betting/sports/bethistory",
+            "betmgm": "/betting/sports/bethistory",
+        }
+        hist_path = bet_history_paths.get(provider_id)
+        if not hist_path:
+            return
+
+        if hist_path not in current_url:
+            # Navigate to bet history
+            try:
+                from urllib.parse import urlparse
+                origin = urlparse(current_url)
+                hist_url = f"{origin.scheme}://{origin.netloc}{hist_path}"
+                logger.info(f"[mirror] Auto-navigating to bet history: {hist_url}")
+                await page.goto(hist_url, wait_until="networkidle", timeout=15000)
+                await asyncio.sleep(3)  # Let JS render
+            except Exception as e:
+                logger.warning(f"[mirror] Could not navigate to bet history: {e}")
+                return
+
+        # Scrape the page
+        await self._scrape_ssr_bet_history(provider_id, page)
+
+    async def _scrape_ssr_bet_history(self, provider_id: str, page):
+        """Scrape SSR bet history from current page and stage settlements."""
+        import re
+
+        try:
+            raw_text = await page.evaluate("() => document.body.innerText")
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read page text: {e}")
+            return
+
+        # Parse Kambi bet history format (Swedish)
+        bet_pattern = re.compile(
+            r'Singel\s*@\s*([\d.]+)\s+'
+            r'(Vinst|F.rlust|Oavgjord|Cashout)\s+'
+            r'(\d+ \w+ \d{4})\s*.\s*([\d:]+)\s+'
+            r'Kupong-Id:\s*(\d+)\s+'
+            r'(.*?)'
+            r'Insats:\s*([\d.,]+)\s*kr'
+            r'(?:\s*Utbetalning:\s*([\d.,]+)\s*kr)?',
+            re.DOTALL
+        )
+
+        scraped = []
+        seen = set()
+        for m in bet_pattern.finditer(raw_text):
+            cid = m.group(5)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            result_raw = m.group(2)
+            if "rlust" in result_raw:
+                result = "lost"
+            elif result_raw == "Vinst":
+                result = "won"
+            elif result_raw == "Oavgjord":
+                result = "void"
+            else:
+                result = "cashout"
+            scraped.append({
+                "odds": float(m.group(1)),
+                "result": result,
+                "stake": float(m.group(7).replace(",", ".")),
+                "payout": float(m.group(8).replace(",", ".")) if m.group(8) else 0,
+                "event": m.group(6).strip().replace("\n", " ")[:80],
+            })
+
+        if not scraped:
+            logger.info(f"[mirror] SSR scrape found 0 bets for {provider_id}")
+            return
+
+        logger.info(f"[mirror] SSR scrape found {len(scraped)} bets for {provider_id}")
+
+        # Match against pending bets
+        pending = await asyncio.to_thread(self._get_pending_bets_sync, provider_id)
+        staged = []
+        for pb in pending:
+            for sb in scraped:
+                if abs(sb["odds"] - pb["odds"]) < 0.02 and abs(sb["stake"] - pb["stake"]) < 0.02:
+                    staged.append({
+                        "bet_id": pb["id"],
+                        "provider": provider_id,
+                        "event": sb["event"],
+                        "odds": sb["odds"],
+                        "stake": sb["stake"],
+                        "result": sb["result"],
+                        "payout": sb["payout"],
+                    })
+                    break
+
+        if staged:
+            self._pending_settlements = staged
+            wins = [s for s in staged if s["result"] == "won"]
+            losses = [s for s in staged if s["result"] == "lost"]
+            logger.info(
+                f"[mirror] Staged {len(staged)} SSR settlement(s) from {provider_id}: "
+                f"{len(wins)}W {len(losses)}L"
+            )
+            self._notify("settlements_pending", {
+                "provider": provider_id,
+                "count": len(staged),
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_staked": sum(s["stake"] for s in staged),
+                "total_payout": sum(s["payout"] for s in staged),
+                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                "settlements": staged,
+            })
+
+    def _get_pending_bets_sync(self, provider_id: str) -> list[dict]:
+        """Get pending bets for a provider."""
+        from ..repositories.profile_repo import ProfileRepo
+        db = get_session()
+        try:
+            profile = ProfileRepo(db).get_active()
+            pending = db.query(Bet).filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == provider_id,
+                Bet.result == "pending",
+            ).all()
+            return [{"id": b.id, "odds": b.odds, "stake": b.stake} for b in pending]
+        finally:
+            db.close()
 
     def _get_provider_sync_info(self, provider_id: str) -> dict:
         """Get current balance + pending bet count for a provider."""

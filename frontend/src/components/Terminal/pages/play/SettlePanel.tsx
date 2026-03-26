@@ -255,6 +255,25 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
     setMirrorSettlements([]);
   }, []);
 
+  const [isScanning, setIsScanning] = useState(false);
+  const handleScanPage = useCallback(() => {
+    setIsScanning(true);
+    fetch('/api/mirror/scrape-page-bets')
+      .then(r => r.json())
+      .then(d => {
+        const staged = d?.data?.staged || 0;
+        if (staged === 0) {
+          console.log('[settle] scan found no matching pending bets');
+        }
+        // SSE will deliver the settlements_pending event
+        setIsScanning(false);
+      })
+      .catch(err => {
+        console.error('[settle] scan failed', err);
+        setIsScanning(false);
+      });
+  }, []);
+
   const handleSettle = useCallback((betId: number, result: 'won' | 'lost' | 'void') => {
     settleMutation.mutate({ betId, result });
   }, [settleMutation]);
@@ -274,7 +293,19 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
 
         {/* Header */}
         <div className="text-center mb-4">
-          <div className="text-[10px] text-dark-400 uppercase tracking-widest mb-1">Settle Pending Bets</div>
+          <div className="flex items-center justify-center gap-2 mb-1">
+            <div className="text-[10px] text-dark-400 uppercase tracking-widest">Settle Pending Bets</div>
+            {totalPending > 0 && (
+              <button
+                onClick={handleScanPage}
+                disabled={isScanning}
+                className="px-2 py-0.5 text-[9px] font-bold border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 disabled:opacity-30 transition-colors rounded"
+                title="Scan mirror browser page for bet results"
+              >
+                {isScanning ? 'Scanning...' : 'Scan page'}
+              </button>
+            )}
+          </div>
           {totalPending > 0 ? (
             <div className="text-sm text-text">
               {remaining > 0 ? (
