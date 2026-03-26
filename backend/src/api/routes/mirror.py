@@ -137,52 +137,8 @@ async def scrape_page_bets():
     # First try: check if Kambi coupon API is available via the page's auth context
     import re
 
-    # Try Kambi coupon history API (uses operator's session cookie)
-    kambi_bets = None
-    try:
-        kambi_resp = await page.evaluate("""async () => {
-            try {
-                const r = await fetch('/sportsbook-feeds/coupon/settled?range=ALL&locale=sv_SE', {credentials: 'include'});
-                if (r.ok) return await r.text();
-                // Try alternative endpoints
-                const r2 = await fetch('/api/sportsbook/coupon/settled', {credentials: 'include'});
-                if (r2.ok) return await r2.text();
-                return null;
-            } catch(e) { return null; }
-        }""")
-        if kambi_resp:
-            import json as _json
-            kambi_bets = _json.loads(kambi_resp)
-            logger.info(f"[mirror] Kambi coupon API returned data: {len(str(kambi_resp))} bytes")
-    except Exception as e:
-        logger.debug(f"[mirror] Kambi coupon API not available: {e}")
-
-    if kambi_bets:
-        return {"url": url, "data": {"source": "kambi_api", "raw": kambi_bets}}
-
-    # Also try fetching the full SSR page's bet history via internal API
-    try:
-        hist_resp = await page.evaluate("""async () => {
-            // Kambi operators often have an internal sportsbook-feeds endpoint
-            const urls = [
-                '/sportsbook-feeds/coupon/history?settled=true&range=ALL',
-                '/sportsbook-feeds/coupon/settled',
-            ];
-            for (const u of urls) {
-                try {
-                    const r = await fetch(u, {credentials: 'include'});
-                    if (r.ok) return {url: u, body: await r.text()};
-                } catch(e) {}
-            }
-            return null;
-        }""")
-        if hist_resp:
-            import json as _json
-            logger.info(f"[mirror] Kambi internal API hit: {hist_resp['url']} ({len(hist_resp['body'])} bytes)")
-            kambi_bets = _json.loads(hist_resp['body'])
-            return {"url": url, "data": {"source": "kambi_internal", "raw": kambi_bets}}
-    except Exception as e:
-        logger.debug(f"[mirror] Kambi internal API failed: {e}")
+    # Note: Kambi (unibet etc.) bet history is fully server-side rendered.
+    # No JSON API available — DOM scraping is the only option.
 
     # Fallback: get raw text from page and parse
     raw_text = await page.evaluate("() => document.body.innerText")
