@@ -141,6 +141,101 @@ async def get_play_session(db: Session = Depends(get_db)):
     return service.get_session(profile.id)
 
 
+@router.get("/play/pending-bets")
+async def get_pending_bets(db: Session = Depends(get_db)):
+    """Get all pending (unsettled) bets grouped by provider."""
+    from ...db.models import Bet, Event
+    from ...repositories import ProfileRepo
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+
+    pending = (
+        db.query(Bet)
+        .filter(Bet.profile_id == profile.id, Bet.result == "pending")
+        .order_by(Bet.provider_id, Bet.placed_at)
+        .all()
+    )
+
+    # Build event name lookup
+    event_ids = {b.event_id for b in pending if b.event_id}
+    events = {}
+    if event_ids:
+        for ev in db.query(Event).filter(Event.id.in_(event_ids)).all():
+            events[ev.id] = f"{ev.home_team} vs {ev.away_team}" if ev.home_team and ev.away_team else ev.id
+
+    # Group by provider
+    from collections import defaultdict
+    groups: dict[str, list] = defaultdict(list)
+    for bet in pending:
+        groups[bet.provider_id].append({
+            "id": bet.id,
+            "event_name": events.get(bet.event_id, bet.event_id or "Unknown"),
+            "market": bet.market,
+            "outcome": bet.outcome,
+            "odds": bet.odds,
+            "stake": bet.stake,
+            "currency": bet.currency or "SEK",
+            "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
+        })
+
+    providers = [
+        {
+            "provider_id": pid,
+            "pending_count": len(bets),
+            "total_stake": sum(b["stake"] for b in bets),
+            "bets": bets,
+        }
+        for pid, bets in sorted(groups.items())
+    ]
+
+    return {
+        "providers": providers,
+        "total_pending": len(pending),
+        "total_stake": sum(b.stake for b in pending),
+    }
+
+
+class SettleBetRequest(BaseModel):
+    bet_id: int
+    result: str  # "won", "lost", "void"
+
+
+@router.post("/play/settle-bet")
+async def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
+    """Manually settle a single pending bet."""
+    from ...db.models import Bet
+    from datetime import datetime, timezone
+
+    if body.result not in ("won", "lost", "void"):
+        raise HTTPException(400, f"Invalid result: {body.result}. Must be won, lost, or void.")
+
+    bet = db.get(Bet, body.bet_id)
+    if not bet:
+        raise HTTPException(404, f"Bet {body.bet_id} not found")
+
+    # Calculate payout
+    if body.result == "won":
+        payout = bet.stake * bet.odds
+    elif body.result == "void":
+        payout = bet.stake
+    else:
+        payout = 0.0
+
+    bet.result = body.result
+    bet.payout = payout
+    bet.settled_at = datetime.now(timezone.utc)
+    bet.settlement_source = "manual"
+    db.commit()
+
+    return {
+        "bet_id": bet.id,
+        "result": bet.result,
+        "payout": bet.payout,
+        "settled_at": bet.settled_at.isoformat(),
+    }
+
+
 class BuildBatchRequest(BaseModel):
     exclude: list[str] | None = None
 
