@@ -33,7 +33,7 @@ export function useMarketStream(symbol: string = 'NQ') {
         setLastTick(tickBuffer.current[tickBuffer.current.length - 1]);
         tickBuffer.current = [];
       }
-    }, 200);
+    }, 500);
 
     return () => {
       es.close();

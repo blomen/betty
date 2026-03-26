@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { TabIcon } from './TabBar';
 import { api } from '../../services/api';
 
-export type TabName = 'value' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingVectors' | 'tradingBankroll' | 'tradingStats';
+export type TabName = 'value' | 'play' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingVectors' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {
@@ -52,7 +52,7 @@ function MirrorButton() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 10_000);
+    const id = setInterval(refresh, 30_000);
     return () => clearInterval(id);
   }, []);
 

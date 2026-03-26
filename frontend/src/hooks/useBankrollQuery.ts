@@ -10,19 +10,19 @@ export function useBankrollQuery() {
   const { data: bankroll, isLoading: infoLoading, error: infoError } = useQuery({
     queryKey: ['bankroll', 'info'],
     queryFn: () => api.getBankroll(),
-    staleTime: 5_000,
+    staleTime: 30_000,
   });
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['bankroll', 'stats'],
     queryFn: () => api.getBankrollStats(),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 
   const { data: exposure, isLoading: exposureLoading } = useQuery({
     queryKey: ['bankroll', 'exposure'],
     queryFn: () => api.getBankrollExposure(),
-    staleTime: 5_000,
+    staleTime: 30_000,
   });
 
   // ─── Helper: optimistic balance update for info + exposure ───

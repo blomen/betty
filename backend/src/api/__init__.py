@@ -1,5 +1,5 @@
 """
-BankrollBBQ FastAPI Backend
+Firev FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -401,14 +401,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BankrollBBQ API",
-    description="Polymarket arbitrage & value betting backend",
+    title="Firev API",
+    description="Betting analytics & value betting backend",
     version="0.1.0",
     lifespan=lifespan,
 )
 
 # GZip compression for responses > 1KB
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# Cache-Control for GET API responses — lets the browser skip redundant fetches
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if request.method == "GET" and path.startswith("/api/") and "/stream" not in path:
+        # Short private cache — browser can reuse within window, must revalidate after
+        response.headers.setdefault("Cache-Control", "private, max-age=5")
+    return response
 
 # Allow CORS for frontend
 app.add_middleware(

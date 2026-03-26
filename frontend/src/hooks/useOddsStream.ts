@@ -51,11 +51,11 @@ export function useOddsStream() {
     });
 
     es.addEventListener('tier_complete', () => {
-      // Full refetch on tier completion to catch anything missed
+      // Refetch opportunities and providers (extraction-affected data only)
+      // Bankroll/bets are not affected by extraction — skip to avoid refetch storm
       queryClient.invalidateQueries({ queryKey: ['opportunities'] });
       queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      queryClient.invalidateQueries({ queryKey: ['bets'] });
+      queryClient.invalidateQueries({ queryKey: ['specials'] });
     });
 
     es.onerror = () => {
