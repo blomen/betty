@@ -1,6 +1,23 @@
 """TPO / Market Profile computation: 30-min brackets, anomalies."""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from datetime import time as _time
+from zoneinfo import ZoneInfo
+
 from .metrics import compute_rotation_factor as _metrics_rf
+
+_CET = ZoneInfo("Europe/Stockholm")
+
+# Non-overlapping session boundaries (CET)
+_SESSION_BOUNDS = {
+    "tokyo":  (_time(0, 0), _time(8, 0)),
+    "london": (_time(8, 0), _time(15, 30)),
+    "ny":     (_time(15, 30), _time(22, 0)),
+}
+
+# Minimum unique price levels in IB bars for IB to be considered valid
+MIN_IB_TPO_COUNT = 4
 
 
 def _period_letter(index: int) -> str:
@@ -339,3 +356,129 @@ def build_full_tpo_profile(bars_30m: list[dict], tick_size: float = 0.25) -> TPO
     profile.upper_excess = upper_ex
     profile.lower_excess = lower_ex
     return profile
+
+
+# ---------------------------------------------------------------------------
+# Per-session TPO profiles (Tokyo / London / NY)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SessionTPO:
+    """Lightweight per-session TPO profile for RL features."""
+    session: str       # "tokyo" | "london" | "ny"
+    poc: float
+    vah: float
+    val: float
+    shape: str         # "p-shape" | "b-shape" | "d-shape" | "balanced" | "B-shape"
+    ib_high: float
+    ib_low: float
+    ib_valid: bool     # False if IB bars have < MIN_IB_TPO_COUNT price levels
+    poor_high: bool
+    poor_low: bool
+
+
+@dataclass
+class SessionTPOSet:
+    """Container for per-session TPO profiles + cross-session features."""
+    tokyo: SessionTPO | None
+    london: SessionTPO | None
+    ny: SessionTPO | None
+    poc_migration_tokyo_london: float  # (london.poc - tokyo.poc) / tick_size
+    poc_migration_london_ny: float     # (ny.poc - london.poc) / tick_size
+
+
+def _split_bars_by_session(
+    bars_30m: list[dict],
+) -> dict[str, list[dict]]:
+    """Split 30m bars into session slices by CET time."""
+    from datetime import timezone as _tz
+
+    result: dict[str, list[dict]] = {"tokyo": [], "london": [], "ny": []}
+    for bar in bars_30m:
+        bar_ts = bar["ts"]
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.replace(tzinfo=_tz.utc)
+        bar_cet = bar_ts.astimezone(_CET)
+        bar_time = bar_cet.time()
+        for session_name, (start, end) in _SESSION_BOUNDS.items():
+            if start <= bar_time < end:
+                result[session_name].append(bar)
+                break
+    return result
+
+
+def _build_session_tpo(
+    session_name: str,
+    bars_30m: list[dict],
+    tick_size: float,
+) -> SessionTPO | None:
+    """Build a SessionTPO from a slice of 30m bars for one session."""
+    if not bars_30m:
+        return None
+
+    profile = compute_tpo_profile(bars_30m, tick_size=tick_size)
+    shape = classify_tpo_shape(profile)
+
+    # IB validity: check if first 2 bars touch enough price levels
+    ib_bars = bars_30m[:2]
+    ib_prices: set[float] = set()
+    for bar in ib_bars:
+        low_tick = round(bar["low"] / tick_size) * tick_size
+        high_tick = round(bar["high"] / tick_size) * tick_size
+        price = low_tick
+        while price <= high_tick + tick_size / 2:
+            ib_prices.add(round(price / tick_size) * tick_size)
+            price += tick_size
+    ib_valid = len(ib_prices) >= MIN_IB_TPO_COUNT
+
+    return SessionTPO(
+        session=session_name,
+        poc=profile.poc,
+        vah=profile.vah,
+        val=profile.val,
+        shape=shape,
+        ib_high=profile.ib_high,
+        ib_low=profile.ib_low,
+        ib_valid=ib_valid,
+        poor_high=profile.poor_high,
+        poor_low=profile.poor_low,
+    )
+
+
+def compute_session_tpos(
+    bars_30m: list[dict],
+    tick_size: float = 0.25,
+) -> SessionTPOSet:
+    """Build per-session TPO profiles from 30m bars with timestamps.
+
+    Each bar must have a "ts" key (datetime). Bars are split by CET time
+    into Tokyo (00:00-08:00), London (08:00-15:30), NY (15:30-22:00).
+    Letters restart at A for each session (slices are re-indexed from 0).
+    """
+    if not bars_30m:
+        return SessionTPOSet(
+            tokyo=None, london=None, ny=None,
+            poc_migration_tokyo_london=0.0,
+            poc_migration_london_ny=0.0,
+        )
+
+    slices = _split_bars_by_session(bars_30m)
+
+    tokyo = _build_session_tpo("tokyo", slices["tokyo"], tick_size)
+    london = _build_session_tpo("london", slices["london"], tick_size)
+    ny = _build_session_tpo("ny", slices["ny"], tick_size)
+
+    # POC migration deltas (in ticks)
+    migration_tl = 0.0
+    if tokyo and london and tokyo.poc and london.poc:
+        migration_tl = (london.poc - tokyo.poc) / tick_size
+    migration_ln = 0.0
+    if london and ny and london.poc and ny.poc:
+        migration_ln = (ny.poc - london.poc) / tick_size
+
+    return SessionTPOSet(
+        tokyo=tokyo, london=london, ny=ny,
+        poc_migration_tokyo_london=migration_tl,
+        poc_migration_london_ny=migration_ln,
+    )

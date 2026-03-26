@@ -122,3 +122,108 @@ class TestDetectExcess:
         excess_high, excess_low = detect_excess(profile)
         assert excess_high > 0
         assert excess_low > 0
+
+
+# ---------------------------------------------------------------------------
+# compute_session_tpos
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from src.market_data.tpo import (
+    SessionTPO,
+    SessionTPOSet,
+    compute_session_tpos,
+)
+
+CET = ZoneInfo("Europe/Stockholm")
+
+
+def _bar_30m(ts_hour_cet: int, ts_min_cet: int, high: float, low: float) -> dict:
+    """Create a 30m bar with a CET timestamp."""
+    ts = datetime(2026, 3, 25, ts_hour_cet, ts_min_cet, tzinfo=CET).astimezone(timezone.utc)
+    return {"ts": ts, "high": high, "low": low, "open": low, "close": high, "volume": 100}
+
+
+class TestComputeSessionTpos:
+    def test_empty_bars_returns_all_none(self):
+        result = compute_session_tpos([], tick_size=0.25)
+        assert result.tokyo is None
+        assert result.london is None
+        assert result.ny is None
+        assert result.poc_migration_tokyo_london == 0.0
+        assert result.poc_migration_london_ny == 0.0
+
+    def test_tokyo_only_session(self):
+        """Bars only in Tokyo window (00:00-08:00 CET) -> london/ny are None."""
+        bars = [
+            _bar_30m(0, 0, 19810.0, 19800.0),
+            _bar_30m(0, 30, 19815.0, 19805.0),
+            _bar_30m(1, 0, 19820.0, 19810.0),
+            _bar_30m(1, 30, 19825.0, 19815.0),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        assert result.tokyo is not None
+        assert result.tokyo.session == "tokyo"
+        assert result.tokyo.poc > 0
+        assert result.tokyo.vah >= result.tokyo.val
+        assert result.london is None
+        assert result.ny is None
+
+    def test_all_three_sessions(self):
+        """Bars across all sessions produce three profiles + migrations."""
+        bars = [
+            _bar_30m(0, 0, 19810.0, 19800.0),
+            _bar_30m(0, 30, 19815.0, 19805.0),
+            _bar_30m(1, 0, 19812.0, 19802.0),
+            _bar_30m(8, 0, 19850.0, 19840.0),
+            _bar_30m(8, 30, 19855.0, 19845.0),
+            _bar_30m(9, 0, 19852.0, 19842.0),
+            _bar_30m(15, 30, 19890.0, 19880.0),
+            _bar_30m(16, 0, 19895.0, 19885.0),
+            _bar_30m(16, 30, 19892.0, 19882.0),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        assert result.tokyo is not None
+        assert result.london is not None
+        assert result.ny is not None
+        assert result.poc_migration_tokyo_london > 0
+        assert result.poc_migration_london_ny > 0
+
+    def test_letters_restart_at_A_per_session(self):
+        """Each session's TPO letters start at A, not continuing from prior session."""
+        bars = [
+            _bar_30m(0, 0, 19810.0, 19800.0),
+            _bar_30m(0, 30, 19815.0, 19805.0),
+            _bar_30m(8, 0, 19850.0, 19840.0),
+            _bar_30m(8, 30, 19855.0, 19845.0),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        tokyo_profile = result.tokyo
+        london_profile = result.london
+        assert tokyo_profile is not None
+        assert london_profile is not None
+        assert tokyo_profile.shape in ("p-shape", "b-shape", "d-shape", "balanced", "B-shape")
+        assert london_profile.shape in ("p-shape", "b-shape", "d-shape", "balanced", "B-shape")
+
+    def test_ib_valid_false_for_low_volume_tokyo(self):
+        """Tokyo IB with very narrow bars -> ib_valid should be False."""
+        bars = [
+            _bar_30m(0, 0, 19800.0, 19800.0),
+            _bar_30m(0, 30, 19800.0, 19800.0),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        assert result.tokyo is not None
+        assert result.tokyo.ib_valid is False
+
+    def test_ib_valid_true_for_normal_session(self):
+        """London with normal IB range -> ib_valid should be True."""
+        bars = [
+            _bar_30m(8, 0, 19860.0, 19840.0),
+            _bar_30m(8, 30, 19865.0, 19845.0),
+            _bar_30m(9, 0, 19855.0, 19850.0),
+        ]
+        result = compute_session_tpos(bars, tick_size=0.25)
+        assert result.london is not None
+        assert result.london.ib_valid is True
