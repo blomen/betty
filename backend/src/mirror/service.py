@@ -111,14 +111,53 @@ class MirrorService:
     async def _handle_bet_history(self, url: str, response_body: str, request_body: str | None = None):
         """Auto-settle pending bets from bet history responses.
 
-        Altenar status codes: 1=won, 2=lost, 3=void/cancelled, 4=cashout.
+        Supports:
+        - Altenar: {"bets": [...]} with status codes 1=won, 2=lost, 3=void, 4=cashout
+        - Gecko V2 coupon-history: {"data": {"coupons": [...]}} with couponStatus "Won"/"Lost"/"Void"
         """
         try:
             data = json.loads(response_body)
         except json.JSONDecodeError:
             return
 
-        bets = data.get("bets", [])
+        # Gecko V2 coupon-history format: normalize to Altenar-compatible format
+        if "coupon-history" in url:
+            coupons = data.get("data", {}).get("coupons", [])
+            # Always store trace for debugging
+            provider_id = self._detect_provider(url)
+            await asyncio.to_thread(
+                self._store_trace_sync, provider_id, url, request_body, response_body, "history"
+            )
+            if not coupons:
+                return
+            # Gecko V2 coupon-history: betsStatus dict has {"won": N} or {"lost": N} etc.
+            bets = []
+            for c in coupons:
+                bs = c.get("betsStatus", {})
+                if "won" in bs:
+                    status_code = 1
+                elif "lost" in bs:
+                    status_code = 2
+                elif "void" in bs or "cancelled" in bs:
+                    status_code = 3
+                elif "cashedOut" in bs:
+                    status_code = 4
+                else:
+                    continue
+                event_names = c.get("eventNames", [])
+                event_name = event_names[0] if event_names else ""
+                # Normalize "Home - Away" to "Home vs Away"
+                event_name = event_name.replace(" - ", " vs ")
+                bets.append({
+                    "status": status_code,
+                    "totalStake": c.get("stake", 0),
+                    "totalOdds": c.get("totalOdds", 0),
+                    "totalWin": c.get("totalPayout", 0),
+                    "eventName": event_name,
+                })
+        else:
+            bets = data.get("bets", [])
+
         if not bets:
             return
 

@@ -39,8 +39,11 @@ class BetInterceptor:
     # WebSocket URLs to monitor for bet placement frames (Kambi etc.)
     _WS_MONITOR_KEYWORDS = ("kambi", "push.aws")
 
-    # Bet history / settlement patterns
-    _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets", "widgetBetHistory")
+    # Bet history / settlement patterns (Altenar + Gecko + generic)
+    _BET_HISTORY_KEYWORDS = ("bethistory", "bet-history", "betHistory", "mybets", "my-bets",
+                             "widgetBetHistory", "coupon-history")
+    # Gecko V2 bet history — same URL as placement but GET method (exclude /count)
+    _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns
     _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
 
@@ -150,6 +153,10 @@ class BetInterceptor:
             url = response.url
             method = response.request.method
 
+            # DEBUG: log all spelklubben API calls to find bet history URL
+            if "spelklubben" in url and "/api/" in url and method == "GET":
+                logger.info(f"[mirror-debug] {method} {url[:150]}")
+
             # Cache event data from events-table API responses (Gecko V2)
             if self.on_event_data and "events-table" in url and method == "GET":
                 try:
@@ -159,9 +166,20 @@ class BetInterceptor:
                     logger.debug(f"[mirror] Could not read events-table response: {e}")
 
             # Intercept bet history / settlement responses
-            if self.on_bet_history and any(kw in url for kw in self._BET_HISTORY_KEYWORDS):
+            _is_bet_history = any(kw in url for kw in self._BET_HISTORY_KEYWORDS)
+            # Gecko V2: GET to coupons endpoint = bet history (POST = placement)
+            if not _is_bet_history and method == "GET" and "/count" not in url and any(kw in url for kw in self._GECKO_COUPON_HISTORY_PATTERNS):
+                _is_bet_history = True
+            if self.on_bet_history and _is_bet_history:
+                logger.info(f"[mirror] Bet history URL matched: {url[:120]}")
                 try:
-                    body_text = await response.text()
+                    # Try text() first, fall back to body() + decode for compressed responses
+                    try:
+                        body_text = await response.text()
+                    except Exception as te:
+                        logger.debug(f"[mirror] text() failed ({te}), trying body()")
+                        raw = await response.body()
+                        body_text = raw.decode("utf-8", errors="replace")
                     req_body = None
                     try:
                         req_body = response.request.post_data

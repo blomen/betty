@@ -205,7 +205,7 @@ class SettleBetRequest(BaseModel):
 async def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
     """Manually settle a single pending bet."""
     from ...db.models import Bet
-    from datetime import datetime, timezone
+    from ...services.bet_service import BetService
 
     if body.result not in ("won", "lost", "void"):
         raise HTTPException(400, f"Invalid result: {body.result}. Must be won, lost, or void.")
@@ -222,17 +222,15 @@ async def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
     else:
         payout = 0.0
 
-    bet.result = body.result
-    bet.payout = payout
-    bet.settled_at = datetime.now(timezone.utc)
-    bet.settlement_source = "manual"
-    db.commit()
+    # Route through BetService so wagering progress gets recorded
+    bet_service = BetService(db)
+    bet_service.settle_bet(body.bet_id, body.result, payout)
 
     return {
         "bet_id": bet.id,
         "result": bet.result,
         "payout": bet.payout,
-        "settled_at": bet.settled_at.isoformat(),
+        "settled_at": bet.settled_at.isoformat() if bet.settled_at else None,
     }
 
 

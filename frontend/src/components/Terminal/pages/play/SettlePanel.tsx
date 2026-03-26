@@ -172,10 +172,22 @@ function ProviderGroup({
 // SettlePanel
 // ---------------------------------------------------------------------------
 
+interface MirrorSettlement {
+  bet_id: number;
+  provider: string;
+  event: string;
+  odds: number;
+  stake: number;
+  result: string;
+  payout: number;
+}
+
 export function SettlePanel({ onContinue, setPendingCount }: Props) {
   const queryClient = useQueryClient();
   const [settledBets, setSettledBets] = useState<Record<number, BetSettleState>>({});
   const [settlingBetId, setSettlingBetId] = useState<number | null>(null);
+  const [mirrorSettlements, setMirrorSettlements] = useState<MirrorSettlement[]>([]);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   // Fetch pending bets
   const { data, isLoading } = useQuery({
@@ -205,7 +217,7 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
     onError: () => setSettlingBetId(null),
   });
 
-  // Listen for mirror auto-settlements via SSE
+  // Listen for mirror settlements via SSE — stage for review, don't auto-confirm
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
 
@@ -213,20 +225,35 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
       const payload = JSON.parse(e.data);
       const settlements = payload.settlements || [];
       if (settlements.length > 0) {
-        api.confirmMirrorSettlements().then(() => {
-          const autoSettled: Record<number, BetSettleState> = {};
-          for (const s of settlements) {
-            autoSettled[s.bet_id] = 'auto-settled';
-          }
-          setSettledBets(prev => ({ ...prev, ...autoSettled }));
-          queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-          queryClient.invalidateQueries({ queryKey: ['pending-bets'] });
-        }).catch(err => console.error('[settle] auto-confirm failed', err));
+        setMirrorSettlements(settlements);
       }
     });
 
     return () => es.close();
-  }, [queryClient]);
+  }, []);
+
+  const handleConfirmMirror = useCallback(() => {
+    setIsConfirming(true);
+    api.confirmMirrorSettlements().then(() => {
+      const autoSettled: Record<number, BetSettleState> = {};
+      for (const s of mirrorSettlements) {
+        autoSettled[s.bet_id] = 'auto-settled';
+      }
+      setSettledBets(prev => ({ ...prev, ...autoSettled }));
+      setMirrorSettlements([]);
+      setIsConfirming(false);
+      queryClient.invalidateQueries({ queryKey: ['bankroll'] });
+      queryClient.invalidateQueries({ queryKey: ['pending-bets'] });
+    }).catch(err => {
+      console.error('[settle] confirm failed', err);
+      setIsConfirming(false);
+    });
+  }, [mirrorSettlements, queryClient]);
+
+  const handleRejectMirror = useCallback(() => {
+    fetch('/api/mirror/settlements/reject', { method: 'POST' });
+    setMirrorSettlements([]);
+  }, []);
 
   const handleSettle = useCallback((betId: number, result: 'won' | 'lost' | 'void') => {
     settleMutation.mutate({ betId, result });
@@ -274,6 +301,46 @@ export function SettlePanel({ onContinue, setPendingCount }: Props) {
             onSettle={handleSettle}
           />
         ))}
+
+        {/* Mirror settlement review banner */}
+        {mirrorSettlements.length > 0 && (
+          <div className="border border-blue-500/40 bg-blue-500/10 rounded-md p-3 mb-4">
+            <div className="text-xs font-bold text-blue-400 mb-2">
+              Mirror detected {mirrorSettlements.length} settlement{mirrorSettlements.length > 1 ? 's' : ''}
+            </div>
+            <div className="space-y-1 mb-3">
+              {mirrorSettlements.map(s => {
+                const wins = s.result === 'won';
+                return (
+                  <div key={s.bet_id} className="flex items-center gap-2 text-[11px]">
+                    <span className={`font-bold w-8 ${wins ? 'text-success' : s.result === 'void' ? 'text-amber-400' : 'text-red-400'}`}>
+                      {s.result.toUpperCase()}
+                    </span>
+                    <span className="text-text truncate flex-1">{s.event}</span>
+                    <span className="text-dark-400">{s.odds.toFixed(2)}</span>
+                    <span className="text-dark-400">{s.stake.toFixed(0)} kr</span>
+                    {wins && <span className="text-success">+{s.payout.toFixed(0)}</span>}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleConfirmMirror}
+                disabled={isConfirming}
+                className="px-3 py-1 text-xs font-bold bg-blue-500 text-black rounded hover:opacity-90 disabled:opacity-50"
+              >
+                {isConfirming ? 'Confirming...' : `Confirm ${mirrorSettlements.length} settlements`}
+              </button>
+              <button
+                onClick={handleRejectMirror}
+                className="px-3 py-1 text-xs text-dark-400 border border-dark-600 rounded hover:bg-dark-800"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Continue button */}
         <div className="text-center mt-4">
