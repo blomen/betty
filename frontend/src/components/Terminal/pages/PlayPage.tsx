@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { BatchResult, CapitalAction } from '@/types';
+import { SettlePanel } from './play/SettlePanel';
 import { CapitalPlanPanel } from './play/CapitalPlanPanel';
 import { SessionBatchPanel } from './play/SessionBatchPanel';
 import { ExecutionPanel } from './play/ExecutionPanel';
@@ -10,21 +11,43 @@ import { ExecutionPanel } from './play/ExecutionPanel';
 // Step definitions
 // ---------------------------------------------------------------------------
 
-type Step = 'capital' | 'batch' | 'execute';
+type Step = 'settle' | 'capital' | 'batch' | 'execute';
 
 const STEPS: { key: Step; label: string }[] = [
+  { key: 'settle', label: 'Settle' },
   { key: 'capital', label: 'Capital Plan' },
   { key: 'batch', label: 'Session Batch' },
   { key: 'execute', label: 'Execute' },
 ];
 
-function StepIndicator({ current, onNavigate }: { current: Step; onNavigate: (s: Step) => void }) {
+function StepIndicator({
+  current,
+  onNavigate,
+  pendingCount,
+  mirrorRunning,
+}: {
+  current: Step;
+  onNavigate: (s: Step) => void;
+  pendingCount: number;
+  mirrorRunning: boolean;
+}) {
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-border bg-dark-900">
+      {/* Mirror status dot */}
+      <div
+        className={`w-2 h-2 rounded-full mr-2 ${mirrorRunning ? 'bg-success' : 'bg-dark-600'}`}
+        title={mirrorRunning ? 'Mirror running' : 'Mirror not running'}
+      />
+
       {STEPS.map((step, i) => {
         const isActive = step.key === current;
         const currentIdx = STEPS.findIndex((s) => s.key === current);
         const isPast = i < currentIdx;
+
+        // Show pending count on settle step
+        const label = step.key === 'settle' && pendingCount > 0
+          ? `${step.label} (${pendingCount})`
+          : step.label;
 
         return (
           <div key={step.key} className="flex items-center gap-1">
@@ -42,7 +65,7 @@ function StepIndicator({ current, onNavigate }: { current: Step; onNavigate: (s:
               }`}
             >
               {isPast ? '✓ ' : isActive ? '● ' : '○ '}
-              {step.label}
+              {label}
             </button>
           </div>
         );
@@ -57,10 +80,19 @@ function StepIndicator({ current, onNavigate }: { current: Step; onNavigate: (s:
 
 export function PlayPage() {
   const queryClient = useQueryClient();
-  const [step, setStep] = useState<Step>('capital');
+  const [step, setStep] = useState<Step>('settle');
   const [excludedBets, setExcludedBets] = useState<string[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [mirrorRunning, setMirrorRunning] = useState(false);
 
-  // Fetch batch
+  // Lazy-start mirror on mount
+  useEffect(() => {
+    api.ensureMirrorStarted()
+      .then(() => setMirrorRunning(true))
+      .catch(() => setMirrorRunning(false));
+  }, []);
+
+  // Fetch batch (only when past settle step)
   const {
     data: batchData,
     isLoading,
@@ -71,6 +103,7 @@ export function PlayPage() {
     queryFn: () => api.getPlayBatch(excludedBets.length > 0 ? excludedBets : undefined),
     staleTime: 60_000,
     refetchInterval: 120_000,
+    enabled: step !== 'settle',
   });
 
   // Confirm capital mutation
@@ -108,75 +141,94 @@ export function PlayPage() {
     setStep('execute');
   }, []);
 
-  if (isLoading) {
-    return <div className="p-4 text-dark-400 text-sm">Building batch...</div>;
-  }
-
-  if (!batchData) {
-    return <div className="p-4 text-dark-400 text-sm">No batch data available. Run extraction first.</div>;
-  }
-
-  const { batch, summary, capital_plan, wagering_projections } = batchData;
-
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Step indicator */}
-      <StepIndicator current={step} onNavigate={setStep} />
+      <StepIndicator
+        current={step}
+        onNavigate={setStep}
+        pendingCount={pendingCount}
+        mirrorRunning={mirrorRunning}
+      />
 
       {/* Step content */}
       <div className="flex-1 overflow-y-auto">
-        {step === 'capital' && (
-          <CapitalPlanPanel
-            capitalPlan={capital_plan}
-            onConfirm={handleConfirmCapital}
-            onSkip={handleSkipCapital}
-            isLoading={confirmCapital.isPending}
+        {step === 'settle' && (
+          <SettlePanel
+            onContinue={() => setStep('capital')}
+            pendingCount={pendingCount}
+            setPendingCount={setPendingCount}
           />
+        )}
+
+        {step === 'capital' && (
+          <>
+            {isLoading ? (
+              <div className="p-4 text-dark-400 text-sm">Building batch...</div>
+            ) : !batchData ? (
+              <div className="p-4 text-dark-400 text-sm">No batch data available. Run extraction first.</div>
+            ) : (
+              <CapitalPlanPanel
+                capitalPlan={batchData.capital_plan}
+                onConfirm={handleConfirmCapital}
+                onSkip={handleSkipCapital}
+                isLoading={confirmCapital.isPending}
+              />
+            )}
+          </>
         )}
 
         {step === 'batch' && (
           <div className="flex flex-col flex-1 min-h-0">
-            <SessionBatchPanel
-              batch={batch}
-              summary={summary}
-              wageringProjections={wagering_projections || []}
-              onRemoveBet={handleRemoveBet}
-            />
+            {isLoading ? (
+              <div className="p-4 text-dark-400 text-sm">Building batch...</div>
+            ) : !batchData ? (
+              <div className="p-4 text-dark-400 text-sm">No batch data available. Run extraction first.</div>
+            ) : (
+              <>
+                <SessionBatchPanel
+                  batch={batchData.batch}
+                  summary={batchData.summary}
+                  wageringProjections={batchData.wagering_projections || []}
+                  onRemoveBet={handleRemoveBet}
+                />
 
-            {/* Action bar */}
-            <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-dark-900">
-              <button
-                className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
-                onClick={() => setStep('capital')}
-              >
-                ← Capital Plan
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  className="px-3 py-1 text-xs bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600"
-                  onClick={() => { setExcludedBets([]); rebuildBatch(); }}
-                  disabled={isFetching}
-                >
-                  {isFetching ? 'Rebuilding...' : 'Rebuild'}
-                </button>
-                {batch.length > 0 && (
+                {/* Action bar */}
+                <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-dark-900">
                   <button
-                    className="px-4 py-1 text-xs bg-success text-black font-bold hover:opacity-90 transition-opacity"
-                    onClick={handleLockBatch}
+                    className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
+                    onClick={() => setStep('capital')}
                   >
-                    Execute ({batch.length} bets) →
+                    ← Capital Plan
                   </button>
-                )}
-              </div>
-            </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="px-3 py-1 text-xs bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600"
+                      onClick={() => { setExcludedBets([]); rebuildBatch(); }}
+                      disabled={isFetching}
+                    >
+                      {isFetching ? 'Rebuilding...' : 'Rebuild'}
+                    </button>
+                    {batchData.batch.length > 0 && (
+                      <button
+                        className="px-4 py-1 text-xs bg-success text-black font-bold hover:opacity-90 transition-opacity"
+                        onClick={handleLockBatch}
+                      >
+                        Execute ({batchData.batch.length} bets) →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 
-        {step === 'execute' && (
+        {step === 'execute' && batchData && (
           <div className="flex flex-col flex-1 min-h-0">
             <ExecutionPanel
-              batch={batch}
-              wageringProjections={wagering_projections || []}
+              batch={batchData.batch}
+              wageringProjections={batchData.wagering_projections || []}
             />
 
             {/* Back to batch */}
