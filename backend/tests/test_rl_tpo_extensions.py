@@ -227,3 +227,80 @@ class TestComputeSessionTpos:
         result = compute_session_tpos(bars, tick_size=0.25)
         assert result.london is not None
         assert result.london.ib_valid is True
+
+
+# ---------------------------------------------------------------------------
+# extract_session_tpo_features
+# ---------------------------------------------------------------------------
+
+import numpy as np
+from src.rl.features.tpo_features import extract_session_tpo_features
+
+
+class TestExtractSessionTpoFeatures:
+    def test_none_returns_26_zeros(self):
+        result = extract_session_tpo_features(None, current_price=19850.0)
+        assert result.shape == (26,)
+        assert np.all(result == 0.0)
+
+    def test_all_sessions_populated(self):
+        tpo_set = SessionTPOSet(
+            tokyo=SessionTPO("tokyo", poc=19800.0, vah=19820.0, val=19780.0,
+                             shape="balanced", ib_high=19810.0, ib_low=19795.0,
+                             ib_valid=False, poor_high=False, poor_low=True),
+            london=SessionTPO("london", poc=19850.0, vah=19870.0, val=19830.0,
+                              shape="p-shape", ib_high=19860.0, ib_low=19840.0,
+                              ib_valid=True, poor_high=True, poor_low=False),
+            ny=SessionTPO("ny", poc=19890.0, vah=19910.0, val=19870.0,
+                          shape="b-shape", ib_high=19900.0, ib_low=19880.0,
+                          ib_valid=True, poor_high=False, poor_low=False),
+            poc_migration_tokyo_london=200.0,
+            poc_migration_london_ny=160.0,
+        )
+        result = extract_session_tpo_features(tpo_set, current_price=19850.0)
+        assert result.shape == (26,)
+        assert result.dtype == np.float32
+        # Tokyo IB features should be zeroed (ib_valid=False)
+        assert result[4] == 0.0  # ib_range
+        assert result[5] == 0.0  # price_vs_ib_mid
+        # London shape should be +1 (p-shape)
+        assert result[8 + 3] == 1.0
+        # Migration features
+        assert result[24] != 0.0
+        assert result[25] != 0.0
+
+    def test_partial_sessions_zeros_for_missing(self):
+        tpo_set = SessionTPOSet(
+            tokyo=SessionTPO("tokyo", poc=19800.0, vah=19820.0, val=19780.0,
+                             shape="p-shape", ib_high=19810.0, ib_low=19795.0,
+                             ib_valid=True, poor_high=False, poor_low=False),
+            london=None, ny=None,
+            poc_migration_tokyo_london=0.0, poc_migration_london_ny=0.0,
+        )
+        result = extract_session_tpo_features(tpo_set, current_price=19800.0)
+        assert result.shape == (26,)
+        assert not np.all(result[0:8] == 0.0)
+        assert np.all(result[8:16] == 0.0)
+        assert np.all(result[16:24] == 0.0)
+
+    def test_price_position_in_va_within(self):
+        tpo_set = SessionTPOSet(
+            tokyo=SessionTPO("tokyo", poc=19800.0, vah=19820.0, val=19780.0,
+                             shape="balanced", ib_high=19810.0, ib_low=19790.0,
+                             ib_valid=True, poor_high=False, poor_low=False),
+            london=None, ny=None,
+            poc_migration_tokyo_london=0.0, poc_migration_london_ny=0.0,
+        )
+        result = extract_session_tpo_features(tpo_set, current_price=19800.0)
+        assert abs(result[7]) < 0.01
+
+    def test_price_position_above_va(self):
+        tpo_set = SessionTPOSet(
+            tokyo=SessionTPO("tokyo", poc=19800.0, vah=19820.0, val=19780.0,
+                             shape="balanced", ib_high=19810.0, ib_low=19790.0,
+                             ib_valid=True, poor_high=False, poor_low=False),
+            london=None, ny=None,
+            poc_migration_tokyo_london=0.0, poc_migration_london_ny=0.0,
+        )
+        result = extract_session_tpo_features(tpo_set, current_price=19840.0)
+        assert result[7] > 0.0
