@@ -75,7 +75,7 @@ class ExtractionPipeline:
         Called after Pinnacle extraction + cache warm-up. Attempts to match
         buffered soft provider events that previously had no Pinnacle match.
         """
-        now = datetime.utcnow()
+        now = datetime.utcnow()  # naive UTC to match SQLite stored datetimes
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
@@ -192,10 +192,10 @@ class ExtractionPipeline:
 
         Returns number of events marked as finished.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from sqlalchemy import or_
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Strategy 1: stale updated_at (not seen in last 3 min = Pinnacle dropped it)
         stale_threshold = now - timedelta(minutes=3)
