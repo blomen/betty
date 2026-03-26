@@ -100,8 +100,9 @@ class SessionManager:
     MAX_COMPOUND: float = 2.0       # Cap at 2x base size
     MIN_Q_SPREAD: float = 0.01     # Minimum Q-spread to consider trading
     FLIP_SPREAD_MULT: float = 2.0   # Only flip if new signal is 2x stronger than entry spread
-    MIN_HOLD_SECONDS: float = 60.0  # Don't flip within 60s of entry
-    TRAIL_LOCK_TICKS: float = 10.0  # Lock profit 10 ticks behind each new level
+    MIN_HOLD_SECONDS: float = 120.0 # Don't flip within 2 min of entry
+    TRAIL_LOCK_TICKS: float = 0.0   # Structural trailing only (on level touches)
+    INDEPENDENT_MODE: bool = True   # Each level touch is independent — no position carry
     MAX_CONSECUTIVE_LOSSES: int = 3  # Reduce size after 3 losses in a row
 
     def __init__(
@@ -179,6 +180,22 @@ class SessionManager:
         size = self._compute_size(confidence)
 
         # --- Decision logic ---
+
+        if self.INDEPENDENT_MODE:
+            # Independent mode: each level touch is a standalone signal
+            # No position carry, no flipping, no trailing
+            # The reward comes from the velocity measurement, not stop/target
+            if q_spread < self.MIN_Q_SPREAD:
+                return self._signal("skip", current_price,
+                                    q_spread=q_spread, confidence=confidence,
+                                    reason="low_confidence")
+
+            action = f"signal_{model_side.value}"
+            return self._signal(action, current_price,
+                                q_values=[q_cont, q_rev],
+                                q_spread=q_spread, confidence=confidence,
+                                stop_price=stop_price, size=size,
+                                reason="independent_signal")
 
         if not self.position.is_open:
             # No position — enter or skip
@@ -324,18 +341,18 @@ class SessionManager:
         return pnl_r
 
     def _trail_stop(self, current_price: float, new_stop_from_model: float) -> float:
-        """Trail the stop — only move in favorable direction, never widen."""
+        """Trail the stop on level touches only — structural trailing, not price-based.
+
+        The stop only moves when the model evaluates a NEW level and confirms
+        the same direction. This prevents noise-based stop tightening.
+        The new stop comes from the model's stop head at the new level.
+        """
         if self.position.side == PositionSide.LONG:
-            # For longs, stop can only move UP
-            # Lock profit: trail behind current price minus buffer
-            trail_price = current_price - self.TRAIL_LOCK_TICKS * TICK_SIZE
-            best_stop = max(self.position.stop_price, trail_price, new_stop_from_model)
-            return best_stop
+            # For longs, stop can only move UP — use model's stop prediction
+            return max(self.position.stop_price, new_stop_from_model)
         else:
             # For shorts, stop can only move DOWN
-            trail_price = current_price + self.TRAIL_LOCK_TICKS * TICK_SIZE
-            best_stop = min(self.position.stop_price, trail_price, new_stop_from_model)
-            return best_stop
+            return min(self.position.stop_price, new_stop_from_model)
 
     def _compute_size(self, confidence: float) -> float:
         """Compute position size based on confidence + session P&L."""
