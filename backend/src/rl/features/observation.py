@@ -8,7 +8,7 @@ Segment sizes:
     level_type one-hot   25
     orderflow            21  (was 15, added 6 temporal dynamics)
     structure + session  23
-    tpo                  13
+    tpo (per-session)    26
     candle window        15
     confluence            8
     macro                 7
@@ -16,7 +16,7 @@ Segment sizes:
     micro (hand-crafted) 20
     approach direction    1
     ---
-    total               146
+    total               159
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import numpy as np
 from ..config import LevelType, TICK_SIZE
 from .level_features import encode_level_type, encode_confluence
 from .orderflow_features import extract_orderflow_features
-from .tpo_features import extract_tpo_features
+from .tpo_features import extract_session_tpo_features
 from .structure_features import extract_structure_features
 from .macro_features import extract_macro_features
 from .setup_features import extract_setup_features
@@ -58,7 +58,6 @@ def build_observation(state: dict) -> np.ndarray:
     candles: list = state.get("candles", [])
     vwap_bands = state.get("vwap_bands")
     volume_profile = state.get("volume_profile")
-    tpo_profile = state.get("tpo_profile")
     session_levels = state.get("session_levels")
     all_levels: list[float] = state.get("all_levels", [])
     orderflow_signals = state.get("orderflow_signals")
@@ -84,8 +83,9 @@ def build_observation(state: dict) -> np.ndarray:
         price, vwap_bands, volume_profile, session_levels, session_context
     )
 
-    # 4. TPO (13)
-    seg_tpo = extract_tpo_features(tpo_profile, price)
+    # 4. TPO per-session (26)
+    session_tpos = state.get("session_tpos")
+    seg_tpo = extract_session_tpo_features(session_tpos, price)
 
     # 5. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)
@@ -127,7 +127,7 @@ def build_observation(state: dict) -> np.ndarray:
         seg_level,        # 25
         seg_orderflow,    # 21
         seg_structure,    # 23
-        seg_tpo,          # 13
+        seg_tpo,          # 26
         seg_candles,      # 15
         seg_confluence,   # 8
         seg_macro,        # 7
@@ -149,6 +149,7 @@ _dummy_state: dict = {
     "candles_5m": [],
     "vwap_bands": None,
     "volume_profile": None,
+    "session_tpos": None,
     "tpo_profile": None,
     "tpo_profile_obj": None,
     "session_levels": None,

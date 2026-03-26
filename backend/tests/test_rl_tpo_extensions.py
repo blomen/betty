@@ -235,6 +235,8 @@ class TestComputeSessionTpos:
 
 import numpy as np
 from src.rl.features.tpo_features import extract_session_tpo_features
+from src.rl.features.observation import build_observation, OBSERVATION_DIM
+from src.rl.config import LevelType
 
 
 class TestExtractSessionTpoFeatures:
@@ -304,3 +306,37 @@ class TestExtractSessionTpoFeatures:
         )
         result = extract_session_tpo_features(tpo_set, current_price=19840.0)
         assert result[7] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Observation dimension after per-session TPO
+# ---------------------------------------------------------------------------
+
+
+class TestObservationDimension:
+    def test_observation_dim_is_159(self):
+        """After per-session TPO: 146 - 13 + 26 = 159."""
+        assert OBSERVATION_DIM == 159
+
+    def test_build_observation_returns_159(self):
+        state = {
+            "level_type": LevelType.VWAP,
+            "price": 19000.0,
+            "candles": [],
+            "candles_5m": [],
+            "vwap_bands": None,
+            "volume_profile": None,
+            "session_tpos": None,
+            "tpo_profile": None,
+            "tpo_profile_obj": None,
+            "session_levels": None,
+            "all_levels": [],
+            "orderflow_signals": None,
+            "macro": None,
+            "session_context": None,
+            "day_type": None,
+            "recent_ticks": [],
+        }
+        obs = build_observation(state)
+        assert obs.shape == (159,)
+        assert obs.dtype == np.float32
