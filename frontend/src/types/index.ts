@@ -833,3 +833,34 @@ export interface BatchResult {
   capital_plan: CapitalPlan;
   wagering_projections: WageringProjection[];
 }
+
+export interface PendingBet {
+  id: number;
+  event_name: string;
+  market: string;
+  outcome: string;
+  odds: number;
+  stake: number;
+  currency: string;
+  placed_at: string | null;
+}
+
+export interface PendingProvider {
+  provider_id: string;
+  pending_count: number;
+  total_stake: number;
+  bets: PendingBet[];
+}
+
+export interface PendingBetsResponse {
+  providers: PendingProvider[];
+  total_pending: number;
+  total_stake: number;
+}
+
+export interface SettleBetResult {
+  bet_id: number;
+  result: string;
+  payout: number;
+  settled_at: string;
+}

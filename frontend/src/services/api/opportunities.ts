@@ -1,4 +1,4 @@
-import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult } from '@/types';
+import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult, PendingBetsResponse, SettleBetResult } from '@/types';
 import { fetchJson } from './client';
 
 export const opportunitiesApi = {
@@ -92,6 +92,26 @@ export const opportunitiesApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ actions }),
+    });
+  },
+
+  async getPendingBets(): Promise<PendingBetsResponse> {
+    return fetchJson('/opportunities/play/pending-bets');
+  },
+
+  async settleBet(betId: number, result: 'won' | 'lost' | 'void'): Promise<SettleBetResult> {
+    return fetchJson('/opportunities/play/settle-bet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bet_id: betId, result }),
+    });
+  },
+
+  async ensureMirrorStarted(): Promise<{ running: boolean; status: string }> {
+    return fetchJson('/mirror/ensure-started', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     });
   },
 };
