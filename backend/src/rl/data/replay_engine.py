@@ -27,7 +27,7 @@ from ...market_data.levels import (
     detect_order_blocks,
     SessionLevels,
 )
-from ...market_data.tpo import build_full_tpo_profile
+from ...market_data.tpo import build_full_tpo_profile, compute_session_tpos
 from ...market_data.orderflow import (
     build_candle_flow,
     compute_signals,
@@ -534,6 +534,7 @@ class ReplayEngine:
         # TPO profile from 30m bars
         tpo_profile_dict: dict | None = None
         tpo_profile_obj = None  # TPOProfile object for setup detection
+        session_tpos = None     # Per-session TPO for RL features
         if bars_30m:
             profile = build_full_tpo_profile(bars_30m, tick_size=TICK_SIZE)
             tpo_profile_obj = profile  # Keep object for setup detection
@@ -567,6 +568,10 @@ class ReplayEngine:
                 "ib_high": profile.ib_high,
                 "ib_low": profile.ib_low,
             }
+
+            # --- Per-session TPO (for RL observation) ---
+            # bars_30m from CandleAggregator have "ts" field (datetime)
+            session_tpos = compute_session_tpos(bars_30m, tick_size=TICK_SIZE)
 
         # Session context
         session_context = self._build_session_context(ts, bars_1m, session_date)
@@ -622,6 +627,7 @@ class ReplayEngine:
             "volume_profile": vp,
             "tpo_profile": tpo_profile_dict,
             "tpo_profile_obj": tpo_profile_obj,
+            "session_tpos": session_tpos,
             "session_levels": self._session_levels,
             "all_levels": all_level_prices,
             "orderflow_signals": of_signals,
