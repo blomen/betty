@@ -46,6 +46,22 @@ async def start_mirror():
     return mirror.get_status()
 
 
+@router.post("/ensure-started")
+async def ensure_mirror_started():
+    """Idempotent: start mirror if not already running, otherwise return status."""
+    if _any_running():
+        for m in _mirrors.values():
+            status = m.get_status()
+            if status["running"]:
+                return status
+        return {"running": True, "status": "running"}
+
+    mirror = MirrorService(broadcaster=odds_broadcaster, provider_id=_DEFAULT_PROVIDER)
+    await mirror.start()
+    _mirrors[_DEFAULT_PROVIDER] = mirror
+    return mirror.get_status()
+
+
 @router.post("/stop")
 async def stop_mirror():
     """Stop all mirror browsers."""
