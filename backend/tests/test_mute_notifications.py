@@ -196,3 +196,66 @@ def test_replay_marks_stale_on_failure(mirror):
             mirror._replay_notification_mute("campobet")
         )
     assert mirror._recipes[0].status == "stale"
+
+
+from fastapi.testclient import TestClient
+from src.api.routes.mirror import router, _mirrors
+from fastapi import FastAPI
+
+
+@pytest.fixture
+def api_client(mirror):
+    """FastAPI test client with a running mirror."""
+    app = FastAPI()
+    app.include_router(router)
+    # Inject our test mirror into the module state
+    _mirrors.clear()
+    _mirrors["test"] = mirror
+    mirror.interceptor.status = "listening"
+    return TestClient(app)
+
+
+def test_get_recipes_empty(api_client):
+    resp = api_client.get("/api/mirror/notification-recipes")
+    assert resp.status_code == 200
+    assert resp.json() == {"recipes": []}
+
+
+def test_get_recipes_with_data(api_client, mirror):
+    from src.mirror.recipes import NotificationRecipe
+    mirror._recipes = [NotificationRecipe(
+        provider_id="campobet",
+        captured_at="2026-03-26T14:30:00Z",
+        method="PUT",
+        url="https://campobet.se/api/v1/preferences",
+        content_type="application/json",
+        body='{"email": false}',
+        status="active",
+    )]
+    resp = api_client.get("/api/mirror/notification-recipes")
+    assert resp.status_code == 200
+    data = resp.json()["recipes"]
+    assert len(data) == 1
+    assert data[0]["provider_id"] == "campobet"
+
+
+def test_delete_recipe(api_client, mirror):
+    from src.mirror.recipes import NotificationRecipe
+    mirror._recipes = [NotificationRecipe(
+        provider_id="campobet",
+        captured_at="2026-03-26T14:30:00Z",
+        method="PUT",
+        url="https://campobet.se/api/v1/preferences",
+        content_type="application/json",
+        body='{"email": false}',
+        status="active",
+    )]
+    resp = api_client.delete("/api/mirror/notification-recipes/campobet")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    assert len(mirror._recipes) == 0
+
+
+def test_delete_recipe_not_found(api_client):
+    resp = api_client.delete("/api/mirror/notification-recipes/nonexistent")
+    assert resp.status_code == 404

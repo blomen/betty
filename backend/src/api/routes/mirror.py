@@ -120,3 +120,24 @@ async def reject_settlements():
     if not mirror:
         raise HTTPException(400, "No mirror running")
     return mirror.reject_settlements()
+
+
+@router.get("/notification-recipes")
+async def get_notification_recipes():
+    """List all stored notification mute recipes."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        return {"recipes": []}
+    return {"recipes": mirror.get_notification_recipes()}
+
+
+@router.delete("/notification-recipes/{provider_id}")
+async def delete_notification_recipe(provider_id: str):
+    """Delete a notification mute recipe for a provider."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(404, "No mirror running")
+    deleted = mirror.delete_notification_recipe(provider_id)
+    if not deleted:
+        raise HTTPException(404, f"No recipe found for {provider_id}")
+    return {"deleted": True, "provider_id": provider_id}
