@@ -910,59 +910,112 @@ class BatchBuilder:
                 "priority_label": "sharp_deposit",
             })
 
-        # --- Priority 2: Bonus deposits (active wagering) ---
-        # --- Priority 3: Soft shortfall deposits ---
+        # --- Priority 2/3: Soft deposits, spread across siblings if needed ---
+        import math
+
+        # Aggregate missed bets per cluster (not per provider) since siblings share opps
+        cluster_missed: dict[str, dict] = {}  # cluster -> {count, stake, ev}
         for pid in sorted(providers_with_shortfall):
             if pid in SHARP_PROVIDERS:
                 continue
             pb = provider_balances.get(pid)
             if pb is None:
                 continue
-
             m_bets = missed_by_provider.get(pid, [])
-            missed_ev = sum(b.expected_profit for b in m_bets) if m_bets else pb.missed_ev
-            missed_stake = sum(b.stake for b in m_bets) if m_bets else 0
             missed_count = len(m_bets) if m_bets else pb.missed_bets
+            missed_stake = sum(b.stake for b in m_bets) if m_bets else 0
+            missed_ev = sum(b.expected_profit for b in m_bets) if m_bets else pb.missed_ev
             if missed_count == 0 and pb.missed_bets == 0:
                 continue
 
             cluster = pb.cluster or pid
+            if cluster not in cluster_missed:
+                cluster_missed[cluster] = {"count": 0, "stake": 0, "ev": 0, "source_pid": pid}
+            cluster_missed[cluster]["count"] += missed_count
+            cluster_missed[cluster]["stake"] += missed_stake
+            cluster_missed[cluster]["ev"] += missed_ev
+
+        for cluster, info in cluster_missed.items():
+            missed_count = info["count"]
+            missed_stake = info["stake"]
+            missed_ev = info["ev"]
+            source_pid = info["source_pid"]
             stats = cluster_opp_stats.get(cluster, {})
-            amount = max(missed_stake, 0)
 
-            has_bonus = pb.wagering_remaining > 0
+            # How many total bets in this cluster (batch + missed)?
+            cluster_total = (cluster_bet_counts.get(cluster, 0) if "cluster_bet_counts" in dir() else missed_count)
+            # Count existing funded providers in this cluster
+            funded_in_cluster = [
+                pid for pid, pb in provider_balances.items()
+                if (pb.cluster or pid) == cluster and pb.lifecycle not in ("dormant", "available")
+            ]
 
+            # How many providers needed for spreading (batch bets + missed)?
+            batch_in_cluster = sum(
+                1 for b in (missed_by_provider.get(source_pid, []))  # approximate
+            )
+            total_bets_cluster = len(funded_in_cluster) and sum(
+                pb.allocated for pid2, pb in provider_balances.items()
+                if (pb.cluster or pid2) == cluster
+            )
+            # Simpler: just use missed count for new siblings needed
+            providers_needed = math.ceil(missed_count / BatchBuilder.BETS_PER_PROVIDER)
+            providers_needed = max(providers_needed, 1)
+
+            # Find unfunded siblings in this cluster
+            all_siblings = PLATFORM_GROUPS.get(cluster, {}).get("members", [cluster])
+            funded_pids = {pid for pid, pb in provider_balances.items() if (pb.cluster or pid) == cluster}
+            unfunded_siblings = [s for s in all_siblings if s not in funded_pids]
+
+            # Check if existing funded provider has a bonus (priority 2 vs 3)
+            funded_pb = provider_balances.get(source_pid)
+            has_bonus = funded_pb and funded_pb.wagering_remaining > 0
             if has_bonus:
-                # Check wagering feasibility
                 effective_wager = avg_daily_wager if avg_daily_wager > 0 else 1000
-                days_needed = pb.wagering_remaining / effective_wager
-                if pb.days_remaining is not None and days_needed > pb.days_remaining:
-                    # Infeasible — skip this bonus deposit
-                    continue
+                days_needed = funded_pb.wagering_remaining / effective_wager
+                if funded_pb.days_remaining is not None and days_needed > funded_pb.days_remaining:
+                    continue  # Infeasible wagering
+                priority = 2
+                label = "bonus_deposit"
+            else:
+                priority = 3
+                label = "soft_deposit"
 
+            if providers_needed <= 1 or not unfunded_siblings:
+                # Single deposit to the existing provider
                 actions.append({
                     "type": "deposit",
-                    "provider_id": pid,
-                    "amount": round(amount, 2),
+                    "provider_id": source_pid,
+                    "amount": round(missed_stake, 2),
                     "unlocks": missed_count,
                     "avg_edge": stats.get("avg_edge", 0),
                     "expected_ev": round(missed_ev, 2),
                     "currency": "SEK",
-                    "priority": 2,
-                    "priority_label": "bonus_deposit",
+                    "priority": priority,
+                    "priority_label": label,
                 })
             else:
-                actions.append({
-                    "type": "deposit",
-                    "provider_id": pid,
-                    "amount": round(amount, 2),
-                    "unlocks": missed_count,
-                    "avg_edge": stats.get("avg_edge", 0),
-                    "expected_ev": round(missed_ev, 2),
-                    "currency": "SEK",
-                    "priority": 3,
-                    "priority_label": "soft_deposit",
-                })
+                # Spread across siblings: existing funded + new unfunded
+                targets = funded_in_cluster[:] + unfunded_siblings
+                targets = targets[:providers_needed]
+                per_provider_bets = math.ceil(missed_count / len(targets))
+                per_provider_stake = round(missed_stake / len(targets), 2)
+                per_provider_ev = round(missed_ev / len(targets), 2)
+                per_provider_unlocks = math.ceil(missed_count / len(targets))
+
+                for target_pid in targets:
+                    is_new = target_pid not in funded_pids
+                    actions.append({
+                        "type": "deposit",
+                        "provider_id": target_pid,
+                        "amount": per_provider_stake,
+                        "unlocks": per_provider_unlocks,
+                        "avg_edge": stats.get("avg_edge", 0),
+                        "expected_ev": per_provider_ev,
+                        "currency": "SEK",
+                        "priority": priority,
+                        "priority_label": f"{label}_new" if is_new else label,
+                    })
 
         # --- Identify excess providers (balance remaining after batch allocation) ---
         # Only providers with cleared wagering can be transfer/withdraw sources.
