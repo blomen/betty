@@ -52,3 +52,20 @@ def test_recipe_to_dict_roundtrip():
     assert restored.url == recipe.url
     assert restored.body == recipe.body
     assert restored.status == recipe.status
+
+
+from src.mirror.interceptor import BetInterceptor
+
+
+def test_notification_url_detection():
+    interceptor = BetInterceptor()
+    # Should match
+    assert interceptor._is_notification_settings("https://campobet.se/api/v1/preferences", "PUT")
+    assert interceptor._is_notification_settings("https://site.com/notifications/update", "POST")
+    assert interceptor._is_notification_settings("https://site.com/consent/marketing", "PATCH")
+    assert interceptor._is_notification_settings("https://site.com/settings/communication", "PUT")
+    assert interceptor._is_notification_settings("https://site.com/subscriptions/email", "POST")
+    # Should NOT match
+    assert not interceptor._is_notification_settings("https://site.com/api/bets", "POST")
+    assert not interceptor._is_notification_settings("https://site.com/preferences", "GET")  # GET = reading, not writing
+    assert not interceptor._is_notification_settings("https://site.com/notifications", "GET")

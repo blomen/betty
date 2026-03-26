@@ -47,6 +47,13 @@ class BetInterceptor:
     # Balance / deposit / withdraw patterns
     _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
 
+    # Notification / preference settings patterns
+    _NOTIFICATION_KEYWORDS = (
+        "preferences", "notifications", "communication", "consent",
+        "marketing", "subscriptions", "gdpr", "contact-settings",
+    )
+    _NOTIFICATION_METHODS = {"PUT", "POST", "PATCH"}
+
     # Known provider domains → provider ID
     _PROVIDER_DOMAINS = {
         "campobet.se": "campobet", "quickcasino.se": "quickcasino",
@@ -73,12 +80,14 @@ class BetInterceptor:
         on_bet_history: Callable[[str, str], Awaitable[None]] | None = None,
         on_financial_data: Callable[[str, str], Awaitable[None]] | None = None,
         on_provider_detected: Callable[[str], Awaitable[None]] | None = None,
+        on_notification_settings: Callable[..., Awaitable[None]] | None = None,
     ):
         self.on_bet_response = on_bet_response
         self.on_event_data = on_event_data
         self.on_bet_history = on_bet_history
         self.on_financial_data = on_financial_data
         self.on_provider_detected = on_provider_detected
+        self.on_notification_settings = on_notification_settings
         self._detected_providers: set[str] = set()  # Track already-detected to avoid spam
         self.status = "stopped"
         self.context = None
@@ -144,6 +153,13 @@ class BetInterceptor:
                     return True
         return False
 
+    def _is_notification_settings(self, url: str, method: str) -> bool:
+        """Check if this request is a notification/preference settings update."""
+        if method not in self._NOTIFICATION_METHODS:
+            return False
+        url_lower = url.lower()
+        return any(kw in url_lower for kw in self._NOTIFICATION_KEYWORDS)
+
     async def _on_response(self, response):
         """Response listener — records everything + filters for bet placements and event data."""
         try:
@@ -196,6 +212,17 @@ class BetInterceptor:
                     await self.on_financial_data(url, body_text)
                 except Exception as e:
                     logger.debug(f"[mirror] Could not read financial data response: {e}")
+
+            # Intercept notification settings updates
+            if self.on_notification_settings and self._is_notification_settings(url, method):
+                if response.status < 400:
+                    try:
+                        body_text = await response.text()
+                        request_body = response.request.post_data
+                        content_type = response.request.headers.get("content-type", "")
+                        await self.on_notification_settings(url, method, request_body, body_text, content_type)
+                    except Exception as e:
+                        logger.debug(f"[mirror] Could not read notification settings response: {e}")
 
             # Intercept bet placements across all platforms
             if not self._is_bet_placement(url, method):
