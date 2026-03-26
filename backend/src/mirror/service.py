@@ -53,11 +53,9 @@ class MirrorService:
         """Stop the mirror browser."""
         await self.interceptor.stop()
 
-    # Kambi providers use SSR bet history — need DOM scraping, not API interception
-    _SSR_PROVIDERS = frozenset({
-        "unibet", "leovegas", "expekt", "888sport", "speedybet",
-        "x3000", "goldenbull", "betmgm",
-    })
+    # Verified SSR bet history — need DOM scraping, not API interception
+    # Only unibet confirmed; other Kambi operators may have XHR — verify before adding
+    _SSR_PROVIDERS = frozenset({"unibet"})
 
     async def _handle_provider_detected(self, provider_id: str):
         """Fires when user navigates to a known provider site."""
