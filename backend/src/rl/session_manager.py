@@ -278,7 +278,29 @@ class SessionManager:
                                     closed_pnl_r=pnl,
                                     reason="direction_flip")
 
-            elif model_side == self.position.side:
+            elif model_side != self.position.side:
+                # BOS without conviction to flip — move to breakeven (Fabio's rule)
+                # "BOS without volume = breakeven, BOS WITH volume = exit"
+                if self.position.side == PositionSide.LONG:
+                    be_price = self.position.entry_price + 1 * TICK_SIZE
+                    if be_price > self.position.stop_price:
+                        self.position.stop_price = be_price
+                        return self._signal("move_to_breakeven", current_price,
+                                            q_values=[q_cont, q_rev],
+                                            q_spread=q_spread, confidence=confidence,
+                                            stop_price=be_price,
+                                            reason="bos_no_conviction_breakeven")
+                else:
+                    be_price = self.position.entry_price - 1 * TICK_SIZE
+                    if be_price < self.position.stop_price:
+                        self.position.stop_price = be_price
+                        return self._signal("move_to_breakeven", current_price,
+                                            q_values=[q_cont, q_rev],
+                                            q_spread=q_spread, confidence=confidence,
+                                            stop_price=be_price,
+                                            reason="bos_no_conviction_breakeven")
+
+            if model_side == self.position.side:
                 # Same direction — trail the stop
                 new_stop = self._trail_stop(current_price, stop_price)
                 if new_stop != self.position.stop_price:

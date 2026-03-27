@@ -73,6 +73,7 @@ def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:
     from .vwap_sd2_reversal import detect_vwap_sd2_reversal
     from .gap_logic import detect_gap_logic
     from .pbd import detect_pbd
+    from .squeeze import detect_squeeze
 
     detectors = [
         detect_poor_extreme,
@@ -88,6 +89,7 @@ def run_all_detectors(ctx: DetectorContext) -> list[SetupCandidate]:
         detect_vwap_sd2_reversal,
         detect_gap_logic,
         detect_pbd,
+        detect_squeeze,
     ]
 
     candidates = []

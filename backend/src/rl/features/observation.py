@@ -12,11 +12,12 @@ Segment sizes:
     candle window        15
     confluence            8
     macro                 7
-    setup                13
+    setup                14  (13 + squeeze detector)
     micro (hand-crafted) 20
     approach direction    1
+    execution context     7  (follow-through, responsive/initiative, ATR, vol anomaly, time)
     ---
-    total               159
+    total               167
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ from .structure_features import extract_structure_features
 from .macro_features import extract_macro_features
 from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
+from .execution_features import extract_execution_features
 
 # Candle window: last 5 candles x 3 features each
 _CANDLE_WINDOW = 5
@@ -123,6 +125,9 @@ def build_observation(state: dict) -> np.ndarray:
         1.0 if approach == "up" else -1.0,
     ], dtype=np.float32)
 
+    # 11. Execution context (7) — Fabio's timing/auction rules
+    seg_execution = extract_execution_features(state, recent_ticks, candles, price)
+
     obs = np.concatenate([
         seg_level,        # 25
         seg_orderflow,    # 21
@@ -131,9 +136,10 @@ def build_observation(state: dict) -> np.ndarray:
         seg_candles,      # 15
         seg_confluence,   # 8
         seg_macro,        # 7
-        seg_setup,        # 13
+        seg_setup,        # 14 (was 13, added squeeze)
         seg_micro,        # 20
         seg_approach,     # 1
+        seg_execution,    # 7
     ])
 
     # Sanitise
