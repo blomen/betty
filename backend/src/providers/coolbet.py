@@ -99,27 +99,59 @@ class CoolbetRetriever(BrowserRetriever):
         self.site_url = config.get("site_url", "https://www.coolbet.com")
         self._camoufox_browser = None
         self._camoufox_page = None
+        self._sports_on_page = 0  # Track usage to proactively recycle
+
+    async def _recycle_page(self):
+        """Close current page and create a fresh one from existing browser.
+
+        Camoufox pages accumulate SPA state and memory after many navigations,
+        eventually crashing. Proactive recycling prevents the crash.
+        """
+        if not self._camoufox_browser:
+            return
+        if self._camoufox_page:
+            try:
+                await self._camoufox_page.close()
+            except Exception:
+                pass
+            self._camoufox_page = None
+        try:
+            self._camoufox_page = await self._camoufox_browser.new_page()
+            self._session_ready = False
+            self._sports_on_page = 0
+            logger.debug(f"[{self.provider_id}] Recycled Camoufox page")
+        except Exception:
+            logger.warning(f"[{self.provider_id}] Page recycle failed, full relaunch needed")
+            await self._cleanup_camoufox()
 
     async def _ensure_camoufox(self):
         """Launch Camoufox anti-detect browser if not already running."""
         if self._camoufox_page is not None:
+            # Proactively recycle page after each sport to prevent crash
+            if self._sports_on_page > 0:
+                await self._recycle_page()
+                if self._camoufox_page:
+                    return self._camoufox_page
+                # Fall through to launch if recycle failed
+
             # Validate cached page is still alive
-            try:
-                await self._camoufox_page.evaluate("() => true", timeout=5000)
-                return self._camoufox_page
-            except Exception:
-                logger.warning(f"[{self.provider_id}] Camoufox page died, recovering...")
-                # Try creating a new page from existing browser (avoids full 15s relaunch)
-                if self._camoufox_browser:
-                    try:
-                        self._camoufox_page = await self._camoufox_browser.new_page()
-                        self._session_ready = False
-                        logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
-                        return self._camoufox_page
-                    except Exception:
-                        logger.warning(f"[{self.provider_id}] Browser also dead, full relaunch")
-                await self._cleanup_camoufox()
-                self._session_ready = False
+            if self._camoufox_page:
+                try:
+                    await self._camoufox_page.evaluate("() => true", timeout=5000)
+                    return self._camoufox_page
+                except Exception:
+                    logger.warning(f"[{self.provider_id}] Camoufox page died, recovering...")
+                    if self._camoufox_browser:
+                        try:
+                            self._camoufox_page = await self._camoufox_browser.new_page()
+                            self._session_ready = False
+                            self._sports_on_page = 0
+                            logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
+                            return self._camoufox_page
+                        except Exception:
+                            logger.warning(f"[{self.provider_id}] Browser also dead, full relaunch")
+                    await self._cleanup_camoufox()
+                    self._session_ready = False
 
         if CoolbetRetriever._camoufox_unavailable:
             return None
@@ -259,6 +291,7 @@ class CoolbetRetriever(BrowserRetriever):
             # Parse events
             events = self._parse_categories(category_data, odds_data, sport)
             logger.debug(f"[{self.provider_id}] {sport}: {len(events)} events extracted")
+            self._sports_on_page += 1
             return events[:limit]
 
         except Exception as e:
