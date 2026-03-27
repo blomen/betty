@@ -186,7 +186,9 @@ async def lifespan(app: FastAPI):
                 level_monitor = LevelMonitor(publish_fn=_databento_stream._publish)
                 _databento_stream.set_level_monitor(level_monitor)
                 app.state.level_monitor = level_monitor
-                level_monitor.set_async_context(asyncio.get_event_loop(), _get_db_session)
+                # Use the stream thread's event loop for level context fetching —
+                # keeps ML/macro async work off the main event loop entirely.
+                level_monitor.set_async_context(_databento_stream._stream_thread_loop, _get_db_session)
 
                 logger.info("Trading features started: Databento stream + level monitor")
 

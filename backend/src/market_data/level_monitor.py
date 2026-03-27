@@ -296,8 +296,9 @@ class LevelMonitor:
         })
         # Schedule async ML/macro fetch
         if self._loop and self._db_session_factory:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self._emit_level_context(level.name, level.price))
+            asyncio.run_coroutine_threadsafe(
+                self._emit_level_context(level.name, level.price),
+                self._loop,
             )
 
         # ML feature extraction + outcome tracking

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
-import asyncio, json
+import asyncio, json, time
 
 from ..deps import get_db
 from ...services.market_service import MarketService
@@ -182,24 +182,35 @@ async def get_macro_snapshot():
 
 @router.get("/stream")
 async def market_stream(request: Request, symbol: str = "NQ"):
-    """SSE stream of real-time tick data, candles, and level touches."""
+    """SSE stream of real-time tick data, candles, and level touches.
+
+    Uses a polling model: the stream thread writes to shared state,
+    and this generator polls it every 500ms. This avoids call_soon_threadsafe
+    which was overwhelming the Windows ProactorEventLoop.
+    """
     stream = _get_live_stream(request)
     if not stream:
         return {"error": "Live stream not available"}
 
-    queue = stream.subscribe()
+    state = stream.get_shared_state()
 
     async def event_generator():
+        versions: dict[str, int] = {}
+        event_seq = 0
+        last_yield = time.monotonic()
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                events, versions, event_seq = state.poll(versions, event_seq)
+                for event in events:
                     event_type = event.get("type", "tick")
                     yield {"event": event_type, "data": json.dumps(event)}
-                except asyncio.TimeoutError:
+                    last_yield = time.monotonic()
+                if not events and time.monotonic() - last_yield > 30:
                     yield {"event": "heartbeat", "data": "{}"}
+                    last_yield = time.monotonic()
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
-            stream.unsubscribe(queue)
+            pass
 
     return EventSourceResponse(event_generator())
 

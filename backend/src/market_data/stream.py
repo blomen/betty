@@ -1,6 +1,7 @@
 """Databento live stream client for Trades + MBP-1."""
 import asyncio
 import logging
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -19,6 +20,69 @@ MIN_GAP_FOR_BACKFILL_S = 120
 # Batch flush config
 TICK_BATCH_SIZE = 500
 TICK_FLUSH_INTERVAL_S = 5.0
+
+
+class StreamState:
+    """Thread-safe shared state for SSE subscribers.
+
+    The Databento stream thread writes latest snapshots here (tick, book, candle).
+    SSE generators poll this state at a fixed interval — no call_soon_threadsafe
+    needed, which prevents the main event loop from being overwhelmed.
+
+    Dedup-safe events (tick, book, candle, orderflow, ml_features, dqn_inference)
+    are stored as "latest" slots — only the most recent value matters.
+    Must-not-lose events (level_touched, predictions, etc.) go into a ring buffer
+    with sequence numbers so multiple subscribers can read independently.
+    """
+
+    # Event types where only the latest value matters
+    SNAPSHOT_TYPES = frozenset({
+        "tick", "book", "candle",
+        "orderflow_update", "ml_features", "dqn_inference",
+    })
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._snapshots: dict[str, dict] = {}
+        self._snapshot_versions: dict[str, int] = {}
+        self._event_ring: deque[tuple[int, dict]] = deque(maxlen=500)
+        self._event_seq: int = 0
+
+    def set_latest(self, event_type: str, data: dict) -> None:
+        """Update a dedup-safe snapshot slot (called from stream thread)."""
+        with self._lock:
+            self._snapshots[event_type] = data
+            self._snapshot_versions[event_type] = self._snapshot_versions.get(event_type, 0) + 1
+
+    def push_event(self, data: dict) -> None:
+        """Queue a must-not-lose event (called from stream thread)."""
+        with self._lock:
+            self._event_seq += 1
+            self._event_ring.append((self._event_seq, data))
+
+    def poll(self, last_versions: dict[str, int], last_event_seq: int) -> tuple[list[dict], dict[str, int], int]:
+        """Poll for new events since last call.
+
+        Returns (events, new_versions, new_event_seq).
+        Each SSE subscriber calls this independently with their own state.
+        """
+        events = []
+        with self._lock:
+            # Check snapshot slots for changes
+            new_versions = dict(self._snapshot_versions)
+            for etype, version in new_versions.items():
+                if version != last_versions.get(etype, 0):
+                    data = self._snapshots.get(etype)
+                    if data:
+                        events.append(data)
+
+            # Collect queued events newer than last_event_seq
+            for seq, data in self._event_ring:
+                if seq > last_event_seq:
+                    events.append(data)
+            new_seq = self._event_seq
+
+        return events, new_versions, new_seq
 
 
 @dataclass
@@ -103,33 +167,40 @@ class TickWriter:
             return
         batch = self._batch
         self._batch = []
-        try:
-            db = self._db_session_factory()
+
+        def _write():
             try:
-                from ..repositories.market_repo import MarketRepo
-                repo = MarketRepo(db)
-                repo.bulk_insert_trades(batch)
-            finally:
-                db.close()
-            logger.debug("Flushed %d ticks to market_trades", len(batch))
-        except Exception as e:
-            logger.error("Tick flush failed (%d ticks lost): %s", len(batch), e)
+                db = self._db_session_factory()
+                try:
+                    from ..repositories.market_repo import MarketRepo
+                    repo = MarketRepo(db)
+                    repo.bulk_insert_trades(batch)
+                finally:
+                    db.close()
+                logger.debug("Flushed %d ticks to market_trades", len(batch))
+            except Exception as e:
+                logger.error("Tick flush failed (%d ticks lost): %s", len(batch), e)
+
+        await asyncio.to_thread(_write)
 
     @staticmethod
     async def prune_old_trades(db_session_factory: Callable, symbol: str = "NQ"):
         """Delete ticks older than current session (midnight UTC)."""
-        cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        try:
-            db = db_session_factory()
+        def _prune():
+            cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             try:
-                from ..repositories.market_repo import MarketRepo
-                repo = MarketRepo(db)
-                repo.prune_trades(symbol, cutoff)
-                logger.info("Pruned market_trades before %s for %s", cutoff, symbol)
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error("Trade prune failed: %s", e)
+                db = db_session_factory()
+                try:
+                    from ..repositories.market_repo import MarketRepo
+                    repo = MarketRepo(db)
+                    repo.prune_trades(symbol, cutoff)
+                    logger.info("Pruned market_trades before %s for %s", cutoff, symbol)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error("Trade prune failed: %s", e)
+
+        await asyncio.to_thread(_prune)
 
 
 class CandleFlow:
@@ -276,14 +347,13 @@ class DatabentoLiveStream:
         self._task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._last_record_time: float = 0.0  # monotonic timestamp of last record
-        self._subscribers: list[asyncio.Queue] = []
         self._db_session_factory = db_session_factory
         self._candle_write_queue: deque[tuple[dict, str]] = deque(maxlen=500)
         self._candle_retry_task: asyncio.Task | None = None
         self._gap_backfill_task: asyncio.Task | None = None
-        self._publish_buffer: list[dict] = []
-        self._publish_latest: dict[str, dict] = {}
-        self._publish_last_flush: float = 0.0
+        self.shared_state = StreamState()
+        self._stream_thread_loop: asyncio.AbstractEventLoop | None = None
+        self._stream_thread_ready = threading.Event()
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -302,13 +372,15 @@ class DatabentoLiveStream:
         # buffers synchronously on the event loop, starving HTTP handlers.
         # By running in a separate thread/loop, the main event loop stays free.
         self._main_loop = asyncio.get_running_loop()
-        import threading
         def _run_stream_thread():
             self._stream_thread_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._stream_thread_loop)
+            self._stream_thread_ready.set()  # Signal that loop is available
             self._stream_thread_loop.run_until_complete(self._stream_loop())
         self._stream_thread = threading.Thread(target=_run_stream_thread, daemon=True, name="databento-stream")
         self._stream_thread.start()
+        # Wait for stream thread loop in a non-blocking way
+        await asyncio.to_thread(self._stream_thread_ready.wait, 10)
 
         # Watchdog and candle tasks stay on the main loop (lightweight, infrequent)
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
@@ -351,14 +423,9 @@ class DatabentoLiveStream:
             await self._tick_writer.stop()
         logger.info("Databento live stream stopped")
 
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue):
-        if q in self._subscribers:
-            self._subscribers.remove(q)
+    def get_shared_state(self) -> StreamState:
+        """Return the shared state for SSE polling."""
+        return self.shared_state
 
     def set_level_monitor(self, monitor: LevelMonitor) -> None:
         """Attach a level monitor to receive tick callbacks."""
@@ -695,50 +762,14 @@ class DatabentoLiveStream:
                 asyncio.create_task(self._stream_loop())
 
     def _publish(self, event: dict):
-        """Publish event to all SSE subscribers.
+        """Publish event to shared state (thread-safe, no main loop interaction).
 
-        Thread-safe: buffers events from the stream thread and flushes to the
-        main event loop every 500ms. Within each batch, only the LATEST tick
-        and book events are kept (the frontend only needs current price).
-        Candle and level events are always forwarded.
+        SSE subscribers poll the shared state independently — this method
+        never touches the main event loop, preventing it from being overwhelmed
+        by high-frequency Databento tick data.
         """
-        if not self._subscribers:
-            return
-        main_loop = getattr(self, '_main_loop', None)
-        if main_loop and main_loop.is_running():
-            etype = event.get("type", "tick")
-            if etype in ("tick", "book", "candle"):
-                # Keep only the latest per type — overwrites previous in buffer
-                self._publish_latest[etype] = event
-            else:
-                # Level, prediction, closed candle events — always queue
-                self._publish_buffer.append(event)
-
-            now = time.monotonic()
-            if now - self._publish_last_flush >= 0.5:  # Flush every 500ms
-                self._publish_last_flush = now
-                # Build compact batch: latest tick + latest book + all other events
-                batch = list(self._publish_buffer)
-                for evt in self._publish_latest.values():
-                    batch.append(evt)
-                self._publish_buffer.clear()
-                self._publish_latest.clear()
-                if batch:
-                    try:
-                        main_loop.call_soon_threadsafe(self._publish_batch, batch)
-                    except RuntimeError:
-                        pass
+        etype = event.get("type", "")
+        if etype in StreamState.SNAPSHOT_TYPES:
+            self.shared_state.set_latest(etype, event)
         else:
-            self._publish_direct(event)
-
-    def _publish_batch(self, events: list[dict]):
-        """Flush a batch of events to all subscribers at once."""
-        for event in events:
-            self._publish_direct(event)
-
-    def _publish_direct(self, event: dict):
-        for q in self._subscribers:
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
+            self.shared_state.push_event(event)
