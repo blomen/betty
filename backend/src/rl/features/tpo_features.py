@@ -15,8 +15,8 @@ _N_SESSIONS = 3
 _N_MIGRATION = 2
 _N_FEATURES = _FEATURES_PER_SESSION * _N_SESSIONS + _N_MIGRATION  # 26
 
-# Shape ordinal: p-shape = bullish (+1), d-shape = bearish (-1), all else = 0
-_SHAPE_ORDINAL = {"p-shape": 1.0, "d-shape": -1.0}
+# Shape ordinal: p-shape = bullish (+1), b-shape = bearish (-1), d-shape = neutral (0)
+_SHAPE_ORDINAL = {"p-shape": 1.0, "b-shape": -1.0, "d-shape": 0.0}
 
 
 def _extract_single_session(
@@ -50,9 +50,9 @@ def _extract_single_session(
     # 7: price_position_in_va (continuous)
     if va_width > 0:
         if current_price > vah:
-            out[7] = (current_price - vah) / va_width
+            out[7] = np.clip((current_price - vah) / va_width, 0.0, 2.0)
         elif current_price < val:
-            out[7] = (current_price - val) / va_width
+            out[7] = np.clip((current_price - val) / va_width, -2.0, 0.0)
         else:
             out[7] = (current_price - val) / va_width - 0.5
 
