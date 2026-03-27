@@ -449,17 +449,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const boxWidth = boxLeftX !== null ? Math.abs(anchorX - boxLeftX) : 200;
         if (boxWidth < 60) {
           // Fallback: compact histogram bars when too narrow for letters
-          const fallbackPrices = Object.keys(tpoSession.tpo_counts).map(Number);
-          const maxCount = Math.max(...fallbackPrices.map(p => tpoSession.tpo_counts[String(p)]));
+          const fallbackKeys = Object.keys(tpoSession.tpo_counts);
+          const maxCount = Math.max(...fallbackKeys.map(k => tpoSession.tpo_counts[k]));
           if (maxCount > 0) {
             const barMaxW = Math.min(boxWidth * 0.6, 30);
-            for (const price of fallbackPrices) {
-              const y = pSeries.priceToCoordinate(price);
+            for (const pk of fallbackKeys) {
+              const priceNum = Number(pk);
+              const y = pSeries.priceToCoordinate(priceNum);
               if (y === null || y < 0 || y > rect.height) continue;
-              const count = tpoSession.tpo_counts[String(price)];
+              const count = tpoSession.tpo_counts[pk];
               const barW = (count / maxCount) * barMaxW;
-              const isPOC = price === tpoSession.poc;
-              const inVA = price >= tpoSession.val && price <= tpoSession.vah;
+              const isPOC = priceNum === tpoSession.poc;
+              const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
               ctx.fillStyle = color;
               ctx.globalAlpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
               ctx.fillRect(anchorX - barW, y - 1, barW, 2);
@@ -469,8 +470,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           continue;
         }
 
-        // Sort prices descending (high to low on chart)
-        const prices = Object.keys(tpoSession.letters).map(Number).sort((a, b) => b - a);
+        // Sort price keys descending (high to low on chart)
+        // Keys are strings like "23940.0" from Python — keep original strings for lookup
+        const priceKeys = Object.keys(tpoSession.letters);
+        const prices = priceKeys.map(k => ({ key: k, num: Number(k) })).sort((a, b) => b.num - a.num);
         if (prices.length === 0) continue;
 
         ctx.save();
@@ -478,14 +481,15 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
 
-        for (const price of prices) {
-          const y = pSeries.priceToCoordinate(price);
+        for (const { key: priceKey, num: priceNum } of prices) {
+          const y = pSeries.priceToCoordinate(priceNum);
           if (y === null || y < 0 || y > rect.height) continue;
 
-          const letters = tpoSession.letters[String(price)];
+          const letters = tpoSession.letters[priceKey];
+          if (!letters) continue;
           const letterStr = letters.join(' ');
-          const isPOC = price === tpoSession.poc;
-          const inVA = price >= tpoSession.val && price <= tpoSession.vah;
+          const isPOC = priceNum === tpoSession.poc;
+          const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
 
           // Opacity: POC=1.0, VA=0.7, outside=0.4
           const alpha = isPOC ? 1.0 : inVA ? 0.7 : 0.4;
