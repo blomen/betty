@@ -196,7 +196,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
             key=lambda s: self.SPORT_PRIORITY.index(s) if s in self.SPORT_PRIORITY else 99,
         )
 
-        for sport_key in sports_to_extract:
+        for sport_idx, sport_key in enumerate(sports_to_extract):
             # Provider-level time budget: stop starting new sports at 90% of provider timeout
             elapsed = time.time() - provider_start
             if elapsed > provider_timeout * 0.90:
@@ -209,6 +209,47 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 )
                 break
 
+            # Proactively recycle the Camoufox page between sports.
+            # After 20+ page.goto() calls per sport, the page accumulates SPA state
+            # and memory until it crashes. Recycling prevents the crash entirely
+            # and keeps the API league discovery working (faster than DOM fallback).
+            if sport_idx > 0 and self._camoufox_browser:
+                # Close old page (may already be dead — that's fine)
+                if self._camoufox_page:
+                    try:
+                        await self._camoufox_page.close()
+                    except Exception:
+                        pass
+                    self._camoufox_page = None
+
+                # Create fresh page from existing browser
+                try:
+                    self._camoufox_page = await self._camoufox_browser.new_page()
+                    self._page = self._camoufox_page
+                    # Re-warm: visit homepage to pass Cloudflare + set cookies
+                    await self._page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                    await asyncio.sleep(2)
+                    await self._dismiss_cookie_overlay(self._page)
+                    self._cookie_dismissed = True
+                    logger.debug(f"[{self.provider_id}] Recycled page before {sport_key}")
+                except Exception as e:
+                    logger.warning(f"[{self.provider_id}] Page recycle failed ({e}), full relaunch...")
+                    await self._cleanup_camoufox()
+                    page = await self._ensure_camoufox()
+                    if page:
+                        self._page = page
+                        try:
+                            await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                            await asyncio.sleep(2)
+                            await self._dismiss_cookie_overlay(page)
+                            self._warmed_up = True
+                            self._cookie_dismissed = True
+                        except Exception:
+                            pass
+                    else:
+                        logger.error(f"[{self.provider_id}] Page recovery failed, stopping extraction")
+                        break
+
             try:
                 sports_attempted += 1
                 sport_events = await self._extract_single_sport(
@@ -218,29 +259,6 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 all_events.extend(sport_events)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Failed to extract {sport_key}: {e}")
-                # Check if page died and recover for remaining sports
-                if self._camoufox_page:
-                    try:
-                        await self._camoufox_page.evaluate("() => true", timeout=3000)
-                    except Exception:
-                        logger.warning(f"[{self.provider_id}] Page died during {sport_key}, recovering...")
-                        page = await self._get_page()
-                        if page:
-                            self._page = page
-                            # Re-warm up the recovered page
-                            if not getattr(self, '_warmed_up', False):
-                                try:
-                                    await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
-                                    await asyncio.sleep(3)
-                                    await self._dismiss_cookie_overlay(page)
-                                    self._warmed_up = True
-                                    self._cookie_dismissed = True
-                                    logger.info(f"[{self.provider_id}] Recovered and re-warmed up for remaining sports")
-                                except Exception as warmup_err:
-                                    logger.warning(f"[{self.provider_id}] Re-warmup failed: {warmup_err}")
-                        else:
-                            logger.error(f"[{self.provider_id}] Page recovery failed, stopping extraction")
-                            break
 
         if not all_events:
             raise RetryableError(
