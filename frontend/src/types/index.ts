@@ -792,10 +792,8 @@ export interface ProviderBalanceStatus {
 }
 
 export interface CapitalAction {
-  type: 'deposit' | 'transfer' | 'withdraw';
-  provider_id?: string;
-  from_provider_id?: string;
-  to_provider_id?: string;
+  type: 'deposit' | 'withdraw';
+  provider_id: string;
   amount: number;
   unlocks: number;
   avg_edge: number;
@@ -803,7 +801,6 @@ export interface CapitalAction {
   currency: 'SEK' | 'USDC';
   priority: number;
   priority_label: string;
-  bonus_info?: string;
 }
 
 export interface CapitalPlan {

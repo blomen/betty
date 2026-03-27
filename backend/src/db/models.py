@@ -1,5 +1,5 @@
 """
-BankrollBBQ Database Models
+Firev Database Models
 
 SQLite schema for:
 - Canonical events (provider-agnostic)

@@ -13,7 +13,7 @@ interface UpdateState {
   downloadUrl: string | null;
 }
 
-const GITHUB_REPO = 'blomen/BankrollBBQ';
+const GITHUB_REPO = 'blomen/Firev';
 
 export function useUpdateChecker(): UpdateState {
   const [state, setState] = useState<UpdateState>({

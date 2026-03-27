@@ -408,15 +408,23 @@ def replay(
     normalizer = RunningNormalizer(dim=OBSERVATION_DIM)
     engine = ReplayEngine(macro_data=macro_data)
 
-    all_observations: list[np.ndarray] = []
-    all_rewards_cont: list[float] = []
-    all_rewards_rev: list[float] = []
-    all_level_types: list[str] = []
-    all_stop_targets: list[float] = []
+    # Incremental save: write per-month chunks to avoid OOM on large datasets
+    chunk_dir = episodes_dir / "_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    # Clean old chunks
+    for old in chunk_dir.glob("*.npy"):
+        old.unlink()
+    chunk_idx = 0
 
     total_episodes = 0
 
     for pfile in parquet_files:
+        month_obs: list[np.ndarray] = []
+        month_rc: list[float] = []
+        month_rr: list[float] = []
+        month_lt: list[str] = []
+        month_st: list[float] = []
+
         try:
             df = pd.read_parquet(pfile)
         except Exception as exc:
@@ -477,13 +485,23 @@ def replay(
 
             for ep in episodes:
                 normalizer.update(ep.observation)
-                all_observations.append(ep.observation)
-                all_rewards_cont.append(ep.reward_continuation)
-                all_rewards_rev.append(ep.reward_reversal)
-                all_level_types.append(ep.level_type)
-                all_stop_targets.append(ep.optimal_stop_ticks)
+                month_obs.append(ep.observation)
+                month_rc.append(ep.reward_continuation)
+                month_rr.append(ep.reward_reversal)
+                month_lt.append(ep.level_type)
+                month_st.append(ep.optimal_stop_ticks)
 
             session_episodes += len(episodes)
+
+        # Flush this month's episodes to disk chunk
+        if session_episodes > 0:
+            np.save(chunk_dir / f"obs_{chunk_idx:04d}.npy", np.array(month_obs, dtype=np.float32))
+            np.save(chunk_dir / f"rc_{chunk_idx:04d}.npy", np.array(month_rc, dtype=np.float32))
+            np.save(chunk_dir / f"rr_{chunk_idx:04d}.npy", np.array(month_rr, dtype=np.float32))
+            np.save(chunk_dir / f"lt_{chunk_idx:04d}.npy", np.array(month_lt))
+            np.save(chunk_dir / f"st_{chunk_idx:04d}.npy", np.array(month_st, dtype=np.float32))
+            chunk_idx += 1
+            del month_obs, month_rc, month_rr, month_lt, month_st  # free RAM
 
         total_episodes += session_episodes
         typer.echo(f"  {pfile.name}: {session_episodes} episodes across {len(dates)} session(s)")
@@ -492,13 +510,33 @@ def replay(
         typer.echo("No episodes generated. Check tick data and replay engine.")
         raise typer.Exit(1)
 
-    # Save .npy files
-    obs_array = np.stack(all_observations).astype(np.float32)
+    # Concatenate chunks from disk (memory-efficient)
+    typer.echo(f"\nConcatenating {chunk_idx} chunks ...")
+    obs_chunks = [np.load(chunk_dir / f"obs_{i:04d}.npy") for i in range(chunk_idx)]
+    obs_array = np.concatenate(obs_chunks, axis=0)
+    del obs_chunks
     np.save(episodes_dir / "observations.npy", obs_array)
-    np.save(episodes_dir / "rewards_cont.npy", np.array(all_rewards_cont, dtype=np.float32))
-    np.save(episodes_dir / "rewards_rev.npy", np.array(all_rewards_rev, dtype=np.float32))
-    np.save(episodes_dir / "level_types.npy", np.array(all_level_types))
-    np.save(episodes_dir / "stop_targets.npy", np.array(all_stop_targets, dtype=np.float32))
+
+    rc_chunks = [np.load(chunk_dir / f"rc_{i:04d}.npy") for i in range(chunk_idx)]
+    np.save(episodes_dir / "rewards_cont.npy", np.concatenate(rc_chunks))
+    del rc_chunks
+
+    rr_chunks = [np.load(chunk_dir / f"rr_{i:04d}.npy") for i in range(chunk_idx)]
+    np.save(episodes_dir / "rewards_rev.npy", np.concatenate(rr_chunks))
+    del rr_chunks
+
+    lt_chunks = [np.load(chunk_dir / f"lt_{i:04d}.npy", allow_pickle=True) for i in range(chunk_idx)]
+    np.save(episodes_dir / "level_types.npy", np.concatenate(lt_chunks))
+    del lt_chunks
+
+    st_chunks = [np.load(chunk_dir / f"st_{i:04d}.npy") for i in range(chunk_idx)]
+    np.save(episodes_dir / "stop_targets.npy", np.concatenate(st_chunks))
+    del st_chunks
+
+    # Clean up chunks
+    for old in chunk_dir.glob("*.npy"):
+        old.unlink()
+    chunk_dir.rmdir()
 
     # Save normalizer
     normalizer.save(episodes_dir / "normalizer.json")

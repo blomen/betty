@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import type { BatchResult, CapitalAction } from '@/types';
+import type { BatchResult } from '@/types';
 import { SettlePanel } from './play/SettlePanel';
 import { CapitalPlanPanel } from './play/CapitalPlanPanel';
 import { SessionBatchPanel } from './play/SessionBatchPanel';
@@ -44,7 +44,6 @@ function StepIndicator({
         const currentIdx = STEPS.findIndex((s) => s.key === current);
         const isPast = i < currentIdx;
 
-        // Show pending count on settle step
         const label = step.key === 'settle' && pendingCount > 0
           ? `${step.label} (${pendingCount})`
           : step.label;
@@ -80,10 +79,21 @@ function StepIndicator({
 
 export function PlayPage() {
   const queryClient = useQueryClient();
-  const [step, setStep] = useState<Step>('settle');
+  const [step, setStep] = useState<Step | null>(null);
   const [excludedBets, setExcludedBets] = useState<string[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [mirrorRunning, setMirrorRunning] = useState(false);
+
+  // Check pending bets on mount to decide initial step
+  useEffect(() => {
+    api.getPendingBets()
+      .then((res) => {
+        const count = res.total_pending ?? 0;
+        setPendingCount(count);
+        setStep(count > 0 ? 'settle' : 'capital');
+      })
+      .catch(() => setStep('capital'));
+  }, []);
 
   // Lazy-start mirror on mount
   useEffect(() => {
@@ -103,20 +113,12 @@ export function PlayPage() {
     queryFn: () => api.getPlayBatch(excludedBets.length > 0 ? excludedBets : undefined),
     staleTime: 60_000,
     refetchInterval: 120_000,
-    enabled: step !== 'settle',
+    enabled: step !== null && step !== 'settle',
   });
 
-  // Confirm capital mutation
+  // Confirm capital — just rebuilds batch with mirror-synced balances
   const confirmCapital = useMutation({
-    mutationFn: (actions: CapitalAction[]) => api.confirmCapital(
-      actions.map(a => ({
-        type: a.type,
-        provider_id: a.provider_id,
-        from_provider_id: a.from_provider_id,
-        to_provider_id: a.to_provider_id,
-        amount: a.amount,
-      }))
-    ),
+    mutationFn: () => api.confirmCapital(),
     onSuccess: () => {
       setExcludedBets([]);
       queryClient.invalidateQueries({ queryKey: ['play-batch'] });
@@ -129,8 +131,8 @@ export function PlayPage() {
     setExcludedBets(prev => [...prev, betKey]);
   }, []);
 
-  const handleConfirmCapital = useCallback((actions: CapitalAction[]) => {
-    confirmCapital.mutate(actions);
+  const handleConfirmCapital = useCallback(() => {
+    confirmCapital.mutate();
   }, [confirmCapital]);
 
   const handleSkipCapital = useCallback(() => {
@@ -141,9 +143,12 @@ export function PlayPage() {
     setStep('execute');
   }, []);
 
+  if (!step) {
+    return <div className="p-4 text-dark-400 text-sm">Loading...</div>;
+  }
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Step indicator */}
       <StepIndicator
         current={step}
         onNavigate={setStep}
@@ -151,7 +156,6 @@ export function PlayPage() {
         mirrorRunning={mirrorRunning}
       />
 
-      {/* Step content */}
       <div className="flex-1 overflow-y-auto">
         {step === 'settle' && (
           <SettlePanel
@@ -193,7 +197,6 @@ export function PlayPage() {
                   onRemoveBet={handleRemoveBet}
                 />
 
-                {/* Action bar */}
                 <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-dark-900">
                   <button
                     className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
@@ -231,7 +234,6 @@ export function PlayPage() {
               wageringProjections={batchData.wagering_projections || []}
             />
 
-            {/* Back to batch */}
             <div className="flex items-center px-3 py-2 border-t border-border bg-dark-900">
               <button
                 className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"

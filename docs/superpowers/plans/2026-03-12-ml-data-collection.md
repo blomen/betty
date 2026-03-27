@@ -6,7 +6,7 @@
 
 **Architecture:** New `backend/src/ml/` module with feature extraction running inline after each scan/signal/extraction. Features stored as JSON blobs in SQLite `ml_features` table. Extraction metrics linked to downstream value outcomes via `extraction_features` and `provider_value_log` tables. Macro data fetched on schedule into dedicated tables. Model registry table prepared for Phase 2.
 
-**Tech Stack:** Python 3.10+, SQLAlchemy (ORM models), SQLite, existing BankrollBBQ analysis/trading pipeline
+**Tech Stack:** Python 3.10+, SQLAlchemy (ORM models), SQLite, existing Firev analysis/trading pipeline
 
 **Spec:** `docs/superpowers/specs/2026-03-12-ml-system-design.md`
 
@@ -83,7 +83,7 @@ mkdir -p backend/tests
 
 ```python
 # backend/tests/conftest.py
-"""Shared test fixtures for BankrollBBQ tests."""
+"""Shared test fixtures for Firev tests."""
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -3308,7 +3308,7 @@ Verify coverage data:
 ```bash
 cd backend && python -c "
 import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
+conn = sqlite3.connect('data/firev.db')
 cursor = conn.execute('SELECT provider_id, sport, pinnacle_events, provider_matched_events, event_coverage_pct FROM pinnacle_coverage_log LIMIT 10')
 for row in cursor:
     print(row)
@@ -3332,7 +3332,7 @@ git commit -m "feat(ml): hook Pinnacle coverage + extraction feature logging int
 - [ ] **Step 1: Back up the database**
 
 ```bash
-cp backend/data/bankrollbbq.db backend/data/bankrollbbq.db.backup-pre-ml
+cp backend/data/firev.db backend/data/firev.db.backup-pre-ml
 ```
 
 - [ ] **Step 2: Run migrations**
@@ -3342,7 +3342,7 @@ cp backend/data/bankrollbbq.db backend/data/bankrollbbq.db.backup-pre-ml
 cd backend && python -c "
 import sqlite3
 from src.ml.migrations import run_migrations
-conn = sqlite3.connect('data/bankrollbbq.db')
+conn = sqlite3.connect('data/firev.db')
 run_migrations(conn)
 conn.close()
 print('Migrations applied successfully')
@@ -3354,7 +3354,7 @@ print('Migrations applied successfully')
 ```bash
 cd backend && python -c "
 import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
+conn = sqlite3.connect('data/firev.db')
 cursor = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\")
 for row in cursor:
     print(row[0])
@@ -3369,7 +3369,7 @@ Expected: All 10 new tables visible (`ml_features`, `candle_snapshots`, `economi
 ```bash
 cd backend && python -c "
 import sqlite3
-conn = sqlite3.connect('data/bankrollbbq.db')
+conn = sqlite3.connect('data/firev.db')
 cursor = conn.execute('PRAGMA table_info(opportunities)')
 for row in cursor:
     print(f'{row[1]:30s} {row[2]}')

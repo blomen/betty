@@ -714,10 +714,13 @@ class BatchBuilder:
 
             if not assigned:
                 template_bet.skip_reason = f"insufficient balance in cluster {cluster}"
-                pb = provider_balances.get(template_bet.provider_id)
-                if pb:
-                    pb.missed_bets += 1
-                    pb.missed_ev += template_bet.expected_profit
+                # Track missed stats on the best-funded active sibling (first in list)
+                # so capital plan targets the right provider for deposits
+                target_pid = active[0] if active else template_bet.provider_id
+                target_pb = provider_balances.get(target_pid)
+                if target_pb:
+                    target_pb.missed_bets += 1
+                    target_pb.missed_ev += template_bet.expected_profit
                 missed.append(template_bet)
 
         return batch, missed
@@ -839,16 +842,20 @@ class BatchBuilder:
         unfunded_sharp: list[dict] | None = None,
     ) -> dict:
         """
-        Build a unified capital plan with 5 recommendation types, priority-ordered.
+        Build capital plan: deposit where balance is short, withdraw where idle.
 
-        Priority 1 — DEPOSIT (sharp): Polymarket/Pinnacle with missed bets or unfunded
-        Priority 2 — DEPOSIT (bonus): Soft providers with active wagering requirement
-        Priority 3 — DEPOSIT (soft shortfall): Soft providers with missed bets, no bonus
-        Priority 4 — TRANSFER: Move funds from excess (dormant) to shortfall targets
-        Priority 5 — WITHDRAW: Dormant providers with balance and no missed bets
+        This is a checklist — the user does deposits/withdrawals in the mirror
+        browser, which auto-syncs balances. Confirm just rebuilds the batch.
+
+        Priority 1 — DEPOSIT (sharp): Polymarket/Pinnacle shortfalls
+        Priority 2 — DEPOSIT (bonus): Soft providers with active wagering
+        Priority 3 — DEPOSIT (soft): Soft providers with missed bets
+        Priority 4 — WITHDRAW: Idle providers with no missed bets
 
         Returns {"total_deployed": float, "withdrawable": float, "actions": list[dict]}
         """
+        import math
+
         actions: list[dict] = []
 
         # Aggregate missed bets by provider
@@ -862,7 +869,7 @@ class BatchBuilder:
             if pb.missed_bets > 0:
                 providers_with_shortfall.add(pid)
 
-        # --- Priority 1: Sharp deposits (funded with missed bets) ---
+        # --- Priority 1: Sharp deposits ---
         sharp_already_handled: set[str] = set()
         for pid in sorted(providers_with_shortfall):
             if pid not in SHARP_PROVIDERS:
@@ -878,12 +885,11 @@ class BatchBuilder:
             cluster = pb.cluster if pb else pid
             stats = cluster_opp_stats.get(cluster, {})
             currency = "USDC" if pid == "polymarket" else "SEK"
-            amount = max(missed_stake, 0)
 
             actions.append({
                 "type": "deposit",
                 "provider_id": pid,
-                "amount": round(amount, 2),
+                "amount": round(max(missed_stake, 0), 2),
                 "unlocks": missed_count,
                 "avg_edge": stats.get("avg_edge", 0),
                 "expected_ev": round(missed_ev, 2),
@@ -893,7 +899,7 @@ class BatchBuilder:
             })
             sharp_already_handled.add(pid)
 
-        # --- Priority 1 (continued): Unfunded sharp providers with opportunities ---
+        # Unfunded sharp providers with opportunities in DB
         for info in (unfunded_sharp or []):
             pid = info["provider_id"]
             if pid in sharp_already_handled:
@@ -910,11 +916,9 @@ class BatchBuilder:
                 "priority_label": "sharp_deposit",
             })
 
-        # --- Priority 2/3: Soft deposits, spread across siblings if needed ---
-        import math
-
-        # Aggregate missed bets per cluster (not per provider) since siblings share opps
-        cluster_missed: dict[str, dict] = {}  # cluster -> {count, stake, ev}
+        # --- Priority 2/3: Soft deposits ---
+        # Aggregate missed bets per cluster (siblings share opps)
+        cluster_missed: dict[str, dict] = {}
         for pid in sorted(providers_with_shortfall):
             if pid in SHARP_PROVIDERS:
                 continue
@@ -942,32 +946,18 @@ class BatchBuilder:
             source_pid = info["source_pid"]
             stats = cluster_opp_stats.get(cluster, {})
 
-            # How many total bets in this cluster (batch + missed)?
-            cluster_total = (cluster_bet_counts.get(cluster, 0) if "cluster_bet_counts" in dir() else missed_count)
-            # Count existing funded providers in this cluster
             funded_in_cluster = [
                 pid for pid, pb in provider_balances.items()
                 if (pb.cluster or pid) == cluster and pb.lifecycle not in ("dormant", "available")
             ]
 
-            # How many providers needed for spreading (batch bets + missed)?
-            batch_in_cluster = sum(
-                1 for b in (missed_by_provider.get(source_pid, []))  # approximate
-            )
-            total_bets_cluster = len(funded_in_cluster) and sum(
-                pb.allocated for pid2, pb in provider_balances.items()
-                if (pb.cluster or pid2) == cluster
-            )
-            # Simpler: just use missed count for new siblings needed
-            providers_needed = math.ceil(missed_count / BatchBuilder.BETS_PER_PROVIDER)
-            providers_needed = max(providers_needed, 1)
+            providers_needed = max(1, math.ceil(missed_count / BatchBuilder.BETS_PER_PROVIDER))
 
-            # Find unfunded siblings in this cluster
             all_siblings = PLATFORM_GROUPS.get(cluster, {}).get("members", [cluster])
             funded_pids = {pid for pid, pb in provider_balances.items() if (pb.cluster or pid) == cluster}
             unfunded_siblings = [s for s in all_siblings if s not in funded_pids]
 
-            # Check if existing funded provider has a bonus (priority 2 vs 3)
+            # Bonus wagering → priority 2, otherwise → priority 3
             funded_pb = provider_balances.get(source_pid)
             has_bonus = funded_pb and funded_pb.wagering_remaining > 0
             if has_bonus:
@@ -982,7 +972,6 @@ class BatchBuilder:
                 label = "soft_deposit"
 
             if providers_needed <= 1 or not unfunded_siblings:
-                # Single deposit to the existing provider
                 actions.append({
                     "type": "deposit",
                     "provider_id": source_pid,
@@ -995,10 +984,9 @@ class BatchBuilder:
                     "priority_label": label,
                 })
             else:
-                # Spread across siblings: existing funded + new unfunded
+                # Spread across siblings
                 targets = funded_in_cluster[:] + unfunded_siblings
                 targets = targets[:providers_needed]
-                per_provider_bets = math.ceil(missed_count / len(targets))
                 per_provider_stake = round(missed_stake / len(targets), 2)
                 per_provider_ev = round(missed_ev / len(targets), 2)
                 per_provider_unlocks = math.ceil(missed_count / len(targets))
@@ -1017,119 +1005,66 @@ class BatchBuilder:
                         "priority_label": f"{label}_new" if is_new else label,
                     })
 
-        # --- Identify excess providers (balance remaining after batch allocation) ---
-        # Only providers with cleared wagering can be transfer/withdraw sources.
-        # Never transfer FROM a provider still wagering through a bonus.
-        excess_providers: list[tuple[str, float]] = []  # (pid, amount)
+        # --- Priority 2 (continued): Every wagering provider needs funding ---
+        # Ensure any provider with active bonus wagering and low balance gets
+        # a deposit recommendation, even if the cluster_missed path missed it.
+        already_recommended = {a["provider_id"] for a in actions if a["type"] == "deposit"}
+        for pid, pb in provider_balances.items():
+            if pid in SHARP_PROVIDERS or pid in already_recommended:
+                continue
+            if pb.wagering_remaining <= 0:
+                continue
+            effective_wager = avg_daily_wager if avg_daily_wager > 0 else 1000
+            days_needed = pb.wagering_remaining / effective_wager
+            if pb.days_remaining is not None and days_needed > pb.days_remaining:
+                continue  # Infeasible
+            # Needs deposit if balance can't cover even one session
+            if pb.remaining > effective_wager:
+                continue
+            cluster = pb.cluster or pid
+            stats = cluster_opp_stats.get(cluster, {})
+            actions.append({
+                "type": "deposit",
+                "provider_id": pid,
+                "amount": round(max(effective_wager - pb.remaining, 100), -2),
+                "unlocks": stats.get("unique_opps", 0),
+                "avg_edge": stats.get("avg_edge", 0),
+                "expected_ev": round(stats.get("total_ev", 0), 2),
+                "currency": "SEK",
+                "priority": 2,
+                "priority_label": "bonus_deposit",
+            })
+
+        # --- Priority 4: Withdraw idle balance ---
         for pid, pb in provider_balances.items():
             if pid in SHARP_PROVIDERS:
                 continue
             if pid in providers_with_shortfall:
                 continue
-            if pb.wagering_remaining > 0:
-                continue  # Still wagering — can't withdraw
-            excess = pb.remaining  # balance - allocated
-            if excess <= 0:
-                continue
-            excess_providers.append((pid, excess))
-        # Sort by excess descending — withdraw largest idle balances first
-        excess_providers.sort(key=lambda x: -x[1])
-
-        # --- Priority 4: Transfers replace deposits when excess is available ---
-        # For each soft deposit, check if we can cover it (partially or fully) via
-        # transfer from an excess provider. Reduce the deposit amount accordingly.
-        remaining_excess = list(excess_providers)
-        transfer_actions: list[dict] = []
-
-        for target in actions:
-            if target["type"] != "deposit" or target["priority"] not in (2, 3):
-                continue
-            if not remaining_excess:
-                break
-
-            original_amount = target["amount"]
-            shortfall = original_amount
-            while shortfall > 0 and remaining_excess:
-                source_pid, source_amount = remaining_excess[0]
-                transfer_amount = min(source_amount, shortfall)
-                if transfer_amount <= 0:
-                    remaining_excess.pop(0)
-                    continue
-
-                # Proportional share of unlocks/ev based on amount covered
-                ratio = transfer_amount / original_amount if original_amount > 0 else 0
-                transfer_actions.append({
-                    "type": "transfer",
-                    "from_provider_id": source_pid,
-                    "to_provider_id": target["provider_id"],
-                    "amount": round(transfer_amount, 2),
-                    "unlocks": round(target["unlocks"] * ratio),
-                    "avg_edge": target["avg_edge"],
-                    "expected_ev": round(target["expected_ev"] * ratio, 2),
-                    "currency": "SEK",
-                    "priority": 4,
-                    "priority_label": "transfer",
-                })
-
-                shortfall -= transfer_amount
-                remaining_excess[0] = (source_pid, source_amount - transfer_amount)
-                if remaining_excess[0][1] <= 0:
-                    remaining_excess.pop(0)
-
-            # Reduce the deposit to only the remaining shortfall after transfers
-            if shortfall < original_amount:
-                covered = original_amount - shortfall
-                ratio_remaining = shortfall / original_amount if original_amount > 0 else 0
-                target["amount"] = round(max(shortfall, 0), 2)
-                target["unlocks"] = round(target["unlocks"] * ratio_remaining)
-                target["expected_ev"] = round(target["expected_ev"] * ratio_remaining, 2)
-
-        # Remove deposits that are fully covered by transfers, and 0-amount transfers
-        actions = [a for a in actions if not (a["type"] == "deposit" and a["amount"] <= 0)]
-        actions.extend([t for t in transfer_actions if t["amount"] > 1])
-
-        # --- Priority 5: Withdrawals (remaining excess after transfers) ---
-        # Only recommend withdrawing from dormant/cleared providers (no active bets or bonus)
-        for pid, pb in provider_balances.items():
-            if pid in SHARP_PROVIDERS:
-                continue
-            if pid in providers_with_shortfall:
-                continue
-            # Only dormant or fully-cleared playing providers
             if pb.lifecycle not in ("dormant", "playing", "limited"):
                 continue
             if pb.wagering_remaining > 0:
-                continue  # Still wagering — don't withdraw
-
-            # Subtract any amount already committed to transfers
-            transferred = sum(
-                a["amount"] for a in actions
-                if a["type"] == "transfer" and a.get("from_provider_id") == pid
-            )
-            remaining_amount = pb.remaining - transferred
-            if remaining_amount <= 0:
+                continue
+            if pb.remaining <= 0:
                 continue
 
             actions.append({
                 "type": "withdraw",
                 "provider_id": pid,
-                "amount": round(remaining_amount, 2),
+                "amount": round(pb.remaining, 2),
                 "unlocks": 0,
                 "avg_edge": 0,
                 "expected_ev": 0,
                 "currency": "SEK",
-                "priority": 5,
+                "priority": 4,
                 "priority_label": "withdraw_excess",
             })
 
-        # Sort by priority, then by expected_ev descending within same priority
+        # Sort by priority, then by expected_ev descending
         actions.sort(key=lambda a: (a["priority"], -a.get("expected_ev", 0)))
 
-        # Compute totals
         deployed = sum(pb.initial_balance for pb in provider_balances.values())
-        withdrawable = sum(
-            a["amount"] for a in actions if a["type"] == "withdraw"
-        )
+        withdrawable = sum(a["amount"] for a in actions if a["type"] == "withdraw")
 
         return {
             "total_deployed": round(deployed, 2),

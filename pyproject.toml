@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bankrollbbq"
+name = "firev"
 version = "0.1.0"
-description = "BankrollBBQ - Betting analytics platform comparing odds across 40+ sportsbooks"
+description = "Firev - Betting analytics platform comparing odds across 40+ sportsbooks"
 requires-python = ">=3.10"
 dependencies = [
     # HTTP/API
@@ -68,7 +68,7 @@ ml = [
 ]
 
 [project.scripts]
-bankrollbbq = "src.cli:app"
+firev = "src.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

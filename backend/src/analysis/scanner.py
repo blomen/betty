@@ -14,6 +14,7 @@ from typing import Optional
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 import logging
+import math
 
 from sqlalchemy.orm import Session
 
@@ -51,10 +52,10 @@ MAX_EDGE_PCT = 50.0
 MAX_ODDS_AGE_HOURS = 2
 
 # Reverse value: minimum independent platforms for consensus
-MIN_CONSENSUS_PLATFORMS = 3
+MIN_CONSENSUS_PLATFORMS = 2
 
-# Reverse value: only bet longshots where Pinnacle is less efficient
-MIN_REVERSE_ODDS = 3.50
+# Reverse value: minimum odds (mid-range underdogs and up)
+MIN_REVERSE_ODDS = 2.50
 
 # Reverse value: maximum odds to avoid extreme longshot noise
 MAX_REVERSE_ODDS = 15.0
@@ -532,19 +533,18 @@ class OpportunityScanner:
         )
         return opportunities
 
-    def scan_reverse_value(self, min_edge_pct: float = 3.0, events: list = None) -> list[ValueBet]:
+    def scan_reverse_value(self, min_edge_pct: float = 2.0, events: list = None) -> list[ValueBet]:
         """
         Find reverse value bets: Pinnacle odds beating soft book consensus.
 
         Uses platform-weighted harmonic mean of devigged soft books as
-        the fair odds source. Only considers 1x2/moneyline markets where
-        Pinnacle offers odds >= MIN_REVERSE_ODDS (longshots where Pinnacle
-        is less efficient).
+        the fair odds source. Considers 1x2, moneyline, spread, and total
+        markets where Pinnacle offers odds >= MIN_REVERSE_ODDS.
 
         Requires MIN_CONSENSUS_PLATFORMS independent pricing sources.
 
         Args:
-            min_edge_pct: Minimum edge percentage (default 3%)
+            min_edge_pct: Minimum edge percentage (default 2%)
             events: Pre-loaded events list (skips DB query if provided)
 
         Returns:
@@ -559,9 +559,8 @@ class OpportunityScanner:
             odds_grouped = self.group_odds(event)
 
             for market, odds_by_outcome in odds_grouped.items():
-                # Only 1x2 and moneyline — no spread/total (point matching issues)
                 base_market = market.split("_")[0] if "_" in market else market
-                if base_market not in ("1x2", "moneyline"):
+                if base_market not in ("1x2", "moneyline", "spread", "total"):
                     continue
 
                 values = self.find_reverse_value_in_market(
@@ -569,6 +568,7 @@ class OpportunityScanner:
                     market=market,
                     odds_by_outcome=odds_by_outcome,
                     min_edge_pct=min_edge_pct,
+                    all_markets=odds_grouped,
                 )
                 opportunities.extend(values)
 
@@ -607,7 +607,6 @@ class OpportunityScanner:
         for outcome in pinnacle_market:
             pin_raw = pinnacle_market[outcome]
 
-            # Only longshots where Pinnacle is less efficient
             if pin_raw < MIN_REVERSE_ODDS or pin_raw > MAX_REVERSE_ODDS:
                 continue
 
@@ -1161,7 +1160,7 @@ class OpportunityScanner:
         # No cross-point relocation avoids bidirectional bounce issues.
         for market_key in [k for k in grouped if k.startswith("spread_")]:
             try:
-                float(market_key.split("_", 1)[1])
+                point = float(market_key.split("_", 1)[1])
             except (ValueError, IndexError):
                 continue
 
@@ -1184,6 +1183,20 @@ class OpportunityScanner:
 
             other_outcome = "away" if pin_outcome == "home" else "home"
 
+            # Find Pinnacle's complement odds at the opposite point.
+            # Used to reject soft entries that are actually on the wrong side
+            # (e.g., VBet stores home@-X when Pinnacle has away@-X for different teams).
+            pin_complement_odds = None
+            complement_key = f"spread_{-point}"
+            complement_data = grouped.get(complement_key, {})
+            for otype in ("home", "away"):
+                for entry in complement_data.get(otype, []):
+                    if entry["provider"] in SHARP_PROVIDERS:
+                        pin_complement_odds = entry["odds"]
+                        break
+                if pin_complement_odds:
+                    break
+
             # Collect all soft entries at this point, grouped by provider
             soft_by_provider: dict[str, list[tuple[str, dict]]] = defaultdict(list)
             for otype in ("home", "away"):
@@ -1202,8 +1215,32 @@ class OpportunityScanner:
                 )
                 best_label, best_entry = entries[best_idx]
                 ratio = best_entry["odds"] / pin_odds
-                if 0.65 < ratio < 1.55:
-                    keep_entries.append(best_entry)
+                if not (0.65 < ratio < 1.55):
+                    continue
+
+                # Cross-check: if the complement Pinnacle odds exist, verify the
+                # soft entry is closer to THIS point's Pinnacle than to the complement.
+                # Providers like VBet always assign home@negative regardless of who's
+                # favored, which can place a "home -X" entry at the same market_key
+                # as Pinnacle's "away -X" — different bets on different teams.
+                # Using log ratio for symmetric distance comparison.
+                # Only reject when Pinnacle sides are far enough apart (>2%)
+                # to make the complement check reliable — near-identical sides
+                # (e.g., 1.90 vs 1.91) are too close for this heuristic.
+                if pin_complement_odds and pin_complement_odds > 1:
+                    pin_spread = abs(math.log(pin_odds / pin_complement_odds))
+                    if pin_spread > 0.02:
+                        dist_to_pin = abs(math.log(best_entry["odds"] / pin_odds))
+                        dist_to_complement = abs(math.log(best_entry["odds"] / pin_complement_odds))
+                        if dist_to_complement < dist_to_pin:
+                            logger.debug(
+                                f"Rejected {provider} {market_key} odds={best_entry['odds']:.2f}: "
+                                f"closer to complement Pinnacle {pin_complement_odds:.2f} "
+                                f"than to this side {pin_odds:.2f}"
+                            )
+                            continue
+
+                keep_entries.append(best_entry)
 
             # Rebuild: sharp entries + correctly matched soft entries
             sharp_at_pin = [

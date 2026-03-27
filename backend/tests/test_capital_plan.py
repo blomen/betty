@@ -48,7 +48,8 @@ def test_withdraw_dormant():
     assert withdrawals[0]["provider_id"] == "spectate"
 
 
-def test_transfer_from_excess_to_shortfall():
+def test_excess_and_shortfall_produces_deposit_and_withdraw():
+    """No transfers — excess provider gets withdraw, shortfall gets deposit."""
     balances = {
         "spectate": _make_balance("spectate", "spectate", 3000, lifecycle="dormant"),
         "unibet": _make_balance("unibet", "kambi", 0, lifecycle="playing"),
@@ -62,9 +63,14 @@ def test_transfer_from_excess_to_shortfall():
         cluster_opp_stats={"kambi": {"unique_opps": 5, "total_ev": 80, "avg_edge": 8.0, "avg_stake": 500}},
         avg_daily_wager=1000, has_wager_history=True,
     )
+    # No transfers exist
     transfers = [a for a in plan["actions"] if a["type"] == "transfer"]
-    assert len(transfers) >= 1
-    assert transfers[0]["from_provider_id"] == "spectate"
+    assert len(transfers) == 0
+    # Spectate gets withdraw, unibet gets deposit
+    withdrawals = [a for a in plan["actions"] if a["type"] == "withdraw"]
+    deposits = [a for a in plan["actions"] if a["type"] == "deposit"]
+    assert any(w["provider_id"] == "spectate" for w in withdrawals)
+    assert any(d["provider_id"] == "unibet" for d in deposits)
 
 
 def test_actions_sorted_by_priority():

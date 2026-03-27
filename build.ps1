@@ -1,9 +1,9 @@
-# BankrollBBQ Windows Build Script
-# Builds the React frontend and packages everything into BankrollBBQ.exe
+# Firev Windows Build Script
+# Builds the React frontend and packages everything into Firev.exe
 #
 # Usage:  .\build.ps1           Build full .exe
 #         .\build.ps1 -Dev      Frontend-only rebuild (for launcher.py dev mode)
-# Output: dist\BankrollBBQ.exe
+# Output: dist\Firev.exe
 
 param(
     [switch]$Dev
@@ -31,7 +31,7 @@ function Write-Step($msg) {
     Write-Host "`n[$script:Step/$script:TotalSteps] $msg" -ForegroundColor Yellow
 }
 
-Write-Host "`n=== BankrollBBQ Build ===" -ForegroundColor Cyan
+Write-Host "`n=== Firev Build ===" -ForegroundColor Cyan
 
 # ── Pre-flight checks ──────────────────────────────────────────────
 Write-Step "Pre-flight checks..."
@@ -109,33 +109,33 @@ if ($MissingDeps.Count -gt 0) {
 Write-Host "  Dependencies OK." -ForegroundColor Green
 
 # ── Build exe ──────────────────────────────────────────────────────
-Write-Step "Building BankrollBBQ.exe..."
+Write-Step "Building Firev.exe..."
 
 # Icon
-$icoPath = "frontend\public\bankrollbbq.ico"
+$icoPath = "frontend\public\firev.ico"
 if (-not (Test-Path $icoPath)) {
     Write-Host "  No .ico file found - exe will use default icon." -ForegroundColor DarkGray
 }
 
 # Clean previous build artifacts
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-if (Test-Path "dist\BankrollBBQ.exe") { Remove-Item -Force "dist\BankrollBBQ.exe" }
+if (Test-Path "dist\Firev.exe") { Remove-Item -Force "dist\Firev.exe" }
 
 # Run PyInstaller from venv so it picks up all installed packages
-& $VenvPython -m PyInstaller bankrollbbq.spec --clean --noconfirm
+& $VenvPython -m PyInstaller firev.spec --clean --noconfirm
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  PyInstaller build failed!" -ForegroundColor Red
     exit 1
 }
 
 # ── Report ─────────────────────────────────────────────────────────
-$exe = "dist\BankrollBBQ.exe"
+$exe = "dist\Firev.exe"
 if (Test-Path $exe) {
     $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host "`n=== Build complete ===" -ForegroundColor Green
     Write-Host "  Output: $exe ($size MB)" -ForegroundColor Green
-    Write-Host "`n  Run with:  .\dist\BankrollBBQ.exe" -ForegroundColor Cyan
-    Write-Host "  Data dir:  %LOCALAPPDATA%\BankrollBBQ`n" -ForegroundColor Cyan
+    Write-Host "`n  Run with:  .\dist\Firev.exe" -ForegroundColor Cyan
+    Write-Host "  Data dir:  %LOCALAPPDATA%\Firev`n" -ForegroundColor Cyan
 } else {
     Write-Host "  Build failed - no .exe produced." -ForegroundColor Red
     exit 1

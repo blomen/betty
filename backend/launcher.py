@@ -1,5 +1,5 @@
 """
-BankrollBBQ Desktop Application Launcher
+Firev Desktop Application Launcher
 
 Starts FastAPI server in a background thread and opens a native
 Windows window via pywebview. The React frontend is served as
@@ -7,7 +7,7 @@ static files from the same FastAPI instance.
 
 Usage:
   python launcher.py          (dev mode)
-  BankrollBBQ.exe                  (bundled mode — PyInstaller)
+  Firev.exe                   (bundled mode — PyInstaller)
 """
 
 import logging
@@ -89,7 +89,7 @@ def start_server(port: int):
         logger.info("Uvicorn server stopped")
     except OSError as e:
         if "address already in use" in str(e).lower() or "10048" in str(e):
-            logger.error("Port %d is already in use — is another BankrollBBQ instance running?", port)
+            logger.error("Port %d is already in use — is another Firev instance running?", port)
         else:
             logger.exception("Server thread crashed (OSError)")
     except Exception:
@@ -161,7 +161,7 @@ def main():
             import ctypes
             msg = traceback.format_exc()
             ctypes.windll.user32.MessageBoxW(
-                0, f"BankrollBBQ failed to start:\n\n{msg}", "BankrollBBQ Error", 0x10
+                0, f"Firev failed to start:\n\n{msg}", "Firev Error", 0x10
             )
         except Exception:
             pass
@@ -175,10 +175,10 @@ def _find_icon() -> str | None:
 
     candidates = []
     if is_bundled():
-        candidates.append(os.path.join(str(get_bundle_dir()), 'frontend', 'dist', 'bankrollbbq.ico'))
+        candidates.append(os.path.join(str(get_bundle_dir()), 'frontend', 'dist', 'firev.ico'))
     # Dev mode
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'public', 'bankrollbbq.ico'))
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'public', 'bankrollbbq.ico'))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'public', 'firev.ico'))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'public', 'firev.ico'))
 
     for path in candidates:
         resolved = os.path.normpath(path)
@@ -197,7 +197,7 @@ def _set_window_icon(icon_path: str, logger: logging.Logger):
         # Give the app its own taskbar identity so Windows uses our icon
         # instead of grouping under the Python interpreter icon.
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "BankrollBBQ.BankrollBBQ.1"
+            "Firev.Firev.1"
         )
 
         user32 = ctypes.windll.user32
@@ -217,9 +217,9 @@ def _set_window_icon(icon_path: str, logger: logging.Logger):
             return
 
         # Find the pywebview window by title
-        hwnd = user32.FindWindowW(None, "BankrollBBQ")
+        hwnd = user32.FindWindowW(None, "Firev")
         if not hwnd:
-            logger.warning("Could not find BankrollBBQ window to set icon")
+            logger.warning("Could not find Firev window to set icon")
             return
 
         WM_SETICON = 0x0080
@@ -243,7 +243,7 @@ def _run(logger: logging.Logger, bundled: bool):
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "BankrollBBQ.BankrollBBQ.1"
+                "Firev.Firev.1"
             )
         except Exception:
             pass
@@ -279,7 +279,7 @@ def _run(logger: logging.Logger, bundled: bool):
 
         logger.info("Opening pywebview window...")
         webview.create_window(
-            title="BankrollBBQ",
+            title="Firev",
             url=f"http://127.0.0.1:{port}",
             width=1400,
             height=900,

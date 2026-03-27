@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { CapitalAction, CapitalPlan } from '../../../../types';
 
 // ---------------------------------------------------------------------------
@@ -9,7 +9,7 @@ type ActionStatus = 'pending' | 'done' | 'dismissed';
 
 interface Props {
   capitalPlan: CapitalPlan & { usdc_rate?: number };
-  onConfirm: (actions: CapitalAction[]) => void;
+  onConfirm: () => void;
   onSkip: () => void;
   isLoading: boolean;
 }
@@ -18,8 +18,8 @@ interface Props {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function actionKey(action: CapitalAction, idx: number): string {
-  return `${action.type}-${action.provider_id ?? action.from_provider_id ?? ''}-${action.to_provider_id ?? ''}-${idx}`;
+function actionKey(action: CapitalAction): string {
+  return `${action.type}-${action.provider_id}-${action.priority}`;
 }
 
 function formatCurrency(amount: number, currency: 'SEK' | 'USDC'): string {
@@ -29,19 +29,17 @@ function formatCurrency(amount: number, currency: 'SEK' | 'USDC'): string {
 
 const ACTION_COLORS: Record<CapitalAction['type'], { badge: string; border: string; dot: string }> = {
   deposit:  { badge: 'bg-success/20 text-success', border: 'border-success/30', dot: 'bg-success' },
-  transfer: { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30', dot: 'bg-blue-500' },
   withdraw: { badge: 'bg-red-500/20 text-red-400', border: 'border-red-500/30', dot: 'bg-red-500' },
 };
 
-// Provider color for sharp providers
-function providerColor(pid: string | undefined): string {
+function providerColor(pid: string): string {
   if (pid === 'pinnacle') return 'text-red-500';
   if (pid === 'polymarket') return 'text-purple-500';
   return 'text-text';
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// ActionNode
 // ---------------------------------------------------------------------------
 
 function ActionNode({
@@ -79,25 +77,12 @@ function ActionNode({
         {/* Left: action info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Badge */}
             <span className={`inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${colors.badge}`}>
               {action.type}
             </span>
-
-            {/* Provider */}
-            {action.type === 'transfer' ? (
-              <span className="text-xs">
-                <span className="text-dark-400">{action.from_provider_id}</span>
-                <span className="text-dark-500 mx-1">→</span>
-                <span className={providerColor(action.to_provider_id)}>{action.to_provider_id}</span>
-              </span>
-            ) : (
-              <span className={`text-xs font-medium ${providerColor(action.provider_id)}`}>
-                {action.provider_id}
-              </span>
-            )}
-
-            {/* Amount */}
+            <span className={`text-xs font-medium ${providerColor(action.provider_id)}`}>
+              {action.provider_id}
+            </span>
             <span className="text-xs text-text font-medium">
               {formatCurrency(action.amount, action.currency)}
               {action.currency === 'USDC' && usdcRate > 0 && (
@@ -110,17 +95,10 @@ function ActionNode({
 
           {/* Details line */}
           <div className="text-[10px] text-dark-400 mt-0.5 flex items-center gap-2 flex-wrap">
-            {action.unlocks > 0 && (
-              <span>→ {action.unlocks} bets</span>
-            )}
-            {action.avg_edge > 0 && (
-              <span>· +{action.avg_edge.toFixed(1)}% avg</span>
-            )}
+            {action.unlocks > 0 && <span>→ {action.unlocks} bets</span>}
+            {action.avg_edge > 0 && <span>· +{action.avg_edge.toFixed(1)}% avg</span>}
             {action.expected_ev > 0 && (
               <span className="text-success">· +{action.expected_ev.toFixed(0)} EV</span>
-            )}
-            {action.bonus_info && (
-              <span className="text-amber-500">· {action.bonus_info}</span>
             )}
           </div>
         </div>
@@ -164,9 +142,29 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
   const [statuses, setStatuses] = useState<Record<string, ActionStatus>>({});
 
   const keys = useMemo(
-    () => capitalPlan.actions.map((a, i) => actionKey(a, i)),
+    () => capitalPlan.actions.map((a) => actionKey(a)),
     [capitalPlan.actions],
   );
+
+  // Listen for mirror balance_synced SSE — auto-mark matching deposit actions done
+  useEffect(() => {
+    const es = new EventSource('/api/extraction/stream');
+
+    es.addEventListener('balance_synced', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const provider = data.provider as string;
+        // Find deposit actions for this provider and auto-mark done
+        capitalPlan.actions.forEach((action, i) => {
+          if (action.type === 'deposit' && action.provider_id === provider) {
+            setStatuses(prev => ({ ...prev, [keys[i]]: 'done' }));
+          }
+        });
+      } catch { /* ignore parse errors */ }
+    });
+
+    return () => es.close();
+  }, [capitalPlan.actions, keys]);
 
   function getStatus(key: string): ActionStatus {
     return statuses[key] ?? 'pending';
@@ -186,16 +184,16 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
     }));
   }
 
-  const doneActions = useMemo(
-    () => capitalPlan.actions.filter((_, i) => getStatus(keys[i]) === 'done'),
+  const doneCount = useMemo(
+    () => keys.filter(k => getStatus(k) === 'done').length,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [capitalPlan.actions, keys, statuses],
+    [keys, statuses],
   );
 
-  const hasDone = doneActions.length > 0;
+  const hasDone = doneCount > 0;
   const hasActions = capitalPlan.actions.length > 0;
 
-  // Summary: net capital needed per currency
+  // Summary
   const { netSEK, netUSDC, totalUnlocks, totalEV } = useMemo(() => {
     let sek = 0, usdc = 0, unlocks = 0, ev = 0;
     capitalPlan.actions.forEach((action, i) => {
@@ -210,34 +208,30 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capitalPlan.actions, keys, statuses]);
 
-  // Projected deployed total (including USDC → SEK conversion)
   const usdcInSEK = netUSDC * usdcRate;
   const projectedDeployed = capitalPlan.total_deployed + netSEK + usdcInSEK;
 
   return (
     <div className="p-4 flex flex-col items-center">
-      {/* Constrain width for the waterfall */}
       <div className="w-full max-w-lg">
 
-        {/* Current State box */}
+        {/* Current State */}
         <div className="border border-dark-600 bg-dark-800 rounded-md p-4 text-center">
           <div className="text-[10px] text-dark-400 uppercase tracking-widest mb-1">Current Capital</div>
           <div className="text-xl font-bold text-text">
             {capitalPlan.total_deployed.toFixed(0)} kr
           </div>
-          <div className="text-[10px] text-dark-400 mt-0.5">
-            {capitalPlan.withdrawable > 0 && (
-              <span>{capitalPlan.withdrawable.toFixed(0)} kr withdrawable</span>
-            )}
-          </div>
+          {capitalPlan.withdrawable > 0 && (
+            <div className="text-[10px] text-dark-400 mt-0.5">
+              {capitalPlan.withdrawable.toFixed(0)} kr withdrawable
+            </div>
+          )}
         </div>
 
-        {/* Arrow down */}
-        {hasActions && (
-          <div className="text-center text-dark-500 text-lg py-1">↓</div>
-        )}
+        {/* Arrow */}
+        {hasActions && <div className="text-center text-dark-500 text-lg py-1">↓</div>}
 
-        {/* Timeline of actions */}
+        {/* Timeline */}
         {hasActions && (
           <div className="border-l-2 border-success/20 ml-5 pl-4">
             {capitalPlan.actions.map((action, idx) => (
@@ -253,10 +247,10 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
           </div>
         )}
 
-        {/* Arrow down */}
+        {/* Arrow */}
         <div className="text-center text-dark-500 text-lg py-1">↓</div>
 
-        {/* Projected State box */}
+        {/* Projected State */}
         <div className="border border-success/30 bg-dark-800 rounded-md p-4 text-center">
           <div className="text-[10px] text-success uppercase tracking-widest mb-1">
             {hasActions ? 'Projected' : 'Ready'}
@@ -280,11 +274,11 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
           <div className="flex items-center justify-center gap-2 mt-4">
             {hasDone ? (
               <button
-                onClick={() => onConfirm(doneActions)}
+                onClick={onConfirm}
                 disabled={isLoading}
                 className="px-5 py-2 bg-success text-black text-xs font-bold rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
-                {isLoading ? 'Recalculating...' : `Confirm & Calc Batch (${doneActions.length}) →`}
+                {isLoading ? 'Recalculating...' : `Recalc Batch →`}
               </button>
             ) : (
               <button
@@ -301,6 +295,13 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
         {!hasActions && (
           <div className="text-center text-dark-400 text-[10px] mt-2">
             All providers funded optimally. No capital actions needed.
+          </div>
+        )}
+
+        {/* Mirror hint */}
+        {hasActions && (
+          <div className="text-center text-dark-400 text-[10px] mt-3">
+            Do deposits in the mirror browser — balances sync automatically.
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 """
-Alembic Environment Configuration for BankrollBBQ
+Alembic Environment Configuration for Firev
 
-This file configures Alembic to work with the BankrollBBQ database models.
+This file configures Alembic to work with the Firev database models.
 """
 from logging.config import fileConfig
 

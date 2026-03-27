@@ -1,5 +1,5 @@
 """
-BankrollBBQ — Min Stake Strategy Analysis
+Firev — Min Stake Strategy Analysis
 ==========================================
 When Kelly says "bet 15 kr" but min_stake is 25 kr, should we:
   A) Skip the bet entirely (current behavior)
@@ -434,7 +434,7 @@ def main():
     random.seed(42)
 
     print("=" * 100)
-    print("  BANKROLLBBQ — MIN STAKE STRATEGY ANALYSIS")
+    print("  FIREV — MIN STAKE STRATEGY ANALYSIS")
     print("  Should we skip, bump, or dynamically adjust when Kelly < 25 kr?")
     print("=" * 100)
 

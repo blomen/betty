@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Transform the BankrollBBQ frontend from a dark terminal UI into a full Pokemon Ruby GBA aesthetic with dialogue-box chrome, pixel fonts, GBA color palette, and tile-textured backgrounds.
+**Goal:** Transform the Firev frontend from a dark terminal UI into a full Pokemon Ruby GBA aesthetic with dialogue-box chrome, pixel fonts, GBA color palette, and tile-textured backgrounds.
 
 **Architecture:** CSS-first approach — most changes are in `index.css` (variables, new classes) and `tailwind.config.js` (tokens). Component changes are primarily class additions and hardcoded color swaps. No logic changes.
 

@@ -1,8 +1,8 @@
-# BankrollBBQ - Betting Analytics Platform
+# Firev - Betting Analytics Platform
 
 ## WHAT This Project Is
 
-BankrollBBQ compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
+Firev compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
 **Tech stack:** Python 3.10+ / FastAPI / SQLite / Playwright | React 19 / TypeScript / Vite / Tailwind
 
@@ -23,7 +23,7 @@ backend/src/
 ├── db/               # SQLAlchemy models (Event, Odds, Bet, Provider, Profile) — ORM only, no business logic
 ├── api/              # FastAPI application
 │   └── routes/       # Thin HTTP handlers — delegate to services/repositories
-├── core/             # Transport, exceptions (BankrollBBQError hierarchy)
+├── core/             # Transport, exceptions (FirevError hierarchy)
 ├── constants.py      # ALLOWED_MARKETS, SHARP_PROVIDERS
 ├── paths.py          # Centralized path resolution (dev vs bundled .exe)
 └── app.py            # Typer CLI
@@ -85,7 +85,7 @@ pytest tests/
 
 - `src/config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
 - `src/config/sports.yaml` - Sport/league mappings with provider-specific IDs
-- `backend/data/bankrollbbq.db` - SQLite database (queryable via sqlite MCP)
+- `backend/data/firev.db` - SQLite database (queryable via sqlite MCP)
 
 ## When Working Here
 

@@ -6,11 +6,11 @@
 
 ## Problem
 
-Bets placed manually on bookmaker sites must be re-entered manually into BankrollBBQ. This is tedious, error-prone, and loses data (exact timestamps, raw API payloads) that could feed future RL training.
+Bets placed manually on bookmaker sites must be re-entered manually into Firev. This is tedious, error-prone, and loses data (exact timestamps, raw API payloads) that could feed future RL training.
 
 ## Solution
 
-A persistent Playwright browser session that intercepts bet placement API responses in real-time, automatically logs them to BankrollBBQ via existing `BetService`, stores raw payloads for RL training, and notifies the frontend via SSE toast.
+A persistent Playwright browser session that intercepts bet placement API responses in real-time, automatically logs them to Firev via existing `BetService`, stores raw payloads for RL training, and notifies the frontend via SSE toast.
 
 ## Architecture
 

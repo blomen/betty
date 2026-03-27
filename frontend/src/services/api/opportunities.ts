@@ -81,17 +81,9 @@ export const opportunitiesApi = {
     });
   },
 
-  async confirmCapital(actions: Array<{
-    type: 'deposit' | 'transfer' | 'withdraw';
-    provider_id?: string;
-    from_provider_id?: string;
-    to_provider_id?: string;
-    amount: number;
-  }>): Promise<BatchResult> {
+  async confirmCapital(): Promise<BatchResult> {
     return fetchJson('/opportunities/play/confirm-capital', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ actions }),
     });
   },
 

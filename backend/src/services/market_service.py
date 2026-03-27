@@ -1430,47 +1430,45 @@ class MarketService:
         return result
 
     @staticmethod
-    def _filter_outlier_candles(candles: list[dict], radius: int = 10, wick_cap: float = 6.0) -> list[dict]:
-        """Clamp only extreme outlier wicks caused by erroneous/auction ticks.
+    def _filter_outlier_candles(candles: list[dict], radius: int = 20, max_wick: float = 25.0) -> list[dict]:
+        """Clamp wicks using a close-price corridor as truth anchor.
 
-        Compares each bar's wick length to the median wick of neighbors.
-        Only clamps if a wick is > wick_cap × the local median wick — this
-        catches settlement prints and erroneous ticks while preserving all
-        normal price action (even volatile moves).
+        During NQ contract rolls, the continuous symbol (NQ.v.0) includes trades
+        from both the expiring and new front-month contracts, creating systematic
+        ~75-80pt wicks on virtually every candle.  Median-wick-based filters fail
+        because the majority of candles are corrupted.
 
-        wick_cap=6.0 means a wick must be 6× the local median to get clamped,
-        so only true outliers are affected.
+        Instead, build a local price corridor from neighboring *close* prices
+        (which always come from the actively-traded contract) and clamp H/L so
+        wicks cannot extend beyond close_range + max_wick.
+
+        max_wick=25 allows normal volatile wicks (NQ 1m can easily have 15-20pt
+        wicks during CPI/FOMC) while removing the 75-80pt roll artifacts.
         """
-        if len(candles) < 5:
+        if len(candles) < 3:
             return candles
         n = len(candles)
-
-        # Pre-compute upper/lower wick sizes
-        upper_wicks = [c["h"] - max(c["o"], c["c"]) for c in candles]
-        lower_wicks = [min(c["o"], c["c"]) - c["l"] for c in candles]
+        closes = [c["c"] for c in candles]
 
         result = []
         for i, c in enumerate(candles):
+            # Build close-price corridor from neighbors
             lo = max(0, i - radius)
             hi = min(n, i + radius + 1)
-            neighbors = [j for j in range(lo, hi) if j != i]
-            if len(neighbors) < 3:
-                result.append(c)
-                continue
+            neighbor_closes = closes[lo:hi]
 
-            # Median upper/lower wicks of neighbors
-            med_up = sorted(upper_wicks[j] for j in neighbors)[len(neighbors) // 2]
-            med_lo = sorted(lower_wicks[j] for j in neighbors)[len(neighbors) // 2]
+            corridor_high = max(neighbor_closes)
+            corridor_low = min(neighbor_closes)
 
-            # Floor: at least 5 NQ points to avoid clamping in dead-flat markets
-            max_upper = max(med_up * wick_cap, 5.0)
-            max_lower = max(med_lo * wick_cap, 5.0)
+            # Ceiling / floor: corridor extremes + max_wick buffer
+            ceiling = corridor_high + max_wick
+            floor = corridor_low - max_wick
 
-            body_high = max(c["o"], c["c"])
-            body_low = min(c["o"], c["c"])
-
-            clamped_h = min(c["h"], body_high + max_upper)
-            clamped_l = max(c["l"], body_low - max_lower)
+            clamped_h = min(c["h"], ceiling)
+            clamped_l = max(c["l"], floor)
+            # Ensure h >= body high, l <= body low (never invert the candle)
+            clamped_h = max(clamped_h, max(c["o"], c["c"]))
+            clamped_l = min(clamped_l, min(c["o"], c["c"]))
 
             if clamped_h != c["h"] or clamped_l != c["l"]:
                 result.append({**c, "h": clamped_h, "l": clamped_l})

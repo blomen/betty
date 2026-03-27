@@ -1,4 +1,4 @@
-"""Shared test fixtures for BankrollBBQ tests."""
+"""Shared test fixtures for Firev tests."""
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

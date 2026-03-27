@@ -675,7 +675,11 @@ class OpportunityService:
             result["arb_legs"] = None
 
     def _add_reverse_value_recommendation(self, result: dict, opp, stake_calculator: StakeCalculator):
-        """Add stake recommendation for reverse value bets (Pinnacle vs consensus)."""
+        """Add stake recommendation for reverse value bets (Pinnacle vs consensus).
+
+        Reverse bets are placed manually on Pinnacle — never skip due to bankroll.
+        If Kelly stake is below min_stake, show min_stake as suggestion instead of skipping.
+        """
         try:
             edge_raw = (opp.odds1 / opp.odds2 - 1) if opp.odds2 > 1 else 0
 
@@ -685,11 +689,20 @@ class OpportunityService:
                 event_id=opp.event_id,
                 provider_id="pinnacle",
             )
-            result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
-            result["final_stake"] = round(stake_rec.stake, 2)
-            result["kelly_fraction"] = stake_rec.kelly_fraction
-            result["skip_reason"] = stake_rec.skip_reason
-            result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
+
+            # Never skip reverse bets for bankroll/EV reasons — user places these manually
+            if stake_rec.skip_reason and stake_rec.skip_reason in ("low EV",) or "add" in (stake_rec.skip_reason or ""):
+                result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+                result["final_stake"] = round(stake_calculator.min_stake, 2)
+                result["kelly_fraction"] = stake_rec.kelly_fraction
+                result["skip_reason"] = None
+                result["bankroll_needed"] = None
+            else:
+                result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
+                result["final_stake"] = round(stake_rec.stake, 2)
+                result["kelly_fraction"] = stake_rec.kelly_fraction
+                result["skip_reason"] = stake_rec.skip_reason
+                result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
 
         except Exception as e:
             logger.debug(f"Reverse value stake calculation failed for opp {opp.id}: {e}")
@@ -738,7 +751,11 @@ class OpportunityService:
             canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
             key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
             orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
-            result[orig_key] = meta_index.get(key)
+            value = meta_index.get(key)
+            if value is None and opp.market == "spread" and opp.point:
+                alt_key = (opp.event_id, canonical, opp.market, opp.outcome1, -opp.point)
+                value = meta_index.get(alt_key)
+            result[orig_key] = value
 
         return result
 
@@ -778,7 +795,13 @@ class OpportunityService:
             canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
             key = (opp.event_id, canonical, opp.market, opp.outcome1, opp.point)
             orig_key = (opp.event_id, opp.provider1_id, opp.market, opp.outcome1, opp.point)
-            result[orig_key] = updated_index.get(key)
+            value = updated_index.get(key)
+            # Spread scanner normalizes point signs (Asian handicap convention),
+            # but odds table stores original provider points — try negated point
+            if value is None and opp.market == "spread" and opp.point:
+                alt_key = (opp.event_id, canonical, opp.market, opp.outcome1, -opp.point)
+                value = updated_index.get(alt_key)
+            result[orig_key] = value
 
         return result
 

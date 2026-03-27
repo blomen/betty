@@ -20,7 +20,7 @@ The core insight: Yoshi's AI receives speed/position/road-layout vectors every 0
 
 ### The Trackmania Analogy
 
-| Trackmania (Yoshi) | BankrollBBQ (Trading) |
+| Trackmania (Yoshi) | Firev (Trading) |
 |---|---|
 | Speed, position, wheel contact | Delta, CVD, volume, spread, body ratio |
 | Road centerline deviation | Price vs VWAP (SD), price position in VA |

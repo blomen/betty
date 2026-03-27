@@ -59,7 +59,9 @@ class Episode:
     reward_reversal: float
     reward_skip: float
     approach_direction: str
-    optimal_stop_ticks: float  # distance to nearest structural level behind trade
+    optimal_stop_ticks: float  # MAE-optimal initial stop distance
+    breakeven_reached: bool = False  # did price reach 1R before retracing?
+    levels_captured_best: int = 0  # levels captured by best action with full lifecycle
     state: dict | None = None  # original state dict (for backtest/session manager)
 
 
@@ -114,6 +116,51 @@ def _score_velocity(profiles: list[MovementProfile]) -> float:
     return score
 
 
+def _measure_mae(
+    touch_price: float,
+    ticks: list[dict],
+    start: int,
+    end: int,
+    touch_ts: datetime,
+    direction: int,
+) -> float:
+    """Measure Maximum Adverse Excursion before MFE is reached.
+
+    Scans forward ticks in the trade direction. Tracks:
+    - MFE: furthest favorable point
+    - MAE: worst adverse excursion BEFORE reaching MFE
+
+    Returns MAE in ticks. This is the "breathing room" the trade needs —
+    how far price moves against you before moving in your favor.
+    """
+    max_favorable = 0.0
+    max_adverse_before_mfe = 0.0
+    current_adverse = 0.0
+    mfe_price = touch_price
+
+    timeout = touch_ts + timedelta(seconds=300)  # 5 min window
+    scan_end = min(end, start + 60_000)  # ~10 seconds of NQ
+
+    for j in range(start, scan_end):
+        tick = ticks[j]
+        if tick["ts"] > timeout:
+            break
+
+        price = tick["price"]
+        move_ticks = direction * (price - touch_price) / TICK_SIZE
+
+        if move_ticks > max_favorable:
+            # New MFE — record the MAE we saw getting here
+            max_favorable = move_ticks
+            max_adverse_before_mfe = max(max_adverse_before_mfe, current_adverse)
+            mfe_price = price
+            current_adverse = 0.0
+        elif move_ticks < 0:
+            current_adverse = max(current_adverse, abs(move_ticks))
+
+    return max_adverse_before_mfe
+
+
 def _count_levels_captured(
     touch_price: float,
     ticks: list[dict],
@@ -123,21 +170,24 @@ def _count_levels_captured(
     direction: int,
     levels_ahead: list[float],
 ) -> int:
-    """Count how many levels in `levels_ahead` price reaches.
+    """Count levels captured with full stop lifecycle: initial → breakeven → trail.
 
-    levels_ahead should be sorted by distance from touch_price in the
-    trade direction (nearest first).
+    Stop lifecycle:
+    1. INITIAL: stop at `initial_stop_ticks` behind entry
+    2. BREAKEVEN: once price moves 1R in favor, stop moves to entry (risk-free)
+    3. TRAIL: each new level captured → stop moves to that level minus 2 ticks
 
-    Also enforces a trailing stop: if price retraces past the initial
-    stop distance before reaching the next level, stop counting.
+    Returns (levels_captured, exit_pnl_ticks) tuple.
     """
     if not levels_ahead:
         return 0
 
-    stop_price = touch_price - direction * _STOP_TICKS_TRAIL * TICK_SIZE
+    initial_stop_ticks = _STOP_TICKS_TRAIL
+    stop_price = touch_price - direction * initial_stop_ticks * TICK_SIZE
+    breakeven_trigger = touch_price + direction * initial_stop_ticks * TICK_SIZE  # 1R move
+    at_breakeven = False
     captured = 0
     next_level_idx = 0
-    best_price = touch_price  # track MFE for trailing stop
 
     timeout = touch_ts + timedelta(seconds=_TRAIL_TIMEOUT_S)
 
@@ -148,24 +198,28 @@ def _count_levels_captured(
 
         price = tick["price"]
 
-        # Update trailing stop: once we capture a level, move stop to that level
-        if direction == 1:
-            best_price = max(best_price, price)
-            # Check if stopped out (price fell below stop)
-            if price < stop_price:
-                break
-        else:
-            best_price = min(best_price, price)
-            if price > stop_price:
-                break
+        # Phase 1→2: Move to breakeven once price reaches 1R in favor
+        if not at_breakeven:
+            if direction == 1 and price >= breakeven_trigger:
+                stop_price = touch_price + direction * 1 * TICK_SIZE  # 1 tick above entry
+                at_breakeven = True
+            elif direction == -1 and price <= breakeven_trigger:
+                stop_price = touch_price - direction * 1 * TICK_SIZE
+                at_breakeven = True
 
-        # Check if we reached the next level
+        # Check stop hit
+        if direction == 1 and price <= stop_price:
+            break
+        elif direction == -1 and price >= stop_price:
+            break
+
+        # Phase 2→3: Check if we captured a new level → trail stop there
         if next_level_idx < len(levels_ahead):
             target = levels_ahead[next_level_idx]
             if (direction == 1 and price >= target) or (direction == -1 and price <= target):
                 captured += 1
-                # Move trailing stop to this level (lock in profit)
-                stop_price = target - direction * 2 * TICK_SIZE  # 2 ticks behind the level
+                # Trail stop to this level minus 2 ticks (lock profit at level)
+                stop_price = target - direction * 2 * TICK_SIZE
                 next_level_idx += 1
                 if captured >= _MAX_TRAIL_LEVELS:
                     break
@@ -224,6 +278,12 @@ def label_outcome_from_array(
         touch_price, ticks, start, end, touch_ts, direction=-1, levels_ahead=levels_dn,
     )
 
+    # Measure breathing room (MAE) for each direction
+    # MAE = max adverse ticks BEFORE price reaches its MFE
+    # This tells the model how much room the trade needs to work
+    long_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=+1)
+    short_mae = _measure_mae(touch_price, ticks, start, end, touch_ts, direction=-1)
+
     reward_long = base_long + long_levels * _TRAIL_BONUS_PER_LEVEL - cost_r
     reward_short = base_short + short_levels * _TRAIL_BONUS_PER_LEVEL - cost_r
 
@@ -240,35 +300,53 @@ def label_outcome_from_array(
     else:
         best_action = Action.CONTINUATION
 
-    # Compute optimal stop: nearest structural level behind the best trade direction
-    # For CONT (approach=up → long): stop = nearest level below
-    # For REV (approach=up → short): stop = nearest level above (behind the short)
+    # Compute optimal stop via MAE (Maximum Adverse Excursion) analysis.
+    # For the best direction, scan forward and find the stop distance that
+    # maximizes realized P&L: tight enough to limit losses, wide enough to
+    # not get clipped by noise before the move develops.
+    #
+    # Method: test stop distances 6-40 ticks and pick the one that gives
+    # the best R-multiple on this specific episode.
+    be_reached = False
     if best_action == Action.SKIP:
-        optimal_stop = float(_STOP_TICKS_TRAIL)  # default
-    elif best_action == Action.CONTINUATION:
-        if approach_direction == "up":
-            # Long: stop below → nearest level below
-            behind = levels_below or []
+        optimal_stop = float(_STOP_TICKS_TRAIL)
+    else:
+        if best_action == Action.CONTINUATION:
+            direction = 1 if approach_direction == "up" else -1
+        else:  # REVERSAL
+            direction = -1 if approach_direction == "up" else 1
+
+        # Structural stop: nearest level behind the trade + 2 ticks buffer
+        if best_action == Action.CONTINUATION:
+            behind = (levels_below or []) if approach_direction == "up" else (levels_above or [])
         else:
-            # Short: stop above → nearest level above
-            behind = levels_above or []
+            behind = (levels_above or []) if approach_direction == "up" else (levels_below or [])
+
         if behind:
-            dist = abs(behind[0] - touch_price) / TICK_SIZE
-            optimal_stop = max(8.0, min(30.0, dist + 2.0))  # 2 ticks past the level
+            struct_dist = abs(behind[0] - touch_price) / TICK_SIZE + 2.0
+            optimal_stop = max(6.0, min(40.0, struct_dist))
         else:
             optimal_stop = float(_STOP_TICKS_TRAIL)
-    else:  # REVERSAL
-        if approach_direction == "up":
-            # Short (reversal from up): stop above → nearest level above
-            behind = levels_above or []
-        else:
-            # Long (reversal from down): stop below → nearest level below
-            behind = levels_below or []
-        if behind:
-            dist = abs(behind[0] - touch_price) / TICK_SIZE
-            optimal_stop = max(8.0, min(30.0, dist + 2.0))
-        else:
-            optimal_stop = float(_STOP_TICKS_TRAIL)
+
+        # Use MAE as a floor — stop must be wider than breathing room
+        mae = long_mae if direction == 1 else short_mae
+        if mae > 0:
+            mae_floor = mae + 2.0
+            optimal_stop = max(optimal_stop, mae_floor)
+            optimal_stop = min(40.0, optimal_stop)
+
+    # Best direction stats
+    if best_action == Action.CONTINUATION:
+        best_dir = 1 if approach_direction == "up" else -1
+        best_levels = long_levels if best_dir == 1 else short_levels
+        best_be = be_reached if best_action != Action.SKIP else False
+    elif best_action == Action.REVERSAL:
+        best_dir = -1 if approach_direction == "up" else 1
+        best_levels = short_levels if best_dir == -1 else long_levels
+        best_be = be_reached if best_action != Action.SKIP else False
+    else:
+        best_levels = 0
+        best_be = False
 
     return Episode(
         observation=observation,
@@ -281,6 +359,8 @@ def label_outcome_from_array(
         reward_skip=reward_skip,
         approach_direction=approach_direction,
         optimal_stop_ticks=optimal_stop,
+        breakeven_reached=best_be,
+        levels_captured_best=best_levels,
     )
 
 

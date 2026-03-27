@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Intercept bet placements on Spelklubben (Gecko V2) via Playwright response listener and auto-log them to BankrollBBQ.
+**Goal:** Intercept bet placements on Spelklubben (Gecko V2) via Playwright response listener and auto-log them to Firev.
 
 **Architecture:** A headed Playwright browser with persistent context runs inside the FastAPI process. A response listener on the browser context intercepts bet placement API calls, parses the confirmation, stores raw traces, creates bets via existing BetService, and pushes SSE notifications to the frontend toast overlay.
 

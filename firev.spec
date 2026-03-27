@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-BankrollBBQ PyInstaller spec file.
+Firev PyInstaller spec file.
 
-Build with:  pyinstaller bankrollbbq.spec --clean --noconfirm
-Output:      dist/BankrollBBQ.exe
+Build with:  pyinstaller firev.spec --clean --noconfirm
+Output:      dist/Firev.exe
 """
 
 from pathlib import Path
@@ -128,7 +128,7 @@ a = Analysis(
         'tkinter', '_tkinter',
         'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
 
-        # Heavy scientific libs (not used by BankrollBBQ)
+        # Heavy scientific libs (not used by Firev)
         'scipy', 'matplotlib', 'pandas', 'numpy.testing',
         'IPython', 'notebook', 'jupyter',
 
@@ -154,7 +154,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='BankrollBBQ',
+    name='Firev',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -167,5 +167,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='frontend/public/bankrollbbq.ico' if Path('frontend/public/bankrollbbq.ico').exists() else None,
+    icon='frontend/public/firev.ico' if Path('frontend/public/firev.ico').exists() else None,
 )

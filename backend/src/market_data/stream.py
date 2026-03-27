@@ -135,10 +135,13 @@ class TickWriter:
 class CandleFlow:
     """Aggregates ticks into a running OHLCV candle for a configurable time bucket."""
 
-    # Reject ticks more than this fraction away from last known price (bad prints)
-    MAX_TICK_DEVIATION = 0.01  # 1% — ~240 pts on NQ
-    # After this many consecutive rejects, accept the tick (legitimate gap)
-    MAX_CONSECUTIVE_REJECTS = 20
+    # Reject ticks more than this fraction away from last known price (bad prints).
+    # 0.2% ≈ 48 pts on NQ — catches contract roll artifacts (~75-400pt offset)
+    # while allowing legitimate gaps (limit moves, halt reopens).
+    MAX_TICK_DEVIATION = 0.002
+    # After this many consecutive rejects, accept the tick (legitimate gap).
+    # High threshold prevents old-contract trades from leaking through during roll.
+    MAX_CONSECUTIVE_REJECTS = 100
 
     def __init__(self, bucket_seconds: int = 300, emit_interval: float = 5.0):
         self.BUCKET_SECONDS = bucket_seconds

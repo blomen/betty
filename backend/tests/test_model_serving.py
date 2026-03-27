@@ -47,12 +47,12 @@ def test_predictor_predict_multiclass():
     predictor = Predictor()
     mock_model = MagicMock()
     mock_model.predict_proba = MagicMock(return_value=np.array([[0.1, 0.7, 0.2]]))
-    predictor.models["devig_selector"] = {
+    predictor.models["test_multiclass"] = {
         "model": mock_model,
         "feature_names": ["sport", "market_type"],
         "task": "multiclass",
     }
-    result = predictor.predict("devig_selector", {"sport": 0, "market_type": 1})
+    result = predictor.predict("test_multiclass", {"sport": 0, "market_type": 1})
     assert isinstance(result, dict)
     assert result["class"] == 1
     assert len(result["probabilities"]) == 3

@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-16
 **Status:** Approved
-**Scope:** Full pixel-art immersion — reskin the entire BankrollBBQ frontend to feel like a Pokemon Ruby GBA interface
+**Scope:** Full pixel-art immersion — reskin the entire Firev frontend to feel like a Pokemon Ruby GBA interface
 
 ## Overview
 

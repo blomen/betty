@@ -173,27 +173,10 @@ def get_fair_odds_for_outcome(
     outcomes = list(market_odds.keys())
     odds_list = [market_odds[o] for o in outcomes]
 
-    # ML devig method selection (M3) — best-effort override
-    if method == "multiplicative":  # Only override default
-        try:
-            from src.ml.serving.predictor import get_predictor
-            predictor = get_predictor()
-            if predictor.is_loaded("devig_selector"):
-                from src.ml.features.devig_features import extract_devig_features
-                devig_features = extract_devig_features(
-                    sport="", market="", num_outcomes=len(odds_list) if odds_list else 2,
-                    pinnacle_overround=calculate_margin(odds_list) if odds_list else 0,
-                    favourite_odds=min(odds_list) if odds_list else 2.0,
-                    odds_range=(max(odds_list) - min(odds_list)) if odds_list and len(odds_list) > 1 else 0,
-                )
-                result = predictor.predict("devig_selector", devig_features)
-                if result and isinstance(result, dict):
-                    methods = ["multiplicative", "additive", "power"]
-                    class_idx = result.get("class", 0)
-                    if class_idx < len(methods):
-                        method = methods[class_idx]
-        except Exception:
-            pass
+    # Rules-based method selection: power for 3-way markets (1x2),
+    # multiplicative for 2-way (totals, spreads, moneyline)
+    if method == "multiplicative" and len(odds_list) >= 3:
+        method = "power"
 
     # De-vig
     if method == "additive":
@@ -247,18 +230,25 @@ def compute_consensus_fair_odds(
             provider_markets[pid][out] = p["odds"]
 
     # Devig each provider that has full market coverage, group by platform
+    n_outcomes = len(all_outcomes)
     platform_devigged: dict[str, list[float]] = {}
     for pid, p_market in provider_markets.items():
-        if len(p_market) != len(all_outcomes):
+        if len(p_market) != n_outcomes:
             continue  # Incomplete market, can't devig
 
         p_odds_list = [p_market[o] for o in all_outcomes]
         if any(o <= 1 for o in p_odds_list):
             continue
 
-        margin = sum(1.0 / o for o in p_odds_list) - 1
-        scale = 1 + margin
-        fair = p_market[outcome] * scale
+        # Power for 3-way, multiplicative for 2-way
+        if n_outcomes >= 3:
+            fair_list = devig_power(p_odds_list)
+            outcome_idx = all_outcomes.index(outcome)
+            fair = fair_list[outcome_idx]
+        else:
+            margin = sum(1.0 / o for o in p_odds_list) - 1
+            scale = 1 + margin
+            fair = p_market[outcome] * scale
 
         if fair <= 1:
             continue
@@ -283,29 +273,3 @@ def compute_consensus_fair_odds(
     return (hm, n)
 
 
-def compute_all_methods(odds_list: list[float]) -> dict:
-    """Compute fair odds using all 3 methods for M3 training data."""
-    return {
-        "multiplicative": devig_multiplicative(odds_list),
-        "additive": devig_additive(odds_list),
-        "power": devig_power(odds_list),
-    }
-
-
-def log_devig_comparison(session, bet_id, event_id, market, outcome, odds_list, sport=None, league=None):
-    """Log all 3 devig method results for M3 training."""
-    try:
-        from src.ml.feature_store import log_features
-        from src.ml.features.devig_features import extract_devig_features
-        compute_all_methods(odds_list)  # ensure all methods work
-        num_outcomes = len(odds_list)
-        overround = calculate_margin(odds_list)
-        features = extract_devig_features(
-            sport=sport or "", market=market, num_outcomes=num_outcomes,
-            pinnacle_overround=overround,
-            favourite_odds=min(odds_list) if odds_list else 2.0,
-            odds_range=(max(odds_list) - min(odds_list)) if odds_list and len(odds_list) > 1 else 0,
-        )
-        log_features(session, "betting", str(bet_id), "devig_comparison", features)
-    except Exception:
-        pass

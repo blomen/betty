@@ -7,6 +7,7 @@ interface Tab {
 }
 
 const SPORTS_TABS: Tab[] = [
+  { name: 'play',       label: 'Play',      color: '#22c55e' },
   { name: 'polymarket', label: 'Poly',      color: '#A855F7' },
   { name: 'value',      label: 'Soft',      color: '#FF9800' },
   { name: 'reverse',    label: 'Pinnacle',  color: '#EF5350' },
@@ -34,6 +35,7 @@ export const DEFAULT_TAB: Record<CategoryName, TabName> = {
 
 // Color map for use in pages — matches SPORTS_TABS colors
 export const TAB_COLORS: Record<string, string> = {
+  play: '#22c55e',
   value: '#FF9800',
   dutch: '#10b981',
   reverse: '#EF5350',

@@ -535,9 +535,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   const { sorted: sortedGroups, sort: valueSort, toggle: toggleValueSort } =
     useMultiSort<GroupedOpp, ValueSortCol>(activeGroups, valueSortExtractors, { column: 'edge', direction: 'desc' }, 'bbq_value_sort');
 
-  const filteredCount = useMemo(() =>
-    sortedGroups.reduce((acc, g) => acc + g.opps.length, 0),
-  [sortedGroups]);
+  const filteredCount = sortedGroups.length;
 
   const valueScrollRef = useRef<HTMLDivElement>(null);
 
@@ -730,7 +728,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-y-auto">
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text flex items-center gap-2">
@@ -814,7 +812,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div className="overflow-y-auto absolute inset-0">
+        <div className="absolute inset-0 overflow-y-auto">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '34%' }} />
@@ -1033,7 +1031,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         </div>
       ) : (
         <div className="border-l-2 border-tabValue flex-1 min-h-0 relative">
-        <div ref={valueScrollRef} className="overflow-y-auto absolute inset-0">
+        <div ref={valueScrollRef} className="absolute inset-0 overflow-y-auto">
         <table className="sq w-full table-fixed">
           <colgroup>
             <col style={{ width: '28%' }} />
@@ -1061,10 +1059,8 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
               <th className="text-right">Upd</th>
             </tr>
           </thead>
-          <tbody style={{
-            paddingTop: valueVirtualizer.getVirtualItems()[0]?.start ?? 0,
-            paddingBottom: (() => { const items = valueVirtualizer.getVirtualItems(); return valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); })(),
-          }}>
+          <tbody>
+            {(() => { const top = valueVirtualizer.getVirtualItems()[0]?.start ?? 0; return top > 0 ? <tr><td colSpan={10} style={{ height: top, padding: 0 }} /></tr> : null; })()}
             {valueVirtualizer.getVirtualItems().map((virtualRow) => {
               const group = sortedGroups[virtualRow.index];
               const idx = virtualRow.index;
@@ -1091,6 +1087,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                 />
               );
             })}
+            {(() => { const items = valueVirtualizer.getVirtualItems(); const bottom = valueVirtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0); return bottom > 0 ? <tr><td colSpan={10} style={{ height: bottom, padding: 0 }} /></tr> : null; })()}
           </tbody>
         </table>
         </div>

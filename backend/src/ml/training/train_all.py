@@ -20,10 +20,6 @@ MODEL_CONFIGS = {
         "min_samples": 20, "domain": "betting",
         "source_type": "limit_event", "task": "classification",
     },
-    "devig_selector": {
-        "min_samples": 500, "domain": "betting",
-        "source_type": "devig_comparison", "task": "multiclass",
-    },
     "boost_calibrator": {
         "min_samples": 100, "domain": "betting",
         "source_type": "boost", "task": "calibration",
@@ -158,7 +154,6 @@ def _get_trainer(model_name: str):
     trainers = {
         "edge_quality": lambda data, s: _train_edge_quality(data, s),
         "limit_predictor": lambda data, s: _train_limit_predictor(data, s),
-        "devig_selector": lambda data, s: _train_devig_selector(data, s),
         "boost_calibrator": lambda data, s: _train_boost_calibrator(data, s),
         "adaptive_kelly": lambda data, s: _train_adaptive_kelly(data, s),
         "setup_scorer": lambda data, s: _train_setup_scorer(data, s),
@@ -182,11 +177,6 @@ def _train_edge_quality(data, session):
 def _train_limit_predictor(data, session):
     from src.ml.models.limit_predictor import LimitPredictorModel
     return LimitPredictorModel().train(data)
-
-
-def _train_devig_selector(data, session):
-    from src.ml.models.devig_selector import DevigSelectorModel
-    return DevigSelectorModel().train(data)
 
 
 def _train_boost_calibrator(data, session):

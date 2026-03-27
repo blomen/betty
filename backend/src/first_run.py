@@ -1,5 +1,5 @@
 """
-First-run setup for BankrollBBQ desktop app.
+First-run setup for Firev desktop app.
 
 Creates AppData directory structure, copies default configs,
 and checks Playwright browser installation.
@@ -35,7 +35,7 @@ def run_first_time_setup():
     env_path = app_dir / ".env"
     if not env_path.exists():
         env_path.write_text(
-            "# BankrollBBQ Environment Configuration\n"
+            "# Firev Environment Configuration\n"
             "# Anthropic API Key for Claude chat integration (optional)\n"
             "ANTHROPIC_API_KEY=\n"
         )

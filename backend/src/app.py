@@ -1,5 +1,5 @@
 """
-BankrollBBQ Interactive Terminal Application
+Firev Interactive Terminal Application
 
 A Rich + Typer based terminal UI for betting analytics.
 """
@@ -28,7 +28,7 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(force_terminal=True)
-app = typer.Typer(help="BankrollBBQ - Betting Analytics Platform")
+app = typer.Typer(help="Firev - Betting Analytics Platform")
 app.add_typer(rl_app, name="rl")
 
 
@@ -36,7 +36,7 @@ def show_banner():
     """Display the app banner."""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║                   BankrollBBQ                             ║
+    ║                    Firev                              ║
     ║           Betting Analytics Platform                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """

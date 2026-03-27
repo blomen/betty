@@ -1,8 +1,7 @@
-// NeuralNetworkSVG.tsx — DQN 115→128→128→64→3 visualization
-import { useMemo } from 'react';
+// NeuralNetworkSVG.tsx — reactive DQN visualization with firing neurons
+import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import {
   DQN_INPUTS, DQN_SEGMENTS, HIDDEN_LAYERS, ACTION_NAMES, ACTION_COLORS,
-  getSegmentColor,
 } from './dqnConfig';
 import type { DQNInferenceEvent } from '@/types/market';
 
@@ -10,103 +9,97 @@ interface Props {
   dqnInference: DQNInferenceEvent | null;
 }
 
-// Layout constants
-const INPUT_X = 180;
-const LAYER1_X = 540;
-const LAYER2_X = 780;
-const LAYER3_X = 1000;
-const OUTPUT_X = 1260;
-const NODE_R = 4;
-const HIDDEN_DOT_R = 3;
-const OUTPUT_R = 16;
-const ROW_H = 10;       // tight for 108 nodes
-const SEGMENT_GAP = 8;
-const TOP_PAD = 35;
+// Layout
+const W = 900;
+const H = 420;
+const INPUT_X = 100;
+const L1_X = 280;
+const L2_X = 440;
+const L3_X = 600;
+const OUTPUT_X = 780;
+const LAYER_XS = [L1_X, L2_X, L3_X];
 
-// Layer display colors
-const LAYER_COLORS = ['#06b6d4', '#8b5cf6', '#a78bfa'] as const;
+// How many dots per hidden layer
+const DOTS_PER_LAYER = [16, 16, 10];
 
-// How many representative dots to show per hidden layer
-const HIDDEN_SAMPLES = 40;
+// Firing threshold — neurons above this get pulse animation
+const FIRE_THRESHOLD = 0.5;
+
+interface FiringNeuron {
+  id: string;
+  cx: number;
+  cy: number;
+  color: string;
+  intensity: number;
+  ts: number;
+}
 
 export function NeuralNetworkSVG({ dqnInference }: Props) {
-  // ── Static: input node positions ──
-  const { inputNodePositions, totalHeight } = useMemo(() => {
-    const positions: number[] = [];
-    let y = TOP_PAD;
-    let lastSeg = '';
-    for (const def of DQN_INPUTS) {
-      if (def.segment !== lastSeg) {
-        if (lastSeg) y += SEGMENT_GAP;
-        lastSeg = def.segment;
-      }
-      positions.push(y);
-      y += ROW_H;
-    }
-    return { inputNodePositions: positions, totalHeight: y + 40 };
+  const [firingNeurons, setFiringNeurons] = useState<FiringNeuron[]>([]);
+  const prevInferenceRef = useRef<DQNInferenceEvent | null>(null);
+  const animFrameRef = useRef<number>(0);
+
+  // ── Segment-level input positions (9 nodes) ──
+  const segmentNodes = useMemo(() => {
+    const count = DQN_SEGMENTS.length;
+    const spacing = (H - 60) / (count - 1);
+    return DQN_SEGMENTS.map((seg, i) => ({
+      ...seg,
+      x: INPUT_X,
+      y: 30 + i * spacing,
+    }));
   }, []);
 
-  // ── Static: segment label positions ──
-  const segmentLabels = useMemo(() => {
+  // ── Segment activations (average absolute input per segment) ──
+  const segmentActivations = useMemo(() => {
     return DQN_SEGMENTS.map(seg => {
-      const startIdx = seg.start;
-      const endIdx = seg.end - 1;
-      const yStart = inputNodePositions[startIdx] ?? TOP_PAD;
-      const yEnd = inputNodePositions[endIdx] ?? TOP_PAD;
-      return { seg, yStart, yEnd, yMid: (yStart + yEnd) / 2 };
-    });
-  }, [inputNodePositions]);
-
-  // ── Static: hidden layer dot positions ──
-  const hiddenLayerDots = useMemo(() => {
-    return HIDDEN_LAYERS.map((size, layerIdx) => {
-      const step = Math.max(1, Math.floor(size / HIDDEN_SAMPLES));
-      const sampledIndices: number[] = [];
-      for (let i = 0; i < size; i += step) {
-        sampledIndices.push(i);
-        if (sampledIndices.length >= HIDDEN_SAMPLES) break;
+      if (!dqnInference) return 0;
+      let sum = 0;
+      let count = 0;
+      for (let i = seg.start; i < seg.end; i++) {
+        sum += Math.abs(dqnInference.inputs[i] ?? 0);
+        count++;
       }
-      const count = sampledIndices.length;
-      const spread = totalHeight * 0.7;
-      const yStart = totalHeight * 0.15;
-      return sampledIndices.map((srcIdx, j) => ({
-        srcIdx,
-        y: yStart + (j / Math.max(count - 1, 1)) * spread,
-        layerIdx,
-      }));
-    });
-  }, [totalHeight]);
-
-  // ── Static: output node positions ──
-  const outputPositions = useMemo(() => {
-    const count = ACTION_NAMES.length;
-    const spread = 120;
-    const center = totalHeight / 2;
-    return ACTION_NAMES.map((name, i) => ({
-      name,
-      color: ACTION_COLORS[i],
-      y: center + (i - (count - 1) / 2) * spread,
-    }));
-  }, [totalHeight]);
-
-  // ── Dynamic: node brightnesses ──
-  const inputBrightnesses = useMemo(() => {
-    return DQN_INPUTS.map(def => {
-      const val = dqnInference?.inputs[def.index] ?? 0;
-      return Math.max(0.15, Math.min(1, Math.abs(val)));
+      return count > 0 ? Math.min(1, sum / count) : 0;
     });
   }, [dqnInference]);
 
-  const hiddenBrightnesses = useMemo(() => {
-    return HIDDEN_LAYERS.map((_, layerIdx) => {
-      const actKey = (['layer1', 'layer2', 'layer3'] as const)[layerIdx];
-      const acts = dqnInference?.activations[actKey] ?? [];
-      return hiddenLayerDots[layerIdx].map(dot => {
-        const val = acts[dot.srcIdx] ?? 0;
-        return Math.max(0.1, Math.min(1, Math.abs(val)));
-      });
+  // ── Hidden layer dot positions ──
+  const hiddenDots = useMemo(() => {
+    return HIDDEN_LAYERS.map((size, li) => {
+      const n = DOTS_PER_LAYER[li];
+      const step = Math.max(1, Math.floor(size / n));
+      const dots: { srcIdx: number; y: number }[] = [];
+      for (let i = 0; i < size && dots.length < n; i += step) {
+        dots.push({ srcIdx: i, y: 0 });
+      }
+      const spacing = (H - 60) / Math.max(dots.length - 1, 1);
+      dots.forEach((d, j) => { d.y = 30 + j * spacing; });
+      return dots;
     });
-  }, [dqnInference, hiddenLayerDots]);
+  }, []);
+
+  // ── Hidden activations ──
+  const hiddenActivations = useMemo(() => {
+    return HIDDEN_LAYERS.map((_, li) => {
+      const key = (['layer1', 'layer2', 'layer3'] as const)[li];
+      const acts = dqnInference?.activations[key] ?? [];
+      return hiddenDots[li].map(d => Math.min(1, Math.abs(acts[d.srcIdx] ?? 0)));
+    });
+  }, [dqnInference, hiddenDots]);
+
+  // ── Output positions ──
+  const outputNodes = useMemo(() => {
+    const count = ACTION_NAMES.length;
+    const spacing = 100;
+    const center = H / 2;
+    return ACTION_NAMES.map((name, i) => ({
+      name,
+      color: ACTION_COLORS[i],
+      x: OUTPUT_X,
+      y: center + (i - (count - 1) / 2) * spacing,
+    }));
+  }, []);
 
   const winnerIdx = useMemo(() => {
     if (!dqnInference) return -1;
@@ -114,235 +107,316 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
     return qv.indexOf(Math.max(...qv));
   }, [dqnInference]);
 
-  // ── Dynamic: connection lines ──
-  const connectionLines = useMemo(() => {
+  // ── Connection paths (curved) ──
+  const connections = useMemo(() => {
     if (!dqnInference) return [];
-    const lines: Array<{
-      x1: number; y1: number; x2: number; y2: number;
-      color: string; strokeWidth: number; opacity: number;
-    }> = [];
+    const lines: { d: string; color: string; width: number; opacity: number }[] = [];
 
-    const layer1Ys = hiddenLayerDots[0].map(d => d.y);
-    const layer2Ys = hiddenLayerDots[1].map(d => d.y);
-    const layer3Ys = hiddenLayerDots[2].map(d => d.y);
+    const curve = (x1: number, y1: number, x2: number, y2: number) => {
+      const mx = (x1 + x2) / 2;
+      return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+    };
 
-    // input → layer1
-    for (const conn of dqnInference.connections.input_l1) {
-      const fromY = inputNodePositions[conn.from_idx];
-      if (fromY == null) continue;
-      const toSlot = hiddenLayerDots[0].findIndex(d => d.srcIdx === conn.to_idx);
-      if (toSlot === -1) continue;
-      const toY = layer1Ys[toSlot];
+    // Aggregate connections: segment → L1
+    // For each segment, find strongest connections to each L1 dot
+    const segConns = new Map<string, { strength: number; sign: number }>();
+    for (const c of dqnInference.connections.input_l1) {
+      const segIdx = DQN_SEGMENTS.findIndex(s => c.from_idx >= s.start && c.from_idx < s.end);
+      if (segIdx === -1) continue;
+      const dotIdx = hiddenDots[0].findIndex(d => d.srcIdx === c.to_idx);
+      if (dotIdx === -1) continue;
+      const key = `${segIdx}-${dotIdx}`;
+      const existing = segConns.get(key);
+      if (!existing || c.strength > existing.strength) {
+        segConns.set(key, { strength: c.strength, sign: c.sign });
+      }
+    }
+    for (const [key, val] of segConns) {
+      const [si, di] = key.split('-').map(Number);
+      const sn = segmentNodes[si];
+      const dn = hiddenDots[0][di];
+      if (!sn || !dn) continue;
       lines.push({
-        x1: INPUT_X + NODE_R, y1: fromY,
-        x2: LAYER1_X - HIDDEN_DOT_R, y2: toY,
-        color: conn.sign === 1 ? LAYER_COLORS[0] : '#ef4444',
-        strokeWidth: Math.max(0.4, conn.strength * 3),
-        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+        d: curve(sn.x + 6, sn.y, LAYER_XS[0] - 5, dn.y),
+        color: val.sign === 1 ? sn.color : '#ef4444',
+        width: Math.max(0.5, val.strength * 2.5),
+        opacity: Math.max(0.04, Math.min(0.6, val.strength)),
       });
     }
 
-    // layer1 → layer2
-    for (const conn of dqnInference.connections.l1_l2) {
-      const fromSlot = hiddenLayerDots[0].findIndex(d => d.srcIdx === conn.from_idx);
-      if (fromSlot === -1) continue;
-      const toSlot = hiddenLayerDots[1].findIndex(d => d.srcIdx === conn.to_idx);
-      if (toSlot === -1) continue;
-      lines.push({
-        x1: LAYER1_X + HIDDEN_DOT_R, y1: layer1Ys[fromSlot],
-        x2: LAYER2_X - HIDDEN_DOT_R, y2: layer2Ys[toSlot],
-        color: conn.sign === 1 ? LAYER_COLORS[1] : '#ef4444',
-        strokeWidth: Math.max(0.4, conn.strength * 3),
-        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
-      });
+    // Hidden → hidden connections
+    const layerPairs = [
+      { conns: dqnInference.connections.l1_l2, fromLi: 0, toLi: 1 },
+      { conns: dqnInference.connections.l2_l3, fromLi: 1, toLi: 2 },
+    ];
+    const layerColors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
+    for (const { conns, fromLi, toLi } of layerPairs) {
+      for (const c of conns) {
+        const fi = hiddenDots[fromLi].findIndex(d => d.srcIdx === c.from_idx);
+        const ti = hiddenDots[toLi].findIndex(d => d.srcIdx === c.to_idx);
+        if (fi === -1 || ti === -1) continue;
+        lines.push({
+          d: curve(LAYER_XS[fromLi] + 5, hiddenDots[fromLi][fi].y,
+                   LAYER_XS[toLi] - 5, hiddenDots[toLi][ti].y),
+          color: c.sign === 1 ? layerColors[toLi] : '#ef4444',
+          width: Math.max(0.5, c.strength * 2.5),
+          opacity: Math.max(0.04, Math.min(0.6, c.strength)),
+        });
+      }
     }
 
-    // layer2 → layer3
-    for (const conn of dqnInference.connections.l2_l3) {
-      const fromSlot = hiddenLayerDots[1].findIndex(d => d.srcIdx === conn.from_idx);
-      if (fromSlot === -1) continue;
-      const toSlot = hiddenLayerDots[2].findIndex(d => d.srcIdx === conn.to_idx);
-      if (toSlot === -1) continue;
+    // L3 → output
+    for (const c of dqnInference.connections.l3_output) {
+      const fi = hiddenDots[2].findIndex(d => d.srcIdx === c.from_idx);
+      const out = outputNodes[c.to_idx];
+      if (fi === -1 || !out) continue;
       lines.push({
-        x1: LAYER2_X + HIDDEN_DOT_R, y1: layer2Ys[fromSlot],
-        x2: LAYER3_X - HIDDEN_DOT_R, y2: layer3Ys[toSlot],
-        color: conn.sign === 1 ? LAYER_COLORS[2] : '#ef4444',
-        strokeWidth: Math.max(0.4, conn.strength * 3),
-        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
-      });
-    }
-
-    // layer3 → output
-    for (const conn of dqnInference.connections.l3_output) {
-      const fromSlot = hiddenLayerDots[2].findIndex(d => d.srcIdx === conn.from_idx);
-      if (fromSlot === -1) continue;
-      const outNode = outputPositions[conn.to_idx];
-      if (!outNode) continue;
-      lines.push({
-        x1: LAYER3_X + HIDDEN_DOT_R, y1: layer3Ys[fromSlot],
-        x2: OUTPUT_X - OUTPUT_R, y2: outNode.y,
-        color: conn.sign === 1 ? outNode.color : '#ef4444',
-        strokeWidth: Math.max(0.4, conn.strength * 3),
-        opacity: Math.max(0.05, Math.min(0.8, conn.strength)),
+        d: curve(LAYER_XS[2] + 5, hiddenDots[2][fi].y, out.x - 14, out.y),
+        color: c.sign === 1 ? out.color : '#ef4444',
+        width: Math.max(0.5, c.strength * 2.5),
+        opacity: Math.max(0.04, Math.min(0.6, c.strength)),
       });
     }
 
     return lines;
-  }, [dqnInference, inputNodePositions, hiddenLayerDots, outputPositions]);
+  }, [dqnInference, segmentNodes, hiddenDots, outputNodes]);
 
-  // Status label
+  // ── Firing neuron detection ──
+  const spawnFirings = useCallback(() => {
+    if (!dqnInference || dqnInference === prevInferenceRef.current) return;
+    prevInferenceRef.current = dqnInference;
+
+    const now = Date.now();
+    const newFires: FiringNeuron[] = [];
+
+    // Input segments firing
+    segmentActivations.forEach((act, i) => {
+      if (act > FIRE_THRESHOLD) {
+        const sn = segmentNodes[i];
+        newFires.push({
+          id: `seg-${i}-${now}`, cx: sn.x, cy: sn.y,
+          color: sn.color, intensity: act, ts: now,
+        });
+      }
+    });
+
+    // Hidden layers firing
+    hiddenActivations.forEach((acts, li) => {
+      acts.forEach((act, di) => {
+        if (act > FIRE_THRESHOLD) {
+          const dot = hiddenDots[li][di];
+          const colors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
+          newFires.push({
+            id: `h${li}-${di}-${now}`, cx: LAYER_XS[li], cy: dot.y,
+            color: colors[li], intensity: act, ts: now,
+          });
+        }
+      });
+    });
+
+    // Output firing
+    if (winnerIdx >= 0) {
+      const out = outputNodes[winnerIdx];
+      newFires.push({
+        id: `out-${winnerIdx}-${now}`, cx: out.x, cy: out.y,
+        color: out.color, intensity: 1, ts: now,
+      });
+    }
+
+    setFiringNeurons(prev => [...prev, ...newFires]);
+  }, [dqnInference, segmentActivations, hiddenActivations, segmentNodes, hiddenDots, outputNodes, winnerIdx]);
+
+  useEffect(() => { spawnFirings(); }, [spawnFirings]);
+
+  // Cleanup expired firing animations (800ms lifetime)
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      setFiringNeurons(prev => {
+        const filtered = prev.filter(f => now - f.ts < 800);
+        return filtered.length !== prev.length ? filtered : prev;
+      });
+      animFrameRef.current = requestAnimationFrame(tick);
+    };
+    animFrameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, []);
+
   const statusLabel = useMemo(() => {
     if (!dqnInference) return 'WAITING FOR LEVEL';
     if (dqnInference.trigger === 'approaching') return `APPROACHING ${dqnInference.level}`;
     return `AT LEVEL ${dqnInference.level}`;
   }, [dqnInference]);
 
-  // Hidden layer X positions
-  const layerXs = [LAYER1_X, LAYER2_X, LAYER3_X];
-
   return (
     <svg
-      viewBox={`0 0 1400 ${totalHeight}`}
-      className="w-full"
-      preserveAspectRatio="xMidYMin meet"
+      viewBox={`0 0 ${W} ${H}`}
+      className="w-full h-full"
+      preserveAspectRatio="xMidYMid meet"
     >
       <defs>
-        <filter id="nn-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="2" result="blur" />
+        <filter id="nn-glow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="3" result="blur" />
           <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+        <filter id="nn-pulse" x="-200%" y="-200%" width="500%" height="500%">
+          <feGaussianBlur stdDeviation="6" />
         </filter>
       </defs>
 
-      {/* ── Connection lines ── */}
-      {connectionLines.map((c, i) => (
-        <line
-          key={`conn-${i}`}
-          x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
+      <style>{`
+        @keyframes nn-fire {
+          0% { r: 4; opacity: 0.8; }
+          100% { r: 18; opacity: 0; }
+        }
+        @keyframes nn-flow {
+          0% { stroke-dashoffset: 16; }
+          100% { stroke-dashoffset: 0; }
+        }
+        .nn-firing { animation: nn-fire 0.8s ease-out forwards; }
+        .nn-conn-active {
+          stroke-dasharray: 8 8;
+          animation: nn-flow 0.6s linear infinite;
+        }
+        .nn-node { transition: opacity 0.15s ease, r 0.15s ease; }
+        .nn-conn { transition: opacity 0.2s ease, stroke-width 0.2s ease; }
+      `}</style>
+
+      {/* ── Connections (curved paths) ── */}
+      {connections.map((c, i) => (
+        <path
+          key={i}
+          d={c.d}
+          fill="none"
           stroke={c.color}
-          strokeWidth={c.strokeWidth}
+          strokeWidth={c.width}
           opacity={c.opacity}
-          className="transition-all duration-300"
+          className={`nn-conn ${c.opacity > 0.25 ? 'nn-conn-active' : ''}`}
         />
       ))}
 
-      {/* ── Segment group bars + labels (left margin) ── */}
-      {segmentLabels.map(({ seg, yStart, yEnd, yMid }) => (
-        <g key={`seg-${seg.name}`}>
-          <line
-            x1={8} y1={yStart} x2={8} y2={yEnd}
-            stroke={seg.color} strokeWidth="2" opacity="0.5"
-          />
-          <text
-            x={14} y={yMid + 4}
-            fill={seg.color}
-            fontSize="8"
-            fontFamily="monospace"
-            fontWeight="bold"
-          >
-            {seg.name}
-          </text>
-        </g>
-      ))}
-
-      {/* ── Input nodes (115) ── */}
-      {DQN_INPUTS.map((def, i) => {
-        const y = inputNodePositions[i];
-        const brightness = inputBrightnesses[i];
-        const color = getSegmentColor(def.segment);
+      {/* ── Firing pulse rings ── */}
+      {firingNeurons.map(f => {
+        const age = (Date.now() - f.ts) / 800; // 0→1
+        const r = 4 + age * 16;
+        const opacity = (1 - age) * f.intensity * 0.6;
         return (
-          <g key={`inp-${def.index}`}>
+          <circle
+            key={f.id}
+            cx={f.cx} cy={f.cy} r={r}
+            fill="none"
+            stroke={f.color}
+            strokeWidth={1.5}
+            opacity={Math.max(0, opacity)}
+            filter="url(#nn-pulse)"
+          />
+        );
+      })}
+
+      {/* ── Input: segment nodes ── */}
+      {segmentNodes.map((seg, i) => {
+        const act = segmentActivations[i];
+        const r = 4 + act * 3;
+        const bright = Math.max(0.2, act);
+        return (
+          <g key={seg.name}>
+            {/* Glow backdrop */}
+            {act > FIRE_THRESHOLD && (
+              <circle cx={seg.x} cy={seg.y} r={r + 4}
+                fill={seg.color} opacity={act * 0.25} filter="url(#nn-glow)" />
+            )}
             <circle
-              cx={INPUT_X} cy={y} r={NODE_R}
-              fill={color} opacity={brightness}
-              filter={brightness > 0.7 ? 'url(#nn-glow)' : undefined}
-              className="transition-all duration-300"
+              cx={seg.x} cy={seg.y} r={r}
+              fill={seg.color} opacity={bright}
+              className="nn-node"
             />
             <text
-              x={INPUT_X + NODE_R + 4} y={y + 3}
-              fill={brightness > 0.4 ? color : '#444'}
-              fontSize="7"
-              fontFamily="monospace"
+              x={seg.x - 10} y={seg.y + 3}
+              fill={bright > 0.4 ? seg.color : '#444'}
+              fontSize="7" fontFamily="monospace" fontWeight="bold"
+              textAnchor="end" opacity={Math.max(0.4, bright)}
             >
-              {def.label}
+              {seg.name}
             </text>
           </g>
         );
       })}
 
       {/* ── Hidden layers ── */}
-      {HIDDEN_LAYERS.map((size, layerIdx) => {
-        const lx = layerXs[layerIdx];
-        const color = LAYER_COLORS[layerIdx];
-        const dots = hiddenLayerDots[layerIdx];
-        const brightnesses = hiddenBrightnesses[layerIdx];
-        const ys = dots.map(d => d.y);
-        const yMin = Math.min(...ys) - 12;
-        const yMax = Math.max(...ys) + 12;
+      {HIDDEN_LAYERS.map((size, li) => {
+        const lx = LAYER_XS[li];
+        const colors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
+        const color = colors[li];
+        const dots = hiddenDots[li];
+        const acts = hiddenActivations[li];
         return (
-          <g key={`layer-${layerIdx}`}>
-            {/* Bounding rect */}
-            <rect
-              x={lx - 10} y={yMin}
-              width={20} height={yMax - yMin}
-              rx={4}
-              fill={color} opacity={0.04}
-              stroke={color} strokeOpacity={0.12} strokeWidth={0.5}
-            />
+          <g key={`layer-${li}`}>
             {/* Layer label */}
             <text
-              x={lx} y={yMin - 6}
-              fill={color} fontSize="9" fontFamily="monospace"
-              textAnchor="middle" fontWeight="bold"
+              x={lx} y={16}
+              fill={color} fontSize="8" fontFamily="monospace"
+              textAnchor="middle" fontWeight="bold" opacity={0.7}
             >
-              L{layerIdx + 1} {size}
+              L{li + 1} {size}
             </text>
             {/* Dots */}
-            {dots.map((dot, j) => (
-              <circle
-                key={`h-${layerIdx}-${j}`}
-                cx={lx} cy={dot.y} r={HIDDEN_DOT_R}
-                fill={color}
-                opacity={brightnesses[j] ?? 0.15}
-                filter={(brightnesses[j] ?? 0) > 0.7 ? 'url(#nn-glow)' : undefined}
-                className="transition-all duration-300"
-              />
-            ))}
+            {dots.map((dot, di) => {
+              const act = acts[di] ?? 0;
+              const r = 2.5 + act * 2;
+              const bright = Math.max(0.1, act);
+              return (
+                <g key={di}>
+                  {act > FIRE_THRESHOLD && (
+                    <circle cx={lx} cy={dot.y} r={r + 3}
+                      fill={color} opacity={act * 0.2} filter="url(#nn-glow)" />
+                  )}
+                  <circle
+                    cx={lx} cy={dot.y} r={r}
+                    fill={color} opacity={bright}
+                    className="nn-node"
+                  />
+                </g>
+              );
+            })}
           </g>
         );
       })}
 
-      {/* ── Output nodes (3 Q-values) ── */}
+      {/* ── Output Q-value nodes ── */}
       <text
-        x={OUTPUT_X} y={outputPositions[0].y - OUTPUT_R - 20}
-        fill="#555" fontSize="9" fontFamily="monospace" textAnchor="middle"
+        x={OUTPUT_X} y={outputNodes[0].y - 40}
+        fill="#555" fontSize="8" fontFamily="monospace" textAnchor="middle"
       >
         Q-VALUES
       </text>
-      {outputPositions.map((o, i) => {
+      {outputNodes.map((o, i) => {
         const qVal = dqnInference?.q_values[i] ?? 0;
         const isWinner = i === winnerIdx;
-        const bright = isWinner ? 1.0 : 0.25;
+        const bright = isWinner ? 1.0 : 0.2;
+        const r = isWinner ? 14 : 10;
         return (
-          <g key={`out-${o.name}`}>
+          <g key={o.name}>
+            {isWinner && (
+              <circle cx={o.x} cy={o.y} r={r + 6}
+                fill={o.color} opacity={0.15} filter="url(#nn-glow)" />
+            )}
             <circle
-              cx={OUTPUT_X} cy={o.y} r={OUTPUT_R}
+              cx={o.x} cy={o.y} r={r}
               fill={o.color} opacity={bright}
+              className="nn-node"
               filter={isWinner ? 'url(#nn-glow)' : undefined}
-              className="transition-all duration-300"
             />
-            {/* Action name above */}
             <text
-              x={OUTPUT_X + OUTPUT_R + 10} y={o.y - 4}
-              fill={o.color} fontSize="11" fontFamily="monospace" fontWeight="bold"
+              x={o.x + r + 8} y={o.y - 3}
+              fill={o.color} fontSize="10" fontFamily="monospace" fontWeight="bold"
               opacity={bright}
             >
               {o.name}
             </text>
-            {/* Q-value below */}
             <text
-              x={OUTPUT_X + OUTPUT_R + 10} y={o.y + 10}
-              fill={bright > 0.4 ? o.color : '#555'}
-              fontSize="10" fontFamily="monospace"
+              x={o.x + r + 8} y={o.y + 10}
+              fill={bright > 0.4 ? o.color : '#444'}
+              fontSize="9" fontFamily="monospace"
             >
               {qVal.toFixed(3)}
             </text>
@@ -350,20 +424,18 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         );
       })}
 
-      {/* ── Status watermark ── */}
+      {/* ── Status ── */}
       <text
-        x={12} y={totalHeight - 10}
-        fill="#444" fontSize="10" fontFamily="monospace"
+        x={8} y={H - 8}
+        fill="#444" fontSize="8" fontFamily="monospace"
       >
         {statusLabel}
       </text>
-
-      {/* ── Architecture label ── */}
       <text
-        x={700} y={totalHeight - 10}
-        fill="#333" fontSize="9" fontFamily="monospace" textAnchor="middle"
+        x={W / 2} y={H - 8}
+        fill="#333" fontSize="7" fontFamily="monospace" textAnchor="middle"
       >
-        DQN: 135 → 128 (ReLU) → 128 (ReLU) → 64 (ReLU) → 3 Q-values
+        DQN: {DQN_INPUTS.length} → 128 → 128 → 64 → 3
       </text>
     </svg>
   );

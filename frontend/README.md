@@ -1,6 +1,6 @@
-# BankrollBBQ Frontend
+# Firev Frontend
 
-Terminal-style React frontend for the BankrollBBQ betting analytics platform.
+Terminal-style React frontend for the Firev betting analytics platform.
 
 ## Architecture
 

@@ -1,4 +1,4 @@
-"""Shared constants for BankrollBBQ."""
+"""Shared constants for Firev."""
 
 # Market types to extract (all others skipped)
 ALLOWED_MARKETS = frozenset({'1x2', 'moneyline', 'spread', 'total'})

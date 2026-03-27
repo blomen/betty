@@ -1,13 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
-import { NearbyLevelStrip } from './NearbyLevelStrip';
-import { TradeActionBar } from './TradeActionBar';
-import { PositionManager } from './PositionManager';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { NeuralNetworkSVG } from './NeuralNetworkSVG';
-import { getMlHealth } from '@/services/api';
+import { DQN_SEGMENTS, HIDDEN_LAYERS } from './dqnConfig';
 import type {
   ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData,
   PricePosition, StreamTickEvent, StreamBookEvent, MlPrediction,
-  MlFeatureSnapshot, MlHealth, DQNInferenceEvent,
+  MlFeatureSnapshot, DQNInferenceEvent, DQNConnection,
 } from '@/types/market';
 
 interface Props {
@@ -32,149 +29,107 @@ interface Props {
   dqnInference: DQNInferenceEvent | null;
 }
 
-// --- Compact prediction bar (inline, no separate panel) ---
-function PredictionBar({ prediction }: { prediction: MlPrediction | null }) {
-  if (!prediction) return null;
-  const pct = Math.round(prediction.confidence * 100);
-  const p = prediction.predicted.toLowerCase();
-  const isCont = p.includes('continuation') || p.includes('breakout');
-  const isRev = p.includes('reversal') || p.includes('rejection');
-  const color = isCont ? 'text-emerald-400' : isRev ? 'text-red-400' : 'text-zinc-400';
-  const barColor = isCont ? 'bg-emerald-500' : isRev ? 'bg-red-500' : 'bg-zinc-600';
+// ── Demo inference generator ──
+function generateDemoInference(battle: BattleScreenData): DQNInferenceEvent {
+  const totalInputs = DQN_SEGMENTS[DQN_SEGMENTS.length - 1].end;
+  const rng = () => Math.random();
+  const randn = () => (rng() + rng() + rng() - 1.5) * 0.8;
 
-  return (
-    <div className="flex items-center gap-3 text-sm font-mono">
-      <span className="text-zinc-500">ML:</span>
-      <span className={`font-semibold ${color}`}>{prediction.predicted}</span>
-      <div className="w-24 h-2 bg-zinc-800 rounded-sm overflow-hidden">
-        <div className={`h-full ${barColor} transition-all duration-300`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-zinc-500">{pct}%</span>
-      {prediction.probabilities && (
-        <span className="text-zinc-600 text-xs">
-          {Object.entries(prediction.probabilities)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3)
-            .map(([k, v]) => `${k.replace('_', ' ')}:${Math.round(v * 100)}%`)
-            .join(' ')}
-        </span>
-      )}
-    </div>
-  );
+  const inputs: number[] = [];
+  for (let i = 0; i < totalInputs; i++) {
+    const seg = DQN_SEGMENTS.find(s => i >= s.start && i < s.end);
+    const boost = seg && (seg.name === 'LEVEL TYPE' || seg.name === 'ORDERFLOW') ? 1.5 : 0.7;
+    inputs.push(Math.max(-1, Math.min(1, randn() * boost)));
+  }
+
+  const makeActs = (size: number) =>
+    Array.from({ length: size }, () => Math.max(0, randn() * 0.8));
+
+  const layer1 = makeActs(HIDDEN_LAYERS[0]);
+  const layer2 = makeActs(HIDDEN_LAYERS[1]);
+  const layer3 = makeActs(HIDDEN_LAYERS[2]);
+
+  const raw = [randn() * 0.5, randn() * 0.5, randn() * 0.3];
+  const winIdx = Math.floor(rng() * 2);
+  raw[winIdx] += 0.4;
+  const actions = ['CONTINUATION', 'REVERSAL', 'SKIP'] as const;
+
+  const makeConns = (fromSize: number, toSize: number, count: number): DQNConnection[] => {
+    const conns: DQNConnection[] = [];
+    for (let c = 0; c < count; c++) {
+      conns.push({
+        from_idx: Math.floor(rng() * fromSize),
+        to_idx: Math.floor(rng() * toSize),
+        strength: 0.1 + rng() * 0.8,
+        sign: rng() > 0.3 ? 1 : -1,
+      });
+    }
+    return conns;
+  };
+
+  return {
+    type: 'dqn_inference',
+    trigger: 'touched',
+    level: battle.level,
+    level_price: battle.level_price,
+    inputs,
+    activations: { layer1, layer2, layer3 },
+    q_values: raw,
+    action: actions[winIdx],
+    connections: {
+      input_l1: makeConns(totalInputs, HIDDEN_LAYERS[0], 40),
+      l1_l2: makeConns(HIDDEN_LAYERS[0], HIDDEN_LAYERS[1], 30),
+      l2_l3: makeConns(HIDDEN_LAYERS[1], HIDDEN_LAYERS[2], 25),
+      l3_output: makeConns(HIDDEN_LAYERS[2], 3, 15),
+    },
+    timestamp: Date.now(),
+  };
 }
 
-// --- Model health strip ---
-function ModelHealthStrip() {
-  const [health, setHealth] = useState<MlHealth | null>(null);
+function useDemoInference(
+  realInference: DQNInferenceEvent | null,
+  battle: BattleScreenData | null,
+): DQNInferenceEvent | null {
+  const [demo, setDemo] = useState<DQNInferenceEvent | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+
+  const refresh = useCallback(() => {
+    if (battle) setDemo(generateDemoInference(battle));
+  }, [battle]);
 
   useEffect(() => {
-    const load = () => getMlHealth().then(setHealth).catch(() => {});
-    load();
-    const iv = setInterval(load, 60_000);
-    return () => clearInterval(iv);
-  }, []);
+    if (realInference) {
+      clearInterval(intervalRef.current);
+      setDemo(null);
+      return;
+    }
+    if (battle) {
+      refresh();
+      intervalRef.current = setInterval(refresh, 2000);
+      return () => clearInterval(intervalRef.current);
+    } else {
+      setDemo(null);
+    }
+  }, [realInference, battle, refresh]);
 
-  if (!health || !health.model_loaded) return null;
-
-  const total = Object.values(health.class_distribution).reduce((a, b) => a + b, 0);
-  const acc = health.recent_accuracy.last_50;
-
-  return (
-    <div className="flex items-center gap-3 text-xs font-mono text-zinc-500">
-      <span>MODEL: {total} samples</span>
-      {acc != null && <span>acc: <span className={acc > 0.4 ? 'text-emerald-500' : 'text-zinc-400'}>{Math.round(acc * 100)}%</span></span>}
-      {health.top_features.slice(0, 3).map(f => (
-        <span key={f.name} className="text-cyan-600">{f.name}:{Math.round(f.importance * 100)}%</span>
-      ))}
-    </div>
-  );
+  return realInference ?? demo;
 }
 
-
 export function VectorsPage({
-  session: _session, levels, currentPrice, connected, pricePos, onLevelClick: _onLevelClick,
-  activeBattle, lastBattle, onDismissBattle: _onDismissBattle, onTakeTrade,
-  positions, onScale, onClose, lastTick, book, latestPrediction, latestFeatures: _latestFeatures, dqnInference,
+  session: _session, levels: _levels, currentPrice: _currentPrice, connected: _connected,
+  pricePos: _pricePos, onLevelClick: _onLevelClick,
+  activeBattle, lastBattle, onDismissBattle: _onDismissBattle, onTakeTrade: _onTakeTrade,
+  positions: _positions, onScale: _onScale, onClose: _onClose,
+  lastTick: _lastTick, book: _book, latestPrediction: _latestPrediction,
+  latestFeatures: _latestFeatures, dqnInference,
 }: Props) {
-  const cp = currentPrice ?? 0;
-  const battle = activeBattle ?? lastBattle;
-  const isStale = !activeBattle && !!lastBattle;
-
-  const nearbyLevels = useMemo(() => {
-    const above = levels.filter(l => l.price > cp).sort((a, b) => a.price - b.price);
-    const below = levels.filter(l => l.price <= cp).sort((a, b) => b.price - a.price);
-    return {
-      above: above.slice(0, 3).map(l => ({ name: l.name, price: l.price })),
-      below: below.slice(0, 3).map(l => ({ name: l.name, price: l.price })),
-    };
-  }, [levels, cp]);
-
+  const effectiveInference = useDemoInference(dqnInference, activeBattle ?? lastBattle);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-2">
-      {/* Header: price + battle + prediction + model health */}
-      <div className="flex items-center gap-3 px-1 flex-wrap">
-        <span className={`inline-block w-3 h-3 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
-        <span className="text-sm text-muted font-mono">VECTORS</span>
-        {currentPrice != null && (
-          <span className="text-lg font-mono font-bold text-text">
-            NQ {currentPrice.toFixed(2)}
-          </span>
-        )}
-        {book && (
-          <span className="text-xs font-mono text-zinc-500">
-            <span className="text-emerald-500">{book.bid_size}</span>
-            <span className="text-zinc-600 mx-0.5">×</span>
-            <span className="text-red-400">{book.ask_size}</span>
-            <span className="text-zinc-600 ml-1">spd:{book.spread.toFixed(2)}</span>
-          </span>
-        )}
-        {lastTick && (
-          <span className="text-xs font-mono text-zinc-500">
-            cvd:<span className={lastTick.cvd > 0 ? 'text-emerald-500' : 'text-red-400'}>{lastTick.cvd}</span>
-            {' '}Δ1m:<span className={lastTick.delta_1m > 0 ? 'text-emerald-500' : 'text-red-400'}>{lastTick.delta_1m}</span>
-          </span>
-        )}
-        {battle && (
-          <span className="flex items-center gap-1.5 text-sm">
-            <span className="text-amber-400 font-bold">⚔</span>
-            <span className="text-white font-mono">{battle.level}</span>
-            <span className="text-zinc-500">@ {battle.level_price.toLocaleString()}</span>
-            {battle.confluence.length > 0 && <span className="text-amber-400">+{battle.confluence.length}</span>}
-            {isStale && <span className="text-zinc-600 text-xs">(stale)</span>}
-          </span>
-        )}
-        {pricePos?.vwap_deviation_sd != null && (
-          <span className={`text-xs font-mono ml-auto ${
-            Math.abs(pricePos.vwap_deviation_sd) > 2 ? 'text-red-400' :
-            Math.abs(pricePos.vwap_deviation_sd) > 1 ? 'text-amber-400' : 'text-zinc-500'
-          }`}>
-            VWAP {pricePos.vwap_deviation_sd > 0 ? '+' : ''}{pricePos.vwap_deviation_sd.toFixed(2)}σ
-          </span>
-        )}
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex-1 min-h-0">
+        <NeuralNetworkSVG dqnInference={effectiveInference} />
       </div>
-
-      {/* Level strip + prediction + model health */}
-      <NearbyLevelStrip above={nearbyLevels.above} below={nearbyLevels.below} />
-      <div className="flex items-center gap-4 px-1">
-        <PredictionBar prediction={latestPrediction} />
-        <ModelHealthStrip />
-      </div>
-
-      {/* NEURAL NETWORK VISUALIZATION */}
-      <div className={`flex-1 overflow-y-auto min-h-0 border border-border bg-panel p-3 ${isStale ? 'opacity-60' : ''}`}>
-        <NeuralNetworkSVG dqnInference={dqnInference} />
-      </div>
-
-      {/* Trade execution bar */}
-      {(activeBattle || positions.length > 0) && (
-        <div className="flex-shrink-0 border border-amber-500/30 bg-zinc-900/50 p-2 space-y-2">
-          {activeBattle && <TradeActionBar battle={activeBattle} onTrade={onTakeTrade} />}
-          {positions.length > 0 && (
-            <PositionManager positions={positions} onScale={onScale} onClose={onClose} onHold={() => {}} onUpdateStop={() => {}} />
-          )}
-        </div>
-      )}
     </div>
   );
 }

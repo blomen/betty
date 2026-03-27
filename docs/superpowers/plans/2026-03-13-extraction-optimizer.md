@@ -163,7 +163,7 @@ Expected: All PASS
 cd backend && python -c "
 import sqlite3
 from src.ml.migrations import run_migrations
-conn = sqlite3.connect('data/bankrollbbq.db')
+conn = sqlite3.connect('data/firev.db')
 run_migrations(conn)
 conn.close()
 print('Migration applied')
