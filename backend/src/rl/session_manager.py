@@ -71,6 +71,8 @@ class SessionState:
     max_pnl_r: float = 0.0
     drawdown_r: float = 0.0
     consecutive_losses: int = 0
+    total_stop_hits: int = 0  # count of stop-loss exits this session
+    session_rth_open_epoch: float = 0.0  # RTH open time for IB gating
     max_daily_loss_r: float = -6.0  # circuit breaker: stop after -6R
 
     @property
@@ -79,7 +81,7 @@ class SessionState:
 
     @property
     def is_stopped_out(self) -> bool:
-        """Circuit breaker: stop trading after max daily loss."""
+        """Circuit breaker: stop trading after max daily loss OR 3 stop hits."""
         return self.total_pnl_r <= self.max_daily_loss_r
 
 
@@ -103,7 +105,10 @@ class SessionManager:
     MIN_HOLD_SECONDS: float = 120.0 # Don't flip within 2 min of entry
     TRAIL_LOCK_TICKS: float = 0.0   # Structural trailing only (on level touches)
     INDEPENDENT_MODE: bool = True   # Each level touch is independent — no position carry
-    MAX_CONSECUTIVE_LOSSES: int = 3  # Reduce size after 3 losses in a row
+    MAX_CONSECUTIVE_LOSSES: int = 3  # 3 stops = HALT trading for session (Fabio's rule)
+    REVERSAL_CUSHION_R: float = 2.0 # Only take reversal trades after +2R session profit
+    IB_NO_TRADE_MINUTES: float = 15.0  # Don't trade during IB formation (first 15 min)
+    PROFIT_CAP_R: float = 20.0     # Stop trading after hitting session profit target
 
     def __init__(
         self,
@@ -140,9 +145,20 @@ class SessionManager:
                 size: float (position size in R-units)
                 reason: str
         """
-        # Circuit breaker
+        # Circuit breakers (Fabio's rules)
         if self.session.is_stopped_out:
             return self._signal("skip", current_price, reason="daily_loss_limit")
+        if self.session.total_stop_hits >= self.MAX_CONSECUTIVE_LOSSES:
+            return self._signal("skip", current_price, reason="3_stops_halt")
+        if self.session.total_pnl_r >= self.PROFIT_CAP_R:
+            return self._signal("skip", current_price, reason="profit_cap_reached")
+
+        # IB no-trade zone: skip during first 15 min of session
+        touch_epoch = state.get("touch_epoch", 0.0)
+        if self.session.session_rth_open_epoch > 0 and touch_epoch > 0:
+            minutes_since_open = (touch_epoch - self.session.session_rth_open_epoch) / 60.0
+            if 0 < minutes_since_open < self.IB_NO_TRADE_MINUTES:
+                return self._signal("skip", current_price, reason="ib_formation")
 
         # Run inference
         obs = build_observation(state)
@@ -180,6 +196,13 @@ class SessionManager:
         size = self._compute_size(confidence)
 
         # --- Decision logic ---
+
+        # Reversal cushion: only take reversal trades after session profit (Fabio's rule)
+        is_reversal = q_rev > q_cont
+        if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
+            return self._signal("skip", current_price,
+                                q_spread=q_spread, confidence=confidence,
+                                reason="reversal_no_cushion")
 
         if self.INDEPENDENT_MODE:
             # Independent mode: each level touch is a standalone signal
@@ -332,6 +355,8 @@ class SessionManager:
 
         if pnl_r < 0:
             self.session.consecutive_losses += 1
+            if reason == "stop":
+                self.session.total_stop_hits += 1
         else:
             self.session.consecutive_losses = 0
 
@@ -361,8 +386,10 @@ class SessionManager:
         # Confidence scaling: 50% to 100% of base
         size = base * (0.5 + 0.5 * confidence)
 
-        # Intraday compounding: increase after profits
-        if self.session.total_pnl_r > self.COMPOUND_THRESHOLD_R:
+        # Intraday compounding: increase after profits ONLY if no recent losses
+        # (Fabio: "never raise exposure to recover")
+        if (self.session.total_pnl_r > self.COMPOUND_THRESHOLD_R
+                and self.session.consecutive_losses == 0):
             compound_steps = int(
                 (self.session.total_pnl_r - self.COMPOUND_THRESHOLD_R)
                 / self.COMPOUND_THRESHOLD_R
@@ -371,7 +398,7 @@ class SessionManager:
             size *= min(compound_mult, self.MAX_COMPOUND)
 
         # Reduce after consecutive losses
-        if self.session.consecutive_losses >= self.MAX_CONSECUTIVE_LOSSES:
+        if self.session.consecutive_losses >= 2:
             size *= 0.5
 
         return round(size, 2)
