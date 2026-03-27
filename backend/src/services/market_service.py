@@ -24,7 +24,7 @@ from ..market_data.orderflow import build_candle_flow, compute_signals
 from ..market_data.scanner import MarketScanner
 from ..market_data.scoring import score_candidate, day_type_fits_setup, filter_by_rr
 from ..market_data.setups.detector import DetectorContext, run_all_detectors
-from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m
+from ..market_data.tpo import build_full_tpo_profile, aggregate_bars_30m, compute_session_tpos
 from ..repositories.market_repo import MarketRepo
 
 logger = logging.getLogger(__name__)
@@ -302,6 +302,27 @@ class MarketService:
 
         # TPO profile from 30-min bars
         tpo = build_full_tpo_profile(bars_30m)
+
+        # Per-session TPO profiles — need timestamped 30m bars
+        # bars (BarData objects) have .timestamp; aggregate them with timestamps
+        bars_30m_ts = []
+        chunk = []
+        for b in bars:
+            chunk.append(b)
+            if len(chunk) == 30:
+                bars_30m_ts.append({
+                    "ts": chunk[0].timestamp,
+                    "high": max(c.high for c in chunk),
+                    "low": min(c.low for c in chunk),
+                    "open": chunk[0].open,
+                    "close": chunk[-1].close,
+                    "volume": sum(c.volume for c in chunk),
+                })
+                chunk = []
+        session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=tick_size)
+
+        from dataclasses import asdict as _asdict
+        session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
 
         try:
             self.store_tpo_session(tpo, symbol, target_date)
@@ -1106,6 +1127,10 @@ class MarketService:
 
     # VP curve cache: {(symbol, timeframe): (result, expiry_time)}
     _vp_cache: dict[tuple, tuple] = {}
+    # Candle cache: {(symbol, interval, date, days): (result, expiry_time)}
+    _candle_cache: dict[tuple, tuple] = {}
+    # Session levels cache: {(symbol, days): (result, expiry_time)}
+    _session_levels_cache: dict[tuple, tuple] = {}
 
     async def get_volume_profile_curve(self, symbol: str = "NQ", timeframe: str = "session") -> dict:
         """Return VP curve (price→volume) for charting. Cached for 60s.
@@ -1261,10 +1286,16 @@ class MarketService:
 
         Returns per-day levels with CET epoch boundaries so the frontend can draw
         time-scoped horizontal lines. Computes on-the-fly from market_candles —
-        same logic used by RL backtesting.
+        same logic used by RL backtesting. Cached for 60s.
         """
+        import time as _time
         from zoneinfo import ZoneInfo
         from collections import defaultdict
+
+        cache_key = (symbol, days)
+        cached = MarketService._session_levels_cache.get(cache_key)
+        if cached and _time.time() < cached[1]:
+            return cached[0]
 
         _CET = ZoneInfo("Europe/Stockholm")
 
@@ -1347,15 +1378,25 @@ class MarketService:
                 "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
             })
 
-        return {"days": result_days, "symbol": symbol}
+        result = {"days": result_days, "symbol": symbol}
+        MarketService._session_levels_cache[cache_key] = (result, _time.time() + 60)
+        return result
 
     async def get_candles(self, symbol: str = "NQ", interval: str = "5m", date_str: str | None = None, days: int = 5) -> dict:
         """Return OHLCV candle array for charting from market_candles DB.
 
         Stored intervals: 1m, 5m.  15m is resampled from 1m on the fly.
         Detects gaps and triggers async backfill from Databento historical.
+        Cached for 30s (keyed on symbol/interval/date/days).
         """
+        import time as _time
+
         end_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cache_key = (symbol, interval, end_date, days)
+        cached = MarketService._candle_cache.get(cache_key)
+        if cached and _time.time() < cached[1]:
+            return cached[0]
+
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
         start_dt = end_dt - timedelta(days=days + (days // 5) * 2 + 2)  # pad for weekends
 
@@ -1375,47 +1416,66 @@ class MarketService:
         # Filter to Globex hours (skip daily 17:00-18:00 ET halt + weekends)
         candles = [c for c in candles if self._in_globex(c["t"])]
 
+        # Clamp outlier wicks from settlement auctions / erroneous ticks
+        candles = self._filter_outlier_candles(candles)
+
         # Detect gaps and trigger async backfill (non-blocking, improves next request)
         base_interval = "1m" if interval == "15m" else interval
         gaps = self._detect_gaps(candles, base_interval)
         if gaps:
             asyncio.create_task(self._backfill_gaps(symbol, base_interval, gaps))
 
-        return {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
+        result = {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
+        MarketService._candle_cache[cache_key] = (result, _time.time() + 30)
+        return result
 
     @staticmethod
-    def _filter_outlier_candles(candles: list[dict], radius: int = 4, max_dev: float = 12.0) -> list[dict]:
-        """Clamp OHLC to neighbor median range ± max_dev.
+    def _filter_outlier_candles(candles: list[dict], radius: int = 10, wick_cap: float = 6.0) -> list[dict]:
+        """Clamp only extreme outlier wicks caused by erroneous/auction ticks.
 
-        Databento OHLCV includes every tick, including outlier trades at extreme
-        prices (settlement auctions, erroneous ticks, wide-spread fleeting fills).
-        This clamps each bar's OHLC so no value can deviate more than max_dev
-        points from the Q1-Q3 range of neighboring bars' close prices.
+        Compares each bar's wick length to the median wick of neighbors.
+        Only clamps if a wick is > wick_cap × the local median wick — this
+        catches settlement prints and erroneous ticks while preserving all
+        normal price action (even volatile moves).
+
+        wick_cap=6.0 means a wick must be 6× the local median to get clamped,
+        so only true outliers are affected.
         """
-        if len(candles) < 3:
+        if len(candles) < 5:
             return candles
         n = len(candles)
+
+        # Pre-compute upper/lower wick sizes
+        upper_wicks = [c["h"] - max(c["o"], c["c"]) for c in candles]
+        lower_wicks = [min(c["o"], c["c"]) - c["l"] for c in candles]
+
         result = []
         for i, c in enumerate(candles):
-            closes = sorted(
-                candles[j]["c"]
-                for j in range(max(0, i - radius), min(n, i + radius + 1))
-                if j != i
-            )
-            if len(closes) < 2:
+            lo = max(0, i - radius)
+            hi = min(n, i + radius + 1)
+            neighbors = [j for j in range(lo, hi) if j != i]
+            if len(neighbors) < 3:
                 result.append(c)
                 continue
-            q1 = closes[len(closes) // 4]
-            q3 = closes[(len(closes) * 3) // 4]
-            floor = q1 - max_dev
-            ceiling = q3 + max_dev
-            result.append({
-                **c,
-                "o": max(floor, min(ceiling, c["o"])),
-                "h": max(floor, min(ceiling, c["h"])),
-                "l": max(floor, min(ceiling, c["l"])),
-                "c": max(floor, min(ceiling, c["c"])),
-            })
+
+            # Median upper/lower wicks of neighbors
+            med_up = sorted(upper_wicks[j] for j in neighbors)[len(neighbors) // 2]
+            med_lo = sorted(lower_wicks[j] for j in neighbors)[len(neighbors) // 2]
+
+            # Floor: at least 5 NQ points to avoid clamping in dead-flat markets
+            max_upper = max(med_up * wick_cap, 5.0)
+            max_lower = max(med_lo * wick_cap, 5.0)
+
+            body_high = max(c["o"], c["c"])
+            body_low = min(c["o"], c["c"])
+
+            clamped_h = min(c["h"], body_high + max_upper)
+            clamped_l = max(c["l"], body_low - max_lower)
+
+            if clamped_h != c["h"] or clamped_l != c["l"]:
+                result.append({**c, "h": clamped_h, "l": clamped_l})
+            else:
+                result.append(c)
         return result
 
     @staticmethod
@@ -1469,14 +1529,19 @@ class MarketService:
         except Exception as e:
             logger.warning("Candle gap backfill failed (non-fatal): %s", e)
 
+    # Pre-create timezone for Globex filter (avoid per-call import + construction)
+    _ET = None
+
     @staticmethod
     def _in_globex(epoch: int) -> bool:
         """Check if timestamp falls within CME Globex hours.
 
         Globex: Sun 18:00 ET → Fri 17:00 ET, with daily 17:00-18:00 ET halt.
         """
-        from zoneinfo import ZoneInfo
-        dt = datetime.fromtimestamp(epoch, tz=ZoneInfo("US/Eastern"))
+        if MarketService._ET is None:
+            from zoneinfo import ZoneInfo
+            MarketService._ET = ZoneInfo("US/Eastern")
+        dt = datetime.fromtimestamp(epoch, tz=MarketService._ET)
         wd = dt.weekday()  # Mon=0 … Sun=6
         hour = dt.hour
         # Saturday: always closed
@@ -1645,6 +1710,25 @@ class MarketService:
                 except Exception:
                     logger.warning("Failed to persist TPO session", exc_info=True)
 
+        # Build timestamped 30m bars for per-session split
+        chunk = []
+        bars_30m_ts = []
+        for r in rows:
+            chunk.append(r)
+            if len(chunk) == 30:
+                bars_30m_ts.append({
+                    "ts": chunk[0].ts,
+                    "high": max(c.h for c in chunk),
+                    "low": min(c.l for c in chunk),
+                    "open": chunk[0].o,
+                    "close": chunk[-1].c,
+                    "volume": sum(c.v for c in chunk),
+                })
+                chunk = []
+        session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
+        from dataclasses import asdict as _asdict
+        result["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
+
         MarketService._tpo_cache[cache_key] = (now, result)
         return result
 
@@ -1692,11 +1776,41 @@ class MarketService:
             if len(bars_30m) < 10:
                 continue
 
+            # Timestamped 30m bars for per-session split
+            chunk = []
+            bars_30m_ts = []
+            for r in rows:
+                chunk.append(r)
+                if len(chunk) == 30:
+                    bars_30m_ts.append({
+                        "ts": chunk[0].ts,
+                        "high": max(c.h for c in chunk),
+                        "low": min(c.l for c in chunk),
+                        "open": chunk[0].o,
+                        "close": chunk[-1].c,
+                        "volume": sum(c.v for c in chunk),
+                    })
+                    chunk = []
+            session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
+
             profile = build_full_tpo_profile(bars_30m, tick_size=0.25)
             try:
                 self.store_tpo_session(profile, symbol, date_str)
                 stored += 1
                 logger.info("TPO backfill: %s %s (%d bars)", symbol, date_str, len(bars_30m))
+
+                # Append per-session TPO to stored session_json
+                from ..db.models import MarketTPOSession
+                row = self.db.query(MarketTPOSession).filter_by(
+                    symbol=symbol, date=date_str
+                ).first()
+                if row and session_tpo_set:
+                    import json as _json
+                    from dataclasses import asdict as _asdict
+                    sj = _json.loads(row.session_json) if isinstance(row.session_json, str) else row.session_json
+                    sj["session_tpos"] = _asdict(session_tpo_set)
+                    row.session_json = _json.dumps(sj, default=str)
+                    self.db.commit()
             except Exception:
                 logger.warning("TPO backfill failed for %s", date_str, exc_info=True)
 

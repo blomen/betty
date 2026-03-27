@@ -227,14 +227,18 @@ class CandleFlow:
 class DatabentoLiveStream:
     """Manages a persistent Databento live subscription (Trades + MBP-1)."""
 
+    _ET_TZ = None  # Lazy-init to avoid per-tick import overhead
+
     @staticmethod
     def _in_globex(epoch: float) -> bool:
         """Check if timestamp falls within CME Globex hours.
 
         Globex: Sun 18:00 ET → Fri 17:00 ET, with daily 17:00-18:00 ET halt.
         """
-        from zoneinfo import ZoneInfo
-        dt = datetime.fromtimestamp(epoch, tz=ZoneInfo("US/Eastern"))
+        if DatabentoLiveStream._ET_TZ is None:
+            from zoneinfo import ZoneInfo
+            DatabentoLiveStream._ET_TZ = ZoneInfo("US/Eastern")
+        dt = datetime.fromtimestamp(epoch, tz=DatabentoLiveStream._ET_TZ)
         wd = dt.weekday()
         hour = dt.hour
         if wd == 5:
@@ -286,12 +290,42 @@ class DatabentoLiveStream:
         # Prune old ticks on startup
         if self._tick_writer:
             await self._tick_writer.start()
-        self._task = asyncio.create_task(self._stream_loop())
+
+        # Run the stream loop in a DEDICATED thread with its own event loop.
+        # The Databento SDK's asyncio.Protocol.data_received() processes socket
+        # buffers synchronously on the event loop, starving HTTP handlers.
+        # By running in a separate thread/loop, the main event loop stays free.
+        self._main_loop = asyncio.get_running_loop()
+        import threading
+        def _run_stream_thread():
+            self._stream_thread_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._stream_thread_loop)
+            self._stream_thread_loop.run_until_complete(self._stream_loop())
+        self._stream_thread = threading.Thread(target=_run_stream_thread, daemon=True, name="databento-stream")
+        self._stream_thread.start()
+
+        # Watchdog and candle tasks stay on the main loop (lightweight, infrequent)
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         if self._db_session_factory:
             self._candle_retry_task = asyncio.create_task(self._candle_retry_loop())
             self._gap_backfill_task = asyncio.create_task(self._periodic_gap_backfill_loop())
-        logger.info("Databento live stream started for %s", self.symbol)
+        logger.info("Databento live stream started for %s (dedicated thread)", self.symbol)
+
+    def _restart_stream_thread(self):
+        """Restart the Databento stream in its dedicated thread."""
+        self._running = False
+        if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+            self._stream_thread.join(timeout=5)
+        self._running = True
+        self._last_record_time = time.monotonic()
+        import threading
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._stream_thread_loop = loop
+            loop.run_until_complete(self._stream_loop())
+        self._stream_thread = threading.Thread(target=_run, daemon=True, name="databento-stream")
+        self._stream_thread.start()
 
     async def stop(self):
         self._running = False
@@ -403,9 +437,7 @@ class DatabentoLiveStream:
             in_halt = dt_et.hour == 17
             if was_in_halt and not in_halt and in_globex:
                 logger.info("Databento watchdog: post-halt transition (18:00 ET) — forcing reconnect + backfill")
-                if self._task:
-                    self._task.cancel()
-                self._task = asyncio.create_task(self._stream_loop())
+                self._restart_stream_thread()
                 self._last_record_time = time.monotonic()
                 was_in_halt = False
                 continue
@@ -418,9 +450,7 @@ class DatabentoLiveStream:
                         "Databento watchdog: no records for %.0fs (during Globex hours) — reconnecting",
                         elapsed,
                     )
-                    if self._task:
-                        self._task.cancel()
-                    self._task = asyncio.create_task(self._stream_loop())
+                    self._restart_stream_thread()
                 else:
                     logger.debug("Databento watchdog: no records for %.0fs (outside Globex hours — OK)", elapsed)
 
@@ -617,6 +647,22 @@ class DatabentoLiveStream:
                 asyncio.create_task(self._stream_loop())
 
     def _publish(self, event: dict):
+        """Publish event to all SSE subscribers.
+
+        Thread-safe: if called from the stream thread, dispatches to the main
+        event loop via call_soon_threadsafe. If called from the main loop, puts directly.
+        """
+        main_loop = getattr(self, '_main_loop', None)
+        if main_loop and main_loop.is_running():
+            # Called from stream thread — dispatch to main loop
+            try:
+                main_loop.call_soon_threadsafe(self._publish_direct, event)
+            except RuntimeError:
+                pass  # Loop closed
+        else:
+            self._publish_direct(event)
+
+    def _publish_direct(self, event: dict):
         for q in self._subscribers:
             try:
                 q.put_nowait(event)

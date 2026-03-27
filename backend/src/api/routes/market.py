@@ -1,6 +1,6 @@
 """Market data API routes — AMT session analysis and scanner signals."""
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
 import asyncio, json
 
@@ -41,8 +41,12 @@ async def get_session_by_date(date: str, svc: MarketService = Depends(_svc)):
     return {"status": "no_data", "date": date}
 
 
+# Pre-serialized candle cache: {cache_key: (json_bytes, expiry)}
+_candle_json_cache: dict[tuple, tuple] = {}
+
 @router.get("/candles")
 async def get_candles(
+    response: Response,
     symbol: str = Query(default="NQ"),
     interval: str = Query(default="5m", pattern="^(1m|5m|15m)$"),
     date: str = Query(default=None),
@@ -50,7 +54,19 @@ async def get_candles(
     svc: MarketService = Depends(_svc),
 ):
     """Return OHLCV candles for charting from market_candles DB."""
-    return await svc.get_candles(symbol, interval, date, days)
+    import time as _time
+    cache_key = (symbol, interval, date, days)
+    cached = _candle_json_cache.get(cache_key)
+    now = _time.time()
+    if cached and now < cached[1]:
+        return Response(content=cached[0], media_type="application/json",
+                        headers={"Cache-Control": "max-age=15"})
+
+    data = await svc.get_candles(symbol, interval, date, days)
+    serialized = json.dumps(data, separators=(",", ":"))
+    _candle_json_cache[cache_key] = (serialized, now + 15)
+    response.headers["Cache-Control"] = "max-age=15"
+    return data
 
 
 @router.get("/vwap")
@@ -301,21 +317,25 @@ async def update_context(data: dict, symbol: str = "NQ", svc: MarketService = De
 
 @router.get("/volume-profile")
 async def get_volume_profile(
+    response: Response,
     symbol: str = Query(default="NQ"),
     timeframe: str = Query(default="session", pattern="^(session|weekly|monthly)$"),
     svc: MarketService = Depends(_svc),
 ):
     """Return VP curve (price→volume pairs) for session/weekly/monthly."""
+    response.headers["Cache-Control"] = f"max-age={30 if timeframe == 'session' else 120}"
     return await svc.get_volume_profile_curve(symbol, timeframe=timeframe)
 
 
 @router.get("/session-levels")
 async def get_session_levels(
+    response: Response,
     symbol: str = Query(default="NQ"),
     days: int = Query(default=5, ge=1, le=30),
     svc: MarketService = Depends(_svc),
 ):
     """Return per-day session levels (PDH/PDL, IB, Tokyo, London) with time boundaries."""
+    response.headers["Cache-Control"] = "max-age=30"
     return await svc.get_session_levels(symbol, days)
 
 

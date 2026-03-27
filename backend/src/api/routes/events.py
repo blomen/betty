@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 
 @router.get("")
-async def list_events(
+def list_events(
     sport: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db)
@@ -78,7 +78,7 @@ def get_live_events(db: Session = Depends(get_db)):
 
 
 @router.get("/{event_id}")
-async def get_event(event_id: str, db: Session = Depends(get_db)):
+def get_event(event_id: str, db: Session = Depends(get_db)):
     """Get event details with all odds."""
     event = db.query(Event).filter(Event.id == event_id).first()
     if not event:

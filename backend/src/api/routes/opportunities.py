@@ -1,10 +1,13 @@
 """Opportunities API routes - value betting opportunities."""
 
 import logging
+import time as _time
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+import json
 
 from ...services import OpportunityService
 from ...services.play_service import PlaySessionService
@@ -18,13 +21,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 
+# Response-level TTL cache for opportunities listing
+# Key: (type, provider1, provider2, providers, market, sport, min_value, limit)
+# Value: (pre-serialized JSON bytes, expiry_time)
+_opp_cache: dict[tuple, tuple] = {}
+_OPP_CACHE_TTL = 15  # seconds
+
 
 def _get_service(db: Session = Depends(get_db)) -> OpportunityService:
     return OpportunityService(db)
 
 
 @router.get("")
-async def list_opportunities(
+def list_opportunities(
+    response: Response,
     type: Optional[str] = None,
     active_only: bool = True,
     provider1: Optional[str] = None,
@@ -37,7 +47,17 @@ async def list_opportunities(
     service: OpportunityService = Depends(_get_service),
 ):
     """Get current value/bonus opportunities with enhanced filtering and stake recommendations."""
-    return service.list_opportunities(
+    cache_key = (type, provider1, provider2, providers, market, sport, min_value, limit)
+    cached = _opp_cache.get(cache_key)
+    now = _time.time()
+    if cached and now < cached[1]:
+        return Response(
+            content=cached[0],
+            media_type="application/json",
+            headers={"Cache-Control": f"max-age={_OPP_CACHE_TTL}"},
+        )
+
+    result = service.list_opportunities(
         type=type,
         provider1=provider1,
         provider2=provider2,
@@ -47,10 +67,15 @@ async def list_opportunities(
         min_value=min_value,
         limit=min(limit, 2000),
     )
+    # Pre-serialize to avoid repeated jsonable_encoder + json.dumps on cache hits
+    serialized = json.dumps(jsonable_encoder(result), ensure_ascii=False, separators=(",", ":"))
+    _opp_cache[cache_key] = (serialized, now + _OPP_CACHE_TTL)
+    response.headers["Cache-Control"] = f"max-age={_OPP_CACHE_TTL}"
+    return result
 
 
 @router.get("/clusters")
-async def list_clusters(
+def list_clusters(
     service: OpportunityService = Depends(_get_service),
 ):
     """Get all available provider clusters with balance info."""
@@ -58,7 +83,7 @@ async def list_clusters(
 
 
 @router.get("/cluster-summary")
-async def cluster_summary(
+def cluster_summary(
     cluster: str,
     service: OpportunityService = Depends(_get_service),
 ):
@@ -67,7 +92,7 @@ async def cluster_summary(
 
 
 @router.post("/bonus/match")
-async def match_bonus_bet(
+def match_bonus_bet(
     data: BonusMatchRequest,
     service: OpportunityService = Depends(_get_service),
 ):
@@ -93,7 +118,7 @@ async def match_bonus_bet(
 
 
 @router.get("/dutch-workflow")
-async def dutch_workflow(
+def dutch_workflow(
     providers: str,
     major_only: bool = False,
     counterpart_providers: Optional[str] = None,
@@ -117,7 +142,7 @@ async def dutch_workflow(
 
 
 @router.get("/bonus/scan")
-async def scan_bonus_opportunities(
+def scan_bonus_opportunities(
     anchor_provider: str,
     limit: int = 10,
     include_negative: bool = True,
@@ -132,7 +157,7 @@ async def scan_bonus_opportunities(
 
 
 @router.get("/play/session")
-async def get_play_session(db: Session = Depends(get_db)):
+def get_play_session(db: Session = Depends(get_db)):
     """Get session data for Play panel: clusters, siblings, lifecycle states."""
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
@@ -142,7 +167,7 @@ async def get_play_session(db: Session = Depends(get_db)):
 
 
 @router.get("/play/pending-bets")
-async def get_pending_bets(db: Session = Depends(get_db)):
+def get_pending_bets(db: Session = Depends(get_db)):
     """Get all pending (unsettled) bets grouped by provider."""
     from ...db.models import Bet, Event
     from ...repositories import ProfileRepo
@@ -202,7 +227,7 @@ class SettleBetRequest(BaseModel):
 
 
 @router.post("/play/settle-bet")
-async def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
+def settle_bet(body: SettleBetRequest, db: Session = Depends(get_db)):
     """Manually settle a single pending bet."""
     from ...db.models import Bet
     from ...services.bet_service import BetService
@@ -238,20 +263,8 @@ class BuildBatchRequest(BaseModel):
     exclude: list[str] | None = None
 
 
-class CapitalActionRequest(BaseModel):
-    type: str  # "deposit", "withdraw", "transfer"
-    provider_id: Optional[str] = None
-    from_provider_id: Optional[str] = None
-    to_provider_id: Optional[str] = None
-    amount: float
-
-
-class ConfirmCapitalRequest(BaseModel):
-    actions: list[CapitalActionRequest]
-
-
 @router.post("/play/batch")
-async def build_batch(
+def build_batch(
     body: BuildBatchRequest | None = None,
     db: Session = Depends(get_db),
 ):
@@ -264,42 +277,15 @@ async def build_batch(
 
 
 @router.post("/play/confirm-capital")
-async def confirm_capital(
-    body: ConfirmCapitalRequest,
+def confirm_capital(
     db: Session = Depends(get_db),
 ):
-    """Apply capital actions (deposit/withdraw/transfer) and rebuild batch."""
+    """Rebuild batch after capital actions.
+
+    Balances are auto-synced by the mirror browser — this endpoint
+    just rebuilds the batch with current (already-synced) balances.
+    """
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
-
-    for action in body.actions:
-        if action.type == "deposit":
-            if not action.provider_id:
-                raise HTTPException(400, "deposit requires provider_id")
-            profile_repo.adjust_balance(profile.id, action.provider_id, action.amount)
-
-        elif action.type == "withdraw":
-            if not action.provider_id:
-                raise HTTPException(400, "withdraw requires provider_id")
-            current = profile_repo.get_balance(profile.id, action.provider_id)
-            if current < action.amount:
-                raise HTTPException(422, f"Insufficient balance on {action.provider_id}: have {current}, need {action.amount}")
-            profile_repo.adjust_balance(profile.id, action.provider_id, -action.amount)
-
-        elif action.type == "transfer":
-            if not action.from_provider_id or not action.to_provider_id:
-                raise HTTPException(400, "transfer requires from_provider_id and to_provider_id")
-            current = profile_repo.get_balance(profile.id, action.from_provider_id)
-            if current < action.amount:
-                raise HTTPException(422, f"Insufficient balance on {action.from_provider_id}: have {current}, need {action.amount}")
-            profile_repo.adjust_balance(profile.id, action.from_provider_id, -action.amount)
-            profile_repo.adjust_balance(profile.id, action.to_provider_id, action.amount)
-
-        else:
-            raise HTTPException(400, f"Unknown action type: {action.type}")
-
-    db.commit()
-
-    # Rebuild batch with updated balances
     builder = BatchBuilder(db)
     return builder.build(profile.id)

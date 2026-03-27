@@ -152,7 +152,7 @@ def _get_service(db: Session = Depends(get_db)) -> BetService:
 
 
 @router.get("")
-async def list_bets(
+def list_bets(
     status: Optional[str] = None,
     exclude_bonus: bool = False,
     limit: int = 50,
@@ -377,7 +377,7 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
 
 
 @router.post("/close-started")
-async def close_started_bets(service: BetService = Depends(_get_service)):
+def close_started_bets(service: BetService = Depends(_get_service)):
     """
     Snapshot closing Pinnacle odds for pending bets on events that have started.
     Call this to capture CLV before settling. Safe to call repeatedly —
@@ -483,7 +483,7 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
 
 
 @router.put("/{bet_id}")
-async def settle_bet(bet_id: int, data: BetUpdate, service: BetService = Depends(_get_service)):
+def settle_bet(bet_id: int, data: BetUpdate, service: BetService = Depends(_get_service)):
     """Settle a bet with result."""
     result = service.settle_bet(bet_id, data.result, data.payout)
 
@@ -494,7 +494,7 @@ async def settle_bet(bet_id: int, data: BetUpdate, service: BetService = Depends
 
 
 @router.patch("/{bet_id}")
-async def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_get_service)):
+def edit_bet(bet_id: int, data: BetEdit, service: BetService = Depends(_get_service)):
     """Edit a bet's stake, odds, or result. Recalculates payout and adjusts balance."""
     result = service.edit_bet(
         bet_id,

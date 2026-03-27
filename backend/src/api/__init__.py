@@ -152,7 +152,9 @@ async def lifespan(app: FastAPI):
     # Stale data is visible via per-row "Upd" timestamps in the frontend.
     # Cleanup happens on re-extraction and via the 6-hour cleanup tier.
 
-    # Add extraction-specific log file (DEBUG level) alongside launcher's root handlers
+    # Add extraction-specific log file (INFO level) alongside launcher's root handlers
+    # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
+    # which blocks the event loop with synchronous disk I/O.
     import logging.handlers
     from ..paths import get_logs_dir
     extraction_handler = logging.handlers.RotatingFileHandler(
@@ -161,16 +163,21 @@ async def lifespan(app: FastAPI):
         backupCount=5,
         encoding="utf-8",
     )
-    extraction_handler.setLevel(logging.DEBUG)
+    extraction_handler.setLevel(logging.INFO)
     extraction_handler.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     ))
     root_logger = logging.getLogger()
     root_logger.addHandler(extraction_handler)
-    # Ensure root logger passes DEBUG+ to handlers (uvicorn sets it to WARNING)
-    if root_logger.level > logging.DEBUG:
-        root_logger.setLevel(logging.DEBUG)
+    # Set root to INFO — DEBUG causes Databento SDK to flood event loop with
+    # sync disk writes (dispatching MBP1Msg, read N bytes) at tick rate
+    if root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+    # Silence noisy third-party loggers
+    logging.getLogger("databento").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # Eagerly warm up singletons / heavy imports so the first API request is fast
     from ..config.loader import load_config

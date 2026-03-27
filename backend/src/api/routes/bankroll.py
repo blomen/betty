@@ -20,25 +20,25 @@ def _get_service(db: Session = Depends(get_db)) -> BankrollService:
 
 
 @router.get("")
-async def get_bankroll(service: BankrollService = Depends(_get_service)):
+def get_bankroll(service: BankrollService = Depends(_get_service)):
     """Get provider balances and total bankroll for active profile."""
     return service.get_bankroll()
 
 
 @router.get("/bonuses")
-async def get_provider_bonuses():
+def get_provider_bonuses():
     """Get bonus configurations for all providers from providers.yaml."""
     return load_provider_bonuses()
 
 
 @router.get("/stats")
-async def get_bankroll_stats(service: BankrollService = Depends(_get_service)):
+def get_bankroll_stats(service: BankrollService = Depends(_get_service)):
     """Get bankroll statistics for active profile."""
     return service.get_stats()
 
 
 @router.post("/set-all")
-async def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db)):
+def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db)):
     """Set balance for multiple providers at once for active profile."""
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
@@ -69,7 +69,7 @@ async def set_all_balances(data: BulkBalanceUpdate, db: Session = Depends(get_db
 
 
 @router.post("/set/{provider_id}")
-async def set_balance(
+def set_balance(
     provider_id: str,
     data: BalanceSet,
     db: Session = Depends(get_db),
@@ -96,7 +96,7 @@ async def set_balance(
 
 
 @router.post("/adjust/{provider_id}")
-async def adjust_balance(
+def adjust_balance(
     provider_id: str,
     data: BalanceAdjustment,
     db: Session = Depends(get_db),
@@ -124,7 +124,7 @@ async def adjust_balance(
 
 
 @router.post("/transfer")
-async def transfer_funds(data: TransferRequest, db: Session = Depends(get_db)):
+def transfer_funds(data: TransferRequest, db: Session = Depends(get_db)):
     """Transfer funds between two providers for active profile."""
     if data.amount <= 0:
         raise HTTPException(400, "Transfer amount must be positive")
@@ -186,7 +186,7 @@ async def transfer_funds(data: TransferRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/deposit/{provider_id}")
-async def deposit_with_bonus(
+def deposit_with_bonus(
     provider_id: str,
     data: DepositRequest,
     service: BankrollService = Depends(_get_service),
@@ -199,7 +199,7 @@ async def deposit_with_bonus(
 
 
 @router.post("/reset-all")
-async def reset_all_balances(db: Session = Depends(get_db)):
+def reset_all_balances(db: Session = Depends(get_db)):
     """Reset all provider balances to 0 for active profile."""
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
@@ -219,19 +219,19 @@ async def reset_all_balances(db: Session = Depends(get_db)):
 
 
 @router.get("/exposure")
-async def get_bankroll_exposure(service: BankrollService = Depends(_get_service)):
+def get_bankroll_exposure(service: BankrollService = Depends(_get_service)):
     """Get bankroll with exposure breakdown per provider for active profile."""
     return service.get_exposure()
 
 
 @router.get("/status")
-async def get_bankroll_status(service: BankrollService = Depends(_get_service)):
+def get_bankroll_status(service: BankrollService = Depends(_get_service)):
     """Get comprehensive bankroll status including exposures and bonus progress."""
     return service.get_status()
 
 
 @router.post("/stake-preview")
-async def preview_stake(data: StakePreviewRequest, service: BankrollService = Depends(_get_service)):
+def preview_stake(data: StakePreviewRequest, service: BankrollService = Depends(_get_service)):
     """Preview recommended stake for an opportunity."""
     profile = service.profile_repo.get_active()
     calc = service.get_stake_calculator(profile.id)
@@ -266,7 +266,7 @@ async def preview_stake(data: StakePreviewRequest, service: BankrollService = De
 
 
 @router.post("/record-bet")
-async def record_bet_exposure(data: RecordBetRequest, service: BankrollService = Depends(_get_service)):
+def record_bet_exposure(data: RecordBetRequest, service: BankrollService = Depends(_get_service)):
     """Record a placed bet for exposure tracking."""
     profile = service.profile_repo.get_active()
     calc = service.get_stake_calculator(profile.id)
@@ -289,7 +289,7 @@ async def record_bet_exposure(data: RecordBetRequest, service: BankrollService =
 
 
 @router.post("/bonus-transition/{provider_id}")
-async def bonus_transition(
+def bonus_transition(
     provider_id: str,
     data: BonusTransitionRequest,
     db: Session = Depends(get_db),
@@ -345,7 +345,7 @@ async def bonus_transition(
 
 
 @router.post("/claim-bonus/{provider_id}")
-async def claim_bonus(provider_id: str, db: Session = Depends(get_db)):
+def claim_bonus(provider_id: str, db: Session = Depends(get_db)):
     """Mark a provider's bonus as already claimed for active profile."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
@@ -360,7 +360,7 @@ async def claim_bonus(provider_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/unclaim-bonus/{provider_id}")
-async def unclaim_bonus(provider_id: str, db: Session = Depends(get_db)):
+def unclaim_bonus(provider_id: str, db: Session = Depends(get_db)):
     """Reset a claimed bonus back to available for active profile."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
@@ -375,7 +375,7 @@ async def unclaim_bonus(provider_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/reset-calculator")
-async def reset_calculator(service: BankrollService = Depends(_get_service)):
+def reset_calculator(service: BankrollService = Depends(_get_service)):
     """Reset the stake calculator's exposure tracking."""
     profile = service.profile_repo.get_active()
     BankrollService.reset_calculators(profile.id)
@@ -387,7 +387,7 @@ async def reset_calculator(service: BankrollService = Depends(_get_service)):
 
 
 @router.post("/backfill-wagering")
-async def backfill_wagering(db: Session = Depends(get_db)):
+def backfill_wagering(db: Session = Depends(get_db)):
     """Recalculate wagered_amount for all active bonuses from settled bets.
 
     Fixes bonuses where wagering wasn't tracked (e.g., bets settled via edit_bet).
@@ -470,7 +470,7 @@ async def backfill_wagering(db: Session = Depends(get_db)):
 # ── Bankroll Planner ──
 
 @router.get("/plan")
-async def get_bankroll_plan(db: Session = Depends(get_db)):
+def get_bankroll_plan(db: Session = Depends(get_db)):
     """Get current planner recommendation (returns cached if fresh)."""
     from ...services.planner_service import BankrollPlannerService
 

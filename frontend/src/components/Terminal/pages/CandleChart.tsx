@@ -571,18 +571,26 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     };
   }, []);
 
-  // Subscribe VP overlay redraws to chart events (separate from init)
+  // Subscribe VP overlay redraws to chart events (throttled to ~60fps)
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
 
-    const redraw = () => drawOverlays();
+    let rafId = 0;
+    const redraw = () => {
+      if (rafId) return; // already scheduled
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        drawOverlays();
+      });
+    };
     chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
 
-    const observer = new ResizeObserver(() => requestAnimationFrame(redraw));
+    const observer = new ResizeObserver(redraw);
     if (containerRef.current) observer.observe(containerRef.current);
 
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
       observer.disconnect();
     };

@@ -114,15 +114,20 @@ class OpportunityService:
         meta_cache = self._batch_lookup_provider_meta(rows)
         updated_at_cache = self._batch_lookup_odds_updated_at(rows)
 
-        # Batch pre-fetch bonus statuses for all providers (avoid N+1)
+        # Batch pre-fetch bonus statuses for all providers (single query instead of N)
         bonus_cache = {}
         if profile and type == 'value':
             provider_ids = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
-            for pid in provider_ids:
+            if provider_ids:
                 try:
-                    bonus_cache[pid] = self.profile_repo.get_bonus_status(profile.id, pid)
+                    bonus_cache = self.profile_repo.get_bonus_statuses_batch(profile.id, provider_ids)
                 except Exception:
-                    bonus_cache[pid] = {"is_cleared": True}
+                    # Fall back to per-provider if batch not available
+                    for pid in provider_ids:
+                        try:
+                            bonus_cache[pid] = self.profile_repo.get_bonus_status(profile.id, pid)
+                        except Exception:
+                            bonus_cache[pid] = {"is_cleared": True}
 
         # Build response
         results = []

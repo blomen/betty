@@ -21,7 +21,7 @@ def _get_active_profile(db: Session) -> Profile:
 
 
 @router.get("")
-async def list_limits(
+def list_limits(
     provider_id: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -32,7 +32,7 @@ async def list_limits(
 
 
 @router.post("")
-async def create_limit(data: LimitCreate, db: Session = Depends(get_db)):
+def create_limit(data: LimitCreate, db: Session = Depends(get_db)):
     """Record a new provider limit with auto-generated betting snapshot."""
     profile = _get_active_profile(db)
 
@@ -63,7 +63,7 @@ async def create_limit(data: LimitCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{limit_id}")
-async def update_limit(limit_id: int, data: LimitUpdate, db: Session = Depends(get_db)):
+def update_limit(limit_id: int, data: LimitUpdate, db: Session = Depends(get_db)):
     """Update limit level or notes. Snapshot is immutable."""
     if data.limit_level is not None and not (1 <= data.limit_level <= 5):
         raise HTTPException(400, "limit_level must be between 1 and 5")
@@ -77,7 +77,7 @@ async def update_limit(limit_id: int, data: LimitUpdate, db: Session = Depends(g
 
 
 @router.delete("/{limit_id}")
-async def delete_limit(limit_id: int, db: Session = Depends(get_db)):
+def delete_limit(limit_id: int, db: Session = Depends(get_db)):
     """Delete a limit record."""
     service = LimitService(db)
     result = service.delete_limit(limit_id)

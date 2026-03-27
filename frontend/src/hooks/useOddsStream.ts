@@ -51,17 +51,32 @@ export function useOddsStream() {
     });
 
     es.addEventListener('tier_complete', () => {
-      // Refetch opportunities and providers (extraction-affected data only)
-      // Bankroll/bets are not affected by extraction — skip to avoid refetch storm
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['specials'] });
+      // Only refetch queries that are currently observed (mounted component).
+      // This prevents refetch storms for pages the user isn't viewing.
+      queryClient.invalidateQueries({
+        queryKey: ['opportunities'],
+        refetchType: 'active',  // only refetch if a component is actively using this query
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['providers'],
+        refetchType: 'active',
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['specials'],
+        refetchType: 'active',
+      });
     });
 
     es.onerror = () => {
-      // SSE disconnected — invalidate to trigger refetch
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
+      // SSE disconnected — only refetch active queries
+      queryClient.invalidateQueries({
+        queryKey: ['opportunities'],
+        refetchType: 'active',
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['providers'],
+        refetchType: 'active',
+      });
     };
 
     return () => es.close();

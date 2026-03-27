@@ -220,6 +220,66 @@ class ProfileRepo:
             "days_remaining": days_remaining,
         }
 
+    def get_bonus_statuses_batch(self, profile_id: int, provider_ids: list[str]) -> dict[str, dict]:
+        """Batch-fetch bonus statuses for multiple providers in one query."""
+        records = self.db.query(ProfileProviderBonus).filter(
+            ProfileProviderBonus.profile_id == profile_id,
+            ProfileProviderBonus.provider_id.in_(provider_ids),
+        ).all()
+
+        record_map = {r.provider_id: r for r in records}
+        default = {
+            "status": "available", "bonus_type": None, "bonus_amount": 0.0,
+            "wagering_requirement": 0.0, "wagered_amount": 0.0, "min_odds": 0.0,
+            "progress_pct": 100.0, "is_cleared": True, "claimed_at": None,
+            "expires_at": None, "days_remaining": None,
+        }
+        now = datetime.now(timezone.utc)
+        active_statuses = ("in_progress", "trigger_needed")
+        result = {}
+
+        for pid in provider_ids:
+            record = record_map.get(pid)
+            if not record:
+                result[pid] = dict(default)
+                continue
+
+            _expires = record.expires_at
+            if _expires and _expires.tzinfo is None:
+                _expires = _expires.replace(tzinfo=timezone.utc)
+            if record.bonus_status in active_statuses and _expires and now > _expires:
+                record.bonus_status = "completed"
+                record.updated_at = now
+
+            is_cleared = (
+                record.bonus_status in ("completed", "available", "claimed") or
+                (record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement)
+            )
+            progress_pct = 0.0
+            if record.wagering_requirement > 0:
+                progress_pct = min(100.0, (record.wagered_amount or 0.0) / record.wagering_requirement * 100)
+            days_remaining = None
+            if record.expires_at and record.bonus_status in active_statuses:
+                exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
+                days_remaining = max(0, (exp - now).days)
+
+            result[pid] = {
+                "status": record.bonus_status,
+                "bonus_type": record.bonus_type,
+                "bonus_amount": record.bonus_amount,
+                "wagering_requirement": record.wagering_requirement,
+                "wagered_amount": record.wagered_amount,
+                "min_odds": record.min_odds if record.min_odds else BONUS_MIN_ODDS,
+                "progress_pct": progress_pct,
+                "is_cleared": is_cleared,
+                "trigger_mode": record.trigger_mode or "cumulative",
+                "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+                "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+                "days_remaining": days_remaining,
+            }
+
+        return result
+
     def record_wagering(self, profile_id: int, provider_id: str, stake: float, odds: float) -> dict:
         """Record a bet toward wagering requirement."""
         record = self.db.query(ProfileProviderBonus).filter(
