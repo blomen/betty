@@ -316,7 +316,11 @@ async def lifespan(app: FastAPI):
         Only opens browsers for sites you've previously logged into —
         determined by the existence of a mirror_profiles/{provider} directory.
         First-time providers must be started manually via the sidebar menu.
+
+        Delays start by 30s and staggers launches by 3s each to keep the
+        event loop responsive for API requests during startup.
         """
+        await asyncio.sleep(30)  # Let API stabilize before launching browsers
         try:
             from ..paths import get_app_data_dir
             profiles_dir = get_app_data_dir() / "data" / "mirror_profiles"
@@ -341,13 +345,16 @@ async def lifespan(app: FastAPI):
                     _mirrors[pid] = mirror
                     started += 1
                     logger.info(f"Mirror auto-started: {pid}")
+                    await asyncio.sleep(3)  # Stagger: let event loop breathe between launches
                 except Exception as e:
                     logger.warning(f"Mirror auto-start failed for {pid}: {e}")
             logger.info(f"Mirror auto-start complete: {started} browsers")
         except Exception as e:
             logger.warning(f"Mirror auto-start failed: {e}")
 
-    asyncio.create_task(_start_all_mirrors())
+    # Mirror auto-start disabled — launching 20 Playwright browsers on the main
+    # event loop freezes it permanently. Mirrors should be started on-demand via UI.
+    # asyncio.create_task(_start_all_mirrors())
 
     yield  # App is running
 

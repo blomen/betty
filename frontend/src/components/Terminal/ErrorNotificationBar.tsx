@@ -19,26 +19,37 @@ export function ConnectionErrorBar() {
 
   useEffect(() => {
     let mounted = true;
+    // Poll faster when offline (5s) to detect recovery quickly, slower when online (30s)
+    let intervalId: ReturnType<typeof setInterval>;
 
     async function check() {
       try {
-        const res = await fetch('/api/extraction/freshness');
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch('/health', { signal: controller.signal });
+        clearTimeout(tid);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         if (mounted) {
           setOffline(false);
           setLastError(null);
+          // Switch to slow polling once recovered
+          clearInterval(intervalId);
+          intervalId = setInterval(check, 30_000);
         }
       } catch (err) {
         if (mounted) {
           setOffline(true);
           setLastError(err instanceof Error ? err.message : 'Connection failed');
+          // Switch to fast polling to detect recovery
+          clearInterval(intervalId);
+          intervalId = setInterval(check, 5_000);
         }
       }
     }
 
     check();
-    const id = setInterval(check, 30_000);
-    return () => { mounted = false; clearInterval(id); };
+    intervalId = setInterval(check, 30_000);
+    return () => { mounted = false; clearInterval(intervalId); };
   }, []);
 
   if (!offline) return null;

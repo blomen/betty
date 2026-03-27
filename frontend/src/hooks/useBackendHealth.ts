@@ -24,7 +24,7 @@ export function useBackendHealth(sseConnected: boolean, lastTickTs: number | nul
   });
   const mountedRef = useRef(true);
   const statusRef = useRef<BackendHealth['status']>('checking');
-  const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const check = useCallback(async () => {
     const t0 = performance.now();

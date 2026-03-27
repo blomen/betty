@@ -351,47 +351,33 @@ class ExtractionScheduler:
         logger.info(f"[Scheduler:{schedule.provider_id}] Loop stopped (running={schedule.running})")
 
     async def _run_provider_extraction(self, schedule: ProviderSchedule) -> dict:
-        """Run extraction for a single provider schedule.
+        """Run extraction for a provider schedule.
 
-        Sharp runs on the main event loop for lowest latency.
-        Soft providers run in a separate thread so their synchronous
-        session.commit() calls don't block the main event loop (which
-        would freeze the API and prevent sharp from cycling on time).
+        ALL extractions run in a dedicated thread with their own event loop
+        so synchronous SQLite commits don't freeze the main event loop
+        (which would make /health and all API handlers hang).
         """
         from src.pipeline.orchestrator import ExtractionPipeline
 
         providers = schedule.providers or [schedule.provider_id]
         update_provider_state(schedule.provider_id, {"running": True, "category": schedule.category})
 
-        if schedule.category == "sharp":
-            # Sharp runs on main loop — fast, no long DB transactions
+        def _run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             pipeline = ExtractionPipeline()
             try:
-                return await pipeline.run(providers=providers, tier_name=schedule.category)
+                return loop.run_until_complete(
+                    pipeline.run(providers=providers, tier_name=schedule.category)
+                )
             finally:
                 try:
                     pipeline.session.close()
                 except Exception:
                     pass
-        else:
-            # Soft providers run in a dedicated thread with their own event loop
-            # so synchronous SQLite commits don't freeze the main event loop.
-            def _run_in_thread():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                pipeline = ExtractionPipeline()
-                try:
-                    return loop.run_until_complete(
-                        pipeline.run(providers=providers, tier_name=schedule.category)
-                    )
-                finally:
-                    try:
-                        pipeline.session.close()
-                    except Exception:
-                        pass
-                    loop.close()
+                loop.close()
 
-            return await asyncio.to_thread(_run_in_thread)
+        return await asyncio.to_thread(_run_in_thread)
 
     def stop_provider(self, provider_id: str):
         """Stop a specific provider schedule."""

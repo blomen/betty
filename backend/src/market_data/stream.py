@@ -281,6 +281,9 @@ class DatabentoLiveStream:
         self._candle_write_queue: deque[tuple[dict, str]] = deque(maxlen=500)
         self._candle_retry_task: asyncio.Task | None = None
         self._gap_backfill_task: asyncio.Task | None = None
+        self._publish_buffer: list[dict] = []
+        self._publish_latest: dict[str, dict] = {}
+        self._publish_last_flush: float = 0.0
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -366,9 +369,10 @@ class DatabentoLiveStream:
     async def _write_closed_candle(self, candle: dict, interval: str = "5m"):
         """Persist a completed candle bucket to market_candles DB table.
 
+        Runs in a thread to avoid blocking the main event loop.
         On failure (e.g. DB locked), queues the candle for retry.
         """
-        try:
+        def _write():
             db = self._db_session_factory()
             try:
                 from ..repositories.market_repo import MarketRepo
@@ -381,42 +385,51 @@ class DatabentoLiveStream:
                 )
             finally:
                 db.close()
+
+        try:
+            await asyncio.to_thread(_write)
         except Exception as e:
             self._candle_write_queue.append((candle, interval))
             logger.warning("Failed to persist closed %s candle (queued, %d pending): %s",
                            interval, len(self._candle_write_queue), e)
 
     async def _candle_retry_loop(self):
-        """Periodically retry persisting queued candles that failed due to DB lock."""
+        """Periodically retry persisting queued candles that failed due to DB lock.
+
+        DB writes run in a thread to avoid blocking the main event loop.
+        """
         while self._running:
             await asyncio.sleep(30)
             if not self._candle_write_queue:
                 continue
             batch = list(self._candle_write_queue)
             self._candle_write_queue.clear()
-            written = 0
-            try:
-                db = self._db_session_factory()
+
+            def _write_batch():
+                written = 0
                 try:
-                    from ..repositories.market_repo import MarketRepo
-                    repo = MarketRepo(db)
-                    sym = self.symbol.split(".")[0]
-                    for candle, interval in batch:
-                        ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
-                        repo.upsert_candle(
-                            symbol=sym, interval=interval, ts=ts,
-                            o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
-                        )
-                        written += 1
-                finally:
-                    db.close()
-                if written:
-                    logger.info("Candle retry: persisted %d/%d queued candles", written, len(batch))
-            except Exception as e:
-                # Re-queue the ones we didn't write
-                for item in batch[written:]:
-                    self._candle_write_queue.append(item)
-                logger.warning("Candle retry failed after %d/%d: %s", written, len(batch), e)
+                    db = self._db_session_factory()
+                    try:
+                        from ..repositories.market_repo import MarketRepo
+                        repo = MarketRepo(db)
+                        sym = self.symbol.split(".")[0]
+                        for candle, interval in batch:
+                            ts = datetime.fromtimestamp(candle["t"], tz=timezone.utc)
+                            repo.upsert_candle(
+                                symbol=sym, interval=interval, ts=ts,
+                                o=candle["o"], h=candle["h"], l=candle["l"], c=candle["c"], v=candle["v"],
+                            )
+                            written += 1
+                    finally:
+                        db.close()
+                    if written:
+                        logger.info("Candle retry: persisted %d/%d queued candles", written, len(batch))
+                except Exception as e:
+                    for item in batch[written:]:
+                        self._candle_write_queue.append(item)
+                    logger.warning("Candle retry failed after %d/%d: %s", written, len(batch), e)
+
+            await asyncio.to_thread(_write_batch)
 
     async def _watchdog_loop(self):
         """Monitor stream health — reconnect if no records received within timeout.
@@ -684,17 +697,43 @@ class DatabentoLiveStream:
     def _publish(self, event: dict):
         """Publish event to all SSE subscribers.
 
-        Thread-safe: if called from the stream thread, dispatches to the main
-        event loop via call_soon_threadsafe. If called from the main loop, puts directly.
+        Thread-safe: buffers events from the stream thread and flushes to the
+        main event loop every 500ms. Within each batch, only the LATEST tick
+        and book events are kept (the frontend only needs current price).
+        Candle and level events are always forwarded.
         """
+        if not self._subscribers:
+            return
         main_loop = getattr(self, '_main_loop', None)
         if main_loop and main_loop.is_running():
-            # Called from stream thread — dispatch to main loop
-            try:
-                main_loop.call_soon_threadsafe(self._publish_direct, event)
-            except RuntimeError:
-                pass  # Loop closed
+            etype = event.get("type", "tick")
+            if etype in ("tick", "book", "candle"):
+                # Keep only the latest per type — overwrites previous in buffer
+                self._publish_latest[etype] = event
+            else:
+                # Level, prediction, closed candle events — always queue
+                self._publish_buffer.append(event)
+
+            now = time.monotonic()
+            if now - self._publish_last_flush >= 0.5:  # Flush every 500ms
+                self._publish_last_flush = now
+                # Build compact batch: latest tick + latest book + all other events
+                batch = list(self._publish_buffer)
+                for evt in self._publish_latest.values():
+                    batch.append(evt)
+                self._publish_buffer.clear()
+                self._publish_latest.clear()
+                if batch:
+                    try:
+                        main_loop.call_soon_threadsafe(self._publish_batch, batch)
+                    except RuntimeError:
+                        pass
         else:
+            self._publish_direct(event)
+
+    def _publish_batch(self, events: list[dict]):
+        """Flush a batch of events to all subscribers at once."""
+        for event in events:
             self._publish_direct(event)
 
     def _publish_direct(self, event: dict):
