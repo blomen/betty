@@ -447,7 +447,27 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         // Box width check: if too narrow, skip letters (graceful degradation)
         const boxLeftX = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
         const boxWidth = boxLeftX !== null ? Math.abs(anchorX - boxLeftX) : 200;
-        if (boxWidth < 60) continue;
+        if (boxWidth < 60) {
+          // Fallback: compact histogram bars when too narrow for letters
+          const fallbackPrices = Object.keys(tpoSession.tpo_counts).map(Number);
+          const maxCount = Math.max(...fallbackPrices.map(p => tpoSession.tpo_counts[String(p)]));
+          if (maxCount > 0) {
+            const barMaxW = Math.min(boxWidth * 0.6, 30);
+            for (const price of fallbackPrices) {
+              const y = pSeries.priceToCoordinate(price);
+              if (y === null || y < 0 || y > rect.height) continue;
+              const count = tpoSession.tpo_counts[String(price)];
+              const barW = (count / maxCount) * barMaxW;
+              const isPOC = price === tpoSession.poc;
+              const inVA = price >= tpoSession.val && price <= tpoSession.vah;
+              ctx.fillStyle = color;
+              ctx.globalAlpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
+              ctx.fillRect(anchorX - barW, y - 1, barW, 2);
+            }
+            ctx.globalAlpha = 1.0;
+          }
+          continue;
+        }
 
         // Sort prices descending (high to low on chart)
         const prices = Object.keys(tpoSession.letters).map(Number).sort((a, b) => b - a);
