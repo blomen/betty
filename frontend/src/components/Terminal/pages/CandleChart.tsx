@@ -14,7 +14,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/services/api';
-import type { CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse, SessionTPOData } from '@/types/market';
+import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } from '@/types/market';
 
 const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
@@ -84,7 +84,6 @@ interface Props {
   lastCandle: CandleData | null;
   session: ExpandedSession | null;
   hiddenLevels?: Set<string>;
-  tpo?: TPOLiveProfile | null;
 }
 
 function toCandle(c: CandleData): CandlestickData<Time> {
@@ -168,7 +167,7 @@ function dedupeAndSort(candles: CandleData[]): CandleData[] {
   return Array.from(map.values()).sort((a, b) => a.t - b.t);
 }
 
-export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
+export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -194,10 +193,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   // Session levels overlay data (per-day PDH/PDL, IB, Tokyo, London)
   const sessionLevelsRef = useRef<import('@/types/market').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
-
-  // TPO overlay data
-  const tpoRef = useRef<TPOLiveProfile | null>(null);
-  tpoRef.current = tpo ?? null;
 
   // Per-session TPO letter grid data
   const sessionTPORef = useRef<SessionTPOResponse | null>(null);
@@ -739,7 +734,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   }, []);
 
   // Redraw when VP data loads, TPO changes, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, tpo, drawOverlays]);
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
@@ -920,11 +915,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
     add('m_vah', p?.monthly?.vah, '#F59E0B', 'mVAH', LineStyle.Dashed, 1);
     add('m_val', p?.monthly?.val, '#F59E0B', 'mVAL', LineStyle.Dashed, 1);
 
-    // TPO Profile levels (orange #ff6b35)
-    add('t_poc', tpo?.poc, '#ff6b35', 'tPOC', LineStyle.Solid, 2);
-    add('t_vah', tpo?.vah, '#ff6b35', 'tVAH', LineStyle.Dashed, 1);
-    add('t_val', tpo?.val, '#ff6b35', 'tVAL', LineStyle.Dashed, 1);
-  }, [session, hiddenLevels, tpo]);
+    // TPO POC/VAH/VAL are now drawn per-session on the canvas overlay (see drawOverlays)
+  }, [session, hiddenLevels]);
 
   return (
     <div className="relative w-full h-full">

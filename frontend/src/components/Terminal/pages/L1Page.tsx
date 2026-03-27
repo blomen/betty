@@ -60,7 +60,7 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
       <div className="flex-1 grid grid-cols-[1fr_220px] gap-2 min-h-0">
         {/* Left — Candle Chart */}
         <div className="border border-border bg-panel min-h-0 overflow-hidden">
-          <CandleChart lastCandle={lastCandle} session={session} hiddenLevels={hiddenLevels} tpo={tpo} />
+          <CandleChart lastCandle={lastCandle} session={session} hiddenLevels={hiddenLevels} />
         </div>
 
         {/* Right — Book Snapshot (best bid/ask + candle stats) */}

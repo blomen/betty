@@ -11,7 +11,9 @@ const LEVEL_GROUPS: Record<string, string[]> = {
   daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
   weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
   monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
-  tpo: ['t_poc', 't_vah', 't_val', 'vp_tpo'],
+  tpo_tokyo:  ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val'],
+  tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val'],
+  tpo_ny:     ['tpo_ny_letters',  'tpo_ny_poc',  'tpo_ny_vah',  'tpo_ny_val'],
 };
 
 interface Props {
@@ -155,18 +157,17 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
         )}
       </div>
 
-      {/* TPO Profile */}
+      {/* TPO Profiles (per-session toggles) */}
       {tpo && (
         <div className="px-2 py-1 border-b border-border last:border-b-0">
-          <button onClick={() => toggleGroup('tpo')} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">TPO Profile</button>
+          <div className="flex gap-2 mb-1">
+            <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">TPO</button>
+            <button onClick={() => toggleGroup('tpo_tokyo')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_tokyo') ? 'text-muted line-through' : 'text-cyan-400'}`}>TKY</button>
+            <button onClick={() => toggleGroup('tpo_london')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_london') ? 'text-muted line-through' : 'text-emerald-400'}`}>LDN</button>
+            <button onClick={() => toggleGroup('tpo_ny')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_ny') ? 'text-muted line-through' : 'text-red-400'}`}>NY</button>
+          </div>
 
-          <div className={isGroupHidden('tpo') ? 'opacity-40' : ''}>
-            <div className="grid grid-cols-3 gap-x-1 text-[10px] mb-1.5">
-              <span className="text-muted2">VAH <span className="text-orange-400">{tpo.vah.toFixed(0)}</span></span>
-              <span className="text-muted2">POC <span className="text-orange-300 font-bold">{tpo.poc.toFixed(0)}</span></span>
-              <span className="text-muted2">VAL <span className="text-orange-400">{tpo.val.toFixed(0)}</span></span>
-            </div>
-
+          <div>
             <Row label="Shape" value={tpo.profile_shape} color="text-orange-300" />
             <Row
               label="Opening"
@@ -179,19 +180,6 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
               color={tpo.rotation_factor > 0 ? 'text-emerald-400' : tpo.rotation_factor < 0 ? 'text-red-400' : 'text-muted2'}
             />
             <Row label="IB Range" value={(tpo.ib_high - tpo.ib_low).toFixed(2)} />
-
-            {(tpo.upper_excess > 0 || tpo.lower_excess > 0) && (
-              <div className="flex gap-2 mt-1 text-[10px]">
-                {tpo.upper_excess > 0 && <span className="text-muted2">Upper excess: <span className="text-orange-300">{tpo.upper_excess}</span></span>}
-                {tpo.lower_excess > 0 && <span className="text-muted2">Lower excess: <span className="text-orange-300">{tpo.lower_excess}</span></span>}
-              </div>
-            )}
-
-            {tpo.single_prints.length > 0 && (
-              <div className="mt-1 text-[10px] text-muted2">
-                Singles: <span className="text-orange-300">{tpo.single_prints.slice(0, 5).map(p => p.toFixed(0)).join(', ')}{tpo.single_prints.length > 5 ? ` +${tpo.single_prints.length - 5}` : ''}</span>
-              </div>
-            )}
           </div>
         </div>
       )}
