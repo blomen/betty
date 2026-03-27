@@ -82,10 +82,11 @@ class ExtractionScheduler:
         self._provider_locks: dict[str, asyncio.Lock] = {}
         # Browser lock: only 1 browser extraction at a time (FIFO guaranteed)
         self._browser_lock = asyncio.Lock()
-        # DB write lock: SQLite supports only one writer at a time (even with WAL).
-        # Serialize all soft extractions so concurrent commits don't block each other
-        # and freeze the event loop. Sharp bypasses this lock for priority scheduling.
-        self._db_write_lock = asyncio.Lock()
+        # NOTE: _db_write_lock removed. SQLite WAL mode + busy_timeout=30s handles
+        # write serialization natively. The old app-level lock wrapped the ENTIRE
+        # extraction (network I/O + processing + DB writes), blocking frontend reads
+        # for minutes at a time. Now each provider runs independently — SQLite serializes
+        # only the brief actual write operations, while reads proceed unblocked.
         # Legacy global lock kept for backward compat (manual API runs)
         self._run_lock = asyncio.Lock()
         # Sharp-ready gate: soft providers wait for sharp's first run before starting.
@@ -295,16 +296,11 @@ class ExtractionScheduler:
             start = datetime.now(timezone.utc)
             try:
                 async with self._provider_locks[schedule.provider_id]:
-                    if schedule.category == "sharp":
-                        # Sharp bypasses _db_write_lock for priority scheduling
-                        results = await self._run_provider_extraction(schedule)
-                    elif schedule.category == "browser_soft":
-                        async with self._db_write_lock:
-                            async with self._browser_lock:
-                                results = await self._run_provider_extraction(schedule)
-                    else:
-                        async with self._db_write_lock:
+                    if schedule.category == "browser_soft":
+                        async with self._browser_lock:
                             results = await self._run_provider_extraction(schedule)
+                    else:
+                        results = await self._run_provider_extraction(schedule)
 
                 schedule.last_completed = datetime.now(timezone.utc)
                 schedule.last_duration = (schedule.last_completed - start).total_seconds()

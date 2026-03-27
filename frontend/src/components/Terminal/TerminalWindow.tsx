@@ -20,6 +20,17 @@ import { api } from '@/services/api';
 import { ErrorNotificationBar, ConnectionErrorBar } from './ErrorNotificationBar';
 import { BetMirrorToast } from './BetMirrorToast';
 
+/** Pages that stay mounted once visited — hidden via CSS on tab switch for instant switching. */
+const KEEP_ALIVE_PAGES: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
+  value: ValuePage,
+  play: PlayPage,
+  dutch: DutchPage,
+  reverse: ReversePage,
+  polymarket: PolymarketPage,
+  stats: BetsPage,
+  bankroll: BankrollPage,
+};
+
 export function TerminalWindow() {
   const [activeCategory, setActiveCategory] = usePersistedState<CategoryName>('bbq_activeCategory', 'sports');
   const [activeTab, setActiveTab] = usePersistedState<TabName>('bbq_activeTab', 'value');
@@ -29,6 +40,8 @@ export function TerminalWindow() {
   const [welcomeChecked, setWelcomeChecked] = useState(false);
   // Track if trading page has been visited — once mounted, keep alive
   const [tradingMounted, setTradingMounted] = useState(false);
+  // Track which keep-alive pages have been visited
+  const [mountedPages, setMountedPages] = useState<Set<string>>(() => new Set());
 
   // On mount: check if we should skip the welcome page
   useEffect(() => {
@@ -94,24 +107,18 @@ export function TerminalWindow() {
     if (isTradingTab && !tradingMounted) setTradingMounted(true);
   }, [isTradingTab, tradingMounted]);
 
+  // Track keep-alive pages: once visited, stay mounted (hidden via CSS)
+  useEffect(() => {
+    if (activeTab in KEEP_ALIVE_PAGES && !mountedPages.has(activeTab)) {
+      setMountedPages(prev => new Set(prev).add(activeTab));
+    }
+  }, [activeTab, mountedPages]);
+
   const renderPage = () => {
-    // Trading tabs handled separately (kept alive below)
+    // Trading tabs and keep-alive pages handled separately (kept alive below)
     if (isTradingTab) return null;
+    if (activeTab in KEEP_ALIVE_PAGES) return null;
     switch (activeTab) {
-      case 'play':
-        return <PlayPage />;
-      case 'value':
-        return <ValuePage />;
-      case 'dutch':
-        return <DutchPage />;
-      case 'reverse':
-        return <ReversePage />;
-      case 'polymarket':
-        return <PolymarketPage />;
-      case 'stats':
-        return <BetsPage />;
-      case 'bankroll':
-        return <BankrollPage />;
       case 'profiles':
         return <ProfilePage />;
       case 'settings':
@@ -167,8 +174,19 @@ export function TerminalWindow() {
                 <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingL1') as 'tradingL1' | 'tradingVectors'} />
               </div>
             )}
-            {/* Non-trading pages render normally */}
-            {!isTradingTab && (
+            {/* Keep-alive pages: mounted once visited, hidden via CSS when inactive */}
+            {Array.from(mountedPages).map(tabName => {
+              const PageComponent = KEEP_ALIVE_PAGES[tabName];
+              if (!PageComponent) return null;
+              const isActive = activeTab === tabName && !isTradingTab && !isOverlay;
+              return (
+                <div key={tabName} className={`flex-1 flex flex-col min-h-0 ${isActive ? '' : 'hidden'}`}>
+                  <PageComponent />
+                </div>
+              );
+            })}
+            {/* Non-keep-alive pages render normally (profiles, settings, trading sub-pages) */}
+            {!isTradingTab && !(activeTab in KEEP_ALIVE_PAGES) && (
               isOverlay ? (
                 renderPage()
               ) : tabs.length > 0 ? (

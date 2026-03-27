@@ -489,8 +489,8 @@ class DatabentoLiveStream:
     async def _backfill_gap(self):
         """Backfill candle gaps from Databento historical after reconnect.
 
-        Finds the last candle in DB, computes the gap to now, and fetches
-        missing 1m/5m bars from Databento historical API.
+        Scans existing candles for mid-series gaps (not just tail gaps),
+        then fetches missing 1m/5m bars from Databento historical API.
         """
         if not self._db_session_factory:
             return
@@ -502,40 +502,62 @@ class DatabentoLiveStream:
             db_sym = self.symbol.split(".")[0]
             now = datetime.now(timezone.utc)
             fetch_end = now - timedelta(minutes=DATABENTO_HISTORICAL_DELAY_M)
+            # Look back 24h for gaps
+            lookback_start = now - timedelta(hours=24)
 
-            # Find last candle timestamp per interval
+            config = get_market_data_config()
+            db_symbol = config.get("symbol", "NQ.v.0")
+
             session = self._db_session_factory()
             try:
                 repo = MarketRepo(session)
                 for interval in ("1m", "5m"):
-                    latest = repo.get_latest_candle(db_sym, interval)
-                    if not latest:
+                    rows = repo.get_candles(db_sym, interval, lookback_start, now)
+                    if len(rows) < 2:
+                        # Tail-gap fallback: no rows means backfill from oldest/latest
+                        latest = repo.get_latest_candle(db_sym, interval)
+                        if not latest:
+                            continue
+                        latest_ts = latest.ts if latest.ts.tzinfo else latest.ts.replace(tzinfo=timezone.utc)
+                        gap_seconds = (fetch_end - latest_ts).total_seconds()
+                        if gap_seconds < MIN_GAP_FOR_BACKFILL_S:
+                            continue
+                        gaps = [(latest_ts, fetch_end)]
+                    else:
+                        # Scan for mid-series gaps
+                        bucket_s = 60 if interval == "1m" else 300
+                        max_gap = bucket_s * 3  # 2 missing bars is OK
+                        gaps = []
+                        for i in range(1, len(rows)):
+                            ts_prev = rows[i - 1].ts if rows[i - 1].ts.tzinfo else rows[i - 1].ts.replace(tzinfo=timezone.utc)
+                            ts_curr = rows[i].ts if rows[i].ts.tzinfo else rows[i].ts.replace(tzinfo=timezone.utc)
+                            diff = (ts_curr - ts_prev).total_seconds()
+                            if diff > max_gap:
+                                # Only backfill gaps old enough for Databento historical
+                                if (now - ts_curr).total_seconds() > DATABENTO_HISTORICAL_DELAY_M * 60:
+                                    gaps.append((ts_prev, ts_curr))
+
+                    if not gaps:
                         continue
-                    latest_ts = latest.ts if latest.ts.tzinfo else latest.ts.replace(tzinfo=timezone.utc)
-                    gap_seconds = (fetch_end - latest_ts).total_seconds()
 
-                    if gap_seconds < MIN_GAP_FOR_BACKFILL_S:
-                        continue
-
-                    logger.info("Gap backfill %s: %s → %s (%.0f min gap)",
-                                interval, latest_ts, fetch_end, gap_seconds / 60)
-
-                    config = get_market_data_config()
                     inner = DabentoProvider(config)
-                    db_symbol = config.get("symbol", "NQ.v.0")
+                    for gap_start, gap_end in gaps:
+                        logger.info("Gap backfill %s: %s → %s (%.0f min gap)",
+                                    interval, gap_start, gap_end,
+                                    (gap_end - gap_start).total_seconds() / 60)
 
-                    bars = await asyncio.wait_for(
-                        inner.get_bars(db_symbol, interval, latest_ts, fetch_end),
-                        timeout=120.0,
-                    )
-                    if bars:
-                        write_db = self._db_session_factory()
-                        try:
-                            write_repo = MarketRepo(write_db)
-                            count = write_repo.bulk_insert_candles(db_sym, interval, bars)
-                            logger.info("Gap backfill %s: inserted %d new bars", interval, count)
-                        finally:
-                            write_db.close()
+                        bars = await asyncio.wait_for(
+                            inner.get_bars(db_symbol, interval, gap_start, gap_end),
+                            timeout=120.0,
+                        )
+                        if bars:
+                            write_db = self._db_session_factory()
+                            try:
+                                write_repo = MarketRepo(write_db)
+                                count = write_repo.bulk_insert_candles(db_sym, interval, bars)
+                                logger.info("Gap backfill %s: inserted %d new bars", interval, count)
+                            finally:
+                                write_db.close()
             finally:
                 session.close()
         except Exception as e:

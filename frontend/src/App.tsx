@@ -9,7 +9,7 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       retry: 1,
       staleTime: 30_000,
-      gcTime: 60_000,
+      gcTime: 5 * 60_000, // 5 min — keep cached data across tab switches
     },
   },
 });

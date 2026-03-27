@@ -380,14 +380,14 @@ async def scrape_league_page(
     url = f"{site_url}{league_href}" if league_href.startswith("/") else league_href
 
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         logger.debug(f"[{provider_id}] League {league_name}: navigation failed: {e}")
         return []
 
     # Wait for game cards to render (SPA hydration)
     try:
-        await page.wait_for_selector('[data-at="game-card"]', timeout=10000)
+        await page.wait_for_selector('[data-at="game-card"]', timeout=15000)
     except Exception:
         logger.debug(f"[{provider_id}] League {league_name}: no game cards (empty or timeout)")
         return []

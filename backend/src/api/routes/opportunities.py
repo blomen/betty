@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 # Key: (type, provider1, provider2, providers, market, sport, min_value, limit)
 # Value: (pre-serialized JSON bytes, expiry_time)
 _opp_cache: dict[tuple, tuple] = {}
-_OPP_CACHE_TTL = 15  # seconds
+_OPP_CACHE_TTL = 30  # seconds
 
 
 def _get_service(db: Session = Depends(get_db)) -> OpportunityService:
@@ -54,7 +54,7 @@ def list_opportunities(
         return Response(
             content=cached[0],
             media_type="application/json",
-            headers={"Cache-Control": f"max-age={_OPP_CACHE_TTL}"},
+            headers={"Cache-Control": f"max-age={_OPP_CACHE_TTL}, stale-while-revalidate=60"},
         )
 
     result = service.list_opportunities(
@@ -70,7 +70,7 @@ def list_opportunities(
     # Pre-serialize to avoid repeated jsonable_encoder + json.dumps on cache hits
     serialized = json.dumps(jsonable_encoder(result), ensure_ascii=False, separators=(",", ":"))
     _opp_cache[cache_key] = (serialized, now + _OPP_CACHE_TTL)
-    response.headers["Cache-Control"] = f"max-age={_OPP_CACHE_TTL}"
+    response.headers["Cache-Control"] = f"max-age={_OPP_CACHE_TTL}, stale-while-revalidate=60"
     return result
 
 

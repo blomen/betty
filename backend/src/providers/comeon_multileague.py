@@ -90,6 +90,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 if self._camoufox_browser:
                     try:
                         self._camoufox_page = await self._camoufox_browser.new_page()
+                        self._warmed_up = False  # Force re-warmup on new page
+                        self._cookie_dismissed = False
                         logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
                         return self._camoufox_page
                     except Exception:
@@ -216,6 +218,29 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                 all_events.extend(sport_events)
             except Exception as e:
                 logger.error(f"[{self.provider_id}] Failed to extract {sport_key}: {e}")
+                # Check if page died and recover for remaining sports
+                if self._camoufox_page:
+                    try:
+                        await self._camoufox_page.evaluate("() => true", timeout=3000)
+                    except Exception:
+                        logger.warning(f"[{self.provider_id}] Page died during {sport_key}, recovering...")
+                        page = await self._get_page()
+                        if page:
+                            self._page = page
+                            # Re-warm up the recovered page
+                            if not getattr(self, '_warmed_up', False):
+                                try:
+                                    await page.goto(f"{self.site_url}/sv", wait_until='domcontentloaded', timeout=30000)
+                                    await asyncio.sleep(3)
+                                    await self._dismiss_cookie_overlay(page)
+                                    self._warmed_up = True
+                                    self._cookie_dismissed = True
+                                    logger.info(f"[{self.provider_id}] Recovered and re-warmed up for remaining sports")
+                                except Exception as warmup_err:
+                                    logger.warning(f"[{self.provider_id}] Re-warmup failed: {warmup_err}")
+                        else:
+                            logger.error(f"[{self.provider_id}] Page recovery failed, stopping extraction")
+                            break
 
         if not all_events:
             raise RetryableError(
@@ -329,7 +354,7 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         """Fallback: discover leagues via DOM accordion expansion (slow)."""
         leagues_url = f"{self.site_url}/sv{sport_path}/leagues"
         try:
-            await page.goto(leagues_url, wait_until='domcontentloaded', timeout=15000)
+            await page.goto(leagues_url, wait_until='domcontentloaded', timeout=30000)
             await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"[{self.provider_id}] Failed to load leagues directory for {sport}: {e}")

@@ -1499,31 +1499,42 @@ class MarketService:
         return gaps
 
     async def _backfill_gaps(self, symbol: str, interval: str, gaps: list[tuple[int, int]]):
-        """Async backfill detected gaps from Databento historical."""
+        """Async backfill detected gaps from Databento historical.
+
+        Always backfills both 1m and 5m to keep them in sync.
+        """
         try:
             from ..market_data.databento_provider import DabentoProvider
             config = get_market_data_config()
             inner = DabentoProvider(config)
             db_symbol = config.get("symbol", "NQ.v.0")
 
+            # Backfill both 1m and 5m for each gap to keep intervals in sync
+            intervals = {"1m", "5m"}
+            intervals.add(interval)
+
             from ..db.models import get_session as _get_db_session
             for gap_start, gap_end in gaps:
                 start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
                 end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
-                logger.info("Candle gap backfill %s: %s → %s", interval, start_dt, end_dt)
 
-                bars = await asyncio.wait_for(
-                    inner.get_bars(db_symbol, interval, start_dt, end_dt),
-                    timeout=60.0,
-                )
-                if bars:
-                    db = _get_db_session()
+                for iv in intervals:
+                    logger.info("Candle gap backfill %s: %s → %s", iv, start_dt, end_dt)
                     try:
-                        repo = MarketRepo(db)
-                        count = repo.bulk_insert_candles(symbol, interval, bars)
-                        logger.info("Candle gap backfill %s: inserted %d bars", interval, count)
-                    finally:
-                        db.close()
+                        bars = await asyncio.wait_for(
+                            inner.get_bars(db_symbol, iv, start_dt, end_dt),
+                            timeout=60.0,
+                        )
+                        if bars:
+                            db = _get_db_session()
+                            try:
+                                repo = MarketRepo(db)
+                                count = repo.bulk_insert_candles(symbol, iv, bars)
+                                logger.info("Candle gap backfill %s: inserted %d bars", iv, count)
+                            finally:
+                                db.close()
+                    except Exception as e:
+                        logger.warning("Candle gap backfill %s failed: %s", iv, e)
         except Exception as e:
             logger.warning("Candle gap backfill failed (non-fatal): %s", e)
 

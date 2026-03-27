@@ -282,7 +282,7 @@ class InterwettenRetriever(BrowserRetriever):
         sport_id, slug = sport_info
         url = f"{self.base_url}/en/sportsbook/o/{sport_id}/{slug}"
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             # Use state='attached' to bypass cookie banner overlay
             try:
                 await page.wait_for_selector('a[href*="/l/"]', timeout=5000, state="attached")
@@ -332,7 +332,7 @@ class InterwettenRetriever(BrowserRetriever):
         """Extract events from a single league page."""
         url = f"{self.base_url}/en/sportsbook/l/{league_id}/{league_slug}"
         try:
-            resp = await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             if not resp or resp.status != 200:
                 status = resp.status if resp else '?'
                 if status != 404:
