@@ -159,7 +159,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
       </div>
 
       {/* TPO Profiles (per-session toggles + stats) */}
-      {(tpo || sessionTPO) && (
+      {sessionTPO && (
         <div className="px-2 py-1 border-b border-border last:border-b-0">
           <div className="flex gap-2 mb-1">
             <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">TPO</button>
@@ -168,23 +168,11 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
             <button onClick={() => toggleGroup('tpo_ny')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_ny') ? 'text-muted line-through' : 'text-red-400'}`}>NY</button>
           </div>
 
-          {/* Composite TPO (from /tpo/live) */}
-          {tpo && (
-            <div className="mb-1.5">
-              <Row label="Shape" value={tpo.profile_shape} color="text-orange-300" />
-              <Row label="Opening" value={`${tpo.opening_type} ${tpo.opening_direction === 'up' ? '\u2191' : tpo.opening_direction === 'down' ? '\u2193' : '\u2194'}`} color="text-orange-300" />
-              <Row label="Rotation" value={`${tpo.rotation_factor > 0 ? '+' : ''}${tpo.rotation_factor.toFixed(1)}`} color={tpo.rotation_factor > 0 ? 'text-emerald-400' : tpo.rotation_factor < 0 ? 'text-red-400' : 'text-muted2'} />
-            </div>
-          )}
-
-          {/* Per-session TPO stats */}
-          {sessionTPO && (
-            <div className="space-y-1">
-              <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
-              <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
-              <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-400" hidden={isGroupHidden('tpo_ny')} />
-            </div>
-          )}
+          <div className="space-y-1">
+            <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
+            <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
+            <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-400" hidden={isGroupHidden('tpo_ny')} />
+          </div>
         </div>
       )}
 
