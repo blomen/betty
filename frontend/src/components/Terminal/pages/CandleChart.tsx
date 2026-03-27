@@ -453,9 +453,20 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const maxCount = Math.max(...tpoKeys.map(k => tpoSession.tpo_counts[k]));
         if (maxCount <= 0) continue;
 
-        // Max bar width: up to 40% of box width
-        const barMaxW = Math.min(boxWidth * 0.4, 120);
-        const barHeight = 3; // pixels per price level
+        // Compute bar height from price spacing on chart
+        // Use two adjacent prices to measure pixel distance per tick
+        const sortedNums = tpoKeys.map(Number).sort((a, b) => a - b);
+        let barHeight = 1;
+        if (sortedNums.length >= 2) {
+          const y0 = pSeries.priceToCoordinate(sortedNums[0]);
+          const y1 = pSeries.priceToCoordinate(sortedNums[1]);
+          if (y0 !== null && y1 !== null) {
+            barHeight = Math.max(1, Math.abs(y0 - y1) - 0.5);
+          }
+        }
+
+        // Max bar width: up to 25% of box width, capped
+        const barMaxW = Math.min(boxWidth * 0.25, 80);
 
         for (const pk of tpoKeys) {
           const priceNum = Number(pk);
@@ -469,14 +480,14 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
 
           // POC = bright solid, VA = medium, outside = faint
           ctx.fillStyle = color;
-          ctx.globalAlpha = isPOC ? 0.7 : inVA ? 0.35 : 0.15;
+          ctx.globalAlpha = isPOC ? 0.75 : inVA ? 0.3 : 0.12;
           ctx.fillRect(startX, y - barHeight / 2, barW, barHeight);
 
           // POC: bright left border accent
           if (isPOC) {
             ctx.fillStyle = color;
             ctx.globalAlpha = 1.0;
-            ctx.fillRect(startX, y - barHeight / 2, 2, barHeight);
+            ctx.fillRect(startX, y - barHeight / 2, 1.5, barHeight);
           }
         }
         ctx.globalAlpha = 1.0;
