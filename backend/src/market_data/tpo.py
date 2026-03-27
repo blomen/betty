@@ -365,7 +365,7 @@ def build_full_tpo_profile(bars_30m: list[dict], tick_size: float = 0.25) -> TPO
 
 @dataclass
 class SessionTPO:
-    """Lightweight per-session TPO profile for RL features."""
+    """Per-session TPO profile with full letter data for visualization."""
     session: str       # "tokyo" | "london" | "ny"
     poc: float
     vah: float
@@ -376,6 +376,15 @@ class SessionTPO:
     ib_valid: bool     # False if IB bars have < MIN_IB_TPO_COUNT price levels
     poor_high: bool
     poor_low: bool
+    # Visualization fields:
+    letters: dict[float, list[str]] = field(default_factory=dict)
+    tpo_counts: dict[float, int] = field(default_factory=dict)
+    upper_excess: int = 0
+    lower_excess: int = 0
+    session_high: float = 0.0
+    session_low: float = 0.0
+    opening_type: str = "OA"
+    opening_direction: str = "neutral"
 
 
 @dataclass
@@ -419,6 +428,8 @@ def _build_session_tpo(
 
     profile = compute_tpo_profile(bars_30m, tick_size=tick_size)
     shape = classify_tpo_shape(profile)
+    opening_type, opening_direction = classify_opening_type(bars_30m)
+    upper_excess, lower_excess = detect_excess(profile)
 
     # IB validity: check if first 2 bars touch enough price levels
     ib_bars = bars_30m[:2]
@@ -443,6 +454,14 @@ def _build_session_tpo(
         ib_valid=ib_valid,
         poor_high=profile.poor_high,
         poor_low=profile.poor_low,
+        letters=profile.letters,
+        tpo_counts={p: len(v) for p, v in profile.letters.items()},
+        upper_excess=upper_excess,
+        lower_excess=lower_excess,
+        session_high=max(b["high"] for b in bars_30m),
+        session_low=min(b["low"] for b in bars_30m),
+        opening_type=opening_type,
+        opening_direction=opening_direction,
     )
 
 
