@@ -14,7 +14,7 @@ import {
   ColorType,
 } from 'lightweight-charts';
 import { api } from '@/services/api';
-import type { CandleData, ExpandedSession, TPOLiveProfile } from '@/types/market';
+import type { CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse, SessionTPOData } from '@/types/market';
 
 const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
@@ -198,6 +198,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   // TPO overlay data
   const tpoRef = useRef<TPOLiveProfile | null>(null);
   tpoRef.current = tpo ?? null;
+
+  // Per-session TPO letter grid data
+  const sessionTPORef = useRef<SessionTPOResponse | null>(null);
+  const [sessionTPOLoaded, setSessionTPOLoaded] = useState(false);
 
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
@@ -425,31 +429,125 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
       }
     }
 
-    // --- TPO histogram on right edge (orange, next to VP histograms) ---
-    const tpoData = tpoRef.current;
-    if (tpoData && !hidden?.has('vp_tpo')) {
-      const counts = tpoData.tpo_counts;
-      const prices = Object.keys(counts).map(Number);
-      if (prices.length > 0) {
-        const maxCount = Math.max(...prices.map(p => counts[String(p)]));
-        if (maxCount > 0) {
-          const tpoBarMaxWidth = 60;
-          // Offset TPO bars slightly left of VP bars to avoid overlap
-          const tpoXRight = xRight - maxBarWidth - 4;
+    // --- Per-session TPO letter grids (inside session boxes) ---
+    const sessionTPO = sessionTPORef.current;
+    if (sessionTPO && boxes.length > 0) {
+      const SESSION_TPO_MAP: Record<string, { data: SessionTPOData | null; hiddenKey: string; color: string }> = {
+        'Tokyo':    { data: sessionTPO.sessions.tokyo,  hiddenKey: 'tpo_tky_letters', color: '#06B6D4' },
+        'London':   { data: sessionTPO.sessions.london, hiddenKey: 'tpo_ldn_letters', color: '#10B981' },
+        'New York': { data: sessionTPO.sessions.ny,     hiddenKey: 'tpo_ny_letters',  color: '#EF4444' },
+      };
 
-          for (const price of prices) {
-            const y = pSeries.priceToCoordinate(price);
-            if (y === null || y < 0 || y > rect.height) continue;
+      for (const box of boxes) {
+        const tpoMeta = SESSION_TPO_MAP[box.name];
+        if (!tpoMeta || !tpoMeta.data || hidden?.has(tpoMeta.hiddenKey)) continue;
+        const tpoSession = tpoMeta.data;
+        const color = tpoMeta.color;
 
-            const count = counts[String(price)];
-            const barW = (count / maxCount) * tpoBarMaxWidth;
-            const isPOC = price === tpoData.poc;
-            const inVA = price >= tpoData.val && price <= tpoData.vah;
+        // Box right edge X coordinate (with padding)
+        const boxRightX = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+        if (boxRightX === null) continue;
+        const anchorX = Math.min(boxRightX - 4, rect.width);
 
-            const alpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
-            ctx.fillStyle = `rgba(255, 107, 53, ${alpha})`;
-            ctx.fillRect(tpoXRight - barW, y - 1, barW, 2);
+        // Box width check: if too narrow, skip letters (graceful degradation)
+        const boxLeftX = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
+        const boxWidth = boxLeftX !== null ? Math.abs(anchorX - boxLeftX) : 200;
+        if (boxWidth < 60) continue;
+
+        // Sort prices descending (high to low on chart)
+        const prices = Object.keys(tpoSession.letters).map(Number).sort((a, b) => b - a);
+        if (prices.length === 0) continue;
+
+        ctx.save();
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+
+        for (const price of prices) {
+          const y = pSeries.priceToCoordinate(price);
+          if (y === null || y < 0 || y > rect.height) continue;
+
+          const letters = tpoSession.letters[String(price)];
+          const letterStr = letters.join(' ');
+          const isPOC = price === tpoSession.poc;
+          const inVA = price >= tpoSession.val && price <= tpoSession.vah;
+
+          // Opacity: POC=1.0, VA=0.7, outside=0.4
+          const alpha = isPOC ? 1.0 : inVA ? 0.7 : 0.4;
+
+          // POC row background highlight
+          if (isPOC) {
+            const textWidth = ctx.measureText(letterStr + ' ◄').width;
+            ctx.fillStyle = `${color}1F`;
+            ctx.fillRect(anchorX - textWidth - 6, y - 7, textWidth + 8, 14);
           }
+
+          ctx.fillStyle = color;
+          ctx.globalAlpha = alpha;
+          ctx.fillText(isPOC ? `${letterStr} ◄` : letterStr, anchorX, y);
+        }
+
+        ctx.globalAlpha = 1.0;
+
+        // --- Session metadata footer at bottom of box ---
+        const boxBottomY = pSeries.priceToCoordinate(box.low);
+        if (boxBottomY !== null) {
+          const ibRange = tpoSession.ib_valid
+            ? ((tpoSession.ib_high - tpoSession.ib_low) / 0.25).toFixed(0)
+            : '—';
+          const arrow = tpoSession.opening_direction === 'up' ? '↑'
+            : tpoSession.opening_direction === 'down' ? '↓' : '↔';
+          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}  ex:${tpoSession.upper_excess}/${tpoSession.lower_excess}`;
+          ctx.font = '8px monospace';
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.5;
+          ctx.textAlign = 'right';
+          ctx.fillText(footerText, anchorX, boxBottomY + 12);
+          ctx.globalAlpha = 1.0;
+        }
+
+        ctx.restore();
+
+        // --- POC/VAH/VAL dashed extension lines ---
+        const dayEndEpoch = box.endEpoch + (22 * 60 - epochToCETMinute(box.endEpoch)) * 60;
+        const lineEndX = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
+
+        const prefixMap: Record<string, string> = { 'Tokyo': 'TKY', 'London': 'LDN', 'New York': 'NY' };
+        const prefix = prefixMap[box.name] || '';
+
+        const levels = [
+          { price: tpoSession.poc, label: `${prefix} POC`, alpha: 0.6, dash: [4, 3], key: `tpo_${prefix.toLowerCase()}_poc` },
+          { price: tpoSession.vah, label: `${prefix} VAH`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix.toLowerCase()}_vah` },
+          { price: tpoSession.val, label: `${prefix} VAL`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix.toLowerCase()}_val` },
+        ];
+
+        for (const lv of levels) {
+          if (hidden?.has(lv.key)) continue;
+          const y = pSeries.priceToCoordinate(lv.price);
+          if (y === null) continue;
+
+          const lx = boxRightX ?? 0;
+          const rx = lineEndX ?? rect.width;
+          if (rx < 0 || lx > rect.width) continue;
+          const drawX1 = Math.max(0, lx);
+          const drawX2 = Math.min(rect.width, rx);
+
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = lv.alpha;
+          ctx.lineWidth = 1;
+          ctx.setLineDash(lv.dash);
+          ctx.beginPath();
+          ctx.moveTo(drawX1, y);
+          ctx.lineTo(drawX2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = color;
+          ctx.textAlign = 'left';
+          ctx.fillText(lv.label, drawX1 + 3, y - 3);
+          ctx.globalAlpha = 1.0;
+          ctx.restore();
         }
       }
     }
@@ -626,8 +724,22 @@ export function CandleChart({ lastCandle, session, hiddenLevels, tpo }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Fetch per-session TPO letter grid data — once on mount
+  useEffect(() => {
+    let cancelled = false;
+    api.getSessionTPO('NQ').then(res => {
+      if (!cancelled && res.sessions) {
+        sessionTPORef.current = res;
+        setSessionTPOLoaded(true);
+        drawOverlays();
+      }
+    }).catch(err => { console.warn('[SessionTPO] fetch failed:', err); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Redraw when VP data loads, TPO changes, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, hiddenLevels, tpo, drawOverlays]);
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, tpo, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {
