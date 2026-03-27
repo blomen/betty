@@ -19,6 +19,7 @@ import type { CandleData, ExpandedSession, SessionTPOResponse, SessionTPOData } 
 const INTERVAL = '1m';
 const INITIAL_DAYS = 3;
 const SCROLL_DAYS = 1;
+const CANDLE_CACHE_KEY = 'firev_candles_1m';
 
 // VP overlay config: which timeframes to show, with colors
 const VP_OVERLAYS = [
@@ -621,32 +622,52 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     volumeSeriesRef.current = volumeSeries;
     anchorSeriesRef.current = anchorSeries;
 
-    // Load candles immediately after chart is created
+    // Load candles: render from sessionStorage cache instantly, then refresh from API
+    const applyCandles = (sorted: CandleData[]) => {
+      candlesRef.current = sorted;
+      try {
+        priceSeries.setData(sorted.map(toCandle));
+        volumeSeries.setData(sorted.map(toVolume));
+      } catch (err) {
+        console.error('Chart setData failed:', err, 'candles:', sorted.length);
+        setNoData(true);
+        return false;
+      }
+      chart.timeScale().scrollToRealTime();
+      setNoData(false);
+      return true;
+    };
+
+    // Phase 1: Instant render from cache (if available)
+    let hadCache = false;
+    try {
+      const cached = sessionStorage.getItem(CANDLE_CACHE_KEY);
+      if (cached) {
+        const parsed: CandleData[] = JSON.parse(cached);
+        if (parsed.length > 0) {
+          hadCache = applyCandles(parsed);
+          if (hadCache) setLoading(false);
+        }
+      }
+    } catch { /* corrupt cache, ignore */ }
+
+    // Phase 2: Fetch fresh data from API (background if cache hit)
     (async () => {
       try {
-        setLoading(true);
+        if (!hadCache) setLoading(true);
         const res = await api.getCandles('NQ', INTERVAL, undefined, INITIAL_DAYS);
         if (res.candles?.length) {
-          // Ensure all timestamps are numbers (API might return strings)
           const cleaned = res.candles.map(c => ({ ...c, t: Number(c.t) })).filter(c => !isNaN(c.t) && c.t > 0);
           const sorted = dedupeAndSort(cleaned);
-          candlesRef.current = sorted;
-          try {
-            priceSeries.setData(sorted.map(toCandle));
-            volumeSeries.setData(sorted.map(toVolume));
-          } catch (err) {
-            console.error('Chart setData failed:', err, 'candles:', sorted.length);
-            setNoData(true);
-            return;
-          }
-          chart.timeScale().scrollToRealTime();
-          setNoData(false);
-        } else {
+          applyCandles(sorted);
+          // Persist to cache for next page load
+          try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(sorted)); } catch { /* quota */ }
+        } else if (!hadCache) {
           setNoData(true);
         }
       } catch (err) {
         console.warn('Failed to load candles:', err);
-        setNoData(true);
+        if (!hadCache) setNoData(true);
       } finally {
         setLoading(false);
       }
@@ -808,6 +829,11 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     }
     // Redraw overlays so active session box follows price in real-time
     drawOverlays();
+
+    // Periodically persist candles to cache so next page load is instant
+    if (existing.length > 0 && existing.length % 10 === 0) {
+      try { sessionStorage.setItem(CANDLE_CACHE_KEY, JSON.stringify(existing)); } catch { /* quota */ }
+    }
   }, [lastCandle, loading, drawOverlays]);
 
   // Anchor series for no-data state

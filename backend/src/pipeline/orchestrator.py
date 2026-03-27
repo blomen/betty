@@ -75,7 +75,7 @@ class ExtractionPipeline:
         Called after Pinnacle extraction + cache warm-up. Attempts to match
         buffered soft provider events that previously had no Pinnacle match.
         """
-        now = datetime.utcnow()  # naive UTC to match SQLite stored datetimes
+        now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC to match SQLite stored datetimes
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
@@ -1094,6 +1094,9 @@ class ExtractionPipeline:
                 odds_broadcaster.publish("tier_complete", {
                     "changed_events": len(self._changed_event_ids),
                 })
+                # Invalidate opportunity response cache so next request gets fresh data
+                from ..api.routes.opportunities import _opp_cache
+                _opp_cache.clear()
 
             # Count totals
             results["total_events"] = self.session.query(Event).count()

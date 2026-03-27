@@ -46,16 +46,16 @@ export function TerminalWindow() {
   // On mount: check if we should skip the welcome page
   useEffect(() => {
     const checkSession = async () => {
-      // If sessionStorage says we already selected a profile this session, skip welcome
+      // If localStorage says we already selected a profile this session, skip welcome
       if (localStorage.getItem('bbq_session_active') === '1') {
         setShowWelcome(false);
         setWelcomeChecked(true);
         return;
       }
 
-      // Check if there's an active profile
+      // Check if there's an active profile — short timeout so UI isn't blocked by slow backend
       try {
-        const { active } = await api.getProfiles();
+        const { active } = await api.getProfiles(undefined, 2000);
         if (active) {
           localStorage.setItem('bbq_session_active', '1');
           setShowWelcome(false);
@@ -63,7 +63,7 @@ export function TerminalWindow() {
           return;
         }
       } catch {
-        // API not ready — skip welcome so dev/offline mode still works
+        // API not ready or timed out — skip welcome so dev/offline mode still works
         setShowWelcome(false);
       }
       setWelcomeChecked(true);

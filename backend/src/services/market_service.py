@@ -1419,11 +1419,24 @@ class MarketService:
         # Clamp outlier wicks from settlement auctions / erroneous ticks
         candles = self._filter_outlier_candles(candles)
 
-        # Detect gaps and trigger async backfill (non-blocking, improves next request)
+        # Detect gaps and trigger async backfill in a background thread
+        # (avoids event loop starvation from Databento API calls blocking HTTP handlers)
         base_interval = "1m" if interval == "15m" else interval
         gaps = self._detect_gaps(candles, base_interval)
         if gaps:
-            asyncio.create_task(self._backfill_gaps(symbol, base_interval, gaps))
+            import threading
+            def _run_backfill(sym, iv, gap_list):
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(self._backfill_gaps(sym, iv, gap_list))
+                except Exception as e:
+                    logger.warning("Background gap backfill failed: %s", e)
+                finally:
+                    loop.close()
+            threading.Thread(
+                target=_run_backfill, args=(symbol, base_interval, gaps),
+                daemon=True, name="candle-backfill",
+            ).start()
 
         result = {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
         MarketService._candle_cache[cache_key] = (result, _time.time() + 30)

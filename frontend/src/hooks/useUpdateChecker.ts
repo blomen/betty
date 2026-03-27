@@ -29,8 +29,11 @@ export function useUpdateChecker(): UpdateState {
 
   async function checkForUpdates() {
     try {
-      // Get current version from our API
-      const versionRes = await fetch('/api/version');
+      // Get current version from our API — short timeout, non-critical
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 3000);
+      const versionRes = await fetch('/api/version', { signal: controller.signal });
+      clearTimeout(tid);
       if (!versionRes.ok) return;
       const info: VersionInfo = await versionRes.json();
 

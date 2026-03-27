@@ -473,7 +473,11 @@ class DatabentoLiveStream:
         Catches mid-session gaps that the watchdog reconnect might miss
         (e.g. stream died briefly but reconnected without triggering backfill,
         or Databento historical wasn't available at reconnect time).
+
+        Runs backfill in a background thread to avoid starving the main event loop
+        (Databento historical API calls can take 30-120s).
         """
+        import threading
         while self._running:
             await asyncio.sleep(self.PERIODIC_BACKFILL_INTERVAL_S)
             if not self._running:
@@ -481,10 +485,16 @@ class DatabentoLiveStream:
             now_epoch = time.time()
             if not self._in_globex(now_epoch):
                 continue
-            try:
-                await self._backfill_gap()
-            except Exception as e:
-                logger.warning("Periodic gap backfill failed (non-fatal): %s", e)
+
+            def _run():
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(self._backfill_gap())
+                except Exception as e:
+                    logger.warning("Periodic gap backfill failed (non-fatal): %s", e)
+                finally:
+                    loop.close()
+            threading.Thread(target=_run, daemon=True, name="periodic-backfill").start()
 
     async def _backfill_gap(self):
         """Backfill candle gaps from Databento historical after reconnect.

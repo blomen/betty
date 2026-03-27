@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 # Key: (type, provider1, provider2, providers, market, sport, min_value, limit)
 # Value: (pre-serialized JSON bytes, expiry_time)
 _opp_cache: dict[tuple, tuple] = {}
-_OPP_CACHE_TTL = 30  # seconds
+_OPP_CACHE_TTL = 120  # seconds — data only changes on extraction (every 5 min)
 
 
 def _get_service(db: Session = Depends(get_db)) -> OpportunityService:

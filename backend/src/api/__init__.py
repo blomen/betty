@@ -52,78 +52,6 @@ logger = logging.getLogger(__name__)
 _startup_time: float = 0.0
 
 
-def _startup_purge():
-    """Clear all extracted data on startup. Preserves user data (bets, profiles, balances).
-
-    Events linked to bets are kept (needed for history). All other events, odds,
-    opportunities, specials, and live status flags are wiped so re-extraction
-    starts fresh.
-
-    Uses a dedicated sqlite3 connection with a short busy_timeout. Each DELETE
-    runs as its own transaction so it grabs and releases the write lock quickly.
-    If any step hits a lock (e.g. from MCP sqlite tool), it skips gracefully —
-    stale data gets overwritten on next extraction anyway.
-    """
-    import sqlite3
-    from ..db.models import DB_PATH
-    from ..constants import SHARP_PROVIDERS
-
-    sharp_list = ",".join(f"'{p}'" for p in SHARP_PROVIDERS)
-
-    conn = sqlite3.connect(str(DB_PATH), timeout=5)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")  # 5s — enough for engine pool to settle
-
-        steps = [
-            ("opportunities", "DELETE FROM opportunities"),
-            # NOTE: specials are NOT purged — LLM research results are expensive
-            # and must persist across restarts. The scraper fully replaces them on each run.
-            ("odds (no bets)", """
-                DELETE FROM odds WHERE event_id IN (
-                    SELECT e.id FROM events e
-                    WHERE e.id NOT IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
-                )
-            """),
-            ("events (no bets)", """
-                DELETE FROM events WHERE id NOT IN (
-                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
-                )
-            """),
-            ("live tracking reset", """
-                UPDATE events SET match_minute = NULL, match_period = NULL
-                WHERE id IN (SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL)
-            """),
-            ("non-sharp odds", f"""
-                DELETE FROM odds WHERE event_id IN (
-                    SELECT DISTINCT event_id FROM bets WHERE event_id IS NOT NULL
-                ) AND provider_id NOT IN ({sharp_list})
-            """),
-        ]
-
-        completed = 0
-        for label, sql in steps:
-            try:
-                conn.execute(sql)
-                conn.commit()
-                completed += 1
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    logger.warning(f"[Startup] Purge skipped '{label}' (DB locked)")
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                else:
-                    raise
-
-        logger.info(f"[Startup] Purge completed ({completed}/{len(steps)} steps)")
-    except Exception as e:
-        logger.error(f"[Startup] Purge failed: {e}")
-    finally:
-        conn.close()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
@@ -131,26 +59,19 @@ async def lifespan(app: FastAPI):
     _startup_time = time.time()
     init_db()
 
-    # Guard: if another backend is already serving, skip the purge.
-    # A duplicate lifespan would wipe all extracted data via _startup_purge().
-    import socket as _sock
-    _dup = False
-    _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-    try:
-        _s.connect(("127.0.0.1", 8000))
-        _dup = True
-        logger.warning(
-            "Port 8000 already serving — skipping startup purge to protect existing data. "
-            "This instance will likely fail to bind."
-        )
-    except (ConnectionRefusedError, OSError):
-        pass  # Port not in use — safe to purge
-    finally:
-        _s.close()
-
-    # No startup purge — data persists across restarts.
-    # Stale data is visible via per-row "Upd" timestamps in the frontend.
-    # Cleanup happens on re-extraction and via the 6-hour cleanup tier.
+    # WAL checkpoint in background thread — don't block event loop on startup
+    import threading
+    def _wal_checkpoint():
+        try:
+            import sqlite3
+            from ..db.models import DB_PATH
+            _wal_conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            _wal_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _wal_conn.close()
+            logger.info("[Startup] WAL checkpoint complete")
+        except Exception as e:
+            logger.warning("[Startup] WAL checkpoint failed: %s", e)
+    threading.Thread(target=_wal_checkpoint, daemon=True, name="startup-wal").start()
 
     # Add extraction-specific log file (INFO level) alongside launcher's root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
@@ -186,6 +107,31 @@ async def lifespan(app: FastAPI):
         import numpy  # noqa: F401 — imported by ml.serving.predictor on first use
     except ImportError:
         pass
+
+    # Warm up opportunity cache in background thread so first page load is fast
+    # Must not block the event loop — otherwise /api/version etc. hang during startup
+    import threading
+    def _warmup_opportunities():
+        try:
+            from ..db.models import get_session as _warmup_session
+            from ..services import OpportunityService
+            from .routes.opportunities import _opp_cache, _OPP_CACHE_TTL
+            _wdb = _warmup_session()
+            try:
+                _wsvc = OpportunityService(_wdb)
+                result = _wsvc.list_opportunities(type='value', limit=500)
+                # Also prime the route-level response cache
+                import json
+                from fastapi.encoders import jsonable_encoder
+                cache_key = ('value', None, None, None, None, None, None, 500)
+                serialized = json.dumps(jsonable_encoder(result), ensure_ascii=False, separators=(",", ":"))
+                _opp_cache[cache_key] = (serialized, time.time() + _OPP_CACHE_TTL)
+                logger.info("[Startup] Opportunity cache warmed (%d opps)", result.get("count", 0))
+            finally:
+                _wdb.close()
+        except Exception as e:
+            logger.warning("[Startup] Opportunity warmup failed: %s", e)
+    threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
@@ -242,42 +188,57 @@ async def lifespan(app: FastAPI):
                 app.state.level_monitor = level_monitor
                 level_monitor.set_async_context(asyncio.get_event_loop(), _get_db_session)
 
-                # Load initial levels if session exists
-                try:
-                    svc = MarketService(_get_db_session())
-                    try:
-                        expanded = await svc.build_expanded_session()
-                        if expanded:
-                            level_monitor.load_levels(expanded)
-                    finally:
-                        svc.db.close()
-                except Exception as e:
-                    logger.warning("Failed to load initial levels for monitor: %s", e)
+                logger.info("Trading features started: Databento stream + level monitor")
 
-                # Refresh COT data on startup
-                try:
-                    from ..market_data.cot import fetch_cot, store_cot_data
-                    reports = await fetch_cot()
-                    if reports:
-                        db = _get_db_session()
+                # Load initial levels + COT in background thread (DB-heavy, would stall event loop)
+                import threading
+                def _load_initial_data():
+                    loop = asyncio.new_event_loop()
+                    async def _run():
                         try:
-                            store_cot_data(db, reports)
-                            db.commit()
-                        finally:
-                            db.close()
-                        logger.info("COT data refreshed: %d reports", len(reports))
-                except Exception as e:
-                    logger.warning("COT refresh failed: %s", e)
+                            svc = MarketService(_get_db_session())
+                            try:
+                                expanded = await svc.build_expanded_session()
+                                if expanded:
+                                    level_monitor.load_levels(expanded)
+                                    logger.info("Initial levels loaded")
+                            finally:
+                                svc.db.close()
+                        except Exception as e:
+                            logger.warning("Failed to load initial levels: %s", e)
 
-                logger.info("Trading features started: Databento stream + level monitor + COT")
+                        try:
+                            from ..market_data.cot import fetch_cot, store_cot_data
+                            reports = await fetch_cot()
+                            if reports:
+                                db = _get_db_session()
+                                try:
+                                    store_cot_data(db, reports)
+                                    db.commit()
+                                finally:
+                                    db.close()
+                                logger.info("COT data refreshed: %d reports", len(reports))
+                        except Exception as e:
+                            logger.warning("COT refresh failed: %s", e)
+                    loop.run_until_complete(_run())
+                    loop.close()
+                threading.Thread(target=_load_initial_data, daemon=True, name="startup-levels").start()
             except Exception as e:
                 logger.error("Trading features startup failed: %s", e, exc_info=True)
 
-            # Backfill market_candles (lowest priority, runs after stream is live)
-            try:
-                await _backfill_candles()
-            except Exception as e:
-                logger.warning("Candle backfill failed: %s", e)
+            # Backfill market_candles in a background thread (lowest priority).
+            # Must not run on the main event loop — Databento API calls (up to 300s)
+            # would starve HTTP handlers.
+            import threading
+            def _run_backfill():
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_backfill_candles())
+                except Exception as e:
+                    logger.warning("Candle backfill failed: %s", e)
+                finally:
+                    loop.close()
+            threading.Thread(target=_run_backfill, daemon=True, name="startup-backfill").start()
 
         async def _backfill_candles():
             from ..market_data.databento_provider import DabentoProvider
@@ -292,7 +253,7 @@ async def lifespan(app: FastAPI):
             fetch_end = now - timedelta(minutes=15)  # Databento ~15 min delay
 
             interval_targets = {
-                "5m": datetime(2010, 6, 6, tzinfo=timezone.utc),
+                "5m": now - timedelta(days=30),   # 1 month of 5m bars (monthly VP)
                 "1m": now - timedelta(days=36),
             }
 

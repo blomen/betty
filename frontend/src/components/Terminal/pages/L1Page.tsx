@@ -3,6 +3,7 @@ import { BookSnapshot } from './BookSnapshot';
 import { CandleChart } from './CandleChart';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useMarketStatus } from '@/hooks/useMarketStatus';
+import { useBackendHealth } from '@/hooks/useBackendHealth';
 import { api } from '@/services/api';
 import type { StreamTickEvent, StreamBookEvent, CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse } from '@/types/market';
 
@@ -20,6 +21,7 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
   const [tpo, setTpo] = useState<TPOLiveProfile | null>(null);
   const [sessionTPO, setSessionTPO] = useState<SessionTPOResponse | null>(null);
   const market = useMarketStatus();
+  const health = useBackendHealth(connected, lastTick ? Date.now() : null);
 
   // Fetch TPO data alongside session updates
   useEffect(() => {
@@ -27,15 +29,19 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
     api.getSessionTPO('NQ').then(setSessionTPO).catch(() => {});
   }, [session]);
 
-  const dotColor = market.state === 'open' && connected
+  const dotColor = market.state === 'open' && connected && health.status !== 'down'
     ? 'bg-emerald-500'
     : market.state === 'halt'
       ? 'bg-yellow-500'
       : 'bg-red-500';
 
-  const statusLabel = !connected && market.state === 'open'
-    ? 'DISCONNECTED'
-    : market.label;
+  const statusLabel = health.status === 'down'
+    ? 'BACKEND DOWN'
+    : health.status === 'slow'
+      ? 'LOOP STALLED'
+      : !connected && market.state === 'open'
+        ? 'DISCONNECTED'
+        : market.label;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-3">
@@ -53,6 +59,23 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
         {price && (
           <span className="text-sm font-mono font-bold text-text">
             NQ {price.toFixed(2)}
+          </span>
+        )}
+        {/* Backend health indicator */}
+        {health.status !== 'ok' && health.status !== 'checking' && (
+          <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${
+            health.status === 'down' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
+          }`}>
+            {health.message}
+            {health.latencyMs != null && health.status === 'slow' && ` - restart backend`}
+            {health.status === 'down' && ` - restart backend`}
+          </span>
+        )}
+        {health.latencyMs != null && (
+          <span className={`text-xs font-mono ${
+            health.latencyMs > 2000 ? 'text-red-400' : health.latencyMs > 500 ? 'text-yellow-400' : 'text-zinc-600'
+          }`}>
+            {health.latencyMs}ms
           </span>
         )}
         <span className="text-xs text-muted font-mono ml-auto">LEVEL 1</span>

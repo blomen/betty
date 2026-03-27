@@ -160,8 +160,10 @@ class MarketRepo:
         if not bars:
             return 0
         start, end = bars[0].timestamp, bars[-1].timestamp
+        # Normalize existing timestamps to naive UTC for comparison
+        # (SQLite stores naive, Databento returns tz-aware UTC)
         existing = {
-            row.ts
+            row.ts.replace(tzinfo=None) if row.ts.tzinfo else row.ts
             for row in self.db.query(MarketCandle.ts).filter(
                 MarketCandle.symbol == symbol,
                 MarketCandle.interval == interval,
@@ -172,7 +174,7 @@ class MarketRepo:
         new_rows = [
             MarketCandle(symbol=symbol, interval=interval, ts=b.timestamp, o=b.open, h=b.high, l=b.low, c=b.close, v=b.volume)
             for b in bars
-            if b.timestamp not in existing
+            if (b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp) not in existing
         ]
         if new_rows:
             self.db.bulk_save_objects(new_rows)

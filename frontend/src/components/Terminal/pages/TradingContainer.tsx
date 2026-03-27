@@ -236,7 +236,7 @@ export function TradingContainer({ activeSubTab }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0" onClick={unlock}>
-      {activeSubTab === 'tradingL1' ? (
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingL1' ? '' : 'hidden'}`}>
         <L1Page
           lastTick={lastTick}
           book={book}
@@ -244,7 +244,8 @@ export function TradingContainer({ activeSubTab }: Props) {
           connected={connected}
           session={session}
         />
-      ) : (
+      </div>
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingVectors' ? '' : 'hidden'}`}>
         <VectorsPage
           session={session}
           levels={levels}
@@ -266,7 +267,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           latestFeatures={latestFeatures}
           dqnInference={dqnInference}
         />
-      )}
+      </div>
     </div>
   );
 }

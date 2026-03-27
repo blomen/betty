@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
+import { NetworkError, TimeoutError } from '@/services/api/client';
 import type { BatchResult } from '@/types';
 import { SettlePanel } from './play/SettlePanel';
 import { CapitalPlanPanel } from './play/CapitalPlanPanel';
@@ -107,6 +108,7 @@ export function PlayPage() {
     data: batchData,
     isLoading,
     isFetching,
+    error: batchError,
     refetch: rebuildBatch,
   } = useQuery<BatchResult>({
     queryKey: ['play-batch', excludedBets],
@@ -115,6 +117,13 @@ export function PlayPage() {
     refetchInterval: 120_000,
     enabled: step !== null && step !== 'settle',
   });
+
+  function batchErrorMessage(): string {
+    if (!batchError) return 'No batch data available.';
+    if (batchError instanceof NetworkError) return 'Backend is not reachable. Start the backend server first.';
+    if (batchError instanceof TimeoutError) return 'Batch request timed out. Backend may be overloaded.';
+    return batchError.message || 'Failed to load batch data.';
+  }
 
   // Confirm capital — just rebuilds batch with mirror-synced balances
   const confirmCapital = useMutation({
@@ -170,7 +179,7 @@ export function PlayPage() {
             {isLoading ? (
               <div className="p-4 text-dark-400 text-sm">Building batch...</div>
             ) : !batchData ? (
-              <div className="p-4 text-dark-400 text-sm">No batch data available. Run extraction first.</div>
+              <div className="p-4 text-dark-400 text-sm">{batchErrorMessage()}</div>
             ) : (
               <CapitalPlanPanel
                 capitalPlan={batchData.capital_plan}
@@ -187,7 +196,7 @@ export function PlayPage() {
             {isLoading ? (
               <div className="p-4 text-dark-400 text-sm">Building batch...</div>
             ) : !batchData ? (
-              <div className="p-4 text-dark-400 text-sm">No batch data available. Run extraction first.</div>
+              <div className="p-4 text-dark-400 text-sm">{batchErrorMessage()}</div>
             ) : (
               <>
                 <SessionBatchPanel

@@ -11,7 +11,9 @@ Usage:
 """
 
 import logging
+import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -21,7 +23,6 @@ from contextlib import closing
 # When there is no console, Python sets sys.stdout/stderr to None, which
 # crashes libraries that call sys.stderr.isatty() (e.g. uvicorn logging).
 import io
-import os
 
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
@@ -236,6 +237,50 @@ def _set_window_icon(icon_path: str, logger: logging.Logger):
         logger.exception("Failed to set window icon")
 
 
+def _kill_orphan_servers(logger: logging.Logger):
+    """Kill orphan backend processes listening on ports 8000-8100.
+
+    Uses netstat to find PIDs bound to our port range, then kills them.
+    Surgical — only targets LISTENING processes on specific ports, so RL
+    training, VSCode, and other node/python processes are untouched.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids_to_kill = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            local_addr = parts[1]
+            state = parts[3]
+            pid = parts[4]
+            # Check if listening on a port in our range
+            if state != "LISTENING" or not pid.isdigit():
+                continue
+            try:
+                addr_port = int(local_addr.rsplit(":", 1)[-1])
+            except ValueError:
+                continue
+            if 8000 <= addr_port <= 8100:
+                pid_int = int(pid)
+                if pid_int > 0 and pid_int != os.getpid():
+                    pids_to_kill.add(pid_int)
+
+        for pid in pids_to_kill:
+            try:
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
+                logger.info("Killed orphan process PID %d", pid)
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("Orphan cleanup skipped", exc_info=True)
+
+
 def _run(logger: logging.Logger, bundled: bool):
     """Core launcher logic, separated for clean error handling."""
     # Set AppUserModelID early so Windows taskbar uses our icon from the start
@@ -247,6 +292,9 @@ def _run(logger: logging.Logger, bundled: bool):
             )
         except Exception:
             pass
+
+    # Kill any orphan servers from previous sessions before finding a port
+    _kill_orphan_servers(logger)
 
     # First-run setup (directories, config, DB, Playwright check)
     from src.first_run import run_first_time_setup

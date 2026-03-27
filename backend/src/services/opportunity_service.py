@@ -54,8 +54,6 @@ class OpportunityService:
         provider_ids = None
         if providers:
             raw_ids = [p.strip() for p in providers.split(',')]
-            # Expand to include canonical providers so dutch/reverse stored
-            # under canonical names are matched when filtering by member alias
             expanded = set(raw_ids)
             for pid in raw_ids:
                 canon = PROVIDER_CANONICAL.get(pid)

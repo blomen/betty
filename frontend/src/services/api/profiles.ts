@@ -2,8 +2,8 @@ import type { Profile, ProfileCreate, ProfileUpdate } from '@/types';
 import { fetchJson } from './client';
 
 export const profilesApi = {
-  async getProfiles(): Promise<{ profiles: Profile[]; active: Profile | null }> {
-    return fetchJson('/profiles');
+  async getProfiles(options?: RequestInit, timeoutMs?: number): Promise<{ profiles: Profile[]; active: Profile | null }> {
+    return fetchJson('/profiles', options, timeoutMs);
   },
 
   async createProfile(data: ProfileCreate): Promise<{ success: boolean; profile: Profile }> {
