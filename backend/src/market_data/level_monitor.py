@@ -52,12 +52,14 @@ class LevelMonitor:
         self._any_at_level: bool = False
         self._tick_buffer = None
         self._candle_flow_fn = None
-        self._open_positions: list[dict] = []  # [{trade_id, direction, entry, stop, targets: [{name, price, hit}]}]
+        self._open_positions: list[dict] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._db_session_factory = None
         self._level_context_lock: asyncio.Lock | None = None
         self._last_ml_features: dict | None = None
         self._active_level_name: str | None = None
+        # Live session context for DQN inference (populated by set_session_context)
+        self._session_context: dict | None = None
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
             self._outcome_tracker = OutcomeTracker()
@@ -195,6 +197,15 @@ class LevelMonitor:
             })
         result.sort(key=lambda x: abs(x["distance_ticks"]))
         return result
+
+    def set_session_context(self, ctx: dict) -> None:
+        """Store live session context for DQN inference.
+
+        Called by compute_session route with VWAP bands, VP, TPO, session levels, macro.
+        This allows _build_rl_state to pass complete context to the model.
+        """
+        self._session_context = ctx
+        logger.info("LevelMonitor session context updated (%d keys)", len(ctx))
 
     def set_tick_buffer(self, tick_buffer) -> None:
         """Provide access to the stream's TickBuffer for orderflow computation."""
@@ -617,31 +628,30 @@ class LevelMonitor:
             logger.debug("DQN inference failed for %s", level.name, exc_info=True)
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
-        """Assemble a state dict compatible with RL build_observation()."""
+        """Assemble a state dict compatible with RL build_observation().
+
+        Uses _session_context (populated by compute_session) for complete
+        VWAP, VP, TPO, session level, and macro context. Without it, the
+        model gets ~60% zeros and can't make meaningful predictions.
+        """
         from src.rl.config import LevelType
+        import time as _time
 
         # Map level name to LevelType enum
         name_lower = level.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
         level_type_map = {
-            # Volume profile
             "poc": LevelType.DAILY_POC, "daily_poc": LevelType.DAILY_POC,
             "vah": LevelType.DAILY_VAH, "daily_vah": LevelType.DAILY_VAH,
             "val": LevelType.DAILY_VAL, "daily_val": LevelType.DAILY_VAL,
-            "weekly_poc": LevelType.WEEKLY_POC, "weekly_vah": LevelType.WEEKLY_VAH, "weekly_val": LevelType.WEEKLY_VAL,
-            "monthly_poc": LevelType.MONTHLY_POC, "monthly_vah": LevelType.MONTHLY_VAH, "monthly_val": LevelType.MONTHLY_VAL,
-            # VWAP
             "vwap": LevelType.VWAP,
             "vwap_1sd_upper": LevelType.VWAP_SD1, "vwap_1sd_lower": LevelType.VWAP_SD1,
             "vwap_2sd_upper": LevelType.VWAP_SD2, "vwap_2sd_lower": LevelType.VWAP_SD2,
             "vwap_3sd_upper": LevelType.VWAP_SD3, "vwap_3sd_lower": LevelType.VWAP_SD3,
-            # Session
             "pdh": LevelType.PDH, "pdl": LevelType.PDL,
             "tokyo_high": LevelType.TOKYO_HIGH, "tokyo_low": LevelType.TOKYO_LOW,
             "nyib_high": LevelType.NYIB_HIGH, "nyib_low": LevelType.NYIB_LOW,
-            # TPO
             "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
             "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
-            # Structure
             "naked_poc": LevelType.NAKED_POC,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
@@ -651,19 +661,39 @@ class LevelMonitor:
         if self._candle_flow_fn:
             candles = self._candle_flow_fn() or []
 
+        # Pull context from session data (set by compute_session)
+        ctx = self._session_context or {}
+
+        # Approach direction from level tracking
+        approach = "up" if level.approach_price is not None and level.approach_price < level.price else "down"
+
+        # Recent ticks from tick buffer (for micro features)
+        recent_ticks = []
+        if self._tick_buffer:
+            try:
+                recent_ticks = self._tick_buffer.get_recent(50)
+            except Exception:
+                pass
+
         return {
             "level_type": lt,
             "price": price,
+            "touch_epoch": _time.time(),
+            "approach_direction": approach,
             "candles": candles,
-            "vwap_bands": None,       # Not stored on LevelMonitor
-            "volume_profile": None,   # Not stored on LevelMonitor
-            "tpo_profile": None,      # Not stored on LevelMonitor
-            "session_levels": None,   # Not stored on LevelMonitor
+            "candles_5m": ctx.get("candles_5m", []),
+            "vwap_bands": ctx.get("vwap_bands"),
+            "volume_profile": ctx.get("volume_profile"),
+            "tpo_profile": ctx.get("tpo_profile"),
+            "tpo_profile_obj": ctx.get("tpo_profile_obj"),
+            "session_tpos": ctx.get("session_tpos"),
+            "session_levels": ctx.get("session_levels"),
             "all_levels": [l.price for l in self._levels],
-            "orderflow_signals": None,  # Will be extracted from candles by build_observation
-            "macro": None,            # Not stored on LevelMonitor
-            "session_context": None,  # Not stored on LevelMonitor
-            "day_type": None,
-            "fvgs": [],               # FVGs passed as confluence signals
-            "single_print_zones": [],
+            "orderflow_signals": ctx.get("orderflow_signals"),
+            "macro": ctx.get("macro"),
+            "session_context": ctx.get("session_context"),
+            "day_type": ctx.get("day_type"),
+            "fvgs": ctx.get("fvgs", []),
+            "single_print_zones": ctx.get("single_print_zones", []),
+            "recent_ticks": recent_ticks,
         }

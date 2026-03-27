@@ -111,6 +111,31 @@ async def trigger_compute(
         if expanded:
             level_monitor.load_levels(expanded)
 
+        # Pass session context for DQN live inference
+        # The compute_session return dict contains the VWAP, VP, TPO, and level data
+        session = data.get("session", {})
+        rl_context = {
+            "vwap_bands": {
+                "vwap": session.get("vwap"),
+                "upper_1": session.get("vwap_1sd_upper"),
+                "lower_1": session.get("vwap_1sd_lower"),
+                "upper_2": session.get("vwap_2sd_upper"),
+                "lower_2": session.get("vwap_2sd_lower"),
+                "upper_3": session.get("vwap_3sd_upper"),
+                "lower_3": session.get("vwap_3sd_lower"),
+            } if session.get("vwap") else None,
+            "volume_profile": session.get("volume_profile"),
+            "session_levels": session.get("session_levels"),
+            "session_tpos": session.get("session_tpos_obj"),
+            "tpo_profile": session.get("tpo"),
+            "session_context": session.get("session_context"),
+            "macro": session.get("macro"),
+            "day_type": session.get("day_type"),
+            "fvgs": [],
+            "single_print_zones": [],
+        }
+        level_monitor.set_session_context(rl_context)
+
     return data
 
 
@@ -455,6 +480,100 @@ async def backfill_trades(
         end=end_date,
     )
     return {"status": "ok", "ticks_inserted": count, "symbol": symbol}
+
+
+@router.post("/backfill-candles")
+async def backfill_candles(
+    symbol: str = Query(default="NQ"),
+    days: int = Query(default=1, ge=1, le=30, description="Days to scan for gaps"),
+    db=Depends(get_db),
+):
+    """Detect and backfill candle gaps from Databento historical.
+
+    Scans the last N days of 1m and 5m candles for gaps and fills them.
+    Returns synchronously (not fire-and-forget) so you can see results/errors.
+    """
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    api_key = os.environ.get("DATABENTO_API_KEY")
+    if not api_key:
+        return {"error": "DATABENTO_API_KEY not set"}
+
+    from ...market_data.databento_provider import DabentoProvider
+    from ...config.trading_loader import get_market_data_config
+    from ...repositories.market_repo import MarketRepo
+    from ...db.models import get_session as get_db_session
+
+    config = get_market_data_config()
+    db_symbol = config.get("symbol", "NQ.v.0")
+    provider = DabentoProvider(config)
+
+    now = datetime.now(timezone.utc)
+    lookback_start = now - timedelta(days=days)
+    # Databento historical has ~15 min delay
+    fetch_end = now - timedelta(minutes=15)
+
+    repo = MarketRepo(db)
+    results = {}
+
+    for interval in ("1m", "5m"):
+        bucket_s = 60 if interval == "1m" else 300
+        max_gap = bucket_s * 3
+
+        rows = repo.get_candles(symbol, interval, lookback_start, now)
+        if len(rows) < 2:
+            results[interval] = {"status": "insufficient_data", "rows": len(rows)}
+            continue
+
+        # Find gaps
+        gaps = []
+        for i in range(1, len(rows)):
+            ts_prev = rows[i - 1].ts if rows[i - 1].ts.tzinfo else rows[i - 1].ts.replace(tzinfo=timezone.utc)
+            ts_curr = rows[i].ts if rows[i].ts.tzinfo else rows[i].ts.replace(tzinfo=timezone.utc)
+            diff = (ts_curr - ts_prev).total_seconds()
+            if diff > max_gap and ts_curr < fetch_end:
+                gaps.append({"start": ts_prev.isoformat(), "end": ts_curr.isoformat(), "minutes": round(diff / 60)})
+
+        if not gaps:
+            results[interval] = {"status": "no_gaps", "candles_scanned": len(rows)}
+            continue
+
+        # Backfill each gap
+        total_inserted = 0
+        gap_details = []
+        for gap in gaps:
+            start_dt = datetime.fromisoformat(gap["start"])
+            end_dt = datetime.fromisoformat(gap["end"])
+            try:
+                bars = await asyncio.wait_for(
+                    provider.get_bars(db_symbol, interval, start_dt, end_dt),
+                    timeout=120.0,
+                )
+                if bars:
+                    write_db = get_db_session()
+                    try:
+                        count = MarketRepo(write_db).bulk_insert_candles(symbol, interval, bars)
+                        total_inserted += count
+                        gap_details.append({**gap, "fetched": len(bars), "inserted": count})
+                    finally:
+                        write_db.close()
+                else:
+                    gap_details.append({**gap, "fetched": 0, "inserted": 0, "note": "no data from Databento"})
+            except Exception as e:
+                gap_details.append({**gap, "error": str(e)})
+
+        results[interval] = {
+            "status": "backfilled",
+            "gaps_found": len(gaps),
+            "total_inserted": total_inserted,
+            "gaps": gap_details,
+        }
+
+    # Clear candle cache so next request serves fresh data
+    MarketService._candle_cache.clear()
+
+    return {"symbol": symbol, "days_scanned": days, "results": results}
 
 
 @router.get("/ml/prediction")
