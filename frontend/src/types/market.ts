@@ -480,6 +480,37 @@ export interface TPOLiveProfile {
   letters: Record<string, string[]>;
 }
 
+export interface SessionTPOData {
+  letters: Record<string, string[]>;  // price → [A, B, C, ...]
+  tpo_counts: Record<string, number>; // price → count
+  poc: number;
+  vah: number;
+  val: number;
+  ib_high: number;
+  ib_low: number;
+  ib_valid: boolean;
+  shape: string;
+  opening_type: string;
+  opening_direction: string;
+  poor_high: boolean;
+  poor_low: boolean;
+  upper_excess: number;
+  lower_excess: number;
+  session_high: number;
+  session_low: number;
+}
+
+export interface SessionTPOResponse {
+  date: string;
+  sessions: {
+    tokyo: SessionTPOData | null;
+    london: SessionTPOData | null;
+    ny: SessionTPOData | null;
+  };
+  poc_migration_tokyo_london: number;
+  poc_migration_london_ny: number;
+}
+
 export interface MlHealth {
   model_loaded: boolean;
   version: number | null;

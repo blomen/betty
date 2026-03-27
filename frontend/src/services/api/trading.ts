@@ -260,6 +260,10 @@ export const tradingApi = {
     return fetchJson(`/trading/market/tpo/live?symbol=${symbol}`);
   },
 
+  async getSessionTPO(symbol = 'NQ'): Promise<import('@/types/market').SessionTPOResponse> {
+    return fetchJson(`/trading/market/tpo/sessions?symbol=${symbol}`);
+  },
+
   async getTpoHistory(symbol = 'NQ', days = 30): Promise<{
     sessions: import('@/types/market').TPOLiveProfile[];
     symbol: string;
