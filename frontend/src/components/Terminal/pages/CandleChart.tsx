@@ -439,73 +439,46 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const tpoSession = tpoMeta.data;
         const color = tpoMeta.color;
 
-        // Box right edge X coordinate (with padding)
-        const boxRightX = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
-        if (boxRightX === null) continue;
-        const anchorX = Math.min(boxRightX - 4, rect.width);
-
-        // Box width check: if too narrow, skip letters (graceful degradation)
+        // Box edges
         const boxLeftX = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
-        const boxWidth = boxLeftX !== null ? Math.abs(anchorX - boxLeftX) : 200;
-        if (boxWidth < 60) {
-          // Fallback: compact histogram bars when too narrow for letters
-          const fallbackKeys = Object.keys(tpoSession.tpo_counts);
-          const maxCount = Math.max(...fallbackKeys.map(k => tpoSession.tpo_counts[k]));
-          if (maxCount > 0) {
-            const barMaxW = Math.min(boxWidth * 0.6, 30);
-            for (const pk of fallbackKeys) {
-              const priceNum = Number(pk);
-              const y = pSeries.priceToCoordinate(priceNum);
-              if (y === null || y < 0 || y > rect.height) continue;
-              const count = tpoSession.tpo_counts[pk];
-              const barW = (count / maxCount) * barMaxW;
-              const isPOC = priceNum === tpoSession.poc;
-              const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
-              ctx.fillStyle = color;
-              ctx.globalAlpha = isPOC ? 0.6 : inVA ? 0.35 : 0.2;
-              ctx.fillRect(anchorX - barW, y - 1, barW, 2);
-            }
-            ctx.globalAlpha = 1.0;
-          }
-          continue;
-        }
+        const boxRightX = timeScale.timeToCoordinate(toLocalEpoch(box.endEpoch) as Time);
+        if (boxLeftX === null && boxRightX === null) continue;
+        const startX = (boxLeftX ?? 0) + 2; // left edge + padding
+        const endX = boxRightX ?? rect.width;
+        const boxWidth = Math.abs(endX - startX);
 
-        // Sort price keys descending (high to low on chart)
-        // Keys are strings like "23940.0" from Python — keep original strings for lookup
-        const priceKeys = Object.keys(tpoSession.letters);
-        const prices = priceKeys.map(k => ({ key: k, num: Number(k) })).sort((a, b) => b.num - a.num);
-        if (prices.length === 0) continue;
+        // TPO count keys
+        const tpoKeys = Object.keys(tpoSession.tpo_counts);
+        if (tpoKeys.length === 0) continue;
+        const maxCount = Math.max(...tpoKeys.map(k => tpoSession.tpo_counts[k]));
+        if (maxCount <= 0) continue;
 
-        ctx.save();
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
+        // Max bar width: up to 40% of box width
+        const barMaxW = Math.min(boxWidth * 0.4, 120);
+        const barHeight = 3; // pixels per price level
 
-        for (const { key: priceKey, num: priceNum } of prices) {
+        for (const pk of tpoKeys) {
+          const priceNum = Number(pk);
           const y = pSeries.priceToCoordinate(priceNum);
           if (y === null || y < 0 || y > rect.height) continue;
 
-          const letters = tpoSession.letters[priceKey];
-          if (!letters) continue;
-          const letterStr = letters.join(' ');
+          const count = tpoSession.tpo_counts[pk];
+          const barW = (count / maxCount) * barMaxW;
           const isPOC = priceNum === tpoSession.poc;
           const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
 
-          // Opacity: POC=1.0, VA=0.7, outside=0.4
-          const alpha = isPOC ? 1.0 : inVA ? 0.7 : 0.4;
-
-          // POC row background highlight
-          if (isPOC) {
-            const textWidth = ctx.measureText(letterStr + ' ◄').width;
-            ctx.fillStyle = `${color}1F`;
-            ctx.fillRect(anchorX - textWidth - 6, y - 7, textWidth + 8, 14);
-          }
-
+          // POC = bright solid, VA = medium, outside = faint
           ctx.fillStyle = color;
-          ctx.globalAlpha = alpha;
-          ctx.fillText(isPOC ? `${letterStr} ◄` : letterStr, anchorX, y);
-        }
+          ctx.globalAlpha = isPOC ? 0.7 : inVA ? 0.35 : 0.15;
+          ctx.fillRect(startX, y - barHeight / 2, barW, barHeight);
 
+          // POC: bright left border accent
+          if (isPOC) {
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 1.0;
+            ctx.fillRect(startX, y - barHeight / 2, 2, barHeight);
+          }
+        }
         ctx.globalAlpha = 1.0;
 
         // --- Session metadata footer at bottom of box ---
@@ -516,16 +489,14 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
             : '—';
           const arrow = tpoSession.opening_direction === 'up' ? '↑'
             : tpoSession.opening_direction === 'down' ? '↓' : '↔';
-          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}  ex:${tpoSession.upper_excess}/${tpoSession.lower_excess}`;
+          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}`;
           ctx.font = '8px monospace';
           ctx.fillStyle = color;
           ctx.globalAlpha = 0.5;
-          ctx.textAlign = 'right';
-          ctx.fillText(footerText, anchorX, boxBottomY + 12);
+          ctx.textAlign = 'left';
+          ctx.fillText(footerText, startX, boxBottomY + 12);
           ctx.globalAlpha = 1.0;
         }
-
-        ctx.restore();
 
         // --- POC/VAH/VAL dashed extension lines ---
         const dayEndEpoch = box.endEpoch + (22 * 60 - epochToCETMinute(box.endEpoch)) * 60;

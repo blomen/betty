@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile } from '@/types/market';
+import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile, SessionTPOResponse, SessionTPOData } from '@/types/market';
 
 // Level groups: toggling a group toggles all its children
 const LEVEL_GROUPS: Record<string, string[]> = {
@@ -23,9 +23,10 @@ interface Props {
   hiddenLevels: Set<string>;
   setHiddenLevels: React.Dispatch<React.SetStateAction<Set<string>>>;
   tpo?: TPOLiveProfile | null;
+  sessionTPO?: SessionTPOResponse | null;
 }
 
-export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Props) {
+export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sessionTPO }: Props) {
   const s = session?.session;
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
@@ -157,8 +158,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
         )}
       </div>
 
-      {/* TPO Profiles (per-session toggles) */}
-      {tpo && (
+      {/* TPO Profiles (per-session toggles + stats) */}
+      {(tpo || sessionTPO) && (
         <div className="px-2 py-1 border-b border-border last:border-b-0">
           <div className="flex gap-2 mb-1">
             <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">TPO</button>
@@ -167,23 +168,47 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo }: Pr
             <button onClick={() => toggleGroup('tpo_ny')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_ny') ? 'text-muted line-through' : 'text-red-400'}`}>NY</button>
           </div>
 
-          <div>
-            <Row label="Shape" value={tpo.profile_shape} color="text-orange-300" />
-            <Row
-              label="Opening"
-              value={`${tpo.opening_type} ${tpo.opening_direction === 'up' ? '\u2191' : tpo.opening_direction === 'down' ? '\u2193' : '\u2194'}`}
-              color="text-orange-300"
-            />
-            <Row
-              label="Rotation"
-              value={`${tpo.rotation_factor > 0 ? '+' : ''}${tpo.rotation_factor.toFixed(1)}`}
-              color={tpo.rotation_factor > 0 ? 'text-emerald-400' : tpo.rotation_factor < 0 ? 'text-red-400' : 'text-muted2'}
-            />
-            <Row label="IB Range" value={(tpo.ib_high - tpo.ib_low).toFixed(2)} />
-          </div>
+          {/* Composite TPO (from /tpo/live) */}
+          {tpo && (
+            <div className="mb-1.5">
+              <Row label="Shape" value={tpo.profile_shape} color="text-orange-300" />
+              <Row label="Opening" value={`${tpo.opening_type} ${tpo.opening_direction === 'up' ? '\u2191' : tpo.opening_direction === 'down' ? '\u2193' : '\u2194'}`} color="text-orange-300" />
+              <Row label="Rotation" value={`${tpo.rotation_factor > 0 ? '+' : ''}${tpo.rotation_factor.toFixed(1)}`} color={tpo.rotation_factor > 0 ? 'text-emerald-400' : tpo.rotation_factor < 0 ? 'text-red-400' : 'text-muted2'} />
+            </div>
+          )}
+
+          {/* Per-session TPO stats */}
+          {sessionTPO && (
+            <div className="space-y-1">
+              <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
+              <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
+              <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-400" hidden={isGroupHidden('tpo_ny')} />
+            </div>
+          )}
         </div>
       )}
 
+    </div>
+  );
+}
+
+/** Compact per-session TPO info block */
+function SessionTPOBlock({ label, data, color, hidden }: { label: string; data: SessionTPOData | null; color: string; hidden: boolean }) {
+  if (!data || hidden) return null;
+  const arrow = data.opening_direction === 'up' ? '↑' : data.opening_direction === 'down' ? '↓' : '↔';
+  const ibTicks = data.ib_valid ? ((data.ib_high - data.ib_low) / 0.25).toFixed(0) : '—';
+  return (
+    <div className="text-[10px] leading-tight">
+      <span className={`${color} font-bold`}>{label}</span>
+      <span className="text-muted2 ml-1">
+        {data.shape} {data.opening_type}{arrow}
+      </span>
+      <span className="text-muted2 ml-1">IB:{ibTicks}</span>
+      <div className="text-muted2 ml-2">
+        <span className={color}>POC</span> {data.poc.toFixed(0)}
+        <span className={`${color} ml-1`}>VAH</span> {data.vah.toFixed(0)}
+        <span className={`${color} ml-1`}>VAL</span> {data.val.toFixed(0)}
+      </div>
     </div>
   );
 }

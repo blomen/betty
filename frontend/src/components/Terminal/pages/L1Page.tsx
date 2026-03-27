@@ -4,7 +4,7 @@ import { CandleChart } from './CandleChart';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useMarketStatus } from '@/hooks/useMarketStatus';
 import { api } from '@/services/api';
-import type { StreamTickEvent, StreamBookEvent, CandleData, ExpandedSession, TPOLiveProfile } from '@/types/market';
+import type { StreamTickEvent, StreamBookEvent, CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse } from '@/types/market';
 
 interface Props {
   lastTick: StreamTickEvent | null;
@@ -18,11 +18,13 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
   const price = lastTick?.price ?? session?.price_position?.last_price ?? null;
   const [hiddenLevels, setHiddenLevels] = usePersistedState<Set<string>>('l1-hidden-levels', new Set());
   const [tpo, setTpo] = useState<TPOLiveProfile | null>(null);
+  const [sessionTPO, setSessionTPO] = useState<SessionTPOResponse | null>(null);
   const market = useMarketStatus();
 
   // Fetch TPO data alongside session updates
   useEffect(() => {
     api.getTpoLive('NQ').then(setTpo).catch(() => {});
+    api.getSessionTPO('NQ').then(setSessionTPO).catch(() => {});
   }, [session]);
 
   const dotColor = market.state === 'open' && connected
@@ -65,7 +67,7 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
 
         {/* Right — Book Snapshot (best bid/ask + candle stats) */}
         <div className="border border-border bg-panel min-h-0">
-          <BookSnapshot book={book} lastCandle={lastCandle} session={session} hiddenLevels={hiddenLevels} setHiddenLevels={setHiddenLevels} tpo={tpo} />
+          <BookSnapshot book={book} lastCandle={lastCandle} session={session} hiddenLevels={hiddenLevels} setHiddenLevels={setHiddenLevels} tpo={tpo} sessionTPO={sessionTPO} />
         </div>
       </div>
     </div>
