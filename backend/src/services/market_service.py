@@ -1741,6 +1741,71 @@ class MarketService:
         MarketService._tpo_cache[cache_key] = (now, result)
         return result
 
+    def get_session_tpos(self, symbol: str = "NQ") -> dict:
+        """Per-session TPO profiles (Tokyo/London/NY) with full letter data. Cached 60s."""
+        import time as _time
+        from dataclasses import asdict
+        from zoneinfo import ZoneInfo
+
+        cache_key = f"tpo_sessions_{symbol}"
+        now = _time.time()
+
+        cached = MarketService._tpo_cache.get(cache_key)
+        if cached and now - cached[0] < 60:
+            return cached[1]
+
+        _CET = ZoneInfo("Europe/Stockholm")
+        now_cet = datetime.now(timezone.utc).astimezone(_CET)
+        tpo_date = now_cet.date()
+        day_start = datetime(tpo_date.year, tpo_date.month, tpo_date.day, tzinfo=_CET)
+        day_end = day_start + timedelta(hours=22)
+
+        start_utc = day_start.astimezone(timezone.utc)
+        end_utc = min(day_end, datetime.now(timezone.utc).replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+        rows = self.repo.get_candles(symbol, "1m", start_utc, end_utc)
+
+        # Build 30m bars with timestamps for session splitting
+        chunk = []
+        bars_30m_ts = []
+        for r in rows:
+            chunk.append(r)
+            if len(chunk) == 30:
+                bars_30m_ts.append({
+                    "ts": chunk[0].ts,
+                    "high": max(c.h for c in chunk),
+                    "low": min(c.l for c in chunk),
+                    "open": chunk[0].o,
+                    "close": chunk[-1].c,
+                    "volume": sum(c.v for c in chunk),
+                })
+                chunk = []
+
+        session_tpo_set = compute_session_tpos(bars_30m_ts, tick_size=0.25)
+
+        def _session_to_dict(s):
+            if s is None:
+                return None
+            d = asdict(s)
+            # Convert float keys to strings for JSON serialization
+            d["letters"] = {str(k): v for k, v in d["letters"].items()}
+            d["tpo_counts"] = {str(k): v for k, v in d["tpo_counts"].items()}
+            return d
+
+        result = {
+            "date": tpo_date.isoformat(),
+            "sessions": {
+                "tokyo": _session_to_dict(session_tpo_set.tokyo),
+                "london": _session_to_dict(session_tpo_set.london),
+                "ny": _session_to_dict(session_tpo_set.ny),
+            },
+            "poc_migration_tokyo_london": session_tpo_set.poc_migration_tokyo_london,
+            "poc_migration_london_ny": session_tpo_set.poc_migration_london_ny,
+        }
+
+        MarketService._tpo_cache[cache_key] = (now, result)
+        return result
+
     def backfill_tpo_sessions(self, symbol: str = "NQ", days: int = 30) -> int:
         """Backfill historical TPO sessions from existing 1m bar data."""
         from dataclasses import asdict

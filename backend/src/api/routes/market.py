@@ -574,6 +574,15 @@ async def get_tpo_live(
     return svc.get_tpo_live(symbol=symbol)
 
 
+@router.get("/tpo/sessions")
+async def get_tpo_sessions(
+    symbol: str = Query("NQ"),
+    svc: MarketService = Depends(_svc),
+):
+    """Per-session TPO profiles (Tokyo/London/NY) with letter grids for chart visualization."""
+    return svc.get_session_tpos(symbol=symbol)
+
+
 @router.post("/tpo/backfill")
 async def backfill_tpo(
     symbol: str = Query("NQ"),
