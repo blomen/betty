@@ -424,17 +424,23 @@ export function SessionBatchPanel({
                 className="flex items-center gap-1.5 text-[11px]"
               >
                 <span className="text-amber-400 font-medium">
-                  {proj.cluster || proj.provider_id}
+                  {proj.provider_id}
                 </span>
-                <span className="text-muted">
-                  {proj.wagering_remaining.toFixed(0)} →{' '}
-                  <span className="text-amber-300">
-                    {proj.projected_remaining.toFixed(0)} kr
-                  </span>
-                </span>
+                {(() => {
+                  const total = proj.wagering_total || proj.wagering_remaining;
+                  const beforePct = total > 0 ? Math.round(((total - proj.wagering_remaining) / total) * 100) : 100;
+                  const afterPct = total > 0 ? Math.round(((total - proj.projected_remaining) / total) * 100) : 100;
+                  return (
+                    <>
+                      <span className="text-muted">{beforePct}%</span>
+                      <span className="text-dark-500">→</span>
+                      <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
+                    </>
+                  );
+                })()}
                 {proj.days_remaining != null && (
                   <span className="text-muted text-[10px]">
-                    ({proj.days_remaining}d left)
+                    {proj.days_remaining}d
                   </span>
                 )}
               </div>
