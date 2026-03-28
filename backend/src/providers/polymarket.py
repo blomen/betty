@@ -147,6 +147,8 @@ class PolymarketRetriever(Retriever):
         self._events_by_sport: dict = None  # Pre-indexed by sport for O(1) lookup
         self._clob_prices: dict = {}  # token_id -> depth-adjusted VWAP (populated during extraction)
         self._clob_depth: dict = {}  # token_id -> available depth in USD on ask side
+        self._clob_bids: dict = {}   # token_id -> best bid price (highest bid)
+        self._clob_asks: dict = {}   # token_id -> best ask price (lowest ask)
 
     def _get_sport_url(self, sport: str) -> str:
         return ""
@@ -173,6 +175,22 @@ class PolymarketRetriever(Retriever):
     def _get_clob_depth_usd(self, token_id: str) -> float:
         """Get total available depth in USD on the ask side for a token."""
         return self._clob_depth.get(token_id, 0)
+
+    def _build_outcome(self, name: str, price: float, token_id: str = None, **extra) -> dict:
+        """Build an outcome dict with odds and optional CLOB microstructure data."""
+        outcome = {"name": name, "odds": self._price_to_odds(price)}
+        if token_id:
+            bid = self._clob_bids.get(token_id)
+            ask = self._clob_asks.get(token_id)
+            depth = self._clob_depth.get(token_id)
+            if bid is not None:
+                outcome["bid"] = bid
+            if ask is not None:
+                outcome["ask"] = ask
+            if depth is not None:
+                outcome["depth_usd"] = depth
+        outcome.update(extra)
+        return outcome
 
     @staticmethod
     def _calc_vwap_from_asks(asks: list[dict], fill_size_usd: float) -> tuple[float, float]:
@@ -246,6 +264,7 @@ class PolymarketRetriever(Retriever):
                         if resp.status == 200:
                             data = await resp.json()
                             asks = data.get("asks", [])
+                            bids = data.get("bids", [])
                             if asks:
                                 vwap, depth_usd = self._calc_vwap_from_asks(asks, fill_size)
                                 # Always store depth so _is_liquid works correctly
@@ -254,6 +273,21 @@ class PolymarketRetriever(Retriever):
                                 # _get_clob_price falls back to Gamma mid-price
                                 if 0.01 < vwap < 0.99:
                                     self._clob_prices[token_id] = vwap
+                                # Extract best ask (lowest ask = first in ascending list)
+                                try:
+                                    best_ask = float(asks[0]["price"])
+                                    if 0.01 < best_ask < 0.99:
+                                        self._clob_asks[token_id] = best_ask
+                                except (ValueError, TypeError, KeyError, IndexError):
+                                    pass
+                            # Extract best bid (highest bid = first in descending list)
+                            if bids:
+                                try:
+                                    best_bid = float(bids[0]["price"])
+                                    if 0.01 < best_bid < 0.99:
+                                        self._clob_bids[token_id] = best_bid
+                                except (ValueError, TypeError, KeyError, IndexError):
+                                    pass
                         elif resp.status != 404:
                             logger.debug(f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}...")
                 except Exception as e:
@@ -1088,8 +1122,8 @@ class PolymarketRetriever(Retriever):
                             return {
                                 "type": "moneyline",
                                 "outcomes": [
-                                    {"name": matched_team, "odds": self._price_to_odds(yes_price)},
-                                    {"name": other_team, "odds": self._price_to_odds(no_price)},
+                                    self._build_outcome(matched_team, yes_price, yes_token),
+                                    self._build_outcome(other_team, no_price, no_token),
                                 ]
                             }
 
@@ -1112,10 +1146,7 @@ class PolymarketRetriever(Retriever):
                     # Re-check after CLOB — VWAP can push price outside valid range
                     if not (0.02 < price < 0.98):
                         continue
-                    formatted_outcomes.append({
-                        "name": name,
-                        "odds": self._price_to_odds(price),
-                    })
+                    formatted_outcomes.append(self._build_outcome(name, price, token_id))
 
             if not formatted_outcomes:
                 return None
@@ -1216,11 +1247,7 @@ class PolymarketRetriever(Retriever):
                 price = self._get_clob_price(token_id, p) if token_id else p
                 if not (0.02 < price < 0.98):
                     continue
-                result_outcomes.append({
-                    "name": norm,
-                    "odds": self._price_to_odds(price),
-                    "point": point,
-                })
+                result_outcomes.append(self._build_outcome(norm, price, token_id, point=point))
 
             if len(result_outcomes) != 2:
                 return None
@@ -1297,20 +1324,12 @@ class PolymarketRetriever(Retriever):
                     price = self._get_clob_price(token_id, p) if token_id else p
                     if not (0.02 < price < 0.98):
                         continue
-                    result_outcomes.append({
-                        "name": "over",
-                        "odds": self._price_to_odds(price),
-                        "point": point,
-                    })
+                    result_outcomes.append(self._build_outcome("over", price, token_id, point=point))
                 elif name_lower == "under":
                     price = self._get_clob_price(token_id, p) if token_id else p
                     if not (0.02 < price < 0.98):
                         continue
-                    result_outcomes.append({
-                        "name": "under",
-                        "odds": self._price_to_odds(price),
-                        "point": point,
-                    })
+                    result_outcomes.append(self._build_outcome("under", price, token_id, point=point))
 
             if len(result_outcomes) != 2:
                 return None
@@ -1386,10 +1405,7 @@ class PolymarketRetriever(Retriever):
                 price = self._get_clob_price(token_id, p) if token_id else p
                 if not (0.02 < price < 0.98):
                     continue
-                formatted_outcomes.append({
-                    "name": norm,
-                    "odds": self._price_to_odds(price),
-                })
+                formatted_outcomes.append(self._build_outcome(norm, price, token_id))
 
             if len(formatted_outcomes) != 2:
                 return None
@@ -1460,11 +1476,7 @@ class PolymarketRetriever(Retriever):
                 price = self._get_clob_price(token_id, p) if token_id else p
                 if not (0.02 < price < 0.98):
                     continue
-                result_outcomes.append({
-                    "name": norm,
-                    "odds": self._price_to_odds(price),
-                    "point": point,
-                })
+                result_outcomes.append(self._build_outcome(norm, price, token_id, point=point))
 
             if len(result_outcomes) != 2:
                 return None
@@ -1489,6 +1501,12 @@ class PolymarketRetriever(Retriever):
         home_odds = None
         draw_odds = None
         away_odds = None
+        home_price = None
+        draw_price = None
+        away_price = None
+        home_token = None
+        draw_token = None
+        away_token = None
 
         home_lower = home.lower()
         away_lower = away.lower()
@@ -1551,21 +1569,27 @@ class PolymarketRetriever(Retriever):
             # Only match specific patterns to avoid BTTS, spreads, totals
             if "end in a draw" in question:
                 draw_odds = odds
+                draw_price = price
+                draw_token = token_id
             elif question.startswith("will ") and " win" in question:
                 # This is a "Will X win?" market - match team name
                 if home_lower in question:
                     home_odds = odds
+                    home_price = price
+                    home_token = token_id
                 elif away_lower in question:
                     away_odds = odds
+                    away_price = price
+                    away_token = token_id
 
         # Build combined 1x2 market
         if home_odds and away_odds:
             outcomes = [
-                {"name": home, "odds": home_odds},
+                self._build_outcome(home, home_price, home_token),
             ]
             if draw_odds:
-                outcomes.append({"name": "Draw", "odds": draw_odds})
-            outcomes.append({"name": away, "odds": away_odds})
+                outcomes.append(self._build_outcome("Draw", draw_price, draw_token))
+            outcomes.append(self._build_outcome(away, away_price, away_token))
 
             return [{
                 "type": "1x2",
