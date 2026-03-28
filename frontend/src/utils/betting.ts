@@ -6,6 +6,9 @@ import { displayTeamName } from '@/utils/formatters';
  */
 export function marketLabel(market: string): string {
   if (market === 'moneyline') return 'ML';
+  if (market === 'spread') return 'SP';
+  if (market === 'total') return 'TOT';
+  if (market === '1x2') return '1X2';
   // Esports map markets: moneyline_m1 → "Map 1", total_m2 → "T Map 2"
   const mapMatch = market.match(/^(moneyline|total)_m(\d)$/);
   if (mapMatch) {

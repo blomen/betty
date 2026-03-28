@@ -148,10 +148,10 @@ const PolyRow = memo(function PolyRow({
             {isSkipped && <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{vb.skip_reason}</span>}
           </div>
           <div className="text-muted2 text-[11px]">
-            {vb.sport}{vb.league ? ` · ${vb.league}` : ''}{vb.market && vb.market !== '1x2' && vb.market !== 'moneyline' && !vb.market.startsWith('moneyline_m') ? ` · ${vb.market}` : ''} · {formatDateTime(vb.start_time)}
+            {vb.sport} · {formatDateTime(vb.start_time)}
           </div>
         </td>
-        <td className="text-right text-text text-sm">{resolveOutcome(vb)}</td>
+        <td className="text-right text-text text-xs">{resolveOutcome(vb)}</td>
         <td className="text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -585,7 +585,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
                         )}
                       </div>
                       <div className="text-muted2 text-[11px]">
-                        {r.sport}{r.league ? ` · ${r.league}` : ''}{' · '}{formatDateTime(r.start_time)}
+                        {r.sport} · {formatDateTime(r.start_time)}
                       </div>
                     </td>
                     <td className="text-right">{compBadge(r.competitive)}</td>

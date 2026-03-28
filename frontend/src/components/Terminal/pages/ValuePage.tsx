@@ -172,7 +172,7 @@ const OpportunityRow = memo(function OpportunityRow({
             )}
           </div>
           <div className="text-muted2 text-[11px]">
-            {rep.sport}{rep.league ? ` · ${rep.league}` : ''}{rep.market && rep.market !== '1x2' && rep.market !== 'moneyline' ? ` · ${rep.market}` : ''} · {formatDateTime(rep.starts_at)}
+            {rep.sport} · {formatDateTime(rep.starts_at)}
           </div>
         </td>
         <td className="text-right text-sm min-w-0">
@@ -188,7 +188,7 @@ const OpportunityRow = memo(function OpportunityRow({
             )}
           </span>
         </td>
-        <td className="text-right text-text text-sm truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
+        <td className="text-right text-text text-xs truncate">{resolveOutcome(rep.outcome1, rep, rep.point, true)}</td>
         <td className={`text-right text-sm font-medium ${flash ? `flash-${flash}` : ''}`} onClick={(e) => e.stopPropagation()}>
           {editingOdds ? (
             <input
@@ -1034,9 +1034,9 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         <div ref={valueScrollRef} className="absolute inset-0 overflow-y-auto">
         <table className="sq w-full table-fixed">
           <colgroup>
-            <col style={{ width: '28%' }} />
+            <col style={{ width: '22%' }} />
             <col style={{ width: '13%' }} />
-            <col style={{ width: '11%' }} />
+            <col style={{ width: '17%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '6%' }} />

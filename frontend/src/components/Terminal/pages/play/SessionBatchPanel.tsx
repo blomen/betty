@@ -124,7 +124,6 @@ function BetRow({
         {event}
         <div className="text-[10px] text-muted">
           {bet.sport}
-          {bet.league ? ` · ${bet.league}` : ''}
         </div>
       </td>
 

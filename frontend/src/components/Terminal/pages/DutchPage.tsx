@@ -163,11 +163,7 @@ const DutchRow = memo(function DutchRow({
             </button>
           </div>
           <div className="text-muted2 text-[11px]">
-            {opp.sport}
-            {opp.league ? ` · ${opp.league}` : ''}
-            {opp.market && opp.market !== '1x2' && opp.market !== 'moneyline' ? ` · ${opp.market}` : ''}
-            {opp.point != null ? ` · ${opp.point}` : ''}
-            {' · '}{formatDateTime(opp.starts_at)}
+            {opp.sport} · {formatDateTime(opp.starts_at)}
           </div>
         </td>
         <td className="text-right text-muted text-sm">
