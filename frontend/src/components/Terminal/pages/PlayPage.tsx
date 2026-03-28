@@ -32,6 +32,8 @@ function StepIndicator({
   pendingCount: number;
   mirrorRunning: boolean;
 }) {
+  const visibleSteps = pendingCount > 0 ? STEPS : STEPS.filter((s) => s.key !== 'settle');
+
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-border bg-dark-900">
       {/* Mirror status dot */}
@@ -40,9 +42,9 @@ function StepIndicator({
         title={mirrorRunning ? 'Mirror running' : 'Mirror not running'}
       />
 
-      {STEPS.map((step, i) => {
+      {visibleSteps.map((step, i) => {
         const isActive = step.key === current;
-        const currentIdx = STEPS.findIndex((s) => s.key === current);
+        const currentIdx = visibleSteps.findIndex((s) => s.key === current);
         const isPast = i < currentIdx;
 
         const label = step.key === 'settle' && pendingCount > 0
@@ -207,12 +209,16 @@ export function PlayPage() {
                 />
 
                 <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-dark-900">
-                  <button
-                    className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
-                    onClick={() => setStep('settle')}
-                  >
-                    ← Settle
-                  </button>
+                  {pendingCount > 0 ? (
+                    <button
+                      className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
+                      onClick={() => setStep('settle')}
+                    >
+                      ← Settle
+                    </button>
+                  ) : (
+                    <div />
+                  )}
                   <div className="flex items-center gap-2">
                     {batchData.capital_plan.actions.length > 0 && (
                       <button

@@ -84,6 +84,14 @@ class OpportunityService:
                     expanded.add(canon)
             provider_ids = list(expanded)
 
+        # Use profile min_edge if not specified
+        profile = None
+        try:
+            profile = self.profile_repo.get_active()
+        except Exception:
+            pass
+        effective_min_edge = min_value if min_value is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
+
         rows = self.opp_repo.find_active(
             type=type,
             provider1=provider1,
@@ -91,16 +99,16 @@ class OpportunityService:
             provider_ids=provider_ids,
             market=market,
             sport=sport,
-            min_edge=min_value,
+            min_edge=effective_min_edge,
             exclude_provider1=None if provider1 else "polymarket",
             limit=limit,
         )
 
         # Fetch active profile once (used for pending-bet filter + stake calculator)
         stake_calculator = None
-        profile = None
         try:
-            profile = self.profile_repo.get_active()
+            if not profile:
+                profile = self.profile_repo.get_active()
         except Exception:
             pass
 

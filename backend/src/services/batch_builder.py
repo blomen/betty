@@ -128,6 +128,7 @@ class ProviderBalance:
     is_bonus_phase: bool = False    # True when in freebet_available phase
 
     # Wagering info
+    wagering_total: float = 0.0
     wagering_remaining: float = 0.0
     days_remaining: int | None = None
 
@@ -246,7 +247,7 @@ class BatchBuilder:
 
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
-            "summary": self._build_summary(batch + missed),
+            "summary": self._build_summary(batch),
             "balance_status": self._build_balance_status(provider_balances, missed),
             "missed_opportunities": self._build_missed_summary(missed),
             "deposit_recommendations": [],
@@ -351,6 +352,7 @@ class BatchBuilder:
                 trigger_mode=bonus_info.get("trigger_mode", "cumulative"),
                 bonus_amount=bonus_info.get("bonus_amount", 0.0),
                 is_bonus_phase=is_bonus_phase,
+                wagering_total=(bonus_info.get("wagering_requirement", 0) or 0),
                 wagering_remaining=max(0, (bonus_info.get("wagering_requirement", 0) or 0) - (bonus_info.get("wagered_amount", 0) or 0)),
                 days_remaining=bonus_info.get("days_remaining"),
             )
@@ -868,6 +870,7 @@ class BatchBuilder:
             projections.append({
                 "provider_id": pid,
                 "cluster": pb.cluster,
+                "wagering_total": round(pb.wagering_total, 2),
                 "wagering_remaining": round(pb.wagering_remaining, 2),
                 "batch_stake": round(batch_stake, 2),
                 "projected_remaining": round(projected_remaining, 2),

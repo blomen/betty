@@ -265,7 +265,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
 
   const { data: polyData, isLoading } = useQuery({
     queryKey: ['opportunities', 'polymarket'],
-    queryFn: () => api.getPolymarketValue(3, undefined, 50),
+    queryFn: () => api.getPolymarketValue(undefined, undefined, 200),
     placeholderData: keepPreviousData,
   });
   const valueBets = polyData?.value_bets ?? [];

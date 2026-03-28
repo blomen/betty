@@ -819,6 +819,7 @@ export interface CapitalPlan {
 export interface WageringProjection {
   provider_id: string;
   cluster: string;
+  wagering_total: number;
   wagering_remaining: number;
   batch_stake: number;
   projected_remaining: number;

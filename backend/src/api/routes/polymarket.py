@@ -27,34 +27,41 @@ router = APIRouter(prefix="/api/polymarket", tags=["polymarket"])
 
 @router.get("/value")
 async def get_polymarket_value(
-    min_edge: float = Query(3.0, description="Minimum edge percentage"),
+    min_edge: Optional[float] = Query(None, description="Minimum edge percentage (defaults to profile min_edge_pct)"),
     sport: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """Get Polymarket value bets from pre-computed opportunities table."""
     from ...repositories import OpportunityRepo
     opp_repo = OpportunityRepo(db)
 
+    # Use profile min_edge if not specified
+    profile_repo = ProfileRepo(db)
+    profile = None
+    try:
+        profile = profile_repo.get_active()
+    except Exception:
+        pass
+    effective_min_edge = min_edge if min_edge is not None else (getattr(profile, "min_edge_pct", 2.0) or 2.0)
+
     # Read pre-computed opportunities (fast indexed query, no scanning)
     rows = opp_repo.find_active(
         type="value",
         provider_ids=["polymarket"],
         sport=sport,
-        min_edge=min_edge,
+        min_edge=effective_min_edge,
         limit=limit,
     )
 
     # Use total bankroll (same as Value page) — Polymarket is just another provider
     stake_calculator = None
-    profile = None
-    profile_repo = None
     total_bankroll = 0.0
     bonus_status = None
     if rows:
         try:
-            profile_repo = ProfileRepo(db)
-            profile = profile_repo.get_active()
+            if not profile:
+                profile = profile_repo.get_active()
             total_bankroll = profile_repo.get_total_bankroll(profile.id)
             stake_calculator = StakeCalculator(
                 bankroll=total_bankroll,

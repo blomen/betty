@@ -38,12 +38,12 @@ export const specialsApi = {
 
   // ============ Polymarket ============
   async getPolymarketValue(
-    minEdge = 3.0,
+    minEdge?: number,
     sport?: string,
-    limit = 50
+    limit = 200
   ): Promise<PolymarketValueResponse> {
     const params = new URLSearchParams();
-    params.set('min_edge', minEdge.toString());
+    if (minEdge != null) params.set('min_edge', minEdge.toString());
     if (sport) params.set('sport', sport);
     params.set('limit', limit.toString());
     return fetchJson(`/polymarket/value?${params}`);
