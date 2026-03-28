@@ -1218,6 +1218,21 @@ class OpportunityScanner:
                 if not (0.65 < ratio < 1.55):
                     continue
 
+                # Guard: if a provider has only ONE entry at this point and its
+                # outcome label differs from Pinnacle's, it's very likely a convention
+                # mismatch (e.g., Kambi betOfferType 7 stores away@-1.5 meaning
+                # "away team gives 1.5" while Pinnacle's home@-1.5 means "home
+                # team gives 1.5" — completely different bets). Apply a much
+                # tighter ratio to prevent cross-outcome false positives.
+                if len(entries) == 1 and best_label != pin_outcome:
+                    if not (0.80 < ratio < 1.25):
+                        logger.debug(
+                            f"Rejected {provider} {market_key}: single entry with "
+                            f"label '{best_label}' != Pinnacle '{pin_outcome}', "
+                            f"ratio {ratio:.2f} outside tight range (0.80-1.25)"
+                        )
+                        continue
+
                 # Cross-check: if the complement Pinnacle odds exist, verify the
                 # soft entry is closer to THIS point's Pinnacle than to the complement.
                 # Providers like VBet always assign home@negative regardless of who's

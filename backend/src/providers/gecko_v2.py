@@ -111,7 +111,9 @@ class GeckoV2Retriever(BrowserRetriever):
         "MTG2WP": "total",              # Tennis total (games/sets)
         "MTP": "total",                 # Volleyball total (points)
         # Spread (handicap)
-        "M3WHCP": "spread",
+        # M3WHCP is 3-way European handicap (home/draw/away on integer lines).
+        # Excluded: draw absorbs probability, inflating home/away odds vs
+        # Pinnacle's 2-way Asian handicap. Produces false spread edges.
         "M2WHCP": "spread",
         "MW2WHCP": "spread",
         "M2WHCPIO": "spread",
