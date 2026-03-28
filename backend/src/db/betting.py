@@ -92,6 +92,9 @@ class Odds(Base):
     point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
     provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    bid = Column(Float, nullable=True)        # Best bid price (probability 0-1, CLOB only)
+    ask = Column(Float, nullable=True)        # Best ask price (probability 0-1, CLOB only)
+    depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
 
     updated_at = Column(DateTime, default=_utcnow)
 

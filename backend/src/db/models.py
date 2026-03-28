@@ -138,6 +138,9 @@ class Odds(Base):
     point = Column(Float, nullable=True)        # Spread/total point value (e.g., -1.5, 2.5)
     clob_token_id = Column(String, nullable=True)  # Legacy — no longer populated
     provider_meta = Column(JSON, nullable=True)  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    bid = Column(Float, nullable=True)        # Best bid price (probability 0-1, CLOB only)
+    ask = Column(Float, nullable=True)        # Best ask price (probability 0-1, CLOB only)
+    depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
 
     updated_at = Column(DateTime, default=_utcnow)
     
@@ -1526,6 +1529,14 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE odds ADD COLUMN provider_meta JSON")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add CLOB microstructure columns to odds (Polymarket bid/ask/depth)
+        for col, col_type in [("bid", "FLOAT"), ("ask", "FLOAT"), ("depth_usd", "FLOAT")]:
+            try:
+                cursor.execute(f"ALTER TABLE odds ADD COLUMN {col} {col_type}")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
