@@ -194,7 +194,7 @@ class BatchBuilder:
         # so bets distribute across siblings by remaining balance
         ranked = sorted(
             candidates,
-            key=lambda b: (-TIER_PRIORITY.get(b.tier, 0), -b.expected_profit),
+            key=lambda b: (-TIER_PRIORITY.get(b.tier, 0), b.priority, -b.expected_profit),
         )
 
         # Split sharp and soft for different allocation strategies
@@ -740,7 +740,7 @@ class BatchBuilder:
         # Walk opportunities in ranked order (by expected_profit descending)
         sorted_keys = sorted(
             best_per_key.keys(),
-            key=lambda k: -best_per_key[k].expected_profit,
+            key=lambda k: (best_per_key[k].priority, -best_per_key[k].expected_profit),
         )
 
         for dedup_key in sorted_keys:
