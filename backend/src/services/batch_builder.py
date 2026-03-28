@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -411,6 +412,19 @@ class BatchBuilder:
     ) -> Optional[BatchBet]:
         """Convert an Opportunity+Event into a BatchBet candidate, or None to skip."""
 
+        # Enforce 48h TTK cap for soft providers
+        if opp.provider1_id not in SHARP_PROVIDERS:
+            if event.start_time:
+                ttk_hours = (event.start_time - datetime.now(timezone.utc)).total_seconds() / 3600
+                if ttk_hours > MAX_TTK_HOURS:
+                    return None
+                if ttk_hours <= 0:
+                    return None
+            else:
+                ttk_hours = None
+        else:
+            ttk_hours = None
+
         provider_id = opp.provider1_id
         pb = provider_balances.get(provider_id)
 
@@ -539,6 +553,8 @@ class BatchBuilder:
             start_time=event.start_time,
             lifecycle=pb.lifecycle if pb else "available",
             cluster=cluster,
+            funded=not unfunded,
+            priority=compute_priority(opp.edge_pct or 0.0, ttk_hours) if provider_id not in SHARP_PROVIDERS else 0,
         )
 
     def _deduplicate(
