@@ -987,11 +987,18 @@ def store_provider_event(
             outcome_meta = outcome.get('provider_meta', {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
 
+            # CLOB microstructure (Polymarket only, None for others)
+            bid_value = outcome.get('bid')
+            ask_value = outcome.get('ask')
+            depth_value = outcome.get('depth_usd')
+
             # Use batch processor if available, otherwise individual upsert
             if odds_batch:
-                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
+                odds_batch.add(final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
+                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
             else:
-                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value, provider_meta=provider_meta)
+                odds_new += upsert_odds(session, final_id, storage_provider, market_type, outcome_name, odds_value, point_value,
+                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
 
     # When using batch processor, we don't know the new count until flush
     # Return 0 for now - caller should get stats from batch processor
@@ -1007,6 +1014,9 @@ def upsert_odds(
     odds: float,
     point: float = None,
     provider_meta: dict = None,
+    bid: float = None,
+    ask: float = None,
+    depth_usd: float = None,
 ) -> int:
     """
     Insert or update odds record.
@@ -1044,6 +1054,9 @@ def upsert_odds(
         existing.updated_at = datetime.now(timezone.utc)
         if provider_meta:
             existing.provider_meta = provider_meta
+        existing.bid = bid
+        existing.ask = ask
+        existing.depth_usd = depth_usd
         return 0
     else:
         session.add(Odds(
@@ -1054,6 +1067,9 @@ def upsert_odds(
             odds=odds,
             point=point,
             provider_meta=provider_meta,
+            bid=bid,
+            ask=ask,
+            depth_usd=depth_usd,
         ))
         return 1
 
@@ -1086,6 +1102,9 @@ class OddsBatchProcessor:
         odds: float,
         point: float = None,
         provider_meta: dict = None,
+        bid: float = None,
+        ask: float = None,
+        depth_usd: float = None,
     ):
         """Add odds record to batch (will be processed on flush)."""
         # Use tuple key to deduplicate (point included for schema compatibility)
@@ -1098,6 +1117,9 @@ class OddsBatchProcessor:
             "odds": odds,
             "point": point,
             "provider_meta": provider_meta,
+            "bid": bid,
+            "ask": ask,
+            "depth_usd": depth_usd,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
@@ -1190,6 +1212,9 @@ class OddsBatchProcessor:
                 existing.updated_at = now
                 if record.get("provider_meta"):
                     existing.provider_meta = record["provider_meta"]
+                existing.bid = record.get("bid")
+                existing.ask = record.get("ask")
+                existing.depth_usd = record.get("depth_usd")
                 self._update_count += 1
             else:
                 # New record
