@@ -15,7 +15,10 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..constants import PLATFORM_GROUPS, PLATFORM_MAP
-from ..bankroll.stake_calculator import calculate_stake, dynamic_min_stake
+from ..bankroll.stake_calculator import (
+    calculate_stake, dynamic_min_stake,
+    OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP,
+)
 from ..repositories.opportunity_repo import OpportunityRepo
 from ..repositories.profile_repo import ProfileRepo
 from ..services.play_service import derive_lifecycle
@@ -273,8 +276,6 @@ class BatchBuilder:
         from ..config import get_exchange_rate
 
         result = []
-        kelly_fraction = getattr(profile, "kelly_fraction", 0.75) or 0.75
-        max_stake_pct = getattr(profile, "max_stake_pct", 5.0) or 5.0
         min_edge_pct = getattr(profile, "min_edge_pct", 2.0) or 2.0
 
         for sharp_pid in ("pinnacle", "polymarket"):
@@ -302,11 +303,9 @@ class BatchBuilder:
                         bankroll_total=total_bankroll,
                         edge_raw=edge_raw,
                         odds=odds,
-                        single_bet_cap_pct=max_stake_pct / 100.0,
                         min_edge=min_edge_pct / 100.0,
                         min_odds=0,
                         min_stake=dynamic_min_stake(total_bankroll),
-                        max_kelly=kelly_fraction,
                     )
                     if stake_result.skip_reason or stake_result.stake <= 0:
                         continue
@@ -367,12 +366,10 @@ class BatchBuilder:
     ) -> list[BatchBet]:
         """Query all opportunity types and compute stakes."""
 
-        # Profile settings for stake calculation
-        kelly_fraction = getattr(profile, "kelly_fraction", 0.75) or 0.75
-        max_stake_pct = getattr(profile, "max_stake_pct", 5.0) or 5.0
+        # Stake sizing: kelly + cap from sim-optimal constants, only min_edge from profile
         min_edge_pct = getattr(profile, "min_edge_pct", 2.0) or 2.0
 
-        single_bet_cap_pct = max_stake_pct / 100.0
+        single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         min_edge = min_edge_pct / 100.0
         min_stake = dynamic_min_stake(total_bankroll)
 
@@ -383,7 +380,7 @@ class BatchBuilder:
             bet = self._make_candidate(
                 opp, event, "value",
                 total_bankroll, provider_balances,
-                kelly_fraction, single_bet_cap_pct, min_edge, min_stake,
+                single_bet_cap_pct, min_edge, min_stake,
             )
             if bet is not None:
                 candidates.append(bet)
@@ -393,7 +390,7 @@ class BatchBuilder:
             bet = self._make_candidate(
                 opp, event, "reverse_value",
                 total_bankroll, provider_balances,
-                kelly_fraction, single_bet_cap_pct, min_edge, min_stake,
+                single_bet_cap_pct, min_edge, min_stake,
             )
             if bet is not None:
                 candidates.append(bet)
@@ -407,7 +404,6 @@ class BatchBuilder:
         opp_type: str,
         total_bankroll: float,
         provider_balances: dict[str, ProviderBalance],
-        kelly_fraction: float,
         single_bet_cap_pct: float,
         min_edge: float,
         min_stake: float,
@@ -465,7 +461,7 @@ class BatchBuilder:
                 min_edge=min_edge,
                 min_odds=0.0,
                 min_stake=0.0,
-                max_kelly=kelly_fraction,
+                max_kelly=OPTIMAL_MAX_KELLY,
             )
             stake = result.stake if result.stake > 0 else min_stake
             is_bonus = False
@@ -508,7 +504,7 @@ class BatchBuilder:
                     min_edge=min_edge,
                     min_odds=bet_min_odds,
                     min_stake=min_stake,
-                    max_kelly=kelly_fraction,
+                    max_kelly=OPTIMAL_MAX_KELLY,
                 )
                 if result.skip_reason:
                     return None

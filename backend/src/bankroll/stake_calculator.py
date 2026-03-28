@@ -490,9 +490,9 @@ class StakeCalculator:
     def __init__(
         self,
         bankroll: float,
-        single_bet_cap_pct: float = 0.03,
+        single_bet_cap_pct: float = OPTIMAL_SINGLE_BET_CAP,
         min_edge: float = 0.01,
-        max_kelly: float = 0.75,
+        max_kelly: float = OPTIMAL_MAX_KELLY,
         min_stake: float | None = None,
         min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
     ):
