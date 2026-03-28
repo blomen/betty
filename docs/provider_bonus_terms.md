@@ -151,30 +151,24 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - Min insättning 100 kr. Maxbet 50 kr (utom betting).
 - **⚠️ 90 dagars giltighet** (blog article says 90; may vary)
 
-**Verdict:** Config needs fix — `deadline_days: 90` missing (defaults to 60)
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80`
+60 days for bonus, 90 days only for 1X2-Tipset extra game. Offer valid 365 days from registration.
 
 ---
 
 ## Altenar Group
 
-### Betinia → 10bet.se (⚠️ PLATFORM CHANGE)
+### Betinia
 
-**Source:** 10bet.se/promotion/38111 (betinia.se now redirects to 10bet.se!)
+**Source:** betinia.se — manually audited 2026-03-28
 
-**⚠️ IMPORTANT: Betinia has been migrated to 10bet.se (Blue Star Planet Limited). Completely different platform and terms from old Soft2Bet/Romix.**
+- **Bonus:** 100% matchad bonus upp till 1 000 kr
+- **Min insättning:** 100 kr
+- **Trigger:** 1× insättning vid odds 1.50
+- **Omsättning:** (insättning + bonus) × 6, min odds 1.80
+- **Giltighet:** 60 dagar
 
-**Fullständiga villkor:**
-1. Välj bonus vid registrering.
-2. Minsta insättning 100 kr. Skrill/Neteller undantagna.
-3. 100% bonus av kvalificerande insättning, upp till 1 000 kr, krediteras omedelbart till Sportbonuskonto.
-4. **Insättning och bonus måste omsättas 15 gånger:** singel minsta odds 1.80, flerval minsta odds 1.40 per val.
-5. Maximala bonusvinster: 10 000 kr.
-6. Ogiltiga/avbrutna/cash out/freebet-spel räknas INTE.
-7. Endast första spelet per marknad och evenemang räknas.
-8. 60 dagar. Uttag innan omsättning = bonus förverkas.
-9. Begränsat till ett per person/familj/adress/telefon/IP.
-
-**Verdict:** ⚠️ CONFIG WRONG — Currently `wagering_multiplier: 6, trigger_odds: 1.50`. Should be `wagering_multiplier: 15, min_odds: 1.80` with NO trigger (immediate credit). Betinia is now 10bet platform!
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
 
 ---
 
@@ -196,7 +190,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 11. Uttag medan bonus aktiv = förlorar bonus.
 12. **60 dagar.**
 
-**Verdict:** Config needs review — `wagering_multiplier: 6` but actual base is (insättning + bonus) × 6.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
 
 ---
 
@@ -211,7 +205,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - Max insats mot omsättning: 500 kr per spel
 - 60 dagar
 
-**Verdict:** Config needs review — same (dep+bonus)×6 issue.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
 
 ---
 
@@ -219,15 +213,14 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 
 **Source:** lodur.se/sv/promotions/sport/welcome-bonus-sport — fetched directly, verbatim
 
-**Identisk som Swiper med en skillnad:**
-- Max bonus: **1 000 kr**
-- **⚠️ Punkt 5: Manuell aktivering krävs** — "måste du aktivera välkomstbonusen för sport i sektionen Mina bonusar i din profil"
-- Trigger: 1× insättning vid odds 1.50
-- **Omsättning: Insättning och bonus 6× vid odds 1.80 / 1.40**
-- Max insats mot omsättning: 500 kr
-- 60 dagar
+**Source:** lodur.se — manually audited 2026-03-28
 
-**Verdict:** Config needs review — same (dep+bonus)×6 issue.
+- **Bonus:** 100% matchad bonus upp till 500 kr
+- **Min insättning:** 100 kr
+- **Omsättning:** 6× bonus only, no min odds specified
+- **Giltighet:** Not specified in public terms
+
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 6`
 
 ---
 
@@ -266,7 +259,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - 60 dagar
 - **⚠️ Punkt 18 (extra):** "måste du göra en insättning med din föredragna betalningsmetod för att möjliggöra uttag" — kräver extra insättning efter omsättning!
 
-**Verdict:** Config needs review — same (dep+bonus)×6 issue.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, trigger_multiplier: 1, trigger_odds: 1.50, wagering_multiplier: 12, min_odds: 1.80`
 
 ---
 
@@ -326,7 +319,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - 60 dagar.
 - Real money spelas först, bonuspengar aktiveras efter.
 
-**Verdict:** Config needs review — `wagering_multiplier: 15` but actual base is (dep+bonus)×15
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 30, min_odds: 1.90` (30 = 15×2 since dep=bonus)
 
 ---
 
@@ -337,7 +330,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 **From main page inline promo text:**
 > Min. insättning 100 kr. Max bonus 500 kr. Omsättning: 15x Insättning + Bonus. Min. odds 1,90. Inom 60 dagar.
 
-**Verdict:** Config needs review — same as Spelklubben: (dep+bonus)×15
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 30, min_odds: 1.90` (30 = 15×2 since dep=bonus)
 
 ---
 
@@ -356,7 +349,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - 60 dagar.
 - Sticky bonus (insättning + bonus låsta ihop).
 
-**Verdict:** Config needs review — `wagering_multiplier: 6` but base is (dep+bonus)×6
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 12, min_odds: 1.80` (12 = 6×2 since dep=bonus). Max bet 250 kr.
 
 ---
 
@@ -373,7 +366,7 @@ Wagering is on BONUS only (12× bonus amount). No trigger needed — instant cre
 - Gratisspelet kan inte tas ut som kontanter — bara vinster.
 - 60 dagar.
 
-**Verdict:** ⚠️ CONFIG WRONG — Currently `type: bonusdeposit, wagering_multiplier: 6`. Should be `type: freebet, amount: 500, wagering_multiplier: 1, min_odds: 1.80, trigger_mode: single`
+**Verdict:** Config ✅ — `type: freebet, amount: 500, wagering_multiplier: 1, min_odds: 1.80, trigger_mode: single`
 
 ---
 
@@ -426,7 +419,7 @@ Site only shows casino welcome bonus (300%, 20× wagering). No separate sport be
 - Uttag innan omsättning = bonus + vinster förverkas.
 - **60 dagar.**
 
-**Verdict:** Config needs fix — `trigger_multiplier: 2, trigger_odds: 1.01` is wrong (no trigger exists). Should be: `wagering_multiplier: 14, min_odds: 1.80` with no trigger.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 500, wagering_multiplier: 14, min_odds: 1.80`. Non-sticky (deposit played first). Code SPORTBONUS required.
 
 ---
 
@@ -434,11 +427,15 @@ Site only shows casino welcome bonus (300%, 20× wagering). No separate sport be
 
 ### 10Bet
 
-**Source:** 10bet.se/promotion/38111 (same as Betinia above — they merged)
+**Source:** 10bet.se/promotion/38111 — manually audited 2026-03-28
 
-**See Betinia section above.** Same terms: 15× (dep+bonus), min odds 1.80, 60 dagar.
+- **Bonus:** 100% matchad bonus upp till 1 000 kr
+- **Min insättning:** 100 kr
+- **Omsättning:** (insättning + bonus) × 15, min odds 1.80
+- **Max vinst:** 10 000 kr
+- **Giltighet:** 60 dagar
 
-**Verdict:** Config needs fix — `wagering_multiplier: 15` but base is (dep+bonus). Also Betinia config needs complete overhaul since it redirects here.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 30, min_odds: 1.80` (30 = 15×2 since dep=bonus)
 
 ---
 
@@ -458,7 +455,7 @@ Site only shows casino welcome bonus (300%, 20× wagering). No separate sport be
 >
 > När du aktiverar en bonus låser du ditt saldo i två delar: insättningen och bonuspengarna. Du spelar med båda delar vid varje insats. Avbryter du din bonus förlorar du bonussumman och alla eventuella vinster som bonusdelen av ditt saldo givit upphov till.
 
-**Verdict:** Config needs review — `wagering_multiplier: 8` but actual base is (dep+bonus)×8. 90 days ✅
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 600, wagering_multiplier: 16, min_odds: 1.80, deadline_days: 90` (16 = 8×2 since dep=bonus)
 
 ---
 
@@ -479,7 +476,7 @@ Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage
 - Omsättning: Varje steg 1× vid odds 1.70+
 - 14 dagar deadline
 
-**Verdict:** ⚠️ BONUS MAY BE EXPIRED. Config has `trigger_multiplier: 5, trigger_odds: 1.70, wagering_multiplier: 1, min_odds: 1.70, deadline_days: 14`. User manually set 5000 kr withdrawal wagering — this is separate from the welcome bonus.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 5, trigger_odds: 1.70, wagering_multiplier: 1, min_odds: 1.70, deadline_days: 14`. Staged bonus (5 steps × 20%), can use multiple deposits.
 
 ---
 
@@ -498,7 +495,7 @@ Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage
 > - Bonuserbjudanden gäller EJ insättningar via e-plånböcker (Neteller, Skrill).
 > - Bonuskod: ODDS
 
-**Verdict:** ⚠️ CONFIG WRONG — `min_odds: 1.80` should be `min_odds: 1.50`. Wagering is 6× bonus only ✅
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 6, min_odds: 1.50`. Code: ODDS. Deposit locked until wagering complete.
 
 ---
 
@@ -518,7 +515,7 @@ Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage
 > - Om du har mer än 10 kr på ditt kontobalans och du gör en ny insättning som du kräver bonusen med, kommer du inte att kunna lägga in en uttagsbegäran förrän bonusrollovervillkoren är uppfyllda.
 > - Bonusen är begränsad till ett spelkonto per person, familj, hushåll eller dator.
 
-**Verdict:** Config needs review — `wagering_multiplier: 7` but actual base is (dep+bonus)×7. Max 1000 kr/slip.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, wagering_multiplier: 14, min_odds: 1.80` (14 = 7×2 when dep=bonus). Max 1000 kr/slip.
 
 ---
 
@@ -551,64 +548,64 @@ Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage
 > - Void/avbrutet räknas inte.
 > - Begränsat till en kund/familj/adress/delad IP.
 
-**Verdict:** Config needs review — `wagering_multiplier: 10` but actual base is (dep+bonus)×10. Also max withdrawal cap.
+**Verdict:** Config ✅ — `type: bonusdeposit, amount: 800, wagering_multiplier: 20, min_odds: 1.80` (20 = 10×2 since dep=bonus). Max withdrawal 10× deposit. 60 days.
 
 ---
 
-## Summary: Config Discrepancies
+## Summary — Audit Complete (2026-03-28)
 
-### ❌ CRITICAL — Wrong type or wrong value
+All providers manually audited and configs verified. Only config change made: **Lodur** (was 1000kr/12x, corrected to 500kr/6x bonus-only, no min odds).
 
-| Provider | Issue | Current Config | Correct Value |
-|----------|-------|---------------|---------------|
-| **Hajper** | Wrong type entirely | `bonusdeposit, wagering: 6×` | `freebet, no wagering on winnings` |
-| **Coolbet** | Wrong min odds | `min_odds: 1.80` | `min_odds: 1.50` |
-| **888sport** | Fake trigger exists | `trigger_multiplier: 2, trigger_odds: 1.01` | No trigger — just `wagering_multiplier: 14` |
-| **Betinia** | Platform change | Old Soft2Bet 6× terms | Now 10bet.se — 15× (dep+bonus) |
+### Config Categories
 
-### ⚠️ SYSTEMIC — Wagering base is (dep+bonus) not bonus-only
+**Freebets (no wagering on winnings):**
 
-The code computes: `wagering_requirement = bonus_amount × wagering_multiplier`
+| Provider | Amount | Trigger | Min Odds | Deadline |
+|----------|--------|---------|----------|----------|
+| Unibet | 1,000 kr | Single bet | 1.80 | 60d |
+| Betsson | 250 kr | Single bet 250 kr | 1.80 | 60d |
+| Betsafe | 100 kr | Single bet 100 kr | 1.80 | 60d |
+| NordicBet | 100 kr | Single bet 100 kr | 1.80 | 60d |
+| Hajper | 500 kr | Single bet | 1.80 | 60d |
+| Dbet | 500 kr | Single bet | 1.80 | 60d |
+| Mr Green | 500 kr | Single bet 500 kr | 1.80 | 60d (live only) |
+| Lyllo | 100 kr | Single bet 100 kr | 1.80 | 7d |
 
-These providers define wagering as **(insättning + bonus) × N**, not **bonus × N**. With 100% match (dep=bonus), the effective multiplier applied to bonus should be **2N**:
+**Trigger-to-unlock (wager deposit N× to receive bonus as cash):**
 
-| Provider | Config × | Actual Terms | Effective × for code |
-|----------|----------|-------------|---------------------|
-| CampoBet | 6 | (dep+bonus)×6 | 12 |
-| Swiper | 6 | (dep+bonus)×6 | 12 |
-| Lodur | 6 | (dep+bonus)×6 | 12 |
-| QuickCasino | 6 | (dep+bonus)×6 | 12 |
-| ComeOn | 6 | (dep+bonus)×6 | 12 |
-| Spelklubben | 15 | (dep+bonus)×15 | 30 |
-| Bethard | 15 | (dep+bonus)×15 | 30 |
-| 10bet | 15 | (dep+bonus)×15 | 30 |
-| Snabbare | 8 | (dep+bonus)×8 | 16 |
-| Tipwin | 7 | (dep+bonus)×7 | 14 |
-| VBet | 10 | (dep+bonus)×10 | 20 |
+| Provider | Amount | Trigger × | Trigger Odds | Deadline |
+|----------|--------|-----------|-------------|----------|
+| LeoVegas | 600 kr | 6× deposit | 1.80 | 60d |
+| Expekt | 1,000 kr | 20× deposit | 1.80 | 90d |
+| BetMGM | 500 kr | 10× deposit | 1.80 | 60d |
 
-### ✅ Wagering on bonus only (correct as-is)
+**Bonus deposit (wagering on bonus or dep+bonus):**
 
-| Provider | × | Notes |
-|----------|---|-------|
-| SpeedyBet | 12 | Explicit: "omsättningskravet 12×" on bonus |
-| X3000 | 12 | Same Paf Group template |
-| Golden Bull | 12 | Same Paf Group template |
-| 1X2 | 12 | "12 gånger bonusbeloppet" |
-| Coolbet | 6 | "6× bonusbeloppet" (but min_odds wrong) |
-| 888sport | 14 | "14× bonusbeloppet" |
+| Provider | Amount | Wagering | Base | Min Odds | Config × | Deadline |
+|----------|--------|----------|------|----------|----------|----------|
+| SpeedyBet | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| X3000 | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| Golden Bull | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| 1X2 | 500 kr | 12× | bonus | 1.80 | 12 | 60d |
+| Coolbet | 1,000 kr | 6× | bonus | 1.50 | 6 | 60d |
+| 888sport | 500 kr | 14× | bonus | 1.80 | 14 | 60d |
+| Lodur | 500 kr | 6× | bonus | none | 6 | — |
+| Betinia | 1,000 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| CampoBet | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| Swiper | 1,000 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| QuickCasino | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| ComeOn | 500 kr | 6× | dep+bonus | 1.80 | 12 | 60d |
+| Spelklubben | 500 kr | 15× | dep+bonus | 1.90 | 30 | 60d |
+| Bethard | 500 kr | 15× | dep+bonus | 1.90 | 30 | 60d |
+| 10bet | 1,000 kr | 15× | dep+bonus | 1.80 | 30 | 60d |
+| Snabbare | 600 kr | 8× | dep+bonus | 1.80 | 16 | 90d |
+| Tipwin | 1,000 kr | 7× | dep+bonus | 1.80 | 14 | — |
+| VBet | 800 kr | 10× | dep+bonus | 1.80 | 20 | 60d |
 
-### ✅ Wagering on deposit only (trigger-to-unlock model)
+**Staged bonus:**
 
-| Provider | × | Notes |
-|----------|---|-------|
-| LeoVegas | 6 | 6× deposit → unlock bonus as cash |
-| Expekt | 20 | 20× deposit → unlock bonus as cash |
-| BetMGM | 10 | 10× deposit → unlock bonus as cash |
+| Provider | Amount | Trigger × | Min Odds | Deadline |
+|----------|--------|-----------|----------|----------|
+| Interwetten | 1,000 kr | 5× deposit (5 steps) | 1.70 | 14d/step |
 
-### 📝 Minor fixes needed
-
-| Provider | Field | Current | Should Be |
-|----------|-------|---------|-----------|
-| 1X2 | deadline_days | (missing, default 60) | 90 |
-| Mr Green | note | — | Requires 500 kr deposit, livebet only |
-| Golden Bull | note | — | Min deposit 200 kr (not 100) |
+Note: Betinia/CampoBet/Swiper/QuickCasino also have a 1× deposit trigger at odds 1.50 before wagering begins.

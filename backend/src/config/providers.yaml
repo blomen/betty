@@ -379,11 +379,11 @@ providers:
     domain: betinia.se
     integration: betiniase2
     bonus:
-      # NOTE: betinia.se now redirects to 10bet.se (Blue Star Planet Limited)
-      # New terms as of 2026-03-27: 15×(dep+bonus), no trigger, instant credit
       type: bonusdeposit
       amount: 1000
-      wagering_multiplier: 30      # (dep+bonus)×15 = bonus×30 when dep=bonus
+      trigger_multiplier: 1        # 1× deposit at odds 1.50 to unlock
+      trigger_odds: 1.50
+      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus
       min_odds: 1.80
       trigger_mode: cumulative
 
@@ -425,11 +425,8 @@ providers:
     integration: lodurse
     bonus:
       type: bonusdeposit
-      amount: 1000
-      trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
-      trigger_odds: 1.50
-      wagering_multiplier: 12      # (dep+bonus)×6 = bonus×12 when dep=bonus. Manual activation required.
-      min_odds: 1.80
+      amount: 500
+      wagering_multiplier: 6       # 6× bonus only, no min odds specified
       trigger_mode: cumulative
 
   dbet:
