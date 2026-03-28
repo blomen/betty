@@ -817,6 +817,22 @@ class BatchBuilder:
         polymarket_bets = [b for b in batch if b.tier == "polymarket"]
         pinnacle_bets = [b for b in batch if b.tier == "pinnacle"]
         soft_bets = [b for b in batch if b.tier == "soft"]
+
+        # Priority tier breakdown for soft bets (funded only)
+        funded_soft = [b for b in soft_bets if b.funded]
+        tier_breakdown = {}
+        for b in funded_soft:
+            p = b.priority
+            if p not in tier_breakdown:
+                tier_breakdown[p] = {"count": 0, "stake": 0.0, "ev": 0.0}
+            tier_breakdown[p]["count"] += 1
+            tier_breakdown[p]["stake"] += b.stake
+            tier_breakdown[p]["ev"] += b.expected_profit
+        # Round values
+        for v in tier_breakdown.values():
+            v["stake"] = round(v["stake"], 2)
+            v["ev"] = round(v["ev"], 2)
+
         return {
             "total_bets": len(batch),
             "total_stake": round(sum(b.stake for b in batch), 2),
@@ -827,6 +843,7 @@ class BatchBuilder:
             "pinnacle_ev": round(sum(b.expected_profit for b in pinnacle_bets), 2),
             "soft_bets": len(soft_bets),
             "soft_ev": round(sum(b.expected_profit for b in soft_bets), 2),
+            "tier_breakdown": tier_breakdown,
         }
 
     def _compute_wagering_projections(
@@ -918,6 +935,7 @@ class BatchBuilder:
             "lifecycle": bet.lifecycle,
             "cluster": bet.cluster,
             "funded": bet.funded,
+            "priority": bet.priority,
             "skip_reason": bet.skip_reason,
         }
 
