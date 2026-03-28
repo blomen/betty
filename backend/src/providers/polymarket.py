@@ -273,20 +273,20 @@ class PolymarketRetriever(Retriever):
                                 # _get_clob_price falls back to Gamma mid-price
                                 if 0.01 < vwap < 0.99:
                                     self._clob_prices[token_id] = vwap
-                                # Extract best ask (lowest ask = first in ascending list)
+                                # Extract best ask (lowest price on ask side)
                                 try:
-                                    best_ask = float(asks[0]["price"])
+                                    best_ask = min(float(a["price"]) for a in asks if float(a.get("price", 0)) > 0)
                                     if 0.01 < best_ask < 0.99:
                                         self._clob_asks[token_id] = best_ask
-                                except (ValueError, TypeError, KeyError, IndexError):
+                                except (ValueError, TypeError, KeyError):
                                     pass
-                            # Extract best bid (highest bid = first in descending list)
+                            # Extract best bid (highest price on bid side)
                             if bids:
                                 try:
-                                    best_bid = float(bids[0]["price"])
+                                    best_bid = max(float(b["price"]) for b in bids if float(b.get("price", 0)) > 0)
                                     if 0.01 < best_bid < 0.99:
                                         self._clob_bids[token_id] = best_bid
-                                except (ValueError, TypeError, KeyError, IndexError):
+                                except (ValueError, TypeError, KeyError):
                                     pass
                         elif resp.status != 404:
                             logger.debug(f"[{self.provider_id}] CLOB /book returned {resp.status} for {token_id[:12]}...")

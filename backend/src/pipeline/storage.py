@@ -494,10 +494,17 @@ def store_polymarket_event(
             # Swap poly_home/poly_away in metadata to match canonical home/away
             if teams_swapped and provider_meta and 'poly_home' in provider_meta and 'poly_away' in provider_meta:
                 provider_meta['poly_home'], provider_meta['poly_away'] = provider_meta['poly_away'], provider_meta['poly_home']
+            # CLOB microstructure (bid/ask/depth from order book)
+            bid_value = outcome.get('bid')
+            ask_value = outcome.get('ask')
+            depth_value = outcome.get('depth_usd')
+
             if odds_batch:
-                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
+                odds_batch.add(matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
+                               provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
             else:
-                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value, provider_meta=provider_meta)
+                odds_new += upsert_odds(session, matched_id, "polymarket", market_type, outcome_norm, odds, point_value,
+                                        provider_meta=provider_meta, bid=bid_value, ask=ask_value, depth_usd=depth_value)
 
     # Safety net: compare stored Polymarket ML odds against Pinnacle.
     # If favorites disagree with high confidence, odds are likely inverted.

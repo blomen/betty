@@ -85,8 +85,8 @@ When `provider == "polymarket"` and both `bid` and `ask` are available:
 effective_odds = polymarket_effective_odds(provider_odds)  # existing fee deduction
 mid = (bid + ask) / 2
 mid_odds = 1 / mid
-ask_odds = provider_odds  # already VWAP-based
-spread_cost = (ask_odds - mid_odds) / mid_odds
+taker_odds = 1 / ask           # what you actually get crossing the spread
+spread_cost = (mid_odds - taker_odds) / mid_odds  # always positive: mid is better than ask
 edge_pct = ((effective_odds / fair_odds) - 1 - spread_cost) * 100
 ```
 
@@ -116,7 +116,7 @@ For Polymarket with bid/ask available:
 ```
 effective_odds = (1 - 0.02) * ask_vwap_odds + 0.02    # fee-adjusted
 mid = (bid + ask) / 2                                   # mid-price in probability space
-spread_cost = (ask_vwap_odds - (1/mid)) / (1/mid)      # spread as fraction of mid odds
+spread_cost = ((1/mid) - (1/ask)) / (1/mid)             # taker cost vs mid, always positive
 true_edge = ((effective_odds / pinnacle_fair) - 1 - spread_cost) * 100
 ```
 
