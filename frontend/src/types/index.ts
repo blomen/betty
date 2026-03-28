@@ -764,6 +764,8 @@ export interface BatchBet {
   start_time: string | null;
   lifecycle: string | null;
   cluster: string | null;
+  funded: boolean;
+  skip_reason: string | null;
   wagering_pct?: number | null;
 }
 
@@ -777,6 +779,7 @@ export interface BatchSummary {
   pinnacle_ev: number;
   soft_bets: number;
   soft_ev: number;
+  tier_breakdown?: Record<string, { count: number; stake: number; ev: number }>;
 }
 
 export interface ProviderBalanceStatus {
@@ -794,7 +797,9 @@ export interface ProviderBalanceStatus {
 export interface CapitalAction {
   type: 'deposit' | 'withdraw';
   provider_id: string;
+  cluster: string;
   amount: number;
+  target_balance: number;
   unlocks: number;
   avg_edge: number;
   expected_ev: number;

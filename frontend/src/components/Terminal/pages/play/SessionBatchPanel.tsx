@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ProviderName } from '../../ProviderName';
 import { resolveOutcome } from '@/utils/betting';
 import { marketLabel } from '@/utils/betting';
@@ -49,57 +49,51 @@ interface Props {
 // ---------------------------------------------------------------------------
 
 const TIER_CONFIG = {
-  polymarket: {
-    label: 'POLYMARKET',
-    sublabel: null,
-    color: '#a855f7',
-    colorClass: 'text-purple-500',
-    bgClass: 'bg-purple-500/10',
-  },
-  pinnacle: {
-    label: 'PINNACLE',
-    sublabel: 'reverse value',
-    color: '#ef4444',
-    colorClass: 'text-red-500',
-    bgClass: 'bg-red-500/10',
-  },
-  soft: {
-    label: 'SOFT VALUE',
-    sublabel: 'round-robin',
-    color: '#22c55e',
-    colorClass: 'text-green-500',
-    bgClass: 'bg-green-500/10',
-  },
+  polymarket: { color: '#a855f7' },
+  pinnacle: { color: '#ef4444' },
+  soft: { color: '#22c55e' },
 } as const;
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function TierHeader({
-  tier,
-  count,
+function ClusterHeader({
+  cluster,
+  bets,
+  expanded,
+  onToggle,
 }: {
-  tier: 'polymarket' | 'pinnacle' | 'soft';
-  count: number;
+  cluster: string;
+  bets: BatchBet[];
+  expanded: boolean;
+  onToggle: () => void;
 }) {
-  const cfg = TIER_CONFIG[tier];
+  const totalStake = bets.reduce((s, b) => s + b.stake, 0);
+  const totalEV = bets.reduce((s, b) => s + b.stake * (b.edge_pct / 100), 0);
+  const isPolymarket = cluster === 'polymarket';
+  const currency = isPolymarket ? 'USDC' : 'kr';
+
   return (
-    <tr>
-      <td
-        colSpan={10}
-        className="!py-1.5 !px-2 bg-dark-900 border-b border-border"
-      >
-        <span
-          className="text-[10px] font-bold tracking-wider uppercase"
-          style={{ color: cfg.color }}
-        >
-          {cfg.label}
-          {cfg.sublabel && (
-            <span className="font-normal opacity-60"> — {cfg.sublabel}</span>
-          )}{' '}
-          — {count} {count === 1 ? 'bet' : 'bets'}
-        </span>
+    <tr
+      className="cursor-pointer hover:bg-dark-800/60 transition-colors"
+      onClick={onToggle}
+    >
+      <td colSpan={10} className="!py-1 !px-2 bg-dark-850 border-b border-dark-700">
+        <div className="flex items-center gap-2">
+          <span className="text-dark-500 text-[10px] w-3">{expanded ? '▾' : '▸'}</span>
+          <span className="text-[10px] font-medium text-dark-300 uppercase tracking-wider">
+            {cluster}
+          </span>
+          <span className="text-[10px] text-dark-500">
+            {bets.length} {bets.length === 1 ? 'bet' : 'bets'}
+          </span>
+          <span className="text-[10px] text-dark-500">·</span>
+          <span className="text-[10px] text-dark-400">
+            {isPolymarket ? totalStake.toFixed(2) : totalStake.toFixed(0)} {currency}
+          </span>
+          <span className="text-[10px] text-success">+{totalEV.toFixed(0)} EV</span>
+        </div>
       </td>
     </tr>
   );
@@ -238,12 +232,31 @@ export function SessionBatchPanel({
     [batch],
   );
 
-  const totalStake = summary.total_stake;
-  const totalEV = summary.total_expected_profit;
-  const providerCount = useMemo(
-    () => new Set(batch.map((b) => b.provider_id)).size,
-    [batch],
-  );
+  // Group soft bets by cluster, preserving order of first appearance
+  const softByCluster = useMemo(() => {
+    const order: string[] = [];
+    const groups: Record<string, BatchBet[]> = {};
+    for (const b of softBets) {
+      const c = b.cluster || b.provider_id;
+      if (!groups[c]) {
+        order.push(c);
+        groups[c] = [];
+      }
+      groups[c].push(b);
+    }
+    return order.map(c => ({ cluster: c, bets: groups[c] }));
+  }, [softBets]);
+
+  // Collapsed state for clusters — all start collapsed
+  const [expandedClusters, setExpandedClusters] = useState<Record<string, boolean>>({});
+  const toggleCluster = (cluster: string) =>
+    setExpandedClusters(prev => ({ ...prev, [cluster]: !prev[cluster] }));
+
+  const sekBets = useMemo(() => batch.filter(b => b.tier !== 'polymarket'), [batch]);
+  const usdcBets = useMemo(() => batch.filter(b => b.tier === 'polymarket'), [batch]);
+  const sekStake = sekBets.reduce((s, b) => s + b.stake, 0);
+  const usdcStake = usdcBets.reduce((s, b) => s + b.stake, 0);
+  const totalEV = batch.reduce((s, b) => s + b.expected_profit, 0);
 
   const hasProjections = wageringProjections.length > 0;
 
@@ -254,21 +267,22 @@ export function SessionBatchPanel({
       {/* ------------------------------------------------------------------ */}
       <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-dark-800 text-xs flex-wrap">
         <span className="text-text font-medium">
-          {summary.total_bets} {summary.total_bets === 1 ? 'bet' : 'bets'}
+          {batch.length} bets
         </span>
-        <span className="text-muted">{totalStake.toFixed(0)} kr</span>
+        <span className="text-muted">{sekStake.toFixed(0)} kr</span>
+        {usdcStake > 0 && (
+          <span className="text-muted">{usdcStake.toFixed(2)} USDC</span>
+        )}
         <span className="text-success font-medium">
           +{totalEV.toFixed(0)} kr EV
         </span>
-        <span className="text-muted">|</span>
-        <span className="text-muted">
-          {providerCount} provider{providerCount !== 1 ? 's' : ''}
-        </span>
-        <span className="text-muted">|</span>
         {summary.polymarket_bets > 0 && (
-          <span style={{ color: TIER_CONFIG.polymarket.color }}>
-            POLY {summary.polymarket_bets} (+{summary.polymarket_ev.toFixed(0)})
-          </span>
+          <>
+            <span className="text-muted">|</span>
+            <span style={{ color: TIER_CONFIG.polymarket.color }}>
+              POLY {summary.polymarket_bets} (+{summary.polymarket_ev.toFixed(0)})
+            </span>
+          </>
         )}
         {summary.pinnacle_bets > 0 && (
           <span style={{ color: TIER_CONFIG.pinnacle.color }}>
@@ -276,9 +290,19 @@ export function SessionBatchPanel({
           </span>
         )}
         {summary.soft_bets > 0 && (
-          <span style={{ color: TIER_CONFIG.soft.color }}>
-            SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)})
-          </span>
+          <>
+            <span style={{ color: TIER_CONFIG.soft.color }}>
+              SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)})
+            </span>
+            {summary.tier_breakdown && Object.entries(summary.tier_breakdown)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([tier, data]: [string, any]) => (
+                <span key={tier} className="ml-2 text-zinc-500">
+                  T{tier}:{data.count}
+                </span>
+              ))
+            }
+          </>
         )}
       </div>
 
@@ -322,8 +346,13 @@ export function SessionBatchPanel({
               {/* Polymarket tier */}
               {polymarketBets.length > 0 && (
                 <>
-                  <TierHeader tier="polymarket" count={polymarketBets.length} />
-                  {polymarketBets.map((b) => (
+                  <ClusterHeader
+                    cluster="polymarket"
+                    bets={polymarketBets}
+                    expanded={!!expandedClusters['polymarket']}
+                    onToggle={() => toggleCluster('polymarket')}
+                  />
+                  {expandedClusters['polymarket'] && polymarketBets.map((b) => (
                     <BetRow
                       key={betKey(b)}
                       bet={b}
@@ -336,8 +365,13 @@ export function SessionBatchPanel({
               {/* Pinnacle tier */}
               {pinnacleBets.length > 0 && (
                 <>
-                  <TierHeader tier="pinnacle" count={pinnacleBets.length} />
-                  {pinnacleBets.map((b) => (
+                  <ClusterHeader
+                    cluster="pinnacle"
+                    bets={pinnacleBets}
+                    expanded={!!expandedClusters['pinnacle']}
+                    onToggle={() => toggleCluster('pinnacle')}
+                  />
+                  {expandedClusters['pinnacle'] && pinnacleBets.map((b) => (
                     <BetRow
                       key={betKey(b)}
                       bet={b}
@@ -347,16 +381,25 @@ export function SessionBatchPanel({
                 </>
               )}
 
-              {/* Soft Value tier */}
+              {/* Soft Value — grouped by cluster */}
               {softBets.length > 0 && (
                 <>
-                  <TierHeader tier="soft" count={softBets.length} />
-                  {softBets.map((b) => (
-                    <BetRow
-                      key={betKey(b)}
-                      bet={b}
-                      onRemove={() => onRemoveBet(betKey(b))}
-                    />
+                  {softByCluster.map(({ cluster, bets }) => (
+                    <React.Fragment key={cluster}>
+                      <ClusterHeader
+                        cluster={cluster}
+                        bets={bets}
+                        expanded={!!expandedClusters[cluster]}
+                        onToggle={() => toggleCluster(cluster)}
+                      />
+                      {expandedClusters[cluster] && bets.map((b) => (
+                        <BetRow
+                          key={betKey(b)}
+                          bet={b}
+                          onRemove={() => onRemoveBet(betKey(b))}
+                        />
+                      ))}
+                    </React.Fragment>
                   ))}
                 </>
               )}
