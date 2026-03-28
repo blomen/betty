@@ -764,6 +764,8 @@ export interface BatchBet {
   sport: string;
   league: string;
   start_time: string | null;
+  detected_at: string | null;
+  odds_age_minutes: number | null;
   lifecycle: string | null;
   cluster: string | null;
   funded: boolean;
@@ -781,6 +783,7 @@ export interface BatchSummary {
   pinnacle_ev: number;
   soft_bets: number;
   soft_ev: number;
+  usdc_rate?: number;
   tier_breakdown?: Record<string, { count: number; stake: number; ev: number }>;
 }
 
