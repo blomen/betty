@@ -180,6 +180,30 @@ async def get_macro_snapshot():
     }
 
 
+@router.get("/status")
+async def market_status(request: Request):
+    """Check if Globex is open and trading features are active.
+
+    Frontend can use this to skip SSE/data calls when market is closed.
+    """
+    from ...services.market_service import MarketService
+    from ...market_data.stream import DatabentoLiveStream
+
+    closed = MarketService._is_globex_closed()
+    stream = _get_live_stream(request)
+    stream_running = stream._running if stream else False
+
+    result = {
+        "globex_open": not closed,
+        "stream_active": stream_running,
+    }
+    if closed:
+        secs = DatabentoLiveStream._seconds_until_globex_open()
+        result["opens_in_seconds"] = int(secs)
+        result["opens_in_hours"] = round(secs / 3600, 1)
+    return result
+
+
 @router.get("/stream")
 async def market_stream(request: Request, symbol: str = "NQ"):
     """SSE stream of real-time tick data, candles, and level touches.

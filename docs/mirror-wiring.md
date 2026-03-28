@@ -45,7 +45,7 @@ Which data we can capture per provider when the mirror browser is active.
 | 28 | interwetten | Interwetten | - | - | - | - | - | - | - |
 | 29 | coolbet | Coolbet | - | - | - | - | - | - | - |
 | 30 | tipwin | Tipwin | - | - | - | - | - | - | - |
-| 31 | pinnacle | Pinnacle | - | N/A | - | - | - | - | - |
+| 31 | pinnacle | Pinnacle | - | N/A | Y | - | - | - | - |
 | 32 | polymarket | Polymarket | - | N/A | - | - | - | N/A | N/A |
 
 ## Platform Notes
@@ -83,7 +83,7 @@ Which data we can capture per provider when the mirror browser is active.
 - **vbet**: BetConstruct — needs investigation
 - **interwetten**: Custom — needs investigation
 - **coolbet, tipwin**: Unknown — needs investigation
-- **pinnacle**: REST API with auth — bet placement via `/v1/bets/straight`
+- **pinnacle**: REST API with auth — bet placement via `/v1/bets/straight`, balance via `api.arcadia.pinnacle.se/0.1/wallet/balance` → `{"amount": 535.0, "currency": "SEK"}`, deposit visible via cashier URL `depamount` param
 - **polymarket**: Blockchain-based — different paradigm
 
 ## API Endpoint Patterns Discovered
@@ -106,4 +106,10 @@ WS    push.aws.kambicdn.com                                             # all WS
 GET   eu1.offering-api.kambicdn.com/offering/v2018/{op}/...             # odds
 GET   cf-mt-auth-api.kambicdn.com/player/api/v2019/{op}/reward/...     # bonuses
 GET   {domain}/wallitt/mainbalance                                      # balance (Unibet)
+
+# Pinnacle
+POST  api.arcadia.pinnacle.se/v1/bets/straight                         # bet placement
+GET   api.arcadia.pinnacle.se/0.1/wallet/balance                       # balance
+GET   cashier.pinnacle.se/GenericPaymentTrustly.asp?depamount={amt}    # deposit (Trustly)
+GET   pinnacle.se/en/account/.../first-deposit/processed/              # deposit confirmed
 ```

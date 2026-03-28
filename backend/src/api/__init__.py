@@ -138,15 +138,17 @@ async def lifespan(app: FastAPI):
     scheduler = get_scheduler()
     await scheduler.start_continuous(interval_seconds=300)
 
-    # Auto-start Databento live stream + prune old ticks
-    # All network I/O is deferred to a background task so the server starts
-    # accepting connections immediately (prevents "Backend unreachable" on restart).
+    # ── Trading features (Databento stream, level monitor, candle backfill) ──
+    # Everything is gated on market hours: when Globex is closed (weekend),
+    # nothing starts — zero threads, zero network, zero CPU.
+    # A lightweight watcher sleeps until market opens, then boots everything.
     import os
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
     if databento_key:
         from ..db.models import get_session as _get_db_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
+        from ..services.market_service import MarketService as _MS
 
         _databento_stream = DatabentoLiveStream(
             api_key=databento_key,
@@ -155,7 +157,10 @@ async def lifespan(app: FastAPI):
         app.state.databento_stream = _databento_stream
 
         async def _start_trading_features():
-            """Background task: all trading feature startup (network I/O heavy)."""
+            """Boot all trading features (network I/O heavy).
+
+            Called once market is confirmed open — never during weekend close.
+            """
             try:
                 # Prune ticks from prior sessions
                 await TickWriter.prune_old_trades(_get_db_session, symbol="NQ")
@@ -229,8 +234,6 @@ async def lifespan(app: FastAPI):
                 logger.error("Trading features startup failed: %s", e, exc_info=True)
 
             # Backfill market_candles in a background thread (lowest priority).
-            # Must not run on the main event loop — Databento API calls (up to 300s)
-            # would starve HTTP handlers.
             import threading
             def _run_backfill():
                 loop = asyncio.new_event_loop()
@@ -303,7 +306,28 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning("Candle backfill %s failed: %s", interval, e)
 
-        asyncio.create_task(_start_trading_features())
+        async def _trading_gate():
+            """Gate: if market is open, start immediately. If closed, sleep until open."""
+            if not _MS._is_globex_closed():
+                await _start_trading_features()
+                return
+
+            # Market is closed — sleep until Globex opens, then boot everything
+            sleep_s = DatabentoLiveStream._seconds_until_globex_open()
+            logger.info(
+                "Trading features halted — Globex closed. "
+                "Sleeping %.1f hours until market opens (zero resources used)",
+                sleep_s / 3600,
+            )
+            # Sleep in 60s chunks so we can be cancelled cleanly on shutdown
+            slept = 0.0
+            while slept < sleep_s:
+                await asyncio.sleep(min(60, sleep_s - slept))
+                slept += 60
+            logger.info("Globex open — starting trading features now")
+            await _start_trading_features()
+
+        asyncio.create_task(_trading_gate())
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 

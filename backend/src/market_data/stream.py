@@ -325,6 +325,38 @@ class DatabentoLiveStream:
             return False
         return True
 
+    @staticmethod
+    def _seconds_until_globex_open() -> float:
+        """Seconds until the next Globex open (Sun 18:00 ET or daily 18:00 ET).
+
+        Returns 0 if market is already open.
+        """
+        if DatabentoLiveStream._ET_TZ is None:
+            from zoneinfo import ZoneInfo
+            DatabentoLiveStream._ET_TZ = ZoneInfo("US/Eastern")
+        now = datetime.now(DatabentoLiveStream._ET_TZ)
+        wd = now.weekday()
+        hour = now.hour
+
+        if wd == 5:
+            # Saturday — opens Sunday 18:00 ET
+            days_ahead = 1
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0) + timedelta(days=days_ahead)
+        elif wd == 6 and hour < 18:
+            # Sunday before 18:00
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        elif wd == 4 and hour >= 17:
+            # Friday after 17:00 — opens Sunday 18:00 ET
+            days_ahead = 2
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0) + timedelta(days=days_ahead)
+        elif hour == 17:
+            # Daily halt 17:00-18:00
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        else:
+            return 0  # market is open
+
+        return max(0, (target - now).total_seconds())
+
     # Watchdog: reconnect if no records received within this many seconds
     WATCHDOG_TIMEOUT_S = 60
 
@@ -501,11 +533,15 @@ class DatabentoLiveStream:
     async def _watchdog_loop(self):
         """Monitor stream health — reconnect if no records received within timeout.
 
-        Also handles the daily halt transition: during the 17:00-18:00 ET halt
-        no records arrive, but we need to reconnect promptly at 18:00 ET rather
-        than waiting for the next watchdog cycle to notice.
+        Handles three transitions:
+        1. Daily halt (17:00-18:00 ET): force reconnect at 18:00.
+        2. Weekend close (Fri 17:00 → Sun 18:00): stop stream thread entirely,
+           sleep until market opens, then restart — saves CPU, network, and
+           avoids Databento "No data found" warnings.
+        3. Mid-session stall: reconnect if no records within WATCHDOG_TIMEOUT_S.
         """
         was_in_halt = False
+        _stream_suspended = False
         while self._running:
             await asyncio.sleep(self.WATCHDOG_TIMEOUT_S)
             if not self._running:
@@ -514,7 +550,43 @@ class DatabentoLiveStream:
             now_epoch = time.time()
             in_globex = self._in_globex(now_epoch)
 
-            # Detect halt → open transition: force reconnect immediately
+            # --- Weekend / extended close: suspend stream and sleep ---
+            if not in_globex and not _stream_suspended:
+                from zoneinfo import ZoneInfo
+                dt_et = datetime.fromtimestamp(now_epoch, tz=ZoneInfo("US/Eastern"))
+                # Only suspend for weekend close (not daily halt — that's brief)
+                is_weekend_close = (
+                    dt_et.weekday() == 5  # Saturday
+                    or (dt_et.weekday() == 4 and dt_et.hour >= 17)  # Friday after 17:00
+                    or (dt_et.weekday() == 6 and dt_et.hour < 18)  # Sunday before 18:00
+                )
+                if is_weekend_close:
+                    logger.info("Databento watchdog: weekend close detected — suspending stream thread")
+                    # Stop stream thread to free network/CPU
+                    self._running = False
+                    if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+                        self._stream_thread.join(timeout=5)
+                    _stream_suspended = True
+                    self._running = True  # Keep watchdog alive
+
+                    # Sleep until market opens (check every 60s for cancellation)
+                    sleep_s = self._seconds_until_globex_open()
+                    logger.info("Databento watchdog: sleeping %.0f min until Globex opens", sleep_s / 60)
+                    slept = 0.0
+                    while slept < sleep_s and self._running:
+                        await asyncio.sleep(min(60, sleep_s - slept))
+                        slept += 60
+                    if not self._running:
+                        break
+
+                    # Market is open — restart stream
+                    logger.info("Databento watchdog: Globex open — restarting stream thread")
+                    self._last_record_time = time.monotonic()
+                    self._restart_stream_thread()
+                    _stream_suspended = False
+                    continue
+
+            # --- Daily halt → open transition: force reconnect ---
             from zoneinfo import ZoneInfo
             dt_et = datetime.fromtimestamp(now_epoch, tz=ZoneInfo("US/Eastern"))
             in_halt = dt_et.hour == 17
@@ -526,9 +598,10 @@ class DatabentoLiveStream:
                 continue
             was_in_halt = in_halt
 
+            # --- Mid-session stall detection ---
             elapsed = time.monotonic() - self._last_record_time
             if elapsed > self.WATCHDOG_TIMEOUT_S:
-                if in_globex:
+                if in_globex and not _stream_suspended:
                     logger.warning(
                         "Databento watchdog: no records for %.0fs (during Globex hours) — reconnecting",
                         elapsed,
@@ -654,6 +727,24 @@ class DatabentoLiveStream:
             logger.warning("Gap backfill failed (non-fatal): %s", e)
 
     async def _stream_loop(self):
+        # If market is closed, sleep until it opens instead of connecting
+        # (avoids "No data found" warnings and wasted Databento API calls)
+        if not self._in_globex(time.time()):
+            next_open = self._seconds_until_globex_open()
+            if next_open > 0:
+                logger.info(
+                    "Databento stream: market closed — sleeping %.0f min until Globex opens",
+                    next_open / 60,
+                )
+                # Sleep in 60s chunks so we can be cancelled cleanly
+                slept = 0.0
+                while slept < next_open and self._running:
+                    await asyncio.sleep(min(60, next_open - slept))
+                    slept += 60
+                if not self._running:
+                    return
+                logger.info("Databento stream: market open — connecting now")
+
         # Backfill any gap before reconnecting to live
         await self._backfill_gap()
 

@@ -8,10 +8,33 @@ from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
 from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP
-from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit
+from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit, ProviderRunMetrics
 from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
+
+
+def get_provider_last_checked(db: Session, provider_ids: list[str] | None = None) -> dict[str, str]:
+    """Get last successful extraction time per provider from provider_run_metrics.
+
+    Returns {provider_id: iso_timestamp} for the most recent successful run.
+    """
+    from sqlalchemy import func
+    q = (
+        db.query(
+            ProviderRunMetrics.provider_id,
+            func.max(ProviderRunMetrics.end_time).label("last_checked"),
+        )
+        .filter(ProviderRunMetrics.status == "success")
+    )
+    if provider_ids:
+        q = q.filter(ProviderRunMetrics.provider_id.in_(provider_ids))
+    q = q.group_by(ProviderRunMetrics.provider_id)
+
+    return {
+        pid: ts.isoformat() + "Z" if ts else None
+        for pid, ts in q.all()
+    }
 
 
 def _get_dutch_legs(outcomes) -> list:
@@ -112,6 +135,10 @@ class OpportunityService:
         meta_cache = self._batch_lookup_provider_meta(rows)
         updated_at_cache = self._batch_lookup_odds_updated_at(rows)
 
+        # Provider-level last-checked timestamps (extraction recency, not data change)
+        provider_ids_in_rows = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
+        last_checked_cache = get_provider_last_checked(self.db, provider_ids_in_rows) if provider_ids_in_rows else {}
+
         # Batch pre-fetch bonus statuses for all providers (single query instead of N)
         bonus_cache = {}
         if profile and type == 'value':
@@ -162,6 +189,10 @@ class OpportunityService:
 
             # Attach odds freshness timestamp
             result["odds_updated_at"] = updated_at_cache.get(meta_key)
+
+            # Attach provider extraction recency (when we last checked, even if odds unchanged)
+            canonical = PROVIDER_CANONICAL.get(opp.provider1_id, opp.provider1_id)
+            result["provider_last_checked"] = last_checked_cache.get(canonical)
 
             # Expose provider's own team names (for copy-paste between app and sportsbook)
             if isinstance(meta, dict):

@@ -16,8 +16,8 @@ type Step = 'settle' | 'capital' | 'batch' | 'execute';
 
 const STEPS: { key: Step; label: string }[] = [
   { key: 'settle', label: 'Settle' },
-  { key: 'capital', label: 'Capital Plan' },
   { key: 'batch', label: 'Session Batch' },
+  { key: 'capital', label: 'Capital Plan' },
   { key: 'execute', label: 'Execute' },
 ];
 
@@ -107,7 +107,6 @@ export function PlayPage() {
   const {
     data: batchData,
     isLoading,
-    isFetching,
     error: batchError,
     refetch: rebuildBatch,
   } = useQuery<BatchResult>({
@@ -132,7 +131,7 @@ export function PlayPage() {
       setExcludedBets([]);
       queryClient.invalidateQueries({ queryKey: ['play-batch'] });
       queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      setStep('batch');
+      setStep('batch');  // Back to batch to see updated allocation
     },
   });
 
@@ -145,7 +144,7 @@ export function PlayPage() {
   }, [confirmCapital]);
 
   const handleSkipCapital = useCallback(() => {
-    setStep('batch');
+    setStep('execute');
   }, []);
 
   const handleLockBatch = useCallback(() => {
@@ -165,10 +164,10 @@ export function PlayPage() {
         mirrorRunning={mirrorRunning}
       />
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {step === 'settle' && (
           <SettlePanel
-            onContinue={() => setStep('capital')}
+            onContinue={() => setStep('batch')}
             pendingCount={pendingCount}
             setPendingCount={setPendingCount}
           />
@@ -183,6 +182,7 @@ export function PlayPage() {
             ) : (
               <CapitalPlanPanel
                 capitalPlan={batchData.capital_plan}
+                balanceStatus={batchData.balance_status}
                 onConfirm={handleConfirmCapital}
                 onSkip={handleSkipCapital}
                 isLoading={confirmCapital.isPending}
@@ -209,18 +209,19 @@ export function PlayPage() {
                 <div className="flex items-center justify-between px-3 py-2 border-t border-border bg-dark-900">
                   <button
                     className="px-3 py-1 text-xs text-dark-400 border border-dark-600 hover:bg-dark-800 transition-colors"
-                    onClick={() => setStep('capital')}
+                    onClick={() => setStep('settle')}
                   >
-                    ← Capital Plan
+                    ← Settle
                   </button>
                   <div className="flex items-center gap-2">
-                    <button
-                      className="px-3 py-1 text-xs bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600"
-                      onClick={() => { setExcludedBets([]); rebuildBatch(); }}
-                      disabled={isFetching}
-                    >
-                      {isFetching ? 'Rebuilding...' : 'Rebuild'}
-                    </button>
+                    {batchData.capital_plan.actions.length > 0 && (
+                      <button
+                        className="px-4 py-1 text-xs bg-amber-500 text-black font-bold hover:opacity-90 transition-opacity"
+                        onClick={() => setStep('capital')}
+                      >
+                        Capital Plan →
+                      </button>
+                    )}
                     {batchData.batch.length > 0 && (
                       <button
                         className="px-4 py-1 text-xs bg-success text-black font-bold hover:opacity-90 transition-opacity"

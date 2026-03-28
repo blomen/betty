@@ -415,7 +415,9 @@ class BatchBuilder:
         # Enforce 48h TTK cap for soft providers
         if opp.provider1_id not in SHARP_PROVIDERS:
             if event.start_time:
-                ttk_hours = (event.start_time - datetime.now(timezone.utc)).total_seconds() / 3600
+                now = datetime.now(timezone.utc)
+                st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
+                ttk_hours = (st - now).total_seconds() / 3600
                 if ttk_hours > MAX_TTK_HOURS:
                     return None
                 if ttk_hours <= 0:
@@ -449,7 +451,10 @@ class BatchBuilder:
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
         if unfunded:
-            # Unfunded provider: compute stake from Kelly but skip bonus logic
+            # Unfunded: only skip if edge below threshold — funding issues
+            # are resolved in the capital plan step
+            if edge_raw < min_edge:
+                return None
             result = calculate_stake(
                 bankroll_total=total_bankroll,
                 edge_raw=edge_raw,
@@ -457,12 +462,10 @@ class BatchBuilder:
                 single_bet_cap_pct=single_bet_cap_pct,
                 min_edge=min_edge,
                 min_odds=0.0,
-                min_stake=min_stake,
+                min_stake=0.0,
                 max_kelly=kelly_fraction,
             )
-            if result.skip_reason:
-                return None
-            stake = result.stake
+            stake = result.stake if result.stake > 0 else min_stake
             is_bonus = False
             bonus_type = None
             bet_min_odds = 0.0

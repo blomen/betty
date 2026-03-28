@@ -43,7 +43,7 @@ def list_opportunities(
     market: Optional[str] = None,
     sport: Optional[str] = None,
     min_value: Optional[float] = None,
-    limit: int = 500,
+    limit: int = 2000,
     service: OpportunityService = Depends(_get_service),
 ):
     """Get current value/bonus opportunities with enhanced filtering and stake recommendations."""

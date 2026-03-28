@@ -347,7 +347,7 @@ export function DutchAnchorPage({ providers }: DutchAnchorPageProps) {
   };
 
   return (
-    <div className="space-y-2 overflow-y-auto">
+    <div className="flex-1 min-h-0 space-y-2 overflow-y-auto">
       {/* Feedback toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 

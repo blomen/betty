@@ -89,6 +89,11 @@ async def get_polymarket_value(
 
     usdc_rate = get_exchange_rate("polymarket")
 
+    # Provider-level extraction recency
+    from ...services.opportunity_service import get_provider_last_checked
+    last_checked_map = get_provider_last_checked(db, ["polymarket"])
+    poly_last_checked = last_checked_map.get("polymarket")
+
     # Build response from pre-computed opportunities
     results = []
     for opp, event in rows:
@@ -127,6 +132,7 @@ async def get_polymarket_value(
             "event_slug": event_slug,
             "provider_meta": {"event_slug": event_slug} if event_slug else None,
             "updated_at": odds_updated_map.get((opp.event_id, opp.market, opp.outcome1)),
+            "provider_last_checked": poly_last_checked,
         }
 
         # Add stake recommendation

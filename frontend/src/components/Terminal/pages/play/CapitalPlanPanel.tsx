@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import type { CapitalAction, CapitalPlan } from '../../../../types';
+import type { CapitalAction, CapitalPlan, ProviderBalanceStatus } from '../../../../types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -9,6 +9,7 @@ type ActionStatus = 'pending' | 'done' | 'dismissed';
 
 interface Props {
   capitalPlan: CapitalPlan & { usdc_rate?: number };
+  balanceStatus?: ProviderBalanceStatus[];
   onConfirm: () => void;
   onSkip: () => void;
   isLoading: boolean;
@@ -39,6 +40,33 @@ function providerColor(pid: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// ProgressRing — thin circle that fills as balance approaches target
+// ---------------------------------------------------------------------------
+
+function ProgressRing({ progress, size = 20, stroke = 2 }: { progress: number; size?: number; stroke?: number }) {
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(1, progress));
+  const offset = circumference * (1 - clamped);
+  const color = clamped >= 1 ? '#22c55e' : clamped > 0 ? '#f59e0b' : '#3f3f46';
+
+  return (
+    <svg width={size} height={size} className="flex-shrink-0" style={{ transform: 'rotate(-90deg)' }}>
+      {/* Background ring */}
+      <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#27272a" strokeWidth={stroke} />
+      {/* Fill ring */}
+      <circle
+        cx={size / 2} cy={size / 2} r={radius} fill="none"
+        stroke={color} strokeWidth={stroke}
+        strokeDasharray={circumference} strokeDashoffset={offset}
+        strokeLinecap="round"
+        style={{ transition: 'stroke-dashoffset 0.5s ease, stroke 0.3s ease' }}
+      />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ActionNode
 // ---------------------------------------------------------------------------
 
@@ -46,13 +74,15 @@ function ActionNode({
   action,
   status,
   usdcRate,
-  onToggleDone,
+  progress,
+  liveBalance,
   onToggleDismiss,
 }: {
   action: CapitalAction;
   status: ActionStatus;
   usdcRate: number;
-  onToggleDone: () => void;
+  progress: number;
+  liveBalance: number | undefined;
   onToggleDismiss: () => void;
 }) {
   const colors = ACTION_COLORS[action.type];
@@ -61,12 +91,10 @@ function ActionNode({
 
   return (
     <div className="relative py-1">
-      {/* Timeline dot */}
-      <div
-        className={`absolute -left-[21px] top-[14px] w-2.5 h-2.5 rounded-full border-2 border-dark-900 ${
-          isDone ? 'bg-success' : isDismissed ? 'bg-dark-600' : colors.dot
-        }`}
-      />
+      {/* Progress ring replacing timeline dot */}
+      <div className="absolute -left-[26px] top-[10px]">
+        <ProgressRing progress={isDone ? 1 : isDismissed ? 0 : progress} />
+      </div>
 
       {/* Action card */}
       <div
@@ -93,6 +121,25 @@ function ActionNode({
             </span>
           </div>
 
+          {/* Balance progress line */}
+          {action.type === 'deposit' && action.target_balance > 0 && (() => {
+            const bal = liveBalance ?? 0;
+            return (
+              <div className="text-[10px] mt-0.5 flex items-center gap-1">
+                <span className={bal >= action.target_balance ? 'text-success' : 'text-amber-400'}>
+                  {formatCurrency(bal, action.currency)}
+                </span>
+                <span className="text-dark-500">/</span>
+                <span className="text-dark-400">{formatCurrency(action.target_balance, action.currency)}</span>
+                {bal < action.target_balance && (
+                  <span className="text-dark-500 ml-1">
+                    ({formatCurrency(action.target_balance - bal, action.currency)} short)
+                  </span>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Details line */}
           <div className="text-[10px] text-dark-400 mt-0.5 flex items-center gap-2 flex-wrap">
             {action.unlocks > 0 && <span>→ {action.unlocks} bets</span>}
@@ -103,19 +150,8 @@ function ActionNode({
           </div>
         </div>
 
-        {/* Right: action buttons */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={onToggleDone}
-            className={`w-7 h-7 flex items-center justify-center border rounded transition-colors ${
-              isDone
-                ? 'border-success bg-success/20 text-success'
-                : 'border-dark-600 text-dark-500 hover:border-success/50 hover:text-success'
-            }`}
-            title={isDone ? 'Mark as pending' : 'Mark as done'}
-          >
-            <span className="text-xs font-bold">✓</span>
-          </button>
+        {/* Right: skip button */}
+        <div className="flex items-center flex-shrink-0">
           <button
             onClick={onToggleDismiss}
             className={`w-7 h-7 flex items-center justify-center border rounded transition-colors ${
@@ -137,44 +173,63 @@ function ActionNode({
 // Component
 // ---------------------------------------------------------------------------
 
-export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: Props) {
+export function CapitalPlanPanel({ capitalPlan, balanceStatus, onConfirm, onSkip, isLoading }: Props) {
   const usdcRate = capitalPlan.usdc_rate ?? 10.5;
   const [statuses, setStatuses] = useState<Record<string, ActionStatus>>({});
+  // Track live balances per provider — seeded from batch data, updated by SSE
+  const [liveBalances, setLiveBalances] = useState<Record<string, number>>(() => {
+    const initial: Record<string, number> = {};
+    if (balanceStatus) {
+      for (const bs of balanceStatus) {
+        initial[bs.provider_id] = bs.balance;
+      }
+    }
+    return initial;
+  });
 
   const keys = useMemo(
     () => capitalPlan.actions.map((a) => actionKey(a)),
     [capitalPlan.actions],
   );
 
-  // Listen for mirror balance_synced SSE — auto-mark matching deposit actions done
+  // Listen for mirror balance_synced SSE — track deposit progress + auto-mark done
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
 
-    es.addEventListener('balance_synced', (e: MessageEvent) => {
+    const handleBalanceEvent = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
         const provider = data.provider as string;
-        // Find deposit actions for this provider and auto-mark done
-        capitalPlan.actions.forEach((action, i) => {
-          if (action.type === 'deposit' && action.provider_id === provider) {
-            setStatuses(prev => ({ ...prev, [keys[i]]: 'done' }));
-          }
-        });
+
+        // Always track absolute live balance
+        const balance = data.balance as number | undefined;
+        if (balance != null) {
+          setLiveBalances(prev => ({ ...prev, [provider]: balance }));
+        }
+
+        // Auto-mark done when a deposit delta matches recommended amount
+        const delta = data.delta as number | undefined;
+        if (delta && delta > 0) {
+          capitalPlan.actions.forEach((action, i) => {
+            if (action.type !== 'deposit' || action.provider_id !== provider) return;
+            if (action.amount <= 0) return;
+            const tolerance = Math.abs(delta - action.amount) / action.amount;
+            if (tolerance <= 0.10) {
+              setStatuses(prev => ({ ...prev, [keys[i]]: 'done' }));
+            }
+          });
+        }
       } catch { /* ignore parse errors */ }
-    });
+    };
+
+    es.addEventListener('balance_synced', handleBalanceEvent);
+    es.addEventListener('deposit_detected', handleBalanceEvent);
 
     return () => es.close();
   }, [capitalPlan.actions, keys]);
 
   function getStatus(key: string): ActionStatus {
     return statuses[key] ?? 'pending';
-  }
-
-  function toggleDone(key: string) {
-    setStatuses(prev => ({
-      ...prev,
-      [key]: prev[key] === 'done' ? 'pending' : 'done',
-    }));
   }
 
   function toggleDismiss(key: string) {
@@ -212,7 +267,7 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
   const projectedDeployed = capitalPlan.total_deployed + netSEK + usdcInSEK;
 
   return (
-    <div className="p-4 flex flex-col items-center">
+    <div className="p-4 flex-1 min-h-0 overflow-y-auto flex flex-col items-center">
       <div className="w-full max-w-lg">
 
         {/* Current State */}
@@ -231,21 +286,67 @@ export function CapitalPlanPanel({ capitalPlan, onConfirm, onSkip, isLoading }: 
         {/* Arrow */}
         {hasActions && <div className="text-center text-dark-500 text-lg py-1">↓</div>}
 
-        {/* Timeline */}
-        {hasActions && (
-          <div className="border-l-2 border-success/20 ml-5 pl-4">
-            {capitalPlan.actions.map((action, idx) => (
-              <ActionNode
-                key={keys[idx]}
-                action={action}
-                status={getStatus(keys[idx])}
-                usdcRate={usdcRate}
-                onToggleDone={() => toggleDone(keys[idx])}
-                onToggleDismiss={() => toggleDismiss(keys[idx])}
-              />
-            ))}
-          </div>
-        )}
+        {/* Timeline grouped by cluster */}
+        {hasActions && (() => {
+          // Group actions by cluster, preserving order of first appearance
+          const clusterOrder: string[] = [];
+          const clusterActions: Record<string, { action: CapitalAction; idx: number }[]> = {};
+          capitalPlan.actions.forEach((action, idx) => {
+            const c = action.cluster;
+            if (!clusterActions[c]) {
+              clusterOrder.push(c);
+              clusterActions[c] = [];
+            }
+            clusterActions[c].push({ action, idx });
+          });
+
+          return (
+            <div className="space-y-2">
+              {clusterOrder.map(cluster => {
+                const items = clusterActions[cluster];
+                const clusterTotal = items.reduce((s, { action }) => s + action.amount, 0);
+                const clusterEV = items.reduce((s, { action }) => s + action.expected_ev, 0);
+                const clusterUnlocks = items.length > 1
+                  ? items[0].action.unlocks  // cluster siblings share the same opps
+                  : items[0].action.unlocks;
+                const allDismissed = items.every(({ idx: i }) => getStatus(keys[i]) === 'dismissed');
+                const currency = items[0].action.currency;
+
+                return (
+                  <div key={cluster} className={`border border-dark-700 rounded-md overflow-hidden ${allDismissed ? 'opacity-30' : ''}`}>
+                    {/* Cluster header */}
+                    <div className="flex items-center justify-between px-3 py-1.5 bg-dark-800/50 border-b border-dark-700">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-dark-400 uppercase tracking-wider">{cluster}</span>
+                        <span className="text-[10px] text-dark-500">
+                          {formatCurrency(clusterTotal, currency)} total
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px]">
+                        {clusterUnlocks > 0 && <span className="text-dark-400">{clusterUnlocks} bets</span>}
+                        {clusterEV > 0 && <span className="text-success">+{clusterEV.toFixed(0)} EV</span>}
+                      </div>
+                    </div>
+                    {/* Actions in cluster */}
+                    <div className="border-l-2 border-success/20 ml-[15px] pl-5 py-0.5">
+                      {items.map(({ action, idx }) => (
+                        <ActionNode
+                          key={keys[idx]}
+                          action={action}
+                          status={getStatus(keys[idx])}
+                          usdcRate={usdcRate}
+                          progress={action.target_balance > 0 ? (liveBalances[action.provider_id] ?? 0) / action.target_balance : 0}
+                          liveBalance={liveBalances[action.provider_id]}
+                          onToggleDismiss={() => toggleDismiss(keys[idx])}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Arrow */}
         <div className="text-center text-dark-500 text-lg py-1">↓</div>

@@ -45,7 +45,7 @@ class BetInterceptor:
     # Gecko V2 bet history — same URL as placement but GET method (exclude /count)
     _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns
-    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance")
+    _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance", "wallet/balance")
 
     # Notification / preference settings patterns
     _NOTIFICATION_KEYWORDS = (

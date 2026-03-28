@@ -260,7 +260,7 @@ export function SessionBatchPanel({
   const hasProjections = wageringProjections.length > 0;
 
   return (
-    <div className="flex flex-col min-h-0">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* ------------------------------------------------------------------ */}
       {/* Summary bar                                                         */}
       {/* ------------------------------------------------------------------ */}
@@ -313,7 +313,7 @@ export function SessionBatchPanel({
           No bets in batch.
         </div>
       ) : (
-        <div className="overflow-y-auto border border-border border-t-0">
+        <div className="flex-1 min-h-0 overflow-y-auto border border-border border-t-0">
           <table className="sq w-full">
             <colgroup>
               <col style={{ width: '3%' }} />

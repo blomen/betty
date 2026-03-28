@@ -97,7 +97,11 @@ const PolyRow = memo(function PolyRow({
   const effectiveOdds = oddsOverride[oddsKey] ?? vb.polymarket_odds;
   const priceCents = oddsToCents(effectiveOdds);
   const fairCents = vb.fair_price_cents ?? oddsToCents(vb.fair_odds);
-  const edgePct = vb.fair_odds > 1 ? (effectiveOdds / vb.fair_odds - 1) * 100 : vb.edge_pct;
+  // Use backend pre-computed edge (includes 2% fee adjustment) unless user overrode odds
+  const isOddsOverridden = oddsKey in oddsOverride;
+  const edgePct = isOddsOverridden && vb.fair_odds > 1
+    ? ((0.98 * effectiveOdds + 0.02) / vb.fair_odds - 1) * 100
+    : vb.edge_pct;
   const stakeUsdc = stakeOverride[oddsKey] ?? vb.final_stake_usdc ?? 0;
   const shares = priceCents > 0 ? stakeUsdc / (priceCents / 100) : 0;
   const payoutUsdc = shares * 1.0;
@@ -202,7 +206,7 @@ const PolyRow = memo(function PolyRow({
           {oddsKey in stakeOverride && <button onClick={() => onStakeClear(oddsKey)} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${edgePct > 0 ? 'text-success' : 'text-error'}`}>{edgePct > 0 ? '+' : ''}{edgePct.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(vb.updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(vb.provider_last_checked ?? vb.updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (

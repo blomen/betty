@@ -56,6 +56,7 @@ export interface Opportunity {
   provider_meta?: Record<string, string | number> | null;
   // Freshness tracking
   odds_updated_at?: string | null;
+  provider_last_checked?: string | null;
   // Allocation / cluster play mode
   allocation_score?: number | null;
   allocation_reason?: string | null;
@@ -336,6 +337,7 @@ export interface PolymarketValueBet {
   event_slug?: string | null;
   provider_meta?: Record<string, string | number> | null;
   updated_at?: string | null;
+  provider_last_checked?: string | null;
 }
 
 export interface PolymarketValueResponse {

@@ -501,6 +501,12 @@ class MirrorService:
                 bonus_val = float(bonus.get("total", 0)) if isinstance(bonus, dict) else 0
                 return cash_val + bonus_val
 
+            # Pinnacle: {"amount": 535.0, "currency": "SEK"}
+            if "amount" in data and "currency" in data:
+                amt = float(data["amount"])
+                if amt >= 0:
+                    return amt
+
             # Gecko V2 / Spelklubben:
             # {"Balances": {"SEK": {"Real": {"Balance": 907}, "Bonus": {"Balance": 500}}}}
             balances = data.get("Balances", {})
@@ -533,10 +539,12 @@ class MirrorService:
                     f"[mirror] Balance synced: {provider_id} "
                     f"{old_balance:.2f} → {balance:.2f} SEK"
                 )
+                delta = balance - (old_balance or 0)
                 self._notify("balance_synced", {
                     "provider": provider_id,
                     "balance": balance,
                     "previous": old_balance,
+                    "delta": round(delta, 2),
                 })
         except Exception as e:
             db.rollback()

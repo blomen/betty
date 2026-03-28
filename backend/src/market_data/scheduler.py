@@ -27,13 +27,19 @@ class MarketScanScheduler:
             self._task = None
             logger.info("Market scan scheduler stopped")
 
+    # When market is closed, sleep this long between checks instead of self.interval.
+    # Avoids waking every 5 min to do nothing.
+    _CLOSED_MARKET_SLEEP = 300  # 5 min — check periodically for market open
+
     async def _loop(self):
         """Main scheduler loop — runs continuously."""
         # Run immediately on startup, then every interval
         while True:
             try:
-                await self._run_scan()
-                await asyncio.sleep(self.interval)
+                ran = await self._run_scan()
+                # Sleep longer when market is closed to conserve resources
+                sleep_time = self.interval if ran else self._CLOSED_MARKET_SLEEP
+                await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -41,14 +47,17 @@ class MarketScanScheduler:
                 await asyncio.sleep(self.interval)
 
     async def _run_scan(self):
-        """Execute a single scan cycle."""
+        """Execute a single scan cycle.
+
+        Returns True if scan ran, False if skipped (market closed).
+        """
         from ..db.models import get_session
         from ..services.market_service import MarketService
 
         # Skip during weekend close — no new data to process
         if MarketService._is_globex_closed():
             logger.debug("Globex closed — skipping scheduled scan")
-            return
+            return False
 
         db = get_session()
         try:
@@ -56,8 +65,10 @@ class MarketScanScheduler:
             await svc.compute_session()
             signals = await svc.run_scan()
             logger.info("Scheduled scan: %d signals", len(signals))
+            return True
         except Exception as e:
             logger.error("Scheduled scan error: %s", e)
             db.rollback()
+            return False
         finally:
             db.close()

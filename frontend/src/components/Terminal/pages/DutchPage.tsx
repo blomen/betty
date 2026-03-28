@@ -55,6 +55,7 @@ interface DutchOpp {
   arb_profit_pct?: number | null;
   arb_legs?: DutchLeg[] | null;
   odds_updated_at?: string | null;
+  provider_last_checked?: string | null;
 }
 
 interface DutchPageProps {
@@ -187,7 +188,7 @@ const DutchRow = memo(function DutchRow({
         <td className={`text-right font-semibold text-sm ${flash ? `flash-${flash}` : ''} ${gp >= 0 ? 'text-success' : 'text-error'}`}>
           {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
         </td>
-        {(() => { const rt = relativeTime(opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(opp.provider_last_checked ?? opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && (
