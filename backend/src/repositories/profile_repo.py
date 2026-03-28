@@ -311,9 +311,10 @@ class ProfileRepo:
                 if record.bonus_type == "bonusdeposit":
                     # Two-phase bonusdeposit: trigger met → unlock bonus money
                     # Add bonus to balance and start main wagering phase
-                    deposit = record.deposit_amount or record.wagering_requirement
                     self.adjust_balance(profile_id, provider_id, record.bonus_amount)
-                    wager_req = (deposit + record.bonus_amount) * record.wagering_multiplier
+                    # wagering_multiplier is defined as "× bonus amount"
+                    # e.g. 12 means bonus×12 (equivalent to (dep+bonus)×6 when dep=bonus)
+                    wager_req = record.bonus_amount * record.wagering_multiplier
                     if wager_req <= 0:
                         # Wager-first model: no wager phase, bonus is cash
                         record.bonus_status = "completed"

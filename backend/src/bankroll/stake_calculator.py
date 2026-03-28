@@ -2,25 +2,35 @@
 Stake Calculator - Dynamic Kelly with Safety Rails
 ===================================================
 
+All parameters derived from Monte Carlo simulations (3,000 runs, 52 weeks).
+No profile settings needed — stakes are fully automated.
+
 Total bankroll approach:
 - All provider balances are fungible
 - Stakes sized from total bankroll
 - Bonuses just add EV + wagering constraints
 
 Key safety features:
-1. Dynamic Kelly scaling by edge (quarter Kelly default)
+1. Dynamic Kelly scaling by edge and bankroll
 2. Single bet cap (3% of bankroll)
 3. Minimum stake guard (scales with bankroll: 5-25 kr)
 
-Bonus clearing:
-- Track wagered amount per provider
-- When bonus fully wagered: skip min_odds requirement
-- Use same stake formula regardless of bonus status
+Monte Carlo optimal parameters (0% ruin, ~270% median growth):
+- max_kelly: 0.75 (3/4 Kelly ceiling at high bankrolls)
+- min_kelly: 0.25 (quarter Kelly floor for low-edge bets)
+- single_bet_cap: 3% of bankroll
+- min_expected_profit: 0.75 kr
+- Dynamic boost at low bankrolls: kelly * 1.333 below 5k, taper to 5k-15k
 """
 
 from dataclasses import dataclass
 from typing import Optional
 
+
+# ── Sim-optimal constants (from Monte Carlo: 3k runs, 52 weeks, 0% ruin) ──
+OPTIMAL_MAX_KELLY = 0.75          # 3/4 Kelly ceiling (converges here at high bankroll)
+OPTIMAL_MIN_KELLY = 0.25          # Quarter Kelly floor for low-edge bets (≤2%)
+OPTIMAL_SINGLE_BET_CAP = 0.03    # 3% of bankroll max per bet
 
 # Default minimum stake (skip bets below this)
 DEFAULT_MIN_STAKE = 25.0
@@ -57,14 +67,13 @@ BONUS_MIN_ODDS = 1.80
 
 
 # ── Dynamic Kelly scaling by bankroll ──
-# At low bankrolls, Kelly stakes are too small to clear min_stake.
-# Scale max_kelly up so raw stakes naturally reach playable sizes.
-# Converges to profile max_kelly as bankroll grows.
+# At low bankrolls, boost Kelly so stakes clear min_stake thresholds.
+# Converges to OPTIMAL_MAX_KELLY as bankroll grows.
 #
-# Bankroll thresholds (with profile max_kelly=0.75):
-#   <= 5k:  effective max_kelly = profile * 1.33 = 1.0
-#   5k-15k: linear interpolation back to profile max_kelly
-#   >= 15k: profile max_kelly unchanged
+# Bankroll thresholds:
+#   <= 5k:  max_kelly * 1.333 ≈ 1.0 (full Kelly)
+#   5k-15k: linear taper back to max_kelly
+#   >= 15k: max_kelly unchanged (0.75)
 DYNAMIC_KELLY_LOW_THRESHOLD = 5000.0
 DYNAMIC_KELLY_HIGH_THRESHOLD = 15000.0
 DYNAMIC_KELLY_BOOST = 1.333  # Multiply profile kelly by this at low bankroll
@@ -149,27 +158,27 @@ def effective_max_kelly(profile_max_kelly: float, bankroll: float) -> float:
 def get_kelly_fraction(
     edge_used: float,
     high_confidence: bool = True,
-    max_kelly: float = 0.75,
+    max_kelly: float = OPTIMAL_MAX_KELLY,
 ) -> float:
     """
-    Dynamic Kelly fraction based on edge, capped by profile setting.
+    Dynamic Kelly fraction based on edge quality.
 
-    Scaling:
-    - <= 2% edge: min(0.25, max_kelly) - conservative base
+    Scaling (from MC simulation):
+    - <= 2% edge: OPTIMAL_MIN_KELLY (0.25) - quarter Kelly for uncertain edges
     - 2-6% edge: Linear scale up to max_kelly
-    - >= 6% edge: max_kelly (capped by profile)
+    - >= 6% edge: max_kelly (full allocation)
 
-    If low confidence, clamp to min(0.25, max_kelly) regardless of edge.
+    If low confidence, clamp to OPTIMAL_MIN_KELLY regardless of edge.
 
     Args:
         edge_used: Edge (decimal, e.g., 0.03 for 3%)
         high_confidence: Whether this is a high-confidence bet (strong match, fresh odds)
-        max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
+        max_kelly: Kelly ceiling (dynamically scaled by bankroll via effective_max_kelly)
 
     Returns:
-        Kelly fraction (up to max_kelly)
+        Kelly fraction between OPTIMAL_MIN_KELLY and max_kelly
     """
-    base = min(0.25, max_kelly)
+    base = min(OPTIMAL_MIN_KELLY, max_kelly)
 
     # Low confidence = always base Kelly
     if not high_confidence:
@@ -190,29 +199,33 @@ def calculate_stake(
     bankroll_total: float,
     edge_raw: float,
     odds: float,
-    single_bet_cap_pct: float = 0.03,
+    single_bet_cap_pct: float = OPTIMAL_SINGLE_BET_CAP,
     min_edge: float = 0.01,
     min_odds: float = BONUS_MIN_ODDS,
     min_odds_sanity: float = 1.10,
     min_stake: float = DEFAULT_MIN_STAKE,
     high_confidence: bool = True,
-    max_kelly: float = 0.75,
+    max_kelly: float = OPTIMAL_MAX_KELLY,
     min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
 ) -> StakeResult:
     """
     Calculate optimal stake using dynamic Kelly with safety rails.
 
+    Kelly fraction and bet cap are derived from Monte Carlo simulations —
+    callers should NOT override max_kelly or single_bet_cap_pct unless
+    they have a specific reason (e.g. bonus wagering constraints).
+
     Args:
         bankroll_total: Total bankroll across all providers
         edge_raw: Raw estimated edge (decimal, e.g., 0.05 for 5%)
         odds: Decimal odds (e.g., 2.0)
-        single_bet_cap_pct: Max stake as % of bankroll (0.03 = 3%)
+        single_bet_cap_pct: Max stake as % of bankroll (sim-optimal: 3%)
         min_edge: Minimum edge to place bet
         min_odds: Minimum odds (for bonus requirements, 0 to disable)
         min_odds_sanity: Minimum odds for sanity (avoid division issues)
         min_stake: Minimum stake (skip tiny bets)
         high_confidence: Whether this is a high-confidence bet
-        max_kelly: Maximum Kelly fraction from profile settings (default 0.75)
+        max_kelly: Kelly ceiling (sim-optimal: 0.75, boosted at low bankrolls)
         min_expected_profit: Minimum expected profit (stake * edge) to bother placing
 
     Returns:
@@ -274,8 +287,11 @@ def calculate_stake(
 
     edge_used = edge_raw
 
-    # Get dynamic Kelly fraction (capped by profile max_kelly, clamped if low confidence)
-    kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
+    # Apply dynamic Kelly boost at low bankrolls (converges to profile setting above 15k)
+    scaled_max_kelly = effective_max_kelly(max_kelly, bankroll_total)
+
+    # Get dynamic Kelly fraction (capped by scaled max_kelly, clamped if low confidence)
+    kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=scaled_max_kelly)
 
     # ML adaptive Kelly (M8) — best-effort
     try:

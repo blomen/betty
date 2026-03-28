@@ -79,18 +79,40 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
 
 // ── Charts ───────────────────────────────────────────────────────────
 
+// Shared chart layout — Polymarket style
+const CHART = { W: 600, H: 200, PL: 8, PR: 44, PT: 8, PB: 24 } as const;
+
+function polyChart(
+  data: { x: number; y: number }[],
+  { yMin, yMax, yFormat }: { yMin: number; yMax: number; yFormat: (v: number) => string },
+) {
+  const { W, H, PL, PR, PT, PB } = CHART;
+  const range = yMax - yMin || 1;
+
+  // 4-5 nice Y grid lines
+  const ySteps = 5;
+  const yLines = Array.from({ length: ySteps }, (_, i) => {
+    const v = yMin + (range * i) / (ySteps - 1);
+    const py = PT + (1 - (v - yMin) / range) * (H - PT - PB);
+    return { v, py, label: yFormat(v) };
+  });
+
+  // Line path — simple linear segments
+  const pathD = data.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+
+  return { yLines, pathD };
+}
+
 function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDeposited: number; totalStaked?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
       .sort((a, b) => new Date(a.placed_at).getTime() - new Date(b.placed_at).getTime());
-
     if (settled.length === 0) return [];
 
-    // Start from net deposited capital — bonus capital is excluded from P&L
     const startBankroll = netDeposited;
 
-    // Aggregate by day for a smoother curve
+    // Aggregate by day
     const dailyProfit = new Map<string, { date: Date; profit: number }>();
     for (const bet of settled) {
       const d = new Date(bet.placed_at);
@@ -114,120 +136,89 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
 
   if (data.length < 2) return null;
 
-  const W = 600;
-  const H = 200;
-  const PX = 40;
-  const PR = 12;
-  const PT = 12;
-  const PB = 24;
+  const { W, H, PL, PR, PT, PB } = CHART;
 
-  const minVal = Math.min(...data.map(d => d.value));
-  const maxVal = Math.max(...data.map(d => d.value));
-  const range = maxVal - minVal || 1;
+  const values = data.map(d => d.value);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const pad = (rawMax - rawMin) * 0.1 || 200;
+  const yMin = rawMin - pad;
+  const yMax = rawMax + pad;
+  const range = yMax - yMin;
   const minDate = data[0].date.getTime();
   const maxDate = data[data.length - 1].date.getTime();
   const dateRange = maxDate - minDate || 1;
 
-  const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
-  const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
+  const xPos = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
+  const yPos = (v: number) => PT + (1 - (v - yMin) / range) * (H - PT - PB);
 
-  // Catmull-Rom to cubic bezier for smooth curves
-  const pts = data.map(p => ({ x: x(p.date), y: y(p.value) }));
-  const pathD = pts.map((p, i) => {
-    if (i === 0) return `M${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-    const p0 = pts[Math.max(0, i - 2)];
-    const p1 = pts[i - 1];
-    const p2 = p;
-    const p3 = pts[Math.min(pts.length - 1, i + 1)];
-    const t = 0.3;
-    const cp1x = p1.x + (p2.x - p0.x) * t;
-    const cp1y = p1.y + (p2.y - p0.y) * t;
-    const cp2x = p2.x - (p3.x - p1.x) * t;
-    const cp2y = p2.y - (p3.y - p1.y) * t;
-    return `C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
-  }).join(' ');
+  const pts = data.map(p => ({ x: xPos(p.date), y: yPos(p.value) }));
+  const { yLines, pathD } = polyChart(pts, {
+    yMin, yMax,
+    yFormat: v => `${(v / 1000).toFixed(1)}k`,
+  });
 
   const lastVal = data[data.length - 1].value;
   const firstVal = data[0].value;
   const isUp = lastVal >= firstVal;
-  const stroke = isUp ? '#10b981' : '#ef4444';
-  const gradId = 'bankroll-grad';
+  const lineColor = isUp ? '#3fb950' : '#f85149';
 
-  const ySteps = 5;
-  const yLabels = Array.from({ length: ySteps }, (_, i) => {
-    const v = minVal + (range * i) / (ySteps - 1);
-    return { value: v, label: `${(v / 1000).toFixed(1)}k`, yPos: y(v) };
-  });
-
-  // Generate month-based x labels
-  const xLabels: { label: string; xPos: number }[] = [];
-  {
-    const seen = new Set<string>();
-    for (const p of data) {
-      const key = `${p.date.getFullYear()}-${p.date.getMonth()}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        xLabels.push({
-          label: p.date.toLocaleDateString('en-US', { month: 'short' }),
-          xPos: x(p.date),
-        });
-      }
-    }
-    const last = data[data.length - 1];
-    const lastKey = `${last.date.getFullYear()}-${last.date.getMonth()}-end`;
-    if (!seen.has(lastKey) && xLabels.length > 0) {
-      xLabels.push({
-        label: last.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        xPos: x(last.date),
-      });
+  // X labels — months
+  const xLabels: { label: string; pos: number }[] = [];
+  const seen = new Set<string>();
+  for (const p of data) {
+    const key = `${p.date.getFullYear()}-${p.date.getMonth()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      xLabels.push({ label: p.date.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(p.date) });
     }
   }
 
   const profit = lastVal - firstVal;
   const roiBase = totalStaked && totalStaked > 0 ? totalStaked : firstVal;
   const profitPct = ((profit / roiBase) * 100).toFixed(1);
-
-  const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
-  const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
+  const lastPt = pts[pts.length - 1];
 
   return (
-    <div className="bg-panel overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-xs text-muted uppercase tracking-wider font-medium">Bankroll</span>
+    <div className="bg-[#0d1117] overflow-hidden">
+      <div className="px-3 py-2 flex items-center justify-between">
+        <span className="text-[11px] text-[#8b949e] uppercase tracking-wider font-medium">Bankroll</span>
         <div className="flex items-center gap-3">
-          <span className={`text-xs ${isUp ? 'text-success/70' : 'text-error/70'}`}>
+          <span className={`text-xs font-medium ${isUp ? 'text-[#3fb950]' : 'text-[#f85149]'}`}>
             {profit >= 0 ? '+' : ''}{profit.toFixed(0)} kr ({profit >= 0 ? '+' : ''}{profitPct}%)
           </span>
-          <span className={`text-sm font-semibold ${isUp ? 'text-success' : 'text-error'}`}>
+          <span className="text-sm font-semibold text-[#e6edf3]">
             {lastVal.toFixed(0)} kr
           </span>
         </div>
       </div>
       <div className="relative" style={{ paddingBottom: '33.3%' }}>
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
+          {/* Dotted horizontal grid lines */}
+          {yLines.map((l, i) => (
+            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" />
+          ))}
+          {/* Gradient fill under line */}
           <defs>
-            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
-              <stop offset="60%" stopColor={stroke} stopOpacity="0.1" />
-              <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
+            <linearGradient id="bankrollGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.25" />
+              <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
             </linearGradient>
           </defs>
-          {yLabels.map((l, i) => (
-            <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="4,4" />
-          ))}
-          <path
-            d={`${pathD} L${pts[pts.length - 1].x.toFixed(1)},${(H - PB).toFixed(1)} L${pts[0].x.toFixed(1)},${(H - PB).toFixed(1)} Z`}
-            fill={`url(#${gradId})`}
-          />
-          <path d={pathD} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="6" fill={stroke} fillOpacity="0.12" />
-          <circle cx={x(data[data.length - 1].date)} cy={y(lastVal)} r="3" fill={stroke} />
+          <path d={`${pathD} L${pts[pts.length - 1].x.toFixed(1)},${H - PB} L${pts[0].x.toFixed(1)},${H - PB} Z`} fill="url(#bankrollGrad)" />
+          {/* Main line */}
+          <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          {/* Endpoint dot */}
+          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} />
+          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" />
         </svg>
-        {yLabels.map((l, i) => (
-          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), left: '2px' }}>{l.label}</span>
+        {/* Y labels — right side */}
+        {yLines.map((l, i) => (
+          <span key={`y${i}`} className="absolute text-[10px] text-[#484f58] -translate-y-1/2" style={{ top: `${(l.py / H * 100).toFixed(2)}%`, right: '4px' }}>{l.label}</span>
         ))}
+        {/* X labels */}
         {xLabels.map((l, i) => (
-          <span key={`x${i}`} className="absolute text-[10px] text-muted2 -translate-x-1/2" style={{ bottom: '2px', left: xPct(l.xPos) }}>{l.label}</span>
+          <span key={`x${i}`} className="absolute text-[10px] text-[#484f58] -translate-x-1/2" style={{ bottom: '2px', left: `${(l.pos / W * 100).toFixed(2)}%` }}>{l.label}</span>
         ))}
       </div>
     </div>
@@ -244,106 +235,114 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
 
   if (data.length < 2) return null;
 
-  const LINE_COLOR = '#1E88E5';
-  const W = 600;
-  const H = 200;
-  const PL = 12;
-  const PR = 40;
-  const PT = 12;
-  const PB = 24;
+  const { W, H, PL, PR, PT, PB } = CHART;
 
-  const minVal = -50;
-  const maxVal = 50;
-  const range = maxVal - minVal || 1;
   const minDate = data[0].date.getTime();
   const maxDate = data[data.length - 1].date.getTime();
   const dateRange = maxDate - minDate || 1;
 
-  const x = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
-  const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
+  const xPos = (d: Date) => PL + (d.getTime() - minDate) / dateRange * (W - PL - PR);
 
-  const zeroY = y(0);
-
-  const windowSize = Math.max(20, Math.ceil(data.length / 4));
-  const avgPoints: { date: Date; avg: number }[] = [];
+  // Cumulative average (running mean of ALL bets up to each point)
+  const cumAvgAll: { date: Date; avg: number }[] = [];
+  let cumSum = 0;
   for (let i = 0; i < data.length; i++) {
-    const start = Math.max(0, i - windowSize + 1);
-    const window = data.slice(start, i + 1);
-    const avg = window.reduce((s, d) => s + d.clv, 0) / window.length;
-    avgPoints.push({ date: data[i].date, avg });
+    cumSum += data[i].clv;
+    cumAvgAll.push({ date: data[i].date, avg: cumSum / (i + 1) });
   }
-  // Catmull-Rom smooth curve
-  const clvPts = avgPoints.map(p => ({ x: x(p.date), y: y(p.avg) }));
-  const avgPathD = clvPts.map((p, i) => {
-    if (i === 0) return `M${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-    const p0 = clvPts[Math.max(0, i - 2)];
-    const p1 = clvPts[i - 1];
-    const p2 = p;
-    const p3 = clvPts[Math.min(clvPts.length - 1, i + 1)];
-    const t = 0.3;
-    const cp1x = p1.x + (p2.x - p0.x) * t;
-    const cp1y = p1.y + (p2.y - p0.y) * t;
-    const cp2x = p2.x - (p3.x - p1.x) * t;
-    const cp2y = p2.y - (p3.y - p1.y) * t;
-    return `C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
-  }).join(' ');
+
+  // Downsample to ~80 points for a smooth line
+  const maxPts = 80;
+  const step = Math.max(1, Math.floor(cumAvgAll.length / maxPts));
+  const avgPoints: { date: Date; avg: number }[] = [];
+  for (let i = 0; i < cumAvgAll.length; i += step) {
+    avgPoints.push(cumAvgAll[i]);
+  }
+  // Always include the last point
+  if (avgPoints[avgPoints.length - 1] !== cumAvgAll[cumAvgAll.length - 1]) {
+    avgPoints.push(cumAvgAll[cumAvgAll.length - 1]);
+  }
+
+  // Dynamic Y range from rolling avg data
+  const avgVals = avgPoints.map(p => p.avg);
+  const rawMin = Math.min(...avgVals);
+  const rawMax = Math.max(...avgVals);
+  const pad = Math.max((rawMax - rawMin) * 0.2, 5);
+  const yMin = Math.min(rawMin - pad, -5);
+  const yMax = Math.max(rawMax + pad, 5);
+  const range = yMax - yMin;
+
+  const yPos = (v: number) => PT + (1 - (v - yMin) / range) * (H - PT - PB);
+  const zeroY = yPos(0);
+
+  const clvPts = avgPoints.map(p => ({ x: xPos(p.date), y: yPos(p.avg) }));
+  const { yLines, pathD: avgPathD } = polyChart(clvPts, {
+    yMin, yMax,
+    yFormat: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}%`,
+  });
 
   const totalAvg = data.reduce((s, d) => s + d.clv, 0) / data.length;
   const isPositive = totalAvg >= 0;
   const positiveCount = data.filter(d => d.clv >= 0).length;
   const beatPct = ((positiveCount / data.length) * 100).toFixed(0);
 
-  const ySteps = 5;
-  const yLabels = Array.from({ length: ySteps }, (_, i) => {
-    const v = minVal + (range * i) / (ySteps - 1);
-    return { label: `${v > 0 ? '+' : ''}${v.toFixed(0)}%`, yPos: y(v) };
-  });
-
-  // Generate month-based x labels
-  const xLabels: { label: string; xPos: number }[] = [];
-  {
-    const seen = new Set<string>();
-    for (const d of data) {
-      const key = `${d.date.getFullYear()}-${d.date.getMonth()}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        xLabels.push({
-          label: d.date.toLocaleDateString('en-US', { month: 'short' }),
-          xPos: x(d.date),
-        });
-      }
+  // X labels — months
+  const xLabels: { label: string; pos: number }[] = [];
+  const seen = new Set<string>();
+  for (const d of data) {
+    const key = `${d.date.getFullYear()}-${d.date.getMonth()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      xLabels.push({ label: d.date.toLocaleDateString('en-US', { month: 'short' }), pos: xPos(d.date) });
     }
   }
 
-  const xPct = (svgX: number) => `${(svgX / W * 100).toFixed(2)}%`;
-  const yPct = (svgY: number) => `${(svgY / H * 100).toFixed(2)}%`;
+  const lastPt = clvPts[clvPts.length - 1];
+  const lineColor = isPositive ? '#3fb950' : '#f85149';
 
   return (
-    <div className="bg-panel overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-xs text-muted uppercase tracking-wider font-medium">CLV Trend</span>
+    <div className="bg-[#0d1117] overflow-hidden">
+      <div className="px-3 py-2 flex items-center justify-between">
+        <span className="text-[11px] text-[#8b949e] uppercase tracking-wider font-medium">CLV Trend</span>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] text-muted">{data.length} bets</span>
-          <span className="text-[10px] text-muted">{beatPct}% beat close</span>
-          <span className={`text-sm font-semibold ${isPositive ? 'text-success' : 'text-error'}`}>
+          <span className="text-[10px] text-[#484f58]">{data.length} bets</span>
+          <span className="text-[10px] text-[#484f58]">{beatPct}% beat close</span>
+          <span className={`text-sm font-semibold ${isPositive ? 'text-[#3fb950]' : 'text-[#f85149]'}`}>
             {totalAvg >= 0 ? '+' : ''}{totalAvg.toFixed(1)}% avg
           </span>
         </div>
       </div>
       <div className="relative" style={{ paddingBottom: '33.3%' }}>
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
-          {yLabels.map((l, i) => (
-            <line key={i} x1={PL} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="2,4" />
+          {/* Dotted horizontal grid lines */}
+          {yLines.map((l, i) => (
+            <line key={i} x1={PL} y1={l.py} x2={W - PR} y2={l.py} stroke="#21262d" strokeWidth="0.5" strokeDasharray="2,3" />
           ))}
-          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#555" strokeWidth="1" />
-          <path d={avgPathD} fill="none" stroke={LINE_COLOR} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx={x(avgPoints[avgPoints.length - 1].date)} cy={y(avgPoints[avgPoints.length - 1].avg)} r="3" fill={LINE_COLOR} />
+          {/* Zero line — clear and prominent */}
+          <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#484f58" strokeWidth="1" />
+          {/* Gradient fill under line */}
+          <defs>
+            <linearGradient id="clvGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.25" />
+              <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <path d={`${avgPathD} L${clvPts[clvPts.length - 1].x.toFixed(1)},${H - PB} L${clvPts[0].x.toFixed(1)},${H - PB} Z`} fill="url(#clvGrad)" />
+          {/* Main line */}
+          <path d={avgPathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          {/* Endpoint dot */}
+          <circle cx={lastPt.x} cy={lastPt.y} r="3" fill={lineColor} />
+          <circle cx={lastPt.x} cy={lastPt.y} r="5" fill={lineColor} fillOpacity="0.15" />
         </svg>
-        {yLabels.map((l, i) => (
-          <span key={`y${i}`} className="absolute text-[10px] text-muted2 -translate-y-1/2" style={{ top: yPct(l.yPos), right: '4px' }}>{l.label}</span>
+        {/* Zero label */}
+        <span className="absolute text-[10px] text-[#8b949e] font-medium -translate-y-1/2" style={{ top: `${(zeroY / H * 100).toFixed(2)}%`, right: '4px' }}>0%</span>
+        {/* Y labels — right side */}
+        {yLines.map((l, i) => (
+          <span key={`y${i}`} className="absolute text-[10px] text-[#484f58] -translate-y-1/2" style={{ top: `${(l.py / H * 100).toFixed(2)}%`, right: '4px' }}>{l.label}</span>
         ))}
+        {/* X labels */}
         {xLabels.map((l, i) => (
-          <span key={`x${i}`} className="absolute text-[10px] text-muted2 -translate-x-1/2" style={{ bottom: '2px', left: xPct(l.xPos) }}>{l.label}</span>
+          <span key={`x${i}`} className="absolute text-[10px] text-[#484f58] -translate-x-1/2" style={{ bottom: '2px', left: `${(l.pos / W * 100).toFixed(2)}%` }}>{l.label}</span>
         ))}
       </div>
     </div>
@@ -408,8 +407,8 @@ export function BetsPage() {
   const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
   // Collapsed states
-  const [wageringCollapsed, setWageringCollapsed] = usePersistedState('bbq_bets_wageringCollapsed', false);
-  const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', false);
+  const [wageringCollapsed, setWageringCollapsed] = usePersistedState('bbq_bets_wageringCollapsed', true);
+  const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', true);
 
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
@@ -645,8 +644,8 @@ export function BetsPage() {
       )}
 
       {/* Charts — side by side */}
-      <div className="border-l-2 border-tabBets">
-        <div className="grid grid-cols-2 gap-px bg-border border border-border">
+      <div>
+        <div className="grid grid-cols-2 gap-[1px] bg-[#161b22]">
           {bets.length > 0 && bankrollStats && bankrollStats.net_deposited > 0 && (
             <BankrollChart bets={bets.filter(b => !b.is_bonus)} netDeposited={bankrollStats.net_deposited} totalStaked={bankrollStats?.total_staked} />
           )}
