@@ -1099,6 +1099,8 @@ class OpportunityScanner:
                 "odds": odds.odds,
                 "point": odds.point,
                 "updated_at": odds.updated_at,
+                "bid": odds.bid,
+                "ask": odds.ask,
             })
 
         # Fix Asian-style spread providers that store 2 outcomes at the same point.
@@ -1360,6 +1362,11 @@ class OpportunityScanner:
                 if po["provider"] in SHARP_PROVIDERS:
                     continue  # Don't compare sharp vs sharp
 
+                # Skip Polymarket for per-map markets — prediction markets only
+                # meaningfully price overall match outcomes, not individual maps
+                if po["provider"] == "polymarket" and "_m" in market:
+                    continue
+
                 # Skip if market types don't match (different outcome counts)
                 # Exceptions:
                 # 1. Spread markets — Pinnacle stores 1 outcome per point (Asian),
@@ -1415,6 +1422,8 @@ class OpportunityScanner:
                     provider_odds=po["odds"],
                     fair_odds=fair_odds,
                     min_edge_pct=min_edge_pct,
+                    bid=po.get("bid"),
+                    ask=po.get("ask"),
                 )
                 if vb:
                     vb.odds_updated_at = po.get("updated_at").isoformat() if po.get("updated_at") else None
