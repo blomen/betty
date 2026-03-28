@@ -25,6 +25,43 @@ logger = logging.getLogger(__name__)
 TIER_PRIORITY = {"polymarket": 2, "pinnacle": 1, "soft": 0}
 SHARP_PROVIDERS = frozenset({"pinnacle", "polymarket"})
 
+# Priority tier boundaries for soft bet allocation
+# Edge buckets (descending): 10%+, 5-10%, 2-5%
+# TTK buckets (ascending): 0-12h, 12-24h, 24-48h
+# Priority = edge_tier_index * 3 + ttk_tier_index + 1  (1 = best, 9 = worst)
+EDGE_THRESHOLDS = [10.0, 5.0, 2.0]   # edge_pct cutoffs (descending)
+TTK_THRESHOLDS = [12.0, 24.0, 48.0]  # hours cutoffs (ascending)
+MAX_TTK_HOURS = 48.0
+
+
+def compute_priority(edge_pct: float, ttk_hours: float | None) -> int:
+    """
+    Compute priority tier 1-9 from edge % and time-to-kickoff hours.
+    Lower number = higher priority. Returns 99 if outside all tiers.
+    """
+    if ttk_hours is None or ttk_hours > MAX_TTK_HOURS:
+        return 99
+
+    # Edge bucket index: 0 = 10%+, 1 = 5-10%, 2 = 2-5%
+    edge_idx = -1
+    for i, threshold in enumerate(EDGE_THRESHOLDS):
+        if edge_pct >= threshold:
+            edge_idx = i
+            break
+    if edge_idx == -1:
+        return 99  # Below min edge
+
+    # TTK bucket index: 0 = 0-12h, 1 = 12-24h, 2 = 24-48h
+    ttk_idx = -1
+    for i, threshold in enumerate(TTK_THRESHOLDS):
+        if ttk_hours <= threshold:
+            ttk_idx = i
+            break
+    if ttk_idx == -1:
+        return 99
+
+    return edge_idx * len(TTK_THRESHOLDS) + ttk_idx + 1
+
 
 @dataclass
 class BatchBet:
@@ -63,8 +100,12 @@ class BatchBet:
     lifecycle: str
     cluster: str                    # cluster / group name (e.g. "kambi", "vbet")
 
-    # Skip info (populated for missed bets)
+    # Funding status
+    funded: bool = True               # False = needs deposit to play
     skip_reason: Optional[str] = None
+
+    # Priority tier (1-9, lower = better; 99 = outside all tiers)
+    priority: int = 99
 
 
 @dataclass
@@ -165,8 +206,12 @@ class BatchBuilder:
         # Soft: round-robin allocation
         soft_batch, soft_missed = self._allocate_with_round_robin(soft_ranked, provider_balances)
 
-        batch = sharp_batch + soft_batch
-        missed = sharp_missed + soft_missed
+        # Merge: all funded bets + unfunded (missed) bets in one list
+        # Funded bets keep funded=True, missed bets get funded=False
+        for bet in sharp_missed + soft_missed:
+            bet.funded = False
+        batch = sharp_batch + soft_batch + sharp_missed + soft_missed
+        missed = sharp_missed + soft_missed  # Keep reference for capital plan
 
         for i, bet in enumerate(batch):
             bet.rank = i + 1
@@ -200,7 +245,7 @@ class BatchBuilder:
 
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
-            "summary": self._build_summary(batch),
+            "summary": self._build_summary(batch + missed),
             "balance_status": self._build_balance_status(provider_balances, missed),
             "missed_opportunities": self._build_missed_summary(missed),
             "deposit_recommendations": [],
@@ -370,6 +415,7 @@ class BatchBuilder:
         pb = provider_balances.get(provider_id)
 
         # If this provider has no balance, try to reroute to a funded sibling
+        unfunded = False
         if pb is None or pb.lifecycle in ("dormant", "available"):
             cluster = _provider_to_cluster(provider_id)
             # Find a funded sibling in the same cluster
@@ -382,47 +428,21 @@ class BatchBuilder:
                 provider_id = funded_sibling
                 pb = provider_balances[funded_sibling]
             else:
-                return None  # No funded sibling in cluster
+                unfunded = True  # Keep as candidate — will be missed due to no balance
 
         odds = opp.odds1 or 0.0
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
-        # Determine min_odds for this bet
-        # Bonus phase (wagering / trigger_needed): enforce per-provider min_odds
-        # Cleared or playing: no restriction
-        if pb.lifecycle in ("wagering", "deposited"):
-            bet_min_odds = pb.min_odds if pb.min_odds else 1.80
-        else:
-            bet_min_odds = 0.0
-
-        # Skip if odds don't meet bonus requirement
-        if bet_min_odds > 0 and odds < bet_min_odds:
-            return None
-
-        # Detect bonus bet types
-        is_freebet = pb.is_bonus_phase
-        is_trigger = pb.lifecycle == "deposited" and pb.trigger_mode == "single"
-
-        # Calculate stake
-        if is_freebet:
-            # Freebet: stake = bonus_amount (fixed), no bankroll consumption
-            stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
-            is_bonus = True
-            bonus_type = "freebet"
-        elif is_trigger:
-            # Single-shot trigger: fixed stake = bonus_amount
-            stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
-            is_bonus = False
-            bonus_type = "trigger"
-        else:
+        if unfunded:
+            # Unfunded provider: compute stake from Kelly but skip bonus logic
             result = calculate_stake(
                 bankroll_total=total_bankroll,
                 edge_raw=edge_raw,
                 odds=odds,
                 single_bet_cap_pct=single_bet_cap_pct,
                 min_edge=min_edge,
-                min_odds=bet_min_odds,
+                min_odds=0.0,
                 min_stake=min_stake,
                 max_kelly=kelly_fraction,
             )
@@ -431,9 +451,61 @@ class BatchBuilder:
             stake = result.stake
             is_bonus = False
             bonus_type = None
+            bet_min_odds = 0.0
+        else:
+            # Determine min_odds for this bet
+            # Bonus phase (wagering / trigger_needed): enforce per-provider min_odds
+            # Cleared or playing: no restriction
+            if pb.lifecycle in ("wagering", "deposited"):
+                bet_min_odds = pb.min_odds if pb.min_odds else 1.80
+            else:
+                bet_min_odds = 0.0
+
+            # Skip if odds don't meet bonus requirement
+            if bet_min_odds > 0 and odds < bet_min_odds:
+                return None
+
+            # Detect bonus bet types
+            is_freebet = pb.is_bonus_phase
+            is_trigger = pb.lifecycle == "deposited" and pb.trigger_mode == "single"
+
+            # Calculate stake
+            if is_freebet:
+                # Freebet: stake = bonus_amount (fixed), no bankroll consumption
+                stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
+                is_bonus = True
+                bonus_type = "freebet"
+            elif is_trigger:
+                # Single-shot trigger: fixed stake = bonus_amount
+                stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
+                is_bonus = False
+                bonus_type = "trigger"
+            else:
+                result = calculate_stake(
+                    bankroll_total=total_bankroll,
+                    edge_raw=edge_raw,
+                    odds=odds,
+                    single_bet_cap_pct=single_bet_cap_pct,
+                    min_edge=min_edge,
+                    min_odds=bet_min_odds,
+                    min_stake=min_stake,
+                    max_kelly=kelly_fraction,
+                )
+                if result.skip_reason:
+                    return None
+                stake = result.stake
+                is_bonus = False
+                bonus_type = None
 
         if stake <= 0:
             return None
+
+        # Convert SEK stake to USDC for Polymarket
+        if provider_id == "polymarket":
+            from ..config import get_exchange_rate
+            exchange_rate = get_exchange_rate("polymarket")
+            if exchange_rate > 0:
+                stake = stake / exchange_rate
 
         expected_profit = stake * edge_raw
 
@@ -443,7 +515,7 @@ class BatchBuilder:
             tier = "pinnacle"
         else:
             tier = "soft"
-        cluster = pb.cluster
+        cluster = pb.cluster if pb else _provider_to_cluster(provider_id)
 
         return BatchBet(
             rank=0,  # assigned later
@@ -465,7 +537,7 @@ class BatchBuilder:
             sport=event.sport or "",
             league=event.league,
             start_time=event.start_time,
-            lifecycle=pb.lifecycle,
+            lifecycle=pb.lifecycle if pb else "available",
             cluster=cluster,
         )
 
@@ -829,6 +901,8 @@ class BatchBuilder:
             "start_time": bet.start_time.isoformat() if bet.start_time else None,
             "lifecycle": bet.lifecycle,
             "cluster": bet.cluster,
+            "funded": bet.funded,
+            "skip_reason": bet.skip_reason,
         }
 
     @staticmethod
@@ -886,10 +960,14 @@ class BatchBuilder:
             stats = cluster_opp_stats.get(cluster, {})
             currency = "USDC" if pid == "polymarket" else "SEK"
 
+            current_bal = pb.initial_balance if pb else 0
+            deposit_amount = round(max(missed_stake, 0), 2)
             actions.append({
                 "type": "deposit",
                 "provider_id": pid,
-                "amount": round(max(missed_stake, 0), 2),
+                "cluster": cluster,
+                "amount": deposit_amount,
+                "target_balance": round(current_bal + deposit_amount, 2),
                 "unlocks": missed_count,
                 "avg_edge": stats.get("avg_edge", 0),
                 "expected_ev": round(missed_ev, 2),
@@ -904,10 +982,13 @@ class BatchBuilder:
             pid = info["provider_id"]
             if pid in sharp_already_handled:
                 continue
+            deposit_amount = round(info["total_stake"], 2)
             actions.append({
                 "type": "deposit",
                 "provider_id": pid,
-                "amount": round(info["total_stake"], 2),
+                "cluster": pid,
+                "amount": deposit_amount,
+                "target_balance": deposit_amount,
                 "unlocks": info["opp_count"],
                 "avg_edge": info["avg_edge"],
                 "expected_ev": round(info["total_ev"], 2),
@@ -1023,12 +1104,20 @@ class BatchBuilder:
                 priority = 3
                 label = "soft_deposit"
 
+            # Use unique opps for display (missed_count can inflate via multi-market)
+            display_unlocks = min(missed_count, stats.get("unique_opps", missed_count))
+
             if providers_needed <= 1:
+                source_bal = provider_balances.get(source_pid)
+                current_bal = source_bal.initial_balance if source_bal else 0
+                dep_amount = round(missed_stake, 2)
                 actions.append({
                     "type": "deposit",
                     "provider_id": source_pid,
-                    "amount": round(missed_stake, 2),
-                    "unlocks": missed_count,
+                    "cluster": cluster,
+                    "amount": dep_amount,
+                    "target_balance": round(current_bal + dep_amount, 2),
+                    "unlocks": display_unlocks,
                     "avg_edge": stats.get("avg_edge", 0),
                     "expected_ev": round(missed_ev, 2),
                     "currency": "SEK",
@@ -1036,22 +1125,31 @@ class BatchBuilder:
                     "priority_label": label,
                 })
             else:
-                # Spread across siblings — use funded first, then recruit unfunded
+                # Spread across siblings: funded + unfunded
                 targets = funded_in_cluster[:] + unfunded_siblings
                 targets = targets[:providers_needed]
-                # Fallback: if still only 1 target (no unfunded recruits), just use source
-                if len(targets) <= 1:
+                if not targets:
                     targets = [source_pid]
-                per_provider_stake = round(missed_stake / len(targets), 2)
+
+                # Total stake needed across the cluster (placed + missed)
+                total_cluster_stake = cluster_placed_stake + missed_stake
+                per_provider_need = total_cluster_stake / len(targets)
                 per_provider_ev = round(missed_ev / len(targets), 2)
-                per_provider_unlocks = math.ceil(missed_count / len(targets))
+                per_provider_unlocks = math.ceil(display_unlocks / len(targets))
 
                 for target_pid in targets:
                     is_new = target_pid not in funded_pids
+                    target_pb = provider_balances.get(target_pid)
+                    current_bal = target_pb.initial_balance if target_pb else 0
+                    shortfall = per_provider_need - current_bal
+                    if shortfall < 10:
+                        continue  # Already has enough balance for its share
                     actions.append({
                         "type": "deposit",
                         "provider_id": target_pid,
-                        "amount": per_provider_stake,
+                        "cluster": cluster,
+                        "amount": round(shortfall, 2),
+                        "target_balance": round(per_provider_need, 2),
                         "unlocks": per_provider_unlocks,
                         "avg_edge": stats.get("avg_edge", 0),
                         "expected_ev": per_provider_ev,
@@ -1123,12 +1221,15 @@ class BatchBuilder:
             for target_pid in targets:
                 tpb = provider_balances.get(target_pid)
                 remaining = tpb.remaining if tpb else 0
+                current_bal = tpb.initial_balance if tpb else 0
                 amount = round(max(effective_wager - remaining, 100), -2)
                 is_new = target_pid not in funded_pids_in_cluster
                 actions.append({
                     "type": "deposit",
                     "provider_id": target_pid,
+                    "cluster": cluster,
                     "amount": amount,
+                    "target_balance": round(current_bal + amount, 2),
                     "unlocks": per_provider_opps,
                     "avg_edge": stats.get("avg_edge", 0),
                     "expected_ev": per_provider_ev,
@@ -1153,7 +1254,9 @@ class BatchBuilder:
             actions.append({
                 "type": "withdraw",
                 "provider_id": pid,
+                "cluster": pb.cluster or pid,
                 "amount": round(pb.remaining, 2),
+                "target_balance": 0,
                 "unlocks": 0,
                 "avg_edge": 0,
                 "expected_ev": 0,
