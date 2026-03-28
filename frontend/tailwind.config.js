@@ -24,6 +24,7 @@ export default {
         tableBorder: '#2a2a2a',
         calloutBorder: '#4CAF50',
         // Tab colors — must match Sidebar.tsx dot colors
+        tabPlay: '#22c55e',
         tabExtract: '#60a5fa',
         tabArb: '#22c55e',
         tabValue: '#FF9800',

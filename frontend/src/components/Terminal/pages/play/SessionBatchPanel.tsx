@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { ProviderName } from '../../ProviderName';
 import { resolveOutcome } from '@/utils/betting';
 import { marketLabel } from '@/utils/betting';
+import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
+import { relativeTime } from '../../FilterBar';
 import type { BatchBet, BatchSummary, WageringProjection } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -48,12 +50,6 @@ interface Props {
 // Tier config
 // ---------------------------------------------------------------------------
 
-const TIER_CONFIG = {
-  polymarket: { color: '#a855f7' },
-  pinnacle: { color: '#ef4444' },
-  soft: { color: '#22c55e' },
-} as const;
-
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -76,23 +72,23 @@ function ClusterHeader({
 
   return (
     <tr
-      className="cursor-pointer hover:bg-dark-800/60 transition-colors"
+      className="cursor-pointer hover:bg-panel2/60 transition-colors"
       onClick={onToggle}
     >
-      <td colSpan={10} className="!py-1 !px-2 bg-dark-850 border-b border-dark-700">
+      <td colSpan={13} className="!py-1 !px-2 bg-panel border-b border-border">
         <div className="flex items-center gap-2">
-          <span className="text-dark-500 text-[10px] w-3">{expanded ? '▾' : '▸'}</span>
-          <span className="text-[10px] font-medium text-dark-300 uppercase tracking-wider">
+          <span className="text-text text-sm w-3">{expanded ? '▾' : '▸'}</span>
+          <span className="text-sm font-medium text-text uppercase tracking-wider">
             {cluster}
           </span>
-          <span className="text-[10px] text-dark-500">
+          <span className="text-sm text-text">
             {bets.length} {bets.length === 1 ? 'bet' : 'bets'}
           </span>
-          <span className="text-[10px] text-dark-500">·</span>
-          <span className="text-[10px] text-dark-400">
+          <span className="text-sm text-text">·</span>
+          <span className="text-sm text-text">
             {isPolymarket ? totalStake.toFixed(2) : totalStake.toFixed(0)} {currency}
           </span>
-          <span className="text-[10px] text-success">+{totalEV.toFixed(0)} EV</span>
+          <span className="text-sm text-success">+{totalEV.toFixed(0)} {currency} EV</span>
         </div>
       </td>
     </tr>
@@ -113,34 +109,35 @@ function BetRow({
   const event = eventLabel(bet);
   const hasWageringBadge =
     bet.wagering_pct != null && bet.wagering_pct < 100;
+  const prob = bet.fair_odds > 0 ? (1 / bet.fair_odds) * 100 : 0;
 
   return (
-    <tr className="hover:bg-dark-900/40 transition-colors">
+    <tr className="hover:bg-panel/60 transition-colors">
       {/* # */}
-      <td className="text-muted text-xs">{bet.rank}</td>
+      <td className="text-muted text-sm">{bet.rank}</td>
 
       {/* Event */}
-      <td className="text-xs text-text truncate max-w-[180px]" title={event}>
+      <td className="text-sm text-text truncate max-w-[180px]" title={event}>
         {event}
-        <div className="text-[10px] text-muted">
+        <div className="text-sm text-muted">
           {bet.sport}
         </div>
       </td>
 
       {/* Market */}
-      <td className="text-xs text-muted">{market}</td>
+      <td className="text-sm text-muted">{market}</td>
 
       {/* Outcome */}
-      <td className="text-xs text-text truncate max-w-[120px]" title={outcome}>
+      <td className="text-sm text-text truncate max-w-[120px]" title={outcome}>
         {outcome}
       </td>
 
       {/* Provider + cluster + wager badge */}
-      <td className="text-xs">
+      <td className="text-sm">
         <div className="flex items-center gap-1 flex-wrap">
           <ProviderName name={bet.provider_id} />
           {bet.cluster && (
-            <span className="text-dark-600 text-[10px]">{bet.cluster}</span>
+            <span className="text-muted2 text-[10px]">{bet.cluster}</span>
           )}
           {hasWageringBadge && (
             <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1 py-0.5 leading-none">
@@ -156,18 +153,23 @@ function BetRow({
       </td>
 
       {/* Odds */}
-      <td className="text-right text-xs font-medium text-text">
+      <td className="text-right text-sm font-medium text-text">
         {bet.odds.toFixed(2)}
       </td>
 
       {/* Fair */}
-      <td className="text-right text-xs text-muted">
+      <td className="text-right text-sm text-muted">
         {bet.fair_odds.toFixed(2)}
+      </td>
+
+      {/* Prob */}
+      <td className="text-right text-sm text-muted">
+        {prob.toFixed(0)}%
       </td>
 
       {/* Edge */}
       <td
-        className={`text-right text-xs font-semibold ${
+        className={`text-right text-sm font-semibold ${
           bet.edge_pct > 0 ? 'text-success' : 'text-error'
         }`}
       >
@@ -176,14 +178,33 @@ function BetRow({
       </td>
 
       {/* Stake */}
-      <td className="text-right text-xs text-text whitespace-nowrap">
+      <td className="text-right text-sm text-text whitespace-nowrap">
         {isPolymarket
           ? `${bet.stake.toFixed(2)} ${currency}`
           : `${bet.stake.toFixed(0)} ${currency}`}
       </td>
 
+      {/* Updated */}
+      <td className="text-right text-sm">
+        {(() => {
+          const ts = bet.odds_age_minutes != null
+            ? new Date(Date.now() - bet.odds_age_minutes * 60000).toISOString()
+            : null;
+          const rt = relativeTime(ts);
+          return <span className={rt.className}>{rt.text}</span>;
+        })()}
+      </td>
+
+      {/* TTK */}
+      <td className="text-right text-sm">
+        {(() => {
+          const ttk = getTTKFromNow(bet.start_time);
+          return <span className={getTTKColor(ttk)}>{formatTTKLabel(ttk)}</span>;
+        })()}
+      </td>
+
       {/* Remove */}
-      <td className="text-right text-xs">
+      <td className="text-right text-sm">
         <button
           onClick={onRemove}
           className="text-muted hover:text-error transition-colors"
@@ -255,7 +276,8 @@ export function SessionBatchPanel({
   const usdcBets = useMemo(() => batch.filter(b => b.tier === 'polymarket'), [batch]);
   const sekStake = sekBets.reduce((s, b) => s + b.stake, 0);
   const usdcStake = usdcBets.reduce((s, b) => s + b.stake, 0);
-  const totalEV = batch.reduce((s, b) => s + b.expected_profit, 0);
+  // total_expected_profit is already in SEK (backend converts Polymarket USDC → kr)
+  const totalEV = summary.total_expected_profit;
 
   const hasProjections = wageringProjections.length > 0;
 
@@ -264,7 +286,7 @@ export function SessionBatchPanel({
       {/* ------------------------------------------------------------------ */}
       {/* Summary bar                                                         */}
       {/* ------------------------------------------------------------------ */}
-      <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-dark-800 text-xs flex-wrap">
+      <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-panel text-sm flex-wrap">
         <span className="text-text font-medium">
           {batch.length} bets
         </span>
@@ -278,25 +300,25 @@ export function SessionBatchPanel({
         {summary.polymarket_bets > 0 && (
           <>
             <span className="text-muted">|</span>
-            <span style={{ color: TIER_CONFIG.polymarket.color }}>
-              POLY {summary.polymarket_bets} (+{summary.polymarket_ev.toFixed(0)})
+            <span className="text-tabPolymarket">
+              POLY {summary.polymarket_bets} (+{summary.polymarket_ev.toFixed(0)} USDC)
             </span>
           </>
         )}
         {summary.pinnacle_bets > 0 && (
-          <span style={{ color: TIER_CONFIG.pinnacle.color }}>
-            PIN {summary.pinnacle_bets} (+{summary.pinnacle_ev.toFixed(0)})
+          <span className="text-tabReverse">
+            PIN {summary.pinnacle_bets} (+{summary.pinnacle_ev.toFixed(0)} kr)
           </span>
         )}
         {summary.soft_bets > 0 && (
           <>
-            <span style={{ color: TIER_CONFIG.soft.color }}>
-              SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)})
+            <span className="text-success">
+              SOFT {summary.soft_bets} (+{summary.soft_ev.toFixed(0)} kr)
             </span>
             {summary.tier_breakdown && Object.entries(summary.tier_breakdown)
               .sort(([a], [b]) => Number(a) - Number(b))
               .map(([tier, data]: [string, any]) => (
-                <span key={tier} className="ml-2 text-zinc-500">
+                <span key={tier} className="ml-2 text-muted">
                   T{tier}:{data.count}
                 </span>
               ))
@@ -309,25 +331,29 @@ export function SessionBatchPanel({
       {/* Batch table                                                          */}
       {/* ------------------------------------------------------------------ */}
       {batch.length === 0 ? (
-        <div className="text-muted text-sm py-8 text-center border border-border border-t-0 bg-dark-800">
+        <div className="text-muted text-sm py-8 text-center border border-border border-t-0 bg-panel">
           No bets in batch.
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto border border-border border-t-0">
-          <table className="sq w-full">
+        <div className="border-l-2 border-tabPlay flex-1 min-h-0 relative">
+        <div className="absolute inset-0 overflow-y-auto">
+          <table className="sq w-full table-fixed">
             <colgroup>
               <col style={{ width: '3%' }} />
-              <col style={{ width: '22%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '13%' }} />
               <col style={{ width: '18%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '8%' }} />
+              <col style={{ width: '5%' }} />
               <col style={{ width: '11%' }} />
+              <col style={{ width: '14%' }} />
+              <col style={{ width: '6%' }} />
+              <col style={{ width: '6%' }} />
+              <col style={{ width: '5%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '6%' }} />
+              <col style={{ width: '6%' }} />
               <col style={{ width: '4%' }} />
             </colgroup>
-            <thead className="sticky top-0 z-10 bg-dark-800">
+            <thead className="sticky top-0 z-10 bg-panel">
               <tr>
                 <th className="text-left">#</th>
                 <th className="text-left">Event</th>
@@ -336,8 +362,11 @@ export function SessionBatchPanel({
                 <th className="text-left">Provider</th>
                 <th className="text-right">Odds</th>
                 <th className="text-right">Fair</th>
+                <th className="text-right">Prob</th>
                 <th className="text-right">Edge</th>
                 <th className="text-right">Stake</th>
+                <th className="text-right">Updated</th>
+                <th className="text-right">TTK</th>
                 <th></th>
               </tr>
             </thead>
@@ -405,6 +434,7 @@ export function SessionBatchPanel({
             </tbody>
           </table>
         </div>
+        </div>
       )}
 
       {/* ------------------------------------------------------------------ */}
@@ -413,7 +443,7 @@ export function SessionBatchPanel({
       {hasProjections && (
         <div className="border border-border border-t-0 bg-amber-500/5 px-3 py-1.5">
           <div className="flex items-center gap-1 mb-1">
-            <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase">
+            <span className="text-sm font-medium text-amber-500 tracking-wider uppercase">
               Wagering After Batch
             </span>
           </div>
@@ -421,7 +451,7 @@ export function SessionBatchPanel({
             {wageringProjections.map((proj) => (
               <div
                 key={`${proj.provider_id}-${proj.cluster}`}
-                className="flex items-center gap-1.5 text-[11px]"
+                className="flex items-center gap-1.5 text-sm"
               >
                 <span className="text-amber-400 font-medium">
                   {proj.provider_id}
@@ -433,7 +463,7 @@ export function SessionBatchPanel({
                   return (
                     <>
                       <span className="text-muted">{beforePct}%</span>
-                      <span className="text-dark-500">→</span>
+                      <span className="text-muted2">→</span>
                       <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
                     </>
                   );

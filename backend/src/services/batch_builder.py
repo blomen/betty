@@ -99,6 +99,8 @@ class BatchBet:
     sport: str
     league: Optional[str]
     start_time: Optional[object]
+    detected_at: Optional[object]     # when opportunity was last refreshed
+    odds_age_minutes: Optional[float] # staleness of the odds
 
     # Lifecycle / cluster
     lifecycle: str
@@ -221,6 +223,9 @@ class BatchBuilder:
         for i, bet in enumerate(batch):
             bet.rank = i + 1
 
+        # Bulk-populate odds_age_minutes from Odds.updated_at
+        self._populate_odds_age(batch)
+
         # Count opportunity volume per cluster (from ALL candidates, not just batch)
         cluster_opp_stats = self._compute_cluster_opp_stats(candidates)
 
@@ -250,7 +255,7 @@ class BatchBuilder:
 
         return {
             "batch": [self._bet_to_dict(b) for b in batch],
-            "summary": self._build_summary(batch),
+            "summary": self._build_summary(batch, usdc_rate),
             "balance_status": self._build_balance_status(provider_balances, missed),
             "missed_opportunities": self._build_missed_summary(missed),
             "deposit_recommendations": [],
@@ -410,18 +415,15 @@ class BatchBuilder:
     ) -> Optional[BatchBet]:
         """Convert an Opportunity+Event into a BatchBet candidate, or None to skip."""
 
-        # Enforce 48h TTK cap for soft providers
-        if opp.provider1_id not in SHARP_PROVIDERS:
-            if event.start_time:
-                now = datetime.now(timezone.utc)
-                st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
-                ttk_hours = (st - now).total_seconds() / 3600
-                if ttk_hours > MAX_TTK_HOURS:
-                    return None
-                if ttk_hours <= 0:
-                    return None
-            else:
-                ttk_hours = None
+        # Skip live events (TTK <= 0) for all providers; enforce 48h cap for soft
+        if event.start_time:
+            now = datetime.now(timezone.utc)
+            st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
+            ttk_hours = (st - now).total_seconds() / 3600
+            if ttk_hours <= 0:
+                return None
+            if opp.provider1_id not in SHARP_PROVIDERS and ttk_hours > MAX_TTK_HOURS:
+                return None
         else:
             ttk_hours = None
 
@@ -552,11 +554,39 @@ class BatchBuilder:
             sport=event.sport or "",
             league=event.league,
             start_time=event.start_time,
+            detected_at=opp.detected_at,
+            odds_age_minutes=opp.odds_age_minutes,
             lifecycle=pb.lifecycle if pb else "available",
             cluster=cluster,
             funded=not unfunded,
             priority=compute_priority(opp.edge_pct or 0.0, ttk_hours) if provider_id not in SHARP_PROVIDERS else 0,
         )
+
+    def _populate_odds_age(self, batch: list[BatchBet]) -> None:
+        """Bulk-lookup Odds.updated_at to compute odds_age_minutes for each bet."""
+        if not batch:
+            return
+        now = datetime.now(timezone.utc)
+        keys = [(b.event_id, b.provider_id, b.market, b.outcome, b.point) for b in batch]
+        # Single query for all odds timestamps
+        from ..db.models import Odds
+        rows = (
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.point, Odds.updated_at)
+            .filter(
+                Odds.event_id.in_(list({k[0] for k in keys})),
+                Odds.provider_id.in_(list({k[1] for k in keys})),
+            )
+            .all()
+        )
+        lookup = {}
+        for r in rows:
+            lookup[(r.event_id, r.provider_id, r.market, r.outcome, r.point)] = r.updated_at
+        for b in batch:
+            ts = lookup.get((b.event_id, b.provider_id, b.market, b.outcome, b.point))
+            if ts:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
     def _deduplicate(
         self,
@@ -676,6 +706,8 @@ class BatchBuilder:
             sport=bet.sport,
             league=bet.league,
             start_time=bet.start_time,
+            detected_at=bet.detected_at,
+            odds_age_minutes=bet.odds_age_minutes,
             lifecycle=pb.lifecycle,
             cluster=bet.cluster,
         )
@@ -814,7 +846,7 @@ class BatchBuilder:
 
         return batch, missed
 
-    def _build_summary(self, batch: list[BatchBet]) -> dict:
+    def _build_summary(self, batch: list[BatchBet], usdc_rate: float = 1.0) -> dict:
         polymarket_bets = [b for b in batch if b.tier == "polymarket"]
         pinnacle_bets = [b for b in batch if b.tier == "pinnacle"]
         soft_bets = [b for b in batch if b.tier == "soft"]
@@ -834,16 +866,23 @@ class BatchBuilder:
             v["stake"] = round(v["stake"], 2)
             v["ev"] = round(v["ev"], 2)
 
+        poly_ev_usdc = round(sum(b.expected_profit for b in polymarket_bets), 2)
+        pinnacle_ev = round(sum(b.expected_profit for b in pinnacle_bets), 2)
+        soft_ev = round(sum(b.expected_profit for b in soft_bets), 2)
+        # Convert Polymarket USDC EV to SEK for the total
+        total_ev_sek = round(poly_ev_usdc * usdc_rate + pinnacle_ev + soft_ev, 2)
+
         return {
             "total_bets": len(batch),
             "total_stake": round(sum(b.stake for b in batch), 2),
-            "total_expected_profit": round(sum(b.expected_profit for b in batch), 2),
+            "total_expected_profit": total_ev_sek,
             "polymarket_bets": len(polymarket_bets),
-            "polymarket_ev": round(sum(b.expected_profit for b in polymarket_bets), 2),
+            "polymarket_ev": poly_ev_usdc,
             "pinnacle_bets": len(pinnacle_bets),
-            "pinnacle_ev": round(sum(b.expected_profit for b in pinnacle_bets), 2),
+            "pinnacle_ev": pinnacle_ev,
             "soft_bets": len(soft_bets),
-            "soft_ev": round(sum(b.expected_profit for b in soft_bets), 2),
+            "soft_ev": soft_ev,
+            "usdc_rate": usdc_rate,
             "tier_breakdown": tier_breakdown,
         }
 
@@ -934,6 +973,8 @@ class BatchBuilder:
             "sport": bet.sport,
             "league": bet.league,
             "start_time": bet.start_time.isoformat() if bet.start_time else None,
+            "detected_at": bet.detected_at.isoformat() if bet.detected_at else None,
+            "odds_age_minutes": round(bet.odds_age_minutes, 1) if bet.odds_age_minutes is not None else None,
             "lifecycle": bet.lifecycle,
             "cluster": bet.cluster,
             "funded": bet.funded,

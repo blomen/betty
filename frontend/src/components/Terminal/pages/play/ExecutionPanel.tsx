@@ -25,10 +25,10 @@ interface ExecutionState {
 const STORAGE_KEY = 'play-v3-execution';
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const TIER_COLORS: Record<string, string> = {
-  polymarket: '#a855f7',
-  pinnacle: '#ef4444',
-  soft: '#22c55e',
+const TIER_CLASSES: Record<string, string> = {
+  polymarket: 'text-tabPolymarket',
+  pinnacle: 'text-tabReverse',
+  soft: 'text-success',
 };
 
 // ---------------------------------------------------------------------------
@@ -133,12 +133,12 @@ function groupByProvider(
 
 function StatusIcon({ status }: { status: 'done' | 'in-progress' | 'pending' }) {
   if (status === 'done') {
-    return <span className="text-[#22c55e] text-sm font-bold">✓</span>;
+    return <span className="text-success text-sm font-bold">✓</span>;
   }
   if (status === 'in-progress') {
     return <span className="text-amber-400 text-sm font-bold">▶</span>;
   }
-  return <span className="text-dark-600 text-sm">○</span>;
+  return <span className="text-muted2 text-sm">○</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,8 +157,8 @@ function CheckCircle({
       onClick={onToggle}
       className={`w-5 h-5 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors ${
         checked
-          ? 'border-[#22c55e] bg-[#22c55e]/20 text-[#22c55e]'
-          : 'border-dark-600 bg-transparent text-transparent hover:border-muted'
+          ? 'border-success bg-success/20 text-success'
+          : 'border-border bg-transparent text-transparent hover:border-muted'
       }`}
       title={checked ? 'Mark as pending' : 'Mark as placed'}
     >
@@ -199,29 +199,26 @@ function ProviderSection({
     ? 'in-progress'
     : 'pending';
 
-  const tierColor = TIER_COLORS[group.tier] ?? '#22c55e';
+  const tierClass = TIER_CLASSES[group.tier] ?? 'text-success';
 
   return (
-    <div className={`border ${isExpanded ? 'border-dark-700' : 'border-dark-800'} bg-dark-900`}>
+    <div className={`border ${isExpanded ? 'border-border' : 'border-border/50'} bg-panel`}>
       {/* Header */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-dark-800/50 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-panel2/50 transition-colors text-left"
       >
         {/* Status icon */}
         <StatusIcon status={status} />
 
         {/* Provider name */}
-        <span
-          className="text-[12px] font-semibold"
-          style={{ color: tierColor }}
-        >
+        <span className={`text-sm font-medium ${tierClass}`}>
           <ProviderName name={group.providerId} />
         </span>
 
         {/* Cluster tag */}
         {group.cluster && (
-          <span className="text-[10px] px-1.5 py-0.5 bg-dark-700 text-muted border border-dark-600">
+          <span className="text-[10px] px-1.5 py-0.5 bg-border text-muted border border-border">
             {group.cluster}
           </span>
         )}
@@ -235,16 +232,16 @@ function ProviderSection({
         )}
 
         {/* Stats */}
-        <span className="text-[11px] text-muted ml-1">
+        <span className="text-sm text-muted ml-1">
           {placedCount}/{totalCount} bets
         </span>
-        <span className="text-[11px] text-muted">·</span>
-        <span className="text-[11px] text-text">{Math.round(group.totalStake)} kr</span>
-        <span className="text-[11px] text-muted">·</span>
-        <span className="text-[11px] text-[#22c55e]">+{Math.round(group.totalEV)} EV</span>
+        <span className="text-sm text-muted">·</span>
+        <span className="text-sm text-text">{Math.round(group.totalStake)} kr</span>
+        <span className="text-sm text-muted">·</span>
+        <span className="text-sm text-success">+{Math.round(group.totalEV)} EV</span>
 
         {/* Status text */}
-        <span className="ml-auto text-[11px] text-muted">
+        <span className="ml-auto text-sm text-muted">
           {allDone ? 'Done' : anyDone ? 'In progress' : 'Pending'}
         </span>
 
@@ -266,7 +263,7 @@ function ProviderSection({
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="border-t border-dark-700">
+        <div className="border-t border-border">
           {/* Bet table */}
           <table className="sq w-full">
             <colgroup>
@@ -279,16 +276,16 @@ function ProviderSection({
               <col style={{ width: '65px' }} />
               <col style={{ width: '55px' }} />
             </colgroup>
-            <thead className="bg-dark-800">
+            <thead className="bg-panel">
               <tr>
                 <th className="text-left"></th>
-                <th className="text-left text-[11px]">Event · Outcome</th>
-                <th className="text-right text-[11px]">Market</th>
-                <th className="text-right text-[11px]">Odds</th>
-                <th className="text-right text-[11px]">Fair</th>
-                <th className="text-right text-[11px]">Edge%</th>
-                <th className="text-right text-[11px]">Stake</th>
-                <th className="text-right text-[11px]">EV</th>
+                <th className="text-left">Event · Outcome</th>
+                <th className="text-right">Market</th>
+                <th className="text-right">Odds</th>
+                <th className="text-right">Fair</th>
+                <th className="text-right">Edge%</th>
+                <th className="text-right">Stake</th>
+                <th className="text-right">EV</th>
               </tr>
             </thead>
             <tbody>
@@ -321,23 +318,23 @@ function ProviderSection({
                       />
                     </td>
                     <td className="!py-1.5">
-                      <div className="text-[11px] text-text truncate max-w-[220px]" title={eventName}>
+                      <div className="text-sm text-text truncate max-w-[220px]" title={eventName}>
                         {eventName}
                       </div>
-                      <div className="text-[10px] text-muted">{outcomeLabel}</div>
+                      <div className="text-[11px] text-muted">{outcomeLabel}</div>
                     </td>
-                    <td className="text-right text-[11px] text-muted">{marketLabel(b.market)}</td>
-                    <td className="text-right text-[11px] text-text font-medium">{b.odds.toFixed(2)}</td>
-                    <td className="text-right text-[11px] text-muted">{b.fair_odds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-muted">{marketLabel(b.market)}</td>
+                    <td className="text-right text-sm text-text font-medium">{b.odds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-muted">{b.fair_odds.toFixed(2)}</td>
                     <td
-                      className={`text-right text-[11px] font-semibold ${
-                        b.edge_pct > 0 ? 'text-[#22c55e]' : 'text-error'
+                      className={`text-right text-sm font-semibold ${
+                        b.edge_pct > 0 ? 'text-success' : 'text-error'
                       }`}
                     >
                       {b.edge_pct > 0 ? '+' : ''}{b.edge_pct.toFixed(1)}%
                     </td>
-                    <td className="text-right text-[11px] text-text">{Math.round(b.stake)} kr</td>
-                    <td className="text-right text-[11px] text-[#22c55e]">+{Math.round(b.expected_profit)}</td>
+                    <td className="text-right text-sm text-text">{Math.round(b.stake)} kr</td>
+                    <td className="text-right text-sm text-success">+{Math.round(b.expected_profit)}</td>
                   </tr>
                 );
               })}
@@ -346,10 +343,10 @@ function ProviderSection({
 
           {/* Mark All Done */}
           {!allDone && (
-            <div className="px-3 py-2 border-t border-dark-700 flex justify-end">
+            <div className="px-3 py-2 border-t border-border flex justify-end">
               <button
                 onClick={() => onMarkAllDone(betKeys)}
-                className="px-3 py-1 bg-success text-black text-[11px] font-bold hover:opacity-90 transition-opacity"
+                className="px-3 py-1 bg-tabPlay text-bg text-xs font-medium hover:opacity-90 transition-opacity"
               >
                 Mark All Done
               </button>
@@ -479,16 +476,16 @@ export function ExecutionPanel({ batch, wageringProjections }: Props) {
   return (
     <div className="flex flex-col gap-2">
       {/* Progress bar */}
-      <div className="border border-dark-700 bg-dark-900 px-3 py-2">
+      <div className="border border-border bg-bg px-3 py-2">
         {/* Progress track */}
-        <div className="h-1.5 bg-dark-700 mb-2 overflow-hidden">
+        <div className="h-1.5 bg-border mb-2 overflow-hidden">
           <div
-            className="h-full bg-[#22c55e] transition-all"
+            className="h-full bg-tabPlay transition-all"
             style={{ width: `${progressPct}%` }}
           />
         </div>
         {/* Progress labels */}
-        <div className="flex items-center gap-3 text-[12px]">
+        <div className="flex items-center gap-3 text-sm">
           <span className="text-text font-medium">
             {placedCount} / {totalBets} bets placed
           </span>
@@ -517,13 +514,13 @@ export function ExecutionPanel({ batch, wageringProjections }: Props) {
       </div>
 
       {/* Session summary bar */}
-      <div className="border border-dark-700 bg-dark-800 px-3 py-2 flex items-center gap-4 text-[12px]">
+      <div className="border border-border bg-panel px-3 py-2 flex items-center gap-4 text-sm">
         <span className="text-muted">Session:</span>
         <span className="text-text font-medium">
           {Math.round(stakedSoFar)} / {Math.round(totalStake)} kr staked
         </span>
         <span className="text-muted">·</span>
-        <span className="text-[#22c55e] font-medium">
+        <span className="text-success font-medium">
           +{Math.round(evCaptured)} / +{Math.round(totalEV)} EV captured
         </span>
         <span className="text-muted">·</span>

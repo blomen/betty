@@ -34,8 +34,8 @@ const ACTION_COLORS: Record<CapitalAction['type'], { badge: string; border: stri
 };
 
 function providerColor(pid: string): string {
-  if (pid === 'pinnacle') return 'text-red-500';
-  if (pid === 'polymarket') return 'text-purple-500';
+  if (pid === 'pinnacle') return 'text-tabReverse';
+  if (pid === 'polymarket') return 'text-tabPolymarket';
   return 'text-text';
 }
 
@@ -98,8 +98,8 @@ function ActionNode({
 
       {/* Action card */}
       <div
-        className={`flex items-center gap-3 px-3 py-2 bg-dark-800 border rounded transition-opacity ${
-          isDismissed ? 'opacity-30 border-dark-700' : isDone ? `${colors.border} bg-success/5` : colors.border
+        className={`flex items-center gap-3 px-3 py-2 bg-panel border transition-opacity ${
+          isDismissed ? 'opacity-30 border-border' : isDone ? `${colors.border} bg-success/5` : colors.border
         }`}
       >
         {/* Left: action info */}
@@ -108,13 +108,13 @@ function ActionNode({
             <span className={`inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${colors.badge}`}>
               {action.type}
             </span>
-            <span className={`text-xs font-medium ${providerColor(action.provider_id)}`}>
+            <span className={`text-sm font-medium ${providerColor(action.provider_id)}`}>
               {action.provider_id}
             </span>
-            <span className="text-xs text-text font-medium">
+            <span className="text-sm text-text font-medium">
               {formatCurrency(action.amount, action.currency)}
               {action.currency === 'USDC' && usdcRate > 0 && (
-                <span className="text-dark-400 font-normal ml-1">
+                <span className="text-muted font-normal ml-1">
                   ({Math.round(action.amount * usdcRate)} kr)
                 </span>
               )}
@@ -129,10 +129,10 @@ function ActionNode({
                 <span className={bal >= action.target_balance ? 'text-success' : 'text-amber-400'}>
                   {formatCurrency(bal, action.currency)}
                 </span>
-                <span className="text-dark-500">/</span>
-                <span className="text-dark-400">{formatCurrency(action.target_balance, action.currency)}</span>
+                <span className="text-muted2">/</span>
+                <span className="text-muted">{formatCurrency(action.target_balance, action.currency)}</span>
                 {bal < action.target_balance && (
-                  <span className="text-dark-500 ml-1">
+                  <span className="text-muted2 ml-1">
                     ({formatCurrency(action.target_balance - bal, action.currency)} short)
                   </span>
                 )}
@@ -141,7 +141,7 @@ function ActionNode({
           })()}
 
           {/* Details line */}
-          <div className="text-[10px] text-dark-400 mt-0.5 flex items-center gap-2 flex-wrap">
+          <div className="text-[10px] text-muted mt-0.5 flex items-center gap-2 flex-wrap">
             {action.unlocks > 0 && <span>→ {action.unlocks} bets</span>}
             {action.avg_edge > 0 && <span>· +{action.avg_edge.toFixed(1)}% avg</span>}
             {action.expected_ev > 0 && (
@@ -154,10 +154,10 @@ function ActionNode({
         <div className="flex items-center flex-shrink-0">
           <button
             onClick={onToggleDismiss}
-            className={`w-7 h-7 flex items-center justify-center border rounded transition-colors ${
+            className={`w-7 h-7 flex items-center justify-center border transition-colors ${
               isDismissed
                 ? 'border-red-500/50 bg-red-500/10 text-red-400'
-                : 'border-dark-600 text-dark-500 hover:border-red-500/30 hover:text-red-400'
+                : 'border-border text-muted2 hover:border-red-500/30 hover:text-red-400'
             }`}
             title={isDismissed ? 'Restore' : 'Skip'}
           >
@@ -249,17 +249,16 @@ export function CapitalPlanPanel({ capitalPlan, balanceStatus, onConfirm, onSkip
   const hasActions = capitalPlan.actions.length > 0;
 
   // Summary
-  const { netSEK, netUSDC, totalUnlocks, totalEV } = useMemo(() => {
-    let sek = 0, usdc = 0, unlocks = 0, ev = 0;
+  const { netSEK, netUSDC, totalEV } = useMemo(() => {
+    let sek = 0, usdc = 0, ev = 0;
     capitalPlan.actions.forEach((action, i) => {
       if (getStatus(keys[i]) === 'dismissed') return;
       const sign = action.type === 'withdraw' ? -1 : 1;
       if (action.currency === 'USDC') usdc += sign * action.amount;
       else sek += sign * action.amount;
-      unlocks += action.unlocks;
       ev += action.expected_ev;
     });
-    return { netSEK: sek, netUSDC: usdc, totalUnlocks: unlocks, totalEV: ev };
+    return { netSEK: sek, netUSDC: usdc, totalEV: ev };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capitalPlan.actions, keys, statuses]);
 
@@ -267,28 +266,32 @@ export function CapitalPlanPanel({ capitalPlan, balanceStatus, onConfirm, onSkip
   const projectedDeployed = capitalPlan.total_deployed + netSEK + usdcInSEK;
 
   return (
-    <div className="p-4 flex-1 min-h-0 overflow-y-auto flex flex-col items-center">
-      <div className="w-full max-w-lg">
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Summary bar */}
+      <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-panel text-sm">
+        <span className="text-muted uppercase tracking-wider text-[11px]">Capital</span>
+        <span className="text-text font-medium">
+          {capitalPlan.total_deployed.toFixed(0)} kr deployed
+        </span>
+        {capitalPlan.withdrawable > 0 && (
+          <span className="text-muted">
+            {capitalPlan.withdrawable.toFixed(0)} kr withdrawable
+          </span>
+        )}
+        {hasActions && (
+          <>
+            <span className="text-muted">→</span>
+            <span className="text-text font-medium">{projectedDeployed.toFixed(0)} kr</span>
+            {totalEV > 0 && <span className="text-success">+{totalEV.toFixed(0)} EV</span>}
+          </>
+        )}
+      </div>
 
-        {/* Current State */}
-        <div className="border border-dark-600 bg-dark-800 rounded-md p-4 text-center">
-          <div className="text-[10px] text-dark-400 uppercase tracking-widest mb-1">Current Capital</div>
-          <div className="text-xl font-bold text-text">
-            {capitalPlan.total_deployed.toFixed(0)} kr
-          </div>
-          {capitalPlan.withdrawable > 0 && (
-            <div className="text-[10px] text-dark-400 mt-0.5">
-              {capitalPlan.withdrawable.toFixed(0)} kr withdrawable
-            </div>
-          )}
-        </div>
+      {/* Actions list */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
 
-        {/* Arrow */}
-        {hasActions && <div className="text-center text-dark-500 text-lg py-1">↓</div>}
-
-        {/* Timeline grouped by cluster */}
+        {/* Actions grouped by cluster */}
         {hasActions && (() => {
-          // Group actions by cluster, preserving order of first appearance
           const clusterOrder: string[] = [];
           const clusterActions: Record<string, { action: CapitalAction; idx: number }[]> = {};
           capitalPlan.actions.forEach((action, idx) => {
@@ -301,34 +304,32 @@ export function CapitalPlanPanel({ capitalPlan, balanceStatus, onConfirm, onSkip
           });
 
           return (
-            <div className="space-y-2">
+            <div className="flex flex-col gap-1">
               {clusterOrder.map(cluster => {
                 const items = clusterActions[cluster];
                 const clusterTotal = items.reduce((s, { action }) => s + action.amount, 0);
                 const clusterEV = items.reduce((s, { action }) => s + action.expected_ev, 0);
-                const clusterUnlocks = items.length > 1
-                  ? items[0].action.unlocks  // cluster siblings share the same opps
-                  : items[0].action.unlocks;
+                const clusterUnlocks = items[0].action.unlocks;
                 const allDismissed = items.every(({ idx: i }) => getStatus(keys[i]) === 'dismissed');
                 const currency = items[0].action.currency;
 
                 return (
-                  <div key={cluster} className={`border border-dark-700 rounded-md overflow-hidden ${allDismissed ? 'opacity-30' : ''}`}>
+                  <div key={cluster} className={`border border-border overflow-hidden ${allDismissed ? 'opacity-30' : ''}`}>
                     {/* Cluster header */}
-                    <div className="flex items-center justify-between px-3 py-1.5 bg-dark-800/50 border-b border-dark-700">
+                    <div className="flex items-center justify-between px-3 py-1.5 bg-panel border-b border-border">
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-dark-400 uppercase tracking-wider">{cluster}</span>
-                        <span className="text-[10px] text-dark-500">
+                        <span className="text-[10px] text-muted uppercase tracking-wider">{cluster}</span>
+                        <span className="text-[10px] text-muted">
                           {formatCurrency(clusterTotal, currency)} total
                         </span>
                       </div>
                       <div className="flex items-center gap-2 text-[10px]">
-                        {clusterUnlocks > 0 && <span className="text-dark-400">{clusterUnlocks} bets</span>}
+                        {clusterUnlocks > 0 && <span className="text-muted">{clusterUnlocks} bets</span>}
                         {clusterEV > 0 && <span className="text-success">+{clusterEV.toFixed(0)} EV</span>}
                       </div>
                     </div>
                     {/* Actions in cluster */}
-                    <div className="border-l-2 border-success/20 ml-[15px] pl-5 py-0.5">
+                    <div className="border-l-2 border-tabPlay/20 ml-[15px] pl-5 py-0.5">
                       {items.map(({ action, idx }) => (
                         <ActionNode
                           key={keys[idx]}
@@ -348,62 +349,38 @@ export function CapitalPlanPanel({ capitalPlan, balanceStatus, onConfirm, onSkip
           );
         })()}
 
-        {/* Arrow */}
-        <div className="text-center text-dark-500 text-lg py-1">↓</div>
-
-        {/* Projected State */}
-        <div className="border border-success/30 bg-dark-800 rounded-md p-4 text-center">
-          <div className="text-[10px] text-success uppercase tracking-widest mb-1">
-            {hasActions ? 'Projected' : 'Ready'}
-          </div>
-          <div className="text-xl font-bold text-text">
-            {projectedDeployed.toFixed(0)} kr
-          </div>
-          {netUSDC > 0 && (
-            <div className="text-[10px] text-dark-400 mt-0.5">
-              incl. {netUSDC.toFixed(2)} USDC ({Math.round(usdcInSEK)} kr)
-            </div>
-          )}
-          {hasActions && (
-            <div className="text-[10px] text-success mt-1">
-              {totalUnlocks > 0 && <span>+{totalUnlocks} bets unlocked</span>}
-              {totalEV > 0 && <span className="ml-2">+{totalEV.toFixed(0)} EV</span>}
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex items-center justify-center gap-2 mt-4">
-            {hasDone ? (
-              <button
-                onClick={onConfirm}
-                disabled={isLoading}
-                className="px-5 py-2 bg-success text-black text-xs font-bold rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {isLoading ? 'Recalculating...' : `Recalc Batch →`}
-              </button>
-            ) : (
-              <button
-                onClick={onSkip}
-                className="px-5 py-2 bg-success text-black text-xs font-bold rounded hover:opacity-90 transition-opacity"
-              >
-                {hasActions ? 'Skip → Calc Batch' : 'Calc Batch →'}
-              </button>
-            )}
-          </div>
-        </div>
-
         {/* No actions hint */}
         {!hasActions && (
-          <div className="text-center text-dark-400 text-[10px] mt-2">
+          <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
             All providers funded optimally. No capital actions needed.
           </div>
         )}
 
         {/* Mirror hint */}
         {hasActions && (
-          <div className="text-center text-dark-400 text-[10px] mt-3">
+          <div className="text-muted text-[10px] px-3 py-1.5">
             Do deposits in the mirror browser — balances sync automatically.
           </div>
+        )}
+      </div>
+
+      {/* Action button */}
+      <div className="flex items-center justify-end px-1 py-1">
+        {hasDone ? (
+          <button
+            onClick={onConfirm}
+            disabled={isLoading}
+            className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {isLoading ? 'Recalculating...' : `Recalc Batch →`}
+          </button>
+        ) : (
+          <button
+            onClick={onSkip}
+            className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+          >
+            {hasActions ? 'Skip → Execute' : 'Execute →'}
+          </button>
         )}
       </div>
     </div>
