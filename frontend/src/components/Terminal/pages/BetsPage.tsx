@@ -79,7 +79,7 @@ function getSortValue(bet: Bet, key: SortKey): number | string {
 
 // ── Charts ───────────────────────────────────────────────────────────
 
-function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; currentBankroll: number; totalStaked?: number }) {
+function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDeposited: number; totalStaked?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
@@ -87,17 +87,30 @@ function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; cu
 
     if (settled.length === 0) return [];
 
-    const totalProfit = settled.reduce((sum, b) => sum + toSEK(b.profit, b.currency), 0);
-    const startBankroll = currentBankroll - totalProfit;
+    // Start from net deposited capital — bonus capital is excluded from P&L
+    const startBankroll = netDeposited;
+
+    // Aggregate by day for a smoother curve
+    const dailyProfit = new Map<string, { date: Date; profit: number }>();
+    for (const bet of settled) {
+      const d = new Date(bet.placed_at);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const existing = dailyProfit.get(key);
+      if (existing) {
+        existing.profit += toSEK(bet.profit, bet.currency);
+      } else {
+        dailyProfit.set(key, { date: d, profit: toSEK(bet.profit, bet.currency) });
+      }
+    }
 
     let cumulative = startBankroll;
     const points = [{ date: new Date(settled[0].placed_at), value: startBankroll }];
-    for (const bet of settled) {
-      cumulative += toSEK(bet.profit, bet.currency);
-      points.push({ date: new Date(bet.placed_at), value: cumulative });
+    for (const day of dailyProfit.values()) {
+      cumulative += day.profit;
+      points.push({ date: day.date, value: cumulative });
     }
     return points;
-  }, [bets, currentBankroll]);
+  }, [bets, netDeposited]);
 
   if (data.length < 2) return null;
 
@@ -118,7 +131,21 @@ function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; cu
   const x = (d: Date) => PX + (d.getTime() - minDate) / dateRange * (W - PX - PR);
   const y = (v: number) => PT + (1 - (v - minVal) / range) * (H - PT - PB);
 
-  const pathD = data.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.date).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  // Catmull-Rom to cubic bezier for smooth curves
+  const pts = data.map(p => ({ x: x(p.date), y: y(p.value) }));
+  const pathD = pts.map((p, i) => {
+    if (i === 0) return `M${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+    const p0 = pts[Math.max(0, i - 2)];
+    const p1 = pts[i - 1];
+    const p2 = p;
+    const p3 = pts[Math.min(pts.length - 1, i + 1)];
+    const t = 0.3;
+    const cp1x = p1.x + (p2.x - p0.x) * t;
+    const cp1y = p1.y + (p2.y - p0.y) * t;
+    const cp2x = p2.x - (p3.x - p1.x) * t;
+    const cp2y = p2.y - (p3.y - p1.y) * t;
+    return `C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }).join(' ');
 
   const lastVal = data[data.length - 1].value;
   const firstVal = data[0].value;
@@ -189,7 +216,7 @@ function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; cu
             <line key={i} x1={PX} y1={l.yPos} x2={W - PR} y2={l.yPos} stroke="#2c2c2c" strokeWidth="0.5" strokeDasharray="4,4" />
           ))}
           <path
-            d={`${pathD} L${x(data[data.length - 1].date).toFixed(1)},${(H - PB).toFixed(1)} L${x(data[0].date).toFixed(1)},${(H - PB).toFixed(1)} Z`}
+            d={`${pathD} L${pts[pts.length - 1].x.toFixed(1)},${(H - PB).toFixed(1)} L${pts[0].x.toFixed(1)},${(H - PB).toFixed(1)} Z`}
             fill={`url(#${gradId})`}
           />
           <path d={pathD} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
@@ -237,7 +264,7 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
 
   const zeroY = y(0);
 
-  const windowSize = Math.min(20, Math.ceil(data.length / 3));
+  const windowSize = Math.max(20, Math.ceil(data.length / 4));
   const avgPoints: { date: Date; avg: number }[] = [];
   for (let i = 0; i < data.length; i++) {
     const start = Math.max(0, i - windowSize + 1);
@@ -245,9 +272,21 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
     const avg = window.reduce((s, d) => s + d.clv, 0) / window.length;
     avgPoints.push({ date: data[i].date, avg });
   }
-  const avgPathD = avgPoints
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.date).toFixed(1)},${y(p.avg).toFixed(1)}`)
-    .join(' ');
+  // Catmull-Rom smooth curve
+  const clvPts = avgPoints.map(p => ({ x: x(p.date), y: y(p.avg) }));
+  const avgPathD = clvPts.map((p, i) => {
+    if (i === 0) return `M${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+    const p0 = clvPts[Math.max(0, i - 2)];
+    const p1 = clvPts[i - 1];
+    const p2 = p;
+    const p3 = clvPts[Math.min(clvPts.length - 1, i + 1)];
+    const t = 0.3;
+    const cp1x = p1.x + (p2.x - p0.x) * t;
+    const cp1y = p1.y + (p2.y - p0.y) * t;
+    const cp2x = p2.x - (p3.x - p1.x) * t;
+    const cp2y = p2.y - (p3.y - p1.y) * t;
+    return `C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }).join(' ');
 
   const totalAvg = data.reduce((s, d) => s + d.clv, 0) / data.length;
   const isPositive = totalAvg >= 0;
@@ -351,7 +390,6 @@ export function BetsPage() {
   const { editBet } = useBetMutations();
   const [bets, setBets] = useState<Bet[]>([]);
   const [bankrollStats, setBankrollStats] = useState<BankrollStats | null>(null);
-  const [currentBankroll, setCurrentBankroll] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [activeBonuses, setActiveBonuses] = useState<[string, BonusProgressEntry][]>([]);
   // Sort & search (for history table)
@@ -369,18 +407,15 @@ export function BetsPage() {
   const [cashoutBetId, setCashoutBetId] = useState<number | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState<string>('');
 
-  // Bet history collapsed state
+  // Collapsed states
+  const [wageringCollapsed, setWageringCollapsed] = usePersistedState('bbq_bets_wageringCollapsed', false);
   const [historyCollapsed, setHistoryCollapsed] = usePersistedState('bbq_bets_historyCollapsed', false);
 
   const fetchBets = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [response, bankroll] = await Promise.all([
-        api.getBets(undefined, 500),
-        api.getBankroll(),
-      ]);
+      const response = await api.getBets(undefined, 500);
       setBets(response.bets);
-      setCurrentBankroll(bankroll.total);
     } catch (err) {
       console.error('Failed to fetch bets:', err);
     } finally {
@@ -401,7 +436,8 @@ export function BetsPage() {
     try {
       const status = await api.getBankrollStatus();
       const active = Object.entries(status.bonus_progress).filter(
-        ([, b]) => ['trigger_needed', 'freebet_available', 'in_progress'].includes(b.status)
+        ([, b]) => b.status !== 'available' && b.status !== 'completed'
+          && b.wagering_requirement > 0
       );
       setActiveBonuses(active);
     } catch {
@@ -604,17 +640,6 @@ export function BetsPage() {
             {bankrollStats.total_deposited > 0 && (
               <span className="text-muted">Net deposited: <span className="text-text">{bankrollStats.net_deposited.toFixed(0)} kr</span></span>
             )}
-            {(bankrollStats.freebet_profit > 0 || bankrollStats.bonus_profit > 0) && (
-              <>
-                <span className="text-muted">|</span>
-                {bankrollStats.freebet_profit > 0 && (
-                  <span className="text-accent">+{bankrollStats.freebet_profit.toFixed(0)} fb</span>
-                )}
-                {bankrollStats.bonus_profit > 0 && (
-                  <span className="text-tabBonus">+{bankrollStats.bonus_profit.toFixed(0)} bonus</span>
-                )}
-              </>
-            )}
           </div>
         </div>
       )}
@@ -622,15 +647,25 @@ export function BetsPage() {
       {/* Charts — side by side */}
       <div className="border-l-2 border-tabBets">
         <div className="grid grid-cols-2 gap-px bg-border border border-border">
-          {bets.length > 0 && currentBankroll > 0 && (
-            <BankrollChart bets={bets} currentBankroll={currentBankroll} totalStaked={bankrollStats?.total_staked} />
+          {bets.length > 0 && bankrollStats && bankrollStats.net_deposited > 0 && (
+            <BankrollChart bets={bets.filter(b => !b.is_bonus)} netDeposited={bankrollStats.net_deposited} totalStaked={bankrollStats?.total_staked} />
           )}
           <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
       </div>
 
-      {/* Active Bonuses */}
-      {activeBonuses.length > 0 && (
+      {/* Wagering Progress */}
+      {activeBonuses.length > 0 && (<>
+        <button
+          className="flex items-center gap-2 w-full text-left cursor-pointer group"
+          onClick={() => setWageringCollapsed(c => !c)}
+        >
+          <span className={`text-[10px] text-muted2 transition-transform ${wageringCollapsed ? '' : 'rotate-90'}`}>▶</span>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
+            Wagering Progress <span className="text-muted2">{activeBonuses.length}</span>
+          </h3>
+        </button>
+        {!wageringCollapsed && (
         <div className="border-l-2 border-tabBets">
           <table className="sq">
             <thead>
@@ -645,26 +680,34 @@ export function BetsPage() {
               </tr>
             </thead>
             <tbody>
-              {activeBonuses.map(([providerId, bonus]) => {
+              {activeBonuses
+                .sort((a, b) => {
+                  const order = { in_progress: 0, trigger_needed: 1, freebet_available: 2, claimed: 3 };
+                  return (order[a[1].status as keyof typeof order] ?? 9) - (order[b[1].status as keyof typeof order] ?? 9);
+                })
+                .map(([providerId, bonus]) => {
                 const pct = Math.min(100, bonus.progress_pct);
                 const days = bonus.days_remaining;
                 const urgent = days !== null && days <= 10;
                 const warning = days !== null && days > 10 && days <= 30;
                 const remaining = bonus.wagering_requirement - bonus.wagered_amount;
-                const hasProgress = (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
+                const isClaimed = bonus.status === 'claimed';
+                const hasProgress = !isClaimed && (bonus.status === 'in_progress' || (bonus.status === 'trigger_needed' && bonus.bonus_type === 'bonusdeposit')) && bonus.wagering_requirement > 0;
                 const estDays = bonus.prognosis?.est_weeks != null ? Math.round(bonus.prognosis.est_weeks * 7) : null;
                 const onTrack = estDays !== null && days !== null && estDays <= days;
                 const requiredPerWk = bonus.prognosis?.required_weekly_wagering ?? null;
 
                 return (
-                  <tr key={providerId}>
+                  <tr key={providerId} className={isClaimed ? 'opacity-60' : ''}>
                     <td className="text-text text-sm font-medium"><ProviderName name={providerId} /></td>
                     <td>
                       <span className={`text-[10px] px-1.5 py-0.5 font-medium ${
+                        isClaimed ? 'bg-muted/15 text-muted' :
                         bonus.status === 'freebet_available' ? 'bg-success/15 text-success' :
                         'bg-tabBets/15 text-tabBets'
                       }`}>
-                        {bonus.bonus_type === 'freebet' ? 'FREEBET'
+                        {isClaimed ? 'NEEDED'
+                          : bonus.bonus_type === 'freebet' ? 'FREEBET'
                           : bonus.status === 'trigger_needed' ? 'TRIGGER'
                           : 'WAGER'}
                       </span>
@@ -683,7 +726,8 @@ export function BetsPage() {
                       ) : <span className="text-muted text-sm">-</span>}
                     </td>
                     <td className="text-right text-sm text-text">
-                      {hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
+                      {isClaimed ? `${bonus.wagering_requirement.toFixed(0)} kr`
+                        : hasProgress ? `${remaining.toFixed(0)} kr` : '-'}
                     </td>
                     <td className="text-right">
                       {requiredPerWk != null && requiredPerWk > 0 ? (
@@ -710,7 +754,8 @@ export function BetsPage() {
             </tbody>
           </table>
         </div>
-      )}
+        )}
+      </>)}
 
       {/* Bet History */}
       <button
