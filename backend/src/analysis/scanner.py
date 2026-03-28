@@ -42,10 +42,10 @@ MAX_ODDS_RATIO = 1.35
 # handicap conventions, vig structures). Relaxed from 1.35 to 1.55.
 MAX_ODDS_RATIO_SPREAD = 1.55
 
-# Maximum edge percentage for a value bet to be considered valid
-# Edges above this are almost certainly data quality issues (wrong odds, event mismatch)
-# Real value bets rarely exceed 30% edge; 50% gives comfortable headroom
-MAX_EDGE_PCT = 50.0
+# Hard safety net — only trips on impossible data (e.g. wrong event match).
+# Real filtering happens upstream: provider EXCLUDE_PATTERNS, market type
+# restrictions, odds ratio checks, prob_sum validation.
+MAX_EDGE_PCT = 100.0
 
 # Maximum odds age in hours for value scanning
 # Odds older than this are considered stale and skipped

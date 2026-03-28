@@ -450,7 +450,10 @@ class KambiRetriever(Retriever):
             # Exclude partial markets, derivative bets, and futures (applies to ALL bet offer types)
             EXCLUDE_PATTERNS = (
                 "quarter", "period", "half",
-                "1st", "2nd", "3rd", "4th",
+                "1st", "2nd", "3rd", "4th", "5th",
+                "first",                                        # "First Inning", "First Half", etc.
+                "inning",                                       # Baseball period markets ("Innings 1-5", "5 Innings")
+                "map ",                                         # Esports period markets ("Map 1", "Map 2")
                 "draw no bet",
                 "competition", "season", "trophy", "award",  # Futures/outrights
                 "0:00-", "5:00-", "10:00-",                   # Time-segment markets
@@ -464,6 +467,12 @@ class KambiRetriever(Retriever):
             )
             if any(pat in label for pat in EXCLUDE_PATTERNS):
                 return None
+
+            # Log criterion labels for spread/total markets that pass filters (diagnostic)
+            if bet_offer_type_id in (1, 6, 7) and label:
+                logger.debug(
+                    f"[kambi] Accepted betOfferType={bet_offer_type_id} label='{label}'"
+                )
 
             # For betOfferType 2 (match winner), apply keyword filter to ensure full-match only
             # betOfferType 1 (handicap), 6 (total), 7 (spread) pass after EXCLUDE_PATTERNS
