@@ -10,14 +10,9 @@ MAP_MARKETS = frozenset({
     'total_m1', 'total_m2', 'total_m3', 'total_m4', 'total_m5',
 })
 
-# Extended markets stored for Pinnacle only — used by boost EV enrichment,
-# NOT by the value scanner.
-ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS | frozenset({
-    'team_total',       # Team over/under (Pinnacle API type)
-    '1x2_1h',           # First-half 1x2 (period=1)
-    'moneyline_1h',     # First-half moneyline (period=1)
-    'total_1h',         # First-half total (period=1)
-})
+# Extended markets stored for Pinnacle/Polymarket — includes esports map markets
+# for map-level value scanning. team_total/1h markets removed (never used by analysis).
+ENRICHMENT_MARKETS = ALLOWED_MARKETS | MAP_MARKETS
 
 # Sharp/reference providers for fair odds
 SHARP_PROVIDERS = frozenset({'pinnacle'})

@@ -444,7 +444,7 @@ def store_polymarket_event(
         market_type = normalize_market(market.get("question", "") or market.get("type", ""))
 
         # Only store allowed markets. Pinnacle gets enrichment markets too
-        # (team_total, 1h lines) for boost EV enrichment — scanner ignores them.
+        # Pinnacle/Polymarket get esports map markets for map-level scanning.
         allowed = ENRICHMENT_MARKETS if event.provider in EXTENDED_MARKET_PROVIDERS else ALLOWED_MARKETS
         if market_type not in allowed:
             continue

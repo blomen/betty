@@ -752,7 +752,7 @@ providers:
     retriever_type: interwetten
     site_url: https://www.interwetten.se
     provider_timeout: 700              # DOM scraping with concurrent league+detail tabs
-    sport_timeout: 300                 # Many leagues per sport, sequential navigation
+    sport_timeout: 400                 # Raised from 300 — football needs ~200s for leagues + ~150s for detail enrichment
     supported_sports:
       - football
       - ice_hockey
@@ -978,7 +978,8 @@ boosts:
     url: "https://eu1.offering-api.kambicdn.com/offering/v2018/expektse/listView/expekt_specials.json?lang=sv_SE&market=SE&channel_id=1"
     primary_provider: expekt
     shared_with: []
-    enabled: true
+    enabled: false
+    note: "expekt_specials group consistently returns 0 events — expekt.se does not offer odds boosts"
 
   betmgm:
     type: null
@@ -1077,8 +1078,8 @@ boosts:
     type: betconstruct
     primary_provider: vbet
     shared_with: []
-    enabled: true
-    note: "Homepage 'Topphändelser' — boosted 1x2 on promoted games. Requires language=swe session. No original_odds (API only returns boosted price)."
+    enabled: false
+    note: "get_boosted_selections consistently returns 0 — vbet.se does not currently offer odds boosts. Re-enable if they add boost features."
 
   # ═══════════════════════════════════════════════════════
   # INTERWETTEN — DISABLED: no boosts on site (2026-03-06 audit)
