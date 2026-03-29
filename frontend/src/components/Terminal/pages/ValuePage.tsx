@@ -237,7 +237,7 @@ const OpportunityRow = memo(function OpportunityRow({
           {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(selOpp.provider_last_checked ?? selOpp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(selOpp.odds_updated_at ?? selOpp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && !isSkipped && (

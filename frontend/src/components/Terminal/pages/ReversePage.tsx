@@ -159,7 +159,7 @@ const ReverseRow = memo(function ReverseRow({
           {isStakeOver && <button onClick={() => { setLocalStakeOverride(null); setEditingStake(false); }} className="text-muted2 hover:text-text text-[10px] ml-0.5" title="Reset">x</button>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynEdge > 0 ? 'text-success' : 'text-error'}`}>{dynEdge > 0 ? '+' : ''}{dynEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(opp.provider_last_checked ?? opp.odds_updated_at); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(opp.odds_updated_at ?? opp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isSelected && !isSkipped && (
