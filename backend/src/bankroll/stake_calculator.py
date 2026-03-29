@@ -62,6 +62,27 @@ def dynamic_min_stake(bankroll: float) -> float:
     return max(ABSOLUTE_MIN_STAKE, (capped // 5) * 5)
 
 
+def dynamic_min_expected_profit(bankroll: float) -> float:
+    """
+    Scale minimum expected profit with bankroll so small bankrolls aren't locked out.
+
+    The MC simulator uses no min_expected_profit guard at all (93.1% play rate).
+    Production needs some guard to avoid dust bets, but it should scale down at
+    low bankrolls where Kelly is already boosted.
+
+    At 10,000+ bankroll: 0.75 kr (standard)
+    At 5,000 bankroll:   0.38 kr
+    At 2,000 bankroll:   0.15 kr
+    At 500 bankroll:     0.10 kr (floor)
+
+    Formula: bankroll * 0.000075, clamped to [0.10, 0.75].
+    """
+    if bankroll <= 0:
+        return DEFAULT_MIN_EXPECTED_PROFIT
+    raw = bankroll * 0.000075
+    return max(0.10, min(raw, DEFAULT_MIN_EXPECTED_PROFIT))
+
+
 # Bonus wagering min odds requirement
 BONUS_MIN_ODDS = 1.80
 
@@ -206,7 +227,7 @@ def calculate_stake(
     min_stake: float = DEFAULT_MIN_STAKE,
     high_confidence: bool = True,
     max_kelly: float = OPTIMAL_MAX_KELLY,
-    min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
+    min_expected_profit: float | None = None,
 ) -> StakeResult:
     """
     Calculate optimal stake using dynamic Kelly with safety rails.
@@ -231,6 +252,10 @@ def calculate_stake(
     Returns:
         StakeResult with stake amount and full breakdown
     """
+    # Default min_expected_profit scales with bankroll (MC-aligned)
+    if min_expected_profit is None:
+        min_expected_profit = dynamic_min_expected_profit(bankroll_total)
+
     # Sanity guard: odds too close to 1.0 cause absurd stakes
     if odds <= min_odds_sanity:
         return StakeResult(
@@ -501,8 +526,8 @@ class StakeCalculator:
         self.min_edge = min_edge
         self.min_stake = min_stake if min_stake is not None else dynamic_min_stake(bankroll)
         self.profile_max_kelly = max_kelly  # Original profile setting
-        self.max_kelly = effective_max_kelly(max_kelly, bankroll)  # Boosted at low bankroll
-        self.min_expected_profit = min_expected_profit
+        self.max_kelly = max_kelly  # calculate_stake() applies effective_max_kelly() internally
+        self.min_expected_profit = dynamic_min_expected_profit(bankroll)
 
         self.bonus_tracker = BonusTracker()
 
@@ -510,7 +535,8 @@ class StakeCalculator:
         """Update bankroll after wins/losses."""
         self.bankroll = new_bankroll
         self.min_stake = dynamic_min_stake(new_bankroll)
-        self.max_kelly = effective_max_kelly(self.profile_max_kelly, new_bankroll)
+        # max_kelly stays as profile setting — calculate_stake() applies effective_max_kelly()
+        self.min_expected_profit = dynamic_min_expected_profit(new_bankroll)
 
     def get_min_odds_for_provider(self, provider_id: str) -> float:
         """
@@ -628,6 +654,7 @@ def quick_stake(
         odds=odds,
         min_odds=0.0,  # No restriction for quick calc
         min_stake=dynamic_min_stake(bankroll),
+        min_expected_profit=dynamic_min_expected_profit(bankroll),
     )
     return result.stake
 
