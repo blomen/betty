@@ -1,5 +1,6 @@
 """Mirror API routes — start/stop bet interception browser."""
 
+import asyncio
 import logging
 import yaml
 from pathlib import Path
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/api/mirror", tags=["mirror"])
 
 # Multi-provider mirror state (used by lifespan auto-start AND manual start/stop)
 _mirrors: dict[str, MirrorService] = {}
+_start_lock = asyncio.Lock()
 
 # Default provider when none specified
 _DEFAULT_PROVIDER = "spelklubben"
@@ -49,17 +51,18 @@ async def start_mirror():
 @router.post("/ensure-started")
 async def ensure_mirror_started():
     """Idempotent: start mirror if not already running, otherwise return status."""
-    if _any_running():
-        for m in _mirrors.values():
-            status = m.get_status()
-            if status["running"]:
-                return status
-        return {"running": True, "status": "running"}
+    async with _start_lock:
+        if _any_running():
+            for m in _mirrors.values():
+                status = m.get_status()
+                if status["running"]:
+                    return status
+            return {"running": True, "status": "running"}
 
-    mirror = MirrorService(broadcaster=odds_broadcaster, provider_id=_DEFAULT_PROVIDER)
-    await mirror.start()
-    _mirrors[_DEFAULT_PROVIDER] = mirror
-    return mirror.get_status()
+        mirror = MirrorService(broadcaster=odds_broadcaster, provider_id=_DEFAULT_PROVIDER)
+        await mirror.start()
+        _mirrors[_DEFAULT_PROVIDER] = mirror
+        return mirror.get_status()
 
 
 @router.post("/stop")
