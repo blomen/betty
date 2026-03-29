@@ -13,7 +13,7 @@ from ...db.models import Event, Odds, Bet
 from ...repositories import ProfileRepo, BetRepo
 from ...analysis.devig import devig_multiplicative
 from ...analysis.value import polymarket_effective_odds
-from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ...bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ...matching.normalizer import normalize_team_name, generate_canonical_id
 from ...matching.matcher import get_team_match_score
 from ...constants import SHARP_PROVIDERS
@@ -65,8 +65,8 @@ async def get_polymarket_value(
             total_bankroll = profile_repo.get_total_bankroll(profile.id)
             stake_calculator = StakeCalculator(
                 bankroll=total_bankroll,
-                max_kelly=profile.kelly_fraction,
-                single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                max_kelly=OPTIMAL_MAX_KELLY,
+                single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=profile.min_edge_pct / 100.0,
             )
             bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")

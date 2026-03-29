@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, BetRepo
 from ..db.models import Profile, Provider, ProfileProviderBonus
-from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS
+from ..bankroll.stake_calculator import StakeCalculator, BONUS_MIN_ODDS, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ..config import get_exchange_rate, get_provider_currency
 from ..constants import PLATFORM_MAP
 
@@ -199,33 +199,27 @@ class BankrollService:
         }
 
     def get_stake_calculator(self, profile_id: int) -> StakeCalculator:
-        """Get or create a StakeCalculator for a profile, using profile risk settings."""
-        # Load profile settings
+        """Get or create a StakeCalculator for a profile, using MC-optimal constants."""
         profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
         bankroll = self.profile_repo.get_total_bankroll(profile_id)
 
-        # Profile settings -> calculator params
-        # kelly_fraction (0.25 = Quarter Kelly) caps the dynamic Kelly scaling
-        # max_stake_pct (5.0 = 5%) -> single_bet_cap_pct (0.05)
-        # min_edge_pct (2.0 = 2%) -> min_edge (0.02)
-        max_kelly = profile.kelly_fraction if profile else 0.25
-        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
+        # Kelly + cap from MC sim-optimal constants; only min_edge from profile
         min_edge = (profile.min_edge_pct / 100.0) if profile else 0.01
 
         if profile_id not in _stake_calculators:
             _stake_calculators[profile_id] = StakeCalculator(
                 bankroll=bankroll,
-                max_kelly=max_kelly,
-                single_bet_cap_pct=single_bet_cap_pct,
+                max_kelly=OPTIMAL_MAX_KELLY,
+                single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=min_edge,
             )
 
         calc = _stake_calculators[profile_id]
 
-        # Always update to current values (profile settings may have changed)
+        # Always update to current values
         calc.update_bankroll(bankroll)
-        calc.max_kelly = max_kelly
-        calc.single_bet_cap_pct = single_bet_cap_pct
+        calc.max_kelly = OPTIMAL_MAX_KELLY
+        calc.single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         calc.min_edge = min_edge
 
         # Always reload bonus statuses from DB

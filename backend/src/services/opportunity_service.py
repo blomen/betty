@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
-from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake
+from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
 from ..constants import PROVIDER_CANONICAL, CANONICAL_MEMBERS, MAJOR_LEAGUES_FLAT, PLATFORM_GROUPS, PLATFORM_MAP
 from ..db.models import Bet, Event, Provider, Odds, ProfileProviderLimit, ProviderRunMetrics
 from ..risk.allocator import ProviderAllocator
@@ -132,8 +132,8 @@ class OpportunityService:
                 bankroll = self.profile_repo.get_total_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
                     bankroll=bankroll,
-                    max_kelly=profile.kelly_fraction,
-                    single_bet_cap_pct=profile.max_stake_pct / 100.0,
+                    max_kelly=OPTIMAL_MAX_KELLY,
+                    single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_edge=profile.min_edge_pct / 100.0,
                 )
             except Exception as e:
@@ -323,10 +323,6 @@ class OpportunityService:
             (self.profile_repo.get_balance(profile.id, p.id) for p in providers if p.id == anchor_provider), 0
         )
 
-        # Profile risk settings
-        max_kelly = profile.kelly_fraction if profile else 0.25
-        single_bet_cap_pct = (profile.max_stake_pct / 100.0) if profile else 0.03
-
         results = []
         for o in opportunities[:limit]:
             edge_raw = o.anchor_odds / o.fair_odds - 1 if o.fair_odds > 1 else 0
@@ -337,8 +333,8 @@ class OpportunityService:
                     edge_raw=edge_raw,
                     odds=o.anchor_odds,
                     min_odds=0.0,
-                    max_kelly=max_kelly,
-                    single_bet_cap_pct=single_bet_cap_pct,
+                    max_kelly=OPTIMAL_MAX_KELLY,
+                    single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_stake=dynamic_min_stake(total_bankroll),
                 )
                 suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
