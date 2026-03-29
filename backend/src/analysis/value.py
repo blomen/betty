@@ -86,8 +86,7 @@ def find_value(
     provider_odds: float,
     fair_odds: float,
     min_edge_pct: float = 2.0,
-    bid: float = None,
-    ask: float = None,
+    **kwargs,
 ) -> Optional[ValueBet]:
     """
     Check if a bet has positive expected value.
@@ -100,8 +99,6 @@ def find_value(
         provider_odds: Decimal odds from provider
         fair_odds: Fair decimal odds (from Pinnacle de-vigged)
         min_edge_pct: Minimum edge to consider (default 2%)
-        bid: Polymarket CLOB best bid (probability units)
-        ask: Polymarket CLOB best ask (probability units)
 
     Returns:
         ValueBet if edge >= min_edge_pct, None otherwise
@@ -115,16 +112,9 @@ def find_value(
     # Calculate edge using effective (post-fee) odds
     edge = (effective_odds / fair_odds) - 1
 
-    # For Polymarket with CLOB data, subtract bid-ask spread cost.
-    # The taker crosses the spread and pays the ask price. The cost is the
-    # difference between mid-market odds and the taker's actual entry odds (1/ask),
-    # expressed as a fraction of mid-market odds.
-    if provider == "polymarket" and bid is not None and ask is not None and bid > 0 and ask > 0:
-        mid = (bid + ask) / 2
-        mid_odds = 1 / mid
-        taker_odds = 1 / ask
-        spread_cost = (mid_odds - taker_odds) / mid_odds
-        edge -= spread_cost
+    # NOTE: Spread cost subtraction removed — Polymarket odds are already based
+    # on ask-side VWAP (from _calc_vwap_from_asks), so the taker cost is already
+    # reflected in provider_odds. Subtracting spread cost again was double-counting.
 
     edge_pct = edge * 100
     

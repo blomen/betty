@@ -1647,6 +1647,10 @@ class OpportunityScanner:
         Uses relaxed threshold for spread/total markets where books
         naturally diverge more on handicap pricing.
 
+        Tolerates a single outlier: if removing one value brings the ratio
+        below the threshold, it's a rogue provider (handled per-provider
+        downstream), not a systemic event mismatch.
+
         Args:
             odds_by_outcome: {outcome: [provider_odds_entries]}
             exclude_providers: Provider IDs to exclude from the ratio calculation
@@ -1669,6 +1673,18 @@ class OpportunityScanner:
             if len(odds_values) >= 3:
                 odds_ratio = max(odds_values) / min(odds_values)
                 if odds_ratio > threshold:
+                    # Tolerate a single outlier: remove the value causing the
+                    # biggest gap and re-check. If ratio falls below threshold,
+                    # it's one rogue provider, not a market-wide mismatch.
+                    sorted_vals = sorted(odds_values)
+                    # Try removing the extreme high
+                    trimmed_high = sorted_vals[:-1]
+                    if max(trimmed_high) / min(trimmed_high) <= threshold:
+                        continue
+                    # Try removing the extreme low
+                    trimmed_low = sorted_vals[1:]
+                    if max(trimmed_low) / min(trimmed_low) <= threshold:
+                        continue
                     return True
         return False
 
