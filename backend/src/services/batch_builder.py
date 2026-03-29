@@ -23,6 +23,15 @@ from ..repositories.opportunity_repo import OpportunityRepo
 from ..repositories.profile_repo import ProfileRepo
 from ..services.play_service import derive_lifecycle
 
+
+def _utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    """Serialize datetime as UTC ISO string (ensures JS parses as UTC, not local)."""
+    if dt is None:
+        return None
+    if not dt.tzinfo:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
 logger = logging.getLogger(__name__)
 
 # Tier priority: higher is ranked first
@@ -932,8 +941,8 @@ class BatchBuilder:
             "display_away": bet.display_away,
             "sport": bet.sport,
             "league": bet.league,
-            "start_time": bet.start_time.isoformat() if bet.start_time else None,
-            "detected_at": bet.detected_at.isoformat() if bet.detected_at else None,
+            "start_time": _utc_iso(bet.start_time),
+            "detected_at": _utc_iso(bet.detected_at),
             "odds_age_minutes": round(bet.odds_age_minutes, 1) if bet.odds_age_minutes is not None else None,
             "lifecycle": bet.lifecycle,
             "cluster": bet.cluster,

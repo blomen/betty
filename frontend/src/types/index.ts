@@ -793,10 +793,16 @@ export interface ProviderBalanceStatus {
   balance: number;
   allocated: number;
   remaining: number;
+  lifecycle: string;
   excess?: number;
   shortfall?: number;
   missed_bets: number;
   missed_ev: number;
+  wagering_total: number;
+  wagering_remaining: number;
+  days_remaining: number | null;
+  trigger_mode: string;
+  bonus_amount: number;
 }
 
 export interface CapitalAction {

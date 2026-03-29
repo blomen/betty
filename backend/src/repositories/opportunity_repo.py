@@ -44,6 +44,10 @@ class OpportunityRepo:
         query = query.filter(
             (Event.start_time.is_(None)) | (Event.start_time > now)
         )
+        # Exclude live/finished events even if start_time check is borderline
+        query = query.filter(
+            (Event.match_status.is_(None)) | (Event.match_status == "prematch")
+        )
 
         # Optional filters
         if type:
