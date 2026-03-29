@@ -415,14 +415,14 @@ class BatchBuilder:
     ) -> Optional[BatchBet]:
         """Convert an Opportunity+Event into a BatchBet candidate, or None to skip."""
 
-        # Skip live events (TTK <= 0) for all providers; enforce 48h cap for soft
+        # Skip live events (TTK <= 0) and events beyond 48h for ALL providers
         if event.start_time:
             now = datetime.now(timezone.utc)
             st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
             ttk_hours = (st - now).total_seconds() / 3600
             if ttk_hours <= 0:
                 return None
-            if opp.provider1_id not in SHARP_PROVIDERS and ttk_hours > MAX_TTK_HOURS:
+            if ttk_hours > MAX_TTK_HOURS:
                 return None
         else:
             ttk_hours = None
@@ -559,7 +559,7 @@ class BatchBuilder:
             lifecycle=pb.lifecycle if pb else "available",
             cluster=cluster,
             funded=not unfunded,
-            priority=compute_priority(opp.edge_pct or 0.0, ttk_hours) if provider_id not in SHARP_PROVIDERS else 0,
+            priority=compute_priority(opp.edge_pct or 0.0, ttk_hours),
         )
 
     def _populate_odds_age(self, batch: list[BatchBet]) -> None:
@@ -722,13 +722,12 @@ class BatchBuilder:
         provider_balances: dict[str, ProviderBalance],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Allocation for soft tier with scaled provider spreading.
+        Allocation for soft tier — drain existing balance first.
 
-        Number of siblings used = ceil(bets / BETS_PER_PROVIDER), capped at
-        available funded siblings. Below BETS_PER_PROVIDER, single provider.
+        Uses all funded siblings sorted by balance descending. For each bet,
+        try each sibling in order until one has enough balance. This naturally
+        drains existing capital before any deposit recommendations.
         """
-        import math
-
         batch: list[BatchBet] = []
         missed: list[BatchBet] = []
 
@@ -738,12 +737,6 @@ class BatchBuilder:
             dedup_key = (bet.cluster, bet.event_id, bet.market, bet.outcome, bet.point)
             if dedup_key not in best_per_key:
                 best_per_key[dedup_key] = bet
-
-        # Count unique bets per cluster
-        cluster_bet_count: dict[str, int] = {}
-        for key in best_per_key:
-            cluster = key[0]
-            cluster_bet_count[cluster] = cluster_bet_count.get(cluster, 0) + 1
 
         # Build cluster siblings (funded providers only, sorted by balance desc)
         cluster_siblings: dict[str, list[str]] = {}
@@ -757,20 +750,7 @@ class BatchBuilder:
         for cluster in cluster_siblings:
             cluster_siblings[cluster].sort(key=lambda pid: -provider_balances[pid].remaining)
 
-        # For each cluster, determine how many siblings to use and build rotation
-        cluster_rotation: dict[str, itertools.cycle] = {}
-        cluster_active_siblings: dict[str, list[str]] = {}
-        for cluster, siblings in cluster_siblings.items():
-            if not siblings:
-                continue
-            bet_count = cluster_bet_count.get(cluster, 0)
-            needed = math.ceil(bet_count / BatchBuilder.BETS_PER_PROVIDER)
-            active = siblings[:min(needed, len(siblings))]
-            cluster_active_siblings[cluster] = active
-            if len(active) > 1:
-                cluster_rotation[cluster] = itertools.cycle(active)
-
-        # Walk opportunities in ranked order (by expected_profit descending)
+        # Walk opportunities in ranked order (by priority, then expected_profit desc)
         sorted_keys = sorted(
             best_per_key.keys(),
             key=lambda k: (best_per_key[k].priority, -best_per_key[k].expected_profit),
@@ -779,65 +759,40 @@ class BatchBuilder:
         for dedup_key in sorted_keys:
             template_bet = best_per_key[dedup_key]
             cluster = dedup_key[0]
-            rotation = cluster_rotation.get(cluster)
-            active = cluster_active_siblings.get(cluster, [])
+            siblings = cluster_siblings.get(cluster, [])
 
-            if not active:
+            if not siblings:
                 template_bet.skip_reason = "no funded sibling in cluster"
                 missed.append(template_bet)
                 continue
 
             assigned = False
 
-            if rotation:
-                # Multiple siblings: round-robin across active set
-                for _ in range(len(active)):
-                    next_pid = next(rotation)
-                    pb = provider_balances[next_pid]
+            # Try each sibling in balance-descending order — drain existing capital
+            for pid in siblings:
+                pb = provider_balances[pid]
 
-                    if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
-                        if template_bet.odds < pb.min_odds:
-                            continue
+                if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
+                    if template_bet.odds < pb.min_odds:
+                        continue
 
-                    if template_bet.is_bonus and template_bet.bonus_type == "freebet":
-                        placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
-                        batch.append(placed)
-                        assigned = True
-                        break
+                if template_bet.is_bonus and template_bet.bonus_type == "freebet":
+                    placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                    batch.append(placed)
+                    assigned = True
+                    break
 
-                    if pb.remaining >= template_bet.stake:
-                        placed = BatchBuilder._clone_bet_to_provider(template_bet, next_pid, pb)
-                        pb.allocated += placed.stake
-                        batch.append(placed)
-                        assigned = True
-                        break
-            else:
-                # Single provider: use best-funded (first in list)
-                for pid in active:
-                    pb = provider_balances[pid]
-
-                    if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
-                        if template_bet.odds < pb.min_odds:
-                            continue
-
-                    if template_bet.is_bonus and template_bet.bonus_type == "freebet":
-                        placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
-                        batch.append(placed)
-                        assigned = True
-                        break
-
-                    if pb.remaining >= template_bet.stake:
-                        placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
-                        pb.allocated += placed.stake
-                        batch.append(placed)
-                        assigned = True
-                        break
+                if pb.remaining >= template_bet.stake:
+                    placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                    pb.allocated += placed.stake
+                    batch.append(placed)
+                    assigned = True
+                    break
 
             if not assigned:
                 template_bet.skip_reason = f"insufficient balance in cluster {cluster}"
-                # Track missed stats on the best-funded active sibling (first in list)
-                # so capital plan targets the right provider for deposits
-                target_pid = active[0] if active else template_bet.provider_id
+                # Track missed stats on the best-funded sibling
+                target_pid = siblings[0] if siblings else template_bet.provider_id
                 target_pb = provider_balances.get(target_pid)
                 if target_pb:
                     target_pb.missed_bets += 1
@@ -929,6 +884,11 @@ class BatchBuilder:
                 "lifecycle": pb.lifecycle,
                 "missed_bets": pb.missed_bets,
                 "missed_ev": round(pb.missed_ev, 2),
+                "wagering_total": round(pb.wagering_total, 2),
+                "wagering_remaining": round(pb.wagering_remaining, 2),
+                "days_remaining": pb.days_remaining,
+                "trigger_mode": pb.trigger_mode,
+                "bonus_amount": round(pb.bonus_amount, 2),
             }
             # Flag excess balance (more allocated than initial — shouldn't happen)
             if pb.allocated > pb.initial_balance:
@@ -1075,245 +1035,131 @@ class BatchBuilder:
             })
 
         # --- Priority 2/3: Soft deposits ---
-        # Aggregate missed bets per cluster (siblings share opps).
-        # Avoid double-counting: round-robin tracks the same missed bet in both
-        # missed_by_provider[canonical] and active[0].missed_bets.  Use the
-        # missed_by_provider list as primary source; only fall back to
-        # pb.missed_bets when the cluster has no missed_by_provider data.
+        # Aggregate missed bets per cluster, then recommend a single deposit
+        # to the best-funded provider in that cluster (drain-first model).
         cluster_missed: dict[str, dict] = {}
-        cluster_has_bet_list: set[str] = set()  # clusters with real bet objects
 
         for pid in sorted(providers_with_shortfall):
             if pid in SHARP_PROVIDERS:
                 continue
             pb = provider_balances.get(pid)
+            m_bets = missed_by_provider.get(pid, [])
+
             if pb is None:
-                # Provider has missed bets but no balance — find a funded sibling
-                # as source_pid so the cluster still gets a deposit recommendation.
                 cluster = _provider_to_cluster(pid)
-                m_bets = missed_by_provider.get(pid, [])
                 if not m_bets:
                     continue
-                missed_count = len(m_bets)
-                missed_stake = sum(b.stake for b in m_bets)
-                missed_ev = sum(b.expected_profit for b in m_bets)
-                cluster_has_bet_list.add(cluster)
-                funded_source = next(
-                    (spid for spid, spb in provider_balances.items()
-                     if (spb.cluster or spid) == cluster),
-                    pid,
-                )
-                if cluster not in cluster_missed:
-                    cluster_missed[cluster] = {"count": 0, "stake": 0, "ev": 0, "source_pid": funded_source}
-                cluster_missed[cluster]["count"] += missed_count
-                cluster_missed[cluster]["stake"] += missed_stake
-                cluster_missed[cluster]["ev"] += missed_ev
-                continue
-
-            m_bets = missed_by_provider.get(pid, [])
-            cluster = pb.cluster or pid
-
-            if m_bets:
-                missed_count = len(m_bets)
-                missed_stake = sum(b.stake for b in m_bets)
-                missed_ev = sum(b.expected_profit for b in m_bets)
-                cluster_has_bet_list.add(cluster)
-            elif cluster in cluster_has_bet_list:
-                # Already counted via missed_by_provider for this cluster
-                continue
             else:
-                missed_count = pb.missed_bets
-                missed_stake = 0
-                missed_ev = pb.missed_ev
+                cluster = pb.cluster or pid
+
+            missed_count = len(m_bets) if m_bets else (pb.missed_bets if pb else 0)
+            missed_stake = sum(b.stake for b in m_bets) if m_bets else 0
+            missed_ev = sum(b.expected_profit for b in m_bets) if m_bets else (pb.missed_ev if pb else 0)
             if missed_count == 0:
                 continue
 
             if cluster not in cluster_missed:
-                cluster_missed[cluster] = {"count": 0, "stake": 0, "ev": 0, "source_pid": pid}
-            cluster_missed[cluster]["count"] += missed_count
-            cluster_missed[cluster]["stake"] += missed_stake
-            cluster_missed[cluster]["ev"] += missed_ev
+                cluster_missed[cluster] = {"count": 0, "stake": 0, "ev": 0}
+            cm = cluster_missed[cluster]
+            # Avoid double-counting: only add if this cluster hasn't seen these bets
+            cm["count"] = max(cm["count"], missed_count)
+            cm["stake"] = max(cm["stake"], missed_stake)
+            cm["ev"] = max(cm["ev"], missed_ev)
 
         for cluster, info in cluster_missed.items():
-            missed_count = info["count"]
             missed_stake = info["stake"]
             missed_ev = info["ev"]
-            source_pid = info["source_pid"]
+            missed_count = info["count"]
+            if missed_stake <= 0:
+                continue
+
             stats = cluster_opp_stats.get(cluster, {})
 
-            funded_in_cluster = [
-                pid for pid, pb in provider_balances.items()
-                if (pb.cluster or pid) == cluster and pb.lifecycle not in ("dormant", "available")
-            ]
+            # Find the best-funded provider in this cluster to deposit into
+            best_pid = None
+            best_bal = -1
+            for pid, pb in provider_balances.items():
+                if (pb.cluster or pid) != cluster:
+                    continue
+                if pb.lifecycle in ("dormant", "available"):
+                    continue
+                if pb.remaining > best_bal:
+                    best_bal = pb.remaining
+                    best_pid = pid
 
-            # Skip if cluster already has enough capital to cover nearly all bets.
-            # The missed bet is marginal — a rebuild after other deposits will likely
-            # re-order allocation so it fits within existing balance.
-            cluster_balance = sum(
-                pb.initial_balance for pb in provider_balances.values()
-                if (pb.cluster or pb.provider_id) == cluster
-            )
-            cluster_placed_stake = sum(
-                pb.allocated for pb in provider_balances.values()
-                if (pb.cluster or pb.provider_id) == cluster
-            )
-            total_needed = cluster_placed_stake + missed_stake
-            if total_needed > 0 and cluster_balance >= total_needed * 0.95:
-                continue  # existing balance covers ≥95% — no deposit needed
+            if best_pid is None:
+                # No funded provider — pick first sibling from cluster
+                all_siblings = PLATFORM_GROUPS.get(cluster, {}).get("members", [cluster])
+                best_pid = all_siblings[0] if all_siblings else cluster
 
-            providers_needed = max(1, math.ceil(missed_count / BatchBuilder.BETS_PER_PROVIDER))
-
-            all_siblings = PLATFORM_GROUPS.get(cluster, {}).get("members", [cluster])
-            funded_pids = {pid for pid, pb in provider_balances.items() if (pb.cluster or pid) == cluster}
-            unfunded_siblings = [s for s in all_siblings if s not in funded_pids]
+            target_pb = provider_balances.get(best_pid)
+            current_bal = target_pb.initial_balance if target_pb else 0
 
             # Bonus wagering → priority 2, otherwise → priority 3
-            funded_pb = provider_balances.get(source_pid)
-            has_bonus = funded_pb and funded_pb.wagering_remaining > 0
+            has_bonus = target_pb and target_pb.wagering_remaining > 0
             if has_bonus:
                 effective_wager = avg_daily_wager if avg_daily_wager > 0 else 1000
-                days_needed = funded_pb.wagering_remaining / effective_wager
-                if funded_pb.days_remaining is not None and days_needed > funded_pb.days_remaining:
-                    continue  # Infeasible wagering
+                days_needed = target_pb.wagering_remaining / effective_wager
+                if target_pb.days_remaining is not None and days_needed > target_pb.days_remaining:
+                    continue
                 priority = 2
                 label = "bonus_deposit"
             else:
                 priority = 3
                 label = "soft_deposit"
 
-            # Use unique opps for display (missed_count can inflate via multi-market)
-            display_unlocks = min(missed_count, stats.get("unique_opps", missed_count))
+            actions.append({
+                "type": "deposit",
+                "provider_id": best_pid,
+                "cluster": cluster,
+                "amount": round(missed_stake, 2),
+                "target_balance": round(current_bal + missed_stake, 2),
+                "unlocks": missed_count,
+                "avg_edge": stats.get("avg_edge", 0),
+                "expected_ev": round(missed_ev, 2),
+                "currency": "SEK",
+                "priority": priority,
+                "priority_label": label,
+            })
 
-            if providers_needed <= 1:
-                source_bal = provider_balances.get(source_pid)
-                current_bal = source_bal.initial_balance if source_bal else 0
-                dep_amount = round(missed_stake, 2)
-                actions.append({
-                    "type": "deposit",
-                    "provider_id": source_pid,
-                    "cluster": cluster,
-                    "amount": dep_amount,
-                    "target_balance": round(current_bal + dep_amount, 2),
-                    "unlocks": display_unlocks,
-                    "avg_edge": stats.get("avg_edge", 0),
-                    "expected_ev": round(missed_ev, 2),
-                    "currency": "SEK",
-                    "priority": priority,
-                    "priority_label": label,
-                })
-            else:
-                # Spread across siblings: funded + unfunded
-                targets = funded_in_cluster[:] + unfunded_siblings
-                targets = targets[:providers_needed]
-                if not targets:
-                    targets = [source_pid]
-
-                # Total stake needed across the cluster (placed + missed)
-                total_cluster_stake = cluster_placed_stake + missed_stake
-                per_provider_need = total_cluster_stake / len(targets)
-                per_provider_ev = round(missed_ev / len(targets), 2)
-                per_provider_unlocks = math.ceil(display_unlocks / len(targets))
-
-                for target_pid in targets:
-                    is_new = target_pid not in funded_pids
-                    target_pb = provider_balances.get(target_pid)
-                    current_bal = target_pb.initial_balance if target_pb else 0
-                    shortfall = per_provider_need - current_bal
-                    if shortfall < 10:
-                        continue  # Already has enough balance for its share
-                    actions.append({
-                        "type": "deposit",
-                        "provider_id": target_pid,
-                        "cluster": cluster,
-                        "amount": round(shortfall, 2),
-                        "target_balance": round(per_provider_need, 2),
-                        "unlocks": per_provider_unlocks,
-                        "avg_edge": stats.get("avg_edge", 0),
-                        "expected_ev": per_provider_ev,
-                        "currency": "SEK",
-                        "priority": priority,
-                        "priority_label": f"{label}_new" if is_new else label,
-                    })
-
-        # --- Priority 2 (continued): Every wagering provider needs funding ---
-        # Ensure any provider with active bonus wagering and low balance gets
-        # a deposit recommendation, even if the cluster_missed path missed it.
-        # Cluster-aware: aggregate per-cluster first, then spread across siblings.
+        # --- Priority 2 (continued): wagering providers with low balance ---
         already_recommended = {a["provider_id"] for a in actions if a["type"] == "deposit"}
-        # Also track which clusters already have recommendations
-        already_recommended_clusters: set[str] = set()
+        already_recommended_clusters = set()
         for a in actions:
             if a["type"] == "deposit":
                 apb = provider_balances.get(a["provider_id"])
                 if apb:
                     already_recommended_clusters.add(apb.cluster or a["provider_id"])
 
-        bonus_clusters: dict[str, list[str]] = {}  # cluster -> [provider_ids needing funding]
         for pid, pb in provider_balances.items():
             if pid in SHARP_PROVIDERS or pid in already_recommended:
                 continue
             if pb.wagering_remaining <= 0:
                 continue
-            effective_wager = avg_daily_wager if avg_daily_wager > 0 else 1000
-            days_needed = pb.wagering_remaining / effective_wager
-            if pb.days_remaining is not None and days_needed > pb.days_remaining:
-                continue  # Infeasible
-            # Needs deposit if balance can't cover even one session
-            if pb.remaining > effective_wager:
-                continue
             cluster = pb.cluster or pid
             if cluster in already_recommended_clusters:
                 continue
-            bonus_clusters.setdefault(cluster, []).append(pid)
-
-        for cluster, pids in bonus_clusters.items():
-            stats = cluster_opp_stats.get(cluster, {})
-            unique_opps = stats.get("unique_opps", 0)
-            total_cluster_stake = stats.get("total_stake", 0)
-            all_siblings = PLATFORM_GROUPS.get(cluster, {}).get("members", [cluster])
-
-            # Skip if existing balance already covers the bets
-            cluster_balance = sum(
-                pb.initial_balance for pb in provider_balances.values()
-                if (pb.cluster or pb.provider_id) == cluster
-            )
-            if cluster_balance >= total_cluster_stake * 0.95:
-                continue
-
-            # How many siblings should we spread across?
-            providers_needed = max(1, math.ceil(unique_opps / BatchBuilder.BETS_PER_PROVIDER))
-            # Include current wagering providers + recruit unfunded siblings
-            funded_pids_in_cluster = {p for p, pb in provider_balances.items()
-                                      if (pb.cluster or p) == cluster}
-            unfunded_siblings = [s for s in all_siblings if s not in funded_pids_in_cluster]
-            targets = pids[:] + [s for s in unfunded_siblings if s not in pids]
-            targets = targets[:providers_needed]
-            if not targets:
-                targets = pids[:1]
-
-            per_provider_opps = math.ceil(unique_opps / len(targets))
             effective_wager = avg_daily_wager if avg_daily_wager > 0 else 1000
-            per_provider_ev = round(stats.get("total_ev", 0) / len(targets), 2)
-
-            for target_pid in targets:
-                tpb = provider_balances.get(target_pid)
-                remaining = tpb.remaining if tpb else 0
-                current_bal = tpb.initial_balance if tpb else 0
-                amount = round(max(effective_wager - remaining, 100), -2)
-                is_new = target_pid not in funded_pids_in_cluster
-                actions.append({
-                    "type": "deposit",
-                    "provider_id": target_pid,
-                    "cluster": cluster,
-                    "amount": amount,
-                    "target_balance": round(current_bal + amount, 2),
-                    "unlocks": per_provider_opps,
-                    "avg_edge": stats.get("avg_edge", 0),
-                    "expected_ev": per_provider_ev,
-                    "currency": "SEK",
-                    "priority": 2,
-                    "priority_label": f"bonus_deposit_new" if is_new else "bonus_deposit",
-                })
+            days_needed = pb.wagering_remaining / effective_wager
+            if pb.days_remaining is not None and days_needed > pb.days_remaining:
+                continue
+            if pb.remaining > effective_wager:
+                continue
+            amount = round(max(effective_wager - pb.remaining, 100), -2)
+            actions.append({
+                "type": "deposit",
+                "provider_id": pid,
+                "cluster": cluster,
+                "amount": amount,
+                "target_balance": round(pb.initial_balance + amount, 2),
+                "unlocks": 0,
+                "avg_edge": 0,
+                "expected_ev": 0,
+                "currency": "SEK",
+                "priority": 2,
+                "priority_label": "bonus_deposit",
+            })
+            already_recommended_clusters.add(cluster)
 
         # --- Priority 4: Withdraw idle balance ---
         for pid, pb in provider_balances.items():

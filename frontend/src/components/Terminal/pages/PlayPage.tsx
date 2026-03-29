@@ -18,7 +18,7 @@ type Step = 'settle' | 'batch' | 'capital' | 'execute';
 const STEPS: { id: Step; label: string }[] = [
   { id: 'settle', label: 'Settle' },
   { id: 'batch', label: 'Batch' },
-  { id: 'capital', label: 'Capital' },
+  { id: 'capital', label: 'Capital Allocation' },
   { id: 'execute', label: 'Fire' },
 ];
 
@@ -56,8 +56,8 @@ export function PlayPage() {
   } = useQuery<BatchResult>({
     queryKey: ['play-batch', excludedBets],
     queryFn: () => api.getPlayBatch(excludedBets.length > 0 ? excludedBets : undefined),
-    staleTime: 60_000,
-    refetchInterval: batchLocked ? false : 120_000,
+    staleTime: 5_000,
+    refetchInterval: batchLocked ? false : 10_000,
     enabled: step !== null && step !== 'settle',
   });
 
@@ -195,6 +195,7 @@ export function PlayPage() {
             <CapitalPlanPanel
               capitalPlan={batchData.capital_plan}
               balanceStatus={batchData.balance_status}
+              batch={batchData.batch}
               onConfirm={handleConfirmCapital}
               onSkip={handleSkipCapital}
               isLoading={confirmCapital.isPending}
