@@ -224,6 +224,30 @@ export interface PriceStructure {
   swing_low: number | null;
 }
 
+/** Individual swing point from fractal pivot detection */
+export interface SwingLevel {
+  price: number;
+  timestamp: number;
+  type: 'swing_high' | 'swing_low';
+  timeframe: 'daily' | 'weekly' | 'monthly';
+}
+
+/** Per-timeframe swing analysis */
+export interface TimeframeSwings {
+  timeframe: string;
+  structure: 'uptrend' | 'downtrend' | 'ranging';
+  swing_highs: SwingLevel[];
+  swing_lows: SwingLevel[];
+}
+
+/** Multi-timeframe swing structure from compute_multi_tf_swings() */
+export interface SwingStructure {
+  daily: TimeframeSwings;
+  weekly: TimeframeSwings;
+  monthly: TimeframeSwings;
+  trend_alignment: number;
+}
+
 /** Multi-timeframe volume profile data */
 export interface VPLevel {
   poc: number;
@@ -276,6 +300,7 @@ export interface ExpandedSession {
     es_nq_ratio_change?: number | null;
   };
   structure: PriceStructure;
+  swing_structure?: SwingStructure;
   profiles: ProfilesData;
   levels: StructuralLevel[];
   price_position: PricePosition;
@@ -353,6 +378,13 @@ export interface SessionLevelDay {
   ny_end: number;
   day_start: number;
   day_end: number;
+  // Swing levels (most recent confirmed pivot per timeframe)
+  daily_swing_high: number | null;
+  daily_swing_low: number | null;
+  weekly_swing_high: number | null;
+  weekly_swing_low: number | null;
+  monthly_swing_high: number | null;
+  monthly_swing_low: number | null;
 }
 
 export interface SessionLevelsResponse {
@@ -538,7 +570,7 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 139
+  inputs: number[];           // 154
   activations: {
     layer1: number[];         // 256
     layer2: number[];         // 256
