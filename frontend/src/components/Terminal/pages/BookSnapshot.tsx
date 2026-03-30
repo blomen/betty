@@ -147,7 +147,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
       </div>
 
       {/* TPO Profiles (per-session toggles + stats) */}
-      {sessionTPO && (
+      {sessionTPO?.sessions && (
         <div className="px-2 py-1 border-b border-border last:border-b-0">
           <div className="flex gap-2 mb-1">
             <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">TPO</button>
