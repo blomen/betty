@@ -21,6 +21,7 @@ from .agent.network import DQNetwork
 from .config import Action, TICK_SIZE, STOP_TICKS
 from .data.normalization import RunningNormalizer
 from .features.observation import build_observation, OBSERVATION_DIM
+from .zone_builder import Zone
 
 log = logging.getLogger(__name__)
 
@@ -313,6 +314,178 @@ class SessionManager:
                                         reason=f"level_{self.position.levels_captured}_captured")
 
             # Model agrees but no stop improvement — hold
+            return self._signal("hold", current_price,
+                                q_values=[q_cont, q_rev],
+                                q_spread=q_spread, confidence=confidence,
+                                reason="hold_position")
+
+    def on_zone_entry(self, state: dict, current_price: float) -> dict:
+        """Process a zone entry event — like on_level_touch but with zone-boundary stops.
+
+        If state contains a "zone" key (a Zone dataclass), the stop is computed
+        from the zone boundary instead of the center price:
+          LONG  → stop = zone.lower_bound - stop_ticks * TICK_SIZE
+          SHORT → stop = zone.upper_bound + stop_ticks * TICK_SIZE
+
+        Falls back to on_level_touch() when no zone is present.
+        """
+        zone: Zone | None = state.get("zone")
+        if zone is None:
+            return self.on_level_touch(state, current_price)
+
+        # Circuit breakers (same as on_level_touch)
+        if self.session.is_stopped_out:
+            return self._signal("skip", current_price, reason="daily_loss_limit")
+        if self.session.total_stop_hits >= self.MAX_CONSECUTIVE_LOSSES:
+            return self._signal("skip", current_price, reason="3_stops_halt")
+        if self.session.total_pnl_r >= self.PROFIT_CAP_R:
+            return self._signal("skip", current_price, reason="profit_cap_reached")
+
+        # IB no-trade zone
+        touch_epoch = state.get("touch_epoch", 0.0)
+        if self.session.session_rth_open_epoch > 0 and touch_epoch > 0:
+            minutes_since_open = (touch_epoch - self.session.session_rth_open_epoch) / 60.0
+            if 0 < minutes_since_open < self.IB_NO_TRADE_MINUTES:
+                return self._signal("skip", current_price, reason="ib_formation")
+
+        # Run inference
+        obs = build_observation(state)
+        if self._normalizer is not None:
+            obs = self._normalizer.normalize(obs)
+        obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+
+        with torch.no_grad():
+            q_values, stop_pred = self._network.forward_full(obs_tensor)
+
+        q_cont = float(q_values[0, Action.CONTINUATION.value])
+        q_rev = float(q_values[0, Action.REVERSAL.value])
+        q_spread = abs(q_cont - q_rev)
+        stop_ticks = float(stop_pred[0, 0])
+
+        # Determine model's preferred direction
+        approach = state.get("approach_direction", "up")
+        if q_cont > q_rev:
+            model_side = PositionSide.LONG if approach == "up" else PositionSide.SHORT
+        else:
+            model_side = PositionSide.SHORT if approach == "up" else PositionSide.LONG
+
+        # Compute stop price from zone BOUNDARY (not center)
+        if model_side == PositionSide.LONG:
+            stop_price = zone.lower_bound - stop_ticks * TICK_SIZE
+        else:
+            stop_price = zone.upper_bound + stop_ticks * TICK_SIZE
+
+        confidence = min(q_spread / 0.10, 1.0)
+        size = self._compute_size(confidence)
+
+        # Reversal cushion check
+        is_reversal = q_rev > q_cont
+        if is_reversal and self.session.total_pnl_r < self.REVERSAL_CUSHION_R:
+            return self._signal("skip", current_price,
+                                q_spread=q_spread, confidence=confidence,
+                                reason="reversal_no_cushion")
+
+        if self.INDEPENDENT_MODE:
+            if q_spread < self.MIN_Q_SPREAD:
+                return self._signal("skip", current_price,
+                                    q_spread=q_spread, confidence=confidence,
+                                    reason="low_confidence")
+
+            action = f"signal_{model_side.value}"
+            return self._signal(action, current_price,
+                                q_values=[q_cont, q_rev],
+                                q_spread=q_spread, confidence=confidence,
+                                stop_price=stop_price, size=size,
+                                zone_members=zone.member_count,
+                                reason="independent_signal")
+
+        if not self.position.is_open:
+            if q_spread < self.MIN_Q_SPREAD:
+                return self._signal("skip", current_price,
+                                    q_spread=q_spread, confidence=confidence,
+                                    reason="low_confidence")
+
+            action = f"enter_{model_side.value}"
+            import time
+            self.position = Position(
+                side=model_side,
+                entry_price=current_price,
+                stop_price=stop_price,
+                size=size,
+                entry_level=str(state.get("level_type", "")),
+                entry_q_spread=q_spread,
+                entry_timestamp=state.get("touch_epoch", time.time()),
+            )
+            return self._signal(action, current_price,
+                                q_values=[q_cont, q_rev],
+                                q_spread=q_spread, confidence=confidence,
+                                stop_price=stop_price, size=size,
+                                zone_members=zone.member_count,
+                                reason="new_entry")
+
+        else:
+            import time
+            current_epoch = state.get("touch_epoch", time.time())
+            hold_time = current_epoch - self.position.entry_timestamp
+
+            flip_ok = (
+                model_side != self.position.side
+                and q_spread >= self.MIN_Q_SPREAD
+                and q_spread >= self.position.entry_q_spread * self.FLIP_SPREAD_MULT
+                and hold_time >= self.MIN_HOLD_SECONDS
+            )
+
+            if flip_ok:
+                pnl = self._close_position(current_price, "flip")
+                action = f"flip_{model_side.value}"
+                self.position = Position(
+                    side=model_side,
+                    entry_price=current_price,
+                    stop_price=stop_price,
+                    size=size,
+                    entry_level=str(state.get("level_type", "")),
+                    entry_q_spread=q_spread,
+                    entry_timestamp=current_epoch,
+                )
+                return self._signal(action, current_price,
+                                    q_values=[q_cont, q_rev],
+                                    q_spread=q_spread, confidence=confidence,
+                                    stop_price=stop_price, size=size,
+                                    closed_pnl_r=pnl,
+                                    zone_members=zone.member_count,
+                                    reason="direction_flip")
+
+            elif model_side != self.position.side:
+                if self.position.side == PositionSide.LONG:
+                    be_price = self.position.entry_price + 1 * TICK_SIZE
+                    if be_price > self.position.stop_price:
+                        self.position.stop_price = be_price
+                        return self._signal("move_to_breakeven", current_price,
+                                            q_values=[q_cont, q_rev],
+                                            q_spread=q_spread, confidence=confidence,
+                                            stop_price=be_price,
+                                            reason="bos_no_conviction_breakeven")
+                else:
+                    be_price = self.position.entry_price - 1 * TICK_SIZE
+                    if be_price < self.position.stop_price:
+                        self.position.stop_price = be_price
+                        return self._signal("move_to_breakeven", current_price,
+                                            q_values=[q_cont, q_rev],
+                                            q_spread=q_spread, confidence=confidence,
+                                            stop_price=be_price,
+                                            reason="bos_no_conviction_breakeven")
+
+            if model_side == self.position.side:
+                new_stop = self._trail_stop(current_price, stop_price)
+                if new_stop != self.position.stop_price:
+                    self.position.stop_price = new_stop
+                    self.position.levels_captured += 1
+                    return self._signal("trail_stop", current_price,
+                                        q_values=[q_cont, q_rev],
+                                        q_spread=q_spread, confidence=confidence,
+                                        stop_price=new_stop,
+                                        reason=f"level_{self.position.levels_captured}_captured")
+
             return self._signal("hold", current_price,
                                 q_values=[q_cont, q_rev],
                                 q_spread=q_spread, confidence=confidence,
