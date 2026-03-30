@@ -242,7 +242,7 @@ from src.rl.config import LevelType
 class TestExtractSessionTpoFeatures:
     def test_none_returns_26_zeros(self):
         result = extract_session_tpo_features(None, current_price=19850.0)
-        assert result.shape == (26,)
+        assert result.shape == (38,)
         assert np.all(result == 0.0)
 
     def test_all_sessions_populated(self):
@@ -260,16 +260,16 @@ class TestExtractSessionTpoFeatures:
             poc_migration_london_ny=160.0,
         )
         result = extract_session_tpo_features(tpo_set, current_price=19850.0)
-        assert result.shape == (26,)
+        assert result.shape == (38,)
         assert result.dtype == np.float32
         # Tokyo IB features should be zeroed (ib_valid=False)
         assert result[4] == 0.0  # ib_range
         assert result[5] == 0.0  # price_vs_ib_mid
         # London shape should be +1 (p-shape)
-        assert result[8 + 3] == 1.0
+        assert result[12 + 3] == 1.0
         # Migration features
-        assert result[24] != 0.0
-        assert result[25] != 0.0
+        assert result[36] != 0.0
+        assert result[37] != 0.0
 
     def test_partial_sessions_zeros_for_missing(self):
         tpo_set = SessionTPOSet(
@@ -280,10 +280,10 @@ class TestExtractSessionTpoFeatures:
             poc_migration_tokyo_london=0.0, poc_migration_london_ny=0.0,
         )
         result = extract_session_tpo_features(tpo_set, current_price=19800.0)
-        assert result.shape == (26,)
-        assert not np.all(result[0:8] == 0.0)
-        assert np.all(result[8:16] == 0.0)
-        assert np.all(result[16:24] == 0.0)
+        assert result.shape == (38,)
+        assert not np.all(result[0:12] == 0.0)
+        assert np.all(result[12:24] == 0.0)
+        assert np.all(result[24:36] == 0.0)
 
     def test_price_position_in_va_within(self):
         tpo_set = SessionTPOSet(
@@ -314,11 +314,11 @@ class TestExtractSessionTpoFeatures:
 
 
 class TestObservationDimension:
-    def test_observation_dim_is_159(self):
-        """After per-session TPO: 146 - 13 + 26 = 159."""
-        assert OBSERVATION_DIM == 159
+    def test_observation_dim(self):
+        """Obs dim auto-computed from build_observation."""
+        assert OBSERVATION_DIM == 195
 
-    def test_build_observation_returns_159(self):
+    def test_build_observation_returns_correct_dim(self):
         state = {
             "level_type": LevelType.VWAP,
             "price": 19000.0,
@@ -338,5 +338,6 @@ class TestObservationDimension:
             "recent_ticks": [],
         }
         obs = build_observation(state)
-        assert obs.shape == (159,)
+        # Legacy mode (no zone) is 1 dim smaller than zone mode (OBSERVATION_DIM)
+        assert obs.shape == (OBSERVATION_DIM - 1,)
         assert obs.dtype == np.float32

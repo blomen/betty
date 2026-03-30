@@ -238,6 +238,8 @@ export interface TimeframeSwings {
   structure: 'uptrend' | 'downtrend' | 'ranging';
   swing_highs: SwingLevel[];
   swing_lows: SwingLevel[];
+  prior_high: number | null;
+  prior_low: number | null;
 }
 
 /** Multi-timeframe swing structure from compute_multi_tf_swings() */
@@ -530,6 +532,7 @@ export interface SessionTPOData {
   lower_excess: number;
   session_high: number;
   session_low: number;
+  rotation_factor: number;
 }
 
 export interface SessionTPOResponse {

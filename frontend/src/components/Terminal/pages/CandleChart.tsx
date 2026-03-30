@@ -191,7 +191,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   const hiddenRef = useRef(hiddenLevels);
   hiddenRef.current = hiddenLevels;
 
-  // Session levels overlay data (per-day PDH/PDL, IB, Tokyo, London)
+  // Session levels overlay data (per-day IB, Tokyo, London, swing levels)
   const sessionLevelsRef = useRef<import('@/types/market').SessionLevelDay[]>([]);
   const [slLoaded, setSlLoaded] = useState(false);
 
@@ -354,34 +354,6 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           ctx.fillStyle = meta.color;
           ctx.textAlign = 'left';
           ctx.fillText(label, drawX1 + 3, y - 3);
-          ctx.restore();
-        }
-      }
-
-      // PDH/PDL from backend session levels — latest day only (reference for current session)
-      if (latestSL && latestSL.pdh != null && latestSL.pdl != null) {
-        for (const { key, price, label } of [
-          { key: 'pdh', price: latestSL.pdh, label: 'PDH' },
-          { key: 'pdl', price: latestSL.pdl, label: 'PDL' },
-        ]) {
-          if (slHidden?.has(key)) continue;
-          const y = pSeries.priceToCoordinate(price);
-          if (y === null) continue;
-
-          // Extend PDH/PDL across entire visible chart (they're reference levels)
-          ctx.save();
-          ctx.strokeStyle = '#FB923C';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([6, 3]);
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(rect.width, y);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.font = '9px monospace';
-          ctx.fillStyle = '#FB923C';
-          ctx.textAlign = 'left';
-          ctx.fillText(label, 3, y - 3);
           ctx.restore();
         }
       }
@@ -583,11 +555,17 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const prefixMap: Record<string, string> = { 'Tokyo': 'tky', 'London': 'ldn', 'New York': 'ny' };
         const prefix = prefixMap[box.name] || '';
 
-        const levels = [
+        const levels: Array<{ price: number; label: string; alpha: number; dash: number[]; key: string; color?: string }> = [
           { price: tpoSession.poc, label: `${prefix} tPOC`, alpha: 0.6, dash: [4, 3], key: `tpo_${prefix}_poc` },
           { price: tpoSession.vah, label: `${prefix} tVAH`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_vah` },
           { price: tpoSession.val, label: `${prefix} tVAL`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_val` },
         ];
+        if (tpoSession.ib_valid) {
+          levels.push(
+            { price: tpoSession.ib_high, label: `${prefix} IBH`, alpha: 0.5, dash: [3, 3], key: `tpo_${prefix}_ibh`, color: '#F59E0B' },
+            { price: tpoSession.ib_low, label: `${prefix} IBL`, alpha: 0.5, dash: [3, 3], key: `tpo_${prefix}_ibl`, color: '#F59E0B' },
+          );
+        }
 
         for (const lv of levels) {
           if (hidden?.has(lv.key)) continue;
@@ -601,8 +579,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           const drawX1 = Math.max(0, lx);
           const drawX2 = Math.min(rect.width, rx);
 
+          const lvColor = lv.color ?? levelColor;
           ctx.save();
-          ctx.strokeStyle = levelColor;
+          ctx.strokeStyle = lvColor;
           ctx.globalAlpha = lv.alpha;
           ctx.lineWidth = 1;
           ctx.setLineDash(lv.dash);
@@ -612,7 +591,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
-          ctx.fillStyle = levelColor;
+          ctx.fillStyle = lvColor;
           ctx.textAlign = 'left';
           ctx.fillText(lv.label, drawX1 + 3, y - 3);
           ctx.globalAlpha = 1.0;
@@ -980,7 +959,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     return () => { cancelled = true; };
   }, [session, hiddenLevels]);
 
-  // Static reference lines: IB, PDH/PDL, dPOC (these are flat — correct for structural levels)
+  // Static reference lines: IB, dPOC (these are flat — correct for structural levels)
   useEffect(() => {
     const series = priceSeriesRef.current;
     if (!series) return;

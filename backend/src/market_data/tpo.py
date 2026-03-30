@@ -385,6 +385,7 @@ class SessionTPO:
     session_low: float = 0.0
     opening_type: str = "OA"
     opening_direction: str = "neutral"
+    rotation_factor: int = 0
 
 
 @dataclass
@@ -431,6 +432,11 @@ def _build_session_tpo(
     opening_type, opening_direction = classify_opening_type(bars_30m)
     upper_excess, lower_excess = detect_excess(profile)
 
+    # Per-session rotation factor
+    highs = [b["high"] for b in bars_30m]
+    lows = [b["low"] for b in bars_30m]
+    rf = _metrics_rf(highs, lows)
+
     # IB validity: check if first 2 bars touch enough price levels
     ib_bars = bars_30m[:2]
     ib_prices: set[float] = set()
@@ -462,6 +468,7 @@ def _build_session_tpo(
         session_low=min(b["low"] for b in bars_30m),
         opening_type=opening_type,
         opening_direction=opening_direction,
+        rotation_factor=rf,
     )
 
 

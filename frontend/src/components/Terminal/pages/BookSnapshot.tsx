@@ -1,19 +1,21 @@
 import { useCallback } from 'react';
-import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile, SessionTPOResponse, SessionTPOData } from '@/types/market';
+import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile, SessionTPOResponse, SessionTPOData, TimeframeSwings } from '@/types/market';
 
 // Level groups: toggling a group toggles all its children
 const LEVEL_GROUPS: Record<string, string[]> = {
   vwap: ['vwap'],
   ib: ['ibh', 'ibl'],
-  pd: ['pdh', 'pdl'],
   tokyo: ['tokyo_h', 'tokyo_l'],
   london: ['london_h', 'london_l'],
   daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
   weekly_vp: ['w_poc', 'w_vah', 'w_val', 'vp_weekly'],
   monthly_vp: ['m_poc', 'm_vah', 'm_val', 'vp_monthly'],
-  tpo_tokyo:  ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val'],
-  tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val'],
-  tpo_ny:     ['tpo_ny_letters',  'tpo_ny_poc',  'tpo_ny_vah',  'tpo_ny_val'],
+  tpo_tokyo:  ['tpo_tky_letters', 'tpo_tky_poc', 'tpo_tky_vah', 'tpo_tky_val', 'tpo_tky_ibh', 'tpo_tky_ibl'],
+  tpo_london: ['tpo_ldn_letters', 'tpo_ldn_poc', 'tpo_ldn_vah', 'tpo_ldn_val', 'tpo_ldn_ibh', 'tpo_ldn_ibl'],
+  tpo_ny:     ['tpo_ny_letters',  'tpo_ny_poc',  'tpo_ny_vah',  'tpo_ny_val',  'tpo_ny_ibh',  'tpo_ny_ibl'],
+  daily_swing:   ['daily_swing_high', 'daily_swing_low'],
+  weekly_swing:  ['weekly_swing_high', 'weekly_swing_low'],
+  monthly_swing: ['monthly_swing_high', 'monthly_swing_low'],
 };
 
 interface Props {
@@ -30,6 +32,8 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
   const s = session?.session;
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
+  const swingStructure = session?.swing_structure;
+  const structure = session?.structure;
 
   const toggleGroup = useCallback((group: string) => {
     const keys = LEVEL_GROUPS[group];
@@ -107,12 +111,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
 
       {/* Session Levels */}
       <div className="px-2 py-1 border-b border-border">
-        <button onClick={() => toggleCluster(['pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
-
-        <Group label="PD" hidden={isGroupHidden('pd')} onToggle={() => toggleGroup('pd')}>
-          {s?.pdh != null && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" />}
-          {s?.pdl != null && <Row label="PDL" value={s.pdl.toFixed(2)} color="text-orange-400" />}
-        </Group>
+        <button onClick={() => toggleCluster(['tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
 
         <Group label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
           {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-300" />}
@@ -146,54 +145,140 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
         )}
       </div>
 
-      {/* TPO Profiles (per-session toggles + stats) */}
+      {/* TPO Profiles (per-session) */}
       {sessionTPO?.sessions && (
         <div className="px-2 py-1 border-b border-border last:border-b-0">
-          <div className="flex gap-2 mb-1">
-            <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer">TPO</button>
-            <button onClick={() => toggleGroup('tpo_tokyo')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_tokyo') ? 'text-muted line-through' : 'text-cyan-400'}`}>TKY</button>
-            <button onClick={() => toggleGroup('tpo_london')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_london') ? 'text-muted line-through' : 'text-emerald-400'}`}>LDN</button>
-            <button onClick={() => toggleGroup('tpo_ny')} className={`text-[10px] cursor-pointer transition-colors ${isGroupHidden('tpo_ny') ? 'text-muted line-through' : 'text-red-400'}`}>NY</button>
+          <button onClick={() => toggleCluster(['tpo_tokyo', 'tpo_london', 'tpo_ny'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">TPO</button>
+
+          <div className="space-y-2">
+            <SessionTPOCard label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-400" borderColor="border-cyan-900/50" hidden={isGroupHidden('tpo_tokyo')} onToggle={() => toggleGroup('tpo_tokyo')} />
+            <SessionTPOCard label="LDN" data={sessionTPO.sessions.london} color="text-emerald-400" borderColor="border-emerald-900/50" hidden={isGroupHidden('tpo_london')} onToggle={() => toggleGroup('tpo_london')} />
+            <SessionTPOCard label="NY" data={sessionTPO.sessions.ny} color="text-red-400" borderColor="border-red-900/50" hidden={isGroupHidden('tpo_ny')} onToggle={() => toggleGroup('tpo_ny')} />
           </div>
 
-          <div className="space-y-1">
-            <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-600" levelColor="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
-            <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-600" levelColor="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
-            <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-600" levelColor="text-red-400" hidden={isGroupHidden('tpo_ny')} showIBLevels />
-          </div>
+          {/* POC Migration */}
+          {(sessionTPO.poc_migration_tokyo_london !== 0 || sessionTPO.poc_migration_london_ny !== 0) && (
+            <div className="mt-1.5 pt-1 border-t border-zinc-800/50 grid grid-cols-2 gap-x-2 text-[10px]">
+              <div className="flex justify-between">
+                <span className="text-muted2">TKY→LDN</span>
+                <PocMigration ticks={sessionTPO.poc_migration_tokyo_london} />
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted2">LDN→NY</span>
+                <PocMigration ticks={sessionTPO.poc_migration_london_ny} />
+              </div>
+            </div>
+          )}
         </div>
       )}
+
+      {/* DOW / Market Structure */}
+      <div className="px-2 py-1 border-b border-border last:border-b-0">
+        <button onClick={() => toggleCluster(['daily_swing', 'weekly_swing', 'monthly_swing'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Structure</button>
+
+        {/* Multi-TF Swing Structure */}
+        {swingStructure && (
+          <>
+            <SwingTFRow label="D" tf={swingStructure.daily} hidden={isGroupHidden('daily_swing')} onToggle={() => toggleGroup('daily_swing')} />
+            <SwingTFRow label="W" tf={swingStructure.weekly} hidden={isGroupHidden('weekly_swing')} onToggle={() => toggleGroup('weekly_swing')} />
+            <SwingTFRow label="M" tf={swingStructure.monthly} hidden={isGroupHidden('monthly_swing')} onToggle={() => toggleGroup('monthly_swing')} />
+
+            {/* Trend Alignment */}
+            <div className="flex items-center justify-between mt-1 pt-1 border-t border-zinc-800/50">
+              <span className="text-[10px] text-muted2">Alignment</span>
+              <span className={`text-[11px] font-bold ${
+                swingStructure.trend_alignment > 0.3 ? 'text-emerald-400' :
+                swingStructure.trend_alignment < -0.3 ? 'text-red-400' : 'text-amber-400'
+              }`}>
+                {swingStructure.trend_alignment > 0 ? '+' : ''}{swingStructure.trend_alignment.toFixed(2)}
+                {swingStructure.trend_alignment > 0.3 ? ' ↑' : swingStructure.trend_alignment < -0.3 ? ' ↓' : ' ↔'}
+              </span>
+            </div>
+          </>
+        )}
+
+        {/* 1m live structure */}
+        {structure && (
+          <div className="flex items-center justify-between mt-1 pt-1 border-t border-zinc-800/50">
+            <span className="text-[10px] text-muted2">Live (1m)</span>
+            <span className={`text-[10px] font-bold ${trendColor(structure.structure)}`}>
+              {structure.structure === 'uptrend' ? '▲ UP' : structure.structure === 'downtrend' ? '▼ DN' : '◆ RANGE'}
+            </span>
+          </div>
+        )}
+      </div>
 
     </div>
   );
 }
 
-/** Compact per-session TPO info block */
-function SessionTPOBlock({ label, data, color, levelColor, hidden, showIBLevels }: { label: string; data: SessionTPOData | null; color: string; levelColor: string; hidden: boolean; showIBLevels?: boolean }) {
-  if (!data || hidden) return null;
+/** Per-session TPO card with structured rows */
+function SessionTPOCard({ label, data, color, borderColor, hidden, onToggle }: {
+  label: string; data: SessionTPOData | null; color: string; borderColor: string; hidden: boolean; onToggle: () => void;
+}) {
+  if (!data) return null;
+  if (hidden) return (
+    <button onClick={onToggle} className={`text-[10px] ${color} opacity-40 line-through cursor-pointer hover:opacity-70 transition-opacity`}>{label}</button>
+  );
   const arrow = data.opening_direction === 'up' ? '↑' : data.opening_direction === 'down' ? '↓' : '↔';
   const ibTicks = data.ib_valid ? ((data.ib_high - data.ib_low) / 0.25).toFixed(0) : '—';
+  const rf = data.rotation_factor ?? 0;
+  const rfColor = rf > 4 ? 'text-emerald-400' : rf < -4 ? 'text-red-400' : 'text-muted2';
+  const shapeColor = data.shape === 'p-shape' ? 'text-emerald-400'
+    : data.shape === 'b-shape' ? 'text-red-400'
+    : data.shape === 'B-shape' ? 'text-amber-400'
+    : data.shape === 'd-shape' ? 'text-purple-400' : 'text-muted2';
+
   return (
-    <div className="text-[10px] leading-tight">
-      <span className={`${color} font-bold`}>{label}</span>
-      <span className="text-muted2 ml-1">
-        {data.shape} {data.opening_type}{arrow}
-      </span>
-      <span className="text-muted2 ml-1">IB:{ibTicks}</span>
-      {showIBLevels && data.ib_valid && (
-        <div className="text-muted2 ml-2">
-          <span className="text-amber-400">NYIBH</span> {data.ib_high.toFixed(2)}
-          <span className="text-amber-400 ml-1">NYIBL</span> {data.ib_low.toFixed(2)}
-          <span className="text-muted ml-1">Range</span> {(data.ib_high - data.ib_low).toFixed(2)}
+    <div className={`border-l-2 ${borderColor} pl-1.5 text-[10px] leading-relaxed min-w-0`}>
+      {/* Header: session name + shape + opening + RF */}
+      <div className="flex items-center justify-between">
+        <button onClick={onToggle} className={`${color} font-bold cursor-pointer hover:opacity-70 transition-opacity`}>{label}</button>
+        <span className="flex items-center gap-1">
+          <span className={shapeColor}>{data.shape}</span>
+          <span className="text-muted2">{data.opening_type}{arrow}</span>
+          <span className={rfColor}>{rf > 0 ? '+' : ''}{rf}</span>
+        </span>
+      </div>
+      {/* Value Area — stacked rows */}
+      <div className="flex justify-between">
+        <span className="text-muted2">POC</span><span className={color}>{data.poc.toFixed(0)}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-muted2">VAH</span><span className="text-text">{data.vah.toFixed(0)}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-muted2">VAL</span><span className="text-text">{data.val.toFixed(0)}</span>
+      </div>
+      {/* IB row */}
+      <div className="flex justify-between">
+        <span className="text-muted2">IBH</span>
+        <span className="text-amber-400">{data.ib_valid ? data.ib_high.toFixed(0) : '—'}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-muted2">IBL</span>
+        <span className="text-amber-400">{data.ib_valid ? data.ib_low.toFixed(0) : '—'}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-muted2">IB Range</span>
+        <span className="text-muted2">{ibTicks}t</span>
+      </div>
+      {/* Anomalies */}
+      {(data.poor_high || data.poor_low || data.upper_excess > 0 || data.lower_excess > 0) && (
+        <div className="flex flex-wrap gap-x-2 text-muted">
+          {data.poor_high && <span className="text-red-400/70">poor high</span>}
+          {data.poor_low && <span className="text-emerald-400/70">poor low</span>}
+          {data.upper_excess > 0 && <span className="text-red-400/70">xs↑{data.upper_excess}</span>}
+          {data.lower_excess > 0 && <span className="text-emerald-400/70">xs↓{data.lower_excess}</span>}
         </div>
       )}
-      <div className="text-muted2 ml-2">
-        <span className={levelColor}>tPOC</span> {data.poc.toFixed(0)}
-        <span className={`${levelColor} ml-1`}>tVAH</span> {data.vah.toFixed(0)}
-        <span className={`${levelColor} ml-1`}>tVAL</span> {data.val.toFixed(0)}
-      </div>
     </div>
   );
+}
+
+function PocMigration({ ticks }: { ticks: number }) {
+  const color = ticks > 0 ? 'text-emerald-400' : ticks < 0 ? 'text-red-400' : 'text-muted2';
+  return <span className={color}>{ticks > 0 ? '+' : ''}{ticks.toFixed(0)}t</span>;
 }
 
 // --- UI building blocks ---
@@ -235,6 +320,43 @@ function VPRow({ vp, color }: { vp?: VPLevel | null; color: string }) {
       <span className="text-muted2">VAH <span className="text-text">{vp.vah.toFixed(0)}</span></span>
       <span className="text-muted2">POC <span className={color}>{vp.poc.toFixed(0)}</span></span>
       <span className="text-muted2">VAL <span className="text-text">{vp.val.toFixed(0)}</span></span>
+    </div>
+  );
+}
+
+function trendColor(trend: string): string {
+  if (trend === 'uptrend') return 'text-emerald-400';
+  if (trend === 'downtrend') return 'text-red-400';
+  return 'text-amber-400';
+}
+
+function trendIcon(trend: string): string {
+  if (trend === 'uptrend') return '▲';
+  if (trend === 'downtrend') return '▼';
+  return '◆';
+}
+
+function SwingTFRow({ label, tf, hidden, onToggle }: {
+  label: string;
+  tf: TimeframeSwings;
+  hidden: boolean;
+  onToggle: () => void;
+}) {
+  const latestHigh = tf.prior_high;
+  const latestLow = tf.prior_low;
+  return (
+    <div className={`mb-1 ${hidden ? 'opacity-40' : ''}`}>
+      <button onClick={onToggle} className="text-[10px] text-muted2 font-bold hover:text-text transition-colors cursor-pointer block">
+        {label} <span className={trendColor(tf.structure)}>{trendIcon(tf.structure)}</span>
+      </button>
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="text-muted2">SH</span>
+        <span className="text-text">{latestHigh?.toFixed(2) ?? '—'}</span>
+      </div>
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="text-muted2">SL</span>
+        <span className="text-text">{latestLow?.toFixed(2) ?? '—'}</span>
+      </div>
     </div>
   );
 }

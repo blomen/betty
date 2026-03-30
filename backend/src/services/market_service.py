@@ -72,6 +72,8 @@ def _serialize_swing_structure(swing) -> dict:
                  "type": s.type, "timeframe": s.timeframe}
                 for s in tf_swings.swing_lows
             ],
+            "prior_high": tf_swings.prior_high,
+            "prior_low": tf_swings.prior_low,
         }
     return {
         "daily": _tf(swing.daily),
@@ -366,6 +368,7 @@ class MarketService:
 
         from dataclasses import asdict as _asdict
         session_data["session_tpos"] = _asdict(session_tpo_set) if session_tpo_set else None
+        session_data["session_tpos_obj"] = session_tpo_set  # SessionTPOSet object for RL features
 
         try:
             self.store_tpo_session(tpo, symbol, target_date)
@@ -541,24 +544,22 @@ class MarketService:
             )
             if swing_struct is not None:
                 swing_structure_data = _serialize_swing_structure(swing_struct)
-                # Add swing levels to levels_list for LevelMonitor
+                # Add prior period H/L to levels_list for LevelMonitor
                 for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
-                    if tf_swings.swing_highs:
-                        sh = tf_swings.swing_highs[0]  # most recent
+                    if tf_swings.prior_high is not None:
                         levels_list.append({
                             "type": f"{tf_swings.timeframe}_swing_high",
-                            "price_low": sh.price,
-                            "price_high": sh.price,
+                            "price_low": tf_swings.prior_high,
+                            "price_high": tf_swings.prior_high,
                             "direction": "resistance",
                             "session": tf_swings.timeframe,
                             "is_filled": False,
                         })
-                    if tf_swings.swing_lows:
-                        sl = tf_swings.swing_lows[0]
+                    if tf_swings.prior_low is not None:
                         levels_list.append({
                             "type": f"{tf_swings.timeframe}_swing_low",
-                            "price_low": sl.price,
-                            "price_high": sl.price,
+                            "price_low": tf_swings.prior_low,
+                            "price_high": tf_swings.prior_low,
                             "direction": "support",
                             "session": tf_swings.timeframe,
                             "is_filled": False,
@@ -1480,12 +1481,12 @@ class MarketService:
                 "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
                 "day_start": _cet_epoch(d, 0, 0),
                 "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
-                "daily_swing_high": swing.daily.swing_highs[0].price if swing.daily.swing_highs else None,
-                "daily_swing_low": swing.daily.swing_lows[0].price if swing.daily.swing_lows else None,
-                "weekly_swing_high": swing.weekly.swing_highs[0].price if swing.weekly.swing_highs else None,
-                "weekly_swing_low": swing.weekly.swing_lows[0].price if swing.weekly.swing_lows else None,
-                "monthly_swing_high": swing.monthly.swing_highs[0].price if swing.monthly.swing_highs else None,
-                "monthly_swing_low": swing.monthly.swing_lows[0].price if swing.monthly.swing_lows else None,
+                "daily_swing_high": swing.daily.prior_high,
+                "daily_swing_low": swing.daily.prior_low,
+                "weekly_swing_high": swing.weekly.prior_high,
+                "weekly_swing_low": swing.weekly.prior_low,
+                "monthly_swing_high": swing.monthly.prior_high,
+                "monthly_swing_low": swing.monthly.prior_low,
             })
 
         result = {"days": result_days, "symbol": symbol}

@@ -8,7 +8,7 @@ Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (25 currently)
     orderflow                   21
     structure + session          32
-    tpo (per-session)            26
+    tpo (per-session)            38
     candle window                15
     zone features                 4
     zone confluence               5
@@ -18,13 +18,13 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       177
+    total                       189
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
     orderflow            21
     structure + session  32
-    tpo (per-session)    26
+    tpo (per-session)    38
     candle window        15
     confluence            8
     macro                 7
@@ -33,7 +33,7 @@ Legacy mode (state["level_type"] present, no zone):
     approach direction    1
     execution context     7
     ---
-    total               176
+    total               188
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def build_observation(state: dict) -> np.ndarray:
         swing_structure=swing_structure,
     )
 
-    # 4. TPO per-session (26)
+    # 4. TPO per-session (38)
     session_tpos = state.get("session_tpos")
     seg_tpo = extract_session_tpo_features(session_tpos, price)
 
@@ -186,7 +186,7 @@ def build_observation(state: dict) -> np.ndarray:
         seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
         seg_structure,    # 32
-        seg_tpo,          # 26
+        seg_tpo,          # 38
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
         seg_confluence,   # 5 (zone) or 8 (legacy)
