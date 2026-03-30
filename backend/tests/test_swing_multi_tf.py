@@ -170,3 +170,70 @@ def test_compute_multi_tf_swings_timeframe_labels():
         assert sh.timeframe == "daily"
     for sl in result.daily.swing_lows:
         assert sl.timeframe == "daily"
+
+
+# ---------------------------------------------------------------------------
+# Task 5: extract_structure_features with swing data
+# ---------------------------------------------------------------------------
+
+import numpy as np
+from src.rl.features.structure_features import extract_structure_features
+
+
+def _make_test_swing_structure() -> SwingStructure:
+    return SwingStructure(
+        daily=TimeframeSwings(
+            timeframe="daily", structure="uptrend",
+            swing_highs=[
+                SwingLevel(price=19500, timestamp=1000, type="swing_high", timeframe="daily"),
+                SwingLevel(price=19300, timestamp=800, type="swing_high", timeframe="daily"),
+            ],
+            swing_lows=[
+                SwingLevel(price=19200, timestamp=900, type="swing_low", timeframe="daily"),
+                SwingLevel(price=19100, timestamp=700, type="swing_low", timeframe="daily"),
+            ],
+        ),
+        weekly=TimeframeSwings(
+            timeframe="weekly", structure="uptrend",
+            swing_highs=[SwingLevel(price=19600, timestamp=500, type="swing_high", timeframe="weekly")],
+            swing_lows=[SwingLevel(price=18900, timestamp=400, type="swing_low", timeframe="weekly")],
+        ),
+        monthly=TimeframeSwings(
+            timeframe="monthly", structure="ranging",
+            swing_highs=[], swing_lows=[],
+        ),
+        trend_alignment=0.67,
+    )
+
+
+def test_structure_features_with_swings():
+    """Structure features should be 32 elements with swing data."""
+    swing = _make_test_swing_structure()
+    feats = extract_structure_features(
+        price=19400.0,
+        vwap_bands=None,
+        volume_profile=None,
+        session_levels=None,
+        session_context=None,
+        swing_structure=swing,
+    )
+    assert feats.shape == (32,)
+    assert feats[23] == 1.0   # swing_trend_d = uptrend = +1
+    assert feats[24] == 1.0   # swing_trend_w = uptrend = +1
+    assert feats[25] == 0.0   # swing_trend_m = ranging = 0
+    assert 0.0 <= feats[29] <= 1.0  # swing_pos_d
+    assert all(np.isfinite(feats))
+
+
+def test_structure_features_without_swings():
+    """Without swing data, features 23-31 should be zeros."""
+    feats = extract_structure_features(
+        price=19400.0,
+        vwap_bands=None,
+        volume_profile=None,
+        session_levels=None,
+        session_context=None,
+        swing_structure=None,
+    )
+    assert feats.shape == (32,)
+    assert all(feats[23:32] == 0.0)

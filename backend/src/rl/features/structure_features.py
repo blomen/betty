@@ -4,10 +4,45 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels
+from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
 from ..config import TICK_SIZE
 
-_N_FEATURES = 23
+_N_FEATURES = 32
+
+
+def _extract_swing_features(
+    price: float,
+    swing: SwingStructure | None,
+) -> np.ndarray:
+    """Extract 9 swing structure features (indices 23-31)."""
+    feats = np.zeros(9, dtype=np.float32)
+    if swing is None:
+        return feats
+
+    trend_map = {"uptrend": 1.0, "downtrend": -1.0, "ranging": 0.0}
+
+    for i, tf_swings in enumerate([swing.daily, swing.weekly, swing.monthly]):
+        # Trend direction (feats 0-2 → indices 23-25)
+        feats[i] = trend_map.get(tf_swings.structure, 0.0)
+
+        # Distance to nearest swing level (feats 3-5 → indices 26-28)
+        all_prices = [s.price for s in tf_swings.swing_highs + tf_swings.swing_lows]
+        if all_prices:
+            nearest = min(all_prices, key=lambda p: abs(p - price))
+            dist_ticks = (price - nearest) / TICK_SIZE
+            feats[3 + i] = float(np.clip(dist_ticks / 200.0, -1.0, 1.0))
+
+        # Position in swing range (feats 6-8 → indices 29-31)
+        if all_prices:
+            range_high = max(all_prices)
+            range_low = min(all_prices)
+            span = range_high - range_low
+            if span > 0:
+                feats[6 + i] = float(np.clip((price - range_low) / span, 0.0, 1.0))
+            else:
+                feats[6 + i] = 0.5
+
+    return feats
 
 
 def extract_structure_features(
@@ -16,44 +51,25 @@ def extract_structure_features(
     volume_profile: VolumeProfile | None,
     session_levels: SessionLevels | None,
     session_context: dict | None,
+    swing_structure: SwingStructure | None = None,
 ) -> np.ndarray:
-    """Extract ~23 market structure and session context features.
+    """Extract 32 market structure and session context features.
 
-    Feature layout (indices 0-22):
+    Feature layout (indices 0-31):
     --- VWAP (0) ---
-      0  price_vs_vwap_sd    — (price - vwap) / sd, clipped ±3
-
+      0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
-      1  price_in_va         — 1 if price inside value area
-      2  dist_to_poc_ticks   — |price - poc| / tick_size, normalised (÷200)
-      3  dist_to_vah_ticks   — (price - vah) / tick_size, normalised (÷200)
-      4  dist_to_val_ticks   — (price - val) / tick_size, normalised (÷200)
-      5  va_width_ticks      — (vah - val) / tick_size, normalised (÷400)
-
-    --- IB Range (6-7) ---
-      6  ib_range_ticks      — (ib_high - ib_low) / tick_size, normalised (÷80)
-      7  poor_high           — 1 if price above ib_high (IB extension up)
-      8  poor_low            — 1 if price below ib_low (IB extension down)
-
+      1-5  price_in_va, dist_to_poc/vah/val, va_width
+    --- IB Range (6-8) ---
+      6-8  ib_range, poor_high, poor_low
     --- Market Type one-hot (9-11) ---
-      9  trend_day           — 1 if daily_range_pct > 0.02 (NQ ~500pt move)
-     10  range_day           — 1 if daily_range_pct < 0.008 + inside VA
-     11  neutral_day         — else
-
+      9-11  trend_day, range_day, neutral_day
     --- Session Context (12-22) ---
-     12  minutes_since_rth_norm — minutes since 09:30 ET / 390
-     13  session_volume_pct     — session volume as pct of daily expected (0-1)
-     14  daily_range_pct        — (daily_high - daily_low) / price, rescaled (÷0.03)
-     15  time_of_day_sin        — sin(2π * minute_of_day / 1440)
-     16  time_of_day_cos        — cos(2π * minute_of_day / 1440)
-     17  session_type_rth       — one-hot RTH
-     18  session_type_globex    — one-hot Globex/overnight
-     19  session_type_london    — one-hot London
-     20  ib_broken_up           — 1 if IB high was broken
-     21  ib_broken_down         — 1 if IB low was broken
-     22  ib_broken_none         — 1 if IB intact
-
-    Returns zeros(23) on fully missing inputs.
+      12-22  timing, session type, IB break
+    --- Swing Structure (23-31) ---
+      23-25  swing_trend_d/w/m
+      26-28  swing_dist_d/w/m
+      29-31  swing_pos_d/w/m
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -68,7 +84,6 @@ def extract_structure_features(
         poc = volume_profile.poc
         vah = volume_profile.vah
         val = volume_profile.val
-
         feats[1] = 1.0 if val <= price <= vah else 0.0
         feats[2] = float(np.clip(abs(price - poc) / TICK_SIZE / 200.0, 0.0, 1.0))
         feats[3] = float(np.clip((price - vah) / TICK_SIZE / 200.0, -1.0, 1.0))
@@ -82,7 +97,6 @@ def extract_structure_features(
     if session_levels is not None:
         ib_high = session_levels.ib_high
         ib_low = session_levels.ib_low
-
     if ib_high is not None and ib_low is not None:
         ib_range = ib_high - ib_low
         feats[6] = min(ib_range / TICK_SIZE / 80.0, 1.0)
@@ -92,39 +106,34 @@ def extract_structure_features(
     # --- Market Type one-hot (feats 9-11) ---
     ctx = session_context or {}
     daily_range_pct = float(ctx.get("daily_range_pct", 0.5))
-    price_in_va_bool = feats[1] > 0.5  # from above
-
-    # NQ daily_range_pct is (high-low)/price, typically 0.005-0.03
+    price_in_va_bool = feats[1] > 0.5
     if daily_range_pct > 0.02:
-        feats[9] = 1.0   # trend day (~500pt NQ range)
+        feats[9] = 1.0
     elif daily_range_pct < 0.008 and price_in_va_bool:
-        feats[10] = 1.0  # range day (~200pt NQ range + inside VA)
+        feats[10] = 1.0
     else:
-        feats[11] = 1.0  # neutral
+        feats[11] = 1.0
 
     # --- Session Context (feats 12-22) ---
     minutes_since_rth = float(ctx.get("minutes_since_rth", 0))
     feats[12] = min(minutes_since_rth / 390.0, 1.0)
-
     session_volume_pct = float(ctx.get("session_volume_pct", 0.5))
     feats[13] = min(max(session_volume_pct, 0.0), 1.0)
-
-    # NQ daily range is typically 0.005-0.03 of price; rescale to fill 0-1
     feats[14] = float(np.clip(daily_range_pct / 0.03, 0.0, 1.0))
-
     minute_of_day = float(ctx.get("minute_of_day", 0))
     angle = 2.0 * math.pi * minute_of_day / 1440.0
     feats[15] = math.sin(angle)
     feats[16] = math.cos(angle)
-
     session_type = ctx.get("session_type", "rth")
     feats[17] = 1.0 if session_type == "rth" else 0.0
     feats[18] = 1.0 if session_type == "globex" else 0.0
     feats[19] = 1.0 if session_type == "london" else 0.0
-
     ib_broken = ctx.get("ib_broken", "none")
     feats[20] = 1.0 if ib_broken == "up" else 0.0
     feats[21] = 1.0 if ib_broken == "down" else 0.0
     feats[22] = 1.0 if ib_broken == "none" else 0.0
+
+    # --- Swing Structure (feats 23-31) ---
+    feats[23:32] = _extract_swing_features(price, swing_structure)
 
     return feats

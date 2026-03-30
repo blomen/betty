@@ -32,6 +32,9 @@ class MonitoredLevel:
     touched_at: float = 0.0
     cluster: list[str] = field(default_factory=list)
     approach_price: float | None = None  # price when WATCHING → APPROACHING
+    approach_ticks: int = 15   # default, overridden for swing levels
+    at_level_ticks: int = 5    # default
+    reject_ticks: int = 20     # default
 
     def distance_ticks(self, price: float) -> float:
         return (price - self.price) / TICK_SIZE
@@ -105,6 +108,21 @@ class LevelMonitor:
                     ))
 
         logger.info("LevelMonitor loaded %d levels", len(self._levels))
+
+        # Set wider approach zones for swing levels
+        _SWING_ZONES = {
+            "daily_swing_high": (15, 5, 20),
+            "daily_swing_low": (15, 5, 20),
+            "weekly_swing_high": (25, 10, 35),
+            "weekly_swing_low": (25, 10, 35),
+            "monthly_swing_high": (40, 15, 50),
+            "monthly_swing_low": (40, 15, 50),
+        }
+        for level in self._levels:
+            zones = _SWING_ZONES.get(level.name)
+            if zones:
+                level.approach_ticks, level.at_level_ticks, level.reject_ticks = zones
+
         self._rebuild_zones()
 
     def _rebuild_zones(self) -> None:
@@ -122,6 +140,12 @@ class LevelMonitor:
             "tpoc": RLLevelType.TPOC, "tvah": RLLevelType.TVAH, "tval": RLLevelType.TVAL,
             "tibh": RLLevelType.TIBH, "tibl": RLLevelType.TIBL,
             "naked_poc": RLLevelType.NAKED_POC,
+            "daily_swing_high": RLLevelType.DAILY_SWING_HIGH,
+            "daily_swing_low": RLLevelType.DAILY_SWING_LOW,
+            "weekly_swing_high": RLLevelType.WEEKLY_SWING_HIGH,
+            "weekly_swing_low": RLLevelType.WEEKLY_SWING_LOW,
+            "monthly_swing_high": RLLevelType.MONTHLY_SWING_HIGH,
+            "monthly_swing_low": RLLevelType.MONTHLY_SWING_LOW,
         }
         level_tuples = []
         for lv in self._levels:
@@ -173,21 +197,21 @@ class LevelMonitor:
             dist = level.abs_distance_ticks(price)
             old_status = level.status
 
-            if dist <= self.AT_LEVEL_TICKS:
+            if dist <= level.at_level_ticks:
                 if old_status != LevelStatus.AT_LEVEL:
                     level.status = LevelStatus.AT_LEVEL
                     level.touched_at = now
                     newly_touched.append(level)
                 at_level_levels.append(level)
 
-            elif dist <= self.APPROACHING_TICKS:
+            elif dist <= level.approach_ticks:
                 if old_status == LevelStatus.WATCHING:
                     level.status = LevelStatus.APPROACHING
                     level.approach_price = price
                     self._on_level_approaching(level, price, dist)
 
             elif old_status in (LevelStatus.AT_LEVEL, LevelStatus.APPROACHING):
-                if dist > self.REJECT_TICKS:
+                if dist > level.reject_ticks:
                     level.status = LevelStatus.REJECTED
                     self._on_level_rejected(level, price)
                     level.status = LevelStatus.WATCHING
@@ -734,6 +758,7 @@ class LevelMonitor:
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
+            "swing_structure": ctx.get("swing_structure"),
         }
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
@@ -762,6 +787,12 @@ class LevelMonitor:
             "tpoc": LevelType.TPOC, "tvah": LevelType.TVAH, "tval": LevelType.TVAL,
             "tibh": LevelType.TIBH, "tibl": LevelType.TIBL,
             "naked_poc": LevelType.NAKED_POC,
+            "daily_swing_high": LevelType.DAILY_SWING_HIGH,
+            "daily_swing_low": LevelType.DAILY_SWING_LOW,
+            "weekly_swing_high": LevelType.WEEKLY_SWING_HIGH,
+            "weekly_swing_low": LevelType.WEEKLY_SWING_LOW,
+            "monthly_swing_high": LevelType.MONTHLY_SWING_HIGH,
+            "monthly_swing_low": LevelType.MONTHLY_SWING_LOW,
         }
         lt = level_type_map.get(name_lower, LevelType.VWAP)
 
@@ -805,4 +836,5 @@ class LevelMonitor:
             "fvgs": ctx.get("fvgs", []),
             "single_print_zones": ctx.get("single_print_zones", []),
             "recent_ticks": recent_ticks,
+            "swing_structure": ctx.get("swing_structure"),
         }

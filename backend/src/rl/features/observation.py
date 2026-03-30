@@ -7,7 +7,7 @@ encode the temporal dynamics.
 Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (25 currently)
     orderflow                   21
-    structure + session          23
+    structure + session          32
     tpo (per-session)            26
     candle window                15
     zone features                 4
@@ -18,12 +18,12 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       168
+    total                       177
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
     orderflow            21
-    structure + session  23
+    structure + session  32
     tpo (per-session)    26
     candle window        15
     confluence            8
@@ -33,7 +33,7 @@ Legacy mode (state["level_type"] present, no zone):
     approach direction    1
     execution context     7
     ---
-    total               167
+    total               176
 """
 from __future__ import annotations
 
@@ -116,9 +116,11 @@ def build_observation(state: dict) -> np.ndarray:
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
 
-    # 3. Structure + session (23)
+    # 3. Structure + session (32)
+    swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
-        price, vwap_bands, volume_profile, session_levels, session_context
+        price, vwap_bands, volume_profile, session_levels, session_context,
+        swing_structure=swing_structure,
     )
 
     # 4. TPO per-session (26)
@@ -183,7 +185,7 @@ def build_observation(state: dict) -> np.ndarray:
     obs = np.concatenate([
         seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
-        seg_structure,    # 23
+        seg_structure,    # 32
         seg_tpo,          # 26
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
