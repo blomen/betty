@@ -305,13 +305,23 @@ class TestBuildObservation:
         obs = build_observation(_minimal_state())
         assert obs.dtype == np.float32
 
-    def test_correct_dim(self):
-        obs = build_observation(_minimal_state())
+    def test_correct_dim_zone_mode(self):
+        state = _minimal_state()
+        state.pop("level_type", None)
+        state["zone"] = _make_zone()
+        state["all_zones"] = [state["zone"]]
+        obs = build_observation(state)
         assert obs.shape == (OBSERVATION_DIM,)
 
-    def test_observation_dim_is_107(self):
-        # 26 + 15 + 23 + 13 + 15 + 5 + 10 = 107
-        assert OBSERVATION_DIM == 107
+    def test_correct_dim_legacy(self):
+        obs = build_observation(_minimal_state())
+        # Legacy mode is 1 fewer dim than zone mode (no zone features segment)
+        # Legacy: no zone features (0 vs 4) but larger confluence (8 vs 5), net -1
+        assert obs.shape == (OBSERVATION_DIM - 1,)
+
+    def test_observation_dim_is_168(self):
+        # Zone mode: 24 + 21 + 23 + 26 + 15 + 4 + 5 + 7 + 14 + 20 + 1 + 7 = 168 (approx breakdown)
+        assert OBSERVATION_DIM == 168
 
     def test_no_nans(self):
         obs = build_observation(_minimal_state())
@@ -364,7 +374,7 @@ class TestBuildObservation:
             "ib_broken": "none",
         }
         state = {
-            "level_type": LevelType.POC_SESSION,
+            "level_type": LevelType.TPOC,
             "price": 19005.0,
             "candles": candles,
             "vwap_bands": bands,
@@ -377,13 +387,18 @@ class TestBuildObservation:
             "session_context": ctx,
         }
         obs = build_observation(state)
-        assert obs.shape == (OBSERVATION_DIM,)
+        # Legacy mode: OBSERVATION_DIM - 1 (no zone features, larger confluence)
+        assert obs.shape == (OBSERVATION_DIM - 1,)
         assert obs.dtype == np.float32
         assert not np.any(np.isnan(obs))
         assert not np.any(np.isinf(obs))
 
-    def test_observation_dim_constant_matches_build(self):
-        obs = build_observation(_minimal_state())
+    def test_observation_dim_constant_matches_zone_build(self):
+        state = _minimal_state()
+        state.pop("level_type", None)
+        state["zone"] = _make_zone()
+        state["all_zones"] = [state["zone"]]
+        obs = build_observation(state)
         assert OBSERVATION_DIM == obs.shape[0]
 
 
@@ -445,10 +460,10 @@ class TestZoneComposition:
 
 
 class TestZoneFeatures:
-    def test_returns_3_floats(self):
+    def test_returns_4_floats(self):
         zone = _make_zone(width_ticks=20.0, hierarchy_score=0.7)
         feats = encode_zone_features(zone)
-        assert len(feats) == 3
+        assert len(feats) == 4
         assert all(isinstance(f, float) for f in feats)
 
     def test_values_bounded_0_1(self):
@@ -472,6 +487,43 @@ class TestZoneFeatures:
         assert feats[0] == pytest.approx(5.0 / 50.0)  # width
         assert feats[1] == pytest.approx(1.0 / 10.0)  # count (1 member)
         assert feats[2] == pytest.approx(0.3)          # hierarchy
+        assert feats[3] == pytest.approx(0.5)          # default relevance (no session_context)
+
+    def test_session_relevance_no_context(self):
+        zone = _make_zone(member_types=[LevelType.TOKYO_HIGH])
+        feats = encode_zone_features(zone)
+        assert feats[3] == pytest.approx(0.5)  # unknown → 0.5
+
+    def test_session_relevance_tokyo_during_london(self):
+        zone = _make_zone(member_types=[LevelType.TOKYO_HIGH])
+        ctx = {"session_type": "london", "minutes_since_rth": 0.0}
+        feats = encode_zone_features(zone, session_context=ctx)
+        assert feats[3] == pytest.approx(1.0)  # active session level
+
+    def test_session_relevance_tokyo_during_rth(self):
+        zone = _make_zone(member_types=[LevelType.TOKYO_HIGH])
+        ctx = {"session_type": "rth", "minutes_since_rth": 60.0}
+        feats = encode_zone_features(zone, session_context=ctx)
+        assert feats[3] == pytest.approx(0.3)  # prior session level
+
+    def test_session_relevance_nyib_early_rth(self):
+        zone = _make_zone(member_types=[LevelType.NYIB_HIGH])
+        ctx = {"session_type": "rth", "minutes_since_rth": 10.0}
+        feats = encode_zone_features(zone, session_context=ctx)
+        assert feats[3] == pytest.approx(0.5)  # IB still forming
+
+    def test_session_relevance_nyib_late_rth(self):
+        zone = _make_zone(member_types=[LevelType.NYIB_HIGH])
+        ctx = {"session_type": "rth", "minutes_since_rth": 60.0}
+        feats = encode_zone_features(zone, session_context=ctx)
+        assert feats[3] == pytest.approx(1.0)  # IB locked
+
+    def test_session_relevance_takes_max_across_members(self):
+        """Zone with TOKYO_HIGH (0.3 during RTH) and PDH (0.9 during RTH) → max = 0.9."""
+        zone = _make_zone(member_types=[LevelType.TOKYO_HIGH, LevelType.PDH])
+        ctx = {"session_type": "rth", "minutes_since_rth": 60.0}
+        feats = encode_zone_features(zone, session_context=ctx)
+        assert feats[3] == pytest.approx(0.9)  # max(0.3, 0.9)
 
 
 class TestZoneConfluence:

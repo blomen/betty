@@ -128,18 +128,78 @@ def encode_zone_composition(zone: Zone) -> list[float]:
     return zone.composition
 
 
-def encode_zone_features(zone: Zone) -> list[float]:
-    """Return 3 normalised scalar features for a zone.
+def _compute_session_relevance(
+    level_type: LevelType, session_context: dict | None
+) -> float:
+    """How relevant is this level type to the current session? 0=stale, 1=active."""
+    if session_context is None:
+        return 0.5  # unknown
+
+    session_type = session_context.get("session_type", "rth")
+    minutes_since_rth = session_context.get("minutes_since_rth", 60.0)
+
+    # Tokyo levels: active during London (which includes Tokyo overlap), stale during RTH
+    if level_type in (LevelType.TOKYO_HIGH, LevelType.TOKYO_LOW):
+        if session_type == "london":
+            return 1.0  # active session level
+        elif session_type == "globex":
+            return 0.8  # recent, still relevant
+        else:
+            return 0.3  # prior session level during RTH
+
+    # NY IB levels: relevance depends on whether IB is still forming
+    if level_type in (LevelType.NYIB_HIGH, LevelType.NYIB_LOW, LevelType.TIBH, LevelType.TIBL):
+        if session_type != "rth":
+            return 0.2  # IB not relevant outside RTH
+        if minutes_since_rth < 30:
+            return 0.5  # IB still forming — level is unstable
+        else:
+            return 1.0  # IB locked — meaningful level
+
+    # Prior day levels: most relevant during RTH
+    if level_type in (LevelType.PDH, LevelType.PDL):
+        if session_type == "rth":
+            return 0.9  # yesterday's key level in today's session
+        else:
+            return 0.5  # less relevant outside RTH
+
+    # VWAP levels: only computed during RTH, always active
+    if level_type in (LevelType.VWAP, LevelType.VWAP_SD1, LevelType.VWAP_SD2, LevelType.VWAP_SD3):
+        if session_type == "rth":
+            return 1.0  # active RTH VWAP
+        else:
+            return 0.3  # prior day's VWAP
+
+    # TPO levels (TPOC, TVAH, TVAL): active during RTH, stale outside
+    if level_type in (LevelType.TPOC, LevelType.TVAH, LevelType.TVAL):
+        if session_type == "rth":
+            return 1.0
+        else:
+            return 0.4
+
+    # Volume profile (daily/weekly/monthly POC/VAH/VAL): always somewhat relevant
+    # Naked POC: always relevant (historical)
+    return 0.6  # default for POC/VAH/VAL levels
+
+
+def encode_zone_features(zone: Zone, session_context: dict | None = None) -> list[float]:
+    """Return 4 normalised scalar features for a zone.
 
     Features (all bounded 0-1):
-        - width_norm:   ``min(zone.width_ticks / 50, 1)``
-        - count_norm:   ``min(zone.member_count / 10, 1)``
-        - hierarchy:    ``zone.hierarchy_score`` (already 0-1)
+        - width_norm:        ``min(zone.width_ticks / 50, 1)``
+        - count_norm:        ``min(zone.member_count / 10, 1)``
+        - hierarchy:         ``zone.hierarchy_score`` (already 0-1)
+        - session_relevance: max relevance of member levels to current session
     """
+    relevance = max(
+        (_compute_session_relevance(m.level_type, session_context) for m in zone.members),
+        default=0.5,
+    )
     return [
         min(zone.width_ticks / 50.0, 1.0),
         min(zone.member_count / 10.0, 1.0),
         zone.hierarchy_score,
+        relevance,
     ]
 
 

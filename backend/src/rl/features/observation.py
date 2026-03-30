@@ -10,7 +10,7 @@ Zone mode (state["zone"] present):
     structure + session          23
     tpo (per-session)            26
     candle window                15
-    zone features                 3
+    zone features                 4
     zone confluence               5
     macro                         7
     setup                        14
@@ -18,7 +18,7 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       167
+    total                       168
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
@@ -128,9 +128,12 @@ def build_observation(state: dict) -> np.ndarray:
     # 5. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)
 
-    # 6. Zone features (3) — only in zone mode
+    # 6. Zone features (4) — only in zone mode
     if zone is not None:
-        seg_zone_feats = np.array(encode_zone_features(zone), dtype=np.float32)
+        seg_zone_feats = np.array(
+            encode_zone_features(zone, session_context=state.get("session_context")),
+            dtype=np.float32,
+        )
     else:
         seg_zone_feats = np.array([], dtype=np.float32)
 
@@ -183,7 +186,7 @@ def build_observation(state: dict) -> np.ndarray:
         seg_structure,    # 23
         seg_tpo,          # 26
         seg_candles,      # 15
-        seg_zone_feats,   # 3 (zone) or 0 (legacy)
+        seg_zone_feats,   # 4 (zone) or 0 (legacy)
         seg_confluence,   # 5 (zone) or 8 (legacy)
         seg_macro,        # 7
         seg_setup,        # 14
