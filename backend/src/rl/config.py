@@ -76,6 +76,12 @@ OBSERVATION_DIM = None  # Computed dynamically in observation.py
 # --- Level Touch Detection ---
 AT_LEVEL_TICKS = 5
 
+# --- Zone Consolidation ---
+ATR_FRACTION = 0.05          # zone radius as fraction of session ATR
+ATR_PERIOD = 14              # ATR lookback (30m candles)
+MIN_ZONE_RADIUS_TICKS = 4    # floor: never merge tighter than 1 point
+MAX_ZONE_RADIUS_TICKS = 20   # cap: never merge wider than 5 points
+
 # --- Reward (velocity-based, computed in episode_builder) ---
 # No fixed target/stop/timeout — rewards are continuous movement quality scores
 
