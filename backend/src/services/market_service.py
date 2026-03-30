@@ -209,13 +209,13 @@ class MarketService:
         return db_bars
 
     async def _get_swing_bars(self, symbol: str) -> list[dict]:
-        """Get 120 days of 1m bars for swing level computation. DB only, no backfill."""
+        """Get 250 days of 1m bars for swing level computation. DB only, no backfill."""
         from zoneinfo import ZoneInfo
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
         today_cet = now.astimezone(_CET).date()
-        start_date = today_cet - timedelta(days=120)
+        start_date = today_cet - timedelta(days=250)
         d_start = datetime(start_date.year, start_date.month, start_date.day, tzinfo=_CET).astimezone(timezone.utc)
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
@@ -1276,6 +1276,21 @@ class MarketService:
                 logger.info("Tick VP: only %d ticks, falling back to bars", len(trades))
                 return None
 
+            # Check tick time span — if ticks only cover a small fraction of
+            # elapsed session time, the data is too sparse for a meaningful VP.
+            elapsed = (now - d_start).total_seconds()
+            first_ts = trades[0].ts if hasattr(trades[0], 'ts') else None
+            last_ts = trades[-1].ts if hasattr(trades[-1], 'ts') else None
+            if first_ts and last_ts and elapsed > 7200:  # session > 2 hours old
+                if hasattr(first_ts, 'timestamp'):
+                    tick_span = (last_ts.timestamp() - first_ts.timestamp())
+                else:
+                    tick_span = elapsed  # can't check, trust data
+                if tick_span < elapsed * 0.15:
+                    logger.info("Tick VP: ticks span %.0fs of %.0fs session (%.0f%%), falling back to bars",
+                                tick_span, elapsed, tick_span / elapsed * 100)
+                    return None
+
             # Build trade dicts for compute_volume_profile (exact prices, no spreading)
             trade_dicts = [{"price": t.price, "size": t.size} for t in trades]
             vp = compute_volume_profile(trade_dicts)
@@ -1287,13 +1302,7 @@ class MarketService:
             return None
 
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
-        """Get 1m bars for weekly or monthly VP from DB.
-
-        Uses time-at-price (volume=1 per bar) instead of raw volume to avoid
-        skewing the composite profile toward days with more captured volume.
-        This matches TPO logic and is the correct approach when volume data
-        quality varies across days in the period.
-        """
+        """Get 1m bars for weekly or monthly VP from DB using actual volume."""
         from zoneinfo import ZoneInfo
         _CET = ZoneInfo("Europe/Stockholm")
 
@@ -1310,8 +1319,7 @@ class MarketService:
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
         logger.info("VP %s bars: %d from DB (%s to now)", timeframe, len(rows), start_date)
-        # Normalize to time-at-price (1 unit per bar) so each day contributes equally
-        return [{"high": r.h, "low": r.l, "close": r.c, "volume": 1} for r in rows]
+        return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v or 1} for r in rows]
 
     async def get_developing_vwap(self, symbol: str = "NQ", interval: str = "1m") -> dict:
         """Return developing VWAP time series from 1m candle data.
@@ -1395,7 +1403,7 @@ class MarketService:
         today_cet = now.astimezone(_CET).date()
 
         # Fetch enough 1m candles to cover `days` trading days + 1 extra for PDH/PDL
-        pad_days = max(days + (days // 5) * 2 + 3, 140)  # 140 days for swing detection
+        pad_days = max(days + (days // 5) * 2 + 3, 250)  # 250 days for swing detection
         start_dt = datetime(
             today_cet.year, today_cet.month, today_cet.day,
             tzinfo=_CET,
