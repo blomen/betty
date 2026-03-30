@@ -53,6 +53,102 @@ class SessionLevels:
     monthly_low: float | None = None
 
 
+@dataclass
+class SwingLevel:
+    """A detected swing point (fractal pivot)."""
+    price: float
+    timestamp: int       # epoch seconds
+    type: str            # "swing_high" or "swing_low"
+    timeframe: str       # "daily", "weekly", "monthly"
+
+
+@dataclass
+class TimeframeSwings:
+    """Swing detection result for a single timeframe."""
+    timeframe: str       # "daily", "weekly", "monthly"
+    structure: str       # "uptrend", "downtrend", "ranging"
+    swing_highs: list[SwingLevel] = field(default_factory=list)  # newest first
+    swing_lows: list[SwingLevel] = field(default_factory=list)   # newest first
+
+
+@dataclass
+class SwingStructure:
+    """Multi-timeframe swing analysis result."""
+    daily: TimeframeSwings
+    weekly: TimeframeSwings
+    monthly: TimeframeSwings
+    trend_alignment: float  # -1.0 (all down) to +1.0 (all up)
+
+
+def aggregate_to_timeframe(
+    bars_1m: list[dict],
+    timeframe: str,
+) -> list[dict]:
+    """Aggregate 1m bars into daily/weekly/monthly OHLC candles.
+
+    Uses CET session boundaries:
+    - Daily: 00:00-22:00 CET
+    - Weekly: Monday 00:00 to Friday 22:00 CET
+    - Monthly: 1st 00:00 to last trading day 22:00 CET
+
+    Returns list of {"date": str, "open": float, "high": float, "low": float,
+    "close": float, "ts": int} sorted chronologically.
+    """
+    if not bars_1m:
+        return []
+
+    from collections import OrderedDict
+
+    _CET = ZoneInfo("Europe/Stockholm")
+    buckets: OrderedDict[str, list[dict]] = OrderedDict()
+
+    for bar in bars_1m:
+        bar_ts = bar["ts"]
+        if isinstance(bar_ts, str):
+            bar_ts = datetime.fromisoformat(bar_ts)
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+        bar_cet = bar_ts.astimezone(_CET)
+
+        if bar_cet.hour >= 22:
+            continue
+
+        if timeframe == "daily":
+            key = bar_cet.date().isoformat()
+        elif timeframe == "weekly":
+            week_start = bar_cet.date() - timedelta(days=bar_cet.weekday())
+            key = week_start.isoformat()
+        elif timeframe == "monthly":
+            key = f"{bar_cet.year}-{bar_cet.month:02d}"
+        else:
+            raise ValueError(f"Unknown timeframe: {timeframe}")
+
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append(bar)
+
+    result = []
+    for key, group in buckets.items():
+        highs = [b["high"] for b in group]
+        lows = [b["low"] for b in group]
+        first_ts = group[0]["ts"]
+        if isinstance(first_ts, str):
+            first_ts = datetime.fromisoformat(first_ts)
+        if first_ts.tzinfo is None:
+            first_ts = first_ts.replace(tzinfo=timezone.utc)
+
+        result.append({
+            "date": key,
+            "open": group[0].get("open", group[0].get("close", highs[0])),
+            "high": max(highs),
+            "low": min(lows),
+            "close": group[-1].get("close", group[-1].get("open", lows[-1])),
+            "ts": int(first_ts.timestamp()),
+        })
+
+    return result
+
+
 def compute_volume_profile(
     trades: list[dict],
     tick_size: float = 0.25,
