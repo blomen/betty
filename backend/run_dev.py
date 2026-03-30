@@ -113,12 +113,23 @@ if __name__ == "__main__":
     # Spawn uvicorn as a child process so the parent can catch Ctrl+C and kill it.
     if sys.platform == "win32" and not os.environ.get("_BBQDEV_CHILD"):
         env = {**os.environ, "_BBQDEV_CHILD": "1"}
-        proc = subprocess.Popen([sys.executable, __file__], env=env)
+        # CREATE_NEW_PROCESS_GROUP lets us send CTRL_BREAK_EVENT for graceful shutdown
+        proc = subprocess.Popen(
+            [sys.executable, __file__], env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
         try:
             proc.wait()
         except KeyboardInterrupt:
-            proc.terminate()
-            proc.wait()
+            # CTRL_BREAK_EVENT triggers KeyboardInterrupt in the child,
+            # letting uvicorn run its lifespan shutdown (vs terminate() which kills instantly)
+            import signal
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                proc.wait()
         sys.exit(proc.returncode or 0)
 
     import uvicorn

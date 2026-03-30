@@ -109,10 +109,13 @@ export function TerminalWindow() {
 
   // Track keep-alive pages: once visited, stay mounted (hidden via CSS)
   useEffect(() => {
-    if (activeTab in KEEP_ALIVE_PAGES && !mountedPages.has(activeTab)) {
-      setMountedPages(prev => new Set(prev).add(activeTab));
-    }
-  }, [activeTab, mountedPages]);
+    setMountedPages(prev => {
+      if (activeTab in KEEP_ALIVE_PAGES && !prev.has(activeTab)) {
+        return new Set(prev).add(activeTab);
+      }
+      return prev;
+    });
+  }, [activeTab]);
 
   const renderPage = () => {
     // Trading tabs and keep-alive pages handled separately (kept alive below)

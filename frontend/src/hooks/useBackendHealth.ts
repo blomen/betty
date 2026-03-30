@@ -110,9 +110,12 @@ export function useBackendHealth(sseConnected: boolean, lastTickTs: number | nul
     return () => { mountedRef.current = false; clearInterval(intervalRef.current); };
   }, [check]);
 
-  // Update stream fields reactively
+  // Update stream fields reactively — only when values actually change
   useEffect(() => {
-    setHealth(h => ({ ...h, streamConnected: sseConnected, streamLastTick: lastTickTs }));
+    setHealth(h => {
+      if (h.streamConnected === sseConnected && h.streamLastTick === lastTickTs) return h;
+      return { ...h, streamConnected: sseConnected, streamLastTick: lastTickTs };
+    });
   }, [sseConnected, lastTickTs]);
 
   return health;

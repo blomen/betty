@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BookSnapshot } from './BookSnapshot';
 import { CandleChart } from './CandleChart';
 import { usePersistedState } from '@/hooks/usePersistedState';
@@ -21,7 +21,9 @@ export function L1Page({ lastTick, book, lastCandle, connected, session }: Props
   const [tpo, setTpo] = useState<TPOLiveProfile | null>(null);
   const [sessionTPO, setSessionTPO] = useState<SessionTPOResponse | null>(null);
   const market = useMarketStatus();
-  const health = useBackendHealth(connected, lastTick ? Date.now() : null);
+  // Stabilise: only update timestamp when lastTick identity changes (not every render)
+  const lastTickTs = useMemo(() => (lastTick ? Date.now() : null), [lastTick]);
+  const health = useBackendHealth(connected, lastTickTs);
 
   // Fetch TPO data alongside session updates
   useEffect(() => {

@@ -370,7 +370,7 @@ async def lifespan(app: FastAPI):
             logger.info("Globex open — starting trading features now")
             await _start_trading_features()
 
-        asyncio.create_task(_trading_gate())
+        _trading_gate_task = asyncio.create_task(_trading_gate())
     else:
         logger.warning("DATABENTO_API_KEY not set — trading features disabled")
 
@@ -429,6 +429,14 @@ async def lifespan(app: FastAPI):
 
     # Graceful shutdown
     logger.info("Shutting down...")
+
+    # Cancel the trading gate sleep loop (can block for hours when market closed)
+    if '_trading_gate_task' in dir() and not _trading_gate_task.done():
+        _trading_gate_task.cancel()
+        try:
+            await _trading_gate_task
+        except asyncio.CancelledError:
+            pass
 
     # Stop all mirrors
     for pid in list(_mirrors.keys()):
