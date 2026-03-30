@@ -158,6 +158,8 @@ class Odds(Base):
         # Index for event-level market grouping (scanner.group_odds)
         Index('ix_odds_event_market_outcome', 'event_id', 'market', 'outcome'),
         Index('ix_odds_event_market_point', 'event_id', 'market', 'point'),
+        # Composite key for OddsBatchProcessor flush lookups
+        Index('ix_odds_composite_key', 'event_id', 'provider_id', 'market', 'outcome', 'point'),
     )
     
     # Relationships
@@ -501,6 +503,7 @@ class Opportunity(Base):
         Index("ix_opp_active_edge", "is_active", "edge_pct"),
         Index("ix_opp_type_active", "type", "is_active"),
         Index("ix_opp_provider1_type", "provider1_id", "type"),
+        Index("ix_opp_active_type_edge_provider", "is_active", "type", "edge_pct", "provider1_id"),
     )
 
     id = Column(Integer, primary_key=True)

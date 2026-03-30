@@ -143,16 +143,26 @@ class ExtractionPipeline:
         async with self._cache_lock:
             self.event_cache.clear()
 
+    # Maximum age of events to load into cache — older events are irrelevant for matching
+    _CACHE_MAX_AGE_DAYS = 14
+
     def _populate_cache_from_db(self):
         """Pre-populate event_cache + date index from existing DB events for fuzzy matching.
 
         This is critical when extracting a subset of providers (e.g., just '10bet')
         against an existing DB with Pinnacle events. Without this, the fuzzy matching
         has no candidates and events with slight name/date differences won't match.
+
+        Only loads events from the last 14 days to cap memory usage.
         """
         from ..db.models import Event
         from .storage import _update_event_cache
-        events = self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league).all()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._CACHE_MAX_AGE_DAYS)
+        events = (
+            self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league)
+            .filter(Event.start_time >= cutoff)
+            .all()
+        )
         for eid, sport, home, away, start_time, league in events:
             if hasattr(start_time, 'strftime'):
                 date_str = start_time.strftime('%Y%m%d')

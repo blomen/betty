@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
     global _startup_time
     _startup_time = time.time()
-    init_db()
+    await asyncio.to_thread(init_db)
 
     # WAL checkpoint in background thread — don't block event loop on startup
     import threading
@@ -100,13 +100,15 @@ async def lifespan(app: FastAPI):
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    # Eagerly warm up singletons / heavy imports so the first API request is fast
-    from ..config.loader import load_config
-    load_config()
-    try:
-        import numpy  # noqa: F401 — imported by ml.serving.predictor on first use
-    except ImportError:
-        pass
+    # Warm up singletons / heavy imports in background — don't block API startup
+    def _warmup_imports():
+        from ..config.loader import load_config
+        load_config()
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            pass
+    threading.Thread(target=_warmup_imports, daemon=True, name="startup-imports").start()
 
     # Warm up opportunity cache in background thread so first page load is fast
     # Must not block the event loop — otherwise /api/version etc. hang during startup
@@ -136,7 +138,7 @@ async def lifespan(app: FastAPI):
     # Auto-start continuous extraction (every 5 min, Pinnacle + Polymarket)
     from ..pipeline.scheduler import get_scheduler
     scheduler = get_scheduler()
-    await scheduler.start_continuous(interval_seconds=300)
+    asyncio.create_task(scheduler.start_continuous(interval_seconds=300))
 
     # ── Trading features (Databento stream, level monitor, candle backfill) ──
     # Everything is gated on market hours: when Globex is closed (weekend),

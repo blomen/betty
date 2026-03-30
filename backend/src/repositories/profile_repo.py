@@ -1,5 +1,6 @@
 """Profile repository - balance, bonus, and profile data access."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,10 @@ from ..db.models import (
 )
 
 BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
+
+# TTL cache for total bankroll (avoids re-querying all balances + exchange rates per request)
+_bankroll_cache: dict[int, tuple[float, float]] = {}  # profile_id -> (expires_at, value)
+_BANKROLL_CACHE_TTL = 30.0  # seconds
 
 
 class ProfileRepo:
@@ -81,12 +86,23 @@ class ProfileRepo:
             return amount
 
     def get_total_bankroll(self, profile_id: int) -> float:
-        """Get total bankroll for a profile in SEK (converts non-SEK balances)."""
+        """Get total bankroll for a profile in SEK (converts non-SEK balances).
+
+        Cached for 30s to avoid re-querying all balances + exchange rates on
+        every opportunity listing request.
+        """
+        now = time.time()
+        cached = _bankroll_cache.get(profile_id)
+        if cached and now < cached[0]:
+            return cached[1]
+
         from ..config import get_exchange_rate
         records = self.db.query(ProfileProviderBalance).filter(
             ProfileProviderBalance.profile_id == profile_id
         ).all()
-        return sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        _bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
+        return total
 
     def get_all_balances(self, profile_id: int) -> dict[str, float]:
         """Return dict of provider_id -> balance for all providers with balance > 0."""

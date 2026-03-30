@@ -336,16 +336,20 @@ def calculate_stake(
     # Round to human-looking amount before min-stake check
     stake = round_stake_natural(stake)
 
-    # Compute bankroll needed to pass both min_stake and min_expected_profit guards
+    # Compute bankroll needed to pass both min_stake and min_expected_profit guards.
+    # Use stable Kelly (profile max without low-bankroll boost) for the estimate since
+    # the target bankroll will be large enough that the boost has tapered off.
     additional_for_stake = 0.0
     additional_for_ev = 0.0
     if kelly > 0 and edge_used > 0:
+        stable_kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=max_kelly)
+        stable_kelly = max(stable_kelly, 1e-9)
         if stake < min_stake:
-            needed = min_stake * (odds - 1) / (kelly * edge_used)
+            needed = min_stake * (odds - 1) / (stable_kelly * edge_used)
             additional_for_stake = max(0.0, needed - bankroll_total)
         expected_profit = stake * edge_used
         if min_expected_profit > 0 and expected_profit < min_expected_profit:
-            needed = min_expected_profit * (odds - 1) / (kelly * edge_used ** 2)
+            needed = min_expected_profit * (odds - 1) / (stable_kelly * edge_used ** 2)
             additional_for_ev = max(0.0, needed - bankroll_total)
 
     additional = max(additional_for_stake, additional_for_ev)
@@ -355,6 +359,10 @@ def calculate_stake(
 
         if additional < 1:
             skip_reason = "low EV"
+        elif additional > bankroll_total:
+            # Needing more than double the current bankroll means this bet is structurally
+            # too small-Kelly for the current strategy — not a "deposit more" situation.
+            skip_reason = "Kelly too small"
         else:
             if additional >= 1000:
                 add_str = f"+{additional / 1000:.0f}k kr"
