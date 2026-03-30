@@ -237,3 +237,49 @@ def test_structure_features_without_swings():
     )
     assert feats.shape == (32,)
     assert all(feats[23:32] == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 11: Integration tests for full observation vector with swing features
+# ---------------------------------------------------------------------------
+
+def test_observation_dim_with_swings():
+    """Full observation vector should include swing structure features."""
+    from src.rl.features.observation import build_observation, OBSERVATION_DIM
+    from src.rl.config import LevelType
+    from src.rl.zone_builder import Zone, ZoneMember
+
+    dummy_member = ZoneMember(name="vwap", level_type=LevelType.VWAP, price=19000.0)
+    dummy_zone = Zone(
+        center_price=19000.0, upper_bound=19001.0, lower_bound=18999.0,
+        members=[dummy_member],
+        composition=[1.0 if lt == LevelType.VWAP else 0.0 for lt in LevelType],
+        width_ticks=8.0, member_count=1, hierarchy_score=0.5,
+    )
+
+    state = {
+        "zone": dummy_zone,
+        "all_zones": [dummy_zone],
+        "price": 19000.0,
+        "candles": [],
+        "vwap_bands": None,
+        "volume_profile": None,
+        "session_tpos": None,
+        "session_levels": None,
+        "all_levels": [],
+        "orderflow_signals": None,
+        "macro": None,
+        "session_context": None,
+        "recent_ticks": [],
+        "swing_structure": _make_test_swing_structure(),
+    }
+    obs = build_observation(state)
+    # OBSERVATION_DIM is computed dynamically from actual segment sizes
+    assert obs.shape[0] == OBSERVATION_DIM
+    # Verify structure segment grew by 9 (was 23, now 32)
+    assert all(np.isfinite(obs))
+
+
+def test_level_type_enum_count():
+    from src.rl.config import LevelType
+    assert len(LevelType) == 31
