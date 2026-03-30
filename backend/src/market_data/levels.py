@@ -1,8 +1,11 @@
 """Level engine: computes all structural levels from bar/tick data."""
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("US/Eastern")
 
@@ -69,6 +72,8 @@ class TimeframeSwings:
     structure: str       # "uptrend", "downtrend", "ranging"
     swing_highs: list[SwingLevel] = field(default_factory=list)  # newest first
     swing_lows: list[SwingLevel] = field(default_factory=list)   # newest first
+    prior_high: float | None = None  # previous period high (PDH / prior week H / prior month H)
+    prior_low: float | None = None   # previous period low  (PDL / prior week L / prior month L)
 
 
 @dataclass
@@ -201,31 +206,47 @@ def detect_fractal_pivots(
 
 _TF_CONFIG = {
     "daily":   {"lookback": 3, "min_candles": 10},
-    "weekly":  {"lookback": 2, "min_candles": 6},
-    "monthly": {"lookback": 2, "min_candles": 6},
+    "weekly":  {"lookback": 2, "min_candles": 5},
+    "monthly": {"lookback": 2, "min_candles": 5},
 }
 
 
 def _classify_structure(
     swing_highs: list[SwingLevel],
     swing_lows: list[SwingLevel],
+    tolerance_pct: float = 0.003,
 ) -> str:
-    """Classify market structure from the last 2 swing highs and lows."""
+    """Classify market structure from the last 2 swing highs and lows.
+
+    Uses a tolerance band to filter noise — two pivots within tolerance_pct
+    of each other are treated as "equal" (neither HH nor LH). Default 0.3%
+    means ~75 NQ points at 25000 must separate pivots for a clear signal.
+    """
     if len(swing_highs) < 2 or len(swing_lows) < 2:
         return "ranging"
 
     sh_new, sh_old = swing_highs[0].price, swing_highs[1].price
     sl_new, sl_old = swing_lows[0].price, swing_lows[1].price
 
-    hh = sh_new > sh_old
-    hl = sl_new > sl_old
-    lh = sh_new < sh_old
-    ll = sl_new < sl_old
+    # Tolerance: pivots within this band are "equal" — no directional signal
+    avg_price = (sh_new + sh_old + sl_new + sl_old) / 4
+    tol = avg_price * tolerance_pct
+
+    hh = sh_new > sh_old + tol
+    hl = sl_new > sl_old + tol
+    lh = sh_new < sh_old - tol
+    ll = sl_new < sl_old - tol
 
     if hh and hl:
         return "uptrend"
     elif lh and ll:
         return "downtrend"
+    elif lh or ll:
+        # At least one side is clearly lower — lean bearish
+        return "downtrend" if (lh and not hl) or (ll and not hh) else "ranging"
+    elif hh or hl:
+        # At least one side is clearly higher — lean bullish
+        return "uptrend" if (hh and not ll) or (hl and not lh) else "ranging"
     return "ranging"
 
 
@@ -250,6 +271,8 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
 
     for tf, cfg in _TF_CONFIG.items():
         candles = aggregate_to_timeframe(bars_1m, tf)
+        logger.info("Swing %s: %d candles (need %d, lookback %d)",
+                     tf, len(candles), cfg["min_candles"], cfg["lookback"])
 
         if len(candles) < cfg["min_candles"]:
             results[tf] = empty_tf(tf)
@@ -265,11 +288,22 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
             sl.timeframe = tf
 
         structure = _classify_structure(highs, lows)
+
+        # Prior period H/L: second-to-last completed candle
+        prior_high = None
+        prior_low = None
+        if len(candles) >= 2:
+            prior = candles[-2]
+            prior_high = prior["high"]
+            prior_low = prior["low"]
+
         results[tf] = TimeframeSwings(
             timeframe=tf,
             structure=structure,
             swing_highs=highs,
             swing_lows=lows,
+            prior_high=prior_high,
+            prior_low=prior_low,
         )
 
     trend_scores = {
