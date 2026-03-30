@@ -68,8 +68,10 @@ class LevelMonitor:
         self._session_context: dict | None = None
         # Zone-aware DQN inference state
         self._zones: list[Zone] = []
-        self._zone_debounce: set[str] = set()
+        self._zone_debounce: set[int] = set()  # zone object ids for O(1) lookup
         self._session_atr: float = 40.0
+        # Throttle: skip level checks when price hasn't moved
+        self._last_price: float = 0.0
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
             self._outcome_tracker = OutcomeTracker()
@@ -183,6 +185,20 @@ class LevelMonitor:
             ts: Exchange timestamp as epoch seconds (from Databento ts_event / 1e9).
         """
         now = ts  # Use exchange timestamp for consistency and replay-ability
+
+        # Skip level/zone checks when price hasn't changed — many ticks hit the
+        # same price and repeating O(n) level scans is pure waste.
+        price_changed = price != self._last_price
+        if price_changed:
+            self._last_price = price
+        else:
+            # Still check orderflow timer even without price change
+            if self._any_at_level and (now - self._last_orderflow_emit) >= self._orderflow_interval:
+                self._emit_orderflow_update(price)
+                self._last_orderflow_emit = now
+            self._check_positions(price)
+            return
+
         at_level_levels = []
         newly_touched = []
 
@@ -218,7 +234,7 @@ class LevelMonitor:
 
         # Mark confluence clusters before emitting touch events
         if len(at_level_levels) > 1:
-            cluster_names = [l.name for l in at_level_levels]
+            cluster_names = tuple(l.name for l in at_level_levels)
             for l in at_level_levels:
                 l.cluster = [n for n in cluster_names if n != l.name]
 
@@ -233,17 +249,15 @@ class LevelMonitor:
 
         # Zone entry detection for DQN inference
         newly_entered_zones = []
-        still_in_zones: set[str] = set()
+        still_in_zones: set[int] = set()
         for zone in self._zones:
-            inside = zone.lower_bound <= price <= zone.upper_bound
-            snapped = round(zone.center_price / TICK_SIZE) * TICK_SIZE
-            key = f"zone_{snapped}"
-            if inside:
-                still_in_zones.add(key)
-                if key not in self._zone_debounce:
-                    self._zone_debounce.add(key)
+            if zone.lower_bound <= price <= zone.upper_bound:
+                zid = id(zone)
+                still_in_zones.add(zid)
+                if zid not in self._zone_debounce:
+                    self._zone_debounce.add(zid)
                     newly_entered_zones.append(zone)
-        self._zone_debounce -= (self._zone_debounce - still_in_zones)
+        self._zone_debounce &= still_in_zones
 
         for zone in newly_entered_zones:
             self._emit_zone_dqn_inference(zone, price)

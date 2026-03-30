@@ -4,6 +4,7 @@ Pipeline Storage
 Functions for storing events and odds in the database.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -1139,9 +1140,9 @@ class OddsBatchProcessor:
         Includes retry logic for SQLite "database is locked" errors that occur
         during concurrent extraction (multiple providers flushing simultaneously).
 
-        Note: Uses synchronous time.sleep() for retry backoff because this method
-        is called from synchronous contexts (__exit__, add()). Max total backoff
-        ~12s across 8 retries, which aligns with the 30s SQLite busy_timeout.
+        Note: Uses time.sleep() because flush is called from synchronous contexts
+        (__exit__, add()). Reduced to 5 retries / ~3s max to limit event loop
+        blocking when callers haven't offloaded to a thread.
         """
         if not self._pending:
             return
@@ -1149,17 +1150,17 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 8
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.1 * (2 ** attempt)  # 100ms, 200ms, 400ms, 800ms, 1.6s, 3.2s, 6.4s
+                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms, 400ms
                     logger.warning(
-                        f"OddsBatchProcessor: DB locked on flush (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {wait * 1000:.0f}ms..."
+                        "OddsBatchProcessor: DB locked on flush (attempt %d/%d), "
+                        "retrying in %.0fms...", attempt + 1, max_retries, wait * 1000
                     )
                     self.session.rollback()
                     time.sleep(wait)

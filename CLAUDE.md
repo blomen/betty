@@ -48,6 +48,9 @@ frontend/src/
 - **Services coordinate business logic** - Routes are thin HTTP handlers, services own the logic
 - **`db/models.py` is ORM-only** - No helper functions, no business logic — just model definitions and DB init
 
+## Performance Philosophy (IMPORTANT)
+**Make sure the PC is the bottleneck, not the code.** Always optimize code paths so hardware limits are what caps performance — not inefficient algorithms, blocking I/O, unnecessary allocations, redundant DB queries, or event loop starvation. Profile before guessing. Batch where possible. Offload blocking work to threads. Keep the async event loop free.
+
 ## HOW To Work In This Codebase
 
 ### Commands
