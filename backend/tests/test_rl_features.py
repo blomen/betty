@@ -385,3 +385,141 @@ class TestBuildObservation:
     def test_observation_dim_constant_matches_build(self):
         obs = build_observation(_minimal_state())
         assert OBSERVATION_DIM == obs.shape[0]
+
+
+# ---------------------------------------------------------------------------
+# Zone encoding tests
+# ---------------------------------------------------------------------------
+
+from src.rl.zone_builder import Zone, ZoneMember, build_zones
+from src.rl.features.level_features import (
+    encode_zone_composition, encode_zone_features, encode_zone_confluence,
+)
+
+
+def _make_zone(
+    center: float = 19000.0,
+    width_ticks: float = 10.0,
+    member_types: list[LevelType] | None = None,
+    hierarchy_score: float = 0.8,
+) -> Zone:
+    """Helper to build a Zone with sensible defaults."""
+    if member_types is None:
+        member_types = [LevelType.VWAP]
+    members = [
+        ZoneMember(name=lt.value, level_type=lt, price=center)
+        for lt in member_types
+    ]
+    from src.rl.zone_builder import _build_composition
+    composition = _build_composition(members)
+    return Zone(
+        center_price=center,
+        upper_bound=center + width_ticks * TICK_SIZE / 2,
+        lower_bound=center - width_ticks * TICK_SIZE / 2,
+        members=members,
+        composition=composition,
+        width_ticks=width_ticks,
+        member_count=len(members),
+        hierarchy_score=hierarchy_score,
+    )
+
+
+class TestZoneComposition:
+    def test_correct_length(self):
+        zone = _make_zone()
+        vec = encode_zone_composition(zone)
+        assert len(vec) == len(LevelType)
+
+    def test_multi_hot_correct_bits(self):
+        zone = _make_zone(member_types=[LevelType.VWAP, LevelType.PDH, LevelType.DAILY_POC])
+        vec = encode_zone_composition(zone)
+        members = list(LevelType)
+        for lt in [LevelType.VWAP, LevelType.PDH, LevelType.DAILY_POC]:
+            assert vec[members.index(lt)] == 1.0
+        assert sum(vec) == 3.0
+
+    def test_singleton_zone_sum_one(self):
+        zone = _make_zone(member_types=[LevelType.TPOC])
+        vec = encode_zone_composition(zone)
+        assert sum(vec) == pytest.approx(1.0)
+
+
+class TestZoneFeatures:
+    def test_returns_3_floats(self):
+        zone = _make_zone(width_ticks=20.0, hierarchy_score=0.7)
+        feats = encode_zone_features(zone)
+        assert len(feats) == 3
+        assert all(isinstance(f, float) for f in feats)
+
+    def test_values_bounded_0_1(self):
+        zone = _make_zone(width_ticks=100.0, hierarchy_score=0.95)
+        zone_obj = Zone(
+            center_price=zone.center_price,
+            upper_bound=zone.upper_bound,
+            lower_bound=zone.lower_bound,
+            members=zone.members * 15,  # 15 members
+            composition=zone.composition,
+            width_ticks=100.0,
+            member_count=15,
+            hierarchy_score=0.95,
+        )
+        feats = encode_zone_features(zone_obj)
+        assert all(0.0 <= f <= 1.0 for f in feats)
+
+    def test_small_zone_values(self):
+        zone = _make_zone(width_ticks=5.0, hierarchy_score=0.3)
+        feats = encode_zone_features(zone)
+        assert feats[0] == pytest.approx(5.0 / 50.0)  # width
+        assert feats[1] == pytest.approx(1.0 / 10.0)  # count (1 member)
+        assert feats[2] == pytest.approx(0.3)          # hierarchy
+
+
+class TestZoneConfluence:
+    def test_returns_5_floats(self):
+        zone = _make_zone(center=19000.0)
+        result = encode_zone_confluence(zone, [zone])
+        assert len(result) == 5
+        assert all(isinstance(f, float) for f in result)
+
+    def test_nearest_zone_distances_positive(self):
+        z_low = _make_zone(center=18990.0)
+        z_mid = _make_zone(center=19000.0)
+        z_high = _make_zone(center=19010.0)
+        all_zones = [z_low, z_mid, z_high]
+        result = encode_zone_confluence(z_mid, all_zones)
+        assert result[0] > 0.0  # nearest higher
+        assert result[1] > 0.0  # nearest lower
+        assert result[0] < 1.0  # not at max distance
+        assert result[1] < 1.0
+
+    def test_no_neighbours_returns_max(self):
+        zone = _make_zone(center=19000.0)
+        result = encode_zone_confluence(zone, [zone])
+        assert result[0] == 1.0  # no higher zone
+        assert result[1] == 1.0  # no lower zone
+
+    def test_fvg_overlap(self):
+        zone = _make_zone(center=19000.0)
+
+        class FVG:
+            def __init__(self, lo, hi):
+                self.price_low = lo
+                self.price_high = hi
+
+        fvgs = [FVG(18995.0, 19005.0)]
+        result = encode_zone_confluence(zone, [zone], fvgs=fvgs)
+        assert result[2] == 1.0  # fvg_overlap
+        assert result[3] > 0.0   # fvg_width > 0
+
+    def test_single_print_overlap(self):
+        zone = _make_zone(center=19000.0)
+        sp_zones = [(18998.0, 19002.0)]
+        result = encode_zone_confluence(zone, [zone], single_print_zones=sp_zones)
+        assert result[4] == 1.0
+
+    def test_no_overlaps(self):
+        zone = _make_zone(center=19000.0)
+        result = encode_zone_confluence(zone, [zone])
+        assert result[2] == 0.0  # no fvg
+        assert result[3] == 0.0  # no fvg width
+        assert result[4] == 0.0  # no single print

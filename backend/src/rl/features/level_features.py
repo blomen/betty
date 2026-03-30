@@ -1,7 +1,12 @@
 """Level type encoding and confluence feature extraction."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..config import LevelType, TICK_SIZE
+
+if TYPE_CHECKING:
+    from ..zone_builder import Zone
 
 
 def encode_level_type(level_type: LevelType) -> list[float]:
@@ -108,3 +113,86 @@ def encode_confluence(
         "fvg_width_ticks": min(fvg_width_ticks / 20.0, 1.0),
         "single_print_overlap": sp_overlap,
     }
+
+
+# ---------------------------------------------------------------------------
+# Zone-based encodings (used in zone-consolidated observation mode)
+# ---------------------------------------------------------------------------
+
+
+def encode_zone_composition(zone: Zone) -> list[float]:
+    """Return the multi-hot composition vector for a zone.
+
+    Length equals ``len(LevelType)`` — one slot per level type.
+    """
+    return zone.composition
+
+
+def encode_zone_features(zone: Zone) -> list[float]:
+    """Return 3 normalised scalar features for a zone.
+
+    Features (all bounded 0-1):
+        - width_norm:   ``min(zone.width_ticks / 50, 1)``
+        - count_norm:   ``min(zone.member_count / 10, 1)``
+        - hierarchy:    ``zone.hierarchy_score`` (already 0-1)
+    """
+    return [
+        min(zone.width_ticks / 50.0, 1.0),
+        min(zone.member_count / 10.0, 1.0),
+        zone.hierarchy_score,
+    ]
+
+
+def encode_zone_confluence(
+    zone: Zone,
+    all_zones: list[Zone],
+    fvgs: list | None = None,
+    single_print_zones: list | None = None,
+) -> list[float]:
+    """Return 5 confluence features for a zone relative to its neighbourhood.
+
+    Features:
+        - nearest_higher_zone_dist: normalised ticks to nearest zone center above
+        - nearest_lower_zone_dist:  normalised ticks to nearest zone center below
+        - fvg_overlap:              1.0 if any FVG contains zone.center_price
+        - fvg_width_ticks:          width of overlapping FVG (normalised, capped 1.0)
+        - single_print_overlap:     1.0 if any single-print zone contains center_price
+    """
+    center = zone.center_price
+
+    # Nearest higher / lower zone centers
+    higher = [z.center_price for z in all_zones if z.center_price > center + TICK_SIZE * 0.5]
+    lower = [z.center_price for z in all_zones if z.center_price < center - TICK_SIZE * 0.5]
+
+    if higher:
+        nearest_higher = min(abs(p - center) / TICK_SIZE / 50.0 for p in higher)
+        nearest_higher = min(nearest_higher, 1.0)
+    else:
+        nearest_higher = 1.0
+
+    if lower:
+        nearest_lower = min(abs(p - center) / TICK_SIZE / 50.0 for p in lower)
+        nearest_lower = min(nearest_lower, 1.0)
+    else:
+        nearest_lower = 1.0
+
+    # FVG overlap
+    fvg_overlap = 0.0
+    fvg_width = 0.0
+    for fvg in (fvgs or []):
+        lo = getattr(fvg, "price_low", 0.0)
+        hi = getattr(fvg, "price_high", 0.0)
+        if lo <= center <= hi:
+            fvg_overlap = 1.0
+            fvg_width = max(fvg_width, (hi - lo) / TICK_SIZE)
+
+    fvg_width_norm = min(fvg_width / 20.0, 1.0)
+
+    # Single print zone overlap
+    sp_overlap = 0.0
+    for sp in (single_print_zones or []):
+        if sp[0] <= center <= sp[1]:
+            sp_overlap = 1.0
+            break
+
+    return [nearest_higher, nearest_lower, fvg_overlap, fvg_width_norm, sp_overlap]
