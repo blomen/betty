@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class LevelType(str, Enum):
-    """All level types the agent can encounter (27 total)."""
+    """All level types the agent can encounter (31 total)."""
     # Volume profile — daily
     DAILY_POC = "daily_poc"
     DAILY_VAH = "daily_vah"
@@ -37,6 +37,13 @@ class LevelType(str, Enum):
     TIBL = "tibl"
     # Structure
     NAKED_POC = "naked_poc"
+    # Swing levels (daily/weekly/monthly)
+    DAILY_SWING_HIGH = "daily_swing_high"
+    DAILY_SWING_LOW = "daily_swing_low"
+    WEEKLY_SWING_HIGH = "weekly_swing_high"
+    WEEKLY_SWING_LOW = "weekly_swing_low"
+    MONTHLY_SWING_HIGH = "monthly_swing_high"
+    MONTHLY_SWING_LOW = "monthly_swing_low"
 
 
 class Action(int, Enum):
