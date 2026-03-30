@@ -199,6 +199,94 @@ def detect_fractal_pivots(
     return pivot_highs[-max_pivots:][::-1], pivot_lows[-max_pivots:][::-1]
 
 
+_TF_CONFIG = {
+    "daily":   {"lookback": 3, "min_candles": 10},
+    "weekly":  {"lookback": 2, "min_candles": 6},
+    "monthly": {"lookback": 2, "min_candles": 6},
+}
+
+
+def _classify_structure(
+    swing_highs: list[SwingLevel],
+    swing_lows: list[SwingLevel],
+) -> str:
+    """Classify market structure from the last 2 swing highs and lows."""
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return "ranging"
+
+    sh_new, sh_old = swing_highs[0].price, swing_highs[1].price
+    sl_new, sl_old = swing_lows[0].price, swing_lows[1].price
+
+    hh = sh_new > sh_old
+    hl = sl_new > sl_old
+    lh = sh_new < sh_old
+    ll = sl_new < sl_old
+
+    if hh and hl:
+        return "uptrend"
+    elif lh and ll:
+        return "downtrend"
+    return "ranging"
+
+
+def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
+    """Compute swing structure across daily, weekly, and monthly timeframes.
+
+    Aggregates 1m bars into higher-timeframe candles, detects fractal pivots
+    on each, classifies structure (HH/HL/LH/LL) per Dow Theory.
+    """
+    def empty_tf(tf: str) -> TimeframeSwings:
+        return TimeframeSwings(timeframe=tf, structure="ranging")
+
+    if not bars_1m:
+        return SwingStructure(
+            daily=empty_tf("daily"),
+            weekly=empty_tf("weekly"),
+            monthly=empty_tf("monthly"),
+            trend_alignment=0.0,
+        )
+
+    results: dict[str, TimeframeSwings] = {}
+
+    for tf, cfg in _TF_CONFIG.items():
+        candles = aggregate_to_timeframe(bars_1m, tf)
+
+        if len(candles) < cfg["min_candles"]:
+            results[tf] = empty_tf(tf)
+            continue
+
+        highs, lows = detect_fractal_pivots(
+            candles, lookback=cfg["lookback"], max_pivots=3,
+        )
+
+        for sl in highs:
+            sl.timeframe = tf
+        for sl in lows:
+            sl.timeframe = tf
+
+        structure = _classify_structure(highs, lows)
+        results[tf] = TimeframeSwings(
+            timeframe=tf,
+            structure=structure,
+            swing_highs=highs,
+            swing_lows=lows,
+        )
+
+    trend_scores = {
+        "uptrend": 1.0, "downtrend": -1.0, "ranging": 0.0,
+    }
+    alignment = sum(
+        trend_scores[results[tf].structure] for tf in ("daily", "weekly", "monthly")
+    ) / 3.0
+
+    return SwingStructure(
+        daily=results["daily"],
+        weekly=results["weekly"],
+        monthly=results["monthly"],
+        trend_alignment=round(alignment, 2),
+    )
+
+
 def compute_volume_profile(
     trades: list[dict],
     tick_size: float = 0.25,

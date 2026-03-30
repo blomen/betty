@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from src.market_data.levels import (
     aggregate_to_timeframe,
     detect_fractal_pivots,
+    compute_multi_tf_swings,
     SwingLevel,
     TimeframeSwings,
     SwingStructure,
@@ -123,3 +124,49 @@ def test_detect_fractal_pivots_insufficient():
     highs, lows = detect_fractal_pivots(candles, lookback=3, max_pivots=3)
     assert highs == []
     assert lows == []
+
+
+# ---------------------------------------------------------------------------
+# Task 3: compute_multi_tf_swings
+# ---------------------------------------------------------------------------
+
+def test_compute_multi_tf_swings_uptrend():
+    bars = _make_1m_bars(days=10, base_price=19000.0)
+    for i, bar in enumerate(bars):
+        trend = i * 0.01
+        bar["high"] += trend
+        bar["low"] += trend
+        bar["close"] = bar.get("close", bar["high"] - 2) + trend
+        bar["open"] = bar.get("open", bar["low"] + 2) + trend
+    result = compute_multi_tf_swings(bars)
+    assert isinstance(result, SwingStructure)
+    assert result.daily.timeframe == "daily"
+    assert result.daily.structure in ("uptrend", "downtrend", "ranging")
+    assert len(result.daily.swing_highs) <= 3
+    assert len(result.daily.swing_lows) <= 3
+    assert -1.0 <= result.trend_alignment <= 1.0
+
+
+def test_compute_multi_tf_swings_graceful_degradation():
+    bars = _make_1m_bars(days=5)
+    result = compute_multi_tf_swings(bars)
+    assert result.daily.timeframe == "daily"
+    assert result.weekly.structure == "ranging"
+    assert result.monthly.structure == "ranging"
+
+
+def test_compute_multi_tf_swings_empty():
+    result = compute_multi_tf_swings([])
+    assert result.daily.structure == "ranging"
+    assert result.weekly.structure == "ranging"
+    assert result.monthly.structure == "ranging"
+    assert result.trend_alignment == 0.0
+
+
+def test_compute_multi_tf_swings_timeframe_labels():
+    bars = _make_1m_bars(days=10)
+    result = compute_multi_tf_swings(bars)
+    for sh in result.daily.swing_highs:
+        assert sh.timeframe == "daily"
+    for sl in result.daily.swing_lows:
+        assert sl.timeframe == "daily"
