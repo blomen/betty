@@ -22,6 +22,9 @@ from ..constants import ALLOWED_MARKETS, ENRICHMENT_MARKETS, SHARP_PROVIDERS, EX
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache of known event IDs to avoid redundant DB lookups during Polymarket matching
+_known_event_ids: set[str] = set()
+
 # Youth/reserve league indicators — used to prevent cross-tier matching
 _YOUTH_INDICATORS = re.compile(
     r'\bu[- ]?(?:17|18|19|20|21|23)\b|'
@@ -263,19 +266,30 @@ def store_polymarket_event(
     matched_id = None
     teams_swapped = False
 
-    # 1. Check if default ID exists (exact match) — memory cache first, DB fallback
+    # 1. Check if default ID exists (exact match) — memory cache first, module cache, then DB fallback
     sport_events_poly = event_cache.get(kambi_sport, {})
-    if default_id in sport_events_poly or session.query(Event.id).filter(Event.id == default_id).first():
+    if default_id in sport_events_poly or default_id in _known_event_ids:
+        matched_id = default_id
+    elif session.query(Event.id).filter(Event.id == default_id).first():
+        _known_event_ids.add(default_id)
         matched_id = default_id
     else:
         # 2. Check swapped team order
         swapped_id = generate_canonical_id(kambi_sport, away_team, home_team, event.start_time)
-        if swapped_id in sport_events_poly or session.query(Event.id).filter(Event.id == swapped_id).first():
+        if swapped_id in sport_events_poly or swapped_id in _known_event_ids:
             matched_id = swapped_id
             teams_swapped = True
             logger.debug(
                 f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
                 f"canonical event with swapped teams"
+            )
+        elif session.query(Event.id).filter(Event.id == swapped_id).first():
+            _known_event_ids.add(swapped_id)
+            matched_id = swapped_id
+            teams_swapped = True
+            logger.debug(
+                f"[polymarket] Aligned '{home_team} vs {away_team}' -> "
+                f"canonical event with swapped teams (DB)"
             )
         else:
             # 3. Fuzzy match against cache (in case of different name normalization)
@@ -1141,8 +1155,8 @@ class OddsBatchProcessor:
         during concurrent extraction (multiple providers flushing simultaneously).
 
         Note: Uses time.sleep() because flush is called from synchronous contexts
-        (__exit__, add()). Reduced to 5 retries / ~3s max to limit event loop
-        blocking when callers haven't offloaded to a thread.
+        (__exit__, add()). Reduced to 3 retries / ~140ms max to minimize event
+        loop blocking when callers haven't offloaded to a thread.
         """
         if not self._pending:
             return
@@ -1150,14 +1164,14 @@ class OddsBatchProcessor:
         import time
         from sqlalchemy.exc import OperationalError as SAOperationalError
 
-        max_retries = 5
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 self._flush_inner()
                 return
             except SAOperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
-                    wait = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms, 400ms
+                    wait = 0.02 * (2 ** attempt)  # 20ms, 40ms = 60ms max total block
                     logger.warning(
                         "OddsBatchProcessor: DB locked on flush (attempt %d/%d), "
                         "retrying in %.0fms...", attempt + 1, max_retries, wait * 1000

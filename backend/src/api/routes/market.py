@@ -2,13 +2,17 @@
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
-import asyncio, json, time
+import asyncio, json, time, threading
 from typing import Callable, TypeVar
 
 from ..deps import get_db
 from ...services.market_service import MarketService
 
 T = TypeVar("T")
+
+# In-memory cache for expensive computations
+_session_levels_cache: dict[str, tuple[float, dict]] = {}  # key -> (expires_at, data)
+_session_levels_lock = threading.Lock()
 
 
 async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
@@ -424,8 +428,31 @@ async def get_session_levels(
     svc: MarketService = Depends(_svc),
 ):
     """Return per-day session levels (PDH/PDL, IB, Tokyo, London) with time boundaries."""
-    response.headers["Cache-Control"] = "max-age=30"
-    return await _offload(svc.get_session_levels, symbol, days)
+    cache_key = f"{symbol}:{days}"
+    now = time.time()
+    with _session_levels_lock:
+        if cache_key in _session_levels_cache:
+            expires, data = _session_levels_cache[cache_key]
+            if now < expires:
+                response.headers["Cache-Control"] = "max-age=30"
+                return data
+
+    try:
+        result = await asyncio.wait_for(
+            _offload(svc.get_session_levels, symbol, days),
+            timeout=30.0,
+        )
+        with _session_levels_lock:
+            _session_levels_cache[cache_key] = (now + 60, result)  # cache 60s
+        response.headers["Cache-Control"] = "max-age=30"
+        return result
+    except asyncio.TimeoutError:
+        # Return stale cache if available
+        with _session_levels_lock:
+            if cache_key in _session_levels_cache:
+                _, data = _session_levels_cache[cache_key]
+                return data
+        return {"sessions": [], "error": "session_levels_timeout"}
 
 
 @router.get("/footprint")
@@ -757,7 +784,7 @@ async def get_tpo_live(
     import asyncio
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=5.0
+            asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=15.0
         )
     except asyncio.TimeoutError:
         return {"error": "tpo_timeout", "cached": True}
@@ -772,7 +799,7 @@ async def get_tpo_sessions(
     import asyncio
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=5.0
+            asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=15.0
         )
     except asyncio.TimeoutError:
         return {"error": "tpo_timeout"}

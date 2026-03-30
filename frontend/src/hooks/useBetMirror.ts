@@ -88,8 +88,16 @@ export function useBetMirror() {
     }
   }, []);
 
-  useEffect(() => {
+  const esRef = useRef<EventSource | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const delayRef = useRef(1000);
+
+  const connectMirror = useCallback(() => {
+    esRef.current?.close();
     const es = new EventSource('/api/extraction/stream');
+    esRef.current = es;
+
+    const resetDelay = () => { delayRef.current = 1000; };
 
     const addToast = (data: Partial<MirroredBet>) => {
       const toast: MirroredBet = {
@@ -112,25 +120,29 @@ export function useBetMirror() {
     };
 
     es.addEventListener('bet_mirrored', (e: MessageEvent) => {
+      resetDelay();
       addToast(JSON.parse(e.data));
     });
 
     es.addEventListener('bet_rejected', (e: MessageEvent) => {
+      resetDelay();
       addToast({ ...JSON.parse(e.data), status: 'rejected' });
     });
 
     es.addEventListener('settlements_pending', (e: MessageEvent) => {
-      if (cooldownRef.current) return; // Skip re-fire after confirm
+      resetDelay();
+      if (cooldownRef.current) return;
       setSyncAvailable(null);
       setPendingSettlements(JSON.parse(e.data));
     });
 
     es.addEventListener('sync_available', (e: MessageEvent) => {
+      resetDelay();
       setSyncAvailable(JSON.parse(e.data));
     });
 
     es.addEventListener('balance_synced', (e: MessageEvent) => {
-      // Update sync banner with new balance if still showing
+      resetDelay();
       const data = JSON.parse(e.data);
       setSyncAvailable(prev => prev && prev.provider === data.provider
         ? { ...prev, balance: data.balance }
@@ -138,8 +150,22 @@ export function useBetMirror() {
       );
     });
 
-    return () => es.close();
+    es.onerror = () => {
+      es.close();
+      retryRef.current = setTimeout(() => {
+        delayRef.current = Math.min(delayRef.current * 2, 30000);
+        connectMirror();
+      }, delayRef.current);
+    };
   }, []);
+
+  useEffect(() => {
+    connectMirror();
+    return () => {
+      if (retryRef.current) clearTimeout(retryRef.current);
+      esRef.current?.close();
+    };
+  }, [connectMirror]);
 
   const dismissSync = useCallback(() => setSyncAvailable(null), []);
 
