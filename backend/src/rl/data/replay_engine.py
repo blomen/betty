@@ -467,6 +467,21 @@ class ReplayEngine:
             _add_optional(levels, "monthly_vah", LevelType.MONTHLY_VAH, self._precomputed.get("monthly_vah"))
             _add_optional(levels, "monthly_val", LevelType.MONTHLY_VAL, self._precomputed.get("monthly_val"))
 
+            # Swing levels (most recent pivot per timeframe)
+            swing = self._precomputed.get("swing_structure")
+            if swing is not None:
+                for tf_swings in [swing.daily, swing.weekly, swing.monthly]:
+                    if tf_swings.swing_highs:
+                        sh = tf_swings.swing_highs[0]
+                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_HIGH", None)
+                        if lt:
+                            levels.append((f"{tf_swings.timeframe}_swing_high", lt, sh.price))
+                    if tf_swings.swing_lows:
+                        sl = tf_swings.swing_lows[0]
+                        lt = getattr(LevelType, f"{tf_swings.timeframe.upper()}_SWING_LOW", None)
+                        if lt:
+                            levels.append((f"{tf_swings.timeframe}_swing_low", lt, sl.price))
+
         self._active_levels = levels
 
         # Build zones from active levels
@@ -690,6 +705,10 @@ class ReplayEngine:
             "single_print_zones": (
                 self._precomputed.get("single_print_zones", [])
                 if self._precomputed else []
+            ),
+            "swing_structure": (
+                self._precomputed.get("swing_structure")
+                if self._precomputed else None
             ),
         }
 

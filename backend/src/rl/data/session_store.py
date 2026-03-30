@@ -334,6 +334,51 @@ def _composite_poc(summaries: dict[str, SessionSummary], dates: list[str]) -> fl
     return poc_from_histogram(histo)
 
 
+def _compute_swing_from_summaries(
+    summaries: dict[str, SessionSummary],
+    current_date: str,
+) -> "SwingStructure | None":
+    """Build SwingStructure from session summaries for backtesting.
+
+    Converts each prior session into a daily candle (using rth_high/rth_low/poc),
+    then runs compute_multi_tf_swings. Weekly/monthly candles are aggregated from
+    the daily candles by the same function.
+    """
+    from src.market_data.levels import compute_multi_tf_swings
+    from datetime import timezone, timedelta
+    from zoneinfo import ZoneInfo
+
+    CET = ZoneInfo("Europe/Stockholm")
+    prior_dates = sorted(d for d in summaries if d < current_date)
+    if not prior_dates:
+        return None
+
+    # Build synthetic 1m-like bars from session summaries.
+    # Each session → one bar at 12:00 CET with OHLC from rth data.
+    synth_bars: list[dict] = []
+    for d in prior_dates:
+        s = summaries[d]
+        if s.rth_high is None or s.rth_low is None:
+            continue
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+        synth_bars.append({
+            "ts": ts,
+            "open": s.poc,
+            "high": s.rth_high,
+            "low": s.rth_low,
+            "close": s.poc,
+        })
+
+    if len(synth_bars) < 7:  # need at least 2*lookback+1 for daily (lookback=3)
+        return None
+
+    # aggregate_to_timeframe expects 1m bars, but since we have exactly 1 bar
+    # per day (at 12:00 CET), daily aggregation gives 1 candle per date.
+    # For weekly/monthly, bars from multiple days merge correctly.
+    return compute_multi_tf_swings(synth_bars)
+
+
 def compute_precomputed_levels(
     summaries: dict[str, SessionSummary],
     current_date: str,
@@ -384,6 +429,9 @@ def compute_precomputed_levels(
     for d in prior_dates:
         all_spz.extend(summaries[d].single_print_zones)
 
+    # --- Multi-timeframe swing structure ---
+    swing_structure = _compute_swing_from_summaries(summaries, current_date)
+
     return {
         "naked_pocs": naked_pocs,
         "poc_daily": poc_daily,
@@ -395,4 +443,5 @@ def compute_precomputed_levels(
         "overnight_high": globex_high,  # alias for NQ
         "overnight_low": globex_low,
         "single_print_zones": all_spz,
+        "swing_structure": swing_structure,
     }
