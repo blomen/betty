@@ -149,6 +149,56 @@ def aggregate_to_timeframe(
     return result
 
 
+def detect_fractal_pivots(
+    candles: list[dict],
+    lookback: int = 3,
+    max_pivots: int = 3,
+) -> tuple[list[SwingLevel], list[SwingLevel]]:
+    """Detect fractal pivot highs and lows from candle data.
+
+    A swing high at index i requires candles[i].high >= all candles[j].high
+    for j in [i-lookback, i+lookback] where j != i. Mirror for swing low.
+
+    Returns:
+        (swing_highs, swing_lows) — each a list of SwingLevel, newest first.
+    """
+    n = len(candles)
+    if n < 2 * lookback + 1:
+        return [], []
+
+    pivot_highs: list[SwingLevel] = []
+    pivot_lows: list[SwingLevel] = []
+
+    for i in range(lookback, n - lookback):
+        high = candles[i]["high"]
+        low = candles[i]["low"]
+        ts = candles[i].get("ts", 0)
+        if isinstance(ts, datetime):
+            ts = int(ts.timestamp())
+
+        is_pivot_high = all(
+            high >= candles[j]["high"]
+            for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+        is_pivot_low = all(
+            low <= candles[j]["low"]
+            for j in range(i - lookback, i + lookback + 1) if j != i
+        )
+
+        if is_pivot_high:
+            pivot_highs.append(SwingLevel(
+                price=high, timestamp=ts,
+                type="swing_high", timeframe="",
+            ))
+        if is_pivot_low:
+            pivot_lows.append(SwingLevel(
+                price=low, timestamp=ts,
+                type="swing_low", timeframe="",
+            ))
+
+    return pivot_highs[-max_pivots:][::-1], pivot_lows[-max_pivots:][::-1]
+
+
 def compute_volume_profile(
     trades: list[dict],
     tick_size: float = 0.25,
