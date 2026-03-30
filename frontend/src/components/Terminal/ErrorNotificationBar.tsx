@@ -24,6 +24,7 @@ export function ConnectionErrorBar() {
     let mounted = true;
     const mountTime = Date.now();
     let everConnected = false;
+    let consecutiveFails = 0;
     let intervalId: ReturnType<typeof setInterval>;
 
     async function check() {
@@ -35,6 +36,7 @@ export function ConnectionErrorBar() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         if (mounted) {
           everConnected = true;
+          consecutiveFails = 0;
           setOffline(false);
           setConnecting(false);
           setLastError(null);
@@ -43,10 +45,18 @@ export function ConnectionErrorBar() {
         }
       } catch (err) {
         if (mounted) {
+          consecutiveFails++;
           const inGrace = !everConnected && Date.now() - mountTime < STARTUP_GRACE_MS;
-          setConnecting(inGrace);
-          setOffline(!inGrace);
-          setLastError(inGrace ? null : (err instanceof Error ? err.message : 'Connection failed'));
+          if (inGrace) {
+            setConnecting(true);
+            setOffline(false);
+            setLastError(null);
+          } else if (consecutiveFails >= 3) {
+            setConnecting(false);
+            setOffline(true);
+            setLastError(err instanceof Error ? err.message : 'Connection failed');
+          }
+          // else: transient failure, don't change state yet
           clearInterval(intervalId);
           intervalId = setInterval(check, 5_000);
         }

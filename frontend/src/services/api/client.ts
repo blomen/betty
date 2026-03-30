@@ -126,7 +126,7 @@ function checkBackendInBackground(): void {
   if (now - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return;
   _lastHealthCheck = now;
   const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), 2000);
+  const tid = setTimeout(() => controller.abort('Health check timeout'), 3000);
   fetch('/health', { signal: controller.signal })
     .then(res => { clearTimeout(tid); _backendDown = !res.ok; if (res.ok) _downSince = 0; })
     .catch(() => { clearTimeout(tid); if (!_backendDown) { _backendDown = true; _downSince = now; } });
