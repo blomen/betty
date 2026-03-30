@@ -142,7 +142,17 @@ export function TradingContainer({ activeSubTab }: Props) {
       if (sessionRes && (sessionRes as any).status !== 'no_data' && sessionRes.session) {
         setSession(sessionRes);
       } else {
-        setSession(DEMO_SESSION);
+        // Fetch real VP data so sidebar doesn't show stale demo values
+        const [dVP, wVP, mVP] = await Promise.all([
+          api.getVolumeProfile('NQ', 'session').catch(() => null),
+          api.getVolumeProfile('NQ', 'weekly').catch(() => null),
+          api.getVolumeProfile('NQ', 'monthly').catch(() => null),
+        ]);
+        const realProfiles: any = { ...DEMO_SESSION.profiles };
+        if (dVP && dVP.poc) realProfiles.session = { poc: dVP.poc, vah: dVP.vah, val: dVP.val };
+        if (wVP && wVP.poc) realProfiles.weekly = { poc: wVP.poc, vah: wVP.vah, val: wVP.val };
+        if (mVP && mVP.poc) realProfiles.monthly = { poc: mVP.poc, vah: mVP.vah, val: mVP.val };
+        setSession({ ...DEMO_SESSION, profiles: realProfiles });
         seedLevels(DEMO_LEVELS);
         lastBattleRef.current = DEMO_BATTLE;
         return;
@@ -186,13 +196,13 @@ export function TradingContainer({ activeSubTab }: Props) {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Auto-refresh session every 30s
+  // Auto-refresh session every 60s
   useEffect(() => {
     const refresh = async () => {
       const sessionRes = await api.getExpandedSession().catch(() => null);
       if (sessionRes) setSession(sessionRes);
     };
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 60_000);
     return () => clearInterval(interval);
   }, []);
 

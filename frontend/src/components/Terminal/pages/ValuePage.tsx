@@ -126,16 +126,8 @@ const OpportunityRow = memo(function OpportunityRow({
     ? (effectiveOdds / rep.fair_odds - 1) * 100
     : rep.edge_pct ?? 0;
 
-  const hasBalance = (ids: string[]) => ids.some(id => (balanceMap.get(id) ?? 0) > 0);
-
   const selOpp = opps[selIdx] || opps[0];
   const isPending = pendingBet?.groupKey === group.key;
-
-  const getDotClass = (opp: any) => {
-    if ((opp.allocation_score ?? 0) > 50) return 'bg-tabValue';
-    if ((balanceMap.get(opp.provider1) ?? 0) > 0) return 'bg-success';
-    return 'bg-muted/40';
-  };
 
   const effStake = localStakeOverride ?? selOpp.final_stake;
   const oppHasStake = effStake != null && effStake > 0;
@@ -177,7 +169,6 @@ const OpportunityRow = memo(function OpportunityRow({
         </td>
         <td className="text-right text-sm min-w-0">
           <span className="inline-flex items-center gap-1.5 justify-end">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(rep as any).allocation_score > 50 ? 'bg-tabValue' : hasBalance(groupProviders) ? 'bg-success' : 'bg-muted/40'}`} />
             {providerCount <= 3 ? (
               <span className="text-text truncate">{groupProviders.map((p, i) => <Fragment key={p}>{i > 0 && ', '}<ProviderName name={p} /></Fragment>)}</span>
             ) : (
@@ -237,7 +228,7 @@ const OpportunityRow = memo(function OpportunityRow({
           {rep.bonus_status === 'freebet_available' && <span className="ml-1 text-[9px] px-1 py-0.5 bg-accent/20 text-accent">FREE</span>}
         </td>
         <td className={`text-right font-semibold text-sm ${dynamicEdge > 0 ? 'text-success' : 'text-error'}`}>{dynamicEdge > 0 ? '+' : ''}{dynamicEdge.toFixed(1)}%</td>
-        {(() => { const rt = relativeTime(selOpp.odds_updated_at ?? selOpp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(selOpp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && !isSkipped && (
@@ -271,7 +262,6 @@ const OpportunityRow = memo(function OpportunityRow({
                       onClick={() => onProviderDropdownToggle(group.key)}
                       className="bg-bg border border-border text-text text-xs px-2 py-1.5 focus:outline-none focus:border-tabValue/50 cursor-pointer flex items-center gap-1.5 min-w-[120px]"
                     >
-                      <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(selOpp)}`} />
                       <span className="truncate">
                         <ProviderName name={selOpp.provider1} />
                         {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
@@ -300,7 +290,6 @@ const OpportunityRow = memo(function OpportunityRow({
                               }}
                               className={`w-full text-left px-2 py-1.5 text-xs flex items-center gap-1.5 hover:bg-panel cursor-pointer ${i === selIdx ? 'bg-panel text-text' : 'text-muted'}`}
                             >
-                              <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${getDotClass(opp)}`} />
                               <span className="truncate">
                                 <ProviderName name={opp.provider1} />{s}{tag}
                               </span>
@@ -463,9 +452,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     for (const p of providers) m.set(p.id, p.balance);
     return m;
   }, [providers]);
-
-  const hasBalance = (providerIds: string[]) =>
-    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
 
   const grouped = useMemo(() => {
     let result = opportunities;
@@ -874,7 +860,6 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
                     </td>
                     <td className="text-right text-sm min-w-0">
                       <span className="inline-flex items-center gap-1.5 justify-end">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(group.providers) ? 'bg-success' : 'bg-error'}`} />
                         {providerCount === 1 ? (
                           <span className="text-text truncate"><ProviderName name={group.providers[0]} /></span>
                         ) : (

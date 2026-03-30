@@ -1,27 +1,25 @@
 import React, { useMemo, useState } from 'react';
-import { ProviderName } from '../../ProviderName';
 import { resolveOutcome } from '@/utils/betting';
 import { marketLabel } from '@/utils/betting';
 import { getTTKFromNow, formatTTKLabel, getTTKColor } from '@/utils/formatters';
-import { relativeTime } from '../../FilterBar';
-import type { BatchBet, BatchSummary, WageringProjection } from '@/types';
+import type { ClusterBet, BatchSummary } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function betKey(b: BatchBet): string {
-  return `${b.provider_id}:${b.event_id}:${b.market}:${b.outcome}:${b.point ?? ''}`;
+export function betKey(b: ClusterBet): string {
+  return `${b.cluster}:${b.event_id}:${b.market}:${b.outcome}:${b.point ?? ''}`;
 }
 
-function eventLabel(b: BatchBet): string {
+function eventLabel(b: ClusterBet): string {
   const home = b.display_home || b.sport;
   const away = b.display_away || '';
   if (home && away) return `${home} v ${away}`;
   return home || away || b.event_id;
 }
 
-function outcomeLabel(b: BatchBet): string {
+function outcomeLabel(b: ClusterBet): string {
   return resolveOutcome(
     b.outcome,
     {
@@ -40,15 +38,10 @@ function outcomeLabel(b: BatchBet): string {
 // ---------------------------------------------------------------------------
 
 interface Props {
-  batch: BatchBet[];
+  batch: ClusterBet[];
   summary: BatchSummary;
-  wageringProjections: WageringProjection[];
   onRemoveBet: (betKey: string) => void;
 }
-
-// ---------------------------------------------------------------------------
-// Tier config
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -61,7 +54,7 @@ function ClusterHeader({
   onToggle,
 }: {
   cluster: string;
-  bets: BatchBet[];
+  bets: ClusterBet[];
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -75,7 +68,7 @@ function ClusterHeader({
       className="cursor-pointer hover:bg-panel2/60 transition-colors"
       onClick={onToggle}
     >
-      <td colSpan={13} className="!py-1 !px-2 bg-panel border-b border-border">
+      <td colSpan={12} className="!py-1 !px-2 bg-panel border-b border-border">
         <div className="flex items-center gap-2">
           <span className="text-text text-sm w-3">{expanded ? '▾' : '▸'}</span>
           <span className="text-sm font-medium text-text uppercase tracking-wider">
@@ -99,7 +92,7 @@ function BetRow({
   bet,
   onRemove,
 }: {
-  bet: BatchBet;
+  bet: ClusterBet;
   onRemove: () => void;
 }) {
   const isPolymarket = bet.tier === 'polymarket';
@@ -107,8 +100,6 @@ function BetRow({
   const market = marketLabel(bet.market);
   const outcome = outcomeLabel(bet);
   const event = eventLabel(bet);
-  const hasWageringBadge =
-    bet.wagering_pct != null && bet.wagering_pct < 100;
   const prob = bet.fair_odds > 0 ? (1 / bet.fair_odds) * 100 : 0;
 
   return (
@@ -132,24 +123,9 @@ function BetRow({
         {outcome}
       </td>
 
-      {/* Provider + cluster + wager badge */}
+      {/* Cluster */}
       <td className="text-sm">
-        <div className="flex items-center gap-1 flex-wrap">
-          <ProviderName name={bet.provider_id} />
-          {bet.cluster && (
-            <span className="text-muted2 text-[10px]">{bet.cluster}</span>
-          )}
-          {hasWageringBadge && (
-            <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1 py-0.5 leading-none">
-              {bet.wagering_pct!.toFixed(0)}%
-            </span>
-          )}
-          {bet.is_bonus && (
-            <span className="bg-accent/20 text-accent text-[9px] px-1 py-0.5 leading-none">
-              {bet.bonus_type === 'freebet' ? 'FREE' : 'TRG'}
-            </span>
-          )}
-        </div>
+        <span className="text-muted uppercase tracking-wider text-[10px]">{bet.cluster}</span>
       </td>
 
       {/* Odds */}
@@ -182,17 +158,6 @@ function BetRow({
         {isPolymarket
           ? `${bet.stake.toFixed(2)} ${currency}`
           : `${bet.stake.toFixed(0)} ${currency}`}
-      </td>
-
-      {/* Updated */}
-      <td className="text-right text-sm">
-        {(() => {
-          const ts = bet.odds_age_minutes != null
-            ? new Date(Date.now() - bet.odds_age_minutes * 60000).toISOString()
-            : null;
-          const rt = relativeTime(ts);
-          return <span className={rt.className}>{rt.text}</span>;
-        })()}
       </td>
 
       {/* TTK */}
@@ -236,28 +201,14 @@ function BetRow({
 export function SessionBatchPanel({
   batch,
   summary,
-  wageringProjections,
   onRemoveBet,
 }: Props) {
-  const polymarketBets = useMemo(
-    () => batch.filter((b) => b.tier === 'polymarket'),
-    [batch],
-  );
-  const pinnacleBets = useMemo(
-    () => batch.filter((b) => b.tier === 'pinnacle'),
-    [batch],
-  );
-  const softBets = useMemo(
-    () => batch.filter((b) => b.tier === 'soft'),
-    [batch],
-  );
-
-  // Group soft bets by cluster, preserving order of first appearance
-  const softByCluster = useMemo(() => {
+  // Group all bets by cluster uniformly
+  const byCluster = useMemo(() => {
     const order: string[] = [];
-    const groups: Record<string, BatchBet[]> = {};
-    for (const b of softBets) {
-      const c = b.cluster || b.provider_id;
+    const groups: Record<string, ClusterBet[]> = {};
+    for (const b of batch) {
+      const c = b.cluster;
       if (!groups[c]) {
         order.push(c);
         groups[c] = [];
@@ -265,9 +216,9 @@ export function SessionBatchPanel({
       groups[c].push(b);
     }
     return order.map(c => ({ cluster: c, bets: groups[c] }));
-  }, [softBets]);
+  }, [batch]);
 
-  // Collapsed state for clusters — all start collapsed
+  // Collapsed state — all start collapsed
   const [expandedClusters, setExpandedClusters] = useState<Record<string, boolean>>({});
   const toggleCluster = (cluster: string) =>
     setExpandedClusters(prev => ({ ...prev, [cluster]: !prev[cluster] }));
@@ -276,16 +227,11 @@ export function SessionBatchPanel({
   const usdcBets = useMemo(() => batch.filter(b => b.tier === 'polymarket'), [batch]);
   const sekStake = sekBets.reduce((s, b) => s + b.stake, 0);
   const usdcStake = usdcBets.reduce((s, b) => s + b.stake, 0);
-  // total_expected_profit is already in SEK (backend converts Polymarket USDC → kr)
   const totalEV = summary.total_expected_profit;
 
-  const hasProjections = wageringProjections.length > 0;
-
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      {/* ------------------------------------------------------------------ */}
-      {/* Summary bar                                                         */}
-      {/* ------------------------------------------------------------------ */}
+    <div className="flex flex-col min-h-0 flex-1">
+      {/* Summary bar */}
       <div className="flex items-center gap-4 px-3 py-1.5 border border-border bg-panel text-sm flex-wrap">
         <span className="text-text font-medium">
           {batch.length} bets
@@ -327,9 +273,7 @@ export function SessionBatchPanel({
         )}
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Batch table                                                          */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Batch table */}
       {batch.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border border-t-0 bg-panel">
           No bets in batch.
@@ -340,17 +284,16 @@ export function SessionBatchPanel({
           <table className="sq w-full table-fixed">
             <colgroup>
               <col style={{ width: '3%' }} />
-              <col style={{ width: '18%' }} />
+              <col style={{ width: '19%' }} />
               <col style={{ width: '5%' }} />
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '14%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
               <col style={{ width: '5%' }} />
               <col style={{ width: '7%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '7%' }} />
               <col style={{ width: '4%' }} />
             </colgroup>
             <thead className="sticky top-0 z-10 bg-panel">
@@ -359,123 +302,37 @@ export function SessionBatchPanel({
                 <th className="text-left">Event</th>
                 <th className="text-left">Market</th>
                 <th className="text-left">Outcome</th>
-                <th className="text-left">Provider</th>
+                <th className="text-left">Cluster</th>
                 <th className="text-right">Odds</th>
                 <th className="text-right">Fair</th>
                 <th className="text-right">Prob</th>
                 <th className="text-right">Edge</th>
                 <th className="text-right">Stake</th>
-                <th className="text-right">Updated</th>
                 <th className="text-right">TTK</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {/* Polymarket tier */}
-              {polymarketBets.length > 0 && (
-                <>
+              {byCluster.map(({ cluster, bets }) => (
+                <React.Fragment key={cluster}>
                   <ClusterHeader
-                    cluster="polymarket"
-                    bets={polymarketBets}
-                    expanded={!!expandedClusters['polymarket']}
-                    onToggle={() => toggleCluster('polymarket')}
+                    cluster={cluster}
+                    bets={bets}
+                    expanded={!!expandedClusters[cluster]}
+                    onToggle={() => toggleCluster(cluster)}
                   />
-                  {expandedClusters['polymarket'] && polymarketBets.map((b) => (
+                  {expandedClusters[cluster] && bets.map((b) => (
                     <BetRow
                       key={betKey(b)}
                       bet={b}
                       onRemove={() => onRemoveBet(betKey(b))}
                     />
                   ))}
-                </>
-              )}
-
-              {/* Pinnacle tier */}
-              {pinnacleBets.length > 0 && (
-                <>
-                  <ClusterHeader
-                    cluster="pinnacle"
-                    bets={pinnacleBets}
-                    expanded={!!expandedClusters['pinnacle']}
-                    onToggle={() => toggleCluster('pinnacle')}
-                  />
-                  {expandedClusters['pinnacle'] && pinnacleBets.map((b) => (
-                    <BetRow
-                      key={betKey(b)}
-                      bet={b}
-                      onRemove={() => onRemoveBet(betKey(b))}
-                    />
-                  ))}
-                </>
-              )}
-
-              {/* Soft Value — grouped by cluster */}
-              {softBets.length > 0 && (
-                <>
-                  {softByCluster.map(({ cluster, bets }) => (
-                    <React.Fragment key={cluster}>
-                      <ClusterHeader
-                        cluster={cluster}
-                        bets={bets}
-                        expanded={!!expandedClusters[cluster]}
-                        onToggle={() => toggleCluster(cluster)}
-                      />
-                      {expandedClusters[cluster] && bets.map((b) => (
-                        <BetRow
-                          key={betKey(b)}
-                          bet={b}
-                          onRemove={() => onRemoveBet(betKey(b))}
-                        />
-                      ))}
-                    </React.Fragment>
-                  ))}
-                </>
-              )}
+                </React.Fragment>
+              ))}
             </tbody>
           </table>
         </div>
-        </div>
-      )}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Wagering projection bar                                             */}
-      {/* ------------------------------------------------------------------ */}
-      {hasProjections && (
-        <div className="border border-border border-t-0 bg-amber-500/5 px-3 py-1.5">
-          <div className="flex items-center gap-1 mb-1">
-            <span className="text-sm font-medium text-amber-500 tracking-wider uppercase">
-              Wagering After Batch
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-            {wageringProjections.map((proj) => (
-              <div
-                key={`${proj.provider_id}-${proj.cluster}`}
-                className="flex items-center gap-1.5 text-sm"
-              >
-                <span className="text-amber-400 font-medium">
-                  {proj.provider_id}
-                </span>
-                {(() => {
-                  const total = proj.wagering_total || proj.wagering_remaining;
-                  const beforePct = total > 0 ? Math.round(((total - proj.wagering_remaining) / total) * 100) : 100;
-                  const afterPct = total > 0 ? Math.round(((total - proj.projected_remaining) / total) * 100) : 100;
-                  return (
-                    <>
-                      <span className="text-muted">{beforePct}%</span>
-                      <span className="text-muted2">→</span>
-                      <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
-                    </>
-                  );
-                })()}
-                {proj.days_remaining != null && (
-                  <span className="text-muted text-[10px]">
-                    {proj.days_remaining}d
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
         </div>
       )}
     </div>

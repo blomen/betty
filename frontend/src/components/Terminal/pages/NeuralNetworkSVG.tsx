@@ -1,4 +1,6 @@
-// NeuralNetworkSVG.tsx — reactive DQN visualization with firing neurons
+// NeuralNetworkSVG.tsx — accurate Dueling DQN visualization
+// Architecture: 139 → 256 (LN+ReLU) → 256 (LN+ReLU) → 128 (LN+ReLU) → 64 (ReLU)
+//   → Value(64→32→1) + Advantage(64→32→3) → Q = V + (A - mean(A))
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import {
   DQN_INPUTS, DQN_SEGMENTS, HIDDEN_LAYERS, ACTION_NAMES, ACTION_COLORS,
@@ -9,20 +11,23 @@ interface Props {
   dqnInference: DQNInferenceEvent | null;
 }
 
-// Layout
-const W = 900;
+// Layout — 6 columns: input, L1, L2, L3, L4, output
+const W = 960;
 const H = 420;
-const INPUT_X = 100;
-const L1_X = 280;
-const L2_X = 440;
-const L3_X = 600;
-const OUTPUT_X = 780;
-const LAYER_XS = [L1_X, L2_X, L3_X];
+const INPUT_X = 80;
+const L1_X = 200;
+const L2_X = 340;
+const L3_X = 480;
+const L4_X = 600;
+const OUTPUT_X = 760;
+const LAYER_XS = [L1_X, L2_X, L3_X, L4_X];
 
-// How many dots per hidden layer
-const DOTS_PER_LAYER = [16, 16, 10];
+// How many dots to show per hidden layer (sampled from full width)
+const DOTS_PER_LAYER = [16, 16, 12, 8];
 
-// Firing threshold — neurons above this get pulse animation
+// Layer colors matching architecture
+const LAYER_COLORS = ['#06b6d4', '#0891b2', '#8b5cf6', '#a78bfa'];
+
 const FIRE_THRESHOLD = 0.5;
 
 interface FiringNeuron {
@@ -82,7 +87,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
   // ── Hidden activations ──
   const hiddenActivations = useMemo(() => {
     return HIDDEN_LAYERS.map((_, li) => {
-      const key = (['layer1', 'layer2', 'layer3'] as const)[li];
+      const key = (['layer1', 'layer2', 'layer3', 'layer4'] as const)[li];
       const acts = dqnInference?.activations[key] ?? [];
       return hiddenDots[li].map(d => Math.min(1, Math.abs(acts[d.srcIdx] ?? 0)));
     });
@@ -91,7 +96,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
   // ── Output positions ──
   const outputNodes = useMemo(() => {
     const count = ACTION_NAMES.length;
-    const spacing = 100;
+    const spacing = 90;
     const center = H / 2;
     return ACTION_NAMES.map((name, i) => ({
       name,
@@ -107,7 +112,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
     return qv.indexOf(Math.max(...qv));
   }, [dqnInference]);
 
-  // ── Connection paths (curved) ──
+  // ── Connection paths ──
   const connections = useMemo(() => {
     if (!dqnInference) return [];
     const lines: { d: string; color: string; width: number; opacity: number }[] = [];
@@ -117,8 +122,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
       return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
     };
 
-    // Aggregate connections: segment → L1
-    // For each segment, find strongest connections to each L1 dot
+    // Segment → L1
     const segConns = new Map<string, { strength: number; sign: number }>();
     for (const c of dqnInference.connections.input_l1) {
       const segIdx = DQN_SEGMENTS.findIndex(s => c.from_idx >= s.start && c.from_idx < s.end);
@@ -144,12 +148,12 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
       });
     }
 
-    // Hidden → hidden connections
+    // Hidden → hidden: L1→L2, L2→L3, L3→L4
     const layerPairs = [
       { conns: dqnInference.connections.l1_l2, fromLi: 0, toLi: 1 },
       { conns: dqnInference.connections.l2_l3, fromLi: 1, toLi: 2 },
+      { conns: dqnInference.connections.l3_l4 ?? dqnInference.connections.l3_output ?? [], fromLi: 2, toLi: 3 },
     ];
-    const layerColors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
     for (const { conns, fromLi, toLi } of layerPairs) {
       for (const c of conns) {
         const fi = hiddenDots[fromLi].findIndex(d => d.srcIdx === c.from_idx);
@@ -158,20 +162,21 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         lines.push({
           d: curve(LAYER_XS[fromLi] + 5, hiddenDots[fromLi][fi].y,
                    LAYER_XS[toLi] - 5, hiddenDots[toLi][ti].y),
-          color: c.sign === 1 ? layerColors[toLi] : '#ef4444',
+          color: c.sign === 1 ? LAYER_COLORS[toLi] : '#ef4444',
           width: Math.max(0.5, c.strength * 2.5),
           opacity: Math.max(0.04, Math.min(0.6, c.strength)),
         });
       }
     }
 
-    // L3 → output
-    for (const c of dqnInference.connections.l3_output) {
-      const fi = hiddenDots[2].findIndex(d => d.srcIdx === c.from_idx);
+    // L4 (features) → output Q-values (through dueling heads)
+    const l4Conns = dqnInference.connections.l4_output ?? [];
+    for (const c of l4Conns) {
+      const fi = hiddenDots[3].findIndex(d => d.srcIdx === c.from_idx);
       const out = outputNodes[c.to_idx];
       if (fi === -1 || !out) continue;
       lines.push({
-        d: curve(LAYER_XS[2] + 5, hiddenDots[2][fi].y, out.x - 14, out.y),
+        d: curve(LAYER_XS[3] + 5, hiddenDots[3][fi].y, out.x - 14, out.y),
         color: c.sign === 1 ? out.color : '#ef4444',
         width: Math.max(0.5, c.strength * 2.5),
         opacity: Math.max(0.04, Math.min(0.6, c.strength)),
@@ -205,10 +210,9 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
       acts.forEach((act, di) => {
         if (act > FIRE_THRESHOLD) {
           const dot = hiddenDots[li][di];
-          const colors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
           newFires.push({
             id: `h${li}-${di}-${now}`, cx: LAYER_XS[li], cy: dot.y,
-            color: colors[li], intensity: act, ts: now,
+            color: LAYER_COLORS[li], intensity: act, ts: now,
           });
         }
       });
@@ -248,6 +252,9 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
     return `AT LEVEL ${dqnInference.level}`;
   }, [dqnInference]);
 
+  // Dueling formula midpoint for visualization bracket
+  const duelingMidX = (L4_X + OUTPUT_X) / 2;
+
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
@@ -282,7 +289,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         .nn-conn { transition: opacity 0.2s ease, stroke-width 0.2s ease; }
       `}</style>
 
-      {/* ── Connections (curved paths) ── */}
+      {/* ── Connections ── */}
       {connections.map((c, i) => (
         <path
           key={i}
@@ -297,7 +304,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
 
       {/* ── Firing pulse rings ── */}
       {firingNeurons.map(f => {
-        const age = (Date.now() - f.ts) / 800; // 0→1
+        const age = (Date.now() - f.ts) / 800;
         const r = 4 + age * 16;
         const opacity = (1 - age) * f.intensity * 0.6;
         return (
@@ -320,7 +327,6 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         const bright = Math.max(0.2, act);
         return (
           <g key={seg.name}>
-            {/* Glow backdrop */}
             {act > FIRE_THRESHOLD && (
               <circle cx={seg.x} cy={seg.y} r={r + 4}
                 fill={seg.color} opacity={act * 0.25} filter="url(#nn-glow)" />
@@ -345,20 +351,39 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
       {/* ── Hidden layers ── */}
       {HIDDEN_LAYERS.map((size, li) => {
         const lx = LAYER_XS[li];
-        const colors = ['#06b6d4', '#8b5cf6', '#a78bfa'];
-        const color = colors[li];
+        const color = LAYER_COLORS[li];
         const dots = hiddenDots[li];
         const acts = hiddenActivations[li];
+        // Show LayerNorm indicator for first 3 layers (they use LN+ReLU)
+        const hasLN = li < 3;
         return (
           <g key={`layer-${li}`}>
             {/* Layer label */}
             <text
-              x={lx} y={16}
+              x={lx} y={14}
               fill={color} fontSize="8" fontFamily="monospace"
               textAnchor="middle" fontWeight="bold" opacity={0.7}
             >
-              L{li + 1} {size}
+              {size}
             </text>
+            {hasLN && (
+              <text
+                x={lx} y={H - 12}
+                fill={color} fontSize="6" fontFamily="monospace"
+                textAnchor="middle" opacity={0.3}
+              >
+                LN+ReLU
+              </text>
+            )}
+            {!hasLN && (
+              <text
+                x={lx} y={H - 12}
+                fill={color} fontSize="6" fontFamily="monospace"
+                textAnchor="middle" opacity={0.3}
+              >
+                ReLU
+              </text>
+            )}
             {/* Dots */}
             {dots.map((dot, di) => {
               const act = acts[di] ?? 0;
@@ -382,13 +407,23 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         );
       })}
 
-      {/* ── Output Q-value nodes ── */}
+      {/* ── Dueling architecture annotation ── */}
       <text
-        x={OUTPUT_X} y={outputNodes[0].y - 40}
-        fill="#555" fontSize="8" fontFamily="monospace" textAnchor="middle"
+        x={duelingMidX} y={outputNodes[0].y - 50}
+        fill="#555" fontSize="7" fontFamily="monospace" textAnchor="middle"
       >
         Q-VALUES
       </text>
+      {/* V+A bracket */}
+      <text
+        x={duelingMidX} y={outputNodes[outputNodes.length - 1].y + 30}
+        fill="#444" fontSize="6" fontFamily="monospace" textAnchor="middle"
+        opacity={0.5}
+      >
+        V + (A - mean(A))
+      </text>
+
+      {/* ── Output Q-value nodes ── */}
       {outputNodes.map((o, i) => {
         const qVal = dqnInference?.q_values[i] ?? 0;
         const isWinner = i === winnerIdx;
@@ -435,7 +470,7 @@ export function NeuralNetworkSVG({ dqnInference }: Props) {
         x={W / 2} y={H - 8}
         fill="#333" fontSize="7" fontFamily="monospace" textAnchor="middle"
       >
-        DQN: {DQN_INPUTS.length} → 128 → 128 → 64 → 3
+        Dueling DQN: {DQN_INPUTS.length} → 256 → 256 → 128 → 64 → V+A → Q(3)
       </text>
     </svg>
   );

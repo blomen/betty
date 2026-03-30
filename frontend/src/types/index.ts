@@ -878,3 +878,25 @@ export interface SettleBetResult {
   payout: number;
   settled_at: string;
 }
+
+// Play page: cluster batch (same shape as BatchResult)
+export type ClusterBatchResult = BatchResult;
+export type ClusterBet = BatchBet;
+
+// Capital allocation step
+export interface SiblingAssignment {
+  provider_id: string;
+  cluster: string;
+  bets_assigned: number;
+  capital_needed: number;
+  current_balance: number;
+  currency: 'SEK' | 'USDC';
+  lifecycle: string;
+  bonus_badge: string | null;
+}
+
+export interface AllocationResult {
+  sibling_plan: SiblingAssignment[];
+  allocated_batch: BatchBet[];
+  wagering_projections: WageringProjection[];
+}

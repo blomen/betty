@@ -538,11 +538,12 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 115
+  inputs: number[];           // 139
   activations: {
-    layer1: number[];         // 128
-    layer2: number[];         // 128
-    layer3: number[];         // 64
+    layer1: number[];         // 256
+    layer2: number[];         // 256
+    layer3: number[];         // 128
+    layer4: number[];         // 64
   };
   q_values: number[];         // 3: [CONTINUATION, REVERSAL, SKIP]
   action: 'CONTINUATION' | 'REVERSAL' | 'SKIP';
@@ -550,7 +551,9 @@ export interface DQNInferenceEvent {
     input_l1: DQNConnection[];
     l1_l2: DQNConnection[];
     l2_l3: DQNConnection[];
-    l3_output: DQNConnection[];
+    l3_l4: DQNConnection[];
+    l4_output: DQNConnection[];
+    l3_output?: DQNConnection[];  // legacy compat
   };
   timestamp: number;
 }

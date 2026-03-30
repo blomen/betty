@@ -498,6 +498,7 @@ class InterwettenRetriever(BrowserRetriever):
 
     def _parse_datetime_str(self, dt_str: str) -> Optional[datetime]:
         """Parse interwetten datetime string like '15.03. - 15:00' into UTC datetime."""
+        from zoneinfo import ZoneInfo
         m = re.search(r'(\d{1,2})\.(\d{1,2})\.\s*-\s*(\d{1,2}):(\d{2})', dt_str)
         if not m:
             return None
@@ -510,7 +511,7 @@ class InterwettenRetriever(BrowserRetriever):
                 year += 1
             return datetime(
                 year, month, day, hour, minute, 0,
-                tzinfo=timezone(timedelta(hours=1)),  # CET
+                tzinfo=ZoneInfo("Europe/Vienna"),  # CET/CEST — DST-aware
             ).astimezone(timezone.utc)
         except (ValueError, TypeError):
             return None

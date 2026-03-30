@@ -519,6 +519,18 @@ class MirrorService:
                         bonus_bal = float(bonus_part.get("Balance", 0)) if isinstance(bonus_part, dict) else 0
                         return real_bal + bonus_bal
 
+            # GraphQL relay (LeoVegas):
+            # {"data":{"viewer":{"user":{"balance":{"amount":1076,"totalAmount":1076,"currency":"SEK"}}}}}
+            # Also handles array response: [{"data":{"viewer":{"user":{"balance":...}}}}]
+            relay = data
+            if isinstance(data, list) and data:
+                relay = data[0]
+            viewer = relay.get("data", {}).get("viewer", {})
+            user = viewer.get("user", {})
+            bal = user.get("balance", {}) if isinstance(user, dict) else {}
+            if isinstance(bal, dict) and "totalAmount" in bal:
+                return float(bal["totalAmount"])
+
         except (TypeError, ValueError, KeyError) as e:
             logger.debug(f"[mirror] Could not extract balance for {provider_id}: {e}")
         return None
@@ -540,12 +552,16 @@ class MirrorService:
                     f"{old_balance:.2f} → {balance:.2f} SEK"
                 )
                 delta = balance - (old_balance or 0)
-                self._notify("balance_synced", {
+                event_data = {
                     "provider": provider_id,
                     "balance": balance,
                     "previous": old_balance,
                     "delta": round(delta, 2),
-                })
+                }
+                self._notify("balance_synced", event_data)
+                # Positive delta = deposit detected
+                if delta > 0.01:
+                    self._notify("deposit_detected", event_data)
         except Exception as e:
             db.rollback()
             logger.error(f"[mirror] Balance sync failed for {provider_id}: {e}")
@@ -851,30 +867,50 @@ class MirrorService:
         "x3000se": "x3000",
         "gbse": "goldenbull",
         "1x2se": "1x2",
+        "betmgmse": "betmgm",
     }
 
     def _detect_provider(self, url: str) -> str:
         """Best-effort provider detection from URL domain or path."""
         url_lower = url.lower()
-        # Direct domain matches
+        # Direct domain matches — keyword in URL → provider_id
         domain_map = {
+            # Altenar
+            "campobet": "campobet",
+            "quickcasino": "quickcasino",
+            "betinia": "betinia",
+            "swiper": "swiper",
+            "lodur": "lodur",
+            "dbet": "dbet",
+            # Gecko V2
             "spelklubben": "spelklubben",
             "betsson": "betsson",
             "betsafe": "betsafe",
             "nordicbet": "nordicbet",
+            "bethard": "bethard",
             "hajper": "hajper",
-            "quickcasino": "quickcasino",
-            "comeon": "comeon",
-            "pinnacle": "pinnacle",
+            # Kambi
             "unibet": "unibet",
-            "888sport": "888sport",
             "leovegas": "leovegas",
             "expekt": "expekt",
-            "campobet": "campobet",
-            "betinia": "betinia",
-            "lodur": "lodur",
-            "swiper": "swiper",
-            "dbet": "dbet",
+            "888sport": "888sport",
+            "speedybet": "speedybet",
+            "x3000": "x3000",
+            "goldenbull": "goldenbull",
+            "1x2": "1x2",
+            "betmgm": "betmgm",
+            # Custom / other
+            "comeon": "comeon",
+            "lyllocasino": "lyllo",
+            "snabbare": "snabbare",
+            "10bet": "10bet",
+            "mrgreen": "mrgreen",
+            "vbet": "vbet",
+            "interwetten": "interwetten",
+            "coolbet": "coolbet",
+            "tipwin": "tipwin",
+            # Sharp
+            "pinnacle": "pinnacle",
         }
         for keyword, provider_id in domain_map.items():
             if keyword in url_lower:

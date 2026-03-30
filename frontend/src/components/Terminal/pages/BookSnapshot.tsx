@@ -107,19 +107,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
 
       {/* Session Levels */}
       <div className="px-2 py-1 border-b border-border">
-        <button onClick={() => toggleCluster(['ib', 'pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
-
-        <Group label="IB" hidden={isGroupHidden('ib')} onToggle={() => toggleGroup('ib')}>
-          {s?.ib_high != null && s?.ib_low != null ? (
-            <>
-              <Row label="NYIBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />
-              <Row label="NYIBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />
-              <Row label="IB Range" value={(s.ib_high - s.ib_low).toFixed(2)} />
-            </>
-          ) : (
-            <Placeholder text="Waiting for IB (15:30-16:30 CET)" />
-          )}
-        </Group>
+        <button onClick={() => toggleCluster(['pd', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
 
         <Group label="PD" hidden={isGroupHidden('pd')} onToggle={() => toggleGroup('pd')}>
           {s?.pdh != null && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-400" />}
@@ -127,13 +115,13 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
         </Group>
 
         <Group label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
-          {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-400" />}
-          {s?.tokyo_low != null && <Row label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-400" />}
+          {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-300" />}
+          {s?.tokyo_low != null && <Row label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-300" />}
         </Group>
 
         <Group label="London" hidden={isGroupHidden('london')} onToggle={() => toggleGroup('london')}>
-          {s?.london_high != null && <Row label="London H" value={s.london_high.toFixed(2)} color="text-emerald-400" />}
-          {s?.london_low != null && <Row label="London L" value={s.london_low.toFixed(2)} color="text-emerald-400" />}
+          {s?.london_high != null && <Row label="London H" value={s.london_high.toFixed(2)} color="text-emerald-300" />}
+          {s?.london_low != null && <Row label="London L" value={s.london_low.toFixed(2)} color="text-emerald-300" />}
         </Group>
       </div>
 
@@ -169,9 +157,9 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
           </div>
 
           <div className="space-y-1">
-            <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
-            <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
-            <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-400" hidden={isGroupHidden('tpo_ny')} />
+            <SessionTPOBlock label="TKY" data={sessionTPO.sessions.tokyo} color="text-cyan-600" levelColor="text-cyan-400" hidden={isGroupHidden('tpo_tokyo')} />
+            <SessionTPOBlock label="LDN" data={sessionTPO.sessions.london} color="text-emerald-600" levelColor="text-emerald-400" hidden={isGroupHidden('tpo_london')} />
+            <SessionTPOBlock label="NY" data={sessionTPO.sessions.ny} color="text-red-600" levelColor="text-red-400" hidden={isGroupHidden('tpo_ny')} showIBLevels />
           </div>
         </div>
       )}
@@ -181,7 +169,7 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo, sess
 }
 
 /** Compact per-session TPO info block */
-function SessionTPOBlock({ label, data, color, hidden }: { label: string; data: SessionTPOData | null; color: string; hidden: boolean }) {
+function SessionTPOBlock({ label, data, color, levelColor, hidden, showIBLevels }: { label: string; data: SessionTPOData | null; color: string; levelColor: string; hidden: boolean; showIBLevels?: boolean }) {
   if (!data || hidden) return null;
   const arrow = data.opening_direction === 'up' ? '↑' : data.opening_direction === 'down' ? '↓' : '↔';
   const ibTicks = data.ib_valid ? ((data.ib_high - data.ib_low) / 0.25).toFixed(0) : '—';
@@ -192,10 +180,17 @@ function SessionTPOBlock({ label, data, color, hidden }: { label: string; data: 
         {data.shape} {data.opening_type}{arrow}
       </span>
       <span className="text-muted2 ml-1">IB:{ibTicks}</span>
+      {showIBLevels && data.ib_valid && (
+        <div className="text-muted2 ml-2">
+          <span className="text-amber-400">NYIBH</span> {data.ib_high.toFixed(2)}
+          <span className="text-amber-400 ml-1">NYIBL</span> {data.ib_low.toFixed(2)}
+          <span className="text-muted ml-1">Range</span> {(data.ib_high - data.ib_low).toFixed(2)}
+        </div>
+      )}
       <div className="text-muted2 ml-2">
-        <span className={color}>POC</span> {data.poc.toFixed(0)}
-        <span className={`${color} ml-1`}>VAH</span> {data.vah.toFixed(0)}
-        <span className={`${color} ml-1`}>VAL</span> {data.val.toFixed(0)}
+        <span className={levelColor}>tPOC</span> {data.poc.toFixed(0)}
+        <span className={`${levelColor} ml-1`}>tVAH</span> {data.vah.toFixed(0)}
+        <span className={`${levelColor} ml-1`}>tVAL</span> {data.val.toFixed(0)}
       </div>
     </div>
   );
@@ -234,7 +229,7 @@ function Row({ label, value, color }: { label: string; value: string; color?: st
 }
 
 function VPRow({ vp, color }: { vp?: VPLevel | null; color: string }) {
-  if (!vp) return null;
+  if (!vp || vp.poc == null) return null;
   return (
     <div className="grid grid-cols-3 gap-x-1 text-[10px]">
       <span className="text-muted2">VAH <span className="text-text">{vp.vah.toFixed(0)}</span></span>

@@ -1,14 +1,21 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { ProviderName } from '../../ProviderName';
-import type { CapitalPlan, ProviderBalanceStatus, BatchBet } from '../../../../types';
+import { useToast, ToastContainer } from '../../Toast';
+import type { AllocationResult, SiblingAssignment, WageringProjection } from '../../../../types';
 
 interface Props {
-  capitalPlan: CapitalPlan & { usdc_rate?: number };
-  balanceStatus?: ProviderBalanceStatus[];
-  batch: BatchBet[];
-  onConfirm: () => void;
-  onSkip: () => void;
+  allocation: AllocationResult;
+  onExecute: () => void;
+  onBack: () => void;
+  onSkipSibling: (providerId: string) => void;
+  onUnskipSibling: (providerId: string) => void;
+  onRecalc: () => void;
+  hasPendingSkips: boolean;
+  skippedSiblings: string[];
   isLoading: boolean;
+  lockedAt: number | null;      // epoch ms when batch was locked
+  lockTtlSeconds: number;       // TTL in seconds (default 1800)
+  onLockExpired: () => void;    // callback when TTL expires
 }
 
 function fmt(amount: number, currency: 'SEK' | 'USDC'): string {
@@ -16,139 +23,215 @@ function fmt(amount: number, currency: 'SEK' | 'USDC'): string {
   return `${Math.round(amount)} kr`;
 }
 
-function lifecycleBadge(s: ProviderBalanceStatus): { text: string; color: string } | null {
-  const wagerPct = s.wagering_total > 0
-    ? Math.round(((s.wagering_total - s.wagering_remaining) / s.wagering_total) * 100)
-    : 100;
-  switch (s.lifecycle) {
-    case 'deposited':
-      if (s.trigger_mode === 'single') {
-        return { text: `TRG ${s.bonus_amount}kr`, color: 'text-amber-400' };
-      }
-      return { text: `TRG ${wagerPct}%`, color: 'text-amber-400' };
-    case 'freebet':
-      return { text: 'FREE', color: 'text-blue-400' };
-    case 'wagering':
-      return { text: `WAGER ${wagerPct}%`, color: 'text-purple-400' };
-    case 'limited':
-      return { text: 'LTD', color: 'text-red-400' };
-    default:
-      return null;
+function lifecycleBadge(lifecycle: string, bonusBadge: string | null): { text: string; color: string } | null {
+  if (bonusBadge) {
+    switch (lifecycle) {
+      case 'deposited':
+        return { text: bonusBadge, color: 'text-amber-400' };
+      case 'freebet':
+        return { text: bonusBadge, color: 'text-blue-400' };
+      case 'wagering':
+        return { text: bonusBadge, color: 'text-purple-400' };
+      case 'limited':
+        return { text: bonusBadge, color: 'text-red-400' };
+      default:
+        return null;
+    }
   }
+  return null;
 }
+
+type ProviderState = 'idle' | 'opened' | 'deposited';
 
 interface ClusterGroup {
   cluster: string;
-  siblings: ProviderBalanceStatus[];
-  bets: number;
-  stake: number;
-  ev: number;
+  siblings: SiblingAssignment[];
+  totalBets: number;
+  totalStake: number;
   currency: 'SEK' | 'USDC';
-  shortfall: number; // total allocated - total balance (if positive)
+  hasShortfall: boolean;
 }
 
-export function CapitalPlanPanel({ capitalPlan, balanceStatus, batch, onSkip }: Props) {
-  const [liveBalances, setLiveBalances] = useState<Record<string, number>>(() => {
-    const initial: Record<string, number> = {};
-    if (balanceStatus) {
-      for (const bs of balanceStatus) initial[bs.provider_id] = bs.balance;
-    }
-    return initial;
-  });
+export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling, onUnskipSibling, onRecalc, hasPendingSkips, skippedSiblings, lockedAt, lockTtlSeconds, onLockExpired }: Props) {
+  const [liveBalances, setLiveBalances] = useState<Record<string, number>>({});
+  const [providerStates, setProviderStates] = useState<Record<string, ProviderState>>({});
+  const { toasts, addToast, dismissToast } = useToast();
+  // Track which providers we've already toasted per event type
+  const toastedOpened = useRef<Set<string>>(new Set());
+  const toastedDeposits = useRef<Set<string>>(new Set());
 
-  // SSE: track deposit progress
+  // Lock TTL countdown — warn at 5 min remaining, auto-rebuild at expiry
+  const [lockRemaining, setLockRemaining] = useState<number | null>(null);
+  useEffect(() => {
+    if (!lockedAt) { setLockRemaining(null); return; }
+    const update = () => {
+      const elapsed = (Date.now() - lockedAt) / 1000;
+      const remaining = Math.max(0, lockTtlSeconds - elapsed);
+      setLockRemaining(remaining);
+      if (remaining <= 0) onLockExpired();
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [lockedAt, lockTtlSeconds, onLockExpired]);
+
+  const lockWarning = lockRemaining !== null && lockRemaining <= 300; // 5 min
+
+  // Build a set of provider_ids in the sibling plan for quick lookup
+  const siblingProviderIds = useMemo(
+    () => new Set(allocation.sibling_plan.map(s => s.provider_id)),
+    [allocation.sibling_plan],
+  );
+
+  // SSE: track provider navigation + balance sync + deposit detection
   useEffect(() => {
     const es = new EventSource('/api/extraction/stream');
-    const handle = (e: MessageEvent) => {
+
+    // sync_available: user navigated to provider site
+    const handleSyncAvailable = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
         const provider = data.provider as string;
-        if (data.balance != null) setLiveBalances(prev => ({ ...prev, [provider]: data.balance }));
+        if (!siblingProviderIds.has(provider)) return;
+
+        // Update balance if provided
+        if (data.balance != null) {
+          setLiveBalances(prev => ({ ...prev, [provider]: data.balance }));
+        }
+
+        // Mark as opened (don't downgrade from deposited)
+        setProviderStates(prev => {
+          if (prev[provider] === 'deposited') return prev;
+          return { ...prev, [provider]: 'opened' };
+        });
+
+        if (!toastedOpened.current.has(provider)) {
+          toastedOpened.current.add(provider);
+          addToast(`${provider} site detected`, 'success');
+        }
       } catch { /* ignore */ }
     };
-    es.addEventListener('balance_synced', handle);
-    es.addEventListener('deposit_detected', handle);
+
+    // balance_synced: balance changed (any direction)
+    const handleBalanceSynced = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const provider = data.provider as string;
+        if (!siblingProviderIds.has(provider)) return;
+        if (data.balance != null) {
+          setLiveBalances(prev => ({ ...prev, [provider]: data.balance }));
+        }
+      } catch { /* ignore */ }
+    };
+
+    // deposit_detected: balance increased
+    const handleDepositDetected = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const provider = data.provider as string;
+        if (!siblingProviderIds.has(provider)) return;
+
+        if (data.balance != null) {
+          setLiveBalances(prev => ({ ...prev, [provider]: data.balance }));
+        }
+
+        setProviderStates(prev => ({ ...prev, [provider]: 'deposited' }));
+
+        if (!toastedDeposits.current.has(provider)) {
+          toastedDeposits.current.add(provider);
+          const delta = data.delta as number;
+          addToast(`${provider} deposit +${Math.round(delta)} detected`, 'success');
+        }
+      } catch { /* ignore */ }
+    };
+
+    es.addEventListener('sync_available', handleSyncAvailable);
+    es.addEventListener('balance_synced', handleBalanceSynced);
+    es.addEventListener('deposit_detected', handleDepositDetected);
     return () => es.close();
-  }, []);
+  }, [siblingProviderIds, addToast]);
 
-  // Group balance_status by cluster, cross-reference with batch
+  // Group sibling plan by cluster
   const clusters = useMemo(() => {
-    if (!balanceStatus) return [];
-
-    // Compute per-provider batch stats
-    const providerBets: Record<string, { count: number; stake: number; ev: number }> = {};
-    for (const b of batch) {
-      const pid = b.provider_id;
-      if (!providerBets[pid]) providerBets[pid] = { count: 0, stake: 0, ev: 0 };
-      providerBets[pid].count += 1;
-      providerBets[pid].stake += b.stake;
-      providerBets[pid].ev += b.stake * (b.edge_pct / 100);
-    }
-
-    // Group siblings by cluster
     const order: string[] = [];
-    const grouped: Record<string, ProviderBalanceStatus[]> = {};
-    for (const bs of balanceStatus) {
-      const c = bs.cluster || bs.provider_id;
+    const grouped: Record<string, SiblingAssignment[]> = {};
+
+    for (const sib of allocation.sibling_plan) {
+      const c = sib.cluster;
       if (!grouped[c]) {
         order.push(c);
         grouped[c] = [];
       }
-      grouped[c].push(bs);
+      grouped[c].push(sib);
     }
 
-    // Build cluster groups — only include clusters that have bets in the batch
-    const result: ClusterGroup[] = [];
-    for (const c of order) {
+    const result = order.map(c => {
       const siblings = grouped[c];
-      let totalBets = 0;
-      let totalStake = 0;
-      let totalEV = 0;
-      let totalBalance = 0;
-      let totalAllocated = 0;
-
-      for (const s of siblings) {
-        const pb = providerBets[s.provider_id];
-        if (pb) {
-          totalBets += pb.count;
-          totalStake += pb.stake;
-          totalEV += pb.ev;
-        }
-        totalBalance += liveBalances[s.provider_id] ?? s.balance;
-        totalAllocated += s.allocated;
-      }
-
-      // Skip clusters with no bets in this batch
-      if (totalBets === 0) continue;
-
-      const isUsdc = c === 'polymarket';
-      result.push({
-        cluster: c,
-        siblings,
-        bets: totalBets,
-        stake: totalStake,
-        ev: totalEV,
-        currency: isUsdc ? 'USDC' : 'SEK',
-        shortfall: Math.max(0, totalAllocated - totalBalance),
+      // Exclude locally-skipped siblings from header totals
+      const active = siblings.filter(sib => !skippedSiblings.includes(sib.provider_id));
+      const totalBets = active.reduce((s, sib) => s + sib.bets_assigned, 0);
+      const totalStake = active.reduce((s, sib) => s + sib.capital_needed, 0);
+      const currency = (c === 'polymarket' ? 'USDC' : 'SEK') as 'SEK' | 'USDC';
+      const hasShortfall = active.some(sib => {
+        const bal = liveBalances[sib.provider_id] ?? sib.current_balance;
+        return bal < sib.capital_needed;
       });
+
+      return { cluster: c, siblings, totalBets, totalStake, currency, hasShortfall } satisfies ClusterGroup;
+    });
+
+    // Drop clusters with 0 bets (no allocatable opportunities)
+    const filtered = result.filter(c => c.totalBets > 0);
+
+    // Funded clusters first, then unfunded; within each group sort by stake descending
+    filtered.sort((a, b) => {
+      if (a.hasShortfall !== b.hasShortfall) return a.hasShortfall ? 1 : -1;
+      return b.totalStake - a.totalStake;
+    });
+
+    return filtered;
+  }, [allocation, liveBalances, skippedSiblings]);
+
+  const anyShortfall = clusters.some(c => c.hasShortfall);
+
+  // Total deposit needed across all unfunded siblings
+  const totalDepositNeeded = useMemo(() => {
+    let sek = 0;
+    let usdc = 0;
+    for (const sib of allocation.sibling_plan) {
+      if (skippedSiblings.includes(sib.provider_id)) continue;
+      const bal = liveBalances[sib.provider_id] ?? sib.current_balance;
+      const shortfall = sib.capital_needed - bal;
+      if (shortfall > 0) {
+        if (sib.currency === 'USDC') usdc += shortfall;
+        else sek += shortfall;
+      }
     }
-
-    return result;
-  }, [balanceStatus, batch, liveBalances]);
-
-  const totalDeployed = capitalPlan.total_deployed;
-  const hasShortfall = clusters.some(c => c.shortfall > 0);
+    return { sek: Math.round(sek), usdc: Math.round(usdc * 100) / 100 };
+  }, [allocation.sibling_plan, liveBalances, skippedSiblings]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
       {/* Summary */}
       <div className="flex items-center gap-3 px-3 py-1.5 border border-border bg-panel text-sm">
         <span className="text-muted uppercase tracking-wider text-[10px]">Capital Allocation</span>
-        <span className="text-text">{totalDeployed.toFixed(0)} kr deployed</span>
-        {hasShortfall && (
-          <span className="text-amber-400 ml-auto">Deposits needed</span>
+        <span className="text-text">
+          {allocation.sibling_plan.length} siblings across {clusters.length} clusters
+        </span>
+        {lockWarning && lockRemaining !== null && (
+          <span className="text-error text-[10px] font-medium animate-pulse">
+            Lock expires {Math.floor(lockRemaining / 60)}:{String(Math.floor(lockRemaining % 60)).padStart(2, '0')}
+          </span>
         )}
-        {!hasShortfall && (
+        {anyShortfall ? (
+          <span className="text-amber-400 ml-auto">
+            Deposit {totalDepositNeeded.sek > 0 && `${totalDepositNeeded.sek} kr`}
+            {totalDepositNeeded.sek > 0 && totalDepositNeeded.usdc > 0 && ' + '}
+            {totalDepositNeeded.usdc > 0 && `${totalDepositNeeded.usdc.toFixed(2)} USDC`}
+          </span>
+        ) : (
           <span className="text-success ml-auto">All funded</span>
         )}
       </div>
@@ -156,85 +239,217 @@ export function CapitalPlanPanel({ capitalPlan, balanceStatus, batch, onSkip }: 
       {/* Cluster list */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="flex flex-col gap-1 mt-1">
-          {clusters.map(({ cluster, siblings, bets, stake, ev, currency, shortfall }) => {
-            const needsDeposit = shortfall > 0;
-
-            return (
-              <div key={cluster} className="border border-border">
-                {/* Cluster header */}
-                <div className="flex items-center justify-between px-3 py-1 bg-panel border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs ${needsDeposit ? 'text-amber-400' : 'text-success'}`}>
-                      {needsDeposit ? '○' : '●'}
-                    </span>
-                    <span className="text-[10px] text-muted uppercase tracking-wider">{cluster}</span>
-                    <span className="text-[10px] text-muted">
-                      {bets} {bets === 1 ? 'bet' : 'bets'} · {fmt(stake, currency)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    {ev > 0 && <span className="text-tabPlay">+{ev.toFixed(0)} {currency === 'USDC' ? 'USDC' : 'kr'} EV</span>}
-                    {needsDeposit && (
-                      <span className="text-amber-400">need {fmt(shortfall, currency)}</span>
-                    )}
-                  </div>
+          {/* Unfunded clusters — need action */}
+          {clusters.filter(c => c.hasShortfall).map(({ cluster, siblings, totalBets, totalStake, currency }) => (
+            <div key={cluster} className="border border-border">
+              <div className="flex items-center px-3 py-1 bg-panel border-b border-border">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-amber-400">○</span>
+                  <span className="text-[10px] text-muted uppercase tracking-wider">{cluster}</span>
+                  <span className="text-[10px] text-muted">
+                    {totalBets} {totalBets === 1 ? 'bet' : 'bets'} · {fmt(totalStake, currency)}
+                  </span>
                 </div>
+              </div>
+              {siblings.map((sib) => {
+                const isSkipped = skippedSiblings.includes(sib.provider_id);
+                const liveBal = liveBalances[sib.provider_id] ?? sib.current_balance;
+                const liveDelta = liveBal - sib.capital_needed;
+                const badge = lifecycleBadge(sib.lifecycle, sib.bonus_badge);
+                const needsDeposit = liveDelta < 0;
 
-                {/* Siblings */}
-                {siblings.map((s) => {
-                  const bal = liveBalances[s.provider_id] ?? s.balance;
-                  const badge = lifecycleBadge(s);
-                  const hasBets = s.allocated > 0;
-                  const siblingShort = s.allocated > bal;
-
+                if (isSkipped) {
+                  const hasFunds = sib.current_balance > 0;
                   return (
                     <div
-                      key={s.provider_id}
-                      className={`flex items-center gap-3 px-3 py-1.5 border-b border-border last:border-b-0 ${
-                        !hasBets ? 'opacity-40' : ''
-                      } ${siblingShort ? 'bg-amber-500/5' : ''}`}
+                      key={sib.provider_id}
+                      className={`flex items-center gap-3 px-3 py-1.5 border-b border-border last:border-b-0 ${hasFunds ? 'opacity-70' : 'opacity-40'}`}
                     >
-                      <ProviderName name={s.provider_id} className="text-sm text-text min-w-[100px]" />
-
-                      {badge && (
-                        <span className={`text-[9px] px-1 py-0.5 bg-muted/20 ${badge.color}`}>
-                          {badge.text}
-                        </span>
-                      )}
-
-                      {s.days_remaining != null && (
-                        <span className="text-[10px] text-muted">{s.days_remaining}d</span>
-                      )}
-
-                      <span className="text-sm text-muted ml-auto">
-                        {fmt(bal, currency)}
-                        {hasBets && (
-                          <span className="text-muted2"> / {fmt(s.allocated, currency)} alloc</span>
-                        )}
+                      <ProviderName name={sib.provider_id} className="text-sm text-text min-w-[100px]" />
+                      <span className="text-[10px] text-muted">
+                        {hasFunds ? `balance-capped · ${fmt(sib.current_balance, currency)}` : 'removed'}
                       </span>
-
-                      {siblingShort && (
-                        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400">
-                          deposit
-                        </span>
-                      )}
+                      <button
+                        onClick={() => onUnskipSibling(sib.provider_id)}
+                        className="ml-auto px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted hover:text-text transition-colors"
+                      >
+                        restore
+                      </button>
                     </div>
                   );
-                })}
+                }
+
+                const pState = providerStates[sib.provider_id] || 'idle';
+
+                return (
+                  <div
+                    key={sib.provider_id}
+                    className={`flex items-center gap-3 px-3 py-1.5 border-b border-border last:border-b-0 transition-colors duration-500 ${
+                      needsDeposit
+                        ? pState === 'deposited' ? 'bg-success/5' : pState === 'opened' ? 'bg-blue-500/5' : 'bg-amber-500/5'
+                        : 'bg-success/5'
+                    }`}
+                  >
+                    {/* State indicator */}
+                    {!needsDeposit ? (
+                      <span className="text-success text-sm">✓</span>
+                    ) : pState === 'deposited' ? (
+                      <span className="text-success text-sm">✓</span>
+                    ) : pState === 'opened' ? (
+                      <span className="text-blue-400 text-sm animate-pulse">◉</span>
+                    ) : null}
+
+                    <ProviderName name={sib.provider_id} className="text-sm text-text min-w-[100px]" />
+                    {badge && !badge.text.startsWith('WAGER') && (
+                      <span className={`text-[9px] px-1 py-0.5 bg-muted/20 ${badge.color}`}>{badge.text}</span>
+                    )}
+                    <span className="text-[10px] text-muted">
+                      {sib.bets_assigned} {sib.bets_assigned === 1 ? 'bet' : 'bets'}
+                    </span>
+                    <div className="flex items-center gap-2 ml-auto text-sm">
+                      <span className="text-muted">{fmt(liveBal, currency)}</span>
+                      <span className="text-muted2">→</span>
+                      <span className="text-text">{fmt(sib.capital_needed, currency)}</span>
+                      <span className={`font-medium min-w-[60px] text-right ${liveDelta >= 0 ? 'text-success' : 'text-amber-400'}`}>
+                        {liveDelta >= 0 ? '+' : ''}{fmt(liveDelta, currency)}
+                      </span>
+                    </div>
+                    {needsDeposit ? (
+                      <>
+                        {pState === 'deposited' ? (
+                          <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-success/20 text-success">
+                            deposited
+                          </span>
+                        ) : pState === 'opened' ? (
+                          <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-400 animate-pulse">
+                            syncing…
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400">
+                            needs deposit
+                          </span>
+                        )}
+                        <button
+                          onClick={() => onSkipSibling(sib.provider_id)}
+                          className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-error/20 text-error hover:bg-error/30 transition-colors"
+                          title="Skip this sibling — redistribute bets to others"
+                        >
+                          skip
+                        </button>
+                      </>
+                    ) : (
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-success/20 text-success">funded</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+
+          {/* Funded clusters — collapsed into a single group */}
+          {clusters.some(c => !c.hasShortfall) && (
+            <div className="border border-border">
+              <div className="flex items-center px-3 py-1 bg-panel border-b border-border">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-success">●</span>
+                  <span className="text-[10px] text-success uppercase tracking-wider">Complete</span>
+                  <span className="text-[10px] text-muted">
+                    {(() => {
+                      const count = clusters.filter(c => !c.hasShortfall).reduce((s, c) => s + c.siblings.length, 0);
+                      return `${count} ${count === 1 ? 'sibling' : 'siblings'}`;
+                    })()}
+                  </span>
+                </div>
               </div>
-            );
-          })}
+              {clusters.filter(c => !c.hasShortfall).map(({ cluster, siblings, currency }) =>
+                siblings.map((sib) => {
+                  const liveBal = liveBalances[sib.provider_id] ?? sib.current_balance;
+                  return (
+                    <div
+                      key={sib.provider_id}
+                      className="flex items-center gap-3 px-3 py-1 border-b border-border last:border-b-0 opacity-60"
+                    >
+                      <span className="text-success text-sm">✓</span>
+                      <ProviderName name={sib.provider_id} className="text-sm text-text min-w-[100px]" />
+                      <span className="text-[10px] text-muted">{cluster}</span>
+                      <span className="text-[10px] text-muted">
+                        {sib.bets_assigned} {sib.bets_assigned === 1 ? 'bet' : 'bets'}
+                      </span>
+                      <span className="text-sm text-muted ml-auto">{fmt(liveBal, currency)}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Action button */}
-      <div className="flex items-center justify-end px-1 py-1">
-        <button
-          onClick={hasShortfall ? onSkip : onSkip}
-          className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
-        >
-          {hasShortfall ? 'Skip → Execute' : 'Execute →'}
-        </button>
+      {/* Wagering projections */}
+      {allocation.wagering_projections.length > 0 && (
+        <div className="border border-border border-t-0 bg-amber-500/5 px-3 py-1.5">
+          <div className="flex items-center gap-1 mb-1">
+            <span className="text-sm font-medium text-amber-500 tracking-wider uppercase">
+              Wagering After Batch
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+            {allocation.wagering_projections.map((proj: WageringProjection) => (
+              <div
+                key={`${proj.provider_id}-${proj.cluster}`}
+                className="flex items-center gap-1.5 text-sm"
+              >
+                <span className="text-amber-400 font-medium">
+                  {proj.provider_id}
+                </span>
+                {(() => {
+                  const total = proj.wagering_total || proj.wagering_remaining;
+                  const beforePct = total > 0 ? Math.round(((total - proj.wagering_remaining) / total) * 100) : 100;
+                  const afterPct = total > 0 ? Math.round(((total - proj.projected_remaining) / total) * 100) : 100;
+                  return (
+                    <>
+                      <span className="text-muted">{beforePct}%</span>
+                      <span className="text-muted2">→</span>
+                      <span className={afterPct >= 100 ? 'text-success' : 'text-amber-300'}>{afterPct}%</span>
+                    </>
+                  );
+                })()}
+                {proj.days_remaining != null && (
+                  <span className="text-muted text-[10px]">
+                    {proj.days_remaining}d
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex items-center justify-end px-1 py-1 shrink-0">
+        {hasPendingSkips ? (
+          <button
+            onClick={onRecalc}
+            className="px-4 py-1.5 text-xs bg-amber-500 text-bg font-medium hover:opacity-90 transition-opacity"
+          >
+            Recalc Batch →
+          </button>
+        ) : (
+          <div className="flex items-center justify-between w-full">
+            <button
+              onClick={onBack}
+              className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+            >
+              ← Back to Batch
+            </button>
+            <button
+              onClick={onExecute}
+              className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+            >
+              Fire Batch →
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -481,8 +481,10 @@ class MarketService:
 
         # Bar-dependent analytics — wrapped in timeout so session always returns
         structure = {}
+        # Only use DB VP values if session_row is from today; stale previous-day values mislead
+        is_today = session_row.date == today
         profiles = {
-            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val},
+            "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val} if is_today else {"poc": None, "vah": None, "val": None},
             "developing_poc": None,
             "developing_poc_direction": None,
             "naked_pocs": [],
@@ -566,10 +568,15 @@ class MarketService:
             profiles = {
                 "session": {"poc": vp.poc, "vah": vp.vah, "val": vp.val}
             }
-        else:
-            # Fallback to DB if no bars/ticks available
+        elif session_row.date == today:
+            # Only use DB fallback if session_row is from today
             profiles = {
                 "session": {"poc": session_row.poc, "vah": session_row.vah, "val": session_row.val}
+            }
+        else:
+            # Previous-day session_row — VP values are stale, omit them
+            profiles = {
+                "session": {"poc": None, "vah": None, "val": None}
             }
 
         # Weekly and monthly VP
@@ -1235,9 +1242,9 @@ class MarketService:
         _CET = ZoneInfo("Europe/Stockholm")
 
         now = datetime.now(timezone.utc)
-        # Start from 00:00 CET today
+        # Start from 00:00 CET today — convert to UTC for naive-UTC DB comparison
         today_cet = now.astimezone(_CET).date()
-        start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET)
+        start = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", start, now))
         logger.info("VWAP: got %d 1m candles from DB for %s (from 00:00 CET)", len(rows), symbol)
@@ -1425,21 +1432,25 @@ class MarketService:
         gaps = self._detect_gaps(candles, base_interval)
         if gaps:
             import threading
-            def _run_backfill(sym, iv, gap_list):
+            def _run_backfill(sym, iv, gap_list, ck):
                 loop = asyncio.new_event_loop()
                 try:
                     loop.run_until_complete(self._backfill_gaps(sym, iv, gap_list))
+                    # Invalidate cache so next request picks up filled data
+                    MarketService._candle_cache.pop(ck, None)
                 except Exception as e:
                     logger.warning("Background gap backfill failed: %s", e)
                 finally:
                     loop.close()
             threading.Thread(
-                target=_run_backfill, args=(symbol, base_interval, gaps),
+                target=_run_backfill, args=(symbol, base_interval, gaps, cache_key),
                 daemon=True, name="candle-backfill",
             ).start()
 
         result = {"candles": candles, "symbol": symbol, "interval": interval, "date": end_date}
-        MarketService._candle_cache[cache_key] = (result, _time.time() + 30)
+        # If gaps detected, use short cache (3s) so backfill results appear quickly
+        ttl = 3 if gaps else 30
+        MarketService._candle_cache[cache_key] = (result, _time.time() + ttl)
         return result
 
     @staticmethod

@@ -90,7 +90,7 @@ async def get_polymarket_value(
             if meta.get("event_slug"):
                 odds_meta_map[key] = o.provider_meta
             if o.updated_at:
-                odds_updated_map[key] = o.updated_at.isoformat()
+                odds_updated_map[key] = o.updated_at.isoformat() + "Z"
             if o.event_id not in poly_names_map and (meta.get("poly_home") or meta.get("poly_away")):
                 poly_names_map[o.event_id] = (meta.get("poly_home"), meta.get("poly_away"))
 

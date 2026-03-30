@@ -45,9 +45,10 @@ function generateDemoInference(battle: BattleScreenData): DQNInferenceEvent {
   const makeActs = (size: number) =>
     Array.from({ length: size }, () => Math.max(0, randn() * 0.8));
 
-  const layer1 = makeActs(HIDDEN_LAYERS[0]);
-  const layer2 = makeActs(HIDDEN_LAYERS[1]);
-  const layer3 = makeActs(HIDDEN_LAYERS[2]);
+  const layer1 = makeActs(HIDDEN_LAYERS[0]); // 256
+  const layer2 = makeActs(HIDDEN_LAYERS[1]); // 256
+  const layer3 = makeActs(HIDDEN_LAYERS[2]); // 128
+  const layer4 = makeActs(HIDDEN_LAYERS[3]); // 64
 
   const raw = [randn() * 0.5, randn() * 0.5, randn() * 0.3];
   const winIdx = Math.floor(rng() * 2);
@@ -73,14 +74,15 @@ function generateDemoInference(battle: BattleScreenData): DQNInferenceEvent {
     level: battle.level,
     level_price: battle.level_price,
     inputs,
-    activations: { layer1, layer2, layer3 },
+    activations: { layer1, layer2, layer3, layer4 },
     q_values: raw,
     action: actions[winIdx],
     connections: {
       input_l1: makeConns(totalInputs, HIDDEN_LAYERS[0], 40),
       l1_l2: makeConns(HIDDEN_LAYERS[0], HIDDEN_LAYERS[1], 30),
       l2_l3: makeConns(HIDDEN_LAYERS[1], HIDDEN_LAYERS[2], 25),
-      l3_output: makeConns(HIDDEN_LAYERS[2], 3, 15),
+      l3_l4: makeConns(HIDDEN_LAYERS[2], HIDDEN_LAYERS[3], 20),
+      l4_output: makeConns(HIDDEN_LAYERS[3], 3, 15),
     },
     timestamp: Date.now(),
   };

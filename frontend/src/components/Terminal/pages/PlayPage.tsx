@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { NetworkError, TimeoutError } from '@/services/api/client';
-import type { BatchResult } from '@/types';
+import type { ClusterBatchResult, AllocationResult } from '@/types';
 import { SettlePanel } from './play/SettlePanel';
 import { CapitalPlanPanel } from './play/CapitalPlanPanel';
 import { SessionBatchPanel } from './play/SessionBatchPanel';
@@ -32,6 +32,10 @@ export function PlayPage() {
   const [excludedBets, setExcludedBets] = useState<string[]>([]);
   const [batchLocked, setBatchLocked] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [skipSiblings, setSkipSiblings] = useState<string[]>([]);
+  const [lockedAt, setLockedAt] = useState<number | null>(null);   // epoch ms
+  const [lockTtl, setLockTtl] = useState<number>(1800);            // seconds
+
   // Check pending bets on mount to decide initial step
   useEffect(() => {
     api.getPendingBets()
@@ -48,17 +52,37 @@ export function PlayPage() {
     api.ensureMirrorStarted().catch(() => {});
   }, []);
 
-  // Fetch batch (only when past settle step)
+  // Fetch cluster-level batch (only when past settle step and not locked)
   const {
     data: batchData,
     isLoading,
     error: batchError,
-  } = useQuery<BatchResult>({
-    queryKey: ['play-batch', excludedBets],
-    queryFn: () => api.getPlayBatch(excludedBets.length > 0 ? excludedBets : undefined),
+  } = useQuery<ClusterBatchResult>({
+    queryKey: ['play-batch', excludedBets, skipSiblings],
+    queryFn: () => api.getPlayBatch(
+      excludedBets.length > 0 ? excludedBets : undefined,
+      skipSiblings.length > 0 ? skipSiblings : undefined,
+    ),
     staleTime: 5_000,
     refetchInterval: batchLocked ? false : 10_000,
     enabled: step !== null && step !== 'settle',
+  });
+
+  // Track committed skips (sent to backend) vs pending skips (local UI)
+  const [committedSkips, setCommittedSkips] = useState<string[]>([]);
+
+  // Fetch allocation (only when on capital step with locked batch)
+  // Only refetches when committedSkips changes (via Recalc), not on every skip click
+  const {
+    data: allocationData,
+    isLoading: allocLoading,
+    error: allocError,
+  } = useQuery<AllocationResult>({
+    queryKey: ['play-allocate', committedSkips],
+    queryFn: () => api.allocateCapital(committedSkips.length > 0 ? committedSkips : undefined),
+    staleTime: 3_000,
+    refetchInterval: committedSkips.length === skipSiblings.length ? 5_000 : false,
+    enabled: step === 'capital' && batchLocked,
   });
 
   function batchErrorMessage(): string {
@@ -68,14 +92,23 @@ export function PlayPage() {
     return batchError.message || 'Failed to load batch data.';
   }
 
-  // Confirm capital — just rebuilds batch with mirror-synced balances
-  const confirmCapital = useMutation({
-    mutationFn: () => api.confirmCapital(),
-    onSuccess: () => {
-      setExcludedBets([]);
-      queryClient.invalidateQueries({ queryKey: ['play-batch'] });
-      queryClient.invalidateQueries({ queryKey: ['bankroll'] });
-      setStep('execute');
+  // Lock batch on backend then move to capital step.
+  // Set batchLocked=true on mutate to freeze refetch before the request fires.
+  const lockBatch = useMutation({
+    mutationFn: () => {
+      if (!batchData) throw new Error('No batch to lock');
+      return api.lockBatch(batchData.batch);
+    },
+    onMutate: () => {
+      setBatchLocked(true);  // freeze refetch immediately
+    },
+    onSuccess: (data) => {
+      setLockedAt(Date.now());
+      if (data.ttl_seconds) setLockTtl(data.ttl_seconds);
+      setStep('capital');
+    },
+    onError: () => {
+      setBatchLocked(false);  // unfreeze on failure
     },
   });
 
@@ -83,18 +116,45 @@ export function PlayPage() {
     setExcludedBets(prev => [...prev, betKey]);
   }, []);
 
-  const handleConfirmCapital = useCallback(() => {
-    confirmCapital.mutate();
-  }, [confirmCapital]);
+  const handleLockBatch = useCallback(() => {
+    lockBatch.mutate();
+  }, [lockBatch]);
 
-  const handleSkipCapital = useCallback(() => {
+  const handleExecute = useCallback(() => {
     setStep('execute');
   }, []);
 
-  const handleLockBatch = useCallback(() => {
-    setBatchLocked(true);
-    setStep('capital');
+  const handleBackToBatch = useCallback(() => {
+    // Clear locked batch on backend
+    api.unlockBatch().catch(() => {});
+    setBatchLocked(false);
+    setLockedAt(null);
+    setSkipSiblings([]);
+    setCommittedSkips([]);
+    setExcludedBets([]);
+    queryClient.invalidateQueries({ queryKey: ['play-batch'] });
+    setStep('batch');
+  }, [queryClient]);
+
+  const handleSkipSibling = useCallback((providerId: string) => {
+    setSkipSiblings(prev => [...prev, providerId]);
   }, []);
+
+  const handleUnskipSibling = useCallback((providerId: string) => {
+    setSkipSiblings(prev => prev.filter(id => id !== providerId));
+  }, []);
+
+  // Commit pending skips → re-allocate same locked batch across fewer siblings.
+  // Clear local skipSiblings after committing — the backend owns skip state
+  // via committedSkips. UI starts fresh for any further skips.
+  const handleRecalc = useCallback(() => {
+    setCommittedSkips(prev => [...new Set([...prev, ...skipSiblings])]);
+    setSkipSiblings([]);
+    queryClient.invalidateQueries({ queryKey: ['play-allocate'] });
+  }, [skipSiblings, queryClient]);
+
+  const hasPendingSkips = skipSiblings.length !== committedSkips.length
+    || skipSiblings.some(s => !committedSkips.includes(s));
 
   if (!step) {
     return <div className="p-4 text-muted text-sm">Loading...</div>;
@@ -110,33 +170,36 @@ export function PlayPage() {
         </h2>
       </div>
 
-      {/* Sub-tab selector — only show settle and batch */}
-      <div className="flex gap-1 border-b border-border">
-        {STEPS.filter(s => s.id === 'settle' || s.id === 'batch').map((s) => {
-          const isActive = step === s.id;
-          // Hide settle tab when no pending bets and not on settle step
-          if (s.id === 'settle' && pendingCount === 0 && step !== 'settle') return null;
-          return (
-            <button
-              key={s.id}
-              onClick={() => setStep(s.id)}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
-                isActive
-                  ? 'border-tabPlay text-tabPlay'
-                  : 'border-transparent text-muted hover:text-text'
-              }`}
-            >
-              {s.label}
-              {s.id === 'settle' && pendingCount > 0 && (
-                <span className="ml-1 text-muted">({pendingCount})</span>
-              )}
-              {s.id === 'batch' && batchData && (
-                <span className="ml-1 text-muted">({batchData.batch.length})</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      {/* Sub-tab selector — only show when settle has pending bets */}
+      {step === 'settle' && pendingCount > 0 && (
+        <div className="flex gap-1 border-b border-border">
+          {STEPS.filter(s => s.id === 'settle' || s.id === 'batch').map((s) => {
+            const isActive = step === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => {
+                  if (s.id === 'batch') {
+                    setBatchLocked(false);
+                    queryClient.invalidateQueries({ queryKey: ['play-batch'] });
+                  }
+                  setStep(s.id);
+                }}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-[1px] ${
+                  isActive
+                    ? 'border-tabPlay text-tabPlay'
+                    : 'border-transparent text-muted hover:text-text'
+                }`}
+              >
+                {s.label}
+                {s.id === 'settle' && (
+                  <span className="ml-1 text-muted">({pendingCount})</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Step content */}
       {step === 'settle' && (
@@ -148,7 +211,7 @@ export function PlayPage() {
       )}
 
       {step === 'batch' && (
-        <>
+        <div className="flex flex-col flex-1 min-h-0">
           {isLoading ? (
             <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
               Building batch...
@@ -162,52 +225,58 @@ export function PlayPage() {
               <SessionBatchPanel
                 batch={batchData.batch}
                 summary={batchData.summary}
-                wageringProjections={batchData.wagering_projections || []}
                 onRemoveBet={handleRemoveBet}
               />
 
-              <div className="flex items-center justify-end px-1 py-1">
-                {batchData.batch.length > 0 && (
+              {batchData.batch.length > 0 && (
+                <div className="flex items-center justify-end px-1 py-1 shrink-0">
                   <button
-                    className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+                    className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
                     onClick={handleLockBatch}
+                    disabled={lockBatch.isPending}
                   >
-                    Lock Batch ({batchData.batch.length} bets) →
+                    {lockBatch.isPending ? 'Locking...' : `Lock Batch (${batchData.batch.length} bets) →`}
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </>
           )}
-        </>
+        </div>
       )}
 
       {step === 'capital' && (
         <>
-          {isLoading ? (
+          {allocLoading && !allocationData ? (
             <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-              Building batch...
+              Allocating capital...
             </div>
-          ) : !batchData ? (
+          ) : allocError ? (
             <div className="text-muted text-sm py-8 text-center border border-border bg-panel">
-              {batchErrorMessage()}
+              {allocError instanceof Error ? allocError.message : 'Failed to allocate capital.'}
             </div>
-          ) : (
+          ) : allocationData ? (
             <CapitalPlanPanel
-              capitalPlan={batchData.capital_plan}
-              balanceStatus={batchData.balance_status}
-              batch={batchData.batch}
-              onConfirm={handleConfirmCapital}
-              onSkip={handleSkipCapital}
-              isLoading={confirmCapital.isPending}
+              allocation={allocationData}
+              onExecute={handleExecute}
+              onBack={handleBackToBatch}
+              onSkipSibling={handleSkipSibling}
+              onUnskipSibling={handleUnskipSibling}
+              onRecalc={handleRecalc}
+              hasPendingSkips={hasPendingSkips}
+              skippedSiblings={skipSiblings}
+              isLoading={allocLoading}
+              lockedAt={lockedAt}
+              lockTtlSeconds={lockTtl}
+              onLockExpired={handleBackToBatch}
             />
-          )}
+          ) : null}
         </>
       )}
 
-      {step === 'execute' && batchData && (
+      {step === 'execute' && allocationData && (
         <ExecutionPanel
-          batch={batchData.batch}
-          wageringProjections={batchData.wagering_projections || []}
+          batch={allocationData.allocated_batch}
+          wageringProjections={allocationData.wagering_projections || []}
         />
       )}
     </div>

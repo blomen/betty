@@ -281,30 +281,73 @@ async def lifespan(app: FastAPI):
 
                 if fetch_start >= fetch_end - timedelta(minutes=2):
                     logger.info("Candle backfill %s: already up to date (latest %s)", interval, fetch_start)
-                    continue
+                else:
+                    logger.info("Candle backfill %s: %s → %s", interval, fetch_start, fetch_end)
+                    try:
+                        bars = await asyncio.wait_for(
+                            inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
+                            timeout=300.0,
+                        )
+                        if bars:
+                            db = _get_db_session()
+                            try:
+                                repo = MarketRepo(db)
+                                for b in bars:
+                                    repo.upsert_candle(
+                                        symbol, interval, b.timestamp,
+                                        b.open, b.high, b.low, b.close, b.volume,
+                                    )
+                                logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
+                            finally:
+                                db.close()
+                        else:
+                            logger.info("Candle backfill %s: no bars in range (market closed?)", interval)
+                    except Exception as e:
+                        logger.warning("Candle backfill %s failed: %s", interval, e)
 
-                logger.info("Candle backfill %s: %s → %s", interval, fetch_start, fetch_end)
+                # Detect and fill mid-series gaps for today (e.g. stream was down for hours)
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+                db = _get_db_session()
                 try:
-                    bars = await asyncio.wait_for(
-                        inner.get_bars(db_symbol, interval, fetch_start, fetch_end),
-                        timeout=300.0,
-                    )
-                    if bars:
-                        db = _get_db_session()
+                    repo = MarketRepo(db)
+                    rows = repo.get_candles(symbol, interval, today_start, now)
+                finally:
+                    db.close()
+
+                bucket_s = 60 if interval == "1m" else 300
+                max_gap = bucket_s * 3
+                min_age = 15 * 60
+                now_epoch = int(now.timestamp())
+                candle_times = sorted(
+                    int(r.ts.replace(tzinfo=timezone.utc).timestamp() if not r.ts.tzinfo else r.ts.timestamp())
+                    for r in rows
+                )
+                gaps = []
+                for i in range(1, len(candle_times)):
+                    diff = candle_times[i] - candle_times[i - 1]
+                    if diff > max_gap and (now_epoch - candle_times[i]) > min_age:
+                        gaps.append((candle_times[i - 1], candle_times[i]))
+
+                if gaps:
+                    logger.info("Candle gap backfill %s: found %d mid-series gaps", interval, len(gaps))
+                    for gap_start, gap_end in gaps:
+                        start_dt = datetime.fromtimestamp(gap_start, tz=timezone.utc)
+                        end_dt = datetime.fromtimestamp(gap_end, tz=timezone.utc)
                         try:
-                            repo = MarketRepo(db)
-                            for b in bars:
-                                repo.upsert_candle(
-                                    symbol, interval, b.timestamp,
-                                    b.open, b.high, b.low, b.close, b.volume,
-                                )
-                            logger.info("Candle backfill %s: upserted %d bars", interval, len(bars))
-                        finally:
-                            db.close()
-                    else:
-                        logger.info("Candle backfill %s: no bars in range (market closed?)", interval)
-                except Exception as e:
-                    logger.warning("Candle backfill %s failed: %s", interval, e)
+                            bars = await asyncio.wait_for(
+                                inner.get_bars(db_symbol, interval, start_dt, end_dt),
+                                timeout=60.0,
+                            )
+                            if bars:
+                                db = _get_db_session()
+                                try:
+                                    repo = MarketRepo(db)
+                                    count = repo.bulk_insert_candles(symbol, interval, bars)
+                                    logger.info("Candle gap backfill %s: filled %s → %s (%d bars)", interval, start_dt, end_dt, count)
+                                finally:
+                                    db.close()
+                        except Exception as e:
+                            logger.warning("Candle gap backfill %s: %s → %s failed: %s", interval, start_dt, end_dt, e)
 
         async def _trading_gate():
             """Gate: if market is open, start immediately. If closed, sleep until open."""
@@ -480,25 +523,30 @@ async def health_ready():
     providers_available = 0
     providers_total = 0
 
-    # Check database connectivity
-    db = None
+    # Check database connectivity (run in thread to avoid blocking event loop)
+    def _check_db():
+        db = None
+        try:
+            db = next(get_db())
+            providers = db.query(Provider).all()
+            total = len(providers)
+            available = sum(1 for p in providers if p.is_enabled)
+            return True, total, available
+        except Exception:
+            return False, 0, 0
+        finally:
+            if db:
+                db.close()
+
     try:
         db_start = time.time()
-        db = next(get_db())
-        # Simple query to verify DB is working
-        providers = db.query(Provider).all()
+        database_ok, providers_total, providers_available = await asyncio.wait_for(
+            asyncio.to_thread(_check_db), timeout=5.0
+        )
         db_latency_ms = (time.time() - db_start) * 1000
-        database_ok = True
-
-        # Count enabled providers
-        providers_total = len(providers)
-        providers_available = sum(1 for p in providers if p.is_enabled)
-    except Exception as e:
+    except (asyncio.TimeoutError, Exception):
         status = "not_ready"
         database_ok = False
-    finally:
-        if db:
-            db.close()
 
     # Determine overall status
     if not database_ok:

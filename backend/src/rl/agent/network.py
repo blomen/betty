@@ -126,7 +126,7 @@ class DQNetwork(nn.Module):
             ("input_l1", activations["inputs"], self.encoder[0]),
             ("l1_l2", activations["layer1"], self.encoder[3]),
             ("l2_l3", activations["layer2"], self.encoder[6]),
-            ("l3_output", activations["layer3"], self.encoder[9]),
+            ("l3_l4", activations["layer3"], self.encoder[9]),
         ]
         result: dict[str, list[dict]] = {}
         for name, act, linear in transitions:
@@ -147,6 +147,30 @@ class DQNetwork(nn.Module):
                     "sign": 1 if w[j, i].item() >= 0 else -1,
                 })
             result[name] = conns
+
+        # Dueling heads: advantage stream connections (features → Q-value discrimination)
+        # Combine advantage_stream[0] (64→32) and advantage_stream[2] (32→3) into effective weights
+        features_1d = activations["features"][0]
+        w_adv1 = self.advantage_stream[0].weight  # (32, 64)
+        w_adv2 = self.advantage_stream[2].weight  # (3, 32)
+        # Effective weight: w_adv2 @ w_adv1 → (3, 64), signal = effective * activation
+        w_eff = w_adv2 @ w_adv1  # (3, 64)
+        signal = (w_eff * features_1d.unsqueeze(0)).abs()
+        flat = signal.flatten()
+        k = min(top_n, flat.numel())
+        top_vals, top_idxs = flat.topk(k)
+        conns = []
+        for val, idx in zip(top_vals.tolist(), top_idxs.tolist()):
+            j = idx // w_eff.shape[1]  # output action idx (0-2)
+            i = idx % w_eff.shape[1]   # feature idx (0-63)
+            conns.append({
+                "from_idx": i,
+                "to_idx": j,
+                "strength": round(val, 4),
+                "sign": 1 if w_eff[j, i].item() >= 0 else -1,
+            })
+        result["l4_output"] = conns
+
         return result
 
     def predict(self, observation: np.ndarray) -> np.ndarray:

@@ -17,7 +17,7 @@ const SPORTS_TABS: Tab[] = [
 ];
 
 const STOCKS_TABS: Tab[] = [
-  { name: 'tradingL1', label: 'L1', color: '#06B6D4' },
+  { name: 'tradingL1', label: 'Chart', color: '#F97316' },
   { name: 'tradingVectors', label: 'Vectors', color: '#EF4444' },
   { name: 'tradingBankroll', label: 'Bankroll', color: '#EC4899' },
   { name: 'tradingStats',    label: 'Stats',    color: '#1E88E5' },

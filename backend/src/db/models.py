@@ -23,6 +23,7 @@ from sqlalchemy import (
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.pool import NullPool
 
 
 class RiskLevel(str, Enum):
@@ -1401,19 +1402,17 @@ def get_engine():
     """
     Get or create the singleton database engine.
 
-    Uses connection pooling with:
-    - pool_size=5: Keep 5 connections ready
-    - pool_recycle=3600: Recycle connections after 1 hour
-    - pool_pre_ping=True: Verify connections before use
+    Uses NullPool — each session gets a fresh SQLite connection and releases
+    it immediately on close.  SQLite connections are just file handles so
+    pooling adds no benefit, but QueuePool caused pool-exhaustion errors
+    under concurrent load (extraction + scheduler + API + streaming).
     """
     global _engine
     if _engine is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(
             f"sqlite:///{DB_PATH}",
-            pool_size=10,
-            pool_recycle=3600,
-            pool_pre_ping=True,
+            poolclass=NullPool,
             # SQLite-specific: allow multi-thread access + 30s busy timeout
             connect_args={
                 "check_same_thread": False,

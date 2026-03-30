@@ -336,6 +336,7 @@ class OpportunityService:
                     max_kelly=OPTIMAL_MAX_KELLY,
                     single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_stake=dynamic_min_stake(total_bankroll),
+                    min_expected_profit=dynamic_min_expected_profit(total_bankroll),
                 )
                 suggested = min(rec.stake, anchor_balance) if rec.stake > 0 else 0
                 kelly_amount = rec.raw_kelly_stake

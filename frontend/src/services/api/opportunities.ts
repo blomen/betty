@@ -1,4 +1,4 @@
-import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult, PendingBetsResponse, SettleBetResult } from '@/types';
+import type { Opportunity, ClusterInfo, ClusterSummary, PlaySession, BatchResult, ClusterBatchResult, ClusterBet, AllocationResult, PendingBetsResponse, SettleBetResult } from '@/types';
 import { fetchJson } from './client';
 
 export const opportunitiesApi = {
@@ -73,11 +73,34 @@ export const opportunitiesApi = {
     return fetchJson('/opportunities/play/session');
   },
 
-  async getPlayBatch(exclude?: string[]): Promise<BatchResult> {
+  async getPlayBatch(exclude?: string[], skipSiblings?: string[]): Promise<ClusterBatchResult> {
+    const payload: Record<string, string[]> = {};
+    if (exclude?.length) payload.exclude = exclude;
+    if (skipSiblings?.length) payload.skip_siblings = skipSiblings;
     return fetchJson('/opportunities/play/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: exclude ? JSON.stringify({ exclude }) : undefined,
+      body: Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined,
+    });
+  },
+
+  async lockBatch(batch: ClusterBet[]): Promise<{ locked: boolean; count: number; locked_at: string; ttl_seconds: number }> {
+    return fetchJson('/opportunities/play/lock-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch }),
+    });
+  },
+
+  async unlockBatch(): Promise<{ unlocked: boolean }> {
+    return fetchJson('/opportunities/play/unlock-batch', { method: 'POST' });
+  },
+
+  async allocateCapital(skipSiblings?: string[]): Promise<AllocationResult> {
+    return fetchJson('/opportunities/play/allocate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: skipSiblings?.length ? JSON.stringify({ skip_siblings: skipSiblings }) : undefined,
     });
   },
 

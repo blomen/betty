@@ -306,8 +306,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
       .find(d => d.ny_high != null || d.tokyo_high != null);
     // Session H/L extension lines — use box H/L (from chart candles) for consistency
     const sessionLineMeta: Record<string, { hKey: string; lKey: string; hLabel: string; lLabel: string; color: string }> = {
-      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#06B6D4' },
-      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#10B981' },
+      'Tokyo':    { hKey: 'tokyo_h', lKey: 'tokyo_l', hLabel: 'TKY H', lLabel: 'TKY L', color: '#22D3EE' },
+      'London':   { hKey: 'london_h', lKey: 'london_l', hLabel: 'LDN H', lLabel: 'LDN L', color: '#34D399' },
     };
 
     // Draw session H/L dashed lines from box end to day end (22:00 CET)
@@ -428,17 +428,18 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
     // --- Per-session TPO letter grids (inside session boxes) ---
     const sessionTPO = sessionTPORef.current;
     if (sessionTPO && boxes.length > 0) {
-      const SESSION_TPO_MAP: Record<string, { data: SessionTPOData | null; hiddenKey: string; color: string }> = {
-        'Tokyo':    { data: sessionTPO.sessions.tokyo,  hiddenKey: 'tpo_tky_letters', color: '#06B6D4' },
-        'London':   { data: sessionTPO.sessions.london, hiddenKey: 'tpo_ldn_letters', color: '#10B981' },
-        'New York': { data: sessionTPO.sessions.ny,     hiddenKey: 'tpo_ny_letters',  color: '#EF4444' },
+      const SESSION_TPO_MAP: Record<string, { data: SessionTPOData | null; hiddenKey: string; profileColor: string; levelColor: string }> = {
+        'Tokyo':    { data: sessionTPO.sessions.tokyo,  hiddenKey: 'tpo_tky_letters', profileColor: '#0891B2', levelColor: '#06B6D4' },
+        'London':   { data: sessionTPO.sessions.london, hiddenKey: 'tpo_ldn_letters', profileColor: '#059669', levelColor: '#10B981' },
+        'New York': { data: sessionTPO.sessions.ny,     hiddenKey: 'tpo_ny_letters',  profileColor: '#DC2626', levelColor: '#EF4444' },
       };
 
       for (const box of boxes) {
         const tpoMeta = SESSION_TPO_MAP[box.name];
         if (!tpoMeta || !tpoMeta.data || hidden?.has(tpoMeta.hiddenKey)) continue;
         const tpoSession = tpoMeta.data;
-        const color = tpoMeta.color;
+        const profileColor = tpoMeta.profileColor;
+        const levelColor = tpoMeta.levelColor;
 
         // Box edges
         const boxLeftX = timeScale.timeToCoordinate(toLocalEpoch(box.startEpoch) as Time);
@@ -448,47 +449,78 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
         const endX = boxRightX ?? rect.width;
         const boxWidth = Math.abs(endX - startX);
 
-        // TPO count keys
-        const tpoKeys = Object.keys(tpoSession.tpo_counts);
-        if (tpoKeys.length === 0) continue;
-        const maxCount = Math.max(...tpoKeys.map(k => tpoSession.tpo_counts[k]));
-        if (maxCount <= 0) continue;
+        // TPO letter grid — classic market profile style
+        const letterKeys = Object.keys(tpoSession.letters);
+        if (letterKeys.length === 0) continue;
 
-        // Compute bar height from price spacing on chart
-        // Use two adjacent prices to measure pixel distance per tick
-        const sortedNums = tpoKeys.map(Number).sort((a, b) => a - b);
-        let barHeight = 1;
+        // Compute cell height from price spacing on chart
+        const sortedNums = letterKeys.map(Number).sort((a, b) => a - b);
+        let cellH = 1;
         if (sortedNums.length >= 2) {
           const y0 = pSeries.priceToCoordinate(sortedNums[0]);
           const y1 = pSeries.priceToCoordinate(sortedNums[1]);
           if (y0 !== null && y1 !== null) {
-            barHeight = Math.max(1, Math.abs(y0 - y1) - 0.5);
+            cellH = Math.max(2, Math.abs(y0 - y1) - 0.5);
           }
         }
 
-        // Max bar width: up to 25% of box width, capped
-        const barMaxW = Math.min(boxWidth * 0.25, 80);
+        // Cell width: proportional to height, capped to fit
+        const maxLetters = Math.max(...letterKeys.map(k => tpoSession.letters[k].length));
+        const cellW = Math.min(Math.max(cellH * 0.8, 6), Math.floor(boxWidth * 0.4 / Math.max(maxLetters, 1)));
+        const showText = cellH >= 7 && cellW >= 6;
+        if (showText) {
+          ctx.font = `${Math.min(cellH - 1, cellW - 1, 9)}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+        }
 
-        for (const pk of tpoKeys) {
+        // IB letters (first two 30-min periods)
+        const ibLetters = new Set(['A', 'B']);
+
+        for (const pk of letterKeys) {
           const priceNum = Number(pk);
           const y = pSeries.priceToCoordinate(priceNum);
           if (y === null || y < 0 || y > rect.height) continue;
 
-          const count = tpoSession.tpo_counts[pk];
-          const barW = (count / maxCount) * barMaxW;
+          const letters = tpoSession.letters[pk];
           const isPOC = priceNum === tpoSession.poc;
           const inVA = priceNum >= tpoSession.val && priceNum <= tpoSession.vah;
 
-          // POC = bright solid, VA = medium, outside = faint
-          ctx.fillStyle = color;
-          ctx.globalAlpha = isPOC ? 0.75 : inVA ? 0.3 : 0.12;
-          ctx.fillRect(startX, y - barHeight / 2, barW, barHeight);
+          for (let i = 0; i < letters.length; i++) {
+            const letter = letters[i];
+            const x = startX + i * cellW;
+            if (x + cellW > endX) break;
+
+            const isIB = ibLetters.has(letter);
+
+            // Color: IB = brighter, VA = medium, outside VA = dimmer
+            if (isPOC) {
+              ctx.fillStyle = profileColor;
+              ctx.globalAlpha = 0.85;
+            } else if (isIB) {
+              ctx.fillStyle = '#C084FC'; // purple for IB letters
+              ctx.globalAlpha = inVA ? 0.7 : 0.5;
+            } else {
+              ctx.fillStyle = profileColor;
+              ctx.globalAlpha = inVA ? 0.55 : 0.3;
+            }
+
+            // Draw cell block
+            ctx.fillRect(x, y - cellH / 2, cellW - 0.5, cellH - 0.5);
+
+            // Draw letter text inside cell
+            if (showText) {
+              ctx.fillStyle = isPOC ? '#fff' : isIB ? '#E9D5FF' : '#D1D5DB';
+              ctx.globalAlpha = isPOC ? 1.0 : 0.9;
+              ctx.fillText(letter, x + cellW / 2, y);
+            }
+          }
 
           // POC: bright left border accent
           if (isPOC) {
-            ctx.fillStyle = color;
-            ctx.globalAlpha = 1.0;
-            ctx.fillRect(startX, y - barHeight / 2, 1.5, barHeight);
+            ctx.fillStyle = '#fff';
+            ctx.globalAlpha = 0.9;
+            ctx.fillRect(startX - 1, y - cellH / 2, 1.5, cellH);
           }
         }
         ctx.globalAlpha = 1.0;
@@ -503,24 +535,24 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
             : tpoSession.opening_direction === 'down' ? '↓' : '↔';
           const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}`;
           ctx.font = '8px monospace';
-          ctx.fillStyle = color;
+          ctx.fillStyle = profileColor;
           ctx.globalAlpha = 0.5;
           ctx.textAlign = 'left';
           ctx.fillText(footerText, startX, boxBottomY + 12);
           ctx.globalAlpha = 1.0;
         }
 
-        // --- POC/VAH/VAL dashed extension lines ---
+        // --- POC/VAH/VAL dashed extension lines (anchored to TPO profile) ---
         const dayEndEpoch = box.endEpoch + (22 * 60 - epochToCETMinute(box.endEpoch)) * 60;
         const lineEndX = timeScale.timeToCoordinate(toLocalEpoch(dayEndEpoch) as Time);
 
-        const prefixMap: Record<string, string> = { 'Tokyo': 'TKY', 'London': 'LDN', 'New York': 'NY' };
+        const prefixMap: Record<string, string> = { 'Tokyo': 'tky', 'London': 'ldn', 'New York': 'ny' };
         const prefix = prefixMap[box.name] || '';
 
         const levels = [
-          { price: tpoSession.poc, label: `${prefix} POC`, alpha: 0.6, dash: [4, 3], key: `tpo_${prefix.toLowerCase()}_poc` },
-          { price: tpoSession.vah, label: `${prefix} VAH`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix.toLowerCase()}_vah` },
-          { price: tpoSession.val, label: `${prefix} VAL`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix.toLowerCase()}_val` },
+          { price: tpoSession.poc, label: `${prefix} tPOC`, alpha: 0.6, dash: [4, 3], key: `tpo_${prefix}_poc` },
+          { price: tpoSession.vah, label: `${prefix} tVAH`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_vah` },
+          { price: tpoSession.val, label: `${prefix} tVAL`, alpha: 0.4, dash: [2, 3], key: `tpo_${prefix}_val` },
         ];
 
         for (const lv of levels) {
@@ -528,14 +560,15 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           const y = pSeries.priceToCoordinate(lv.price);
           if (y === null) continue;
 
-          const lx = boxRightX ?? 0;
+          // Anchor from TPO profile (left edge of session box)
+          const lx = startX;
           const rx = lineEndX ?? rect.width;
           if (rx < 0 || lx > rect.width) continue;
           const drawX1 = Math.max(0, lx);
           const drawX2 = Math.min(rect.width, rx);
 
           ctx.save();
-          ctx.strokeStyle = color;
+          ctx.strokeStyle = levelColor;
           ctx.globalAlpha = lv.alpha;
           ctx.lineWidth = 1;
           ctx.setLineDash(lv.dash);
@@ -545,7 +578,7 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.font = '9px monospace';
-          ctx.fillStyle = color;
+          ctx.fillStyle = levelColor;
           ctx.textAlign = 'left';
           ctx.fillText(lv.label, drawX1 + 3, y - 3);
           ctx.globalAlpha = 1.0;

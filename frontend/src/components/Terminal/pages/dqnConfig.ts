@@ -123,8 +123,8 @@ export function getSegmentColor(segmentName: string): string {
   return DQN_SEGMENTS.find(s => s.name === segmentName)?.color ?? '#52525b';
 }
 
-/** Hidden layer sizes (real DQN architecture) */
-export const HIDDEN_LAYERS = [128, 128, 64] as const;
+/** Hidden layer sizes (real Dueling DQN architecture: 256→256→128→64) */
+export const HIDDEN_LAYERS = [256, 256, 128, 64] as const;
 export const NUM_ACTIONS = 3;
 export const ACTION_NAMES = ['CONT', 'REV', 'SKIP'] as const;
 export const ACTION_COLORS = ['#10b981', '#ef4444', '#52525b'] as const;

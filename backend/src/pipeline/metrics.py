@@ -576,7 +576,7 @@ class MetricsCollector:
             tier_name: Tier name (sharp/api_soft/browser_soft) stored in trigger field
             max_runs_per_tier: Number of historical runs to keep per tier (default 10)
         """
-        from datetime import datetime as dt
+        from datetime import datetime as dt, timezone as tz
         from src.db.models import ExtractionRun, ProviderRunMetrics, SportRunMetrics
 
         trigger = tier_name or 'manual'
@@ -598,8 +598,8 @@ class MetricsCollector:
             # Create extraction run record
             run = ExtractionRun(
                 id=run_metrics.run_id,
-                start_time=dt.fromtimestamp(run_metrics.start_time),
-                end_time=dt.fromtimestamp(run_metrics.end_time) if run_metrics.end_time else None,
+                start_time=dt.fromtimestamp(run_metrics.start_time, tz=tz.utc),
+                end_time=dt.fromtimestamp(run_metrics.end_time, tz=tz.utc) if run_metrics.end_time else None,
                 duration_seconds=run_metrics.duration_seconds,
                 providers_attempted=run_metrics.providers_attempted,
                 providers_succeeded=run_metrics.providers_succeeded,
@@ -628,8 +628,8 @@ class MetricsCollector:
                 pm = ProviderRunMetrics(
                     run_id=run_metrics.run_id,
                     provider_id=provider_id,
-                    start_time=dt.fromtimestamp(pmetrics.start_time),
-                    end_time=dt.fromtimestamp(pmetrics.end_time) if pmetrics.end_time else None,
+                    start_time=dt.fromtimestamp(pmetrics.start_time, tz=tz.utc),
+                    end_time=dt.fromtimestamp(pmetrics.end_time, tz=tz.utc) if pmetrics.end_time else None,
                     duration_seconds=pmetrics.duration_seconds,
                     events_processed=pmetrics.total_events,
                     events_new=pmetrics.total_events_new,

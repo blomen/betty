@@ -11,26 +11,23 @@ export interface ToastItem {
 const DISMISS_MS = 5000;
 const FADEOUT_MS = 500;
 
-const variantStyles: Record<ToastVariant, { border: string; bg: string; text: string; glow: string; icon: string }> = {
+const variantStyles: Record<ToastVariant, { border: string; bg: string; text: string; icon: string }> = {
   success: {
     border: 'border-success/30',
     bg: 'from-success/12 to-success/4',
     text: 'text-success',
-    glow: 'shadow-[0_0_20px_rgba(76,175,80,0.08),0_4px_12px_rgba(0,0,0,0.3)]',
     icon: '✓',
   },
   error: {
     border: 'border-error/30',
     bg: 'from-error/12 to-error/4',
     text: 'text-error',
-    glow: 'shadow-[0_0_20px_rgba(239,83,80,0.08),0_4px_12px_rgba(0,0,0,0.3)]',
     icon: '!',
   },
   warning: {
     border: 'border-warning/30',
     bg: 'from-warning/12 to-warning/4',
     text: 'text-warning',
-    glow: 'shadow-[0_0_20px_rgba(255,152,0,0.08),0_4px_12px_rgba(0,0,0,0.3)]',
     icon: '~',
   },
 };
@@ -66,7 +63,7 @@ function SingleToast({ item, onDismiss }: { item: ToastItem; onDismiss: () => vo
       className={`
         border ${s.border} bg-gradient-to-br ${s.bg}
         text-xs font-mono px-3 py-2.5 flex items-center gap-2
-        ${s.glow} relative overflow-hidden cursor-pointer
+        relative overflow-hidden cursor-pointer
         ${fadingOut ? 'toast-fade-out' : 'toast-slide-in'}
       `}
       style={{ borderLeftWidth: 3, borderLeftColor: borderLeftColors[item.variant] }}

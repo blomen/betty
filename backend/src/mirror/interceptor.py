@@ -46,6 +46,8 @@ class BetInterceptor:
     _GECKO_COUPON_HISTORY_PATTERNS = ("/api/sb/v1/coupons", "/api/sb/v2/coupons")
     # Balance / deposit / withdraw patterns
     _FINANCIAL_KEYWORDS = ("account/balance", "/wallets", "payment-stats", "mainbalance", "wallet/balance")
+    # GraphQL relay endpoints that may contain balance data (e.g. LeoVegas /api?relay)
+    _GRAPHQL_RELAY_PATTERNS = ("/api?relay",)
 
     # Notification / preference settings patterns
     _NOTIFICATION_KEYWORDS = (
@@ -202,12 +204,23 @@ class BetInterceptor:
                     logger.debug(f"[mirror] Could not read bet history response: {e}")
 
             # Intercept balance / deposit / withdraw data
-            if self.on_financial_data and any(kw in url for kw in self._FINANCIAL_KEYWORDS):
-                try:
-                    body_text = await response.text()
-                    await self.on_financial_data(url, body_text)
-                except Exception as e:
-                    logger.debug(f"[mirror] Could not read financial data response: {e}")
+            if self.on_financial_data:
+                _is_financial = any(kw in url for kw in self._FINANCIAL_KEYWORDS)
+                _relay_body = None
+                # GraphQL relay: peek at body for balance data (e.g. LeoVegas)
+                if not _is_financial and any(kw in url for kw in self._GRAPHQL_RELAY_PATTERNS):
+                    try:
+                        _relay_body = await response.text()
+                        if '"balance"' in _relay_body and '"totalAmount"' in _relay_body:
+                            _is_financial = True
+                    except Exception:
+                        pass
+                if _is_financial:
+                    try:
+                        body_text = _relay_body or await response.text()
+                        await self.on_financial_data(url, body_text)
+                    except Exception as e:
+                        logger.debug(f"[mirror] Could not read financial data response: {e}")
 
             # Intercept notification settings updates
             if self.on_notification_settings and self._is_notification_settings(url, method):

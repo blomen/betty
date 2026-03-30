@@ -1426,7 +1426,7 @@ class OpportunityScanner:
                     ask=po.get("ask"),
                 )
                 if vb:
-                    vb.odds_updated_at = po.get("updated_at").isoformat() if po.get("updated_at") else None
+                    vb.odds_updated_at = (po.get("updated_at").isoformat() + "Z") if po.get("updated_at") else None
                     # Hard cap: edges above MAX_EDGE_PCT are data quality issues
                     if vb.edge_pct > MAX_EDGE_PCT:
                         logger.debug(

@@ -96,9 +96,6 @@ const DutchRow = memo(function DutchRow({
   const gp = opp.guaranteed_profit_pct ?? opp.profit_pct ?? 0;
   const uniqueProviders = [...new Set(legs.filter(l => !l.is_sharp).map(l => l.provider))];
 
-  const hasBalance = (providerIds: string[]) =>
-    providerIds.some(id => (balanceMap.get(id) ?? 0) > 0);
-
   // Per-row odds override state: key = legIdx
   const [oddsOverride, setOddsOverride] = useState<Record<number, number>>({});
   const [editingOdds, setEditingOdds] = useState<number | null>(null);
@@ -169,7 +166,6 @@ const DutchRow = memo(function DutchRow({
         </td>
         <td className="text-right text-muted text-sm">
           <span className="inline-flex items-center gap-1.5 justify-end">
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${hasBalance(uniqueProviders) ? 'bg-success' : 'bg-error'}`} />
             {uniqueProviders.length <= 3
               ? uniqueProviders.map((p, i) => <span key={p}>{i > 0 && ', '}<ProviderName name={p} /></span>)
               : <><ProviderName name={uniqueProviders[0]} /> <span className="text-muted2">+{uniqueProviders.length - 1}</span></>
@@ -188,7 +184,7 @@ const DutchRow = memo(function DutchRow({
         <td className={`text-right font-semibold text-sm ${flash ? `flash-${flash}` : ''} ${gp >= 0 ? 'text-success' : 'text-error'}`}>
           {gp >= 0 ? `+${gp.toFixed(2)}%` : `${gp.toFixed(2)}%`}
         </td>
-        {(() => { const rt = relativeTime(opp.odds_updated_at ?? opp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
+        {(() => { const rt = relativeTime(opp.provider_last_checked); return <td className={`text-right text-sm ${rt.className}`}>{rt.text}</td>; })()}
       </tr>
 
       {isExpanded && (
@@ -222,7 +218,6 @@ const DutchRow = memo(function DutchRow({
                   return (
                     <tr key={legIdx}>
                       <td>
-                        <span className={`inline-block w-1.5 h-1.5 mr-1.5 align-middle ${leg.edge_pct > 0 ? 'bg-success' : 'bg-muted2'}`} />
                         {resolveOutcome(leg.outcome, opp, opp.point, true)}
                         {leg.is_sharp && <span className="text-[9px] ml-1 px-1 py-0.5 bg-muted/10 text-muted2">PIN</span>}
                       </td>

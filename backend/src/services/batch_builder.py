@@ -273,6 +273,84 @@ class BatchBuilder:
             "wagering_projections": self._compute_wagering_projections(batch, provider_balances),
         }
 
+    def allocate_capital(
+        self,
+        locked_batch: list[dict],
+        profile_id: int,
+        skip_siblings: list[str] | None = None,
+    ) -> dict:
+        """
+        Re-run build and reshape into AllocationResult for the capital step.
+
+        Returns:
+          - sibling_plan: per-provider capital needs
+          - allocated_batch: the bet list
+          - wagering_projections: bonus wagering info
+        """
+        # Rebuild with current balances (locked_batch is informational only —
+        # build() re-fetches opportunities fresh)
+        result = self.build(profile_id)
+        batch = result["batch"]
+        balance_status = result["balance_status"]
+        wagering = result.get("wagering_projections", [])
+
+        # Filter out skipped siblings
+        skip_set = set(skip_siblings or [])
+
+        # Build sibling_plan from balance_status + batch
+        # Count bets and capital per provider from the batch
+        bets_per_provider: dict[str, int] = {}
+        capital_per_provider: dict[str, float] = {}
+        for bet in batch:
+            if not bet.get("funded", True):
+                continue
+            pid = bet["provider_id"]
+            bets_per_provider[pid] = bets_per_provider.get(pid, 0) + 1
+            capital_per_provider[pid] = capital_per_provider.get(pid, 0) + bet.get("stake", 0)
+
+        sibling_plan = []
+        for bs in balance_status:
+            pid = bs["provider_id"]
+            currency = "USDC" if pid == "polymarket" else "SEK"
+
+            # Determine bonus badge from lifecycle + wagering
+            bonus_badge = None
+            if bs.get("wagering_remaining", 0) > 0:
+                bonus_badge = f"WAGER {round(bs['wagering_remaining'])} left"
+            elif bs.get("lifecycle") == "freebet":
+                bonus_badge = "FREEBET"
+            elif bs.get("trigger_mode") == "freebet" and bs.get("bonus_amount", 0) > 0:
+                bonus_badge = f"FB {round(bs['bonus_amount'])}"
+
+            sibling_plan.append({
+                "provider_id": pid,
+                "cluster": bs["cluster"],
+                "bets_assigned": bets_per_provider.get(pid, 0),
+                "capital_needed": round(capital_per_provider.get(pid, 0), 2),
+                "current_balance": round(bs["balance"], 2),
+                "currency": currency,
+                "lifecycle": bs.get("lifecycle", "active"),
+                "bonus_badge": bonus_badge,
+            })
+
+        # Filter: only include providers that have bets or are in skip list
+        sibling_plan = [
+            s for s in sibling_plan
+            if s["bets_assigned"] > 0 or s["provider_id"] in skip_set
+        ]
+
+        # Filter batch to exclude skipped siblings
+        allocated_batch = [
+            b for b in batch
+            if b.get("provider_id") not in skip_set
+        ]
+
+        return {
+            "sibling_plan": sibling_plan,
+            "allocated_batch": allocated_batch,
+            "wagering_projections": wagering,
+        }
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
@@ -479,21 +557,17 @@ class BatchBuilder:
             bonus_type = None
             bet_min_odds = 0.0
         else:
-            # Determine min_odds for this bet
-            # Bonus phase (wagering / trigger_needed): enforce per-provider min_odds
-            # Cleared or playing: no restriction
-            if pb.lifecycle in ("wagering", "deposited"):
-                bet_min_odds = pb.min_odds if pb.min_odds else 1.80
-            else:
-                bet_min_odds = 0.0
-
-            # Skip if odds don't meet bonus requirement
-            if bet_min_odds > 0 and odds < bet_min_odds:
-                return None
-
             # Detect bonus bet types
             is_freebet = pb.is_bonus_phase
             is_trigger = pb.lifecycle == "deposited" and pb.trigger_mode == "single"
+
+            # Only enforce min_odds for single-shot trigger bets — the trigger
+            # bet must qualify to unlock the bonus. Wagering phase bets are played
+            # regardless of odds (low-odds bets just don't count toward progress).
+            if is_trigger:
+                bet_min_odds = pb.min_odds if pb.min_odds else 1.80
+                if bet_min_odds > 0 and odds < bet_min_odds:
+                    return None
 
             # Calculate stake
             if is_freebet:
@@ -513,7 +587,7 @@ class BatchBuilder:
                     odds=odds,
                     single_bet_cap_pct=single_bet_cap_pct,
                     min_edge=min_edge,
-                    min_odds=bet_min_odds,
+                    min_odds=0.0,
                     min_stake=min_stake,
                     max_kelly=OPTIMAL_MAX_KELLY,
                 )
@@ -781,7 +855,8 @@ class BatchBuilder:
             for pid in siblings:
                 pb = provider_balances[pid]
 
-                if pb.lifecycle in ("wagering", "deposited") and pb.min_odds > 0:
+                # Only block on min_odds for single-shot trigger bets
+                if pb.lifecycle == "deposited" and pb.trigger_mode == "single" and pb.min_odds > 0:
                     if template_bet.odds < pb.min_odds:
                         continue
 
