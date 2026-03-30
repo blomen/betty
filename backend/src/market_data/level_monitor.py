@@ -6,6 +6,9 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.rl.zone_builder import Zone, ZoneMember, build_zones
+from src.rl.config import LevelType as RLLevelType
+
 logger = logging.getLogger(__name__)
 
 TICK_SIZE = 0.25  # NQ tick size
@@ -60,6 +63,10 @@ class LevelMonitor:
         self._active_level_name: str | None = None
         # Live session context for DQN inference (populated by set_session_context)
         self._session_context: dict | None = None
+        # Zone-aware DQN inference state
+        self._zones: list[Zone] = []
+        self._zone_debounce: set[str] = set()
+        self._session_atr: float = 40.0
         try:
             from src.ml.level_touch.outcomes import OutcomeTracker
             self._outcome_tracker = OutcomeTracker()
@@ -98,6 +105,32 @@ class LevelMonitor:
                     ))
 
         logger.info("LevelMonitor loaded %d levels", len(self._levels))
+        self._rebuild_zones()
+
+    def _rebuild_zones(self) -> None:
+        level_type_map = {
+            "poc": RLLevelType.DAILY_POC, "daily_poc": RLLevelType.DAILY_POC,
+            "vah": RLLevelType.DAILY_VAH, "daily_vah": RLLevelType.DAILY_VAH,
+            "val": RLLevelType.DAILY_VAL, "daily_val": RLLevelType.DAILY_VAL,
+            "vwap": RLLevelType.VWAP,
+            "vwap +1sd": RLLevelType.VWAP_SD1, "vwap -1sd": RLLevelType.VWAP_SD1,
+            "vwap +2sd": RLLevelType.VWAP_SD2, "vwap -2sd": RLLevelType.VWAP_SD2,
+            "vwap +3sd": RLLevelType.VWAP_SD3, "vwap -3sd": RLLevelType.VWAP_SD3,
+            "pdh": RLLevelType.PDH, "pdl": RLLevelType.PDL,
+            "tokyo_high": RLLevelType.TOKYO_HIGH, "tokyo_low": RLLevelType.TOKYO_LOW,
+            "nyib_high": RLLevelType.NYIB_HIGH, "nyib_low": RLLevelType.NYIB_LOW,
+            "tpoc": RLLevelType.TPOC, "tvah": RLLevelType.TVAH, "tval": RLLevelType.TVAL,
+            "tibh": RLLevelType.TIBH, "tibl": RLLevelType.TIBL,
+            "naked_poc": RLLevelType.NAKED_POC,
+        }
+        level_tuples = []
+        for lv in self._levels:
+            name_key = lv.name.lower().replace(" ", "_").replace("+", "").replace("-", "")
+            lt = level_type_map.get(name_key, RLLevelType.VWAP)
+            level_tuples.append((lv.name, lt, lv.price))
+        self._zones = build_zones(level_tuples, self._session_atr)
+        self._zone_debounce.clear()
+        logger.info("LevelMonitor rebuilt %d zones from %d levels", len(self._zones), len(self._levels))
 
     def set_async_context(self, loop, db_session_factory) -> None:
         self._level_context_lock = asyncio.Lock()
@@ -174,6 +207,23 @@ class LevelMonitor:
             self._emit_orderflow_update(price)
             self._last_orderflow_emit = now
 
+        # Zone entry detection for DQN inference
+        newly_entered_zones = []
+        still_in_zones: set[str] = set()
+        for zone in self._zones:
+            inside = zone.lower_bound <= price <= zone.upper_bound
+            snapped = round(zone.center_price / TICK_SIZE) * TICK_SIZE
+            key = f"zone_{snapped}"
+            if inside:
+                still_in_zones.add(key)
+                if key not in self._zone_debounce:
+                    self._zone_debounce.add(key)
+                    newly_entered_zones.append(zone)
+        self._zone_debounce -= (self._zone_debounce - still_in_zones)
+
+        for zone in newly_entered_zones:
+            self._emit_zone_dqn_inference(zone, price)
+
         self._check_positions(price)
 
     def mark_triggered(self, level_name: str) -> None:
@@ -205,6 +255,8 @@ class LevelMonitor:
         This allows _build_rl_state to pass complete context to the model.
         """
         self._session_context = ctx
+        if "atr" in ctx:
+            self._session_atr = ctx["atr"]
         logger.info("LevelMonitor session context updated (%d keys)", len(ctx))
 
     def set_tick_buffer(self, tick_buffer) -> None:
@@ -627,6 +679,62 @@ class LevelMonitor:
                 })
         except Exception:
             logger.debug("DQN inference failed for %s", level.name, exc_info=True)
+
+    def _emit_zone_dqn_inference(self, zone: Zone, price: float) -> None:
+        try:
+            from src.rl.live_inference import get_dqn_inference
+            dqn = get_dqn_inference()
+            if not dqn.is_loaded:
+                return
+            rl_state = self._build_rl_state_zone(zone, price)
+            result = dqn.infer(rl_state)
+            if result is not None:
+                self._publish({
+                    "type": "dqn_inference",
+                    "trigger": "zone_entry",
+                    "zone_members": zone.member_count,
+                    "zone_center": zone.center_price,
+                    "zone_hierarchy": round(zone.hierarchy_score, 3),
+                    **result,
+                    "timestamp": time.time(),
+                })
+        except Exception:
+            logger.debug("DQN zone inference failed", exc_info=True)
+
+    def _build_rl_state_zone(self, zone: Zone, price: float) -> dict:
+        import time as _time
+        candles = self._candle_flow_fn() if self._candle_flow_fn else []
+        ctx = self._session_context or {}
+        approach = "up" if price < zone.center_price else "down"
+        recent_ticks = []
+        if self._tick_buffer:
+            try:
+                recent_ticks = self._tick_buffer.get_recent(50)
+            except Exception:
+                pass
+        return {
+            "zone": zone,
+            "all_zones": self._zones,
+            "price": price,
+            "touch_epoch": _time.time(),
+            "approach_direction": approach,
+            "candles": candles or [],
+            "candles_5m": ctx.get("candles_5m", []),
+            "vwap_bands": ctx.get("vwap_bands"),
+            "volume_profile": ctx.get("volume_profile"),
+            "tpo_profile": ctx.get("tpo_profile"),
+            "tpo_profile_obj": ctx.get("tpo_profile_obj"),
+            "session_tpos": ctx.get("session_tpos"),
+            "session_levels": ctx.get("session_levels"),
+            "all_levels": [l.price for l in self._levels],
+            "orderflow_signals": ctx.get("orderflow_signals"),
+            "macro": ctx.get("macro"),
+            "session_context": ctx.get("session_context"),
+            "day_type": ctx.get("day_type"),
+            "fvgs": ctx.get("fvgs", []),
+            "single_print_zones": ctx.get("single_print_zones", []),
+            "recent_ticks": recent_ticks,
+        }
 
     def _build_rl_state(self, level: MonitoredLevel, price: float) -> dict:
         """Assemble a state dict compatible with RL build_observation().
