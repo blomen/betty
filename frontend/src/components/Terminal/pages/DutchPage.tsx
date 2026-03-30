@@ -393,6 +393,7 @@ export function DutchPage({ providers = [] }: DutchPageProps) {
     queryKey: ['opportunities', 'dutch'],
     queryFn: () => api.getOpportunities('dutch', true),
     placeholderData: keepPreviousData,
+    refetchInterval: 30_000,
   });
   const opportunities = (dutchData?.opportunities ?? []) as unknown as DutchOpp[];
 

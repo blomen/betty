@@ -267,6 +267,7 @@ export function PolymarketPage({ providers = [] }: { providers?: Provider[] }) {
     queryKey: ['opportunities', 'polymarket'],
     queryFn: () => api.getPolymarketValue(undefined, undefined, 200),
     placeholderData: keepPreviousData,
+    refetchInterval: 30_000,
   });
   const valueBets = polyData?.value_bets ?? [];
 

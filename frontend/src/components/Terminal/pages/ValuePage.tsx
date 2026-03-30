@@ -406,6 +406,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     queryFn: () => api.getOpportunities('value', true),
     placeholderData: keepPreviousData,
     staleTime: 5 * 60_000,
+    refetchInterval: 30_000,
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
@@ -413,6 +414,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     queryKey: ['specials'],
     queryFn: () => api.getSpecials({}),
     staleTime: 60_000,
+    refetchInterval: 30_000,
   });
   const specials = specialsData?.specials ?? [];
   const { data: betsData } = useQuery({

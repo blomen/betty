@@ -280,19 +280,24 @@ class BatchBuilder:
         skip_siblings: list[str] | None = None,
     ) -> dict:
         """
-        Re-run build and reshape into AllocationResult for the capital step.
+        Use the locked batch as-is and compute sibling plan with fresh balances.
 
         Returns:
           - sibling_plan: per-provider capital needs
           - allocated_batch: the bet list
           - wagering_projections: bonus wagering info
         """
-        # Rebuild with current balances (locked_batch is informational only —
-        # build() re-fetches opportunities fresh)
-        result = self.build(profile_id)
-        batch = result["batch"]
-        balance_status = result["balance_status"]
-        wagering = result.get("wagering_projections", [])
+        # Use the locked batch directly — don't rebuild
+        batch = locked_batch
+
+        # Fetch fresh balances for funding status
+        provider_balances = self._load_provider_balances(profile_id)
+
+        # Build balance_status from fresh balances (no missed bets in locked context)
+        balance_status = self._build_balance_status(provider_balances, [])
+
+        # Compute wagering projections from locked batch
+        wagering = self._compute_wagering_projections_from_dicts(batch, provider_balances)
 
         # Filter out skipped siblings
         skip_set = set(skip_siblings or [])
@@ -934,6 +939,34 @@ class BatchBuilder:
         provider_stakes: dict[str, float] = {}
         for bet in batch:
             provider_stakes[bet.provider_id] = provider_stakes.get(bet.provider_id, 0) + bet.stake
+
+        projections = []
+        for pid, pb in provider_balances.items():
+            if pb.wagering_remaining <= 0:
+                continue
+            batch_stake = provider_stakes.get(pid, 0)
+            projected_remaining = max(0, pb.wagering_remaining - batch_stake)
+            projections.append({
+                "provider_id": pid,
+                "cluster": pb.cluster,
+                "wagering_total": round(pb.wagering_total, 2),
+                "wagering_remaining": round(pb.wagering_remaining, 2),
+                "batch_stake": round(batch_stake, 2),
+                "projected_remaining": round(projected_remaining, 2),
+                "days_remaining": pb.days_remaining,
+            })
+        return projections
+
+    def _compute_wagering_projections_from_dicts(
+        self,
+        batch: list[dict],
+        provider_balances: dict[str, ProviderBalance],
+    ) -> list[dict]:
+        """Same as _compute_wagering_projections but for dict-based locked batch."""
+        provider_stakes: dict[str, float] = {}
+        for bet in batch:
+            pid = bet.get("provider_id", "")
+            provider_stakes[pid] = provider_stakes.get(pid, 0) + bet.get("stake", 0)
 
         projections = []
         for pid, pb in provider_balances.items():
