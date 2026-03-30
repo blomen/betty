@@ -1568,7 +1568,12 @@ class ExtractionPipeline:
                     # Use a per-sport session to isolate DB errors between
                     # concurrent providers. A "database is locked" error on one
                     # provider's session won't poison other providers' sessions.
+                    # autoflush=False prevents premature writes during queries
+                    # (e.g. deferred_events INSERT triggered by a query in
+                    # _resolve_event_id), which cause "database is locked" errors
+                    # when another provider holds a write lock.
                     sport_session = get_session()
+                    sport_session.autoflush = False
                     try:
                         with OddsBatchProcessor(
                             sport_session,
