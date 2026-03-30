@@ -152,6 +152,7 @@ async def trigger_compute(
             "day_type": session.get("day_type"),
             "fvgs": [],
             "single_print_zones": [],
+            "swing_structure": expanded.get("swing_structure"),
         }
         level_monitor.set_session_context(rl_context)
 
