@@ -4,18 +4,34 @@ All features are hand-crafted from domain knowledge (AMT, orderflow, Fabio's
 patterns). No raw tick sequences — the orderflow and micro features already
 encode the temporal dynamics.
 
-Segment sizes:
+Zone mode (state["zone"] present):
+    zone composition multi-hot  len(LevelType)  (25 currently)
+    orderflow                   21
+    structure + session          23
+    tpo (per-session)            26
+    candle window                15
+    zone features                 3
+    zone confluence               5
+    macro                         7
+    setup                        14
+    micro (hand-crafted)         20
+    approach direction            1
+    execution context             7
+    ---
+    total                       167
+
+Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
-    orderflow            21  (was 15, added 6 temporal dynamics)
+    orderflow            21
     structure + session  23
     tpo (per-session)    26
     candle window        15
     confluence            8
     macro                 7
-    setup                14  (13 + squeeze detector)
+    setup                14
     micro (hand-crafted) 20
     approach direction    1
-    execution context     7  (follow-through, responsive/initiative, ATR, vol anomaly, time)
+    execution context     7
     ---
     total               167
 """
@@ -24,7 +40,13 @@ from __future__ import annotations
 import numpy as np
 
 from ..config import LevelType, TICK_SIZE
-from .level_features import encode_level_type, encode_confluence
+from .level_features import (
+    encode_level_type,
+    encode_confluence,
+    encode_zone_composition,
+    encode_zone_features,
+    encode_zone_confluence,
+)
 from .orderflow_features import extract_orderflow_features
 from .tpo_features import extract_session_tpo_features
 from .structure_features import extract_structure_features
@@ -32,6 +54,7 @@ from .macro_features import extract_macro_features
 from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
 from .execution_features import extract_execution_features
+from ..zone_builder import Zone, ZoneMember
 
 # Candle window: last 5 candles x 3 features each
 _CANDLE_WINDOW = 5
@@ -54,8 +77,15 @@ def _build_candle_window(candles: list, avg_vol: float) -> np.ndarray:
 
 
 def build_observation(state: dict) -> np.ndarray:
-    """Assemble the full observation vector from a state dict."""
-    level_type: LevelType = state.get("level_type", LevelType.VWAP)
+    """Assemble the full observation vector from a state dict.
+
+    Supports two modes:
+    - **Zone mode** (``state["zone"]`` present): multi-hot composition,
+      zone features after candle window, 5-dim zone confluence.
+    - **Legacy mode** (``state["level_type"]`` present, no zone): one-hot
+      level type, 8-dim old-style confluence.
+    """
+    zone: Zone | None = state.get("zone")
     price: float = float(state.get("price", 0.0))
     candles: list = state.get("candles", [])
     vwap_bands = state.get("vwap_bands")
@@ -74,8 +104,14 @@ def build_observation(state: dict) -> np.ndarray:
     else:
         avg_vol = 1.0
 
-    # 1. Level type one-hot (25)
-    seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
+    # --- Zone mode vs Legacy mode ---
+    if zone is not None:
+        # 1. Zone composition multi-hot (len(LevelType))
+        seg_level = np.array(encode_zone_composition(zone), dtype=np.float32)
+    else:
+        # 1. Level type one-hot (len(LevelType))
+        level_type: LevelType = state.get("level_type", LevelType.VWAP)
+        seg_level = np.array(encode_level_type(level_type), dtype=np.float32)
 
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
@@ -92,51 +128,65 @@ def build_observation(state: dict) -> np.ndarray:
     # 5. Candle window (15)
     seg_candles = _build_candle_window(candles, avg_vol)
 
-    # 6. Confluence (8)
+    # 6. Zone features (3) — only in zone mode
+    if zone is not None:
+        seg_zone_feats = np.array(encode_zone_features(zone), dtype=np.float32)
+    else:
+        seg_zone_feats = np.array([], dtype=np.float32)
+
+    # 7. Confluence — zone mode (5) vs legacy mode (8)
     fvgs = state.get("fvgs", [])
     single_print_zones = state.get("single_print_zones", [])
-    conf = encode_confluence(
-        price, all_levels, tick_size=TICK_SIZE,
-        fvgs=fvgs, single_print_zones=single_print_zones,
-    )
-    seg_confluence = np.array([
-        conf["levels_within_5_ticks"] / 10.0,
-        conf["strongest_cluster_score"],
-        conf["nearest_higher_level_dist"] / 50.0,
-        conf["nearest_lower_level_dist"] / 50.0,
-        conf["touched_level_hierarchy_rank"],
-        conf["fvg_overlap"],
-        conf["fvg_width_ticks"],
-        conf["single_print_overlap"],
-    ], dtype=np.float32)
+    if zone is not None:
+        all_zones: list[Zone] = state.get("all_zones", [])
+        seg_confluence = np.array(
+            encode_zone_confluence(zone, all_zones, fvgs, single_print_zones),
+            dtype=np.float32,
+        )
+    else:
+        conf = encode_confluence(
+            price, all_levels, tick_size=TICK_SIZE,
+            fvgs=fvgs, single_print_zones=single_print_zones,
+        )
+        seg_confluence = np.array([
+            conf["levels_within_5_ticks"] / 10.0,
+            conf["strongest_cluster_score"],
+            conf["nearest_higher_level_dist"] / 50.0,
+            conf["nearest_lower_level_dist"] / 50.0,
+            conf["touched_level_hierarchy_rank"],
+            conf["fvg_overlap"],
+            conf["fvg_width_ticks"],
+            conf["single_print_overlap"],
+        ], dtype=np.float32)
 
-    # 7. Macro (7)
+    # 8. Macro (7)
     seg_macro = extract_macro_features(macro)
 
-    # 8. Setup detection (13)
+    # 9. Setup detection (14)
     seg_setup = extract_setup_features(state)
 
-    # 9. Micro features (20) — tick-level hand-crafted context
+    # 10. Micro features (20) — tick-level hand-crafted context
     seg_micro = extract_micro_features(recent_ticks, price)
 
-    # 10. Approach direction (1)
+    # 11. Approach direction (1)
     approach = state.get("approach_direction", "up")
     seg_approach = np.array([
         1.0 if approach == "up" else -1.0,
     ], dtype=np.float32)
 
-    # 11. Execution context (7) — Fabio's timing/auction rules
+    # 12. Execution context (7) — Fabio's timing/auction rules
     seg_execution = extract_execution_features(state, recent_ticks, candles, price)
 
     obs = np.concatenate([
-        seg_level,        # 25
+        seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
         seg_structure,    # 23
         seg_tpo,          # 26
         seg_candles,      # 15
-        seg_confluence,   # 8
+        seg_zone_feats,   # 3 (zone) or 0 (legacy)
+        seg_confluence,   # 5 (zone) or 8 (legacy)
         seg_macro,        # 7
-        seg_setup,        # 14 (was 13, added squeeze)
+        seg_setup,        # 14
         seg_micro,        # 20
         seg_approach,     # 1
         seg_execution,    # 7
@@ -147,9 +197,21 @@ def build_observation(state: dict) -> np.ndarray:
     return obs.astype(np.float32)
 
 
-# Compute dimension at import time
+# Compute dimension at import time using zone mode
+_dummy_member = ZoneMember(name="vwap", level_type=LevelType.VWAP, price=19000.0)
+_dummy_zone = Zone(
+    center_price=19000.0,
+    upper_bound=19001.0,
+    lower_bound=18999.0,
+    members=[_dummy_member],
+    composition=[1.0 if lt == LevelType.VWAP else 0.0 for lt in LevelType],
+    width_ticks=8.0,
+    member_count=1,
+    hierarchy_score=0.5,
+)
 _dummy_state: dict = {
-    "level_type": LevelType.VWAP,
+    "zone": _dummy_zone,
+    "all_zones": [_dummy_zone],
     "price": 19000.0,
     "candles": [],
     "candles_5m": [],
