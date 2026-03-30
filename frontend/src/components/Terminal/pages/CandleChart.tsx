@@ -385,6 +385,40 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           ctx.restore();
         }
       }
+
+      // --- Swing levels from session-levels API ---
+      if (latestSL) {
+        const swingLevels: { key: string; price: number | null; label: string; color: string }[] = [
+          { key: 'daily_swing_high', price: latestSL.daily_swing_high, label: 'D-SH', color: '#e2e8f0' },
+          { key: 'daily_swing_low', price: latestSL.daily_swing_low, label: 'D-SL', color: '#e2e8f0' },
+          { key: 'weekly_swing_high', price: latestSL.weekly_swing_high, label: 'W-SH', color: '#3b82f6' },
+          { key: 'weekly_swing_low', price: latestSL.weekly_swing_low, label: 'W-SL', color: '#3b82f6' },
+          { key: 'monthly_swing_high', price: latestSL.monthly_swing_high, label: 'M-SH', color: '#a855f7' },
+          { key: 'monthly_swing_low', price: latestSL.monthly_swing_low, label: 'M-SL', color: '#a855f7' },
+        ];
+
+        for (const { key, price, label, color } of swingLevels) {
+          if (price == null) continue;
+          if (slHidden?.has(key)) continue;
+          const y = pSeries.priceToCoordinate(price);
+          if (y === null) continue;
+
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([6, 3]);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(rect.width, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = color;
+          ctx.textAlign = 'left';
+          ctx.fillText(label, 3, y - 3);
+          ctx.restore();
+        }
+      }
     }
 
     // --- NY IB levels — latest day only ---
