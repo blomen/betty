@@ -185,9 +185,12 @@ class TickWriter:
 
     @staticmethod
     async def prune_old_trades(db_session_factory: Callable, symbol: str = "NQ"):
-        """Delete ticks older than current session (midnight UTC)."""
+        """Delete ticks older than current session (midnight CET/CEST)."""
         def _prune():
-            cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            from zoneinfo import ZoneInfo
+            _CET = ZoneInfo("Europe/Stockholm")
+            today_cet = datetime.now(timezone.utc).astimezone(_CET).date()
+            cutoff = datetime(today_cet.year, today_cet.month, today_cet.day, tzinfo=_CET).astimezone(timezone.utc)
             try:
                 db = db_session_factory()
                 try:
@@ -386,6 +389,7 @@ class DatabentoLiveStream:
         self.shared_state = StreamState()
         self._stream_thread_loop: asyncio.AbstractEventLoop | None = None
         self._stream_thread_ready = threading.Event()
+        self._live_client = None  # Databento Live client — stored for explicit shutdown
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -424,6 +428,13 @@ class DatabentoLiveStream:
     def _restart_stream_thread(self):
         """Restart the Databento stream in its dedicated thread."""
         self._running = False
+        # Close client to unblock `async for record in client`
+        if self._live_client:
+            try:
+                self._live_client.close()
+            except Exception:
+                pass
+            self._live_client = None
         if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
             self._stream_thread.join(timeout=5)
         self._running = True
@@ -439,18 +450,35 @@ class DatabentoLiveStream:
 
     async def stop(self):
         self._running = False
-        if self._task:
-            self._task.cancel()
-            self._task = None
-        if self._watchdog_task:
-            self._watchdog_task.cancel()
-            self._watchdog_task = None
-        if self._candle_retry_task:
-            self._candle_retry_task.cancel()
-            self._candle_retry_task = None
-        if self._gap_backfill_task:
-            self._gap_backfill_task.cancel()
-            self._gap_backfill_task = None
+
+        # Close Databento client first — unblocks `async for record in client`
+        # in the stream thread so it can exit promptly
+        if self._live_client:
+            try:
+                self._live_client.close()
+            except Exception:
+                pass
+            self._live_client = None
+
+        # Cancel main-loop tasks
+        tasks_to_cancel = [self._task, self._watchdog_task, self._candle_retry_task, self._gap_backfill_task]
+        for task in tasks_to_cancel:
+            if task:
+                task.cancel()
+        self._task = self._watchdog_task = self._candle_retry_task = self._gap_backfill_task = None
+
+        # Await cancelled tasks so they actually finish (prevents pending-task warnings)
+        for task in tasks_to_cancel:
+            if task:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        # Join the stream thread (with timeout — don't hang shutdown)
+        if hasattr(self, '_stream_thread') and self._stream_thread.is_alive():
+            await asyncio.to_thread(self._stream_thread.join, 3)
+
         if self._tick_writer:
             await self._tick_writer.stop()
         logger.info("Databento live stream stopped")
@@ -753,6 +781,7 @@ class DatabentoLiveStream:
 
             logger.info("Databento stream connecting to %s / %s ...", self.dataset, self.symbol)
             client = db.Live(key=self.api_key)
+            self._live_client = client  # Store for explicit shutdown
             # Subscribe to both Trades and MBP-1 (top of book)
             client.subscribe(
                 dataset=self.dataset,
@@ -846,11 +875,15 @@ class DatabentoLiveStream:
                     logger.info("Databento stream: %d records received", record_count)
 
         except Exception as e:
-            logger.error("Databento stream error: %s", e, exc_info=True)
             if self._running:
+                logger.error("Databento stream error: %s", e, exc_info=True)
                 logger.info("Databento stream reconnecting in 5s...")
+                self._live_client = None
                 await asyncio.sleep(5)
                 asyncio.create_task(self._stream_loop())
+            else:
+                logger.info("Databento stream closed (shutdown)")
+                self._live_client = None
 
     def _publish(self, event: dict):
         """Publish event to shared state (thread-safe, no main loop interaction).

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { StreamTickEvent, StreamBookEvent, CandleData } from '@/types/market';
 
 export function useMarketStream(symbol: string = 'NQ') {
@@ -8,8 +8,14 @@ export function useMarketStream(symbol: string = 'NQ') {
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const tickBuffer = useRef<StreamTickEvent[]>([]);
+  const retryRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const retryDelayRef = useRef(500);
+  const mountedRef = useRef(true);
+  const consecutiveErrorsRef = useRef(0);
 
-  useEffect(() => {
+  const connect = useCallback(() => {
+    if (!mountedRef.current) return;
+
     const es = new EventSource(`/api/trading/market/stream?symbol=${symbol}`);
     esRef.current = es;
 
@@ -25,8 +31,33 @@ export function useMarketStream(symbol: string = 'NQ') {
       setLastCandle(JSON.parse(e.data));
     });
 
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    es.onopen = () => {
+      setConnected(true);
+      retryDelayRef.current = 500; // reset backoff on success
+      consecutiveErrorsRef.current = 0;
+    };
+
+    es.onerror = () => {
+      consecutiveErrorsRef.current += 1;
+      // Only show disconnected after 2+ consecutive errors (skip transient blips)
+      if (consecutiveErrorsRef.current >= 2) {
+        setConnected(false);
+      }
+      es.close();
+      esRef.current = null;
+      // Reconnect with exponential backoff (500ms → 1s → 2s → 4s → cap 8s)
+      if (mountedRef.current) {
+        retryRef.current = setTimeout(() => {
+          retryDelayRef.current = Math.min(retryDelayRef.current * 2, 8_000);
+          connect();
+        }, retryDelayRef.current);
+      }
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    connect();
 
     const flushId = setInterval(() => {
       if (tickBuffer.current.length > 0) {
@@ -36,13 +67,15 @@ export function useMarketStream(symbol: string = 'NQ') {
     }, 500);
 
     return () => {
-      es.close();
+      mountedRef.current = false;
+      clearTimeout(retryRef.current);
+      esRef.current?.close();
       esRef.current = null;
       clearInterval(flushId);
       tickBuffer.current = [];
       setConnected(false);
     };
-  }, [symbol]);
+  }, [connect]);
 
   return { lastTick, book, lastCandle, connected, esRef };
 }

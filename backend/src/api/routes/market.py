@@ -3,9 +3,28 @@
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
 import asyncio, json, time
+from typing import Callable, TypeVar
 
 from ..deps import get_db
 from ...services.market_service import MarketService
+
+T = TypeVar("T")
+
+
+async def _offload(coro_fn: Callable[..., T], *args, **kwargs) -> T:
+    """Run a 'fake async' service method in a thread to avoid blocking the event loop.
+
+    Many MarketService methods are async def but only do synchronous DB work.
+    Running them on the event loop starves SSE streams and health checks.
+    This helper creates a throwaway event loop in a thread pool worker.
+    """
+    def _run():
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro_fn(*args, **kwargs))
+        finally:
+            loop.close()
+    return await asyncio.to_thread(_run)
 
 
 def _get_live_stream(request: Request):
@@ -22,7 +41,7 @@ def _svc(db=Depends(get_db)) -> MarketService:
 @router.get("/session")
 async def get_current_session(svc: MarketService = Depends(_svc)):
     """Expanded session data with all analytical layers."""
-    result = await svc.build_expanded_session()
+    result = await _offload(svc.build_expanded_session)
     if not result:
         return {"status": "no_data", "message": "No session computed yet. POST /compute first."}
     return result
@@ -62,7 +81,7 @@ async def get_candles(
         return Response(content=cached[0], media_type="application/json",
                         headers={"Cache-Control": "max-age=15"})
 
-    data = await svc.get_candles(symbol, interval, date, days)
+    data = await _offload(svc.get_candles, symbol, interval, date, days)
     serialized = json.dumps(data, separators=(",", ":"))
     _candle_json_cache[cache_key] = (serialized, now + 15)
     response.headers["Cache-Control"] = "max-age=15"
@@ -76,7 +95,7 @@ async def get_developing_vwap(
     svc: MarketService = Depends(_svc),
 ):
     """Return developing VWAP time series from tick data (RTH only)."""
-    return await svc.get_developing_vwap(symbol, interval)
+    return await _offload(svc.get_developing_vwap, symbol, interval)
 
 
 @router.get("/signals")
@@ -91,7 +110,7 @@ async def trigger_scan(
     svc: MarketService = Depends(_svc),
 ):
     """Run scanner on current session → generate signals."""
-    signals = await svc.run_scan(threshold)
+    signals = await _offload(svc.run_scan, threshold)
     return {"signals": signals, "count": len(signals)}
 
 
@@ -102,12 +121,12 @@ async def trigger_compute(
     svc: MarketService = Depends(_svc),
 ):
     """Fetch market data and compute AMT analysis for a date."""
-    data = await svc.compute_session(date)
+    data = await _offload(svc.compute_session, date)
 
     # Refresh level monitor with new session data
     level_monitor = getattr(request.app.state, "level_monitor", None)
     if level_monitor:
-        expanded = await svc.build_expanded_session()
+        expanded = await _offload(svc.build_expanded_session)
         if expanded:
             level_monitor.load_levels(expanded)
 
@@ -151,7 +170,7 @@ async def get_session_history(
 @router.get("/indicators")
 async def get_indicators(svc: MarketService = Depends(_svc)):
     """Live orderflow indicators + ML predictions."""
-    return await svc.get_indicators()
+    return await _offload(svc.get_indicators)
 
 
 @router.get("/confirmations")
@@ -213,12 +232,21 @@ async def market_stream(request: Request, symbol: str = "NQ"):
     which was overwhelming the Windows ProactorEventLoop.
     """
     stream = _get_live_stream(request)
-    if not stream:
-        return {"error": "Live stream not available"}
-
-    state = stream.get_shared_state()
 
     async def event_generator():
+        nonlocal stream
+        # Wait for stream to become available (sends heartbeats to keep SSE alive)
+        if not stream:
+            for _ in range(60):  # up to 30s
+                yield {"event": "heartbeat", "data": json.dumps({"status": "connecting"})}
+                await asyncio.sleep(0.5)
+                stream = _get_live_stream(request)
+                if stream:
+                    break
+            if not stream:
+                return
+
+        state = stream.get_shared_state()
         versions: dict[str, int] = {}
         event_seq = 0
         last_yield = time.monotonic()
@@ -229,14 +257,14 @@ async def market_stream(request: Request, symbol: str = "NQ"):
                     event_type = event.get("type", "tick")
                     yield {"event": event_type, "data": json.dumps(event)}
                     last_yield = time.monotonic()
-                if not events and time.monotonic() - last_yield > 30:
+                if not events and time.monotonic() - last_yield > 15:
                     yield {"event": "heartbeat", "data": "{}"}
                     last_yield = time.monotonic()
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_generator(), ping=15)
 
 
 @router.get("/levels")
@@ -384,7 +412,7 @@ async def get_volume_profile(
 ):
     """Return VP curve (price→volume pairs) for session/weekly/monthly."""
     response.headers["Cache-Control"] = f"max-age={30 if timeframe == 'session' else 120}"
-    return await svc.get_volume_profile_curve(symbol, timeframe=timeframe)
+    return await _offload(svc.get_volume_profile_curve, symbol, timeframe)
 
 
 @router.get("/session-levels")
@@ -396,7 +424,7 @@ async def get_session_levels(
 ):
     """Return per-day session levels (PDH/PDL, IB, Tokyo, London) with time boundaries."""
     response.headers["Cache-Control"] = "max-age=30"
-    return await svc.get_session_levels(symbol, days)
+    return await _offload(svc.get_session_levels, symbol, days)
 
 
 @router.get("/footprint")
@@ -725,7 +753,13 @@ async def get_tpo_live(
     svc: MarketService = Depends(_svc),
 ):
     """Today's developing TPO profile."""
-    return svc.get_tpo_live(symbol=symbol)
+    import asyncio
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(svc.get_tpo_live, symbol=symbol), timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        return {"error": "tpo_timeout", "cached": True}
 
 
 @router.get("/tpo/sessions")
@@ -734,7 +768,13 @@ async def get_tpo_sessions(
     svc: MarketService = Depends(_svc),
 ):
     """Per-session TPO profiles (Tokyo/London/NY) with letter grids for chart visualization."""
-    return svc.get_session_tpos(symbol=symbol)
+    import asyncio
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(svc.get_session_tpos, symbol=symbol), timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        return {"error": "tpo_timeout"}
 
 
 @router.post("/tpo/backfill")
