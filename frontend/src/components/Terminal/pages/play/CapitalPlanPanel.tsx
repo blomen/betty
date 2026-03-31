@@ -199,21 +199,33 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
 
   const anyShortfall = clusters.some(c => c.hasShortfall);
 
-  // Total deposit needed across all unfunded siblings
-  const totalDepositNeeded = useMemo(() => {
-    let sek = 0;
-    let usdc = 0;
+  // Current deployed capital + deposit needed
+  const capitalSummary = useMemo(() => {
+    let deployedSek = 0;
+    let deployedUsdc = 0;
+    let depositSek = 0;
+    let depositUsdc = 0;
     for (const sib of allocation.sibling_plan) {
       if (skippedSiblings.includes(sib.provider_id)) continue;
       const bal = liveBalances[sib.provider_id] ?? sib.current_balance;
+      if (sib.currency === 'USDC') deployedUsdc += bal;
+      else deployedSek += bal;
       const shortfall = sib.capital_needed - bal;
       if (shortfall > 0) {
-        if (sib.currency === 'USDC') usdc += shortfall;
-        else sek += shortfall;
+        if (sib.currency === 'USDC') depositUsdc += shortfall;
+        else depositSek += shortfall;
       }
     }
-    return { sek: Math.round(sek), usdc: Math.round(usdc * 100) / 100 };
-  }, [allocation.sibling_plan, liveBalances, skippedSiblings]);
+    return {
+      deployedSek: Math.round(deployedSek),
+      deployedUsdc: Math.round(deployedUsdc * 100) / 100,
+      depositSek: Math.round(depositSek),
+      depositUsdc: Math.round(depositUsdc * 100) / 100,
+    };
+    }, [allocation.sibling_plan, liveBalances, skippedSiblings]);
+
+  // Shorthand for deposit needed (used in multiple places)
+  const totalDepositNeeded = { sek: capitalSummary.depositSek, usdc: capitalSummary.depositUsdc };
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -224,6 +236,12 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
         <span className="text-muted uppercase tracking-wider text-[10px]">Capital Allocation</span>
         <span className="text-text">
           {allocation.sibling_plan.length} siblings across {clusters.length} clusters
+        </span>
+        <span className="text-muted text-[10px]">
+          Deployed {capitalSummary.deployedSek > 0 && `${capitalSummary.deployedSek} kr`}
+          {capitalSummary.deployedSek > 0 && capitalSummary.deployedUsdc > 0 && ' + '}
+          {capitalSummary.deployedUsdc > 0 && `${capitalSummary.deployedUsdc.toFixed(2)} USDC`}
+          {capitalSummary.deployedSek === 0 && capitalSummary.deployedUsdc === 0 && '0 kr'}
         </span>
         {lockWarning && lockRemaining !== null && (
           <span className="text-error text-[10px] font-medium animate-pulse">

@@ -388,7 +388,8 @@ class BatchBuilder:
                 "bonus_badge": bonus_badge,
             })
 
-        # -- Budget constraint: auto-skip unfunded siblings that exceed budget --
+        # -- Budget constraint: drop bets on providers that don't fit ----------
+        # No redistribution — budget-skipped bets are simply not played.
         has_budget = budget_sek is not None or budget_usdc is not None
         if has_budget:
             remaining_sek = budget_sek if budget_sek is not None else float("inf")
@@ -400,7 +401,6 @@ class BatchBuilder:
                 shortfall = sib["capital_needed"] - sib["current_balance"]
                 if shortfall <= 0:
                     continue  # Already funded
-                # Sum EV of bets assigned to this provider
                 sib_ev = sum(
                     b.get("expected_profit", 0)
                     for b in batch
@@ -417,27 +417,53 @@ class BatchBuilder:
             # Sort by EV density descending — best bang for buck first
             unfunded.sort(key=lambda x: -x["ev_density"])
 
-            budget_skips: list[str] = []
+            budget_funded: set[str] = set()
             for item in unfunded:
                 if item["currency"] == "USDC":
                     if item["shortfall"] <= remaining_usdc:
                         remaining_usdc -= item["shortfall"]
-                    else:
-                        budget_skips.append(item["provider_id"])
+                        budget_funded.add(item["provider_id"])
                 else:
                     if item["shortfall"] <= remaining_sek:
                         remaining_sek -= item["shortfall"]
-                    else:
-                        budget_skips.append(item["provider_id"])
+                        budget_funded.add(item["provider_id"])
 
-            if budget_skips:
-                # Recursively allocate with the budget-derived skips merged in
-                all_skips = list(set((skip_siblings or []) + budget_skips))
-                return self.allocate_capital(
-                    locked_batch, profile_id,
-                    skip_siblings=all_skips,
-                    # Don't pass budget again — skips already computed
-                )
+            # Drop bets on unfunded providers that didn't make the budget cut
+            budget_skipped = {u["provider_id"] for u in unfunded} - budget_funded
+            if budget_skipped:
+                batch = [b for b in batch if b["provider_id"] not in budget_skipped]
+                # Rebuild sibling_plan from filtered batch
+                bets_per_provider = {}
+                capital_per_provider = {}
+                for bet in batch:
+                    pid = bet["provider_id"]
+                    bets_per_provider[pid] = bets_per_provider.get(pid, 0) + 1
+                    capital_per_provider[pid] = capital_per_provider.get(pid, 0) + bet.get("stake", 0)
+
+                sibling_plan = []
+                for pid in sorted(set(bets_per_provider.keys()) | set(bs_by_pid.keys())):
+                    if bets_per_provider.get(pid, 0) == 0:
+                        continue
+                    bs = bs_by_pid.get(pid, {})
+                    currency = "USDC" if pid == "polymarket" else "SEK"
+                    bonus_badge = None
+                    if bs.get("wagering_remaining", 0) > 0:
+                        bonus_badge = f"WAGER {round(bs['wagering_remaining'])} left"
+                    elif bs.get("lifecycle") == "freebet":
+                        bonus_badge = "FREEBET"
+                    elif bs.get("trigger_mode") == "freebet" and bs.get("bonus_amount", 0) > 0:
+                        bonus_badge = f"FB {round(bs['bonus_amount'])}"
+                    sibling_plan.append({
+                        "provider_id": pid,
+                        "cluster": bs.get("cluster", _provider_to_cluster(pid)),
+                        "bets_assigned": bets_per_provider.get(pid, 0),
+                        "capital_needed": round(capital_per_provider.get(pid, 0), 2),
+                        "current_balance": round(bs.get("balance", 0), 2),
+                        "currency": currency,
+                        "lifecycle": bs.get("lifecycle", "idle"),
+                        "bonus_badge": bonus_badge,
+                    })
+                wagering = self._compute_wagering_projections_from_dicts(batch, provider_balances)
 
         allocated_batch = batch
 
