@@ -1,9 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
 /**
  * Shows extraction errors as a dismissible banner above page content.
  * Currently a no-op since the tiers progress endpoint was removed.
- * Will be re-wired to a new error source in a future iteration.
  */
 export function ErrorNotificationBar() {
   return null;
@@ -11,61 +10,14 @@ export function ErrorNotificationBar() {
 
 /**
  * Shows a connection error banner when the backend API is unreachable.
- * Polls /health with exponential backoff. Recovers on first success.
+ * Reads from the unified ConnectionManager — no independent polling.
  */
-const STARTUP_GRACE_MS = 30_000;
-
 export function ConnectionErrorBar() {
-  const [offline, setOffline] = useState(false);
-  const [connecting, setConnecting] = useState(true);
-  const [lastError, setLastError] = useState<string | null>(null);
-  const mountedRef = useRef(true);
-  const mountTimeRef = useRef(Date.now());
-  const everConnectedRef = useRef(false);
-  const consecutiveFailsRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const { status, message } = useConnectionStatus();
 
-  useEffect(() => {
-    mountedRef.current = true;
-    mountTimeRef.current = Date.now();
+  if (status === 'checking') return null;
 
-    async function check() {
-      try {
-        const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort('Health check timeout'), 5000);
-        const res = await fetch('/health', { signal: controller.signal });
-        clearTimeout(tid);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        if (!mountedRef.current) return;
-        everConnectedRef.current = true;
-        consecutiveFailsRef.current = 0;
-        setOffline(false);
-        setConnecting(false);
-        setLastError(null);
-        // Healthy: poll infrequently
-        timerRef.current = setTimeout(check, 30_000);
-      } catch (err) {
-        if (!mountedRef.current) return;
-        consecutiveFailsRef.current++;
-        const inGrace = !everConnectedRef.current && Date.now() - mountTimeRef.current < STARTUP_GRACE_MS;
-        if (inGrace) {
-          setConnecting(true);
-          setOffline(false);
-        } else if (consecutiveFailsRef.current >= 3) {
-          setConnecting(false);
-          setOffline(true);
-          setLastError(err instanceof Error ? err.message : 'Connection failed');
-        }
-        // Unhealthy: poll more frequently
-        timerRef.current = setTimeout(check, 3_000);
-      }
-    }
-
-    check();
-    return () => { mountedRef.current = false; clearTimeout(timerRef.current); };
-  }, []);
-
-  if (connecting) {
+  if (status === 'connecting') {
     return (
       <div
         className="mx-3 mt-2 border border-orange-500/30 bg-gradient-to-br from-orange-500/12 to-orange-500/4 text-xs font-mono px-3 py-2 flex items-center gap-2"
@@ -77,16 +29,18 @@ export function ConnectionErrorBar() {
     );
   }
 
-  if (!offline) return null;
+  if (status === 'down') {
+    return (
+      <div
+        className="mx-3 mt-2 border border-error/30 bg-gradient-to-br from-error/12 to-error/4 text-xs font-mono px-3 py-2 flex items-center gap-2"
+        style={{ borderLeftWidth: 3, borderLeftColor: '#EF5350' }}
+      >
+        <span className="text-error font-bold text-sm">!</span>
+        <span className="text-error">Backend unreachable</span>
+        <span className="text-muted">{message}</span>
+      </div>
+    );
+  }
 
-  return (
-    <div
-      className="mx-3 mt-2 border border-error/30 bg-gradient-to-br from-error/12 to-error/4 text-xs font-mono px-3 py-2 flex items-center gap-2 "
-      style={{ borderLeftWidth: 3, borderLeftColor: '#EF5350' }}
-    >
-      <span className="text-error font-bold text-sm">!</span>
-      <span className="text-error">Backend unreachable</span>
-      <span className="text-muted">{lastError}</span>
-    </div>
-  );
+  return null;
 }
