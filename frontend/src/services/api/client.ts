@@ -1,4 +1,5 @@
 import type { MlHealth } from '@/types/market';
+import { connectionManager } from '@/services/connectionManager';
 
 // ============ Oddsboost Types ============
 
@@ -111,27 +112,6 @@ const DEFAULT_TIMEOUT_MS = 15000; // 15 seconds — fail fast, retry once
 const DEFAULT_RETRIES = 1;        // 1 retry only — avoid retry storms when backend is busy
 const INITIAL_BACKOFF_MS = 2000;  // 2 seconds — give backend breathing room
 
-// Fast connectivity state — avoids 45s+ hangs when backend is down.
-// Only blocks requests when backend is *known* to be down. When status is
-// unknown or up, requests proceed immediately (no await on health check).
-let _backendDown = false;
-let _lastHealthCheck = 0;
-let _downSince = 0;
-const HEALTH_CHECK_INTERVAL_MS = 3000;
-// After this many ms of being "down", let requests through anyway to re-probe
-const MAX_FAST_FAIL_MS = 10000;
-
-function checkBackendInBackground(): void {
-  const now = Date.now();
-  if (now - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return;
-  _lastHealthCheck = now;
-  const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort('Health check timeout'), 3000);
-  fetch('/health', { signal: controller.signal })
-    .then(res => { clearTimeout(tid); _backendDown = !res.ok; if (res.ok) _downSince = 0; })
-    .catch(() => { clearTimeout(tid); if (!_backendDown) { _backendDown = true; _downSince = now; } });
-}
-
 // Structured error classes
 export class ApiError extends Error {
   constructor(
@@ -187,8 +167,7 @@ export async function fetchWithRetry<T>(
 ): Promise<T> {
   // Fast-fail if backend is known to be down (avoids 45s+ hangs per request)
   // But expire after MAX_FAST_FAIL_MS so we re-probe and recover
-  checkBackendInBackground();
-  if (_backendDown && _downSince && (Date.now() - _downSince) < MAX_FAST_FAIL_MS) {
+  if (!connectionManager.isUp()) {
     throw new NetworkError('Backend is not reachable', endpoint);
   }
 
@@ -205,7 +184,6 @@ export async function fetchWithRetry<T>(
       });
 
       clearTimeout(timeoutId);
-      _backendDown = false; // Backend responded — clear down flag
 
       if (!response.ok) {
         const isRetryable = isRetryableStatus(response.status);
@@ -266,9 +244,8 @@ export async function fetchWithRetry<T>(
         }
       }
 
-      // Handle network errors — mark backend as down for fast-fail
+      // Handle network errors
       if (error instanceof TypeError && error.message.includes('fetch')) {
-        _backendDown = true;
         lastError = new NetworkError(
           `Network error: ${error.message}`,
           endpoint
