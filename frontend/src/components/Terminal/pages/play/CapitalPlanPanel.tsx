@@ -252,33 +252,29 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
           budgetMode ? (
             <div className="flex items-center gap-2 ml-auto">
               <span className="text-[10px] text-muted uppercase">Budget</span>
-              {totalDepositNeeded.sek > 0 && (
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    value={editingSek}
-                    onChange={(e) => setEditingSek(e.target.value)}
-                    placeholder={String(totalDepositNeeded.sek)}
-                    className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
-                    min={0}
-                  />
-                  <span className="text-[10px] text-muted">kr</span>
-                </div>
-              )}
-              {totalDepositNeeded.usdc > 0 && (
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    value={editingUsdc}
-                    onChange={(e) => setEditingUsdc(e.target.value)}
-                    placeholder={String(totalDepositNeeded.usdc)}
-                    className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
-                    min={0}
-                    step={0.01}
-                  />
-                  <span className="text-[10px] text-muted">USDC</span>
-                </div>
-              )}
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  value={editingSek}
+                  onChange={(e) => setEditingSek(e.target.value)}
+                  placeholder={String(totalDepositNeeded.sek || 0)}
+                  className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                  min={0}
+                />
+                <span className="text-[10px] text-muted">kr</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  value={editingUsdc}
+                  onChange={(e) => setEditingUsdc(e.target.value)}
+                  placeholder={String(totalDepositNeeded.usdc || 0)}
+                  className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                  min={0}
+                  step={0.01}
+                />
+                <span className="text-[10px] text-muted">USDC</span>
+              </div>
               <button
                 onClick={() => {
                   const sek = editingSek !== '' ? parseFloat(editingSek) : undefined;
