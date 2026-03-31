@@ -457,6 +457,94 @@ class MirrorService:
         self._pending_settlements.clear()
         return {"rejected": count}
 
+    def settle_polymarket_bets(self) -> list[dict]:
+        """Check for resolved Polymarket markets and stage settlements for pending bets.
+
+        Uses the Gamma API (via PolymarketRetriever.fetch_resolved) to find finished events,
+        then matches against pending Polymarket bets.
+        """
+        from ..db.models import get_session, Bet, Odds, Event
+        from ..repositories.profile_repo import ProfileRepo
+
+        db = get_session()
+        staged = []
+        try:
+            profile = ProfileRepo(db).get_active()
+            pending = db.query(Bet).filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == "polymarket",
+                Bet.result == "pending",
+            ).all()
+
+            if not pending:
+                return []
+
+            # For each pending bet, check if its event has resolved
+            for bet in pending:
+                if not bet.event_id:
+                    continue
+
+                # Check if the event is finished
+                event = db.get(Event, bet.event_id)
+                if not event or event.status != "finished":
+                    continue
+
+                # Look at resolved odds for this bet's market/outcome
+                odds = db.query(Odds).filter(
+                    Odds.event_id == bet.event_id,
+                    Odds.provider == "polymarket",
+                    Odds.market == bet.market,
+                    Odds.outcome == bet.outcome,
+                ).first()
+
+                if not odds or not odds.provider_meta:
+                    continue
+
+                # Determine result from the event resolution
+                # Binary market: resolved price of ~1.0 means won, ~0.0 means lost
+                result = "pending"
+                payout = 0.0
+
+                if odds.odds and odds.odds <= 1.01:
+                    # This outcome resolved to $1 — won
+                    result = "won"
+                    payout = bet.stake / (1 / odds.odds) if odds.odds > 0 else 0
+                elif odds.odds and odds.odds >= 50.0:
+                    # Extreme odds = resolved to $0 — lost
+                    result = "lost"
+                    payout = 0
+
+                if result != "pending":
+                    staged.append({
+                        "bet_id": bet.id,
+                        "provider": "polymarket",
+                        "event": (event.home_team or "") + " vs " + (event.away_team or "") if event.home_team else "Unknown",
+                        "odds": bet.odds,
+                        "stake": bet.stake,
+                        "result": result,
+                        "payout": payout,
+                    })
+
+        except Exception as e:
+            logger.error(f"[mirror] Polymarket settlement check failed: {e}", exc_info=True)
+        finally:
+            db.close()
+
+        if staged:
+            self._pending_settlements.extend(staged)
+            self._notify("settlements_pending", {
+                "provider": "polymarket",
+                "count": len(staged),
+                "wins": len([s for s in staged if s["result"] == "won"]),
+                "losses": len([s for s in staged if s["result"] == "lost"]),
+                "total_staked": sum(s["stake"] for s in staged),
+                "total_payout": sum(s["payout"] for s in staged),
+                "net": sum(s["payout"] for s in staged) - sum(s["stake"] for s in staged),
+                "settlements": staged,
+            })
+
+        return staged
+
     def get_pending_settlements(self) -> list[dict]:
         """Return current pending settlements for review."""
         return self._pending_settlements
