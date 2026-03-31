@@ -152,6 +152,9 @@ def aggregate_to_timeframe(
 
 
 _TF_RECENCY = {"daily": 5, "weekly": 3, "monthly": 2}
+# Max input bars per timeframe — limits how far back we look for structure.
+# Prevents the engine from getting stuck on decade-old swings.
+_TF_MAX_BARS = {"daily": 120, "weekly": 200, "monthly": 400}
 
 
 def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
@@ -178,8 +181,11 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
 
     results: dict[str, TimeframeSwings] = {}
     for tf in ("daily", "weekly", "monthly"):
-        candles = aggregate_to_timeframe(bars_1m, tf)
-        logger.info("Swing %s: %d candles", tf, len(candles))
+        # Limit input bars to avoid processing decade-old data
+        max_bars = _TF_MAX_BARS[tf]
+        tf_bars = bars_1m[-max_bars:] if len(bars_1m) > max_bars else bars_1m
+        candles = aggregate_to_timeframe(tf_bars, tf)
+        logger.info("Swing %s: %d candles (from %d bars)", tf, len(candles), len(tf_bars))
 
         if len(candles) < 5:
             results[tf] = empty_tf(tf)

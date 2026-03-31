@@ -88,9 +88,15 @@ class MarketStructureEngine:
     step(candle) for incremental processing.
     """
 
-    def __init__(self, recency_bars: int = _DEFAULT_RECENCY_BARS, timeframe: str = "") -> None:
+    def __init__(
+        self,
+        recency_bars: int = _DEFAULT_RECENCY_BARS,
+        timeframe: str = "",
+        use_close_only: bool = False,
+    ) -> None:
         self._recency_bars = recency_bars
         self._timeframe = timeframe
+        self._use_close_only = use_close_only
         self._reset()
 
     # ------------------------------------------------------------------
@@ -158,28 +164,47 @@ class MarketStructureEngine:
     def _step_seeking_high(self, hi: float, lo: float, cl: float, ts: int) -> None:
         """
         We are rising (or starting up). Track the running potential high.
-        Confirmation trigger: close BELOW the last confirmed swing low.
-        When triggered we confirm the potential high as a swing high.
+        Confirmation trigger: price breaks BELOW the last confirmed swing low.
         """
         # Update running potential high
         if self._potential_high_price is None or hi > self._potential_high_price:
             self._potential_high_price = hi
             self._potential_high_ts = ts
 
+        break_price_dn = cl if self._use_close_only else lo
+
         # Check for confirmation: do we have a confirmed low to break below?
         if self._confirmed_lows and self._potential_high_price is not None:
             last_sl = self._confirmed_lows[0]
-            if cl < last_sl.price:
-                # Confirm the potential high
+            if break_price_dn < last_sl.price:
                 self._confirm_high(cl, ts)
+                return
+
+            # Persistent uptrend: price breaks above last confirmed swing high
+            # WITHOUT first dipping below the swing low → force-confirm pair
+            if self._confirmed_highs and self._potential_low_price is not None:
+                last_sh = self._confirmed_highs[0]
+                break_price_up = cl if self._use_close_only else hi
+                if break_price_up > last_sh.price and self._potential_low_price < last_sh.price:
+                    self._force_swing_pair(
+                        sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
+                        sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
+                        trigger_close=cl, trigger_ts=ts,
+                    )
+                    return
+
+            # Track potential low (for persistent trend + next cycle)
+            if self._potential_low_price is None or lo < self._potential_low_price:
+                self._potential_low_price = lo
+                self._potential_low_ts = ts
+
         elif not self._confirmed_lows:
             # Bootstrap phase: no confirmed lows yet.
-            # Check BEFORE updating potential_low so we compare close against
-            # the prior bar's running low (close can never be below its own candle's low).
+            # Check BEFORE updating potential_low (close can't be below its own low)
             if (
                 self._potential_high_price is not None
                 and self._potential_low_price is not None
-                and cl < self._potential_low_price
+                and break_price_dn < self._potential_low_price
                 and self._potential_high_price > self._potential_low_price
             ):
                 self._confirm_high(cl, ts)
@@ -192,20 +217,43 @@ class MarketStructureEngine:
     def _step_seeking_low(self, hi: float, lo: float, cl: float, ts: int) -> None:
         """
         We are falling (or just confirmed a high). Track the running potential low.
-        Confirmation trigger: close ABOVE the last confirmed swing high.
-        When triggered we confirm the potential low as a swing low.
+        Confirmation trigger: price breaks ABOVE the last confirmed swing high.
+
+        Persistent trend: if price breaks below the last confirmed swing low
+        WITHOUT first bouncing above the swing high, we force-confirm the
+        potential low and re-enter SEEKING_LOW to continue tracking the move.
         """
+        # Track potential high for when we flip to SEEKING_HIGH
+        if self._potential_high_price is None or hi > self._potential_high_price:
+            self._potential_high_price = hi
+            self._potential_high_ts = ts
+
         # Update running potential low
         if self._potential_low_price is None or lo < self._potential_low_price:
             self._potential_low_price = lo
             self._potential_low_ts = ts
 
-        # Check for confirmation
+        break_price_up = cl if self._use_close_only else hi
+        break_price_dn = cl if self._use_close_only else lo
+
+        # Primary: price breaks above last confirmed swing high → confirm low
         if self._confirmed_highs and self._potential_low_price is not None:
             last_sh = self._confirmed_highs[0]
-            if cl > last_sh.price:
-                # Confirm the potential low
+            if break_price_up > last_sh.price:
                 self._confirm_low(cl, ts)
+                return
+
+        # Persistent downtrend: price breaks below last confirmed swing low
+        # → force-confirm the bounce high + the current low, continue SEEKING_LOW
+        if self._confirmed_lows and self._potential_low_price is not None and self._potential_high_price is not None:
+            last_sl = self._confirmed_lows[0]
+            if break_price_dn < last_sl.price and self._potential_high_price > last_sl.price:
+                # The bounce high since last confirmed low IS the new swing high (LH in downtrend)
+                self._force_swing_pair(
+                    sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
+                    sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
+                    trigger_close=cl, trigger_ts=ts,
+                )
         elif not self._confirmed_highs:
             # Bootstrap phase after first confirmed high doesn't apply here
             # (we always confirm a high before entering SEEKING_LOW for the first time)
@@ -292,6 +340,67 @@ class MarketStructureEngine:
 
         # Switch to SEEKING_HIGH; reset potential high
         self._state = _SEEKING_HIGH
+        self._potential_high_price = None
+        self._potential_high_ts = None
+        self._potential_low_price = None
+        self._potential_low_ts = None
+
+    def _force_swing_pair(
+        self,
+        sh_price: float, sh_ts: int,
+        sl_price: float, sl_ts: int,
+        trigger_close: float, trigger_ts: int,
+    ) -> None:
+        """Force-confirm a swing high + swing low pair in a persistent trend.
+
+        Called when price continues trending without reversing to the prior swing:
+        - Persistent downtrend: price breaks below prior SL without bouncing above SH
+        - Persistent uptrend: price breaks above prior SH without dipping below SL
+
+        This creates two swings and two events, keeping the engine in sync with the trend.
+        """
+        # Confirm swing high
+        sh = SwingLevel(price=sh_price, timestamp=sh_ts, type="swing_high", timeframe=self._timeframe)
+        self._confirmed_highs.insert(0, sh)
+        if len(self._confirmed_highs) > _MAX_SWINGS:
+            self._confirmed_highs.pop()
+
+        sh_event_type = self._classify_event(is_high=True)
+        self._update_trend(sh_event_type)
+        sh_event = StructureEvent(
+            price=trigger_close, timestamp=trigger_ts,
+            event_type=sh_event_type, swing_type="swing_high", swing_price=sh_price,
+        )
+        self._events.append(sh_event)
+        if "bos" in sh_event_type:
+            self._last_bos = sh_event
+            self._last_bos_bar = self._bar_count
+        else:
+            self._last_choch = sh_event
+            self._last_choch_bar = self._bar_count
+
+        # Confirm swing low
+        sl = SwingLevel(price=sl_price, timestamp=sl_ts, type="swing_low", timeframe=self._timeframe)
+        self._confirmed_lows.insert(0, sl)
+        if len(self._confirmed_lows) > _MAX_SWINGS:
+            self._confirmed_lows.pop()
+
+        sl_event_type = self._classify_event(is_high=False)
+        self._update_trend(sl_event_type)
+        sl_event = StructureEvent(
+            price=trigger_close, timestamp=trigger_ts,
+            event_type=sl_event_type, swing_type="swing_low", swing_price=sl_price,
+        )
+        self._events.append(sl_event)
+        if "bos" in sl_event_type:
+            self._last_bos = sl_event
+            self._last_bos_bar = self._bar_count
+        else:
+            self._last_choch = sl_event
+            self._last_choch_bar = self._bar_count
+
+        # Reset potentials and stay in same seeking state
+        # (the trend is continuing, so we keep looking for the next swing in the same direction)
         self._potential_high_price = None
         self._potential_high_ts = None
         self._potential_low_price = None
