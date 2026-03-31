@@ -58,6 +58,14 @@ def _get_provider() -> MarketDataProvider:
 
 def _serialize_swing_structure(swing) -> dict:
     """Serialize SwingStructure to JSON-safe dict."""
+    def _ev(ev):
+        if ev is None:
+            return None
+        return {
+            "price": ev.price, "timestamp": ev.timestamp,
+            "event_type": ev.event_type, "swing_type": ev.swing_type,
+            "swing_price": ev.swing_price,
+        }
     def _tf(tf_swings):
         return {
             "timeframe": tf_swings.timeframe,
@@ -72,8 +80,10 @@ def _serialize_swing_structure(swing) -> dict:
                  "type": s.type, "timeframe": s.timeframe}
                 for s in tf_swings.swing_lows
             ],
-            "prior_high": tf_swings.prior_high,
-            "prior_low": tf_swings.prior_low,
+            "last_bos": _ev(tf_swings.last_bos),
+            "last_choch": _ev(tf_swings.last_choch),
+            "bos_active": tf_swings.bos_active,
+            "choch_active": tf_swings.choch_active,
         }
     return {
         "daily": _tf(swing.daily),
@@ -210,23 +220,46 @@ class MarketService:
 
         return db_bars
 
-    async def _get_swing_bars(self, symbol: str) -> list[dict]:
-        """Get 250 days of 1m bars for swing level computation. DB only, no backfill."""
+    def _load_swing_structure(self):
+        """Load swing structure from RL session summaries (795 sessions back to 2011)."""
+        import json
+        from pathlib import Path
+        from ..market_data.levels import compute_multi_tf_swings
+
+        summaries_path = Path(__file__).resolve().parents[2] / "data" / "rl" / "session_summaries.json"
+        if not summaries_path.exists():
+            logger.warning("Session summaries not found at %s", summaries_path)
+            return None
+
+        try:
+            with open(summaries_path) as f:
+                raw = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load session summaries: %s", e)
+            return None
+
         from zoneinfo import ZoneInfo
-        _CET = ZoneInfo("Europe/Stockholm")
+        CET = ZoneInfo("Europe/Stockholm")
 
-        now = datetime.now(timezone.utc)
-        today_cet = now.astimezone(_CET).date()
-        start_date = today_cet - timedelta(days=250)
-        d_start = datetime(start_date.year, start_date.month, start_date.day, tzinfo=_CET).astimezone(timezone.utc)
+        synth_bars = []
+        for date_str in sorted(raw.keys()):
+            s = raw[date_str]
+            rth_high = s.get("rth_high")
+            rth_low = s.get("rth_low")
+            if rth_high is None or rth_low is None:
+                continue
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+            synth_bars.append({
+                "ts": ts, "open": s.get("poc", rth_high),
+                "high": rth_high, "low": rth_low,
+                "close": s.get("poc", rth_low),
+            })
 
-        rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
-        logger.info("Swing bars: %d from DB (%s to now)", len(rows), start_date)
-        return [
-            {"ts": r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc),
-             "high": r.h, "low": r.l, "open": r.o, "close": r.c}
-            for r in rows
-        ]
+        if len(synth_bars) < 5:
+            return None
+
+        return compute_multi_tf_swings(synth_bars)
 
     async def compute_session(
         self, target_date: str | None = None, symbol: str | None = None
@@ -675,11 +708,9 @@ class MarketService:
         else:
             profiles["naked_pocs"] = []
 
-        # Multi-timeframe swing detection
-        from ..market_data.levels import compute_multi_tf_swings
+        # Multi-timeframe swing detection — use session summaries for full history
         try:
-            swing_bars = await self._get_swing_bars(symbol)
-            swing_structure = compute_multi_tf_swings(swing_bars)
+            swing_structure = self._load_swing_structure()
         except Exception as e:
             logger.warning("Swing detection failed: %s", e)
             swing_structure = None
@@ -1404,7 +1435,7 @@ class MarketService:
         today_cet = now.astimezone(_CET).date()
 
         # Fetch enough 1m candles to cover `days` trading days + 1 extra for PDH/PDL
-        pad_days = max(days + (days // 5) * 2 + 3, 250)  # 250 days for swing detection
+        pad_days = days + (days // 5) * 2 + 3
         start_dt = datetime(
             today_cet.year, today_cet.month, today_cet.day,
             tzinfo=_CET,
@@ -1435,6 +1466,16 @@ class MarketService:
 
         all_dates_sorted = sorted(bars_by_date.keys())  # ascending
 
+        swing = self._load_swing_structure()
+        swing_data = {
+            "daily_swing_high": swing.daily.swing_highs[0].price if swing and swing.daily.swing_highs else None,
+            "daily_swing_low": swing.daily.swing_lows[0].price if swing and swing.daily.swing_lows else None,
+            "weekly_swing_high": swing.weekly.swing_highs[0].price if swing and swing.weekly.swing_highs else None,
+            "weekly_swing_low": swing.weekly.swing_lows[0].price if swing and swing.weekly.swing_lows else None,
+            "monthly_swing_high": swing.monthly.swing_highs[0].price if swing and swing.monthly.swing_highs else None,
+            "monthly_swing_low": swing.monthly.swing_lows[0].price if swing and swing.monthly.swing_lows else None,
+        }
+
         result_days = []
         for date_str in sorted_dates:
             # Find the most recent prior trading day (skip weekends/holidays)
@@ -1448,10 +1489,6 @@ class MarketService:
             dt_parsed = datetime.strptime(date_str, "%Y-%m-%d")
             session_date = dt_parsed.replace(hour=12, tzinfo=ZoneInfo("US/Eastern"))
             sl = compute_session_levels(all_bars, session_date)
-
-            # Compute swing levels for this date
-            from ..market_data.levels import compute_multi_tf_swings
-            swing = compute_multi_tf_swings(bars)
 
             # CET epoch boundaries for frontend time-scoping
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -1481,12 +1518,7 @@ class MarketService:
                 "ny_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
                 "day_start": _cet_epoch(d, 0, 0),
                 "day_end": _cet_epoch(d, _NY_END.hour, _NY_END.minute),
-                "daily_swing_high": swing.daily.prior_high,
-                "daily_swing_low": swing.daily.prior_low,
-                "weekly_swing_high": swing.weekly.prior_high,
-                "weekly_swing_low": swing.weekly.prior_low,
-                "monthly_swing_high": swing.monthly.prior_high,
-                "monthly_swing_low": swing.monthly.prior_low,
+                **swing_data,
             })
 
         result = {"days": result_days, "symbol": symbol}
