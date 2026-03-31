@@ -73,6 +73,12 @@ class BetService:
         if not provider:
             return {"error": f"Provider {provider_id} not found"}
 
+        # Block bets on banned providers
+        from ..repositories.limit_repo import LimitRepo
+        banned = LimitRepo(self.db).get_banned_providers(profile.id)
+        if provider_id in banned:
+            return {"error": f"Provider {provider_id} is banned — account closed"}
+
         # Block duplicate: same event + market + outcome + point already has a pending bet (any provider)
         if event_id and market and outcome:
             dup_query = self.db.query(Bet).filter(
