@@ -185,7 +185,7 @@ class MarketStructureEngine:
             if self._confirmed_highs and self._potential_low_price is not None:
                 last_sh = self._confirmed_highs[0]
                 break_price_up = cl if self._use_close_only else hi
-                if break_price_up > last_sh.price and self._potential_low_price < last_sh.price:
+                if break_price_up > last_sh.price:
                     self._force_swing_pair(
                         sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
                         sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
@@ -247,8 +247,7 @@ class MarketStructureEngine:
         # → force-confirm the bounce high + the current low, continue SEEKING_LOW
         if self._confirmed_lows and self._potential_low_price is not None and self._potential_high_price is not None:
             last_sl = self._confirmed_lows[0]
-            if break_price_dn < last_sl.price and self._potential_high_price > last_sl.price:
-                # The bounce high since last confirmed low IS the new swing high (LH in downtrend)
+            if break_price_dn < last_sl.price:
                 self._force_swing_pair(
                     sh_price=self._potential_high_price, sh_ts=self._potential_high_ts or ts,
                     sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
