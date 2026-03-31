@@ -1,7 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { ProviderName } from '../../ProviderName';
 import { resolveOutcome, marketLabel } from '@/utils/betting';
+import { api } from '@/services/api';
 import type { BatchBet, WageringProjection } from '@/types';
+
+const USDC_RATE = 10.50;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,6 +192,9 @@ function ProviderSection({
   onToggleBet,
   onMarkAllDone,
 }: ProviderSectionProps) {
+  const [firing, setFiring] = useState(false);
+  const [fireResult, setFireResult] = useState<string | null>(null);
+
   const betKeys = group.bets.map(betKey);
   const placedCount = betKeys.filter((k) => placedSet.has(k)).length;
   const totalCount = betKeys.length;
@@ -201,6 +207,37 @@ function ProviderSection({
     : 'pending';
 
   const tierClass = TIER_CLASSES[group.tier] ?? 'text-success';
+  const isPoly = group.providerId === 'polymarket';
+
+  const handleFire = async () => {
+    setFiring(true);
+    setFireResult(null);
+    try {
+      const bets = group.bets.map((b) => ({
+        event_id: b.event_id,
+        market: b.market,
+        outcome: b.outcome,
+        odds: b.odds,
+        stake: b.stake,
+      }));
+      const result = await api.firePolymarketBatch(bets);
+      const p = result.placed?.length ?? 0;
+      const s = result.skipped?.length ?? 0;
+      const f = result.failed?.length ?? 0;
+      setFireResult(`${p} placed, ${s} skipped, ${f} failed`);
+      if (p > 0) {
+        onMarkAllDone(betKeys);
+      }
+    } catch (err: any) {
+      setFireResult(`Error: ${err.message || err}`);
+    } finally {
+      setFiring(false);
+    }
+  };
+
+  const stakeDisplay = isPoly
+    ? `$${(group.totalStake / USDC_RATE).toFixed(0)} USDC`
+    : `${Math.round(group.totalStake)} kr`;
 
   return (
     <div className={`border ${isExpanded ? 'border-border' : 'border-border/50'} bg-panel`}>
@@ -209,44 +246,35 @@ function ProviderSection({
         onClick={onToggle}
         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-panel2/50 transition-colors text-left"
       >
-        {/* Status icon */}
         <StatusIcon status={status} />
 
-        {/* Provider name */}
         <span className={`text-sm font-medium ${tierClass}`}>
           <ProviderName name={group.providerId} />
         </span>
 
-        {/* Cluster tag */}
-        {group.cluster && (
+        {group.cluster && !isPoly && (
           <span className="text-[10px] px-1.5 py-0.5 bg-border text-muted border border-border">
             {group.cluster}
           </span>
         )}
 
-        {/* Wagering badge */}
-        {group.wageringRemaining !== null && (
+        {!isPoly && group.wageringRemaining !== null && (
           <span className="text-[10px] px-1.5 py-0.5 bg-purple-900/40 text-purple-400 border border-purple-800/40">
             {Math.round(group.wageringRemaining)} kr left
             {group.daysRemaining !== null && ` · ${group.daysRemaining}d`}
           </span>
         )}
 
-        {/* Stats */}
         <span className="text-sm text-muted ml-1">
           {placedCount}/{totalCount} bets
         </span>
         <span className="text-sm text-muted">·</span>
-        <span className="text-sm text-text">{Math.round(group.totalStake)} kr</span>
-        <span className="text-sm text-muted">·</span>
-        <span className="text-sm text-success">+{Math.round(group.totalEV)} EV</span>
+        <span className="text-sm text-text">{stakeDisplay}</span>
 
-        {/* Status text */}
         <span className="ml-auto text-sm text-muted">
           {allDone ? 'Done' : anyDone ? 'In progress' : 'Pending'}
         </span>
 
-        {/* Chevron */}
         <svg
           width="12"
           height="12"
@@ -265,17 +293,13 @@ function ProviderSection({
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border">
-          {/* Bet table */}
           <table className="sq w-full">
             <colgroup>
               <col style={{ width: '28px' }} />
               <col />
               <col style={{ width: '80px' }} />
               <col style={{ width: '50px' }} />
-              <col style={{ width: '50px' }} />
-              <col style={{ width: '55px' }} />
               <col style={{ width: '65px' }} />
-              <col style={{ width: '55px' }} />
             </colgroup>
             <thead className="bg-panel">
               <tr>
@@ -283,10 +307,7 @@ function ProviderSection({
                 <th className="text-left">Event · Outcome</th>
                 <th className="text-right">Market</th>
                 <th className="text-right">Odds</th>
-                <th className="text-right">Fair</th>
-                <th className="text-right">Edge%</th>
                 <th className="text-right">Stake</th>
-                <th className="text-right">EV</th>
               </tr>
             </thead>
             <tbody>
@@ -306,6 +327,9 @@ function ProviderSection({
                   b.point,
                   false,
                 );
+                const stakeText = isPoly
+                  ? `$${(b.stake / USDC_RATE).toFixed(1)}`
+                  : `${Math.round(b.stake)} kr`;
 
                 return (
                   <tr
@@ -326,25 +350,28 @@ function ProviderSection({
                     </td>
                     <td className="text-right text-sm text-muted">{marketLabel(b.market)}</td>
                     <td className="text-right text-sm text-text font-medium">{b.odds.toFixed(2)}</td>
-                    <td className="text-right text-sm text-muted">{b.fair_odds.toFixed(2)}</td>
-                    <td
-                      className={`text-right text-sm font-semibold ${
-                        b.edge_pct > 0 ? 'text-success' : 'text-error'
-                      }`}
-                    >
-                      {b.edge_pct > 0 ? '+' : ''}{b.edge_pct.toFixed(1)}%
-                    </td>
-                    <td className="text-right text-sm text-text">{Math.round(b.stake)} kr</td>
-                    <td className="text-right text-sm text-success">+{Math.round(b.expected_profit)}</td>
+                    <td className="text-right text-sm text-text">{stakeText}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
 
-          {/* Mark All Done */}
+          {/* Actions */}
           {!allDone && (
-            <div className="px-3 py-2 border-t border-border flex justify-end">
+            <div className="px-3 py-2 border-t border-border flex items-center justify-end gap-2">
+              {fireResult && (
+                <span className="text-xs text-muted mr-auto">{fireResult}</span>
+              )}
+              {isPoly && (
+                <button
+                  onClick={handleFire}
+                  disabled={firing || allDone}
+                  className="px-3 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {firing ? 'Firing...' : 'Fire Polymarket'}
+                </button>
+              )}
               <button
                 onClick={() => onMarkAllDone(betKeys)}
                 className="px-3 py-1 bg-tabPlay text-bg text-xs font-medium hover:opacity-90 transition-opacity"
