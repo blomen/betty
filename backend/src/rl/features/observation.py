@@ -7,7 +7,7 @@ encode the temporal dynamics.
 Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (25 currently)
     orderflow                   21
-    structure + session          35
+    structure + session + PDH    39
     tpo (per-session)            38
     candle window                15
     zone features                 4
@@ -19,12 +19,12 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       209
+    total                       213
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
     orderflow            21
-    structure + session  35
+    structure + session + PDH  39
     tpo (per-session)    38
     candle window        15
     confluence            8
@@ -35,7 +35,7 @@ Legacy mode (state["level_type"] present, no zone):
     approach direction    1
     execution context     7
     ---
-    total               208
+    total               212
 """
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def build_observation(state: dict) -> np.ndarray:
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
 
-    # 3. Structure + session (35)
+    # 3. Structure + session + PDH/PDL (39)
     swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
         price, vwap_bands, volume_profile, session_levels, session_context,
@@ -191,7 +191,7 @@ def build_observation(state: dict) -> np.ndarray:
     obs = np.concatenate([
         seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
-        seg_structure,    # 35
+        seg_structure,    # 39
         seg_tpo,          # 38
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)

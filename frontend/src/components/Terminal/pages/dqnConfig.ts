@@ -70,6 +70,8 @@ const STRUCTURE = [
   // BOS / CHoCH flags
   'bos_d', 'bos_w', 'bos_m',
   'choch_d', 'choch_w', 'choch_m',
+  // PDH/PDL
+  'pdh_dist', 'pdl_dist', 'pdh_pdl_pos', 'pdh_pdl_range',
 ];
 
 // TPO feature names (indices 84-96)

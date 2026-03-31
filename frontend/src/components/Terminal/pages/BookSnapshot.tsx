@@ -5,6 +5,7 @@ import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProf
 const LEVEL_GROUPS: Record<string, string[]> = {
   vwap: ['vwap'],
   ib: ['ibh', 'ibl'],
+  pdh_pdl: ['pdh', 'pdl'],
   tokyo: ['tokyo_h', 'tokyo_l'],
   london: ['london_h', 'london_l'],
   daily_vp: ['d_poc', 'd_vah', 'd_val', 'vp_session'],
@@ -129,21 +130,21 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo
 
       {/* Session Levels */}
       {(() => {
-        const sessionAllHidden = ['tokyo', 'london'].every(g => isGroupHidden(g));
+        const sessionAllHidden = ['pdh_pdl', 'tokyo', 'london'].every(g => isGroupHidden(g));
         if (sessionAllHidden) return (
           <div className="px-2 py-0.5 border-b border-border">
-            <button onClick={() => toggleCluster(['tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider opacity-40 line-through cursor-pointer hover:opacity-70 transition-opacity">Session</button>
+            <button onClick={() => toggleCluster(['pdh_pdl', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider opacity-40 line-through cursor-pointer hover:opacity-70 transition-opacity">Session</button>
           </div>
         );
         return (
           <div className="px-2 py-1 border-b border-border">
-            <button onClick={() => toggleCluster(['tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
+            <button onClick={() => toggleCluster(['pdh_pdl', 'tokyo', 'london'])} className="text-[10px] text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer mb-1 block">Session</button>
 
             {/* PDH/PDL */}
-            {(s?.pdh != null || s?.pdl != null) && (
+            {(s?.pdh != null || s?.pdl != null) && !isGroupHidden('pdh_pdl') && (
               <div className="mb-1">
-                {s?.pdh != null && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-300" />}
-                {s?.pdl != null && <Row label="PDL" value={s.pdl.toFixed(2)} color="text-orange-300" />}
+                {s?.pdh != null && !hiddenLevels.has('pdh') && <Row label="PDH" value={s.pdh.toFixed(2)} color="text-orange-300" />}
+                {s?.pdl != null && !hiddenLevels.has('pdl') && <Row label="PDL" value={s.pdl.toFixed(2)} color="text-orange-300" />}
               </div>
             )}
 

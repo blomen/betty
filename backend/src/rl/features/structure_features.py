@@ -7,7 +7,7 @@ import numpy as np
 from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
 from ..config import TICK_SIZE
 
-_N_FEATURES = 35
+_N_FEATURES = 39
 
 
 def _extract_swing_features(
@@ -61,9 +61,9 @@ def extract_structure_features(
     session_context: dict | None,
     swing_structure: SwingStructure | None = None,
 ) -> np.ndarray:
-    """Extract 35 market structure and session context features.
+    """Extract 39 market structure and session context features.
 
-    Feature layout (indices 0-34):
+    Feature layout (indices 0-38):
     --- VWAP (0) ---
       0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
@@ -73,14 +73,16 @@ def extract_structure_features(
     --- Session Context (9-19) ---
       9-19  timing, session type, IB break
     --- Swing Structure (20-34) ---
-      20-22  swing_trend_d/w/m  (uptrend=1, reversing_up=0.5, ranging=0, reversing_down=-0.5, downtrend=-1)
-      23-25  swing_dist_d/w/m   (signed distance to nearest swing, clipped ±1)
-      26-28  swing_pos_d/w/m    (price position within swing range, 0-1)
-      29-31  swing_bos_d/w/m    (BOS active flag)
-      32-34  swing_choch_d/w/m  (CHoCH active flag)
-
-    Note: the 3-way market type one-hot (trend_day/range_day/neutral_day) was
-    removed in favour of the richer 6-way Dalton day type in the AMT segment.
+      20-22  swing_trend_d/w/m
+      23-25  swing_dist_d/w/m
+      26-28  swing_pos_d/w/m
+      29-31  swing_bos_d/w/m
+      32-34  swing_choch_d/w/m
+    --- PDH/PDL (35-38) ---
+      35  dist_to_pdh (signed, clipped ±1)
+      36  dist_to_pdl (signed, clipped ±1)
+      37  position within PDH-PDL range (0=PDL, 1=PDH)
+      38  PDH-PDL range width (normalised)
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -137,5 +139,20 @@ def extract_structure_features(
 
     # --- Swing Structure (feats 20-34) ---
     feats[20:35] = _extract_swing_features(price, swing_structure)
+
+    # --- PDH/PDL (feats 35-38) ---
+    pdh: float | None = None
+    pdl: float | None = None
+    if session_levels is not None:
+        pdh = session_levels.pdh
+        pdl = session_levels.pdl
+    if pdh is not None:
+        feats[35] = float(np.clip((price - pdh) / TICK_SIZE / 200.0, -1.0, 1.0))
+    if pdl is not None:
+        feats[36] = float(np.clip((price - pdl) / TICK_SIZE / 200.0, -1.0, 1.0))
+    if pdh is not None and pdl is not None:
+        span = pdh - pdl
+        feats[37] = float(np.clip((price - pdl) / span, 0.0, 1.0)) if span > 0 else 0.5
+        feats[38] = float(np.clip(span / TICK_SIZE / 400.0, 0.0, 1.0))
 
     return feats
