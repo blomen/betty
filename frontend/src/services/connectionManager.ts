@@ -40,9 +40,9 @@ class ConnectionManager {
     return this._message;
   }
 
-  /** Sync check — true when state is 'ok' or 'slow' (backend is responding). */
+  /** Sync check — true when backend is responding or state is unknown (don't block during startup). */
   isUp(): boolean {
-    return this._state === 'ok' || this._state === 'slow';
+    return this._state !== 'down';
   }
 
   /** Async — resolves immediately if already up, otherwise waits for next 'ok'/'slow' transition. */
