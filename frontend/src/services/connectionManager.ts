@@ -8,7 +8,7 @@ const POLL_OK_MS = 10_000;
 const POLL_DOWN_MS = 3_000;
 const SLOW_THRESHOLD_MS = 3000;
 const STARTUP_GRACE_MS = 30_000;
-const HEALTH_TIMEOUT_MS = 5000;
+const HEALTH_TIMEOUT_MS = 10000;
 const CONSECUTIVE_FAIL_THRESHOLD = 2;
 
 class ConnectionManager {
