@@ -320,7 +320,7 @@ async def fire_polymarket_batch(request: FireBatchRequest):
             # Look up the Polymarket odds row to get event_slug
             odds_row = db.query(Odds).filter(
                 Odds.event_id == bet.event_id,
-                Odds.provider == "polymarket",
+                Odds.provider_id == "polymarket",
                 Odds.market == bet.market,
                 Odds.outcome == bet.outcome,
             ).first()
