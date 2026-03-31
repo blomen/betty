@@ -5,6 +5,7 @@ import logging
 import yaml
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ...mirror.service import MirrorService
 from ...pipeline.broadcast import odds_broadcaster
@@ -237,6 +238,38 @@ async def scrape_page_bets():
         db.close()
 
     return {"url": url, "data": {"bets": bets, "count": len(bets), "staged": len(staged)}}
+
+
+class PolymarketBetRequest(BaseModel):
+    bet_id: int
+    market_slug: str
+    token_id: str = ""
+    outcome: str
+    amount_usdc: float
+    expected_price: float
+    max_slippage_pct: float = 2.0
+
+
+class PlaceBetsRequest(BaseModel):
+    bets: list[PolymarketBetRequest]
+
+
+@router.post("/place-bets")
+async def place_polymarket_bets(request: PlaceBetsRequest):
+    """Place a batch of bets on Polymarket via mirror browser automation."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    if "polymarket.com" not in (page.url or ""):
+        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+
+    bets = [b.model_dump() for b in request.bets]
+    result = await mirror.place_polymarket_bets(bets)
+    return result
 
 
 @router.get("/notification-recipes")
