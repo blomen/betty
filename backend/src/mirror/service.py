@@ -1202,6 +1202,174 @@ class MirrorService:
             return True
         return False
 
+    async def place_polymarket_bets(self, bets: list[dict]) -> dict:
+        """Place bets on Polymarket via Playwright UI automation.
+
+        Each bet dict: {bet_id, market_slug, token_id, outcome, amount_usdc, expected_price, max_slippage_pct}
+        Returns: {placed: [...], skipped: [...], failed: [...], total: N}
+        """
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "placed": [], "skipped": [], "failed": [], "total": 0}
+
+        page = context.pages[0]
+        placed = []
+        skipped = []
+        failed = []
+
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            slug = bet["market_slug"]
+            outcome = bet["outcome"]
+            amount = bet["amount_usdc"]
+            expected_price = bet["expected_price"]
+            max_slippage = bet.get("max_slippage_pct", 2.0)
+
+            self._notify("polymarket_bet_placing", {
+                "bet_id": bet_id, "market_slug": slug,
+                "outcome": outcome, "amount": amount,
+            })
+
+            try:
+                result = await self._place_single_polymarket_bet(
+                    page, bet_id, slug, outcome, amount, expected_price, max_slippage
+                )
+                if result["status"] == "placed":
+                    placed.append(result)
+                elif result["status"] == "skipped":
+                    skipped.append(result)
+                else:
+                    failed.append(result)
+            except Exception as e:
+                logger.error(f"[mirror] Polymarket bet {bet_id} failed: {e}", exc_info=True)
+                result = {"bet_id": bet_id, "status": "failed", "reason": str(e)}
+                failed.append(result)
+                self._notify("polymarket_bet_failed", result)
+
+        summary = {"placed": placed, "skipped": skipped, "failed": failed, "total": len(bets)}
+        self._notify("polymarket_batch_complete", {
+            "placed": len(placed), "skipped": len(skipped),
+            "failed": len(failed), "total": len(bets),
+        })
+        return summary
+
+    async def _place_single_polymarket_bet(
+        self, page, bet_id: int, slug: str, outcome: str,
+        amount: float, expected_price: float, max_slippage: float,
+    ) -> dict:
+        """Place a single bet on Polymarket via browser automation."""
+        import asyncio
+
+        # 1. Navigate to market page
+        market_url = f"https://polymarket.com/{slug}"
+        logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
+        await page.goto(market_url, wait_until="networkidle", timeout=20000)
+        await asyncio.sleep(2)
+
+        # 2. Click outcome button (Yes/No)
+        outcome_selector = f'button:has-text("{outcome}")'
+        try:
+            await page.click(outcome_selector, timeout=5000)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {outcome}: {e}"}
+
+        # 3. Read current price from order form and check slippage
+        try:
+            price_text = await page.evaluate("""() => {
+                const selectors = [
+                    '[data-testid="price-display"]',
+                    '.price-input input',
+                    'input[placeholder*="Price"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) return el.value || el.textContent;
+                }
+                const inputs = document.querySelectorAll('input[type="number"]');
+                for (const inp of inputs) {
+                    const v = parseFloat(inp.value);
+                    if (v > 0 && v < 1) return inp.value;
+                }
+                return null;
+            }""")
+            if price_text:
+                current_price = float(price_text)
+                slippage_ok = self.polymarket_parser.check_slippage(expected_price, current_price, max_slippage)
+                slippage_pct = abs(current_price - expected_price) / expected_price * 100
+
+                self._notify("polymarket_bet_price_check", {
+                    "bet_id": bet_id, "expected": expected_price,
+                    "actual": current_price, "slippage_pct": round(slippage_pct, 2),
+                })
+
+                if not slippage_ok:
+                    logger.warning(
+                        f"[mirror] Polymarket bet {bet_id}: slippage {slippage_pct:.1f}% "
+                        f"exceeds {max_slippage}% (expected={expected_price}, actual={current_price})"
+                    )
+                    return {
+                        "bet_id": bet_id, "status": "skipped", "reason": "slippage",
+                        "expected_price": expected_price, "actual_price": current_price,
+                        "slippage_pct": round(slippage_pct, 2),
+                    }
+        except Exception as e:
+            logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
+
+        # 4. Enter amount
+        try:
+            amount_input = page.locator('input[placeholder*="Amount"], input[placeholder*="Enter"]').first
+            await amount_input.click()
+            await amount_input.fill("")
+            await amount_input.type(str(amount), delay=50)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
+
+        # 5. Click Buy/confirm button
+        try:
+            buy_btn = page.locator('button:has-text("Buy")').first
+            await buy_btn.click(timeout=5000)
+            await asyncio.sleep(1)
+        except Exception as e:
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click Buy: {e}"}
+
+        # 6. Handle Fun.xyz transaction confirmation popup
+        try:
+            confirm_btn = page.locator('button:has-text("Confirm"), button:has-text("Approve")').first
+            await confirm_btn.click(timeout=15000)
+            await asyncio.sleep(3)
+        except Exception:
+            logger.debug(f"[mirror] No Fun.xyz confirm popup for bet {bet_id}")
+            await asyncio.sleep(3)
+
+        # 7. Check for success indicators
+        try:
+            success = await page.evaluate("""() => {
+                const text = document.body.innerText;
+                return text.includes('Order placed') || text.includes('Success') || text.includes('Confirmed');
+            }""")
+            if success:
+                logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
+                result = {
+                    "bet_id": bet_id, "status": "placed",
+                    "amount_usdc": amount, "outcome": outcome,
+                }
+                self._notify("polymarket_bet_placed", result)
+                return result
+        except Exception:
+            pass
+
+        # Uncertain — report as placed but flag
+        logger.warning(f"[mirror] Polymarket bet {bet_id}: placement uncertain")
+        result = {
+            "bet_id": bet_id, "status": "placed",
+            "amount_usdc": amount, "outcome": outcome,
+            "note": "confirmation_uncertain",
+        }
+        self._notify("polymarket_bet_placed", result)
+        return result
+
     def _notify(self, event_type: str, data: dict):
         """Publish SSE event if broadcaster is available."""
         if self.broadcaster:
