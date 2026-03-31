@@ -100,7 +100,7 @@ class MirrorService:
                 "  const els = document.querySelectorAll('button, a, span, div');"
                 "  for (const el of els) {"
                 "    const text = el.textContent || '';"
-                "    const match = text.match(/Cash\\$([\\d,.]+)/);"
+                "    const match = text.match(/Cash\\s*\\$([\\d,.]+)/);"
                 "    if (match) return match[1];"
                 "  }"
                 "  return null;"
