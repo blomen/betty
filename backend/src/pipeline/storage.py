@@ -596,17 +596,17 @@ def _resolve_event_id(
                     pass
 
     # Pre-filter by team name prefix for better performance
+    # Uses word-level prefixes to handle reversed name order (e.g. "Cina Federico" vs "Federico Cina")
     if prefix_filter_length > 0 and len(candidates) > 10:
-        home_prefix = event.home_team[:prefix_filter_length].lower() if event.home_team else ""
-        away_prefix = event.away_team[:prefix_filter_length].lower() if event.away_team else ""
+        def _word_prefixes(name: str) -> set:
+            return {w[:prefix_filter_length].lower() for w in name.split() if len(w) >= prefix_filter_length}
+
+        event_prefixes = _word_prefixes(event.home_team) | _word_prefixes(event.away_team)
 
         prefix_filtered = [
             (pid, home, away, date, league)
             for pid, home, away, date, league in candidates
-            if (home[:prefix_filter_length].lower() == home_prefix or
-                away[:prefix_filter_length].lower() == home_prefix or
-                home[:prefix_filter_length].lower() == away_prefix or
-                away[:prefix_filter_length].lower() == away_prefix)
+            if (_word_prefixes(home) | _word_prefixes(away)) & event_prefixes
         ]
         if prefix_filtered:
             candidates = prefix_filtered
