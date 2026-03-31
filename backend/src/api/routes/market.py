@@ -724,21 +724,19 @@ async def get_ml_health():
                 for n, v in pairs[:10]
             ]
 
-    # Class distribution + recent accuracy from DB
-    try:
+    # Class distribution + recent accuracy from DB (offloaded to thread to avoid blocking event loop)
+    def _query_ml_stats():
         db = get_session()
         try:
-            # Class distribution
             dist = (
                 db.query(LevelTouchOutcome.outcome, func.count())
                 .filter(LevelTouchOutcome.outcome.isnot(None))
                 .group_by(LevelTouchOutcome.outcome)
                 .all()
             )
-            result["class_distribution"] = {cls: cnt for cls, cnt in dist}
-            result["training_data_count"] = sum(cnt for _, cnt in dist)
+            class_dist = {cls: cnt for cls, cnt in dist}
+            training_count = sum(cnt for _, cnt in dist)
 
-            # Recent accuracy (prediction vs actual on last 50)
             recent = (
                 db.query(LevelTouchOutcome.prediction, LevelTouchOutcome.outcome)
                 .filter(
@@ -749,14 +747,22 @@ async def get_ml_health():
                 .limit(50)
                 .all()
             )
+            recent_acc = {}
             if recent:
                 correct = sum(1 for pred, actual in recent if pred == actual)
-                result["recent_accuracy"] = {
+                recent_acc = {
                     "last_50": round(correct / len(recent), 3),
                     "sample_count": len(recent),
                 }
+            return class_dist, training_count, recent_acc
         finally:
             db.close()
+
+    try:
+        class_dist, training_count, recent_acc = await asyncio.to_thread(_query_ml_stats)
+        result["class_distribution"] = class_dist
+        result["training_data_count"] = training_count
+        result["recent_accuracy"] = recent_acc
     except Exception:
         pass
 

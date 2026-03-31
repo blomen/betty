@@ -5,6 +5,7 @@ EV enrichment runs at scrape time (scheduler or manual POST), not at query time.
 Falls back to JSON file if DB table is empty (first run before scheduler populates).
 """
 
+import asyncio
 import sys
 import logging
 from datetime import datetime, timezone
@@ -228,7 +229,7 @@ async def scrape_specials(db: Session = Depends(get_db)):
 
     # JSON backup
     save_specials(specials)
-    _persist_boost_log(run_log)
+    await asyncio.to_thread(_persist_boost_log, run_log)
 
     # EV enrichment + LLM research + DB storage
     active = filter_expired([asdict(s) for s in specials])

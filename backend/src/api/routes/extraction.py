@@ -128,7 +128,7 @@ async def run_extraction_task(providers: list[str] | None):
         # Final state update in finally block (guaranteed to run)
         if _results:
             try:
-                final = _build_final_state(_results)
+                final = await asyncio.to_thread(_build_final_state, _results)
                 update_extraction_state(
                     total_events=_results.get("total_events", 0),
                     total_odds=_results.get("total_odds", 0),
@@ -416,23 +416,26 @@ async def start_tier(tier_name: str):
     grouped = category_config.get("grouped", False)
 
     # Filter out providers disabled in settings for active profile
-    from ...db.models import Profile, ProviderExtractionSetting, get_session
-    session = get_session()
-    try:
-        profile = session.query(Profile).filter(
-            Profile.is_active == True  # noqa: E712
-        ).first()
-        disabled = set()
-        if profile:
-            disabled = {
+    def _get_disabled():
+        from ...db.models import Profile, ProviderExtractionSetting, get_session
+        session = get_session()
+        try:
+            profile = session.query(Profile).filter(
+                Profile.is_active == True  # noqa: E712
+            ).first()
+            if not profile:
+                return set()
+            return {
                 s.provider_id
                 for s in session.query(ProviderExtractionSetting).filter(
                     ProviderExtractionSetting.profile_id == profile.id,
                     ProviderExtractionSetting.enabled == False,  # noqa: E712
                 ).all()
             }
-    finally:
-        session.close()
+        finally:
+            session.close()
+
+    disabled = await asyncio.to_thread(_get_disabled)
     providers = [p for p in all_providers if p not in disabled]
 
     if grouped:
@@ -474,35 +477,35 @@ async def stop_tier(tier_name: str):
 @router.get("/freshness")
 async def get_extraction_freshness():
     """Get the most recent odds update time per extraction tier (soft/sharp/poly/boosts)."""
-    from sqlalchemy import func, case
-    from ...db.models import BoostExtractionLog
 
-    session = get_session()
-    try:
-        rows = (
-            session.query(
-                case(
-                    (Odds.provider_id == "pinnacle", "sharp"),
-                    (Odds.provider_id == "polymarket", "poly"),
-                    else_="soft",
-                ).label("tier"),
-                func.max(Odds.updated_at).label("latest"),
+    def _query():
+        from sqlalchemy import func, case
+        from ...db.models import BoostExtractionLog
+        session = get_session()
+        try:
+            rows = (
+                session.query(
+                    case(
+                        (Odds.provider_id == "pinnacle", "sharp"),
+                        (Odds.provider_id == "polymarket", "poly"),
+                        else_="soft",
+                    ).label("tier"),
+                    func.max(Odds.updated_at).label("latest"),
+                )
+                .group_by("tier")
+                .all()
             )
-            .group_by("tier")
-            .all()
-        )
-        # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
-        result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
+            result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
+            return {
+                "soft": result.get("soft"),
+                "sharp": result.get("sharp"),
+                "poly": result.get("poly"),
+                "boosts": None,
+            }
+        finally:
+            session.close()
 
-        # Boost freshness — DISABLED (boosts/specials turned off)
-        return {
-            "soft": result.get("soft"),
-            "sharp": result.get("sharp"),
-            "poly": result.get("poly"),
-            "boosts": None,
-        }
-    finally:
-        session.close()
+    return await asyncio.to_thread(_query)
 
 
 # =============================================================================
@@ -512,130 +515,148 @@ async def get_extraction_freshness():
 @router.get("/analytics")
 async def get_extraction_analytics():
     """Get extraction analytics: provider ROI, coverage gaps, scheduling efficiency."""
-    from src.ml.analytics.engine import compute_provider_roi, compute_coverage_gaps, compute_scheduling_efficiency
 
-    session = get_session()
-    try:
-        return {
-            "provider_roi": compute_provider_roi(session),
-            "coverage_gaps": compute_coverage_gaps(session),
-            "scheduling": compute_scheduling_efficiency(session),
-        }
-    finally:
-        session.close()
+    def _query():
+        from src.ml.analytics.engine import compute_provider_roi, compute_coverage_gaps, compute_scheduling_efficiency
+        session = get_session()
+        try:
+            return {
+                "provider_roi": compute_provider_roi(session),
+                "coverage_gaps": compute_coverage_gaps(session),
+                "scheduling": compute_scheduling_efficiency(session),
+            }
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_query)
 
 
 @router.get("/recommendations")
 async def get_extraction_recommendations():
     """Get active extraction recommendations."""
-    from src.ml.analytics.recommendations import RecommendationManager
 
-    session = get_session()
-    try:
-        mgr = RecommendationManager(session)
-        active = mgr.get_active()
-        return [
-            {
-                "id": r.id,
-                "provider_id": r.provider_id,
-                "category": r.category,
-                "severity": r.severity,
-                "message": r.message,
-                "status": r.status,
-                "before_metric": r.before_metric,
-                "after_metric": r.after_metric,
-                "source": r.source,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in active
-        ]
-    finally:
-        session.close()
+    def _query():
+        from src.ml.analytics.recommendations import RecommendationManager
+        session = get_session()
+        try:
+            mgr = RecommendationManager(session)
+            active = mgr.get_active()
+            return [
+                {
+                    "id": r.id,
+                    "provider_id": r.provider_id,
+                    "category": r.category,
+                    "severity": r.severity,
+                    "message": r.message,
+                    "status": r.status,
+                    "before_metric": r.before_metric,
+                    "after_metric": r.after_metric,
+                    "source": r.source,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in active
+            ]
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_query)
 
 
 @router.get("/ml/status")
 async def get_ml_status():
     """Get status of all ML models."""
-    from src.ml.serving.predictor import get_predictor
-    from src.ml.training.train_all import TrainingOrchestrator
 
-    session = get_session()
-    try:
-        predictor = get_predictor()
-        orch = TrainingOrchestrator()
-        thresholds = orch.check_thresholds(session)
+    def _query():
+        from src.ml.serving.predictor import get_predictor
+        from src.ml.training.train_all import TrainingOrchestrator
+        session = get_session()
+        try:
+            predictor = get_predictor()
+            orch = TrainingOrchestrator()
+            thresholds = orch.check_thresholds(session)
+            result = {}
+            for name, config in orch.model_configs.items():
+                result[name] = {
+                    "loaded": predictor.is_loaded(name),
+                    "data_ready": thresholds.get(name, False),
+                    "min_samples": config["min_samples"],
+                }
+            return result
+        finally:
+            session.close()
 
-        result = {}
-        for name, config in orch.model_configs.items():
-            result[name] = {
-                "loaded": predictor.is_loaded(name),
-                "data_ready": thresholds.get(name, False),
-                "min_samples": config["min_samples"],
-            }
-        return result
-    finally:
-        session.close()
+    return await asyncio.to_thread(_query)
 
 
 @router.post("/ml/train")
 async def trigger_ml_training():
     """Manually trigger ML model training."""
-    from src.ml.training.train_all import TrainingOrchestrator
 
-    session = get_session()
-    try:
-        orch = TrainingOrchestrator()
-        results = orch.train_all(session)
-        session.commit()
-        return results
-    finally:
-        session.close()
+    def _train():
+        from src.ml.training.train_all import TrainingOrchestrator
+        session = get_session()
+        try:
+            orch = TrainingOrchestrator()
+            results = orch.train_all(session)
+            session.commit()
+            return results
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_train)
 
 
 @router.get("/optimizer/status")
 async def get_optimizer_status():
     """Return latest M10 optimizer analysis results."""
-    from src.ml.optimizer.schedule import ScheduleOptimizer
-    from src.ml.optimizer.provider_priority import ProviderPriorityScorer
-    from src.ml.optimizer.timeout import TimeoutTuner
-    from src.ml.optimizer.coverage import CoverageOptimizer
 
-    session = get_session()
-    try:
-        results = {}
-        for name, cls in [
-            ("schedule", ScheduleOptimizer),
-            ("provider_priority", ProviderPriorityScorer),
-            ("timeout", TimeoutTuner),
-            ("coverage", CoverageOptimizer),
-        ]:
-            try:
-                result = cls().check_and_train(session) or {"status": "insufficient_data"}
-                # Remove non-serializable model objects
-                result.pop("model", None)
-                results[name] = result
-            except Exception as e:
-                results[name] = {"status": "error", "error": str(e)}
-        return results
-    finally:
-        session.close()
+    def _query():
+        from src.ml.optimizer.schedule import ScheduleOptimizer
+        from src.ml.optimizer.provider_priority import ProviderPriorityScorer
+        from src.ml.optimizer.timeout import TimeoutTuner
+        from src.ml.optimizer.coverage import CoverageOptimizer
+        session = get_session()
+        try:
+            results = {}
+            for name, cls in [
+                ("schedule", ScheduleOptimizer),
+                ("provider_priority", ProviderPriorityScorer),
+                ("timeout", TimeoutTuner),
+                ("coverage", CoverageOptimizer),
+            ]:
+                try:
+                    result = cls().check_and_train(session) or {"status": "insufficient_data"}
+                    result.pop("model", None)
+                    results[name] = result
+                except Exception as e:
+                    results[name] = {"status": "error", "error": str(e)}
+            return results
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_query)
 
 
 @router.patch("/recommendations/{rec_id}")
 async def update_recommendation(rec_id: int, status: str, after_metric: float = None):
     """Update recommendation status (acted_on, resolved, wont_fix)."""
-    from src.ml.analytics.recommendations import RecommendationManager
-
     if status not in ("acted_on", "resolved", "wont_fix"):
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
 
-    session = get_session()
-    try:
-        mgr = RecommendationManager(session)
-        rec = mgr.update_status(rec_id, status, after_metric=after_metric)
-        session.commit()
-        if not rec:
-            raise HTTPException(status_code=404, detail="Recommendation not found")
-        return {"id": rec.id, "status": rec.status}
-    finally:
-        session.close()
+    def _update():
+        from src.ml.analytics.recommendations import RecommendationManager
+        session = get_session()
+        try:
+            mgr = RecommendationManager(session)
+            rec = mgr.update_status(rec_id, status, after_metric=after_metric)
+            session.commit()
+            if not rec:
+                return None
+            return {"id": rec.id, "status": rec.status}
+        finally:
+            session.close()
+
+    result = await asyncio.to_thread(_update)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    return result
