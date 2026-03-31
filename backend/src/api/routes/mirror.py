@@ -272,6 +272,130 @@ async def place_polymarket_bets(request: PlaceBetsRequest):
     return result
 
 
+class FireBatchBet(BaseModel):
+    event_id: str
+    market: str
+    outcome: str
+    odds: float
+    stake: float  # in SEK — will be converted to USDC
+
+
+class FireBatchRequest(BaseModel):
+    bets: list[FireBatchBet]
+    max_slippage_pct: float = 3.0
+
+
+@router.post("/fire-batch")
+async def fire_polymarket_batch(request: FireBatchRequest):
+    """Fire a batch of Polymarket bets — resolves market slugs from DB, converts stakes to USDC.
+
+    Accepts batch bets with event_id/market/outcome (same fields as BatchBet),
+    looks up event_slug from Odds.provider_meta, converts SEK stake to USDC,
+    and delegates to mirror browser for Playwright automation.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    if "polymarket.com" not in (page.url or ""):
+        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+
+    # Resolve slugs and convert stakes
+    from ..deps import get_db as _get_db
+    from ...db.models import Odds
+    from ...config import get_exchange_rate
+
+    usdc_rate = get_exchange_rate("polymarket")
+    if usdc_rate <= 0:
+        usdc_rate = 10.50  # fallback
+
+    db = next(_get_db())
+    resolved = []
+    errors = []
+    try:
+        for i, bet in enumerate(request.bets):
+            # Look up the Polymarket odds row to get event_slug
+            odds_row = db.query(Odds).filter(
+                Odds.event_id == bet.event_id,
+                Odds.provider == "polymarket",
+                Odds.market == bet.market,
+                Odds.outcome == bet.outcome,
+            ).first()
+
+            if not odds_row or not odds_row.provider_meta:
+                errors.append({
+                    "event_id": bet.event_id,
+                    "reason": "No Polymarket odds found for this event/market/outcome",
+                })
+                continue
+
+            meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
+            slug = meta.get("event_slug", "")
+            if not slug:
+                errors.append({
+                    "event_id": bet.event_id,
+                    "reason": "No event_slug in provider_meta",
+                })
+                continue
+
+            # Convert SEK stake to USDC
+            amount_usdc = round(bet.stake / usdc_rate, 2)
+            # Convert decimal odds to price (probability)
+            expected_price = round(1 / bet.odds, 4) if bet.odds > 1 else 0.5
+
+            # Map outcome (home/away/draw) to Polymarket outcome (Yes/No or team name)
+            poly_outcome = _resolve_poly_outcome(bet.outcome, meta)
+
+            resolved.append({
+                "bet_id": i,
+                "market_slug": slug,
+                "token_id": "",
+                "outcome": poly_outcome,
+                "amount_usdc": amount_usdc,
+                "expected_price": expected_price,
+                "max_slippage_pct": request.max_slippage_pct,
+                # Pass through for tracking
+                "event_id": bet.event_id,
+                "original_stake_sek": bet.stake,
+                "original_odds": bet.odds,
+            })
+    finally:
+        db.close()
+
+    if not resolved:
+        return {"placed": [], "skipped": [], "failed": errors, "total": 0, "resolve_errors": errors}
+
+    result = await mirror.place_polymarket_bets(resolved)
+    result["resolve_errors"] = errors
+    return result
+
+
+def _resolve_poly_outcome(outcome: str, meta: dict) -> str:
+    """Map internal outcome (home/away/draw) to Polymarket display outcome.
+
+    Polymarket uses team names or Yes/No for outcomes.
+    provider_meta has poly_home/poly_away for the mapping.
+    """
+    poly_home = meta.get("poly_home", "")
+    poly_away = meta.get("poly_away", "")
+
+    if outcome == "home" and poly_home:
+        return poly_home
+    if outcome == "away" and poly_away:
+        return poly_away
+    if outcome == "draw":
+        return "Draw"
+    if outcome == "over":
+        return "Over"
+    if outcome == "under":
+        return "Under"
+    # Fallback: return as-is (might be "Yes"/"No" already)
+    return outcome
+
+
 @router.get("/page-eval")
 async def page_eval(js: str = "() => document.body.innerText"):
     """Evaluate JS on the active mirror page and return result."""
