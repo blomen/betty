@@ -467,12 +467,22 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
 
       {/* Action buttons */}
       <div className="flex items-center justify-between px-1 py-1 shrink-0">
-        <button
-          onClick={onBack}
-          className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
-        >
-          ← Back to Batch
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onBack}
+            className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+          >
+            ← Back to Batch
+          </button>
+          {anyShortfall && (
+            <button
+              onClick={() => onBudgetRecalc(0, 0)}
+              className="px-3 py-1.5 text-xs bg-muted/20 text-muted font-medium hover:text-text hover:bg-muted/30 transition-colors"
+            >
+              Skip All Deposits
+            </button>
+          )}
+        </div>
         {hasPendingSkips ? (
           <button
             onClick={onRecalc}
