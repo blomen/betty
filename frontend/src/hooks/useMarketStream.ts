@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { connectionManager } from '@/services/connectionManager';
 import type { StreamTickEvent, StreamBookEvent, CandleData } from '@/types/market';
 
 export function useMarketStream(symbol: string = 'NQ') {
@@ -12,7 +13,6 @@ export function useMarketStream(symbol: string = 'NQ') {
   const retryRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const retryDelayRef = useRef(500);
   const mountedRef = useRef(true);
-  const consecutiveErrorsRef = useRef(0);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -34,26 +34,23 @@ export function useMarketStream(symbol: string = 'NQ') {
 
     es.onopen = () => {
       setConnected(true);
-      setConnectionId(id => id + 1); // trigger useLevelMonitor listener re-attachment
-      retryDelayRef.current = 500; // reset backoff on success
-      consecutiveErrorsRef.current = 0;
+      setConnectionId(id => id + 1);
+      retryDelayRef.current = 500;
     };
 
     es.onerror = () => {
-      consecutiveErrorsRef.current += 1;
-      // Only show disconnected after 2+ consecutive errors (skip transient blips)
-      if (consecutiveErrorsRef.current >= 2) {
-        setConnected(false);
-      }
+      setConnected(false);
       es.close();
       esRef.current = null;
-      // Reconnect with exponential backoff (500ms → 1s → 2s → 4s → cap 8s)
-      if (mountedRef.current) {
+
+      // Wait for backend health confirmation before reconnecting
+      connectionManager.waitForUp().then(() => {
+        if (!mountedRef.current) return;
         retryRef.current = setTimeout(() => {
           retryDelayRef.current = Math.min(retryDelayRef.current * 2, 8_000);
           connect();
         }, retryDelayRef.current);
-      }
+      });
     };
   }, [symbol]);
 
