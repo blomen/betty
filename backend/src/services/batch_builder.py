@@ -435,20 +435,50 @@ class BatchBuilder:
                     "bets": bets,
                 })
 
-            # Greedily allocate budget to providers with best EV density
+            # Greedily allocate budget — spread across clusters first, then
+            # fill within clusters.  Within each pass, pick the best EV-density
+            # provider from each cluster that hasn't been granted yet.
             shortfall_requests.sort(key=lambda x: -x["ev_density"])
-            budget_grants: dict[str, float] = {}  # pid → extra capital granted
+
+            # Tag each request with its cluster
             for req in shortfall_requests:
-                if req["currency"] == "USDC":
-                    grant = min(req["shortfall"], remaining_usdc)
-                    if grant > 0:
-                        budget_grants[req["provider_id"]] = grant
-                        remaining_usdc -= grant
-                else:
-                    grant = min(req["shortfall"], remaining_sek)
-                    if grant > 0:
-                        budget_grants[req["provider_id"]] = grant
-                        remaining_sek -= grant
+                req["cluster"] = _provider_to_cluster(req["provider_id"])
+
+            budget_grants: dict[str, float] = {}
+            remaining_reqs = list(shortfall_requests)
+
+            while remaining_reqs:
+                granted_this_round = False
+                clusters_seen: set[str] = set()
+                still_pending: list[dict] = []
+
+                for req in remaining_reqs:
+                    cluster = req["cluster"]
+                    if cluster in clusters_seen:
+                        still_pending.append(req)
+                        continue
+                    clusters_seen.add(cluster)
+
+                    if req["currency"] == "USDC":
+                        grant = min(req["shortfall"], remaining_usdc)
+                        if grant > 0:
+                            budget_grants[req["provider_id"]] = budget_grants.get(req["provider_id"], 0) + grant
+                            remaining_usdc -= grant
+                            granted_this_round = True
+                    else:
+                        grant = min(req["shortfall"], remaining_sek)
+                        if grant > 0:
+                            budget_grants[req["provider_id"]] = budget_grants.get(req["provider_id"], 0) + grant
+                            remaining_sek -= grant
+                            granted_this_round = True
+
+                    # If fully funded, don't re-queue; if partially, re-queue remainder
+                    if grant < req["shortfall"]:
+                        still_pending.append({**req, "shortfall": req["shortfall"] - grant})
+
+                if not granted_this_round:
+                    break  # No budget left
+                remaining_reqs = still_pending
 
             # Rebuild batch: keep bets each provider can afford
             new_batch: list[dict] = []
