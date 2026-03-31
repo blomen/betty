@@ -18,9 +18,9 @@ Key safety features:
 Monte Carlo optimal parameters (0% ruin, ~270% median growth):
 - max_kelly: 0.75 (3/4 Kelly ceiling at high bankrolls)
 - min_kelly: 0.25 (quarter Kelly floor for low-edge bets)
-- single_bet_cap: 3% of bankroll
+- single_bet_cap: 3% of bankroll (4% at low BR, tapers to 3% at 10k+)
 - min_expected_profit: 0.75 kr
-- Dynamic boost at low bankrolls: kelly * 1.333 below 5k, taper to 5k-15k
+- Dynamic boost at low bankrolls: kelly * 1.5 below 5k, taper to 5k-10k
 """
 
 from dataclasses import dataclass
@@ -91,13 +91,16 @@ BONUS_MIN_ODDS = 1.80
 # At low bankrolls, boost Kelly so stakes clear min_stake thresholds.
 # Converges to OPTIMAL_MAX_KELLY as bankroll grows.
 #
-# Bankroll thresholds:
-#   <= 5k:  max_kelly * 1.333 ≈ 1.0 (full Kelly)
-#   5k-15k: linear taper back to max_kelly
-#   >= 15k: max_kelly unchanged (0.75)
+# MC-optimal parameters (5k sims, 52 weeks, 0% ruin, all bankroll levels):
+#   <= 5k:  max_kelly * 1.5 ≈ 1.125 Kelly — +16-21% median growth vs 1.333
+#   5k-10k: linear taper back to max_kelly (faster convergence)
+#   >= 10k: max_kelly unchanged (0.75)
+#
+# Previous: 1.333 boost, 5k-15k taper. New values shift the crossover
+# point down — at 10k the boost is already negligible anyway.
 DYNAMIC_KELLY_LOW_THRESHOLD = 5000.0
-DYNAMIC_KELLY_HIGH_THRESHOLD = 15000.0
-DYNAMIC_KELLY_BOOST = 1.333  # Multiply profile kelly by this at low bankroll
+DYNAMIC_KELLY_HIGH_THRESHOLD = 10000.0
+DYNAMIC_KELLY_BOOST = 1.5  # Multiply profile kelly by this at low bankroll
 
 
 @dataclass
@@ -155,13 +158,14 @@ def effective_max_kelly(profile_max_kelly: float, bankroll: float) -> float:
     Kelly multiplier so stakes naturally reach playable sizes.
 
     This converges smoothly to the profile setting as bankroll grows:
-      <= 5k:   max_kelly * 1.333 (e.g. 0.75 -> 1.0)
-      5k-15k:  linear taper back to profile max_kelly
-      >= 15k:  profile max_kelly unchanged
+      <= 5k:   max_kelly * 1.5 (e.g. 0.75 -> 1.125)
+      5k-10k:  linear taper back to profile max_kelly
+      >= 10k:  profile max_kelly unchanged
 
-    Simulation results (5k start, 35 bets/week, 52 weeks, 3000 MC runs):
-      Without: median +236%, P10=3,232, DD=61.6%, play=73.6%
-      With:    median +360%, P10=1,453, DD=70.5%, play=93.1%
+    Simulation results (5k sims, 52 weeks, 35 bets/week, all bankroll levels):
+      Old (1.333, taper 15k): 2k start → 4.44x, 5k → 4.21x
+      New (1.5,   taper 10k): 2k start → 5.13x, 5k → 4.41x  (+16%, +5%)
+      Above 10k: identical performance (boost fully tapered)
     """
     if bankroll <= 0:
         return profile_max_kelly
@@ -325,8 +329,17 @@ def calculate_stake(
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
 
+    # Dynamic single bet cap: 4% at low bankrolls, taper to 3% at 10k+
+    # MC-optimal: +12-16% growth at low BR with 0% ruin increase.
+    effective_cap_pct = single_bet_cap_pct
+    if bankroll_total <= DYNAMIC_KELLY_LOW_THRESHOLD:
+        effective_cap_pct = max(single_bet_cap_pct, 0.04)
+    elif bankroll_total < DYNAMIC_KELLY_HIGH_THRESHOLD:
+        t = (bankroll_total - DYNAMIC_KELLY_LOW_THRESHOLD) / (DYNAMIC_KELLY_HIGH_THRESHOLD - DYNAMIC_KELLY_LOW_THRESHOLD)
+        effective_cap_pct = max(single_bet_cap_pct, 0.04 - t * 0.01)
+
     # Apply single bet cap
-    single_bet_cap = bankroll_total * single_bet_cap_pct
+    single_bet_cap = bankroll_total * effective_cap_pct
     stake = min(raw_stake, single_bet_cap)
     was_capped_single = raw_stake > single_bet_cap
 

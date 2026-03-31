@@ -118,7 +118,8 @@ def sim_kelly_stake(edge: float, odds: float, deployable_capital: float) -> floa
     - edge >= 6%: fraction = 0.75
     - between: linear interpolation
 
-    Capped at 3% of deployable capital.
+    MC-optimal low-BR boost: 1.5x at <=5k, taper to 10k.
+    MC-optimal low-BR cap: 4% at <=5k, taper to 3% at 10k.
     """
     if edge <= 0 or odds <= 1.0 or deployable_capital <= 0:
         return 0.0
@@ -132,8 +133,24 @@ def sim_kelly_stake(edge: float, odds: float, deployable_capital: float) -> floa
         t = (edge - 0.02) / 0.04
         kelly_frac = 0.25 + t * 0.50
 
+    # Low-bankroll boost (MC-optimal: 1.5x at <=5k, taper to 10k)
+    if deployable_capital <= 5000:
+        kelly_frac *= 1.5
+    elif deployable_capital < 10000:
+        t = (deployable_capital - 5000) / 5000
+        kelly_frac *= 1.5 - t * 0.5
+
     raw = deployable_capital * kelly_frac * edge / (odds - 1.0)
-    cap = deployable_capital * 0.03
+
+    # Dynamic cap: 4% at <=5k, taper to 3% at 10k+
+    if deployable_capital <= 5000:
+        cap_pct = 0.04
+    elif deployable_capital < 10000:
+        t = (deployable_capital - 5000) / 5000
+        cap_pct = 0.04 - t * 0.01
+    else:
+        cap_pct = 0.03
+    cap = deployable_capital * cap_pct
     return min(raw, cap)
 
 

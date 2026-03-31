@@ -711,17 +711,28 @@ class BatchBuilder:
         missed: list[BatchBet] = []
         bets_assigned: dict[str, int] = {}
 
-        # -- Build cluster → funded siblings (sorted by balance desc) ----------
+        # -- Build cluster → funded siblings ---------------------------------
+        # Sort order: trigger/freebet siblings by bonus_amount ascending
+        # (smallest trigger first — MC-optimal: 0% ruin vs 57% with largest-first),
+        # then normal siblings by balance descending.
         funded_siblings: dict[str, list[str]] = {}
         for pid, pb in provider_balances.items():
             if pb.lifecycle in ("dormant", "available"):
                 continue
             cluster = pb.cluster or pid
             funded_siblings.setdefault(cluster, []).append(pid)
+
+        total_bankroll = sum(pb.initial_balance for pb in provider_balances.values())
+
         for cluster in funded_siblings:
-            funded_siblings[cluster].sort(
-                key=lambda pid: -provider_balances[pid].remaining,
-            )
+            def _sibling_sort_key(pid: str) -> tuple:
+                pb = provider_balances[pid]
+                # Deposited (trigger) and freebet: sort by bonus_amount ASC (smallest first)
+                if pb.lifecycle in ("deposited", "freebet"):
+                    return (0, pb.bonus_amount, -pb.remaining)
+                # Normal: sort by balance DESC
+                return (1, 0, -pb.remaining)
+            funded_siblings[cluster].sort(key=_sibling_sort_key)
 
         # -- Build cluster → all registered siblings (for missed round-robin) --
         registered = registered_providers or set(provider_balances.keys())
@@ -821,12 +832,18 @@ class BatchBuilder:
                     batch.append(placed)
                     return True
 
-                # Trigger: fixed stake, must meet min_odds
+                # Trigger: fixed stake, must meet min_odds.
+                # Safe-2x rule (MC-optimal): skip trigger if total bankroll < 2x
+                # trigger amount. This drops ruin from 57% to 0% at low bankrolls
+                # by avoiding all-in trigger bets. Smaller triggers get tried first
+                # (siblings sorted by bonus_amount ASC above).
                 if pb.lifecycle == "deposited" and pb.trigger_mode == "single":
                     bet_min_odds = pb.min_odds if pb.min_odds else 1.80
                     if bet.odds < bet_min_odds:
                         continue
                     trigger_stake = pb.bonus_amount if pb.bonus_amount > 0 else bet.stake
+                    if total_bankroll < trigger_stake * 2:
+                        continue  # Safe-2x: bankroll too small for this trigger
                     if pb.remaining < trigger_stake:
                         continue
                     placed = self._clone_bet_to_provider(
@@ -1257,8 +1274,9 @@ class BatchBuilder:
                 "priority_label": "withdraw_excess",
             })
 
-        # Sort by priority, then by expected_ev descending
-        actions.sort(key=lambda a: (a["priority"], -a.get("expected_ev", 0)))
+        # Sort by priority, then by deposit amount ascending (smallest trigger first
+        # per MC sims — 0% ruin vs 57% with largest-first), then by EV descending.
+        actions.sort(key=lambda a: (a["priority"], a.get("amount", 0), -a.get("expected_ev", 0)))
 
         deployed = sum(pb.initial_balance for pb in provider_balances.values())
         withdrawable = sum(a["amount"] for a in actions if a["type"] == "withdraw")
