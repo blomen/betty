@@ -28,6 +28,15 @@ class LimitRepo:
             query = query.filter(ProfileProviderLimit.provider_id == provider_id)
         return query.order_by(ProfileProviderLimit.detected_at.desc()).all()
 
+    def get_banned_providers(self, profile_id: int) -> set[str]:
+        """Get provider IDs where account is closed (fully_banned, level 5)."""
+        rows = self.db.query(ProfileProviderLimit.provider_id).filter(
+            ProfileProviderLimit.profile_id == profile_id,
+            ProfileProviderLimit.limit_type == "fully_banned",
+            ProfileProviderLimit.limit_level == 5,
+        ).all()
+        return {r[0] for r in rows}
+
     def get_existing(
         self, profile_id: int, provider_id: str, limit_type: str
     ) -> ProfileProviderLimit | None:
