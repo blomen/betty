@@ -188,7 +188,7 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
     // Drop clusters with 0 bets (no allocatable opportunities)
     const filtered = result.filter(c => c.totalBets > 0);
 
-    // Funded clusters first, then unfunded; within each group sort by stake descending
+    // Funded clusters on top (free capital), then unfunded; within each group sort by stake descending
     filtered.sort((a, b) => {
       if (a.hasShortfall !== b.hasShortfall) return a.hasShortfall ? 1 : -1;
       return b.totalStake - a.totalStake;
@@ -313,15 +313,16 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
         )}
       </div>
 
-      {/* Cluster list */}
+      {/* Cluster list — funded on top, then needs-deposit */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="flex flex-col gap-1 mt-1">
-          {/* Unfunded clusters — need action */}
-          {clusters.filter(c => c.hasShortfall).map(({ cluster, siblings, totalBets, totalStake, currency }) => (
+          {clusters.map(({ cluster, siblings, totalBets, totalStake, currency, hasShortfall }) => (
             <div key={cluster} className="border border-border">
               <div className="flex items-center px-3 py-1 bg-panel border-b border-border">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-amber-400">○</span>
+                  <span className={`text-xs ${hasShortfall ? 'text-amber-400' : 'text-success'}`}>
+                    {hasShortfall ? '○' : '●'}
+                  </span>
                   <span className="text-[10px] text-muted uppercase tracking-wider">{cluster}</span>
                   <span className="text-[10px] text-muted">
                     {totalBets} {totalBets === 1 ? 'bet' : 'bets'} · {fmt(totalStake, currency)}
@@ -367,7 +368,6 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
                         : 'bg-success/5'
                     }`}
                   >
-                    {/* State indicator */}
                     {!needsDeposit ? (
                       <span className="text-success text-sm">✓</span>
                     ) : pState === 'deposited' ? (
@@ -422,43 +422,6 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
               })}
             </div>
           ))}
-
-          {/* Funded clusters — collapsed into a single group */}
-          {clusters.some(c => !c.hasShortfall) && (
-            <div className="border border-border">
-              <div className="flex items-center px-3 py-1 bg-panel border-b border-border">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-success">●</span>
-                  <span className="text-[10px] text-success uppercase tracking-wider">Complete</span>
-                  <span className="text-[10px] text-muted">
-                    {(() => {
-                      const count = clusters.filter(c => !c.hasShortfall).reduce((s, c) => s + c.siblings.length, 0);
-                      return `${count} ${count === 1 ? 'sibling' : 'siblings'}`;
-                    })()}
-                  </span>
-                </div>
-              </div>
-              {clusters.filter(c => !c.hasShortfall).map(({ cluster, siblings, currency }) =>
-                siblings.map((sib) => {
-                  const liveBal = liveBalances[sib.provider_id] ?? sib.current_balance;
-                  return (
-                    <div
-                      key={sib.provider_id}
-                      className="flex items-center gap-3 px-3 py-1 border-b border-border last:border-b-0 opacity-60"
-                    >
-                      <span className="text-success text-sm">✓</span>
-                      <ProviderName name={sib.provider_id} className="text-sm text-text min-w-[100px]" />
-                      <span className="text-[10px] text-muted">{cluster}</span>
-                      <span className="text-[10px] text-muted">
-                        {sib.bets_assigned} {sib.bets_assigned === 1 ? 'bet' : 'bets'}
-                      </span>
-                      <span className="text-sm text-muted ml-auto">{fmt(liveBal, currency)}</span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
         </div>
       </div>
 
