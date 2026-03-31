@@ -10,6 +10,7 @@ interface Props {
   onSkipSibling: (providerId: string) => void;
   onUnskipSibling: (providerId: string) => void;
   onRecalc: () => void;
+  onBudgetRecalc: (sek: number | undefined, usdc: number | undefined) => void;
   hasPendingSkips: boolean;
   skippedSiblings: string[];
   isLoading: boolean;
@@ -52,9 +53,13 @@ interface ClusterGroup {
   hasShortfall: boolean;
 }
 
-export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling, onUnskipSibling, onRecalc, hasPendingSkips, skippedSiblings, lockedAt, lockTtlSeconds, onLockExpired }: Props) {
+export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling, onUnskipSibling, onRecalc, onBudgetRecalc, hasPendingSkips, skippedSiblings, lockedAt, lockTtlSeconds, onLockExpired }: Props) {
   const [liveBalances, setLiveBalances] = useState<Record<string, number>>({});
   const [providerStates, setProviderStates] = useState<Record<string, ProviderState>>({});
+  // Budget editing state (local until user clicks recalc)
+  const [editingSek, setEditingSek] = useState<string>('');
+  const [editingUsdc, setEditingUsdc] = useState<string>('');
+  const [budgetMode, setBudgetMode] = useState(false);
   const { toasts, addToast, dismissToast } = useToast();
   // Track which providers we've already toasted per event type
   const toastedOpened = useRef<Set<string>>(new Set());
@@ -226,11 +231,69 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
           </span>
         )}
         {anyShortfall ? (
-          <span className="text-amber-400 ml-auto">
-            Deposit {totalDepositNeeded.sek > 0 && `${totalDepositNeeded.sek} kr`}
-            {totalDepositNeeded.sek > 0 && totalDepositNeeded.usdc > 0 && ' + '}
-            {totalDepositNeeded.usdc > 0 && `${totalDepositNeeded.usdc.toFixed(2)} USDC`}
-          </span>
+          budgetMode ? (
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-[10px] text-muted uppercase">Budget</span>
+              {totalDepositNeeded.sek > 0 && (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={editingSek}
+                    onChange={(e) => setEditingSek(e.target.value)}
+                    placeholder={String(totalDepositNeeded.sek)}
+                    className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                    min={0}
+                  />
+                  <span className="text-[10px] text-muted">kr</span>
+                </div>
+              )}
+              {totalDepositNeeded.usdc > 0 && (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={editingUsdc}
+                    onChange={(e) => setEditingUsdc(e.target.value)}
+                    placeholder={String(totalDepositNeeded.usdc)}
+                    className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                    min={0}
+                    step={0.01}
+                  />
+                  <span className="text-[10px] text-muted">USDC</span>
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  const sek = editingSek !== '' ? parseFloat(editingSek) : undefined;
+                  const usdc = editingUsdc !== '' ? parseFloat(editingUsdc) : undefined;
+                  onBudgetRecalc(sek, usdc);
+                  setBudgetMode(false);
+                }}
+                className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+              >
+                Apply
+              </button>
+              <button
+                onClick={() => setBudgetMode(false)}
+                className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted hover:text-text"
+              >
+                ×
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setEditingSek(String(totalDepositNeeded.sek));
+                setEditingUsdc(String(totalDepositNeeded.usdc));
+                setBudgetMode(true);
+              }}
+              className="text-amber-400 ml-auto hover:text-amber-300 transition-colors cursor-pointer"
+              title="Click to set deposit budget"
+            >
+              Deposit {totalDepositNeeded.sek > 0 && `${totalDepositNeeded.sek} kr`}
+              {totalDepositNeeded.sek > 0 && totalDepositNeeded.usdc > 0 && ' + '}
+              {totalDepositNeeded.usdc > 0 && `${totalDepositNeeded.usdc.toFixed(2)} USDC`}
+            </button>
+          )
         ) : (
           <span className="text-success ml-auto">All funded</span>
         )}
@@ -426,7 +489,13 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
       )}
 
       {/* Action buttons */}
-      <div className="flex items-center justify-end px-1 py-1 shrink-0">
+      <div className="flex items-center justify-between px-1 py-1 shrink-0">
+        <button
+          onClick={onBack}
+          className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+        >
+          ← Back to Batch
+        </button>
         {hasPendingSkips ? (
           <button
             onClick={onRecalc}
@@ -435,20 +504,12 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
             Recalc Batch →
           </button>
         ) : (
-          <div className="flex items-center justify-between w-full">
-            <button
-              onClick={onBack}
-              className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
-            >
-              ← Back to Batch
-            </button>
-            <button
-              onClick={onExecute}
-              className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
-            >
-              Fire Batch →
-            </button>
-          </div>
+          <button
+            onClick={onExecute}
+            className="px-4 py-1.5 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+          >
+            Fire Batch →
+          </button>
         )}
       </div>
     </div>

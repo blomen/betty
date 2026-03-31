@@ -262,9 +262,14 @@ class BatchBuilder:
         locked_batch: list[dict],
         profile_id: int,
         skip_siblings: list[str] | None = None,
+        budget_sek: float | None = None,
+        budget_usdc: float | None = None,
     ) -> dict:
         """
         Use the locked batch as-is and compute sibling plan with fresh balances.
+
+        If budget_sek / budget_usdc are provided, auto-skip unfunded siblings
+        that don't fit in the budget (greedy by EV density).
 
         Returns:
           - sibling_plan: per-provider capital needs
@@ -382,6 +387,57 @@ class BatchBuilder:
                 "lifecycle": bs.get("lifecycle", "idle"),
                 "bonus_badge": bonus_badge,
             })
+
+        # -- Budget constraint: auto-skip unfunded siblings that exceed budget --
+        has_budget = budget_sek is not None or budget_usdc is not None
+        if has_budget:
+            remaining_sek = budget_sek if budget_sek is not None else float("inf")
+            remaining_usdc = budget_usdc if budget_usdc is not None else float("inf")
+
+            # Compute shortfall + EV for each unfunded sibling
+            unfunded: list[dict] = []
+            for sib in sibling_plan:
+                shortfall = sib["capital_needed"] - sib["current_balance"]
+                if shortfall <= 0:
+                    continue  # Already funded
+                # Sum EV of bets assigned to this provider
+                sib_ev = sum(
+                    b.get("expected_profit", 0)
+                    for b in batch
+                    if b["provider_id"] == sib["provider_id"]
+                )
+                unfunded.append({
+                    "provider_id": sib["provider_id"],
+                    "shortfall": shortfall,
+                    "currency": sib["currency"],
+                    "ev": sib_ev,
+                    "ev_density": sib_ev / shortfall if shortfall > 0 else 0,
+                })
+
+            # Sort by EV density descending — best bang for buck first
+            unfunded.sort(key=lambda x: -x["ev_density"])
+
+            budget_skips: list[str] = []
+            for item in unfunded:
+                if item["currency"] == "USDC":
+                    if item["shortfall"] <= remaining_usdc:
+                        remaining_usdc -= item["shortfall"]
+                    else:
+                        budget_skips.append(item["provider_id"])
+                else:
+                    if item["shortfall"] <= remaining_sek:
+                        remaining_sek -= item["shortfall"]
+                    else:
+                        budget_skips.append(item["provider_id"])
+
+            if budget_skips:
+                # Recursively allocate with the budget-derived skips merged in
+                all_skips = list(set((skip_siblings or []) + budget_skips))
+                return self.allocate_capital(
+                    locked_batch, profile_id,
+                    skip_siblings=all_skips,
+                    # Don't pass budget again — skips already computed
+                )
 
         allocated_batch = batch
 

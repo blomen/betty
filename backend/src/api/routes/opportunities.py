@@ -320,6 +320,8 @@ def unlock_batch(db: Session = Depends(get_db)):
 
 class AllocateRequest(BaseModel):
     skip_siblings: list[str] | None = None
+    budget_sek: float | None = None
+    budget_usdc: float | None = None
 
 
 @router.post("/play/allocate")
@@ -341,8 +343,15 @@ def allocate_capital(
         raise HTTPException(410, "Locked batch expired (>30 min). Rebuild the batch.")
 
     skip = body.skip_siblings if body else None
+    b_sek = body.budget_sek if body else None
+    b_usdc = body.budget_usdc if body else None
     builder = BatchBuilder(db)
-    return builder.allocate_capital(lock["batch"], profile.id, skip_siblings=skip)
+    return builder.allocate_capital(
+        lock["batch"], profile.id,
+        skip_siblings=skip,
+        budget_sek=b_sek,
+        budget_usdc=b_usdc,
+    )
 
 
 @router.post("/play/confirm-capital")

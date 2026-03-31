@@ -35,6 +35,10 @@ export function PlayPage() {
   const [skipSiblings, setSkipSiblings] = useState<string[]>([]);
   const [lockedAt, setLockedAt] = useState<number | null>(null);   // epoch ms
   const [lockTtl, setLockTtl] = useState<number>(1800);            // seconds
+  const [budgetSek, setBudgetSek] = useState<number | undefined>(undefined);
+  const [budgetUsdc, setBudgetUsdc] = useState<number | undefined>(undefined);
+  // Track whether user has edited the budget (null = use default shortfall)
+  const [budgetCommitted, setBudgetCommitted] = useState(false);
 
   // Check pending bets on mount to decide initial step
   useEffect(() => {
@@ -78,10 +82,14 @@ export function PlayPage() {
     isLoading: allocLoading,
     error: allocError,
   } = useQuery<AllocationResult>({
-    queryKey: ['play-allocate', committedSkips],
-    queryFn: () => api.allocateCapital(committedSkips.length > 0 ? committedSkips : undefined),
+    queryKey: ['play-allocate', committedSkips, budgetCommitted ? budgetSek : undefined, budgetCommitted ? budgetUsdc : undefined],
+    queryFn: () => api.allocateCapital(
+      committedSkips.length > 0 ? committedSkips : undefined,
+      budgetCommitted ? budgetSek : undefined,
+      budgetCommitted ? budgetUsdc : undefined,
+    ),
     staleTime: 3_000,
-    refetchInterval: committedSkips.length === skipSiblings.length ? 5_000 : false,
+    refetchInterval: committedSkips.length === skipSiblings.length && !budgetCommitted ? 5_000 : false,
     enabled: step === 'capital' && batchLocked,
   });
 
@@ -132,6 +140,9 @@ export function PlayPage() {
     setSkipSiblings([]);
     setCommittedSkips([]);
     setExcludedBets([]);
+    setBudgetSek(undefined);
+    setBudgetUsdc(undefined);
+    setBudgetCommitted(false);
     queryClient.invalidateQueries({ queryKey: ['play-batch'] });
     setStep('batch');
   }, [queryClient]);
@@ -152,6 +163,14 @@ export function PlayPage() {
     setSkipSiblings([]);
     queryClient.invalidateQueries({ queryKey: ['play-allocate'] });
   }, [skipSiblings, queryClient]);
+
+  // Budget recalc: user edited the deposit budget and pressed recalc
+  const handleBudgetRecalc = useCallback((sek: number | undefined, usdc: number | undefined) => {
+    setBudgetSek(sek);
+    setBudgetUsdc(usdc);
+    setBudgetCommitted(true);
+    queryClient.invalidateQueries({ queryKey: ['play-allocate'] });
+  }, [queryClient]);
 
   const hasPendingSkips = skipSiblings.length !== committedSkips.length
     || skipSiblings.some(s => !committedSkips.includes(s));
@@ -262,6 +281,7 @@ export function PlayPage() {
               onSkipSibling={handleSkipSibling}
               onUnskipSibling={handleUnskipSibling}
               onRecalc={handleRecalc}
+              onBudgetRecalc={handleBudgetRecalc}
               hasPendingSkips={hasPendingSkips}
               skippedSiblings={skipSiblings}
               isLoading={allocLoading}

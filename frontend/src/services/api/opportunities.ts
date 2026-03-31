@@ -96,11 +96,15 @@ export const opportunitiesApi = {
     return fetchJson('/opportunities/play/unlock-batch', { method: 'POST' });
   },
 
-  async allocateCapital(skipSiblings?: string[]): Promise<AllocationResult> {
+  async allocateCapital(skipSiblings?: string[], budgetSek?: number, budgetUsdc?: number): Promise<AllocationResult> {
+    const payload: Record<string, unknown> = {};
+    if (skipSiblings?.length) payload.skip_siblings = skipSiblings;
+    if (budgetSek !== undefined) payload.budget_sek = budgetSek;
+    if (budgetUsdc !== undefined) payload.budget_usdc = budgetUsdc;
     return fetchJson('/opportunities/play/allocate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: skipSiblings?.length ? JSON.stringify({ skip_siblings: skipSiblings }) : undefined,
+      body: Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined,
     });
   },
 
