@@ -7,7 +7,7 @@ import numpy as np
 from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
 from ..config import TICK_SIZE
 
-_N_FEATURES = 38
+_N_FEATURES = 35
 
 
 def _extract_swing_features(
@@ -61,25 +61,26 @@ def extract_structure_features(
     session_context: dict | None,
     swing_structure: SwingStructure | None = None,
 ) -> np.ndarray:
-    """Extract 38 market structure and session context features.
+    """Extract 35 market structure and session context features.
 
-    Feature layout (indices 0-37):
+    Feature layout (indices 0-34):
     --- VWAP (0) ---
       0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
       1-5  price_in_va, dist_to_poc/vah/val, va_width
     --- IB Range (6-8) ---
       6-8  ib_range, poor_high, poor_low
-    --- Market Type one-hot (9-11) ---
-      9-11  trend_day, range_day, neutral_day
-    --- Session Context (12-22) ---
-      12-22  timing, session type, IB break
-    --- Swing Structure (23-37) ---
-      23-25  swing_trend_d/w/m  (uptrend=1, reversing_up=0.5, ranging=0, reversing_down=-0.5, downtrend=-1)
-      26-28  swing_dist_d/w/m   (signed distance to nearest swing, clipped ±1)
-      29-31  swing_pos_d/w/m    (price position within swing range, 0-1)
-      32-34  swing_bos_d/w/m    (BOS active flag)
-      35-37  swing_choch_d/w/m  (CHoCH active flag)
+    --- Session Context (9-19) ---
+      9-19  timing, session type, IB break
+    --- Swing Structure (20-34) ---
+      20-22  swing_trend_d/w/m  (uptrend=1, reversing_up=0.5, ranging=0, reversing_down=-0.5, downtrend=-1)
+      23-25  swing_dist_d/w/m   (signed distance to nearest swing, clipped ±1)
+      26-28  swing_pos_d/w/m    (price position within swing range, 0-1)
+      29-31  swing_bos_d/w/m    (BOS active flag)
+      32-34  swing_choch_d/w/m  (CHoCH active flag)
+
+    Note: the 3-way market type one-hot (trend_day/range_day/neutral_day) was
+    removed in favour of the richer 6-way Dalton day type in the AMT segment.
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -113,37 +114,28 @@ def extract_structure_features(
         feats[7] = 1.0 if price > ib_high else 0.0
         feats[8] = 1.0 if price < ib_low else 0.0
 
-    # --- Market Type one-hot (feats 9-11) ---
+    # --- Session Context (feats 9-19) ---
     ctx = session_context or {}
     daily_range_pct = float(ctx.get("daily_range_pct", 0.5))
-    price_in_va_bool = feats[1] > 0.5
-    if daily_range_pct > 0.02:
-        feats[9] = 1.0
-    elif daily_range_pct < 0.008 and price_in_va_bool:
-        feats[10] = 1.0
-    else:
-        feats[11] = 1.0
-
-    # --- Session Context (feats 12-22) ---
     minutes_since_rth = float(ctx.get("minutes_since_rth", 0))
-    feats[12] = min(minutes_since_rth / 390.0, 1.0)
+    feats[9] = min(minutes_since_rth / 390.0, 1.0)
     session_volume_pct = float(ctx.get("session_volume_pct", 0.5))
-    feats[13] = min(max(session_volume_pct, 0.0), 1.0)
-    feats[14] = float(np.clip(daily_range_pct / 0.03, 0.0, 1.0))
+    feats[10] = min(max(session_volume_pct, 0.0), 1.0)
+    feats[11] = float(np.clip(daily_range_pct / 0.03, 0.0, 1.0))
     minute_of_day = float(ctx.get("minute_of_day", 0))
     angle = 2.0 * math.pi * minute_of_day / 1440.0
-    feats[15] = math.sin(angle)
-    feats[16] = math.cos(angle)
+    feats[12] = math.sin(angle)
+    feats[13] = math.cos(angle)
     session_type = ctx.get("session_type", "rth")
-    feats[17] = 1.0 if session_type == "rth" else 0.0
-    feats[18] = 1.0 if session_type == "globex" else 0.0
-    feats[19] = 1.0 if session_type == "london" else 0.0
+    feats[14] = 1.0 if session_type == "rth" else 0.0
+    feats[15] = 1.0 if session_type == "globex" else 0.0
+    feats[16] = 1.0 if session_type == "london" else 0.0
     ib_broken = ctx.get("ib_broken", "none")
-    feats[20] = 1.0 if ib_broken == "up" else 0.0
-    feats[21] = 1.0 if ib_broken == "down" else 0.0
-    feats[22] = 1.0 if ib_broken == "none" else 0.0
+    feats[17] = 1.0 if ib_broken == "up" else 0.0
+    feats[18] = 1.0 if ib_broken == "down" else 0.0
+    feats[19] = 1.0 if ib_broken == "none" else 0.0
 
-    # --- Swing Structure (feats 23-37) ---
-    feats[23:38] = _extract_swing_features(price, swing_structure)
+    # --- Swing Structure (feats 20-34) ---
+    feats[20:35] = _extract_swing_features(price, swing_structure)
 
     return feats

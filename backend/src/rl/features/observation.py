@@ -7,33 +7,35 @@ encode the temporal dynamics.
 Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (25 currently)
     orderflow                   21
-    structure + session          38
+    structure + session          35
     tpo (per-session)            38
     candle window                15
     zone features                 4
     zone confluence               5
-    macro                         7
+    macro                        11
     setup                        14
+    AMT features                 13
     micro (hand-crafted)         20
     approach direction            1
     execution context             7
     ---
-    total                       195
+    total                       209
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
     orderflow            21
-    structure + session  38
+    structure + session  35
     tpo (per-session)    38
     candle window        15
     confluence            8
-    macro                 7
+    macro                11
     setup                14
+    AMT features         13
     micro (hand-crafted) 20
     approach direction    1
     execution context     7
     ---
-    total               194
+    total               208
 """
 from __future__ import annotations
 
@@ -54,6 +56,7 @@ from .macro_features import extract_macro_features
 from .setup_features import extract_setup_features
 from .micro_features import extract_micro_features
 from .execution_features import extract_execution_features
+from .amt_features import extract_amt_features
 from ..zone_builder import Zone, ZoneMember
 
 # Candle window: last 5 candles x 3 features each
@@ -116,7 +119,7 @@ def build_observation(state: dict) -> np.ndarray:
     # 2. Orderflow (21) — includes 6 new temporal dynamics features
     seg_orderflow = extract_orderflow_features(candles, orderflow_signals)
 
-    # 3. Structure + session (32)
+    # 3. Structure + session (35)
     swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
         price, vwap_bands, volume_profile, session_levels, session_context,
@@ -170,28 +173,32 @@ def build_observation(state: dict) -> np.ndarray:
     # 9. Setup detection (14)
     seg_setup = extract_setup_features(state)
 
-    # 10. Micro features (20) — tick-level hand-crafted context
+    # 10. AMT features (13) — Dalton day type, opening type, VA migration
+    seg_amt = extract_amt_features(session_levels, volume_profile, session_context, price)
+
+    # 11. Micro features (20) — tick-level hand-crafted context
     seg_micro = extract_micro_features(recent_ticks, price)
 
-    # 11. Approach direction (1)
+    # 12. Approach direction (1)
     approach = state.get("approach_direction", "up")
     seg_approach = np.array([
         1.0 if approach == "up" else -1.0,
     ], dtype=np.float32)
 
-    # 12. Execution context (7) — Fabio's timing/auction rules
+    # 13. Execution context (7) — Fabio's timing/auction rules
     seg_execution = extract_execution_features(state, recent_ticks, candles, price)
 
     obs = np.concatenate([
         seg_level,        # len(LevelType) — multi-hot (zone) or one-hot (legacy)
         seg_orderflow,    # 21
-        seg_structure,    # 32
+        seg_structure,    # 35
         seg_tpo,          # 38
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
         seg_confluence,   # 5 (zone) or 8 (legacy)
         seg_macro,        # 11
         seg_setup,        # 14
+        seg_amt,          # 13
         seg_micro,        # 20
         seg_approach,     # 1
         seg_execution,    # 7
