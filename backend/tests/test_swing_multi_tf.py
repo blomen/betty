@@ -3,12 +3,11 @@ from zoneinfo import ZoneInfo
 
 from src.market_data.levels import (
     aggregate_to_timeframe,
-    detect_fractal_pivots,
     compute_multi_tf_swings,
-    SwingLevel,
     TimeframeSwings,
     SwingStructure,
 )
+from src.market_data.structure import SwingLevel
 
 CET = ZoneInfo("Europe/Stockholm")
 
@@ -63,67 +62,6 @@ def test_aggregate_monthly():
 def test_aggregate_empty():
     result = aggregate_to_timeframe([], "daily")
     assert result == []
-
-
-# ---------------------------------------------------------------------------
-# Task 2: detect_fractal_pivots
-# ---------------------------------------------------------------------------
-
-def _make_uptrend_candles() -> list[dict]:
-    """Candles with clear HH/HL pattern. Lookback=3 needs 7 bars per pivot."""
-    return [
-        {"high": 100, "low": 95, "close": 98, "ts": 1000},
-        {"high": 103, "low": 98, "close": 101, "ts": 2000},
-        {"high": 106, "low": 101, "close": 104, "ts": 3000},
-        {"high": 109, "low": 104, "close": 107, "ts": 4000},
-        {"high": 110, "low": 105, "close": 108, "ts": 5000},  # SH1
-        {"high": 107, "low": 100, "close": 103, "ts": 6000},
-        {"high": 104, "low": 97, "close": 100, "ts": 7000},
-        {"high": 101, "low": 94, "close": 97, "ts": 8000},
-        {"high": 98, "low": 93, "close": 95, "ts": 9000},   # SL1
-        {"high": 102, "low": 96, "close": 100, "ts": 10000},
-        {"high": 108, "low": 102, "close": 106, "ts": 11000},
-        {"high": 114, "low": 108, "close": 112, "ts": 12000},
-        {"high": 119, "low": 113, "close": 117, "ts": 13000},
-        {"high": 122, "low": 116, "close": 120, "ts": 14000}, # SH2 (HH)
-        {"high": 118, "low": 112, "close": 115, "ts": 15000},
-        {"high": 114, "low": 108, "close": 111, "ts": 16000},
-        {"high": 110, "low": 104, "close": 107, "ts": 17000},
-        {"high": 106, "low": 101, "close": 103, "ts": 18000}, # SL2 (HL)
-        {"high": 109, "low": 103, "close": 107, "ts": 19000},
-        {"high": 112, "low": 106, "close": 110, "ts": 20000},
-        {"high": 115, "low": 109, "close": 113, "ts": 21000},
-    ]
-
-
-def test_detect_fractal_pivots_uptrend():
-    candles = _make_uptrend_candles()
-    highs, lows = detect_fractal_pivots(candles, lookback=3, max_pivots=3)
-    assert len(highs) >= 2
-    assert len(lows) >= 2
-    assert highs[0].price >= highs[1].price  # HH
-    assert lows[0].price >= lows[1].price    # HL
-    assert highs[0].timestamp > highs[1].timestamp
-
-
-def test_detect_fractal_pivots_max_3():
-    candles = _make_uptrend_candles()
-    highs, lows = detect_fractal_pivots(candles, lookback=3, max_pivots=3)
-    assert len(highs) <= 3
-    assert len(lows) <= 3
-
-
-def test_detect_fractal_pivots_empty():
-    highs, lows = detect_fractal_pivots([], lookback=3, max_pivots=3)
-    assert highs == []
-    assert lows == []
-
-
-def test_detect_fractal_pivots_insufficient():
-    candles = [{"high": 100, "low": 95, "close": 98, "ts": i} for i in range(5)]
-    highs, lows = detect_fractal_pivots(candles, lookback=3, max_pivots=3)
-    assert highs == []
-    assert lows == []
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +145,7 @@ def _make_test_swing_structure() -> SwingStructure:
 
 
 def test_structure_features_with_swings():
-    """Structure features should be 32 elements with swing data."""
+    """Structure features should be 38 elements with swing data."""
     swing = _make_test_swing_structure()
     feats = extract_structure_features(
         price=19400.0,
@@ -217,7 +155,7 @@ def test_structure_features_with_swings():
         session_context=None,
         swing_structure=swing,
     )
-    assert feats.shape == (32,)
+    assert feats.shape == (38,)
     assert feats[23] == 1.0   # swing_trend_d = uptrend = +1
     assert feats[24] == 1.0   # swing_trend_w = uptrend = +1
     assert feats[25] == 0.0   # swing_trend_m = ranging = 0
@@ -226,7 +164,7 @@ def test_structure_features_with_swings():
 
 
 def test_structure_features_without_swings():
-    """Without swing data, features 23-31 should be zeros."""
+    """Without swing data, features 23-37 should be zeros."""
     feats = extract_structure_features(
         price=19400.0,
         vwap_bands=None,
@@ -235,8 +173,8 @@ def test_structure_features_without_swings():
         session_context=None,
         swing_structure=None,
     )
-    assert feats.shape == (32,)
-    assert all(feats[23:32] == 0.0)
+    assert feats.shape == (38,)
+    assert all(feats[23:38] == 0.0)
 
 
 # ---------------------------------------------------------------------------

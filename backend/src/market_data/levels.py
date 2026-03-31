@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 
+from .structure import StructureEvent, SwingLevel, MarketStructureEngine  # noqa: F401 — re-exported
+
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("US/Eastern")
@@ -57,23 +59,18 @@ class SessionLevels:
 
 
 @dataclass
-class SwingLevel:
-    """A detected swing point (fractal pivot)."""
-    price: float
-    timestamp: int       # epoch seconds
-    type: str            # "swing_high" or "swing_low"
-    timeframe: str       # "daily", "weekly", "monthly"
-
-
-@dataclass
 class TimeframeSwings:
     """Swing detection result for a single timeframe."""
     timeframe: str       # "daily", "weekly", "monthly"
-    structure: str       # "uptrend", "downtrend", "ranging"
+    structure: str       # "uptrend", "downtrend", "reversing_up", "reversing_down", "ranging"
     swing_highs: list[SwingLevel] = field(default_factory=list)  # newest first
     swing_lows: list[SwingLevel] = field(default_factory=list)   # newest first
     prior_high: float | None = None  # previous period high (PDH / prior week H / prior month H)
     prior_low: float | None = None   # previous period low  (PDL / prior week L / prior month L)
+    last_bos: StructureEvent | None = None
+    last_choch: StructureEvent | None = None
+    bos_active: bool = False
+    choch_active: bool = False
 
 
 @dataclass
@@ -154,107 +151,14 @@ def aggregate_to_timeframe(
     return result
 
 
-def detect_fractal_pivots(
-    candles: list[dict],
-    lookback: int = 3,
-    max_pivots: int = 3,
-) -> tuple[list[SwingLevel], list[SwingLevel]]:
-    """Detect fractal pivot highs and lows from candle data.
-
-    A swing high at index i requires candles[i].high >= all candles[j].high
-    for j in [i-lookback, i+lookback] where j != i. Mirror for swing low.
-
-    Returns:
-        (swing_highs, swing_lows) — each a list of SwingLevel, newest first.
-    """
-    n = len(candles)
-    if n < 2 * lookback + 1:
-        return [], []
-
-    pivot_highs: list[SwingLevel] = []
-    pivot_lows: list[SwingLevel] = []
-
-    for i in range(lookback, n - lookback):
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-        ts = candles[i].get("ts", 0)
-        if isinstance(ts, datetime):
-            ts = int(ts.timestamp())
-
-        is_pivot_high = all(
-            high >= candles[j]["high"]
-            for j in range(i - lookback, i + lookback + 1) if j != i
-        )
-        is_pivot_low = all(
-            low <= candles[j]["low"]
-            for j in range(i - lookback, i + lookback + 1) if j != i
-        )
-
-        if is_pivot_high:
-            pivot_highs.append(SwingLevel(
-                price=high, timestamp=ts,
-                type="swing_high", timeframe="",
-            ))
-        if is_pivot_low:
-            pivot_lows.append(SwingLevel(
-                price=low, timestamp=ts,
-                type="swing_low", timeframe="",
-            ))
-
-    return pivot_highs[-max_pivots:][::-1], pivot_lows[-max_pivots:][::-1]
-
-
-_TF_CONFIG = {
-    "daily":   {"lookback": 3, "min_candles": 10},
-    "weekly":  {"lookback": 2, "min_candles": 5},
-    "monthly": {"lookback": 2, "min_candles": 5},
-}
-
-
-def _classify_structure(
-    swing_highs: list[SwingLevel],
-    swing_lows: list[SwingLevel],
-    tolerance_pct: float = 0.003,
-) -> str:
-    """Classify market structure from the last 2 swing highs and lows.
-
-    Uses a tolerance band to filter noise — two pivots within tolerance_pct
-    of each other are treated as "equal" (neither HH nor LH). Default 0.3%
-    means ~75 NQ points at 25000 must separate pivots for a clear signal.
-    """
-    if len(swing_highs) < 2 or len(swing_lows) < 2:
-        return "ranging"
-
-    sh_new, sh_old = swing_highs[0].price, swing_highs[1].price
-    sl_new, sl_old = swing_lows[0].price, swing_lows[1].price
-
-    # Tolerance: pivots within this band are "equal" — no directional signal
-    avg_price = (sh_new + sh_old + sl_new + sl_old) / 4
-    tol = avg_price * tolerance_pct
-
-    hh = sh_new > sh_old + tol
-    hl = sl_new > sl_old + tol
-    lh = sh_new < sh_old - tol
-    ll = sl_new < sl_old - tol
-
-    if hh and hl:
-        return "uptrend"
-    elif lh and ll:
-        return "downtrend"
-    elif lh or ll:
-        # At least one side is clearly lower — lean bearish
-        return "downtrend" if (lh and not hl) or (ll and not hh) else "ranging"
-    elif hh or hl:
-        # At least one side is clearly higher — lean bullish
-        return "uptrend" if (hh and not ll) or (hl and not lh) else "ranging"
-    return "ranging"
+_TF_RECENCY = {"daily": 5, "weekly": 3, "monthly": 2}
 
 
 def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
     """Compute swing structure across daily, weekly, and monthly timeframes.
 
-    Aggregates 1m bars into higher-timeframe candles, detects fractal pivots
-    on each, classifies structure (HH/HL/LH/LL) per Dow Theory.
+    Aggregates 1m bars into higher-timeframe candles and runs MarketStructureEngine
+    (Dow Theory BOS/CHoCH state machine) on each timeframe.
     """
     def empty_tf(tf: str) -> TimeframeSwings:
         return TimeframeSwings(timeframe=tf, structure="ranging")
@@ -267,27 +171,27 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
             trend_alignment=0.0,
         )
 
+    trend_scores = {
+        "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
+        "reversing_down": -0.5, "downtrend": -1.0,
+    }
+
     results: dict[str, TimeframeSwings] = {}
-
-    for tf, cfg in _TF_CONFIG.items():
+    for tf in ("daily", "weekly", "monthly"):
         candles = aggregate_to_timeframe(bars_1m, tf)
-        logger.info("Swing %s: %d candles (need %d, lookback %d)",
-                     tf, len(candles), cfg["min_candles"], cfg["lookback"])
+        logger.info("Swing %s: %d candles", tf, len(candles))
 
-        if len(candles) < cfg["min_candles"]:
+        if len(candles) < 5:
             results[tf] = empty_tf(tf)
             continue
 
-        highs, lows = detect_fractal_pivots(
-            candles, lookback=cfg["lookback"], max_pivots=3,
-        )
+        engine = MarketStructureEngine(recency_bars=_TF_RECENCY[tf])
+        sr = engine.process(candles)
 
-        for sl in highs:
-            sl.timeframe = tf
-        for sl in lows:
-            sl.timeframe = tf
-
-        structure = _classify_structure(highs, lows)
+        for s in sr.swing_highs:
+            s.timeframe = tf
+        for s in sr.swing_lows:
+            s.timeframe = tf
 
         # Prior period H/L: second-to-last completed candle
         prior_high = None
@@ -299,18 +203,19 @@ def compute_multi_tf_swings(bars_1m: list[dict]) -> SwingStructure:
 
         results[tf] = TimeframeSwings(
             timeframe=tf,
-            structure=structure,
-            swing_highs=highs,
-            swing_lows=lows,
+            structure=sr.structure,
+            swing_highs=sr.swing_highs,
+            swing_lows=sr.swing_lows,
             prior_high=prior_high,
             prior_low=prior_low,
+            last_bos=sr.last_bos,
+            last_choch=sr.last_choch,
+            bos_active=sr.bos_active,
+            choch_active=sr.choch_active,
         )
 
-    trend_scores = {
-        "uptrend": 1.0, "downtrend": -1.0, "ranging": 0.0,
-    }
     alignment = sum(
-        trend_scores[results[tf].structure] for tf in ("daily", "weekly", "monthly")
+        trend_scores.get(results[tf].structure, 0.0) for tf in ("daily", "weekly", "monthly")
     ) / 3.0
 
     return SwingStructure(
