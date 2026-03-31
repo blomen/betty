@@ -248,68 +248,76 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
             Lock expires {Math.floor(lockRemaining / 60)}:{String(Math.floor(lockRemaining % 60)).padStart(2, '0')}
           </span>
         )}
-        {anyShortfall ? (
-          budgetMode ? (
-            <div className="flex items-center gap-2 ml-auto">
-              <span className="text-[10px] text-muted uppercase">Budget</span>
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  value={editingSek}
-                  onChange={(e) => setEditingSek(e.target.value)}
-                  placeholder={String(totalDepositNeeded.sek || 0)}
-                  className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
-                  min={0}
-                />
-                <span className="text-[10px] text-muted">kr</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  value={editingUsdc}
-                  onChange={(e) => setEditingUsdc(e.target.value)}
-                  placeholder={String(totalDepositNeeded.usdc || 0)}
-                  className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
-                  min={0}
-                  step={0.01}
-                />
-                <span className="text-[10px] text-muted">USDC</span>
-              </div>
-              <button
-                onClick={() => {
-                  const sek = editingSek !== '' ? parseFloat(editingSek) : undefined;
-                  const usdc = editingUsdc !== '' ? parseFloat(editingUsdc) : undefined;
-                  onBudgetRecalc(sek, usdc);
-                  setBudgetMode(false);
-                }}
-                className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
-              >
-                Apply
-              </button>
-              <button
-                onClick={() => setBudgetMode(false)}
-                className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted hover:text-text"
-              >
-                ×
-              </button>
+        {budgetMode ? (
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-[10px] text-muted uppercase">Extra deposit</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                value={editingSek}
+                onChange={(e) => setEditingSek(e.target.value)}
+                placeholder="0"
+                className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                min={0}
+              />
+              <span className="text-[10px] text-muted">kr</span>
             </div>
-          ) : (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                value={editingUsdc}
+                onChange={(e) => setEditingUsdc(e.target.value)}
+                placeholder="0"
+                className="w-20 px-1.5 py-0.5 text-sm bg-bg border border-border text-text text-right"
+                min={0}
+                step={0.01}
+              />
+              <span className="text-[10px] text-muted">USDC</span>
+            </div>
             <button
               onClick={() => {
-                setEditingSek(String(totalDepositNeeded.sek));
-                setEditingUsdc(String(totalDepositNeeded.usdc));
-                setBudgetMode(true);
+                const sek = editingSek !== '' ? parseFloat(editingSek) : undefined;
+                const usdc = editingUsdc !== '' ? parseFloat(editingUsdc) : undefined;
+                onBudgetRecalc(sek, usdc);
+                setBudgetMode(false);
               }}
-              className="text-amber-400 ml-auto hover:text-amber-300 transition-colors cursor-pointer"
-              title="Click to set deposit budget"
+              className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
             >
-              Deposit {totalDepositNeeded.sek > 0 && `${totalDepositNeeded.sek} kr`}
-              {totalDepositNeeded.sek > 0 && totalDepositNeeded.usdc > 0 && ' + '}
-              {totalDepositNeeded.usdc > 0 && `${totalDepositNeeded.usdc.toFixed(2)} USDC`}
+              Apply
             </button>
-          )
+            <button
+              onClick={() => setBudgetMode(false)}
+              className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted hover:text-text"
+            >
+              ×
+            </button>
+          </div>
+        ) : anyShortfall ? (
+          <button
+            onClick={() => {
+              setEditingSek(String(totalDepositNeeded.sek));
+              setEditingUsdc(String(totalDepositNeeded.usdc));
+              setBudgetMode(true);
+            }}
+            className="text-amber-400 ml-auto hover:text-amber-300 transition-colors cursor-pointer"
+            title="Click to set deposit budget"
+          >
+            Deposit {totalDepositNeeded.sek > 0 && `${totalDepositNeeded.sek} kr`}
+            {totalDepositNeeded.sek > 0 && totalDepositNeeded.usdc > 0 && ' + '}
+            {totalDepositNeeded.usdc > 0 && `${totalDepositNeeded.usdc.toFixed(2)} USDC`}
+          </button>
         ) : (
-          <span className="text-success ml-auto">All funded</span>
+          <button
+            onClick={() => {
+              setEditingSek('');
+              setEditingUsdc('');
+              setBudgetMode(true);
+            }}
+            className="text-success ml-auto hover:text-success/80 transition-colors cursor-pointer"
+            title="Click to add extra deposit budget"
+          >
+            All funded
+          </button>
         )}
       </div>
 
@@ -474,14 +482,21 @@ export function CapitalPlanPanel({ allocation, onExecute, onBack, onSkipSibling,
           >
             ← Back to Batch
           </button>
-          {anyShortfall && (
+          {anyShortfall ? (
             <button
               onClick={() => onBudgetRecalc(0, 0)}
               className="px-3 py-1.5 text-xs bg-muted/20 text-muted font-medium hover:text-text hover:bg-muted/30 transition-colors"
             >
               Skip All Deposits
             </button>
-          )}
+          ) : !anyShortfall && allocation.sibling_plan.length > 0 ? (
+            <button
+              onClick={() => onBudgetRecalc(undefined, undefined)}
+              className="px-3 py-1.5 text-xs bg-muted/20 text-muted font-medium hover:text-text hover:bg-muted/30 transition-colors"
+            >
+              Reset Budget
+            </button>
+          ) : null}
         </div>
         {hasPendingSkips ? (
           <button

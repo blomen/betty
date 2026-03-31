@@ -169,6 +169,9 @@ export function PlayPage() {
     setBudgetSek(sek);
     setBudgetUsdc(usdc);
     setBudgetCommitted(true);
+    // Budget replaces manual skips — clear them so budget is the only constraint
+    setSkipSiblings([]);
+    setCommittedSkips([]);
     queryClient.invalidateQueries({ queryKey: ['play-allocate'] });
   }, [queryClient]);
 
