@@ -49,6 +49,13 @@ class BetInterceptor:
     # GraphQL relay endpoints that may contain balance data (e.g. LeoVegas /api?relay)
     _GRAPHQL_RELAY_PATTERNS = ("/api?relay",)
 
+    # Polymarket-specific URL patterns
+    _POLYMARKET_FINANCIAL_PATTERNS = (
+        "data-api.polymarket.com/value",    # Portfolio value (USDC)
+        "clob.polymarket.com/data/orders",  # Open orders
+        "widget.swapped.com/api/v1/order",  # Deposit via Swapped
+    )
+
     # Notification / preference settings patterns
     _NOTIFICATION_KEYWORDS = (
         "preferences", "notifications", "communication", "consent",
@@ -73,6 +80,7 @@ class BetInterceptor:
         "betmgm.se": "betmgm", "vbet.se": "vbet",
         "interwetten.se": "interwetten", "coolbet.com": "coolbet",
         "tipwin.se": "tipwin", "pinnacle.com": "pinnacle",
+        "polymarket.com": "polymarket",
     }
 
     def __init__(
@@ -206,6 +214,9 @@ class BetInterceptor:
             # Intercept balance / deposit / withdraw data
             if self.on_financial_data:
                 _is_financial = any(kw in url for kw in self._FINANCIAL_KEYWORDS)
+                # Polymarket-specific financial patterns
+                if not _is_financial and any(p in url for p in self._POLYMARKET_FINANCIAL_PATTERNS):
+                    _is_financial = True
                 _relay_body = None
                 # GraphQL relay: peek at body for balance data (e.g. LeoVegas)
                 if not _is_financial and any(kw in url for kw in self._GRAPHQL_RELAY_PATTERNS):
