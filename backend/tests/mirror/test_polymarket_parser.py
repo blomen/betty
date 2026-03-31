@@ -47,10 +47,14 @@ class TestOrderParsing:
         orders = parser.parse_orders(body)
         assert len(orders) == 1
         assert orders[0]["id"] == "order-123"
+        assert orders[0]["status"] == "live"
+        assert orders[0]["token_id"] == "token-abc"
         assert orders[0]["side"] == "BUY"
         assert orders[0]["price"] == 0.62
         assert orders[0]["size"] == 25.0
         assert orders[0]["filled"] == 10.0
+        assert orders[0]["outcome"] == "Yes"
+        assert orders[0]["market"] == "Will X happen?"
 
     def test_parse_empty_orders(self):
         parser = PolymarketParser()
