@@ -232,14 +232,25 @@ export interface SwingLevel {
   timeframe: 'daily' | 'weekly' | 'monthly';
 }
 
+/** Structural event: BOS or CHoCH */
+export interface StructureEvent {
+  price: number;
+  timestamp: number;
+  event_type: 'bos_bullish' | 'bos_bearish' | 'choch_bullish' | 'choch_bearish';
+  swing_type: 'swing_high' | 'swing_low';
+  swing_price: number;
+}
+
 /** Per-timeframe swing analysis */
 export interface TimeframeSwings {
   timeframe: string;
-  structure: 'uptrend' | 'downtrend' | 'ranging';
+  structure: 'uptrend' | 'downtrend' | 'reversing_up' | 'reversing_down' | 'ranging';
   swing_highs: SwingLevel[];
   swing_lows: SwingLevel[];
-  prior_high: number | null;
-  prior_low: number | null;
+  last_bos: StructureEvent | null;
+  last_choch: StructureEvent | null;
+  bos_active: boolean;
+  choch_active: boolean;
 }
 
 /** Multi-timeframe swing structure from compute_multi_tf_swings() */
@@ -573,7 +584,7 @@ export interface DQNInferenceEvent {
   trigger: 'approaching' | 'touched';
   level: string;
   level_price: number;
-  inputs: number[];           // 154
+  inputs: number[];           // 160
   activations: {
     layer1: number[];         // 256
     layer2: number[];         // 256
