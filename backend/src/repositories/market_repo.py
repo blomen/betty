@@ -8,10 +8,36 @@ from ..db.models import MarketSession, TradingSignal, MarketTrade, MarketLevel, 
 
 
 class MarketRepo:
-    """Data access for market session and signal tables."""
+    """Data access for market session and signal tables.
 
-    def __init__(self, db: Session):
+    Uses the main DB (self.db) for sessions, signals, levels, context, metrics.
+    Uses a separate market DB (self._market_db) for high-frequency tick/candle data
+    to avoid SQLite write-lock contention with extraction.
+    """
+
+    def __init__(self, db: Session, market_db: Session | None = None):
         self.db = db
+        self._explicit_market_db = market_db
+        self._lazy_market_db: Session | None = None
+
+    @property
+    def market_db(self) -> Session:
+        """Session for market.db (ticks + candles). Falls back to main DB if unavailable."""
+        if self._explicit_market_db is not None:
+            return self._explicit_market_db
+        if self._lazy_market_db is None:
+            try:
+                from ..db.models import get_market_session
+                self._lazy_market_db = get_market_session()
+            except Exception:
+                return self.db  # Fallback to main DB
+        return self._lazy_market_db
+
+    def close_market_db(self):
+        """Close the lazily-created market session if any."""
+        if self._lazy_market_db is not None:
+            self._lazy_market_db.close()
+            self._lazy_market_db = None
 
     # ---- Sessions ----
 
@@ -94,19 +120,19 @@ class MarketRepo:
 
     def bulk_insert_trades(self, trades: list[dict]):
         """Insert batch of ticks. trades = [{symbol, ts, price, size, side}, ...]"""
-        self.db.bulk_insert_mappings(MarketTrade, trades)
-        self.db.commit()
+        self.market_db.bulk_insert_mappings(MarketTrade, trades)
+        self.market_db.commit()
 
     def prune_trades(self, symbol: str, before: datetime):
         """Delete ticks older than cutoff."""
-        self.db.query(MarketTrade).filter(
+        self.market_db.query(MarketTrade).filter(
             MarketTrade.symbol == symbol,
             MarketTrade.ts < before,
         ).delete()
-        self.db.commit()
+        self.market_db.commit()
 
     def get_trades(self, symbol: str, start: datetime, end: datetime) -> list[MarketTrade]:
-        return self.db.query(MarketTrade).filter(
+        return self.market_db.query(MarketTrade).filter(
             MarketTrade.symbol == symbol,
             MarketTrade.ts >= start,
             MarketTrade.ts <= end,
@@ -115,7 +141,7 @@ class MarketRepo:
     # ---- MarketCandle ----
 
     def get_candles(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[MarketCandle]:
-        return self.db.query(MarketCandle).filter(
+        return self.market_db.query(MarketCandle).filter(
             MarketCandle.symbol == symbol,
             MarketCandle.interval == interval,
             MarketCandle.ts >= start,
@@ -124,7 +150,7 @@ class MarketRepo:
 
     def get_latest_candle(self, symbol: str, interval: str) -> MarketCandle | None:
         return (
-            self.db.query(MarketCandle)
+            self.market_db.query(MarketCandle)
             .filter_by(symbol=symbol, interval=interval)
             .order_by(MarketCandle.ts.desc())
             .first()
@@ -132,7 +158,7 @@ class MarketRepo:
 
     def get_oldest_candle(self, symbol: str, interval: str) -> MarketCandle | None:
         return (
-            self.db.query(MarketCandle)
+            self.market_db.query(MarketCandle)
             .filter_by(symbol=symbol, interval=interval)
             .order_by(MarketCandle.ts.asc())
             .first()
@@ -140,7 +166,7 @@ class MarketRepo:
 
     def upsert_candle(self, symbol: str, interval: str, ts: datetime, o: float, h: float, l: float, c: float, v: int):
         """Insert or replace a single candle (used for live closed-candle writes)."""
-        row = self.db.query(MarketCandle).filter_by(symbol=symbol, interval=interval, ts=ts).first()
+        row = self.market_db.query(MarketCandle).filter_by(symbol=symbol, interval=interval, ts=ts).first()
         if row:
             row.o = o
             row.h = h
@@ -148,8 +174,8 @@ class MarketRepo:
             row.c = c
             row.v = v
         else:
-            self.db.add(MarketCandle(symbol=symbol, interval=interval, ts=ts, o=o, h=h, l=l, c=c, v=v))
-        self.db.commit()
+            self.market_db.add(MarketCandle(symbol=symbol, interval=interval, ts=ts, o=o, h=h, l=l, c=c, v=v))
+        self.market_db.commit()
 
     def bulk_insert_candles(self, symbol: str, interval: str, bars: list) -> int:
         """Insert bars from Databento backfill, skipping timestamps that already exist.
@@ -164,7 +190,7 @@ class MarketRepo:
         # (SQLite stores naive, Databento returns tz-aware UTC)
         existing = {
             row.ts.replace(tzinfo=None) if row.ts.tzinfo else row.ts
-            for row in self.db.query(MarketCandle.ts).filter(
+            for row in self.market_db.query(MarketCandle.ts).filter(
                 MarketCandle.symbol == symbol,
                 MarketCandle.interval == interval,
                 MarketCandle.ts >= start,
@@ -177,8 +203,8 @@ class MarketRepo:
             if (b.timestamp.replace(tzinfo=None) if b.timestamp.tzinfo else b.timestamp) not in existing
         ]
         if new_rows:
-            self.db.bulk_save_objects(new_rows)
-            self.db.commit()
+            self.market_db.bulk_save_objects(new_rows)
+            self.market_db.commit()
         return len(new_rows)
 
     # ---- MarketLevel ----

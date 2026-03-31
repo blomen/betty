@@ -564,11 +564,24 @@ class ExtractionScheduler:
                 stale_threshold = schedule.interval_seconds * self.WATCHDOG_STALE_MULTIPLIER
                 elapsed = (now - schedule.last_completed).total_seconds()
                 if elapsed > stale_threshold:
-                    logger.critical(
-                        f"[Watchdog] Provider '{provider_id}' is STALE — "
-                        f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
-                        f"run_count={schedule.run_count}"
-                    )
+                    # Use a higher threshold before force-restarting (5x interval)
+                    # to avoid killing long-but-progressing extractions
+                    force_restart_threshold = schedule.interval_seconds * 5
+                    if elapsed > force_restart_threshold:
+                        logger.critical(
+                            f"[Watchdog] Provider '{provider_id}' is STUCK — "
+                            f"last completed {elapsed:.0f}s ago (threshold: {force_restart_threshold:.0f}s). "
+                            f"Force-cancelling and restarting..."
+                        )
+                        if schedule.task and not schedule.task.done():
+                            schedule.task.cancel()
+                        await self._restart_schedule(schedule)
+                    else:
+                        logger.warning(
+                            f"[Watchdog] Provider '{provider_id}' is STALE — "
+                            f"last completed {elapsed:.0f}s ago (threshold: {stale_threshold:.0f}s). "
+                            f"run_count={schedule.run_count}"
+                        )
 
             # Starvation detection for browser providers
             if (schedule.category == "browser_soft" and schedule.running

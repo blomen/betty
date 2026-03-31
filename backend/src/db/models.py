@@ -2030,6 +2030,71 @@ def get_session():
     return factory()
 
 
+# ── Market DB (separate file for high-frequency tick/candle writes) ────────
+
+_market_engine = None
+_MarketSessionFactory = None
+
+# Tables that live in market.db — high-frequency writes that must not
+# contend with extraction/analysis for SQLite's single-writer lock.
+MARKET_DB_TABLES = {MarketTrade.__table__, MarketCandle.__table__}
+
+
+def get_market_engine():
+    """Get or create the market-data database engine (market.db).
+
+    Separate from firev.db so Databento tick writes (hundreds/sec) never
+    block extraction commits or frontend API queries.
+    """
+    global _market_engine
+    if _market_engine is None:
+        from ..paths import get_market_db_path
+        market_path = get_market_db_path()
+        market_path.parent.mkdir(parents=True, exist_ok=True)
+        _market_engine = create_engine(
+            f"sqlite:///{market_path}",
+            poolclass=NullPool,
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 10,  # Shorter timeout OK — only tick/candle writes compete
+            },
+        )
+
+        with _market_engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.commit()
+
+        @event.listens_for(_market_engine, "connect")
+        def _set_market_pragmas(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
+        # Only create tick/candle tables in market.db
+        for table in MARKET_DB_TABLES:
+            table.create(_market_engine, checkfirst=True)
+
+    return _market_engine
+
+
+def get_market_session_factory():
+    """Get or create session factory for market.db."""
+    global _MarketSessionFactory
+    if _MarketSessionFactory is None:
+        _MarketSessionFactory = sessionmaker(bind=get_market_engine())
+    return _MarketSessionFactory
+
+
+def get_market_session():
+    """Get a database session for market.db (ticks + candles).
+
+    Caller is responsible for closing the session.
+    """
+    factory = get_market_session_factory()
+    return factory()
+
+
 # ============ Constants ============
 
 # Minimum odds for bonus wagering (bets below this don't count)

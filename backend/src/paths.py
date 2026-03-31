@@ -53,6 +53,17 @@ def get_db_path() -> Path:
     return db_dir / 'firev.db'
 
 
+def get_market_db_path() -> Path:
+    """Separate SQLite database for market tick/candle data.
+
+    Isolated from firev.db so high-frequency tick writes (Databento stream)
+    never contend with extraction/analysis writes for SQLite's single-writer lock.
+    """
+    db_dir = get_app_data_dir() / 'data'
+    db_dir.mkdir(parents=True, exist_ok=True)
+    return db_dir / 'market.db'
+
+
 def get_logs_dir() -> Path:
     """Logs directory. Always in user data directory."""
     logs_dir = get_app_data_dir() / 'logs'

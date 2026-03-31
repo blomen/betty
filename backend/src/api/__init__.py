@@ -148,13 +148,13 @@ async def lifespan(app: FastAPI):
     databento_key = os.environ.get("DATABENTO_API_KEY")
     _databento_stream = None
     if databento_key:
-        from ..db.models import get_session as _get_db_session
+        from ..db.models import get_session as _get_db_session, get_market_session as _get_market_session
         from ..market_data.stream import DatabentoLiveStream, TickWriter
         from ..services.market_service import MarketService as _MS
 
         _databento_stream = DatabentoLiveStream(
             api_key=databento_key,
-            db_session_factory=_get_db_session,
+            db_session_factory=_get_market_session,
         )
         app.state.databento_stream = _databento_stream
 
@@ -164,13 +164,13 @@ async def lifespan(app: FastAPI):
             Called once market is confirmed open — never during weekend close.
             """
             try:
-                # Prune ticks from prior sessions
-                await TickWriter.prune_old_trades(_get_db_session, symbol="NQ")
+                # Prune ticks from prior sessions (market.db)
+                await TickWriter.prune_old_trades(_get_market_session, symbol="NQ")
 
                 # Seed CandleFlow from last DB candle so live updates continue
                 # rather than starting fresh (which causes fake wicks on chart).
                 from ..repositories.market_repo import MarketRepo as _MR
-                _seed_db = _get_db_session()
+                _seed_db = _get_market_session()
                 try:
                     for _flow, _interval in [
                         (_databento_stream._candle_flow, "5m"),

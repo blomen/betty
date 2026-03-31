@@ -557,14 +557,14 @@ async def backfill_trades(
         return {"error": "DATABENTO_API_KEY not set"}
 
     from ...market_data.history import backfill_trades_to_db
-    from ...db.models import get_session as get_db_session
+    from ...db.models import get_market_session
 
     start_date = dt_date.fromisoformat(start)
     end_date = dt_date.fromisoformat(end) if end else None
 
     count = await backfill_trades_to_db(
         api_key=api_key,
-        db_session_factory=get_db_session,
+        db_session_factory=get_market_session,
         symbol=symbol,
         start=start_date,
         end=end_date,

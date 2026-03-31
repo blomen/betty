@@ -37,12 +37,21 @@ def _port_in_use(host: str, port: int) -> bool:
 def _kill_orphan_servers():
     """Kill orphan backend (port 8000) and frontend (port 5173) processes.
 
-    Uses netstat to find PIDs bound to our dev ports, then kills them.
-    This is surgical — only targets processes on specific ports, so RL
-    training, VSCode, and other node/python processes are untouched.
+    Uses netstat to find PIDs bound to our dev ports, then kills them
+    along with their entire process tree (/T flag). This is surgical —
+    only targets processes on specific ports, so RL training, VSCode,
+    and other node/python processes are untouched.
     """
     if sys.platform != "win32":
         return
+
+    my_pid = os.getpid()
+    # Also exclude our parent in case we're the child wrapper
+    try:
+        import psutil
+        my_tree = {my_pid, os.getppid()}
+    except Exception:
+        my_tree = {my_pid}
 
     for port in (PORT, FRONTEND_PORT):
         try:
@@ -52,7 +61,6 @@ def _kill_orphan_servers():
             )
             pids_to_kill = set()
             for line in result.stdout.splitlines():
-                # Match LISTENING or ESTABLISHED on our ports
                 if f":{port}" not in line:
                     continue
                 parts = line.split()
@@ -64,16 +72,17 @@ def _kill_orphan_servers():
                 # Only kill processes actually bound to our port (LISTENING)
                 if local_addr.endswith(f":{port}") and state == "LISTENING" and pid.isdigit():
                     pid_int = int(pid)
-                    if pid_int > 0 and pid_int != os.getpid():
+                    if pid_int > 0 and pid_int not in my_tree:
                         pids_to_kill.add(pid_int)
 
             for pid in pids_to_kill:
                 try:
+                    # /T kills the entire process tree (parent wrapper + child uvicorn)
                     subprocess.run(
-                        ["taskkill", "/F", "/PID", str(pid)],
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
                         capture_output=True, timeout=5,
                     )
-                    print(f"  Killed orphan process PID {pid} on port {port}")
+                    print(f"  Killed orphan process tree PID {pid} on port {port}")
                 except Exception:
                     pass
         except Exception:
@@ -100,7 +109,7 @@ if __name__ == "__main__":
     # Wait for port to be released after killing orphans
     if _port_in_use(HOST, PORT):
         print(f"  Waiting for port {PORT} to be released...")
-        for _ in range(10):
+        for _ in range(20):
             time.sleep(0.5)
             if not _port_in_use(HOST, PORT):
                 break
