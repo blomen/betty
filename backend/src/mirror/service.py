@@ -14,6 +14,7 @@ from ..db.models import get_session, BetTrace, Bet
 from ..services.bet_service import BetService
 from .interceptor import BetInterceptor
 from .parsers.gecko import GeckoBetParser
+from .parsers.polymarket import PolymarketParser
 from .recipes import NotificationRecipe, load_recipes, save_recipes
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class MirrorService:
         self.provider_id = provider_id
         self.discovery = discovery
         self.parser = GeckoBetParser()
+        self.polymarket_parser = PolymarketParser()
         # Cache: gecko_event_id → {home_team, away_team, event_name}
         self._event_cache: dict[str, dict[str, str]] = {}
         # Pending settlements awaiting confirmation
@@ -474,6 +476,28 @@ class MirrorService:
         if balance is not None:
             await asyncio.to_thread(self._sync_balance, provider_id, balance)
 
+        # Polymarket: store deposit trace from Swapped widget
+        if "swapped.com" in url and "create_order" in url:
+            deposit = self.polymarket_parser.parse_deposit(url, response_body)
+            if deposit:
+                logger.info(f"[mirror] Polymarket deposit initiated: ${deposit['amount']} {deposit['currency']}")
+                self._notify("deposit_initiated", {
+                    "provider": "polymarket",
+                    "amount": deposit["amount"],
+                    "currency": deposit["currency"],
+                    "order_id": deposit["order_id"],
+                })
+
+        # Polymarket: parse and broadcast open orders
+        if "clob.polymarket.com/data/orders" in url:
+            orders = self.polymarket_parser.parse_orders(response_body)
+            if orders:
+                self._notify("polymarket_orders", {
+                    "orders": orders,
+                    "count": len(orders),
+                    "open": len([o for o in orders if o["status"] == "live"]),
+                })
+
         # Store trace for audit
         await asyncio.to_thread(
             self._store_trace_sync, provider_id, url, None, response_body, "balance"
@@ -482,6 +506,14 @@ class MirrorService:
     def _extract_balance(self, provider_id: str, data: dict) -> float | None:
         """Extract total balance (cash + bonus) from provider-specific response format."""
         try:
+            # Polymarket: [{"user": "0x...", "value": 123.45}]
+            if isinstance(data, list):
+                if data and "user" in data[0] and "value" in data[0]:
+                    return float(data[0]["value"])
+                # No other balance format uses a bare list — fall through to GraphQL relay below
+                if not data:
+                    return None
+
             # Kambi / Unibet: {"balance": {"cash": 384.10, "bonus": 0, ...}}
             if "balance" in data and isinstance(data["balance"], dict):
                 bal = data["balance"]
@@ -911,10 +943,16 @@ class MirrorService:
             "tipwin": "tipwin",
             # Sharp
             "pinnacle": "pinnacle",
+            # Polymarket
+            "polymarket": "polymarket",
         }
         for keyword, provider_id in domain_map.items():
             if keyword in url_lower:
                 return provider_id
+
+        # Polymarket data API
+        if "polymarket" in url_lower or "swapped.com" in url_lower:
+            return "polymarket"
 
         # Kambi operator code in URL path (e.g. /ubse/coupon.json)
         if "kambi" in url_lower:
