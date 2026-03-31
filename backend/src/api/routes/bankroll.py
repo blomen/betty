@@ -260,6 +260,7 @@ def preview_stake(data: StakePreviewRequest, service: BankrollService = Depends(
         "single_bet_cap": result.single_bet_cap,
         "was_capped_single": result.was_capped_single,
         "skip_reason": result.skip_reason,
+        "counts_toward_wagering": result.counts_toward_wagering,
         "bonus_cleared": bonus_cleared,
         "min_odds_applied": 0.0 if bonus_cleared else calc.get_min_odds_for_provider(data.provider_id or ""),
     }

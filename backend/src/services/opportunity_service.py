@@ -567,6 +567,7 @@ class OpportunityService:
             result["final_stake"] = round(stake_rec.stake, 2)
             result["kelly_fraction"] = stake_rec.kelly_fraction
             result["skip_reason"] = stake_rec.skip_reason
+            result["counts_toward_wagering"] = stake_rec.counts_toward_wagering
             result["bankroll_needed"] = stake_rec.bankroll_needed if stake_rec.bankroll_needed > 0 else None
             result["bonus_cleared"] = bonus_status.get("is_cleared", True)
 
@@ -607,13 +608,12 @@ class OpportunityService:
                 is_freebet = bs == "freebet_available"
                 has_balance = is_freebet or balance >= bonus_amount  # freebets don't need balance
 
-                if opp.odds1 >= min_odds and has_balance:
+                if has_balance:
                     result["final_stake"] = bonus_amount
                     result["skip_reason"] = None
-                elif opp.odds1 >= min_odds and not has_balance:
+                else:
                     result["final_stake"] = 0
                     result["skip_reason"] = "no_balance"
-                # If odds < min_odds, keep skip_reason and final_stake=0
 
         except Exception as e:
             logger.debug(f"Stake calculation failed for opp {opp.id}: {e}")
@@ -621,6 +621,7 @@ class OpportunityService:
             result["final_stake"] = None
             result["kelly_fraction"] = None
             result["skip_reason"] = None
+            result["counts_toward_wagering"] = True
             result["bankroll_needed"] = None
             result["bonus_cleared"] = None
             result["bonus_status"] = None

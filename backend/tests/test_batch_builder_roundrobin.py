@@ -158,11 +158,11 @@ def test_sharp_missed_when_no_balance():
     assert not missed[0].funded
 
 
-def test_trigger_respects_min_odds():
-    """Trigger provider skips bets below min_odds."""
-    # Bet with odds 1.5 — below trigger min_odds of 1.80
+def test_trigger_allows_low_odds():
+    """Trigger provider plays bets below min_odds (wagering tracking handles eligibility)."""
+    # Bet with odds 1.5 — below trigger min_odds of 1.80 but still played
     bet = _make_bet("unibet", "kambi", "evt_1", 5.0, 100)
-    bet.odds = 1.5  # Below trigger threshold
+    bet.odds = 1.5  # Below wagering threshold but still playable
 
     balances = {
         "unibet": ProviderBalance(
@@ -175,9 +175,10 @@ def test_trigger_respects_min_odds():
     builder = BatchBuilder.__new__(BatchBuilder)
     batch, missed = builder._allocate_batch([bet], balances, {"unibet"})
 
-    # Should be missed — odds too low for trigger
-    assert len(batch) == 0
-    assert len(missed) == 1
+    # Should be placed — we play everything, wagering tracking decides if it counts
+    assert len(batch) == 1
+    assert batch[0].funded
+    assert batch[0].bonus_type == "trigger"
 
 
 def test_trigger_accepts_qualifying_odds():

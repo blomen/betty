@@ -120,6 +120,9 @@ class StakeResult:
     # Reasoning
     skip_reason: Optional[str] = None
 
+    # Whether this bet counts toward bonus wagering (False when odds < bonus min_odds)
+    counts_toward_wagering: bool = True
+
     # How much additional bankroll needed to qualify (0 if already qualifies)
     bankroll_needed: float = 0.0
 
@@ -274,19 +277,8 @@ def calculate_stake(
             skip_reason=f"Odds {odds:.2f} below sanity minimum {min_odds_sanity}"
         )
 
-    # Check min odds (for bonus wagering - skip if min_odds is 0)
-    if min_odds > 0 and odds < min_odds:
-        return StakeResult(
-            stake=0.0,
-            kelly_fraction=0.0,
-            edge_used=0.0,
-            edge_raw=edge_raw,
-            bankroll=bankroll_total,
-            raw_kelly_stake=0.0,
-            single_bet_cap=0.0,
-            was_capped_single=False,
-            skip_reason=f"Odds {odds:.2f} below minimum {min_odds} (bonus requirement)"
-        )
+    # Track whether bet counts toward wagering (odds below bonus min_odds don't count)
+    _counts_toward_wagering = not (min_odds > 0 and odds < min_odds)
 
     if edge_raw < min_edge:
         return StakeResult(
@@ -393,6 +385,7 @@ def calculate_stake(
             single_bet_cap=round(single_bet_cap, 2),
             was_capped_single=was_capped_single,
             skip_reason=skip_reason,
+            counts_toward_wagering=_counts_toward_wagering,
             bankroll_needed=additional,
         )
 
@@ -405,6 +398,7 @@ def calculate_stake(
         raw_kelly_stake=round(raw_stake, 2),
         single_bet_cap=round(single_bet_cap, 2),
         was_capped_single=was_capped_single,
+        counts_toward_wagering=_counts_toward_wagering,
     )
 
 
@@ -702,11 +696,11 @@ if __name__ == "__main__":
     # Simulate bonus being cleared
     calc2 = StakeCalculator(bankroll=10000)
 
-    # Bet at 1.50 odds (below 1.80) - should SKIP with bonus
+    # Bet at 1.50 odds (below 1.80) - plays but doesn't count toward wagering
     result_with_bonus = calc2.calculate(0.05, 1.50, min_odds=1.80)
-    print(f"With bonus (min 1.80): odds=1.50 -> {result_with_bonus.stake:.0f} ({result_with_bonus.skip_reason})")
+    print(f"With bonus (min 1.80): odds=1.50 -> {result_with_bonus.stake:.0f} kr (wagering={result_with_bonus.counts_toward_wagering})")
 
     # Same bet without bonus requirement
     result_cleared = calc2.calculate(0.05, 1.50, min_odds=0.0)
-    print(f"Bonus cleared (no min): odds=1.50 -> {result_cleared.stake:.0f} kr")
+    print(f"Bonus cleared (no min): odds=1.50 -> {result_cleared.stake:.0f} kr (wagering={result_cleared.counts_toward_wagering})")
 

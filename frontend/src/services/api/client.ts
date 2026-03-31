@@ -76,6 +76,7 @@ export interface StakePreviewResult {
   single_bet_cap: number;
   was_capped_single: boolean;
   skip_reason: string | null;
+  counts_toward_wagering: boolean;
   bonus_cleared: boolean;
   min_odds_applied: number;
 }

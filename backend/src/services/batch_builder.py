@@ -317,23 +317,15 @@ class BatchBuilder:
                 bets_count[pid] = bets_count.get(pid, 0) + 1
 
             # Redistribute skipped bets to available siblings under the cap
-            # Bonus-aware: check min_odds for trigger providers
             for cluster, bets in skipped_bets.items():
                 avail = cluster_avail.get(cluster, [])
                 if not avail:
                     continue  # No remaining siblings — drop these bets
                 for bet in bets:
                     target = None
-                    bet_odds = bet.get("odds", 0)
                     for candidate in avail:
                         if bets_count.get(candidate, 0) >= cap:
                             continue
-                        # Check bonus constraints on target sibling
-                        cpb = provider_balances.get(candidate)
-                        if cpb and cpb.lifecycle == "deposited" and cpb.trigger_mode == "single":
-                            min_odds = cpb.min_odds if cpb.min_odds else 1.80
-                            if bet_odds < min_odds:
-                                continue
                         target = candidate
                         break
                     if target is None:
@@ -858,15 +850,12 @@ class BatchBuilder:
                     batch.append(placed)
                     return True
 
-                # Trigger: fixed stake, must meet min_odds.
+                # Trigger: fixed stake, play all odds (wagering tracking handles min_odds).
                 # Safe-2x rule (MC-optimal): skip trigger if total bankroll < 2x
                 # trigger amount. This drops ruin from 57% to 0% at low bankrolls
                 # by avoiding all-in trigger bets. Smaller triggers get tried first
                 # (siblings sorted by bonus_amount ASC above).
                 if pb.lifecycle == "deposited" and pb.trigger_mode == "single":
-                    bet_min_odds = pb.min_odds if pb.min_odds else 1.80
-                    if bet.odds < bet_min_odds:
-                        continue
                     trigger_stake = pb.bonus_amount if pb.bonus_amount > 0 else bet.stake
                     if total_bankroll < trigger_stake * 2:
                         continue  # Safe-2x: bankroll too small for this trigger

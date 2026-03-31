@@ -159,8 +159,11 @@ const OpportunityRow = memo(function OpportunityRow({
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
             </button>
-            {isSkipped && (
+            {isSkipped && rep.skip_reason && (
               <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-muted">{rep.skip_reason}</span>
+            )}
+            {!isSkipped && rep.counts_toward_wagering === false && (
+              <span className="text-[9px] px-1 py-0.5 bg-muted/15 text-yellow-500/70">no wager</span>
             )}
           </div>
           <div className="text-muted2 text-[11px]">
@@ -265,7 +268,7 @@ const OpportunityRow = memo(function OpportunityRow({
                       <span className="truncate">
                         <ProviderName name={selOpp.provider1} />
                         {oppHasStake ? ` ${effStake!.toFixed(0)} kr` : ''}
-                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : ''}
+                        {selOpp.bonus_status === 'trigger_needed' ? ' [TRG]' : selOpp.bonus_status === 'freebet_available' ? ' [FREE]' : selOpp.skip_reason ? ` (${selOpp.skip_reason})` : selOpp.counts_toward_wagering === false ? ' (no wager)' : ''}
                       </span>
                       <svg className="w-3 h-3 ml-auto flex-shrink-0 text-muted" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
@@ -280,6 +283,7 @@ const OpportunityRow = memo(function OpportunityRow({
                           const tag = opp.bonus_status === 'trigger_needed' ? ' [TRG]'
                             : opp.bonus_status === 'freebet_available' ? ' [FREE]'
                             : opp.skip_reason ? ` (${opp.skip_reason})`
+                            : opp.counts_toward_wagering === false ? ' (no wager)'
                             : '';
                           return (
                             <button

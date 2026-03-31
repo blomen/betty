@@ -46,6 +46,7 @@ export interface Opportunity {
   final_stake?: number | null;
   kelly_fraction?: number | null;
   skip_reason?: string | null;
+  counts_toward_wagering?: boolean;
   bankroll_needed?: number | null;
   bonus_cleared?: boolean | null;
   // Freebet phase info
