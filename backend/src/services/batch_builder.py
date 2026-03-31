@@ -439,15 +439,16 @@ class BatchBuilder:
             shortfall_requests.sort(key=lambda x: -x["ev_density"])
             budget_grants: dict[str, float] = {}  # pid → extra capital granted
             for req in shortfall_requests:
-                pool = remaining_usdc if req["currency"] == "USDC" else remaining_sek
-                if pool >= req["shortfall"]:
-                    # Fully fund the shortfall
-                    budget_grants[req["provider_id"]] = req["shortfall"]
-                    if req["currency"] == "USDC":
-                        remaining_usdc -= req["shortfall"]
-                    else:
-                        remaining_sek -= req["shortfall"]
-                # else: no partial grants — provider keeps only balance-funded bets
+                if req["currency"] == "USDC":
+                    grant = min(req["shortfall"], remaining_usdc)
+                    if grant > 0:
+                        budget_grants[req["provider_id"]] = grant
+                        remaining_usdc -= grant
+                else:
+                    grant = min(req["shortfall"], remaining_sek)
+                    if grant > 0:
+                        budget_grants[req["provider_id"]] = grant
+                        remaining_sek -= grant
 
             # Rebuild batch: keep bets each provider can afford
             new_batch: list[dict] = []
