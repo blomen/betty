@@ -7,7 +7,7 @@ encode the temporal dynamics.
 Zone mode (state["zone"] present):
     zone composition multi-hot  len(LevelType)  (25 currently)
     orderflow                   21
-    structure + session          32
+    structure + session          38
     tpo (per-session)            38
     candle window                15
     zone features                 4
@@ -18,12 +18,12 @@ Zone mode (state["zone"] present):
     approach direction            1
     execution context             7
     ---
-    total                       189
+    total                       195
 
 Legacy mode (state["level_type"] present, no zone):
     level_type one-hot   25
     orderflow            21
-    structure + session  32
+    structure + session  38
     tpo (per-session)    38
     candle window        15
     confluence            8
@@ -33,7 +33,7 @@ Legacy mode (state["level_type"] present, no zone):
     approach direction    1
     execution context     7
     ---
-    total               188
+    total               194
 """
 from __future__ import annotations
 

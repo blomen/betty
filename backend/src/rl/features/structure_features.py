@@ -7,40 +7,48 @@ import numpy as np
 from ...market_data.levels import VWAPBands, VolumeProfile, SessionLevels, SwingStructure
 from ..config import TICK_SIZE
 
-_N_FEATURES = 32
+_N_FEATURES = 38
 
 
 def _extract_swing_features(
     price: float,
     swing: SwingStructure | None,
 ) -> np.ndarray:
-    """Extract 9 swing structure features (indices 23-31)."""
-    feats = np.zeros(9, dtype=np.float32)
+    """Extract 15 swing structure features (indices 23-37).
+
+    Per timeframe (daily=0, weekly=1, monthly=2):
+      feats[0-2]   trend encoded: uptrend=1.0, reversing_up=0.5, ranging=0.0,
+                                  reversing_down=-0.5, downtrend=-1.0
+      feats[3-5]   distance to nearest swing level (signed, clipped ±1)
+      feats[6-8]   position within swing range (0=at low, 1=at high)
+      feats[9-11]  bos_active flag (1.0 if BOS fired within recency window)
+      feats[12-14] choch_active flag (1.0 if CHoCH fired within recency window)
+    """
+    feats = np.zeros(15, dtype=np.float32)
     if swing is None:
         return feats
 
-    trend_map = {"uptrend": 1.0, "downtrend": -1.0, "ranging": 0.0}
+    trend_map = {
+        "uptrend": 1.0, "reversing_up": 0.5, "ranging": 0.0,
+        "reversing_down": -0.5, "downtrend": -1.0,
+    }
 
     for i, tf_swings in enumerate([swing.daily, swing.weekly, swing.monthly]):
-        # Trend direction (feats 0-2 → indices 23-25)
-        feats[i] = trend_map.get(tf_swings.structure, 0.0)
+        feats[i] = trend_map.get(tf_swings.structure, 0.0)           # trend (0-2)
 
-        # Distance to nearest swing level (feats 3-5 → indices 26-28)
         all_prices = [s.price for s in tf_swings.swing_highs + tf_swings.swing_lows]
         if all_prices:
             nearest = min(all_prices, key=lambda p: abs(p - price))
             dist_ticks = (price - nearest) / TICK_SIZE
-            feats[3 + i] = float(np.clip(dist_ticks / 200.0, -1.0, 1.0))
+            feats[3 + i] = float(np.clip(dist_ticks / 200.0, -1.0, 1.0))  # dist (3-5)
 
-        # Position in swing range (feats 6-8 → indices 29-31)
-        if all_prices:
             range_high = max(all_prices)
             range_low = min(all_prices)
             span = range_high - range_low
-            if span > 0:
-                feats[6 + i] = float(np.clip((price - range_low) / span, 0.0, 1.0))
-            else:
-                feats[6 + i] = 0.5
+            feats[6 + i] = float(np.clip((price - range_low) / span, 0.0, 1.0)) if span > 0 else 0.5  # pos (6-8)
+
+        feats[9 + i] = 1.0 if tf_swings.bos_active else 0.0       # bos (9-11)
+        feats[12 + i] = 1.0 if tf_swings.choch_active else 0.0    # choch (12-14)
 
     return feats
 
@@ -53,9 +61,9 @@ def extract_structure_features(
     session_context: dict | None,
     swing_structure: SwingStructure | None = None,
 ) -> np.ndarray:
-    """Extract 32 market structure and session context features.
+    """Extract 38 market structure and session context features.
 
-    Feature layout (indices 0-31):
+    Feature layout (indices 0-37):
     --- VWAP (0) ---
       0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
@@ -66,10 +74,12 @@ def extract_structure_features(
       9-11  trend_day, range_day, neutral_day
     --- Session Context (12-22) ---
       12-22  timing, session type, IB break
-    --- Swing Structure (23-31) ---
-      23-25  swing_trend_d/w/m
-      26-28  swing_dist_d/w/m
-      29-31  swing_pos_d/w/m
+    --- Swing Structure (23-37) ---
+      23-25  swing_trend_d/w/m  (uptrend=1, reversing_up=0.5, ranging=0, reversing_down=-0.5, downtrend=-1)
+      26-28  swing_dist_d/w/m   (signed distance to nearest swing, clipped ±1)
+      29-31  swing_pos_d/w/m    (price position within swing range, 0-1)
+      32-34  swing_bos_d/w/m    (BOS active flag)
+      35-37  swing_choch_d/w/m  (CHoCH active flag)
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -133,7 +143,7 @@ def extract_structure_features(
     feats[21] = 1.0 if ib_broken == "down" else 0.0
     feats[22] = 1.0 if ib_broken == "none" else 0.0
 
-    # --- Swing Structure (feats 23-31) ---
-    feats[23:32] = _extract_swing_features(price, swing_structure)
+    # --- Swing Structure (feats 23-37) ---
+    feats[23:38] = _extract_swing_features(price, swing_structure)
 
     return feats

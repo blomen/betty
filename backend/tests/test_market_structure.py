@@ -514,3 +514,84 @@ def test_engine_event_fields():
     assert ev.timestamp == 4
     # swing_price is the price of the confirmed swing (the potential_high_price = 112)
     assert ev.swing_price == pytest.approx(112.0)
+
+
+# ---------------------------------------------------------------------------
+# test_structure_features_38_with_bos_choch
+# ---------------------------------------------------------------------------
+
+def test_structure_features_38_with_bos_choch():
+    """Structure features should be 38 elements with BOS/CHoCH flags."""
+    import numpy as np
+    from src.market_data.levels import TimeframeSwings, SwingStructure
+    from src.rl.features.structure_features import extract_structure_features
+
+    daily = TimeframeSwings(
+        timeframe="daily", structure="uptrend",
+        swing_highs=[SwingLevel(price=19500, timestamp=1000, type="swing_high", timeframe="daily")],
+        swing_lows=[SwingLevel(price=19200, timestamp=900, type="swing_low", timeframe="daily")],
+        bos_active=True,
+        choch_active=False,
+    )
+    weekly = TimeframeSwings(
+        timeframe="weekly", structure="reversing_up",
+        swing_highs=[SwingLevel(price=19600, timestamp=500, type="swing_high", timeframe="weekly")],
+        swing_lows=[SwingLevel(price=18900, timestamp=400, type="swing_low", timeframe="weekly")],
+        bos_active=False,
+        choch_active=True,
+    )
+    monthly = TimeframeSwings(
+        timeframe="monthly", structure="ranging",
+        swing_highs=[], swing_lows=[],
+        bos_active=False,
+        choch_active=False,
+    )
+    swing = SwingStructure(
+        daily=daily, weekly=weekly, monthly=monthly, trend_alignment=0.5,
+    )
+
+    feats = extract_structure_features(
+        price=19400.0,
+        vwap_bands=None,
+        volume_profile=None,
+        session_levels=None,
+        session_context=None,
+        swing_structure=swing,
+    )
+
+    assert feats.shape == (38,)
+    assert all(np.isfinite(feats))
+    # Trend encoding
+    assert feats[23] == pytest.approx(1.0)   # daily uptrend
+    assert feats[24] == pytest.approx(0.5)   # weekly reversing_up
+    assert feats[25] == pytest.approx(0.0)   # monthly ranging
+    # BOS flags (indices 32-34)
+    assert feats[32] == pytest.approx(1.0)   # bos_active daily
+    assert feats[33] == pytest.approx(0.0)   # bos_active weekly
+    assert feats[34] == pytest.approx(0.0)   # bos_active monthly
+    # CHoCH flags (indices 35-37)
+    assert feats[35] == pytest.approx(0.0)   # choch_active daily
+    assert feats[36] == pytest.approx(1.0)   # choch_active weekly
+    assert feats[37] == pytest.approx(0.0)   # choch_active monthly
+
+
+# ---------------------------------------------------------------------------
+# test_structure_features_38_without_swings
+# ---------------------------------------------------------------------------
+
+def test_structure_features_38_without_swings():
+    """Without swing data, features 23-37 should be zeros."""
+    import numpy as np
+    from src.rl.features.structure_features import extract_structure_features
+
+    feats = extract_structure_features(
+        price=19400.0,
+        vwap_bands=None,
+        volume_profile=None,
+        session_levels=None,
+        session_context=None,
+        swing_structure=None,
+    )
+
+    assert feats.shape == (38,)
+    assert all(feats[23:38] == 0.0)
