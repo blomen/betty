@@ -380,82 +380,123 @@ class BatchBuilder:
                 "bonus_badge": bonus_badge,
             })
 
-        # -- Budget constraint: drop bets on providers that don't fit ----------
-        # No redistribution — budget-skipped bets are simply not played.
+        # -- Budget constraint: per-provider capital = balance + budget share ---
+        # Each provider keeps bets it can fund with existing balance.
+        # Extra budget is allocated greedily by EV to cover shortfalls.
+        # Bets beyond what a provider can cover are dropped (not redistributed).
         has_budget = budget_sek is not None or budget_usdc is not None
         if has_budget:
             remaining_sek = budget_sek if budget_sek is not None else float("inf")
             remaining_usdc = budget_usdc if budget_usdc is not None else float("inf")
 
-            # Compute shortfall + EV for each unfunded sibling
-            unfunded: list[dict] = []
+            # Group bets per provider, sorted by EV desc (best bets first)
+            provider_bets: dict[str, list[dict]] = {}
+            for bet in batch:
+                provider_bets.setdefault(bet["provider_id"], []).append(bet)
+            for pid in provider_bets:
+                provider_bets[pid].sort(key=lambda b: -b.get("expected_profit", 0))
+
+            # For each provider, compute how many bets fit in current balance
+            # and the marginal EV of funding the shortfall
+            shortfall_requests: list[dict] = []
             for sib in sibling_plan:
-                shortfall = sib["capital_needed"] - sib["current_balance"]
-                if shortfall <= 0:
-                    continue  # Already funded
-                sib_ev = sum(
-                    b.get("expected_profit", 0)
-                    for b in batch
-                    if b["provider_id"] == sib["provider_id"]
-                )
-                unfunded.append({
-                    "provider_id": sib["provider_id"],
-                    "shortfall": shortfall,
-                    "currency": sib["currency"],
-                    "ev": sib_ev,
-                    "ev_density": sib_ev / shortfall if shortfall > 0 else 0,
+                pid = sib["provider_id"]
+                bets = provider_bets.get(pid, [])
+                if not bets:
+                    continue
+                bal = sib["current_balance"]
+                currency = sib["currency"]
+
+                # Find how many bets fit in existing balance
+                running = 0.0
+                funded_count = 0
+                for b in bets:
+                    running += b.get("stake", 0)
+                    if running <= bal:
+                        funded_count += 1
+                    else:
+                        break
+
+                if funded_count >= len(bets):
+                    continue  # Fully funded by existing balance
+
+                # Shortfall = cost of remaining bets beyond what balance covers
+                shortfall_stake = sum(b.get("stake", 0) for b in bets[funded_count:])
+                shortfall_ev = sum(b.get("expected_profit", 0) for b in bets[funded_count:])
+                ev_density = shortfall_ev / shortfall_stake if shortfall_stake > 0 else 0
+
+                shortfall_requests.append({
+                    "provider_id": pid,
+                    "shortfall": shortfall_stake,
+                    "currency": currency,
+                    "ev": shortfall_ev,
+                    "ev_density": ev_density,
+                    "funded_count": funded_count,
+                    "bets": bets,
                 })
 
-            # Sort by EV density descending — best bang for buck first
-            unfunded.sort(key=lambda x: -x["ev_density"])
+            # Greedily allocate budget to providers with best EV density
+            shortfall_requests.sort(key=lambda x: -x["ev_density"])
+            budget_grants: dict[str, float] = {}  # pid → extra capital granted
+            for req in shortfall_requests:
+                pool = remaining_usdc if req["currency"] == "USDC" else remaining_sek
+                if pool >= req["shortfall"]:
+                    # Fully fund the shortfall
+                    budget_grants[req["provider_id"]] = req["shortfall"]
+                    if req["currency"] == "USDC":
+                        remaining_usdc -= req["shortfall"]
+                    else:
+                        remaining_sek -= req["shortfall"]
+                # else: no partial grants — provider keeps only balance-funded bets
 
-            budget_funded: set[str] = set()
-            for item in unfunded:
-                if item["currency"] == "USDC":
-                    if item["shortfall"] <= remaining_usdc:
-                        remaining_usdc -= item["shortfall"]
-                        budget_funded.add(item["provider_id"])
-                else:
-                    if item["shortfall"] <= remaining_sek:
-                        remaining_sek -= item["shortfall"]
-                        budget_funded.add(item["provider_id"])
+            # Rebuild batch: keep bets each provider can afford
+            new_batch: list[dict] = []
+            for sib in sibling_plan:
+                pid = sib["provider_id"]
+                bets = provider_bets.get(pid, [])
+                if not bets:
+                    continue
+                available = sib["current_balance"] + budget_grants.get(pid, 0)
+                running = 0.0
+                for b in bets:
+                    running += b.get("stake", 0)
+                    if running <= available + 0.01:  # small float tolerance
+                        new_batch.append(b)
 
-            # Drop bets on unfunded providers that didn't make the budget cut
-            budget_skipped = {u["provider_id"] for u in unfunded} - budget_funded
-            if budget_skipped:
-                batch = [b for b in batch if b["provider_id"] not in budget_skipped]
-                # Rebuild sibling_plan from filtered batch
-                bets_per_provider = {}
-                capital_per_provider = {}
-                for bet in batch:
-                    pid = bet["provider_id"]
-                    bets_per_provider[pid] = bets_per_provider.get(pid, 0) + 1
-                    capital_per_provider[pid] = capital_per_provider.get(pid, 0) + bet.get("stake", 0)
+            batch = new_batch
 
-                sibling_plan = []
-                for pid in sorted(set(bets_per_provider.keys()) | set(bs_by_pid.keys())):
-                    if bets_per_provider.get(pid, 0) == 0:
-                        continue
-                    bs = bs_by_pid.get(pid, {})
-                    currency = "USDC" if pid == "polymarket" else "SEK"
-                    bonus_badge = None
-                    if bs.get("wagering_remaining", 0) > 0:
-                        bonus_badge = f"WAGER {round(bs['wagering_remaining'])} left"
-                    elif bs.get("lifecycle") == "freebet":
-                        bonus_badge = "FREEBET"
-                    elif bs.get("trigger_mode") == "freebet" and bs.get("bonus_amount", 0) > 0:
-                        bonus_badge = f"FB {round(bs['bonus_amount'])}"
-                    sibling_plan.append({
-                        "provider_id": pid,
-                        "cluster": bs.get("cluster", _provider_to_cluster(pid)),
-                        "bets_assigned": bets_per_provider.get(pid, 0),
-                        "capital_needed": round(capital_per_provider.get(pid, 0), 2),
-                        "current_balance": round(bs.get("balance", 0), 2),
-                        "currency": currency,
-                        "lifecycle": bs.get("lifecycle", "idle"),
-                        "bonus_badge": bonus_badge,
-                    })
-                wagering = self._compute_wagering_projections_from_dicts(batch, provider_balances)
+            # Rebuild sibling_plan from filtered batch
+            bets_per_provider = {}
+            capital_per_provider = {}
+            for bet in batch:
+                pid = bet["provider_id"]
+                bets_per_provider[pid] = bets_per_provider.get(pid, 0) + 1
+                capital_per_provider[pid] = capital_per_provider.get(pid, 0) + bet.get("stake", 0)
+
+            sibling_plan = []
+            for pid in sorted(set(bets_per_provider.keys()) | set(bs_by_pid.keys())):
+                if bets_per_provider.get(pid, 0) == 0:
+                    continue
+                bs = bs_by_pid.get(pid, {})
+                currency = "USDC" if pid == "polymarket" else "SEK"
+                bonus_badge = None
+                if bs.get("wagering_remaining", 0) > 0:
+                    bonus_badge = f"WAGER {round(bs['wagering_remaining'])} left"
+                elif bs.get("lifecycle") == "freebet":
+                    bonus_badge = "FREEBET"
+                elif bs.get("trigger_mode") == "freebet" and bs.get("bonus_amount", 0) > 0:
+                    bonus_badge = f"FB {round(bs['bonus_amount'])}"
+                sibling_plan.append({
+                    "provider_id": pid,
+                    "cluster": bs.get("cluster", _provider_to_cluster(pid)),
+                    "bets_assigned": bets_per_provider.get(pid, 0),
+                    "capital_needed": round(capital_per_provider.get(pid, 0), 2),
+                    "current_balance": round(bs.get("balance", 0), 2),
+                    "currency": currency,
+                    "lifecycle": bs.get("lifecycle", "idle"),
+                    "bonus_badge": bonus_badge,
+                })
+            wagering = self._compute_wagering_projections_from_dicts(batch, provider_balances)
 
         allocated_batch = batch
 
