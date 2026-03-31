@@ -4,6 +4,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from ..repositories import ProfileRepo, OpportunityRepo, OddsRepo
+from ..repositories.limit_repo import LimitRepo
 from ..analysis import find_best_hedge
 from ..analysis.scanner import OpportunityScanner
 from ..bankroll.stake_calculator import StakeCalculator, calculate_stake, BONUS_MIN_ODDS, dynamic_min_stake, OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP
@@ -103,6 +104,16 @@ class OpportunityService:
             exclude_provider1=None if provider1 else "polymarket",
             limit=limit,
         )
+
+        # Exclude banned providers
+        try:
+            if not profile:
+                profile = self.profile_repo.get_active()
+            banned = LimitRepo(self.db).get_banned_providers(profile.id)
+            if banned:
+                rows = [(opp, evt) for opp, evt in rows if opp.provider1_id not in banned]
+        except Exception:
+            banned = set()
 
         # Fetch active profile once (used for pending-bet filter + stake calculator)
         stake_calculator = None
