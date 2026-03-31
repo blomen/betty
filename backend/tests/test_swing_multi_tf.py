@@ -155,11 +155,12 @@ def test_structure_features_with_swings():
         session_context=None,
         swing_structure=swing,
     )
-    assert feats.shape == (38,)
-    assert feats[23] == 1.0   # swing_trend_d = uptrend = +1
-    assert feats[24] == 1.0   # swing_trend_w = uptrend = +1
-    assert feats[25] == 0.0   # swing_trend_m = ranging = 0
-    assert 0.0 <= feats[29] <= 1.0  # swing_pos_d
+    assert feats.shape == (35,)
+    # Swing features shifted to [20-34] after market type removal
+    assert feats[20] == 1.0   # swing_trend_d = uptrend = +1
+    assert feats[21] == 1.0   # swing_trend_w = uptrend = +1
+    assert feats[22] == 0.0   # swing_trend_m = ranging = 0
+    assert 0.0 <= feats[26] <= 1.0  # swing_pos_d
     assert all(np.isfinite(feats))
 
 
@@ -173,8 +174,8 @@ def test_structure_features_without_swings():
         session_context=None,
         swing_structure=None,
     )
-    assert feats.shape == (38,)
-    assert all(feats[23:38] == 0.0)
+    assert feats.shape == (35,)
+    assert all(feats[20:35] == 0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -570,20 +570,20 @@ def test_structure_features_38_with_bos_choch():
         swing_structure=swing,
     )
 
-    assert feats.shape == (38,)
+    assert feats.shape == (35,)
     assert all(np.isfinite(feats))
-    # Trend encoding
-    assert feats[23] == pytest.approx(1.0)   # daily uptrend
-    assert feats[24] == pytest.approx(0.5)   # weekly reversing_up
-    assert feats[25] == pytest.approx(0.0)   # monthly ranging
-    # BOS flags (indices 32-34)
-    assert feats[32] == pytest.approx(1.0)   # bos_active daily
-    assert feats[33] == pytest.approx(0.0)   # bos_active weekly
-    assert feats[34] == pytest.approx(0.0)   # bos_active monthly
-    # CHoCH flags (indices 35-37)
-    assert feats[35] == pytest.approx(0.0)   # choch_active daily
-    assert feats[36] == pytest.approx(1.0)   # choch_active weekly
-    assert feats[37] == pytest.approx(0.0)   # choch_active monthly
+    # Swing features shifted -3 after market type removal (indices 20-34)
+    assert feats[20] == pytest.approx(1.0)   # daily uptrend
+    assert feats[21] == pytest.approx(0.5)   # weekly reversing_up
+    assert feats[22] == pytest.approx(0.0)   # monthly ranging
+    # BOS flags (indices 29-31)
+    assert feats[29] == pytest.approx(1.0)   # bos_active daily
+    assert feats[30] == pytest.approx(0.0)   # bos_active weekly
+    assert feats[31] == pytest.approx(0.0)   # bos_active monthly
+    # CHoCH flags (indices 32-34)
+    assert feats[32] == pytest.approx(0.0)   # choch_active daily
+    assert feats[33] == pytest.approx(1.0)   # choch_active weekly
+    assert feats[34] == pytest.approx(0.0)   # choch_active monthly
 
 
 # ---------------------------------------------------------------------------
@@ -604,5 +604,5 @@ def test_structure_features_38_without_swings():
         swing_structure=None,
     )
 
-    assert feats.shape == (38,)
-    assert all(feats[23:38] == 0.0)
+    assert feats.shape == (35,)
+    assert all(feats[20:35] == 0.0)
