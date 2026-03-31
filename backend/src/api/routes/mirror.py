@@ -272,6 +272,20 @@ async def place_polymarket_bets(request: PlaceBetsRequest):
     return result
 
 
+@router.get("/page-eval")
+async def page_eval(js: str = "() => document.body.innerText"):
+    """Evaluate JS on the active mirror page and return result."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    result = await page.evaluate(js)
+    return {"url": page.url, "result": result}
+
+
 @router.get("/notification-recipes")
 async def get_notification_recipes():
     """List all stored notification mute recipes."""

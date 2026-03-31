@@ -1345,43 +1345,60 @@ class MirrorService:
         self, page, bet_id: int, slug: str, outcome: str,
         amount: float, expected_price: float, max_slippage: float,
     ) -> dict:
-        """Place a single bet on Polymarket via browser automation."""
+        """Place a single bet on Polymarket via browser automation.
+
+        Discovered DOM structure (2026-04-01):
+        - Order panel: div with class containing 'shadow-md' and 'bg-surface-1'
+        - Buy/Sell toggle: button[role="radio"] with text "Buy" / "Sell"
+        - Outcome buttons: button.trading-button[role="radio"] containing "Yes"/"No" + price
+        - Amount input: input[placeholder="$0"]
+        - Quick amounts: buttons with text "+$1", "+$5", "+$10", "+$100", "Max"
+        - Submit: button.trading-button with text "Buy Yes" / "Buy No" etc.
+        """
         import asyncio
 
         # 1. Navigate to market page
         market_url = f"https://polymarket.com/{slug}"
         logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
         await page.goto(market_url, wait_until="networkidle", timeout=20000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(2)  # Let React hydrate
 
-        # 2. Click outcome button (Yes/No)
-        outcome_selector = f'button:has-text("{outcome}")'
+        # 2. Click the outcome's trading-button in the order panel
+        # The order panel has trading-button[role="radio"] buttons with "Yes"/"No" text
+        # These are different from the main market trading-buttons (which show team names)
         try:
-            await page.click(outcome_selector, timeout=5000)
+            # First ensure Buy mode is selected (not Sell)
+            buy_toggle = page.locator('button[role="radio"]').filter(has_text="Buy").first
+            await buy_toggle.click(timeout=3000)
+            await asyncio.sleep(0.3)
+
+            # Click the outcome button in the order panel
+            # Order panel outcome buttons are trading-button[role="radio"] inside the panel
+            outcome_btn = page.locator('button.trading-button[role="radio"]').filter(has_text=outcome).first
+            await outcome_btn.click(timeout=5000)
             await asyncio.sleep(0.5)
         except Exception as e:
-            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {outcome}: {e}"}
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not select {outcome}: {e}"}
 
-        # 3. Read current price from order form and check slippage
+        # 3. Read current price from the selected outcome button and check slippage
         try:
-            price_text = await page.evaluate("""() => {
-                const selectors = [
-                    '[data-testid="price-display"]',
-                    '.price-input input',
-                    'input[placeholder*="Price"]',
-                ];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) return el.value || el.textContent;
-                }
-                const inputs = document.querySelectorAll('input[type="number"]');
-                for (const inp of inputs) {
-                    const v = parseFloat(inp.value);
-                    if (v > 0 && v < 1) return inp.value;
-                }
-                return null;
-            }""")
-            if price_text:
+            # The trading-button text format is "Yes0.1¢" or "No52¢" — extract the price
+            price_text = await page.evaluate(
+                "(outcome) => {"
+                "  const btns = document.querySelectorAll('button.trading-button[role=\"radio\"]');"
+                "  for (const btn of btns) {"
+                "    const text = btn.textContent || '';"
+                "    if (text.startsWith(outcome)) {"
+                "      const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+                "      if (priceMatch) return parseFloat(priceMatch[1]) / 100;"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                outcome,
+            )
+
+            if price_text is not None:
                 current_price = float(price_text)
                 slippage_ok = self.polymarket_parser.check_slippage(expected_price, current_price, max_slippage)
                 slippage_pct = abs(current_price - expected_price) / expected_price * 100
@@ -1404,9 +1421,9 @@ class MirrorService:
         except Exception as e:
             logger.warning(f"[mirror] Could not read price for bet {bet_id}: {e}")
 
-        # 4. Enter amount
+        # 4. Enter amount in the $0 input
         try:
-            amount_input = page.locator('input[placeholder*="Amount"], input[placeholder*="Enter"]').first
+            amount_input = page.locator('input[placeholder="$0"]').first
             await amount_input.click()
             await amount_input.fill("")
             await amount_input.type(str(amount), delay=50)
@@ -1414,15 +1431,17 @@ class MirrorService:
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
 
-        # 5. Click Buy/confirm button
+        # 5. Click the submit button ("Buy Yes" / "Buy No")
+        # This is a button.trading-button (not role="radio") with text like "Buy Yes"
         try:
-            buy_btn = page.locator('button:has-text("Buy")').first
-            await buy_btn.click(timeout=5000)
+            submit_text = f"Buy {outcome}"
+            submit_btn = page.locator('button.trading-button').filter(has_text=submit_text).first
+            await submit_btn.click(timeout=5000)
             await asyncio.sleep(1)
         except Exception as e:
-            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click Buy: {e}"}
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {submit_text}: {e}"}
 
-        # 6. Handle Fun.xyz transaction confirmation popup
+        # 6. Handle Fun.xyz transaction confirmation popup (may or may not appear)
         try:
             confirm_btn = page.locator('button:has-text("Confirm"), button:has-text("Approve")').first
             await confirm_btn.click(timeout=15000)
@@ -1431,11 +1450,12 @@ class MirrorService:
             logger.debug(f"[mirror] No Fun.xyz confirm popup for bet {bet_id}")
             await asyncio.sleep(3)
 
-        # 7. Check for success indicators
+        # 7. Check for success indicators on page
         try:
             success = await page.evaluate("""() => {
                 const text = document.body.innerText;
-                return text.includes('Order placed') || text.includes('Success') || text.includes('Confirmed');
+                return text.includes('Order placed') || text.includes('Success') ||
+                       text.includes('Confirmed') || text.includes('Position');
             }""")
             if success:
                 logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
@@ -1448,7 +1468,7 @@ class MirrorService:
         except Exception:
             pass
 
-        # Uncertain — report as placed but flag
+        # Uncertain — report as placed but flag for manual verification
         logger.warning(f"[mirror] Polymarket bet {bet_id}: placement uncertain")
         result = {
             "bet_id": bet_id, "status": "placed",
