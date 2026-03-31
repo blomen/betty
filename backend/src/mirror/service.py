@@ -74,9 +74,46 @@ class MirrorService:
         })
         # Auto-mute notifications if we have a recipe
         await self._replay_notification_mute(provider_id)
+        # Polymarket: scrape cash balance from DOM (not available via API)
+        if provider_id == "polymarket":
+            asyncio.ensure_future(self._scrape_polymarket_balance())
         # Auto-scrape bet history for SSR providers when pending bets exist
         if provider_id in self._SSR_PROVIDERS and info["pending_bets"] > 0:
             asyncio.ensure_future(self._auto_scrape_bet_history(provider_id))
+
+    async def _scrape_polymarket_balance(self):
+        """Scrape USDC cash balance from Polymarket DOM.
+
+        The cash balance is rendered client-side (not from a single API endpoint).
+        The nav shows "Cash$101.51" — we extract the dollar amount from that text.
+        """
+        await asyncio.sleep(3)  # Wait for page to render
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return
+
+        page = context.pages[0]
+        try:
+            balance_text = await page.evaluate(
+                "() => {"
+                "  const els = document.querySelectorAll('button, a, span, div');"
+                "  for (const el of els) {"
+                "    const text = el.textContent || '';"
+                "    const match = text.match(/Cash\\$([\\d,.]+)/);"
+                "    if (match) return match[1];"
+                "  }"
+                "  return null;"
+                "}"
+            )
+            if balance_text:
+                balance = float(balance_text.replace(",", ""))
+                logger.info(f"[mirror] Polymarket cash balance from DOM: ${balance}")
+                await asyncio.to_thread(self._sync_balance, "polymarket", balance)
+            else:
+                logger.debug("[mirror] Could not find Polymarket cash balance in DOM")
+        except Exception as e:
+            logger.warning(f"[mirror] Could not scrape Polymarket balance: {e}")
 
     async def _auto_scrape_bet_history(self, provider_id: str):
         """Wait for page to load, then navigate to bet history and scrape."""
