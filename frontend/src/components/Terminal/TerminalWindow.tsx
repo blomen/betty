@@ -99,7 +99,7 @@ export function TerminalWindow() {
     setActiveTab('settings');
   }, []);
 
-  const isTradingTab = activeTab === 'tradingL1' || activeTab === 'tradingVectors';
+  const isTradingTab = activeTab === 'tradingChart' || activeTab === 'tradingDqn';
 
 
   const renderPage = () => {
@@ -159,7 +159,7 @@ export function TerminalWindow() {
             {/* TradingContainer stays mounted once visited — hidden via CSS when on other tabs */}
             {tradingMounted && (
               <div className={`flex-1 flex flex-col min-h-0 ${isTradingTab ? '' : 'hidden'}`}>
-                <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingL1') as 'tradingL1' | 'tradingVectors'} />
+                <TradingContainer activeSubTab={(isTradingTab ? activeTab : 'tradingChart') as 'tradingChart' | 'tradingDqn'} />
               </div>
             )}
             {/* Keep-alive pages: mounted once visited, hidden via CSS when inactive */}

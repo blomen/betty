@@ -221,40 +221,80 @@ class MarketService:
         return db_bars
 
     def _load_swing_structure(self):
-        """Load swing structure from RL session summaries (795 sessions back to 2011)."""
+        """Load swing structure from RL session summaries + live DB candles.
+
+        Session summaries provide historical data (back to 2011).
+        For dates after the last summary, we aggregate 1m candles from market_candles
+        into daily bars so swing detection stays current.
+        """
         import json
         from pathlib import Path
+        from collections import defaultdict
         from ..market_data.levels import compute_multi_tf_swings
-
-        summaries_path = Path(__file__).resolve().parents[2] / "data" / "rl" / "session_summaries.json"
-        if not summaries_path.exists():
-            logger.warning("Session summaries not found at %s", summaries_path)
-            return None
-
-        try:
-            with open(summaries_path) as f:
-                raw = json.load(f)
-        except Exception as e:
-            logger.warning("Failed to load session summaries: %s", e)
-            return None
 
         from zoneinfo import ZoneInfo
         CET = ZoneInfo("Europe/Stockholm")
 
         synth_bars = []
-        for date_str in sorted(raw.keys()):
-            s = raw[date_str]
-            rth_high = s.get("rth_high")
-            rth_low = s.get("rth_low")
-            if rth_high is None or rth_low is None:
-                continue
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
-            synth_bars.append({
-                "ts": ts, "open": s.get("poc", rth_high),
-                "high": rth_high, "low": rth_low,
-                "close": s.get("poc", rth_low),
-            })
+
+        # Phase 1: Load session summaries (historical)
+        summaries_path = Path(__file__).resolve().parents[2] / "data" / "rl" / "session_summaries.json"
+        last_summary_date = None
+        if summaries_path.exists():
+            try:
+                with open(summaries_path) as f:
+                    raw = json.load(f)
+                for date_str in sorted(raw.keys()):
+                    s = raw[date_str]
+                    rth_high = s.get("rth_high")
+                    rth_low = s.get("rth_low")
+                    if rth_high is None or rth_low is None:
+                        continue
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+                    synth_bars.append({
+                        "ts": ts, "open": s.get("poc", rth_high),
+                        "high": rth_high, "low": rth_low,
+                        "close": s.get("poc", rth_low),
+                    })
+                    last_summary_date = date_str
+            except Exception as e:
+                logger.warning("Failed to load session summaries: %s", e)
+
+        # Phase 2: Supplement with live DB candles for dates after last summary
+        try:
+            gap_start = datetime.strptime(last_summary_date, "%Y-%m-%d") + timedelta(days=1) if last_summary_date else datetime.now(timezone.utc) - timedelta(days=30)
+            gap_start_utc = gap_start.replace(hour=0, tzinfo=CET).astimezone(timezone.utc)
+            now = datetime.now(timezone.utc)
+
+            rows = self.repo.get_candles("NQ", "1m", gap_start_utc, now)
+            if rows:
+                # Group by CET date and aggregate into daily bars
+                daily: dict[str, list] = defaultdict(list)
+                for r in rows:
+                    ts = r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)
+                    cet_date = ts.astimezone(CET).date().isoformat()
+                    daily[cet_date].append(r)
+
+                for d_str in sorted(daily.keys()):
+                    candles = daily[d_str]
+                    if len(candles) < 60:  # Skip partial days (< 1 hour of data)
+                        continue
+                    d_high = max(c.h for c in candles)
+                    d_low = min(c.l for c in candles)
+                    d_open = candles[0].o
+                    d_close = candles[-1].c
+                    dt = datetime.strptime(d_str, "%Y-%m-%d")
+                    ts = dt.replace(hour=12, tzinfo=CET).astimezone(timezone.utc)
+                    synth_bars.append({
+                        "ts": ts, "open": d_open,
+                        "high": d_high, "low": d_low,
+                        "close": d_close,
+                    })
+                logger.info("Swing structure: supplemented with %d live daily bars after %s",
+                           len(daily), last_summary_date or "N/A")
+        except Exception as e:
+            logger.warning("Failed to supplement swing data from DB: %s", e)
 
         if len(synth_bars) < 5:
             return None
@@ -2131,17 +2171,21 @@ class MarketService:
                 text("SELECT * FROM cot_data ORDER BY report_date DESC LIMIT 2")
             ).fetchall()
             if not rows:
+                logger.debug("COT: no data in cot_data table")
                 return None
             latest = dict(rows[0]._mapping)
             change_1w = None
             if len(rows) > 1:
                 prev = dict(rows[1]._mapping)
                 change_1w = (latest.get("net_position", 0) or 0) - (prev.get("net_position", 0) or 0)
-            return {
+            result = {
                 "net_non_commercial": latest.get("net_position"),
                 "change_1w": change_1w,
             }
-        except Exception:
+            logger.debug("COT summary: %s", result)
+            return result
+        except Exception as e:
+            logger.warning("COT fetch failed: %s", e)
             return None
 
     def _compute_live_orderflow(self, symbol: str, session_data: dict, direction: str | None = None):

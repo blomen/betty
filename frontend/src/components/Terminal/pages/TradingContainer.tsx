@@ -3,8 +3,8 @@ import { api } from '@/services/api';
 import { useMarketStream } from '@/hooks/useMarketStream';
 import { useLevelMonitor } from '@/hooks/useLevelMonitor';
 import { useSound } from '@/hooks/useSound';
-import { L1Page } from './L1Page';
-import { VectorsPage } from './VectorsPage';
+import { ChartPage } from './ChartPage';
+import { DqnPage } from './DqnPage';
 import type { ExpandedSession, MonitoredLevel, PositionRow, BattleScreenData, OrderflowSnapshot } from '@/types/market';
 
 // ---- Demo data for testing when backend is offline ----
@@ -104,7 +104,7 @@ const DEMO_BATTLE: BattleScreenData = {
 // ---------------------------------------------------
 
 interface Props {
-  activeSubTab: 'tradingL1' | 'tradingVectors';
+  activeSubTab: 'tradingChart' | 'tradingDqn';
 }
 
 export function TradingContainer({ activeSubTab }: Props) {
@@ -246,8 +246,8 @@ export function TradingContainer({ activeSubTab }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0" onClick={unlock}>
-      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingL1' ? '' : 'hidden'}`}>
-        <L1Page
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingChart' ? '' : 'hidden'}`}>
+        <ChartPage
           lastTick={lastTick}
           book={book}
           lastCandle={lastCandle}
@@ -255,8 +255,8 @@ export function TradingContainer({ activeSubTab }: Props) {
           session={session}
         />
       </div>
-      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingVectors' ? '' : 'hidden'}`}>
-        <VectorsPage
+      <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingDqn' ? '' : 'hidden'}`}>
+        <DqnPage
           session={session}
           levels={levels}
           currentPrice={currentPrice}

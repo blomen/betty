@@ -830,3 +830,15 @@ async def get_cot_data(limit: int = Query(default=4, le=52)):
         }
         for r in reports
     ]
+
+
+@router.get("/cot/summary")
+async def get_cot_summary(svc: MarketService = Depends(_svc)):
+    """Lightweight COT summary from DB — no external API call."""
+    summary = svc._get_cot_summary()
+    if not summary:
+        return {"cot_net_position": None, "cot_change_1w": None}
+    return {
+        "cot_net_position": summary.get("net_non_commercial"),
+        "cot_change_1w": summary.get("change_1w"),
+    }

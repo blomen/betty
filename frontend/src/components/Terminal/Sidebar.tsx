@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { TabIcon } from './TabBar';
 import { api } from '../../services/api';
 
-export type TabName = 'value' | 'play' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingL1' | 'tradingVectors' | 'tradingBankroll' | 'tradingStats';
+export type TabName = 'value' | 'play' | 'dutch' | 'reverse' | 'polymarket' | 'stats' | 'bankroll' | 'profiles' | 'settings' | 'tradingChart' | 'tradingDqn' | 'tradingBankroll' | 'tradingStats';
 export type CategoryName = 'sports' | 'stocks';
 
 interface SidebarProps {

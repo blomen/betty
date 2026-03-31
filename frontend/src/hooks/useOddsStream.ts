@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { connectionManager } from '@/services/connectionManager';
 
 interface OpportunitiesResponse {
   opportunities: any[];
@@ -71,10 +72,14 @@ export function useOddsStream() {
       es.close();
       queryClient.invalidateQueries({ queryKey: ['opportunities'], refetchType: 'active' });
       queryClient.invalidateQueries({ queryKey: ['providers'], refetchType: 'active' });
-      retryRef.current = setTimeout(() => {
-        delayRef.current = Math.min(delayRef.current * 2, 30000);
-        connect();
-      }, delayRef.current);
+
+      // Wait for backend health confirmation before reconnecting
+      connectionManager.waitForUp().then(() => {
+        retryRef.current = setTimeout(() => {
+          delayRef.current = Math.min(delayRef.current * 2, 30000);
+          connect();
+        }, delayRef.current);
+      });
     };
   }, [queryClient]);
 

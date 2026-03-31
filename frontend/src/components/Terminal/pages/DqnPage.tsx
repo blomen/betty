@@ -117,7 +117,7 @@ function useDemoInference(
   return realInference ?? demo;
 }
 
-export function VectorsPage({
+export function DqnPage({
   session: _session, levels: _levels, currentPrice: _currentPrice, connected: _connected,
   pricePos: _pricePos, onLevelClick: _onLevelClick,
   activeBattle, lastBattle, onDismissBattle: _onDismissBattle, onTakeTrade: _onTakeTrade,
