@@ -38,10 +38,9 @@ export function TerminalWindow() {
   const [isSettingsActive, setIsSettingsActive] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
-  // Track if trading page has been visited — once mounted, keep alive
-  const [tradingMounted, setTradingMounted] = useState(false);
-  // Track which keep-alive pages have been visited
-  const [mountedPages, setMountedPages] = useState<Set<string>>(() => new Set());
+  // All keep-alive pages and trading mount eagerly so they're ready on tab switch
+  const tradingMounted = true;
+  const mountedPages = new Set(Object.keys(KEEP_ALIVE_PAGES));
 
   // On mount: check if we should skip the welcome page
   useEffect(() => {
@@ -102,20 +101,6 @@ export function TerminalWindow() {
 
   const isTradingTab = activeTab === 'tradingL1' || activeTab === 'tradingVectors';
 
-  // Once user visits trading, keep TradingContainer mounted forever
-  useEffect(() => {
-    if (isTradingTab && !tradingMounted) setTradingMounted(true);
-  }, [isTradingTab, tradingMounted]);
-
-  // Track keep-alive pages: once visited, stay mounted (hidden via CSS)
-  useEffect(() => {
-    setMountedPages(prev => {
-      if (activeTab in KEEP_ALIVE_PAGES && !prev.has(activeTab)) {
-        return new Set(prev).add(activeTab);
-      }
-      return prev;
-    });
-  }, [activeTab]);
 
   const renderPage = () => {
     // Trading tabs and keep-alive pages handled separately (kept alive below)

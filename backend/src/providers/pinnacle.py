@@ -227,10 +227,9 @@ class PinnacleRetriever(Retriever):
                 matchups_task = self.transport.get(matchups_url)
                 markets_task = self.transport.get(markets_url)
 
-                matchups, markets = await asyncio.gather(matchups_task, markets_task)
-
-                matchups = matchups if matchups else []
-                markets = markets if markets else []
+                results = await asyncio.gather(matchups_task, markets_task, return_exceptions=True)
+                matchups = results[0] if not isinstance(results[0], Exception) else []
+                markets = results[1] if not isinstance(results[1], Exception) else []
 
                 # Check for pagination in matchups/markets
                 self._check_pagination(matchups, f"matchups/{league_name}", metrics)

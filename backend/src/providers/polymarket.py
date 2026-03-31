@@ -299,7 +299,7 @@ class PolymarketRetriever(Retriever):
                 CHUNK_SIZE = 50
                 for i in range(0, len(unique_tokens), CHUNK_SIZE):
                     chunk = unique_tokens[i:i + CHUNK_SIZE]
-                    await asyncio.gather(*[fetch_book(session, tid) for tid in chunk])
+                    await asyncio.gather(*[fetch_book(session, tid) for tid in chunk], return_exceptions=True)
 
             thin_count = sum(1 for d in self._clob_depth.values() if d < self.min_depth_usd)
             logger.debug(

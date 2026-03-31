@@ -194,7 +194,7 @@ class ExtractionPipeline:
     def _detect_finished_events(self) -> int:
         """Mark events as 'finished' when they are no longer active.
 
-        Three detection strategies:
+        Three detection strategies (1 & 2 use bulk UPDATE, 3 needs per-sport filter):
         1. Staleness: match_status='live' and updated_at > 3 min ago = Pinnacle dropped them
         2. Time-based (live): match_status='live' and start_time + 6 hours ago = over
         3. Time-based (never-live): pending bets, match_status NULL/prematch,
@@ -203,40 +203,37 @@ class ExtractionPipeline:
         Returns number of events marked as finished.
         """
         from datetime import datetime, timedelta, timezone
-        from sqlalchemy import or_
+        from sqlalchemy import or_, update
 
         now = datetime.now(timezone.utc)
+        count = 0
 
-        # Strategy 1: stale updated_at (not seen in last 3 min = Pinnacle dropped it)
+        # Strategy 1 + 2: bulk UPDATE — no need to load ORM objects
         stale_threshold = now - timedelta(minutes=3)
-        stale_events = (
-            self.session.query(Event)
-            .filter(
-                Event.match_status == "live",
-                Event.updated_at < stale_threshold,
-            )
-            .all()
-        )
-
-        # Strategy 2: time-based — start_time + 6 hours = definitely over
         time_cutoff = now - timedelta(hours=6)
-        overtime_events = (
-            self.session.query(Event)
-            .filter(
-                Event.match_status == "live",
-                Event.start_time.isnot(None),
-                Event.start_time < time_cutoff,
+        bulk_count = (
+            self.session.execute(
+                update(Event)
+                .where(
+                    Event.match_status == "live",
+                    or_(
+                        Event.updated_at < stale_threshold,
+                        Event.start_time < time_cutoff,
+                    ),
+                )
+                .values(match_status="finished")
             )
-            .all()
-        )
+        ).rowcount
+        count += bulk_count
+        if bulk_count:
+            logger.info(f"[FT] Bulk-marked {bulk_count} stale/overtime live events as finished")
 
         # Strategy 3: never-live events with pending bets, past sport duration
         from ..db.models import Bet
-        # Use the shortest sport duration as the DB filter, then refine per-sport in Python
         min_hours = min(self.SPORT_DURATION_HOURS.values())
         broad_cutoff = now - timedelta(hours=min_hours)
         never_live_candidates = (
-            self.session.query(Event)
+            self.session.query(Event.id, Event.sport, Event.start_time, Event.home_team, Event.away_team)
             .join(Bet, Bet.event_id == Event.id)
             .filter(
                 Bet.result == "pending",
@@ -247,30 +244,22 @@ class ExtractionPipeline:
             .distinct()
             .all()
         )
-        # Refine: only mark finished if past sport-specific duration
-        never_live_events = []
-        for ev in never_live_candidates:
-            hours = self.SPORT_DURATION_HOURS.get(ev.sport, self.DEFAULT_DURATION_HOURS)
-            st = ev.start_time if ev.start_time.tzinfo else ev.start_time.replace(tzinfo=timezone.utc)
+        # Refine per-sport, collect IDs for batch update
+        finish_ids = []
+        for eid, sport, start_time, home, away in never_live_candidates:
+            hours = self.SPORT_DURATION_HOURS.get(sport, self.DEFAULT_DURATION_HOURS)
+            st = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
             if st < now - timedelta(hours=hours):
-                never_live_events.append(ev)
+                finish_ids.append(eid)
+                logger.info(f"[FT] {home} vs {away} -> finished (never-live, past {hours}h)")
 
-        # Merge (deduplicate by id)
-        seen = set()
-        all_finished = []
-        for ev in stale_events + overtime_events + never_live_events:
-            if ev.id not in seen:
-                seen.add(ev.id)
-                all_finished.append(ev)
-
-        count = 0
-        for ev in all_finished:
-            ev.match_status = "finished"
-            count += 1
-            logger.info(
-                f"[FT] {ev.home_team} vs {ev.away_team} -> finished "
-                f"({ev.home_score}-{ev.away_score})"
+        if finish_ids:
+            self.session.execute(
+                update(Event)
+                .where(Event.id.in_(finish_ids))
+                .values(match_status="finished")
             )
+            count += len(finish_ids)
 
         return count
 
@@ -589,10 +578,10 @@ class ExtractionPipeline:
 
         log_progress("Pipeline started")
 
-        # Expire all cached ORM objects so this run sees fresh DB state.
-        # The pipeline singleton keeps self.session across runs; without
-        # expire_all(), queries return stale identity-map objects.
-        self.session.expire_all()
+        # Fresh session per run: avoids stale identity map from previous runs
+        # and prevents unbounded ORM object accumulation across extractions.
+        self.session.close()
+        self.session = get_session()
 
         # Clear stale extractors from previous runs (browser handles, connections)
         self.engine.clear_extractor_cache()
@@ -997,11 +986,13 @@ class ExtractionPipeline:
                             return await extract_with_error_handling(pid)
 
                     provider_tasks = [extract_with_limited_concurrency(pid) for pid in available_providers]
-                    provider_results_list = await asyncio.gather(*provider_tasks)
+                    provider_results_list = await asyncio.gather(*provider_tasks, return_exceptions=True)
                 else:
                     # Full parallel mode: run all providers concurrently with pool limits
                     provider_tasks = [extract_with_concurrency_limit(pid) for pid in available_providers]
-                    provider_results_list = await asyncio.gather(*provider_tasks)
+                    provider_results_list = await asyncio.gather(*provider_tasks, return_exceptions=True)
+
+                provider_results_list = [r for r in provider_results_list if not isinstance(r, Exception)]
 
                 # Collect results and log each provider
                 for provider_id, provider_result in provider_results_list:
@@ -1787,7 +1778,7 @@ class ExtractionPipeline:
         try:
             # Sport extraction (sequential for Kambi, parallel for others)
             sport_tasks = [extract_sport(sport, i) for i, sport in enumerate(sports)]
-            sport_results = await asyncio.gather(*sport_tasks)
+            sport_results = await asyncio.gather(*sport_tasks, return_exceptions=True)
 
             # Aggregate results
             total_events_processed = 0

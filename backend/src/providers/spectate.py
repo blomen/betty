@@ -168,7 +168,7 @@ class SpectateRetriever(BrowserRetriever):
 
         # Fetch all buckets concurrently
         tasks = [fetch_bucket(bucket) for bucket in unique_buckets]
-        bucket_results = await asyncio.gather(*tasks)
+        bucket_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Combine results and deduplicate
         for events in bucket_results:

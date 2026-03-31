@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 /**
  * Shows extraction errors as a dismissible banner above page content.
@@ -11,61 +11,58 @@ export function ErrorNotificationBar() {
 
 /**
  * Shows a connection error banner when the backend API is unreachable.
- * Polls /api/extraction/freshness — if it fails, shows the banner.
+ * Polls /health with exponential backoff. Recovers on first success.
  */
-const STARTUP_GRACE_MS = 30_000; // Don't show error banner during first 30s
+const STARTUP_GRACE_MS = 30_000;
 
 export function ConnectionErrorBar() {
   const [offline, setOffline] = useState(false);
-  const [lastError, setLastError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(true);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const mountTimeRef = useRef(Date.now());
+  const everConnectedRef = useRef(false);
+  const consecutiveFailsRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
-    let mounted = true;
-    const mountTime = Date.now();
-    let everConnected = false;
-    let consecutiveFails = 0;
-    let intervalId: ReturnType<typeof setInterval>;
+    mountedRef.current = true;
+    mountTimeRef.current = Date.now();
 
     async function check() {
       try {
         const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort('Health check timeout'), 5000);
+        const tid = setTimeout(() => controller.abort(), 5000);
         const res = await fetch('/health', { signal: controller.signal });
         clearTimeout(tid);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        if (mounted) {
-          everConnected = true;
-          consecutiveFails = 0;
-          setOffline(false);
-          setConnecting(false);
-          setLastError(null);
-          clearInterval(intervalId);
-          intervalId = setInterval(check, 30_000);
-        }
+        if (!mountedRef.current) return;
+        everConnectedRef.current = true;
+        consecutiveFailsRef.current = 0;
+        setOffline(false);
+        setConnecting(false);
+        setLastError(null);
+        // Healthy: poll infrequently
+        timerRef.current = setTimeout(check, 30_000);
       } catch (err) {
-        if (mounted) {
-          consecutiveFails++;
-          const inGrace = !everConnected && Date.now() - mountTime < STARTUP_GRACE_MS;
-          if (inGrace) {
-            setConnecting(true);
-            setOffline(false);
-            setLastError(null);
-          } else if (consecutiveFails >= 3) {
-            setConnecting(false);
-            setOffline(true);
-            setLastError(err instanceof Error ? err.message : 'Connection failed');
-          }
-          // else: transient failure, don't change state yet
-          clearInterval(intervalId);
-          intervalId = setInterval(check, 5_000);
+        if (!mountedRef.current) return;
+        consecutiveFailsRef.current++;
+        const inGrace = !everConnectedRef.current && Date.now() - mountTimeRef.current < STARTUP_GRACE_MS;
+        if (inGrace) {
+          setConnecting(true);
+          setOffline(false);
+        } else if (consecutiveFailsRef.current >= 3) {
+          setConnecting(false);
+          setOffline(true);
+          setLastError(err instanceof Error ? err.message : 'Connection failed');
         }
+        // Unhealthy: poll more frequently
+        timerRef.current = setTimeout(check, 3_000);
       }
     }
 
     check();
-    intervalId = setInterval(check, 30_000);
-    return () => { mounted = false; clearInterval(intervalId); };
+    return () => { mountedRef.current = false; clearTimeout(timerRef.current); };
   }, []);
 
   if (connecting) {

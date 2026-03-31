@@ -84,6 +84,7 @@ def start_server(port: int):
             port=port,
             log_level="warning",
             access_log=False,
+            timeout_keep_alive=120,  # SSE streams need long keep-alive (default 5s drops connections)
         )
         server = uvicorn.Server(config)
         server.run()

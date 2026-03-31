@@ -209,7 +209,7 @@ class InterwettenRetriever(BrowserRetriever):
 
             batch = leagues[batch_start:batch_start + batch_size]
             tasks = [extract_league_concurrent(lg) for lg in batch]
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for league_events, league_hrefs in results:
                 if league_events:
@@ -486,7 +486,7 @@ class InterwettenRetriever(BrowserRetriever):
             finally:
                 await page_pool.put(worker_page)
 
-        await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo))
+        await asyncio.gather(*(enrich_one(ev, href) for ev, href in todo), return_exceptions=True)
 
         for p in extra_pages:
             try:

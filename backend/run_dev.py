@@ -134,4 +134,4 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    uvicorn.run("src.api:app", host=HOST, port=PORT)
+    uvicorn.run("src.api:app", host=HOST, port=PORT, timeout_keep_alive=120)

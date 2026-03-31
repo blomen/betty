@@ -19,7 +19,7 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 from sqlalchemy import (
-    create_engine, event, Column, Integer, String, Float,
+    create_engine, event, text, Column, Integer, String, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -61,15 +61,15 @@ Base = declarative_base()
 class Event(Base):
     """
     A canonical sporting event.
-    
+
     Events are provider-agnostic - the same match has ONE event row,
     with odds from multiple providers stored in the Odds table.
     """
     __tablename__ = "events"
-    
+
     # Canonical ID: "{sport}:{home_normalized}:{away_normalized}:{date}"
     id = Column(String, primary_key=True)
-    
+
     sport = Column(String, nullable=False)
     league = Column(String)
     home_team = Column(String, nullable=False)  # Normalized name
@@ -88,6 +88,15 @@ class Event(Base):
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        # Pipeline cache warming: filter by sport + upcoming start_time
+        Index('ix_events_sport_start_time', 'sport', 'start_time'),
+        # Finished event detection: filter by match_status
+        Index('ix_events_match_status', 'match_status'),
+        # League-based queries (soft provider filtering, sports.yaml lookups)
+        Index('ix_events_league', 'league'),
+    )
 
     # Relationships
     odds = relationship("Odds", back_populates="event", cascade="all, delete-orphan")
@@ -1423,11 +1432,14 @@ def get_engine():
             },
         )
 
-        # Enable WAL mode + busy timeout on every new connection
+        # Set WAL mode once (persistent across connections), then per-connection pragmas
+        with _engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.commit()
+
         @event.listens_for(_engine, "connect")
         def _set_sqlite_pragmas(dbapi_conn, connection_record):
             cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()

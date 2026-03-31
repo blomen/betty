@@ -6,6 +6,7 @@ export function useMarketStream(symbol: string = 'NQ') {
   const [book, setBook] = useState<StreamBookEvent | null>(null);
   const [lastCandle, setLastCandle] = useState<CandleData | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectionId, setConnectionId] = useState(0);
   const esRef = useRef<EventSource | null>(null);
   const tickBuffer = useRef<StreamTickEvent[]>([]);
   const retryRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -33,6 +34,7 @@ export function useMarketStream(symbol: string = 'NQ') {
 
     es.onopen = () => {
       setConnected(true);
+      setConnectionId(id => id + 1); // trigger useLevelMonitor listener re-attachment
       retryDelayRef.current = 500; // reset backoff on success
       consecutiveErrorsRef.current = 0;
     };
@@ -77,5 +79,5 @@ export function useMarketStream(symbol: string = 'NQ') {
     };
   }, [connect]);
 
-  return { lastTick, book, lastCandle, connected, esRef };
+  return { lastTick, book, lastCandle, connected, esRef, connectionId };
 }

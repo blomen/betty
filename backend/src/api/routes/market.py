@@ -240,31 +240,30 @@ async def market_stream(request: Request, symbol: str = "NQ"):
 
     async def event_generator():
         nonlocal stream
-        # Wait for stream to become available (sends heartbeats to keep SSE alive)
-        if not stream:
-            for _ in range(60):  # up to 30s
+        last_heartbeat = time.monotonic()
+
+        # Wait for stream — keep SSE alive with heartbeats (never close)
+        while not stream:
+            if time.monotonic() - last_heartbeat >= 5:
                 yield {"event": "heartbeat", "data": json.dumps({"status": "connecting"})}
-                await asyncio.sleep(0.5)
-                stream = _get_live_stream(request)
-                if stream:
-                    break
-            if not stream:
-                return
+                last_heartbeat = time.monotonic()
+            await asyncio.sleep(0.5)
+            stream = _get_live_stream(request)
 
         state = stream.get_shared_state()
         versions: dict[str, int] = {}
         event_seq = 0
-        last_yield = time.monotonic()
         try:
             while True:
                 events, versions, event_seq = state.poll(versions, event_seq)
                 for event in events:
                     event_type = event.get("type", "tick")
                     yield {"event": event_type, "data": json.dumps(event)}
-                    last_yield = time.monotonic()
-                if not events and time.monotonic() - last_yield > 15:
-                    yield {"event": "heartbeat", "data": "{}"}
-                    last_yield = time.monotonic()
+                    last_heartbeat = time.monotonic()
+                # Unconditional heartbeat every 10s to keep connection alive
+                if time.monotonic() - last_heartbeat >= 10:
+                    yield {"event": "heartbeat", "data": json.dumps({"status": "live", "seq": event_seq})}
+                    last_heartbeat = time.monotonic()
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass

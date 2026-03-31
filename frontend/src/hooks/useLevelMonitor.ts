@@ -17,6 +17,7 @@ interface LevelMonitorState {
 export function useLevelMonitor(
   esRef: React.RefObject<EventSource | null>,
   sessionData: { session: any; macro: any; ml_day_type: any; ml_day_type_confidence: any } | null,
+  connectionId: number = 0,
 ) {
   const [state, setState] = useState<LevelMonitorState>({
     levels: [],
@@ -222,7 +223,7 @@ export function useLevelMonitor(
       es.removeEventListener('ml_features', onMlFeatures);
       es.removeEventListener('dqn_inference', onDqnInference);
     };
-  }, [esRef, sessionData]);
+  }, [esRef, sessionData, connectionId]);
 
   const dismissBattle = useCallback(() => {
     setState(prev => ({ ...prev, activeBattle: null, battleActive: false }));

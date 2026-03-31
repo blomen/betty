@@ -220,7 +220,7 @@ class TenBetRetriever(BrowserRetriever):
 
             batch = competitions[batch_start:batch_start + batch_size]
             tasks = [process_competition(c) for c in batch]
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for res in results:
                 for ev in res:
@@ -970,7 +970,7 @@ class TenBetRetriever(BrowserRetriever):
             finally:
                 await page_pool.put(worker_page)
 
-        await asyncio.gather(*(enrich_one(ev, eid) for ev, eid in todo))
+        await asyncio.gather(*(enrich_one(ev, eid) for ev, eid in todo), return_exceptions=True)
 
         # Close extra pages
         for p in extra_pages:
