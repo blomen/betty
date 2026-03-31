@@ -37,11 +37,11 @@ def test_soft_drains_best_funded_first():
 
     balances = {
         "unibet": ProviderBalance("unibet", "kambi", 500.0),
-        "888sport": ProviderBalance("888sport", "kambi", 200.0),
+        "leovegas": ProviderBalance("leovegas", "kambi", 200.0),
     }
 
     builder = BatchBuilder.__new__(BatchBuilder)
-    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "888sport"})
+    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "leovegas"})
 
     assert len(batch) == 3
     assert all(b.funded for b in batch)
@@ -55,11 +55,11 @@ def test_soft_spreads_when_cap_reached():
 
     balances = {
         "unibet": ProviderBalance("unibet", "kambi", 5000.0),
-        "888sport": ProviderBalance("888sport", "kambi", 5000.0),
+        "leovegas": ProviderBalance("leovegas", "kambi", 5000.0),
     }
 
     builder = BatchBuilder.__new__(BatchBuilder)
-    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "888sport"})
+    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "leovegas"})
 
     assert len(batch) == 12
     assert all(b.funded for b in batch)
@@ -73,14 +73,14 @@ def test_soft_falls_back_on_insufficient_balance():
 
     balances = {
         "unibet": ProviderBalance("unibet", "kambi", 100.0),
-        "888sport": ProviderBalance("888sport", "kambi", 500.0),
+        "leovegas": ProviderBalance("leovegas", "kambi", 500.0),
     }
 
     builder = BatchBuilder.__new__(BatchBuilder)
-    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "888sport"})
+    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "leovegas"})
 
     assert len(batch) == 1
-    assert batch[0].provider_id == "888sport"
+    assert batch[0].provider_id == "leovegas"
     assert batch[0].funded
 
 
@@ -112,11 +112,11 @@ def test_all_insufficient_goes_to_missed():
 
     balances = {
         "unibet": ProviderBalance("unibet", "kambi", 100.0),
-        "888sport": ProviderBalance("888sport", "kambi", 100.0),
+        "leovegas": ProviderBalance("leovegas", "kambi", 100.0),
     }
 
     builder = BatchBuilder.__new__(BatchBuilder)
-    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "888sport"})
+    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "leovegas"})
 
     assert len(batch) == 0
     assert len(missed) == 1
@@ -200,3 +200,31 @@ def test_trigger_accepts_qualifying_odds():
     assert batch[0].funded
     assert batch[0].bonus_type == "trigger"
     assert batch[0].stake == 50.0  # bonus_amount override
+
+
+def test_cap_enforced_across_funded_and_missed():
+    """Total bets per provider (funded + missed) must not exceed BETS_PER_PROVIDER."""
+    # 25 bets across kambi cluster, 2 real kambi siblings
+    candidates = [_make_bet("unibet", "kambi", f"evt_{i}", 5.0, 100) for i in range(25)]
+
+    balances = {
+        "unibet": ProviderBalance("unibet", "kambi", 1000.0),    # funds 10
+        "leovegas": ProviderBalance("leovegas", "kambi", 1000.0), # funds 10
+    }
+
+    builder = BatchBuilder.__new__(BatchBuilder)
+    batch, missed = builder._allocate_batch(candidates, balances, {"unibet", "leovegas"})
+
+    # 20 funded (10 per sibling), 5 overflow
+    assert len(batch) == 20
+    assert len(missed) == 5
+
+    # No provider should have more than 10 funded bets
+    from collections import Counter
+    funded_counts = Counter(b.provider_id for b in batch)
+    for pid, count in funded_counts.items():
+        assert count <= 10, f"{pid} has {count} funded bets (cap=10)"
+
+    # Overflow bets: all siblings at cap, needs more siblings
+    overflow = [m for m in missed if "all siblings at" in (m.skip_reason or "")]
+    assert len(overflow) == 5, f"Expected 5 overflow bets, got {len(overflow)}"
