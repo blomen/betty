@@ -281,6 +281,11 @@ class LimitUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class BanProviderRequest(BaseModel):
+    provider_id: str
+    notes: Optional[str] = None
+
+
 class LimitRiskUpdate(BaseModel):
     limit_risk: Literal["low", "medium", "high", "instant"]
     limit_notes: Optional[str] = None
