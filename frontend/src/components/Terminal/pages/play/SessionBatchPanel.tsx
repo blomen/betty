@@ -208,7 +208,7 @@ export function SessionBatchPanel({
     const order: string[] = [];
     const groups: Record<string, ClusterBet[]> = {};
     for (const b of batch) {
-      const c = b.cluster;
+      const c = b.cluster ?? 'ungrouped';
       if (!groups[c]) {
         order.push(c);
         groups[c] = [];

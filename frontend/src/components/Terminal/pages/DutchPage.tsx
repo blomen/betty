@@ -84,7 +84,7 @@ const DutchRow = memo(function DutchRow({
   idx,
   isExpanded,
   onToggle,
-  balanceMap,
+  balanceMap: _balanceMap,
   placedLegs,
   isPlacing,
   placingLeg,

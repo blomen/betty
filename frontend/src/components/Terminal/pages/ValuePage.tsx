@@ -68,7 +68,7 @@ const OpportunityRow = memo(function OpportunityRow({
   idx,
   isExpanded,
   onToggle,
-  balanceMap,
+  balanceMap: _balanceMap,
   selectedBetProvider: selIdx,
   providerDropdownOpen,
   providerDropdownRef,
@@ -338,7 +338,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
   const [searchInput, setSearchInput] = usePersistedState('bbq_value_search', '');
   const search = useDeferredValue(searchInput);
-  const [boostSearchInput, setBoostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
+  const [boostSearchInput] = usePersistedState('bbq_value_boostSearch', '');
   const boostSearch = useDeferredValue(boostSearchInput);
   const { toasts, addToast, dismissToast } = useToast();
   const [selectedBetProvider, setSelectedBetProvider] = usePersistedState<Record<string, number>>('bbq_value_selectedProvider', {});
@@ -401,7 +401,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
     });
   }, []);
 
-  const { data: opportunitiesData, isLoading, isFetching } = useQuery({
+  const { data: opportunitiesData, isLoading } = useQuery({
     queryKey: ['opportunities', 'value'],
     queryFn: () => api.getOpportunities('value', true),
     placeholderData: keepPreviousData,
@@ -410,13 +410,14 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
   });
   const opportunities = opportunitiesData?.opportunities ?? [];
 
-  const { data: specialsData } = useQuery({
-    queryKey: ['specials'],
-    queryFn: () => api.getSpecials({}),
-    staleTime: 60_000,
-    refetchInterval: 30_000,
-  });
-  const specials = specialsData?.specials ?? [];
+  // DISABLED — boosts/specials turned off
+  // const { data: specialsData } = useQuery({
+  //   queryKey: ['specials'],
+  //   queryFn: () => api.getSpecials({}),
+  //   staleTime: 60_000,
+  //   refetchInterval: 30_000,
+  // });
+  const specials: any[] = [];
   const { data: betsData } = useQuery({
     queryKey: ['bets', 'pending'],
     queryFn: () => api.getBets('pending', 500),
@@ -726,9 +727,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
         {activeTab === 'value' && (
           <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search event, provider..." accentColor="tabValue" />
         )}
-        {activeTab === 'boosts' && (
-          <SearchInput value={boostSearchInput} onChange={setBoostSearchInput} placeholder="Search boost, provider..." accentColor="tabValue" />
-        )}
+        {/* DISABLED — boosts tab turned off */}
       </div>
 
       {/* Sub-tab selector */}
@@ -770,7 +769,7 @@ export function ValuePage({ providers = [] }: ValuePageProps) {
 
       {/* LLM enrichment health warning */}
       {(() => {
-        const h = specialsData?.llm_health;
+        const h = (specials as any)?.llm_health;
         if (!h || h.status === 'ok') return null;
         const isError = h.status === 'error';
         const msgs: string[] = [];

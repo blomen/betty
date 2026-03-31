@@ -32,7 +32,7 @@ export function ConnectionErrorBar() {
     async function check() {
       try {
         const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 5000);
+        const tid = setTimeout(() => controller.abort('Health check timeout'), 5000);
         const res = await fetch('/health', { signal: controller.signal });
         clearTimeout(tid);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

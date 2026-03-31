@@ -207,7 +207,7 @@ async def extraction_stream(request: Request):
         try:
             while True:
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    msg = await asyncio.wait_for(queue.get(), timeout=10.0)
                     yield {
                         "event": msg["event"],
                         "data": json.dumps(msg["data"]),
@@ -219,7 +219,7 @@ async def extraction_stream(request: Request):
         finally:
             odds_broadcaster.unsubscribe(client_id)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_generator(), ping=15)
 
 
 # =============================================================================
@@ -494,21 +494,12 @@ async def get_extraction_freshness():
         # Append 'Z' to indicate UTC — naive isoformat() is interpreted as local time by JS
         result = {row.tier: row.latest.isoformat() + "Z" if row.latest else None for row in rows}
 
-        # Boost freshness: use provider state last_completed (includes LLM enrichment time),
-        # falling back to boost_extraction_logs scraped_at for first load
-        from ...api.state import get_provider_states
-        _provider_states = get_provider_states()
-        boosts_state = _provider_states.get("boosts", {})
-        boosts_ts = boosts_state.get("last_completed")  # already ISO string with timezone
-        if not boosts_ts:
-            boost_latest = session.query(func.max(BoostExtractionLog.scraped_at)).scalar()
-            boosts_ts = boost_latest.isoformat() + "Z" if boost_latest else None
-
+        # Boost freshness — DISABLED (boosts/specials turned off)
         return {
             "soft": result.get("soft"),
             "sharp": result.get("sharp"),
             "poly": result.get("poly"),
-            "boosts": boosts_ts,
+            "boosts": None,
         }
     finally:
         session.close()

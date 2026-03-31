@@ -121,6 +121,8 @@ export interface MacroSnapshot {
   regime: string;
   regime_score: number;
   fetched_at?: string;
+  news_proximity?: number;
+  news_importance?: number;
 }
 
 export interface MarketSessionSummary {

@@ -297,6 +297,7 @@ export function PlayPage() {
         <ExecutionPanel
           batch={allocationData.allocated_batch}
           wageringProjections={allocationData.wagering_projections || []}
+          onBack={() => setStep('capital')}
         />
       )}
     </div>

@@ -597,22 +597,24 @@ class MarketService:
             )
             if swing_struct is not None:
                 swing_structure_data = _serialize_swing_structure(swing_struct)
-                # Add prior period H/L to levels_list for LevelMonitor
+                # Add confirmed swing highs/lows to levels_list for LevelMonitor
                 for tf_swings in [swing_struct.daily, swing_struct.weekly, swing_struct.monthly]:
-                    if tf_swings.prior_high is not None:
+                    if tf_swings.swing_highs:
+                        sh_price = tf_swings.swing_highs[0].price
                         levels_list.append({
                             "type": f"{tf_swings.timeframe}_swing_high",
-                            "price_low": tf_swings.prior_high,
-                            "price_high": tf_swings.prior_high,
+                            "price_low": sh_price,
+                            "price_high": sh_price,
                             "direction": "resistance",
                             "session": tf_swings.timeframe,
                             "is_filled": False,
                         })
-                    if tf_swings.prior_low is not None:
+                    if tf_swings.swing_lows:
+                        sl_price = tf_swings.swing_lows[0].price
                         levels_list.append({
                             "type": f"{tf_swings.timeframe}_swing_low",
-                            "price_low": tf_swings.prior_low,
-                            "price_high": tf_swings.prior_low,
+                            "price_low": sl_price,
+                            "price_high": sl_price,
                             "direction": "support",
                             "session": tf_swings.timeframe,
                             "is_filled": False,

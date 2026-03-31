@@ -481,8 +481,8 @@ class ExtractionScheduler:
                     )
                     await self._start_schedule(schedule)
 
-        # Boosts — standalone 60-minute interval (no trigger, just timer)
-        await self.start_boosts_tier(interval_seconds=3600)
+        # Boosts — DISABLED (noisy browser output, not needed right now)
+        # await self.start_boosts_tier(interval_seconds=3600)
 
         # Cleanup tier — purge stale events/odds every 6 hours
         await self.start_cleanup_tier()

@@ -199,6 +199,10 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   const sessionTPORef = useRef<SessionTPOResponse | null>(null);
   const [sessionTPOLoaded, setSessionTPOLoaded] = useState(false);
 
+  // Macro data ref (COT, etc.) — updated from session prop
+  const macroRef = useRef<Record<string, any> | null>(null);
+  macroRef.current = (session as any)?.macro ?? null;
+
   // Draw VP histograms + session boxes on canvas
   const drawOverlays = useCallback(() => {
     const canvas = canvasRef.current;
@@ -539,7 +543,9 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
             : '—';
           const arrow = tpoSession.opening_direction === 'up' ? '↑'
             : tpoSession.opening_direction === 'down' ? '↓' : '↔';
-          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}`;
+          const rf = tpoSession.rotation_factor ?? 0;
+          const rfStr = `RF:${rf > 0 ? '+' : ''}${rf}`;
+          const footerText = `${tpoSession.shape}  IB:${ibRange}  ${tpoSession.opening_type}${arrow}  ${rfStr}`;
           ctx.font = '8px monospace';
           ctx.fillStyle = profileColor;
           ctx.globalAlpha = 0.5;
@@ -598,6 +604,32 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
           ctx.restore();
         }
       }
+    }
+
+    // --- COT annotation (top-left corner, below session labels) ---
+    const macro = macroRef.current;
+    if (macro && (macro.cot_net_position != null || macro.cot_change_1w != null) && !hidden?.has('macro_cot')) {
+      ctx.save();
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      const cotY = 14;
+
+      if (macro.cot_net_position != null) {
+        const net = macro.cot_net_position;
+        ctx.fillStyle = net > 0 ? '#34D399' : net < 0 ? '#EF4444' : '#9AA0A6';
+        ctx.globalAlpha = 0.7;
+        const netStr = `COT: ${net > 0 ? '+' : ''}${(net / 1000).toFixed(1)}k`;
+        ctx.fillText(netStr, 4, cotY);
+
+        if (macro.cot_change_1w != null) {
+          const chg = macro.cot_change_1w;
+          ctx.fillStyle = chg > 0 ? '#34D399' : chg < 0 ? '#EF4444' : '#9AA0A6';
+          const chgStr = `(${chg > 0 ? '+' : ''}${(chg / 1000).toFixed(1)}k)`;
+          ctx.fillText(chgStr, ctx.measureText(netStr).width + 8, cotY);
+        }
+      }
+      ctx.globalAlpha = 1.0;
+      ctx.restore();
     }
   }, []);
 
@@ -806,8 +838,8 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redraw when VP data loads, TPO changes, or visibility changes
-  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, drawOverlays]);
+  // Redraw when VP data loads, TPO changes, session/macro changes, or visibility changes
+  useEffect(() => { drawOverlays(); }, [vpLoaded, slLoaded, sessionTPOLoaded, hiddenLevels, session, drawOverlays]);
 
   // Infinite scroll
   useEffect(() => {

@@ -604,7 +604,7 @@ app.include_router(monitoring_router)
 app.include_router(chat_router)
 app.include_router(polymarket_router)
 app.include_router(risk_router)
-app.include_router(specials_router)
+# app.include_router(specials_router)  # DISABLED — boosts/specials turned off
 app.include_router(trading_router)
 app.include_router(market_router)
 app.include_router(settings_router)

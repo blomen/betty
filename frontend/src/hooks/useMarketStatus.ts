@@ -20,7 +20,7 @@ function getGlobexState(now: Date): MarketStatus {
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const wd = et.getDay(); // 0=Sun, 6=Sat
   const hour = et.getHours();
-  const min = et.getMinutes();
+
 
   // Saturday: fully closed
   if (wd === 6) {

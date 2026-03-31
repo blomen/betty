@@ -86,7 +86,7 @@ function polyChart(
   data: { x: number; y: number }[],
   { yMin, yMax, yFormat }: { yMin: number; yMax: number; yFormat: (v: number) => string },
 ) {
-  const { W, H, PL, PR, PT, PB } = CHART;
+  const { H, PT, PB } = CHART;
   const range = yMax - yMin || 1;
 
   // 4-5 nice Y grid lines

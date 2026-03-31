@@ -590,10 +590,12 @@ class MetricsCollector:
                 .all()
             )
             runs_to_delete = existing_runs[max_runs_per_tier - 1:]  # Keep N-1, adding 1 new = N total
-            for old_run in runs_to_delete:
-                session.query(SportRunMetrics).filter(SportRunMetrics.run_id == old_run.id).delete()
-                session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id == old_run.id).delete()
-                session.delete(old_run)
+            if runs_to_delete:
+                old_ids = [r.id for r in runs_to_delete]
+                session.query(SportRunMetrics).filter(SportRunMetrics.run_id.in_(old_ids)).delete(synchronize_session=False)
+                session.query(ProviderRunMetrics).filter(ProviderRunMetrics.run_id.in_(old_ids)).delete(synchronize_session=False)
+                session.query(ExtractionRun).filter(ExtractionRun.id.in_(old_ids)).delete(synchronize_session=False)
+                session.flush()
 
             # Create extraction run record
             run = ExtractionRun(

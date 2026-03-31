@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from ..db.models import Profile, Opportunity
 from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
-from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity
+from ..analysis.scanner import OpportunityScanner, BonusOpportunity, DutchOpportunity, SET_SPREAD_SPORTS
 from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,14 @@ class OpportunityAnalyzer:
             # Group odds by market -> outcome -> providers (delegates to scanner)
             odds_grouped = self.scanner.group_odds(event)
 
+            # Tennis (set-based sports): Pinnacle spread = set handicap,
+            # soft providers spread = game handicap → phantom edges. Skip.
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
+
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 # Detect value via scanner, then persist best per outcome
                 value_count = self._detect_value(event.id, market, odds_by_outcome, odds_grouped)
                 results["value"]["found"] += value_count["found"]

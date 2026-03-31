@@ -10,6 +10,7 @@ import type { BatchBet, WageringProjection } from '@/types';
 interface Props {
   batch: BatchBet[];
   wageringProjections: WageringProjection[];
+  onBack: () => void;
 }
 
 interface ExecutionState {
@@ -362,7 +363,7 @@ function ProviderSection({
 // ExecutionPanel
 // ---------------------------------------------------------------------------
 
-export function ExecutionPanel({ batch, wageringProjections }: Props) {
+export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
   const batchHash = useMemo(() => computeBatchHash(batch), [batch]);
 
   // Load persisted state (or initialize fresh)
@@ -515,6 +516,12 @@ export function ExecutionPanel({ batch, wageringProjections }: Props) {
 
       {/* Session summary bar */}
       <div className="border border-border bg-panel px-3 py-2 flex items-center gap-4 text-sm">
+        <button
+          onClick={onBack}
+          className="px-3 py-1 text-xs bg-tabPlay text-bg font-medium hover:opacity-90 transition-opacity"
+        >
+          ← Back
+        </button>
         <span className="text-muted">Session:</span>
         <span className="text-text font-medium">
           {Math.round(stakedSoFar)} / {Math.round(totalStake)} kr staked
