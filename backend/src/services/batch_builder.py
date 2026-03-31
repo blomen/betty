@@ -168,6 +168,60 @@ def _provider_to_cluster(provider_id: str) -> str:
     return provider_id
 
 
+def _bonus_retention_rate(wagering_multiplier: float, bonus_type: str = "bonusdeposit") -> float:
+    """Estimate what fraction of a bonus survives wagering.
+
+    Lower wagering = higher retention. Freebets only return profit (not stake),
+    so effective retention is halved.
+    """
+    if wagering_multiplier <= 1:
+        rate = 0.95
+    elif wagering_multiplier <= 6:
+        rate = 0.80
+    elif wagering_multiplier <= 12:
+        rate = 0.60
+    elif wagering_multiplier <= 20:
+        rate = 0.40
+    else:
+        rate = 0.25
+    # Freebets: only profit is kept, not stake — roughly halve retention
+    if bonus_type == "freebet":
+        rate *= 0.5
+    return rate
+
+
+def _get_unclaimed_bonuses(profile_repo, profile_id: int) -> dict[str, dict]:
+    """Return {provider_id: bonus_config} for providers with unclaimed bonuses.
+
+    Unclaimed = bonus config exists in providers.yaml but bonus_status is
+    'available' or 'claimed' (with amount=0) in the profile.
+    """
+    from ..config import load_config
+
+    config = load_config()
+    providers_with_bonus = {}
+    for pid in config.get_enabled_providers():
+        pc = config.get_provider(pid)
+        if pc and pc.bonus and pc.bonus.get("amount", 0) > 0:
+            providers_with_bonus[pid] = pc.bonus
+
+    if not providers_with_bonus:
+        return {}
+
+    # Check which ones are already claimed/in-progress
+    statuses = profile_repo.get_bonus_statuses_batch(
+        profile_id, list(providers_with_bonus.keys())
+    )
+    unclaimed = {}
+    for pid, bonus_cfg in providers_with_bonus.items():
+        st = statuses.get(pid, {})
+        status = st.get("status", "available")
+        # "available" = never claimed; "claimed" with amount=0 = already redeemed
+        if status == "available":
+            unclaimed[pid] = bonus_cfg
+    return unclaimed
+
+
 class BatchBuilder:
     """
     Builds a ready-to-fire batch across all opportunity types for a given profile.
@@ -233,6 +287,8 @@ class BatchBuilder:
         avg_daily_wager = wager_info.get("avg_daily_wager", 0)
         has_wager_history = wager_info.get("has_history", False)
 
+        unclaimed = _get_unclaimed_bonuses(self.profile_repo, profile_id)
+
         capital_plan = self._build_capital_plan_v3(
             provider_balances=provider_balances,
             missed=missed,
@@ -240,6 +296,7 @@ class BatchBuilder:
             cluster_opp_stats=cluster_opp_stats,
             avg_daily_wager=avg_daily_wager,
             has_wager_history=has_wager_history,
+            unclaimed_bonuses=unclaimed,
         )
 
         # Get exchange rate for USDC → SEK conversion
@@ -383,11 +440,28 @@ class BatchBuilder:
         # -- Budget constraint: per-provider capital = balance + budget share ---
         # Each provider keeps bets it can fund with existing balance.
         # Extra budget is allocated greedily by EV to cover shortfalls.
-        # Bets beyond what a provider can cover are dropped (not redistributed).
+        # Bonus boost: unclaimed bonuses inflate EV density to prioritize
+        # providers where depositing also unlocks a bonus.
+        # Cluster cap: max 2 concurrent wagering siblings (3 if >20 bets).
         has_budget = budget_sek is not None or budget_usdc is not None
         if has_budget:
             remaining_sek = budget_sek if budget_sek is not None else float("inf")
             remaining_usdc = budget_usdc if budget_usdc is not None else float("inf")
+
+            # Load unclaimed bonuses and active wagering counts
+            unclaimed = _get_unclaimed_bonuses(self.profile_repo, profile_id)
+
+            # Count active wagering per cluster + bet volume per cluster
+            wagering_per_cluster: dict[str, int] = {}
+            for pid, pb in provider_balances.items():
+                if pb.wagering_remaining > 0:
+                    cluster = pb.cluster or _provider_to_cluster(pid)
+                    wagering_per_cluster[cluster] = wagering_per_cluster.get(cluster, 0) + 1
+
+            bets_per_cluster: dict[str, int] = {}
+            for bet in batch:
+                cluster = bet.get("cluster", _provider_to_cluster(bet["provider_id"]))
+                bets_per_cluster[cluster] = bets_per_cluster.get(cluster, 0) + 1
 
             # Group bets per provider, sorted by EV desc (best bets first)
             provider_bets: dict[str, list[dict]] = {}
@@ -425,6 +499,25 @@ class BatchBuilder:
                 shortfall_ev = sum(b.get("expected_profit", 0) for b in bets[funded_count:])
                 ev_density = shortfall_ev / shortfall_stake if shortfall_stake > 0 else 0
 
+                # Bonus boost: if unclaimed bonus, add retained bonus value to EV
+                cluster = _provider_to_cluster(pid)
+                bonus_cfg = unclaimed.get(pid)
+                bonus_boosted = False
+                if bonus_cfg:
+                    # Check cluster wagering cap: 2 max (3 if >20 bets)
+                    active_wager = wagering_per_cluster.get(cluster, 0)
+                    cluster_bets = bets_per_cluster.get(cluster, 0)
+                    cap_limit = 3 if cluster_bets > 20 else 2
+                    if active_wager < cap_limit:
+                        bonus_amt = bonus_cfg.get("amount", 0)
+                        wager_mult = bonus_cfg.get("wagering_multiplier", 12)
+                        bonus_type = bonus_cfg.get("type", "bonusdeposit")
+                        retention = _bonus_retention_rate(wager_mult, bonus_type)
+                        bonus_ev = bonus_amt * retention
+                        # Add bonus EV to the shortfall's EV density
+                        ev_density = (shortfall_ev + bonus_ev) / shortfall_stake if shortfall_stake > 0 else 0
+                        bonus_boosted = True
+
                 shortfall_requests.append({
                     "provider_id": pid,
                     "shortfall": shortfall_stake,
@@ -433,6 +526,7 @@ class BatchBuilder:
                     "ev_density": ev_density,
                     "funded_count": funded_count,
                     "bets": bets,
+                    "bonus_boosted": bonus_boosted,
                 })
 
             # Greedily allocate budget — spread across clusters first, then
@@ -1146,6 +1240,7 @@ class BatchBuilder:
         cluster_opp_stats: dict[str, dict],
         avg_daily_wager: float = 0.0,
         has_wager_history: bool = False,
+        unclaimed_bonuses: dict[str, dict] | None = None,
     ) -> dict:
         """
         Build capital plan: deposit where balance is short, withdraw where idle.
@@ -1360,6 +1455,52 @@ class BatchBuilder:
                 "priority": 4,
                 "priority_label": "withdraw_excess",
             })
+
+        # --- Priority 1.5: Transfer for bonus cycling ---
+        # If a sibling finished wagering, suggest transferring to an unclaimed
+        # sibling in the same cluster to claim its bonus.
+        if unclaimed_bonuses:
+            for group_name, group_info in PLATFORM_GROUPS.items():
+                members = group_info["members"]
+                # Find siblings with completed wagering + balance
+                donors = []
+                for pid in members:
+                    pb = provider_balances.get(pid)
+                    if not pb:
+                        continue
+                    if pb.wagering_remaining <= 0 and pb.remaining > 0 and pid not in providers_with_shortfall:
+                        donors.append(pid)
+                # Find unclaimed bonus siblings in this cluster
+                targets = [pid for pid in members if pid in unclaimed_bonuses]
+                if not donors or not targets:
+                    continue
+                for target_pid in targets:
+                    bonus_cfg = unclaimed_bonuses[target_pid]
+                    bonus_amt = bonus_cfg.get("amount", 0)
+                    wager_mult = bonus_cfg.get("wagering_multiplier", 12)
+                    bonus_type = bonus_cfg.get("type", "bonusdeposit")
+                    retention = _bonus_retention_rate(wager_mult, bonus_type)
+                    # Pick donor with most remaining balance
+                    donor = max(donors, key=lambda p: provider_balances[p].remaining)
+                    transfer_amt = min(provider_balances[donor].remaining, bonus_amt)
+                    if transfer_amt <= 0:
+                        continue
+                    actions.append({
+                        "type": "transfer",
+                        "provider_id": target_pid,
+                        "from_provider": donor,
+                        "cluster": group_name,
+                        "amount": round(transfer_amt, 2),
+                        "target_balance": round(transfer_amt, 2),
+                        "unlocks": 0,
+                        "avg_edge": 0,
+                        "expected_ev": round(bonus_amt * retention, 2),
+                        "currency": "SEK",
+                        "priority": 2,
+                        "priority_label": "bonus_cycle_transfer",
+                        "bonus_amount": bonus_amt,
+                        "wagering_multiplier": wager_mult,
+                    })
 
         # Sort by priority, then by deposit amount ascending (smallest trigger first
         # per MC sims — 0% ruin vs 57% with largest-first), then by EV descending.
