@@ -142,6 +142,43 @@ class LimitService:
             "betting_snapshot": snapshot,
         }
 
+    def ban_provider(
+        self,
+        profile_id: int,
+        provider_id: str,
+        notes: str | None = None,
+    ) -> dict:
+        """Ban a provider: record fully_banned limit (level 5) + disable extraction."""
+        # Record the limit (reuse existing logic)
+        result = self.record_limit(
+            profile_id=profile_id,
+            provider_id=provider_id,
+            limit_type="fully_banned",
+            limit_level=5,
+            notes=notes,
+        )
+        if not result["success"]:
+            return result
+
+        # Disable extraction for this profile+provider
+        from ..db.models import ProviderExtractionSetting
+        existing = self.db.query(ProviderExtractionSetting).filter(
+            ProviderExtractionSetting.profile_id == profile_id,
+            ProviderExtractionSetting.provider_id == provider_id,
+        ).first()
+        if existing:
+            existing.enabled = False
+        else:
+            self.db.add(ProviderExtractionSetting(
+                profile_id=profile_id,
+                provider_id=provider_id,
+                enabled=False,
+            ))
+        self.db.commit()
+
+        logger.info("Banned provider %s for profile %d — extraction disabled", provider_id, profile_id)
+        return result
+
     def update_limit(
         self,
         limit_id: int,

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, Profile, Provider, ProfileProviderLimit, ProviderExtractionSetting
 from src.repositories.limit_repo import LimitRepo
+from src.services.limit_service import LimitService
 
 
 @pytest.fixture
@@ -71,3 +72,54 @@ class TestGetBannedProviders:
         db.commit()
         repo = LimitRepo(db)
         assert repo.get_banned_providers(profile_id=1) == {"coolbet", "snabbare"}
+
+
+class TestBanProvider:
+    def test_ban_records_limit_and_disables_extraction(self, db: Session):
+        service = LimitService(db)
+        result = service.ban_provider(
+            profile_id=1,
+            provider_id="coolbet",
+            notes="Account closed — Coolbet dialog",
+        )
+        assert result["success"] is True
+
+        # Verify limit recorded
+        repo = LimitRepo(db)
+        assert "coolbet" in repo.get_banned_providers(profile_id=1)
+
+        # Verify extraction disabled
+        setting = db.query(ProviderExtractionSetting).filter(
+            ProviderExtractionSetting.profile_id == 1,
+            ProviderExtractionSetting.provider_id == "coolbet",
+        ).first()
+        assert setting is not None
+        assert setting.enabled is False
+
+    def test_ban_already_banned_returns_error(self, db: Session):
+        service = LimitService(db)
+        service.ban_provider(profile_id=1, provider_id="coolbet")
+        result = service.ban_provider(profile_id=1, provider_id="coolbet")
+        assert result["success"] is False
+        assert "already" in result["error"].lower()
+
+    def test_ban_invalid_provider_returns_error(self, db: Session):
+        service = LimitService(db)
+        result = service.ban_provider(profile_id=1, provider_id="nonexistent")
+        assert result["success"] is False
+
+    def test_ban_updates_existing_extraction_setting(self, db: Session):
+        """If extraction setting already exists as enabled, flip it to False."""
+        db.add(ProviderExtractionSetting(
+            profile_id=1, provider_id="coolbet", enabled=True
+        ))
+        db.commit()
+        service = LimitService(db)
+        result = service.ban_provider(profile_id=1, provider_id="coolbet")
+        assert result["success"] is True
+
+        setting = db.query(ProviderExtractionSetting).filter(
+            ProviderExtractionSetting.profile_id == 1,
+            ProviderExtractionSetting.provider_id == "coolbet",
+        ).first()
+        assert setting.enabled is False
