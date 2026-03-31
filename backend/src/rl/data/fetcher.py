@@ -230,6 +230,78 @@ def fetch_macro_history(
     return out_path
 
 
+def fetch_cot_history(
+    start: datetime,
+    end: datetime,
+    output_dir: Path | None = None,
+    cftc_code: str = "209742",
+) -> "Path | None":
+    """Fetch weekly CFTC COT data for NQ futures.
+
+    Saves ``cot_weekly.parquet`` with net_position and open_interest columns.
+    Returns the path on success, None on failure.
+    """
+    import httpx
+
+    out_dir = output_dir or MACRO_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "cot_weekly.parquet"
+
+    start_str = _to_utc(start).strftime("%Y-%m-%dT00:00:00")
+    end_str = _to_utc(end).strftime("%Y-%m-%dT23:59:59")
+
+    url = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+    params = {
+        "$where": (
+            f"cftc_contract_market_code='{cftc_code}' "
+            f"AND report_date_as_yyyy_mm_dd >= '{start_str}' "
+            f"AND report_date_as_yyyy_mm_dd <= '{end_str}'"
+        ),
+        "$order": "report_date_as_yyyy_mm_dd ASC",
+        "$limit": "5000",
+    }
+
+    try:
+        resp = httpx.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:
+        logger.error("COT history fetch failed: %s", exc)
+        return None
+
+    if not rows:
+        logger.warning("No COT data returned for %s – %s", start_str[:10], end_str[:10])
+        return None
+
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.warning("pandas not installed — cannot save COT data")
+        return None
+
+    records = []
+    for row in rows:
+        date_str = row.get("report_date_as_yyyy_mm_dd", "")[:10]
+        net_nc = (
+            int(row.get("noncomm_positions_long_all", 0))
+            - int(row.get("noncomm_positions_short_all", 0))
+        )
+        oi = int(row.get("open_interest_all", 0))
+        records.append({"date": date_str, "cot_net_position": net_nc, "cot_open_interest": oi})
+
+    df = pd.DataFrame(records)
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    df.sort_index(inplace=True)
+
+    # Compute week-over-week change
+    df["cot_net_change"] = df["cot_net_position"].diff()
+
+    df.to_parquet(out_path)
+    logger.info("Wrote COT history (%d weeks) to %s", len(df), out_path.name)
+    return out_path
+
+
 def load_ticks(
     date_or_month: str,
     ticks_dir: Path | None = None,

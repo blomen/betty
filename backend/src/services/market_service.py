@@ -549,6 +549,26 @@ class MarketService:
             macro["cot_net_position"] = cot_data.get("net_non_commercial")
             macro["cot_change_1w"] = cot_data.get("change_1w")
 
+        # News proximity for RL macro features
+        try:
+            from ..data.economic_calendar import get_upcoming_events
+            upcoming = get_upcoming_events(self.db, minutes_ahead=120)
+            if upcoming:
+                nearest = upcoming[0]
+                evt_dt = nearest.event_datetime
+                if evt_dt.tzinfo is None:
+                    from datetime import timezone as _tz
+                    evt_dt = evt_dt.replace(tzinfo=_tz.utc)
+                minutes_away = max(0, (evt_dt - datetime.now(timezone.utc)).total_seconds() / 60.0)
+                macro["news_proximity"] = max(0.0, 1.0 - minutes_away / 120.0)
+                macro["news_importance"] = nearest.importance or 0
+            else:
+                macro["news_proximity"] = 0.0
+                macro["news_importance"] = 0.0
+        except Exception:
+            macro["news_proximity"] = 0.0
+            macro["news_importance"] = 0.0
+
         vwap_dev_sd = None
         vwap = sj.get("vwap")
         last_price = sj.get("last_price")
@@ -2106,7 +2126,7 @@ class MarketService:
         try:
             from sqlalchemy import text
             rows = self.db.execute(
-                text("SELECT * FROM cot_reports ORDER BY report_date DESC LIMIT 2")
+                text("SELECT * FROM cot_data ORDER BY report_date DESC LIMIT 2")
             ).fetchall()
             if not rows:
                 return None
@@ -2114,9 +2134,9 @@ class MarketService:
             change_1w = None
             if len(rows) > 1:
                 prev = dict(rows[1]._mapping)
-                change_1w = (latest.get("net_non_commercial", 0) or 0) - (prev.get("net_non_commercial", 0) or 0)
+                change_1w = (latest.get("net_position", 0) or 0) - (prev.get("net_position", 0) or 0)
             return {
-                "net_non_commercial": latest.get("net_non_commercial"),
+                "net_non_commercial": latest.get("net_position"),
                 "change_1w": change_1w,
             }
         except Exception:

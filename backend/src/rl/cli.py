@@ -16,12 +16,26 @@ _ET = ZoneInfo("US/Eastern")
 rl_app = typer.Typer(help="RL Trading Agent — fetch, replay, train, eval")
 
 
-def _prepare_macro_data(macro_df) -> dict:
+def _prepare_macro_data(macro_df, cot_df=None) -> dict:
     """Convert raw macro parquet (VIX, DXY, US10Y, US2Y levels) into
     the dict format expected by extract_macro_features().
 
-    Computes daily changes, yield curve spread, and a simple regime score.
+    Computes daily changes, yield curve spread, regime score,
+    and merges weekly COT data (forward-filled to daily).
     """
+    # Build COT lookup: forward-fill weekly COT to daily resolution
+    cot_lookup: dict = {}
+    if cot_df is not None and not cot_df.empty:
+        # Reindex COT to daily frequency, forward-fill
+        import pandas as pd
+        daily_idx = pd.date_range(cot_df.index.min(), cot_df.index.max(), freq="D")
+        cot_daily = cot_df.reindex(daily_idx, method="ffill")
+        for date_idx, row in cot_daily.iterrows():
+            cot_lookup[str(date_idx)[:10]] = {
+                "cot_net_position": float(row.get("cot_net_position", 0)),
+                "cot_net_change": float(row.get("cot_net_change", 0)),
+            }
+
     macro_data: dict = {}
     prev_row = None
     for date_idx, row in macro_df.iterrows():
@@ -45,7 +59,7 @@ def _prepare_macro_data(macro_df) -> dict:
         # Simple regime score: risk_off when VIX high + yields rising
         regime_score = max(0.0, min(1.0, 0.5 + (vix - 20) / 40 + vix_change / 10))
 
-        macro_data[date_str] = {
+        entry = {
             "vix": vix,
             "vix_change": vix_change,
             "regime_score": regime_score,
@@ -55,7 +69,21 @@ def _prepare_macro_data(macro_df) -> dict:
             "us10y": us10y,
             "us2y": us2y,
             "yield_curve_spread": us10y - us2y,
+            # COT defaults (overwritten if available)
+            "cot_net_position": 0.0,
+            "cot_net_change": 0.0,
+            # News defaults (populated in live only)
+            "news_proximity": 0.0,
+            "news_importance": 0.0,
         }
+
+        # Merge COT if available for this date
+        cot = cot_lookup.get(date_str)
+        if cot:
+            entry["cot_net_position"] = cot["cot_net_position"]
+            entry["cot_net_change"] = cot["cot_net_change"]
+
+        macro_data[date_str] = entry
         prev_row = row
     return macro_data
 
@@ -147,6 +175,14 @@ def fetch(
         typer.echo(f"  Macro file: {macro_path}")
     else:
         typer.echo("  Macro fetch failed or yfinance unavailable.")
+
+    typer.echo("Fetching COT history (CFTC NQ positioning) ...")
+    from src.rl.data.fetcher import fetch_cot_history
+    cot_path = fetch_cot_history(start, end)
+    if cot_path:
+        typer.echo(f"  COT file: {cot_path}")
+    else:
+        typer.echo("  COT fetch failed.")
 
 
 # ---------------------------------------------------------------------------
@@ -383,12 +419,15 @@ def replay(
 
     # Load macro data
     macro_path = MACRO_DIR / "macro_daily.parquet"
+    cot_path = MACRO_DIR / "cot_weekly.parquet"
     macro_data: dict = {}
     if macro_path.exists():
         try:
             macro_df = pd.read_parquet(macro_path)
-            macro_data = _prepare_macro_data(macro_df)
-            typer.echo(f"Loaded macro data: {len(macro_data)} days.")
+            cot_df = pd.read_parquet(cot_path) if cot_path.exists() else None
+            macro_data = _prepare_macro_data(macro_df, cot_df=cot_df)
+            typer.echo(f"Loaded macro data: {len(macro_data)} days" +
+                       (f" (COT: {len(cot_df)} weeks)" if cot_df is not None else " (no COT)") + ".")
         except Exception as exc:
             typer.echo(f"Warning: could not load macro data: {exc}")
     else:
@@ -818,12 +857,14 @@ def backtest(
     if norm_path.exists():
         normalizer.load(norm_path)
 
-    # Load macro
+    # Load macro + COT
     macro_path = MACRO_DIR / "macro_daily.parquet"
+    cot_path = MACRO_DIR / "cot_weekly.parquet"
     macro_data: dict = {}
     if macro_path.exists():
         macro_df = pd.read_parquet(macro_path)
-        macro_data = _prepare_macro_data(macro_df)
+        cot_df = pd.read_parquet(cot_path) if cot_path.exists() else None
+        macro_data = _prepare_macro_data(macro_df, cot_df=cot_df)
 
     # Load summaries
     summaries = load_summaries(_DATA_DIR / "session_summaries.json")

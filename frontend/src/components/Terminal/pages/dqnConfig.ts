@@ -94,10 +94,11 @@ const CONFLUENCE = [
   'fvg_overlap', 'fvg_width', 'sp_overlap',
 ];
 
-// Macro feature names (indices 120-126)
+// Macro feature names (indices 120-130)
 const MACRO = [
   'vix', 'vix_chg', 'regime', 'dxy_chg',
   'us10y_chg', 'us2y_chg', 'yield_curve',
+  'cot_net', 'cot_chg', 'news_prox', 'news_imp',
 ];
 
 // Setup detection feature names (indices 127-139)

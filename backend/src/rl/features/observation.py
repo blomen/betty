@@ -164,7 +164,7 @@ def build_observation(state: dict) -> np.ndarray:
             conf["single_print_overlap"],
         ], dtype=np.float32)
 
-    # 8. Macro (7)
+    # 8. Macro (11) — VIX, DXY, yields, COT, news proximity
     seg_macro = extract_macro_features(macro)
 
     # 9. Setup detection (14)
@@ -190,7 +190,7 @@ def build_observation(state: dict) -> np.ndarray:
         seg_candles,      # 15
         seg_zone_feats,   # 4 (zone) or 0 (legacy)
         seg_confluence,   # 5 (zone) or 8 (legacy)
-        seg_macro,        # 7
+        seg_macro,        # 11
         seg_setup,        # 14
         seg_micro,        # 20
         seg_approach,     # 1

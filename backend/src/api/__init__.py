@@ -229,9 +229,27 @@ async def lifespan(app: FastAPI):
                                 logger.info("COT data refreshed: %d reports", len(reports))
                         except Exception as e:
                             logger.warning("COT refresh failed: %s", e)
+
+                        # Refresh economic calendar from ForexFactory
+                        try:
+                            from ..data.economic_calendar import fetch_and_store_calendar
+                            db = _get_db_session()
+                            try:
+                                count = await fetch_and_store_calendar(db)
+                                db.commit()
+                                logger.info("Economic calendar refreshed: %d events", count)
+                            finally:
+                                db.close()
+                        except Exception as e:
+                            logger.warning("Economic calendar refresh failed: %s", e)
                     loop.run_until_complete(_run())
                     loop.close()
                 threading.Thread(target=_load_initial_data, daemon=True, name="startup-levels").start()
+
+                # Start news impact recorder (measures NQ price after economic events)
+                from ..ml.macro.news_impact_recorder import news_impact_loop
+                asyncio.create_task(news_impact_loop(_get_db_session, _databento_stream))
+
             except Exception as e:
                 logger.error("Trading features startup failed: %s", e, exc_info=True)
 

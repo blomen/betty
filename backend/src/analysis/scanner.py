@@ -47,6 +47,11 @@ MAX_ODDS_RATIO_SPREAD = 1.55
 # restrictions, odds ratio checks, prob_sum validation.
 MAX_EDGE_PCT = 100.0
 
+# Sports where Pinnacle uses SET handicaps but soft providers use GAME handicaps.
+# Comparing spread markets across providers would produce phantom edges because
+# e.g. "+1.5 sets" (Pinnacle) ≠ "+1.5 games" (Kambi/Altenar/VBet).
+SET_SPREAD_SPORTS = frozenset({"tennis"})
+
 # Maximum odds age in hours for value scanning
 # Odds older than this are considered stale and skipped
 MAX_ODDS_AGE_HOURS = 2
@@ -162,7 +167,15 @@ class OpportunityScanner:
         for event in events:
             odds_grouped = self.group_odds(event)
 
+            # Tennis (and other set-based sports): Pinnacle spread = set handicap,
+            # soft providers spread = game handicap. Same point value, different
+            # unit → phantom edges. Skip spread comparisons for these sports.
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
+
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 values = self.find_value_in_market(
                     event_id=event.id,
                     market=market,
@@ -381,8 +394,12 @@ class OpportunityScanner:
 
         for event in events:
             odds_grouped = self.group_odds(event)
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
 
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 bonus_opps = self._find_bonus_in_market(
                     event=event,
                     market=market,
@@ -422,8 +439,12 @@ class OpportunityScanner:
 
         for event in events:
             odds_grouped = self.group_odds(event)
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
 
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 dutch = self._find_dutch_in_market(
                     event=event,
                     market=market,
@@ -465,8 +486,12 @@ class OpportunityScanner:
 
         for event in events:
             odds_grouped = self.group_odds(event)
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
 
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 dutch = self._find_dutch_in_market(
                     event=event,
                     market=market,
@@ -510,8 +535,12 @@ class OpportunityScanner:
 
         for event in events:
             odds_grouped = self.group_odds(event)
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
 
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 dutch = self._find_dutch_in_market(
                     event=event,
                     market=market,
@@ -557,8 +586,12 @@ class OpportunityScanner:
 
         for event in events:
             odds_grouped = self.group_odds(event)
+            skip_spreads = event.sport in SET_SPREAD_SPORTS
 
             for market, odds_by_outcome in odds_grouped.items():
+                if skip_spreads and market.startswith("spread"):
+                    continue
+
                 base_market = market.split("_")[0] if "_" in market else market
                 if base_market not in ("1x2", "moneyline", "spread", "total"):
                     continue

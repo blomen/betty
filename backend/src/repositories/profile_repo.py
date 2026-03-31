@@ -112,6 +112,13 @@ class ProfileRepo:
         ).all()
         return {r.provider_id: r.balance for r in records}
 
+    def get_all_registered_providers(self, profile_id: int) -> set[str]:
+        """Return set of all provider_ids registered in the profile (including balance=0)."""
+        records = self.db.query(ProfileProviderBalance.provider_id).filter(
+            ProfileProviderBalance.profile_id == profile_id,
+        ).all()
+        return {r[0] for r in records}
+
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a single provider. Alias for get_balance()."""
         return self.get_balance(profile_id, provider_id)
