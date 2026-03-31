@@ -599,7 +599,12 @@ class MirrorService:
 
         balance = self._extract_balance(provider_id, data)
         if balance is not None:
-            await asyncio.to_thread(self._sync_balance, provider_id, balance)
+            # Polymarket /value returns portfolio value (positions), not cash.
+            # If it's 0 or we're on Polymarket, also scrape cash from DOM.
+            if provider_id == "polymarket" and balance == 0:
+                await self._scrape_polymarket_balance()
+            else:
+                await asyncio.to_thread(self._sync_balance, provider_id, balance)
 
         # Polymarket: store deposit trace from Swapped widget
         if "swapped.com" in url and "create_order" in url:
