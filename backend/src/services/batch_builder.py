@@ -1,12 +1,16 @@
 """
-BatchBuilder service — collects all +EV opportunities, deduplicates across cluster
-siblings, ranks by tier (sharp first) then expected profit, allocates balance, and
-returns a ready-to-fire batch.
+BatchBuilder service — two-phase pipeline:
+
+Phase 1 (collect): Find ALL +EV opportunities, compute Kelly stakes from total
+bankroll.  Balance-blind — one candidate per (cluster, event, market, outcome, point).
+
+Phase 2 (allocate): Assign concrete providers, drain funded siblings first,
+enforce 10-bet cap, handle bonus logic (freebet/trigger/wagering).  Unfunded bets
+become deposit recommendations in the capital plan.
 """
 
 from __future__ import annotations
 
-import itertools
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,7 +18,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..constants import PLATFORM_GROUPS, PLATFORM_MAP
+from ..constants import PLATFORM_GROUPS
 from ..bankroll.stake_calculator import (
     calculate_stake, dynamic_min_stake,
     OPTIMAL_MAX_KELLY, OPTIMAL_SINGLE_BET_CAP,
@@ -180,54 +184,40 @@ class BatchBuilder:
 
     def build(self, profile_id: int, exclude: list[str] | None = None) -> dict:
         """
-        Main entry point. Returns a dict with:
-          - batch: list of bet dicts (ranked, allocated)
-          - summary: aggregate stats
-          - balance_status: per-provider status
-          - missed_opportunities: summary of bets that couldn't be placed
-          - wagering_projections: projected bonus wagering progress
+        Main entry point — two-phase pipeline:
+
+        Phase 1 (collect): balance-blind, all +EV opportunities with Kelly stakes.
+        Phase 2 (allocate): assign providers, enforce balance/cap/bonus constraints.
         """
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_total_bankroll(profile_id)
 
-        provider_balances = self._load_provider_balances(profile_id)
+        # -- Phase 1: balance-blind candidate collection -----------------------
+        candidates = self._collect_candidates(total_bankroll, profile)
 
-        candidates = self._collect_candidates(
-            total_bankroll, provider_balances, profile
-        )
-
-        # Filter out excluded bets (from UI "remove" action)
+        # Filter out excluded bets (UI "remove" action)
+        # Frontend sends cluster:event_id:market:outcome:point
         if exclude:
             exclude_set = set(exclude)
             candidates = [
                 c for c in candidates
-                if f"{c.provider_id}:{c.event_id}:{c.market}:{c.outcome}:{c.point}" not in exclude_set
+                if f"{c.cluster}:{c.event_id}:{c.market}:{c.outcome}:{c.point}" not in exclude_set
             ]
 
-        # Sort ALL candidates: sharp first, then by expected_profit desc
-        # Don't deduplicate before allocation — dedup happens during allocation
-        # so bets distribute across siblings by remaining balance
+        # Rank: sharp first, then by priority tier, then by expected_profit desc
         ranked = sorted(
             candidates,
             key=lambda b: (-TIER_PRIORITY.get(b.tier, 0), b.priority, -b.expected_profit),
         )
 
-        # Split sharp and soft for different allocation strategies
-        sharp_ranked = [b for b in ranked if b.tier in ("polymarket", "pinnacle")]
-        soft_ranked = [b for b in ranked if b.tier == "soft"]
+        # -- Phase 2: allocate providers + balances ----------------------------
+        provider_balances = self._load_provider_balances(profile_id)
+        registered = self.profile_repo.get_all_registered_providers(profile_id)
 
-        # Sharp: direct allocation (existing dedup logic)
-        sharp_batch, sharp_missed = self._allocate_with_dedup(sharp_ranked, provider_balances)
+        funded_batch, missed = self._allocate_batch(ranked, provider_balances, registered)
 
-        # Soft: round-robin allocation
-        soft_batch, soft_missed = self._allocate_with_round_robin(soft_ranked, provider_balances)
-
-        # Merge: all funded bets + unfunded (missed) bets in one list
-        # Funded bets keep funded=True, missed bets get funded=False
-        for bet in sharp_missed + soft_missed:
-            bet.funded = False
-        batch = sharp_batch + soft_batch + sharp_missed + soft_missed
-        missed = sharp_missed + soft_missed  # Keep reference for capital plan
+        # Merge: funded bets + missed (unfunded) in one list
+        batch = funded_batch + missed
 
         for i, bet in enumerate(batch):
             bet.rank = i + 1
@@ -237,11 +227,6 @@ class BatchBuilder:
 
         # Count opportunity volume per cluster (from ALL candidates, not just batch)
         cluster_opp_stats = self._compute_cluster_opp_stats(candidates)
-
-        # Check for unfunded sharp providers that have opportunities in the DB
-        unfunded_sharp = self._check_unfunded_sharp_opps(
-            provider_balances, total_bankroll, profile
-        )
 
         # Get wagering history for capital plan
         wager_info = self.profile_repo.get_avg_daily_wager(profile_id)
@@ -255,7 +240,6 @@ class BatchBuilder:
             cluster_opp_stats=cluster_opp_stats,
             avg_daily_wager=avg_daily_wager,
             has_wager_history=has_wager_history,
-            unfunded_sharp=unfunded_sharp,
         )
 
         # Get exchange rate for USDC → SEK conversion
@@ -287,38 +271,99 @@ class BatchBuilder:
           - allocated_batch: the bet list
           - wagering_projections: bonus wagering info
         """
-        # Use the locked batch directly — don't rebuild
-        batch = locked_batch
-
-        # Fetch fresh balances for funding status
+        # Skip + recalc: redistribute skipped bets to remaining registered
+        # siblings in the same cluster (respecting 10-bet cap). Bets that can't
+        # fit anywhere are dropped.
+        skip_set = set(skip_siblings or [])
+        cap = self.BETS_PER_PROVIDER
         provider_balances = self._load_provider_balances(profile_id)
 
-        # Build balance_status from fresh balances (no missed bets in locked context)
+        if skip_set:
+            kept: list[dict] = []
+            skipped_bets: dict[str, list[dict]] = {}
+            for bet in locked_batch:
+                pid = bet["provider_id"]
+                if pid in skip_set:
+                    cluster = bet.get("cluster", _provider_to_cluster(pid))
+                    skipped_bets.setdefault(cluster, []).append(bet)
+                else:
+                    kept.append(bet)
+
+            # Available siblings = registered, not skipped, in the same cluster
+            registered = self.profile_repo.get_all_registered_providers(profile_id)
+            cluster_avail: dict[str, list[str]] = {}
+            for group_name, group_info in PLATFORM_GROUPS.items():
+                members = [m for m in group_info["members"] if m in registered and m not in skip_set]
+                if members:
+                    cluster_avail[group_name] = members
+            # Standalone providers already in kept
+            for b in kept:
+                pid = b["provider_id"]
+                cluster = b.get("cluster", _provider_to_cluster(pid))
+                if cluster not in cluster_avail:
+                    cluster_avail[cluster] = [pid]
+                elif pid not in cluster_avail[cluster]:
+                    cluster_avail[cluster].append(pid)
+
+            # Count existing bets per provider
+            bets_count: dict[str, int] = {}
+            for b in kept:
+                pid = b["provider_id"]
+                bets_count[pid] = bets_count.get(pid, 0) + 1
+
+            # Redistribute skipped bets to available siblings under the cap
+            # Bonus-aware: check min_odds for trigger providers
+            for cluster, bets in skipped_bets.items():
+                avail = cluster_avail.get(cluster, [])
+                if not avail:
+                    continue  # No remaining siblings — drop these bets
+                for bet in bets:
+                    target = None
+                    bet_odds = bet.get("odds", 0)
+                    for candidate in avail:
+                        if bets_count.get(candidate, 0) >= cap:
+                            continue
+                        # Check bonus constraints on target sibling
+                        cpb = provider_balances.get(candidate)
+                        if cpb and cpb.lifecycle == "deposited" and cpb.trigger_mode == "single":
+                            min_odds = cpb.min_odds if cpb.min_odds else 1.80
+                            if bet_odds < min_odds:
+                                continue
+                        target = candidate
+                        break
+                    if target is None:
+                        continue  # All siblings at cap or ineligible — drop this bet
+                    bets_count[target] = bets_count.get(target, 0) + 1
+                    kept.append({**bet, "provider_id": target})
+
+            batch = kept
+        else:
+            batch = list(locked_batch)
+
+        # Build balance_status from fresh balances
         balance_status = self._build_balance_status(provider_balances, [])
 
-        # Compute wagering projections from locked batch
+        # Compute wagering projections from batch
         wagering = self._compute_wagering_projections_from_dicts(batch, provider_balances)
 
-        # Filter out skipped siblings
-        skip_set = set(skip_siblings or [])
-
-        # Build sibling_plan from balance_status + batch
-        # Count bets and capital per provider from the batch
+        # Build sibling_plan — count ALL bets
         bets_per_provider: dict[str, int] = {}
         capital_per_provider: dict[str, float] = {}
         for bet in batch:
-            if not bet.get("funded", True):
-                continue
             pid = bet["provider_id"]
             bets_per_provider[pid] = bets_per_provider.get(pid, 0) + 1
             capital_per_provider[pid] = capital_per_provider.get(pid, 0) + bet.get("stake", 0)
 
+        # Index balance_status by provider_id for lookup
+        bs_by_pid = {bs["provider_id"]: bs for bs in balance_status}
+
         sibling_plan = []
-        for bs in balance_status:
-            pid = bs["provider_id"]
+        for pid in sorted(set(bets_per_provider.keys()) | set(bs_by_pid.keys())):
+            if bets_per_provider.get(pid, 0) == 0:
+                continue
+            bs = bs_by_pid.get(pid, {})
             currency = "USDC" if pid == "polymarket" else "SEK"
 
-            # Determine bonus badge from lifecycle + wagering
             bonus_badge = None
             if bs.get("wagering_remaining", 0) > 0:
                 bonus_badge = f"WAGER {round(bs['wagering_remaining'])} left"
@@ -329,26 +374,16 @@ class BatchBuilder:
 
             sibling_plan.append({
                 "provider_id": pid,
-                "cluster": bs["cluster"],
+                "cluster": bs.get("cluster", _provider_to_cluster(pid)),
                 "bets_assigned": bets_per_provider.get(pid, 0),
                 "capital_needed": round(capital_per_provider.get(pid, 0), 2),
-                "current_balance": round(bs["balance"], 2),
+                "current_balance": round(bs.get("balance", 0), 2),
                 "currency": currency,
-                "lifecycle": bs.get("lifecycle", "active"),
+                "lifecycle": bs.get("lifecycle", "idle"),
                 "bonus_badge": bonus_badge,
             })
 
-        # Filter: only include providers that have bets or are in skip list
-        sibling_plan = [
-            s for s in sibling_plan
-            if s["bets_assigned"] > 0 or s["provider_id"] in skip_set
-        ]
-
-        # Filter batch to exclude skipped siblings
-        allocated_batch = [
-            b for b in batch
-            if b.get("provider_id") not in skip_set
-        ]
+        allocated_batch = batch
 
         return {
             "sibling_plan": sibling_plan,
@@ -359,71 +394,6 @@ class BatchBuilder:
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
-
-    def _check_unfunded_sharp_opps(
-        self,
-        provider_balances: dict[str, ProviderBalance],
-        total_bankroll: float,
-        profile,
-    ) -> list[dict]:
-        """
-        Check for unfunded sharp providers (Pinnacle, Polymarket) that have
-        active opportunities in the DB. Returns summary info for capital plan.
-        """
-        from ..config import get_exchange_rate
-
-        result = []
-        min_edge_pct = getattr(profile, "min_edge_pct", 2.0) or 2.0
-
-        for sharp_pid in ("pinnacle", "polymarket"):
-            if sharp_pid in provider_balances:
-                continue  # Already funded, handled normally
-
-            is_usdc = sharp_pid == "polymarket"
-            exchange_rate = get_exchange_rate(sharp_pid) if is_usdc else 1.0
-
-            # Count opportunities for this sharp provider
-            opp_count = 0
-            total_stake = 0.0
-            total_ev = 0.0
-            total_edge = 0.0
-
-            for opp_type in ("value", "reverse_value"):
-                for opp, event in self.opp_repo.find_active(type=opp_type):
-                    if opp.provider1_id != sharp_pid:
-                        continue
-                    edge_raw = (opp.edge_pct or 0.0) / 100.0
-                    if edge_raw < min_edge_pct / 100.0:
-                        continue
-                    odds = opp.odds1 or 0.0
-                    stake_result = calculate_stake(
-                        bankroll_total=total_bankroll,
-                        edge_raw=edge_raw,
-                        odds=odds,
-                        min_edge=min_edge_pct / 100.0,
-                        min_odds=0,
-                        min_stake=dynamic_min_stake(total_bankroll),
-                    )
-                    if stake_result.skip_reason or stake_result.stake <= 0:
-                        continue
-                    # Convert SEK stake to provider currency (USDC for Polymarket)
-                    stake_in_currency = stake_result.stake / exchange_rate if is_usdc else stake_result.stake
-                    opp_count += 1
-                    total_stake += stake_in_currency
-                    total_ev += stake_in_currency * edge_raw
-                    total_edge += opp.edge_pct or 0.0
-
-            if opp_count > 0:
-                result.append({
-                    "provider_id": sharp_pid,
-                    "opp_count": opp_count,
-                    "total_stake": round(total_stake, 2),
-                    "total_ev": round(total_ev, 2),
-                    "avg_edge": round(total_edge / opp_count, 1),
-                    "currency": "USDC" if is_usdc else "SEK",
-                })
-
-        return result
 
     def _load_provider_balances(self, profile_id: int) -> dict[str, ProviderBalance]:
         """Load balances and bonus states for all providers with balance > 0."""
@@ -458,41 +428,39 @@ class BatchBuilder:
     def _collect_candidates(
         self,
         total_bankroll: float,
-        provider_balances: dict[str, ProviderBalance],
         profile,
     ) -> list[BatchBet]:
-        """Query all opportunity types and compute stakes."""
+        """
+        Query all opportunity types and compute Kelly stakes.
 
-        # Stake sizing: kelly + cap from sim-optimal constants, only min_edge from profile
+        Balance-blind: returns one candidate per (cluster, event, market,
+        outcome, point), keeping the highest edge when duplicates exist.
+        """
+
         min_edge_pct = getattr(profile, "min_edge_pct", 2.0) or 2.0
-
         single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         min_edge = min_edge_pct / 100.0
         min_stake = dynamic_min_stake(total_bankroll)
 
-        candidates: list[BatchBet] = []
+        raw: list[BatchBet] = []
 
-        # Collect value opps (soft providers + polymarket stored as type="value")
-        for opp, event in self.opp_repo.find_active(type="value"):
-            bet = self._make_candidate(
-                opp, event, "value",
-                total_bankroll, provider_balances,
-                single_bet_cap_pct, min_edge, min_stake,
-            )
-            if bet is not None:
-                candidates.append(bet)
+        for opp_type in ("value", "reverse_value"):
+            for opp, event in self.opp_repo.find_active(type=opp_type):
+                bet = self._make_candidate(
+                    opp, event, opp_type,
+                    total_bankroll,
+                    single_bet_cap_pct, min_edge, min_stake,
+                )
+                if bet is not None:
+                    raw.append(bet)
 
-        # Collect reverse_value opps (Pinnacle vs consensus)
-        for opp, event in self.opp_repo.find_active(type="reverse_value"):
-            bet = self._make_candidate(
-                opp, event, "reverse_value",
-                total_bankroll, provider_balances,
-                single_bet_cap_pct, min_edge, min_stake,
-            )
-            if bet is not None:
-                candidates.append(bet)
-
-        return candidates
+        # Dedup: one per (cluster, event, market, outcome, point) — keep highest edge
+        best: dict[tuple, BatchBet] = {}
+        for c in raw:
+            key = (c.cluster, c.event_id, c.market, c.outcome, c.point)
+            if key not in best or c.edge_pct > best[key].edge_pct:
+                best[key] = c
+        return list(best.values())
 
     def _make_candidate(
         self,
@@ -500,14 +468,18 @@ class BatchBuilder:
         event,
         opp_type: str,
         total_bankroll: float,
-        provider_balances: dict[str, ProviderBalance],
         single_bet_cap_pct: float,
         min_edge: float,
         min_stake: float,
     ) -> Optional[BatchBet]:
-        """Convert an Opportunity+Event into a BatchBet candidate, or None to skip."""
+        """
+        Convert an Opportunity+Event into a BatchBet candidate, or None to skip.
 
-        # Skip live events (TTK <= 0) and events beyond 48h for ALL providers
+        Balance-blind: computes Kelly stake from total bankroll only.
+        No provider routing, no bonus logic — that happens in _allocate_batch().
+        """
+
+        # Skip live events (TTK <= 0) and events beyond 48h
         if event.start_time:
             now = datetime.now(timezone.utc)
             st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
@@ -520,88 +492,24 @@ class BatchBuilder:
             ttk_hours = None
 
         provider_id = opp.provider1_id
-        pb = provider_balances.get(provider_id)
-
-        # If this provider has no balance, try to reroute to a funded sibling
-        unfunded = False
-        if pb is None or pb.lifecycle in ("dormant", "available"):
-            cluster = _provider_to_cluster(provider_id)
-            # Find a funded sibling in the same cluster
-            funded_sibling = None
-            for pid, spb in provider_balances.items():
-                if spb.cluster == cluster and spb.lifecycle not in ("dormant", "available") and spb.remaining > 0:
-                    if funded_sibling is None or spb.remaining > provider_balances[funded_sibling].remaining:
-                        funded_sibling = pid
-            if funded_sibling:
-                provider_id = funded_sibling
-                pb = provider_balances[funded_sibling]
-            else:
-                unfunded = True  # Keep as candidate — will be missed due to no balance
-
         odds = opp.odds1 or 0.0
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
-        if unfunded:
-            # Unfunded: only skip if edge below threshold — funding issues
-            # are resolved in the capital plan step
-            if edge_raw < min_edge:
-                return None
-            result = calculate_stake(
-                bankroll_total=total_bankroll,
-                edge_raw=edge_raw,
-                odds=odds,
-                single_bet_cap_pct=single_bet_cap_pct,
-                min_edge=min_edge,
-                min_odds=0.0,
-                min_stake=0.0,
-                max_kelly=OPTIMAL_MAX_KELLY,
-            )
-            stake = result.stake if result.stake > 0 else min_stake
-            is_bonus = False
-            bonus_type = None
-            bet_min_odds = 0.0
-        else:
-            # Detect bonus bet types
-            is_freebet = pb.is_bonus_phase
-            is_trigger = pb.lifecycle == "deposited" and pb.trigger_mode == "single"
-
-            # Only enforce min_odds for single-shot trigger bets — the trigger
-            # bet must qualify to unlock the bonus. Wagering phase bets are played
-            # regardless of odds (low-odds bets just don't count toward progress).
-            if is_trigger:
-                bet_min_odds = pb.min_odds if pb.min_odds else 1.80
-                if bet_min_odds > 0 and odds < bet_min_odds:
-                    return None
-
-            # Calculate stake
-            if is_freebet:
-                # Freebet: stake = bonus_amount (fixed), no bankroll consumption
-                stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
-                is_bonus = True
-                bonus_type = "freebet"
-            elif is_trigger:
-                # Single-shot trigger: fixed stake = bonus_amount
-                stake = pb.bonus_amount if pb.bonus_amount > 0 else 0.0
-                is_bonus = False
-                bonus_type = "trigger"
-            else:
-                result = calculate_stake(
-                    bankroll_total=total_bankroll,
-                    edge_raw=edge_raw,
-                    odds=odds,
-                    single_bet_cap_pct=single_bet_cap_pct,
-                    min_edge=min_edge,
-                    min_odds=0.0,
-                    min_stake=min_stake,
-                    max_kelly=OPTIMAL_MAX_KELLY,
-                )
-                if result.skip_reason:
-                    return None
-                stake = result.stake
-                is_bonus = False
-                bonus_type = None
-
+        # Kelly stake from total bankroll — no balance check
+        result = calculate_stake(
+            bankroll_total=total_bankroll,
+            edge_raw=edge_raw,
+            odds=odds,
+            single_bet_cap_pct=single_bet_cap_pct,
+            min_edge=min_edge,
+            min_odds=0.0,
+            min_stake=min_stake,
+            max_kelly=OPTIMAL_MAX_KELLY,
+        )
+        if result.skip_reason:
+            return None
+        stake = result.stake
         if stake <= 0:
             return None
 
@@ -620,7 +528,7 @@ class BatchBuilder:
             tier = "pinnacle"
         else:
             tier = "soft"
-        cluster = pb.cluster if pb else _provider_to_cluster(provider_id)
+        cluster = _provider_to_cluster(provider_id)
 
         return BatchBet(
             rank=0,  # assigned later
@@ -635,8 +543,8 @@ class BatchBuilder:
             edge_pct=opp.edge_pct or 0.0,
             stake=stake,
             expected_profit=expected_profit,
-            is_bonus=is_bonus,
-            bonus_type=bonus_type,
+            is_bonus=False,
+            bonus_type=None,
             display_home=event.display_home or event.home_team or "",
             display_away=event.display_away or event.away_team or "",
             sport=event.sport or "",
@@ -644,9 +552,9 @@ class BatchBuilder:
             start_time=event.start_time,
             detected_at=opp.detected_at,
             odds_age_minutes=opp.odds_age_minutes,
-            lifecycle=pb.lifecycle if pb else "available",
+            lifecycle="available",
             cluster=cluster,
-            funded=not unfunded,
+            funded=False,  # allocation will flip to True
             priority=compute_priority(opp.edge_pct or 0.0, ttk_hours),
         )
 
@@ -676,104 +584,28 @@ class BatchBuilder:
                     ts = ts.replace(tzinfo=timezone.utc)
                 b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
-    def _deduplicate(
-        self,
-        candidates: list[BatchBet],
-        provider_balances: dict[str, ProviderBalance],
-    ) -> list[BatchBet]:
-        """
-        Within a cluster, keep only one copy of each (event_id, market, outcome, point).
-        When duplicates exist, pick the provider with the most remaining balance.
-        """
-        # Group by (cluster, event_id, market, outcome, point)
-        seen: dict[tuple, BatchBet] = {}
-
-        for bet in candidates:
-            key = (bet.cluster, bet.event_id, bet.market, bet.outcome, bet.point)
-            if key not in seen:
-                seen[key] = bet
-            else:
-                existing = seen[key]
-                existing_balance = provider_balances.get(
-                    existing.provider_id, ProviderBalance(
-                        provider_id=existing.provider_id, cluster=existing.cluster,
-                        initial_balance=0.0
-                    )
-                ).remaining
-                new_balance = provider_balances.get(
-                    bet.provider_id, ProviderBalance(
-                        provider_id=bet.provider_id, cluster=bet.cluster,
-                        initial_balance=0.0
-                    )
-                ).remaining
-                if new_balance > existing_balance:
-                    seen[key] = bet
-
-        return list(seen.values())
-
-    def _allocate_with_dedup(
-        self,
-        ranked: list[BatchBet],
-        provider_balances: dict[str, ProviderBalance],
-    ) -> tuple[list[BatchBet], list[BatchBet]]:
-        """
-        Greedy allocation with inline dedup across cluster siblings.
-
-        For each bet, check if the same (cluster, event, market, outcome, point)
-        was already placed on another sibling. If so, skip (not missed — just
-        a duplicate). This naturally distributes bets across siblings by remaining
-        balance since we process highest-balance providers first for each event.
-        """
-        batch: list[BatchBet] = []
-        missed: list[BatchBet] = []
-        # Track placed bet keys per cluster to avoid duplicates
-        placed_keys: set[tuple] = set()
-
-        for bet in ranked:
-            # Dedup key: within a cluster, only one copy per event+market+outcome+point
-            # Sharp providers use provider_id as cluster (no dedup across sharps)
-            cluster_key = bet.cluster if bet.tier == "soft" and bet.cluster else bet.provider_id
-            dedup_key = (cluster_key, bet.event_id, bet.market, bet.outcome, bet.point)
-
-            if dedup_key in placed_keys:
-                continue  # Already placed on another sibling — skip silently
-
-            pb = provider_balances.get(bet.provider_id)
-            if pb is None:
-                bet.skip_reason = "no balance record"
-                missed.append(bet)
-                continue
-
-            # Freebets don't consume real balance
-            if bet.is_bonus and bet.bonus_type == "freebet":
-                placed_keys.add(dedup_key)
-                batch.append(bet)
-                continue
-
-            if pb.remaining >= bet.stake:
-                pb.allocated += bet.stake
-                placed_keys.add(dedup_key)
-                batch.append(bet)
-            else:
-                # Don't mark as placed — another sibling might have balance
-                # Only mark as missed if no sibling can take it
-                # (this happens naturally: if sibling B has balance, its candidate
-                # will appear later in the ranked list and get placed)
-                bet.skip_reason = (
-                    f"insufficient balance "
-                    f"(need {bet.stake:.0f}, have {pb.remaining:.0f})"
-                )
-                pb.missed_bets += 1
-                pb.missed_ev += bet.expected_profit
-                missed.append(bet)
-
-        return batch, missed
+    # Max bets per provider to avoid suspicion.
+    BETS_PER_PROVIDER = 10
 
     @staticmethod
     def _clone_bet_to_provider(
-        bet: BatchBet, new_provider_id: str, pb: ProviderBalance,
+        bet: BatchBet,
+        new_provider_id: str,
+        pb: ProviderBalance,
+        *,
+        stake: float | None = None,
+        is_bonus: bool | None = None,
+        bonus_type: str | None = None,
     ) -> BatchBet:
-        """Clone a bet to a different provider in the same cluster (same platform = same odds)."""
+        """Clone a bet to a different provider (same cluster = same odds).
+
+        Optional overrides for stake/bonus when the target provider has
+        freebet or trigger constraints.
+        """
+        actual_stake = stake if stake is not None else bet.stake
+        actual_is_bonus = is_bonus if is_bonus is not None else bet.is_bonus
+        actual_bonus_type = bonus_type if bonus_type is not None else bet.bonus_type
+        edge_raw = bet.edge_pct / 100.0
         return BatchBet(
             rank=0,
             tier=bet.tier,
@@ -785,10 +617,10 @@ class BatchBuilder:
             odds=bet.odds,
             fair_odds=bet.fair_odds,
             edge_pct=bet.edge_pct,
-            stake=bet.stake,
-            expected_profit=bet.expected_profit,
-            is_bonus=bet.is_bonus,
-            bonus_type=bet.bonus_type,
+            stake=actual_stake,
+            expected_profit=actual_stake * edge_raw,
+            is_bonus=actual_is_bonus,
+            bonus_type=actual_bonus_type,
             display_home=bet.display_home,
             display_away=bet.display_away,
             sport=bet.sport,
@@ -798,95 +630,170 @@ class BatchBuilder:
             odds_age_minutes=bet.odds_age_minutes,
             lifecycle=pb.lifecycle,
             cluster=bet.cluster,
+            priority=bet.priority,
         )
 
-    # Every BETS_PER_PROVIDER bets in a cluster adds another sibling.
-    # 1-10 → 1 provider, 11-20 → 2, 21-30 → 3, etc.
-    BETS_PER_PROVIDER = 10
-
-    @staticmethod
-    def _allocate_with_round_robin(
-        ranked: list[BatchBet],
+    def _allocate_batch(
+        self,
+        candidates: list[BatchBet],
         provider_balances: dict[str, ProviderBalance],
+        registered_providers: set[str],
     ) -> tuple[list[BatchBet], list[BatchBet]]:
         """
-        Allocation for soft tier — drain existing balance first.
+        Unified allocation for all tiers — the ONLY place that assigns
+        providers, checks balances, and handles bonus logic.
 
-        Uses all funded siblings sorted by balance descending. For each bet,
-        try each sibling in order until one has enough balance. This naturally
-        drains existing capital before any deposit recommendations.
+        Sharp (pinnacle/polymarket): standalone provider, no siblings.
+        Soft: iterate funded siblings in balance-descending order, respecting
+        10-bet cap and bonus constraints.  Unfunded bets distribute round-robin
+        across all registered siblings for capital plan visibility.
+
+        Returns (funded_batch, missed_batch).
         """
+        cap = self.BETS_PER_PROVIDER
         batch: list[BatchBet] = []
         missed: list[BatchBet] = []
+        bets_assigned: dict[str, int] = {}
 
-        # Deduplicate: keep best candidate per (cluster, event, market, outcome, point)
-        best_per_key: dict[tuple, BatchBet] = {}
-        for bet in ranked:
-            dedup_key = (bet.cluster, bet.event_id, bet.market, bet.outcome, bet.point)
-            if dedup_key not in best_per_key:
-                best_per_key[dedup_key] = bet
-
-        # Build cluster siblings (funded providers only, sorted by balance desc)
-        cluster_siblings: dict[str, list[str]] = {}
+        # -- Build cluster → funded siblings (sorted by balance desc) ----------
+        funded_siblings: dict[str, list[str]] = {}
         for pid, pb in provider_balances.items():
             if pb.lifecycle in ("dormant", "available"):
                 continue
             cluster = pb.cluster or pid
-            if cluster not in cluster_siblings:
-                cluster_siblings[cluster] = []
-            cluster_siblings[cluster].append(pid)
-        for cluster in cluster_siblings:
-            cluster_siblings[cluster].sort(key=lambda pid: -provider_balances[pid].remaining)
+            funded_siblings.setdefault(cluster, []).append(pid)
+        for cluster in funded_siblings:
+            funded_siblings[cluster].sort(
+                key=lambda pid: -provider_balances[pid].remaining,
+            )
 
-        # Walk opportunities in ranked order (by priority, then expected_profit desc)
-        sorted_keys = sorted(
-            best_per_key.keys(),
-            key=lambda k: (best_per_key[k].priority, -best_per_key[k].expected_profit),
-        )
+        # -- Build cluster → all registered siblings (for missed round-robin) --
+        registered = registered_providers or set(provider_balances.keys())
+        clusters_with_bets = {c.cluster for c in candidates}
+        all_siblings: dict[str, list[str]] = {}
+        for group_name, group_info in PLATFORM_GROUPS.items():
+            members = [m for m in group_info["members"] if m in registered]
+            if members:
+                all_siblings[group_name] = members
+            elif group_name in clusters_with_bets:
+                all_siblings[group_name] = [group_info["canonical"]]
+        for pid in registered:
+            cluster = _provider_to_cluster(pid)
+            if cluster not in all_siblings:
+                all_siblings[cluster] = [pid]
 
-        for dedup_key in sorted_keys:
-            template_bet = best_per_key[dedup_key]
-            cluster = dedup_key[0]
-            siblings = cluster_siblings.get(cluster, [])
+        # -- Helpers -----------------------------------------------------------
+        def _assign_missed(template: BatchBet, cluster: str, reason: str) -> None:
+            """Assign an unfunded bet to a sibling for capital plan visibility."""
+            sibs = all_siblings.get(cluster, [template.provider_id])
+            target_pid = None
+            for candidate in sibs:
+                if bets_assigned.get(candidate, 0) < cap:
+                    target_pid = candidate
+                    break
+            if target_pid is None:
+                target_pid = min(sibs, key=lambda p: bets_assigned.get(p, 0))
 
-            if not siblings:
-                template_bet.skip_reason = "no funded sibling in cluster"
-                missed.append(template_bet)
-                continue
+            placed = self._clone_bet_to_provider(
+                template, target_pid,
+                provider_balances.get(target_pid, ProviderBalance(
+                    provider_id=target_pid, cluster=cluster, initial_balance=0,
+                )),
+            )
+            placed.funded = False
+            placed.skip_reason = reason
+            bets_assigned[target_pid] = bets_assigned.get(target_pid, 0) + 1
+            target_pb = provider_balances.get(target_pid)
+            if target_pb:
+                target_pb.missed_bets += 1
+                target_pb.missed_ev += template.expected_profit
+            missed.append(placed)
 
-            assigned = False
+        def _try_assign_sharp(bet: BatchBet) -> bool:
+            """Try to fund a sharp bet on its own provider."""
+            pid = bet.provider_id
+            pb = provider_balances.get(pid)
+            if pb is None:
+                return False
+            if bets_assigned.get(pid, 0) >= cap:
+                return False
+            if pb.remaining < bet.stake:
+                return False
+            placed = self._clone_bet_to_provider(bet, pid, pb)
+            placed.funded = True
+            pb.allocated += placed.stake
+            bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
+            batch.append(placed)
+            return True
 
-            # Try each sibling in balance-descending order — drain existing capital
+        def _try_assign_soft(bet: BatchBet) -> bool:
+            """Try funded siblings in balance-descending order, handling bonus logic."""
+            cluster = bet.cluster
+            siblings = funded_siblings.get(cluster, [])
+
             for pid in siblings:
+                if bets_assigned.get(pid, 0) >= cap:
+                    continue
+
                 pb = provider_balances[pid]
 
-                # Only block on min_odds for single-shot trigger bets
-                if pb.lifecycle == "deposited" and pb.trigger_mode == "single" and pb.min_odds > 0:
-                    if template_bet.odds < pb.min_odds:
+                # -- Bonus logic (applied here, not during collection) ---------
+                # Freebet: fixed stake, doesn't consume real balance
+                if pb.is_bonus_phase:
+                    if pb.bonus_amount <= 0:
                         continue
-
-                if template_bet.is_bonus and template_bet.bonus_type == "freebet":
-                    placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                    placed = self._clone_bet_to_provider(
+                        bet, pid, pb,
+                        stake=pb.bonus_amount,
+                        is_bonus=True,
+                        bonus_type="freebet",
+                    )
+                    placed.funded = True
+                    bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
                     batch.append(placed)
-                    assigned = True
-                    break
+                    return True
 
-                if pb.remaining >= template_bet.stake:
-                    placed = BatchBuilder._clone_bet_to_provider(template_bet, pid, pb)
+                # Trigger: fixed stake, must meet min_odds
+                if pb.lifecycle == "deposited" and pb.trigger_mode == "single":
+                    bet_min_odds = pb.min_odds if pb.min_odds else 1.80
+                    if bet.odds < bet_min_odds:
+                        continue
+                    trigger_stake = pb.bonus_amount if pb.bonus_amount > 0 else bet.stake
+                    if pb.remaining < trigger_stake:
+                        continue
+                    placed = self._clone_bet_to_provider(
+                        bet, pid, pb,
+                        stake=trigger_stake,
+                        bonus_type="trigger",
+                    )
+                    placed.funded = True
                     pb.allocated += placed.stake
+                    bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
                     batch.append(placed)
-                    assigned = True
-                    break
+                    return True
 
-            if not assigned:
-                template_bet.skip_reason = f"insufficient balance in cluster {cluster}"
-                # Track missed stats on the best-funded sibling
-                target_pid = siblings[0] if siblings else template_bet.provider_id
-                target_pb = provider_balances.get(target_pid)
-                if target_pb:
-                    target_pb.missed_bets += 1
-                    target_pb.missed_ev += template_bet.expected_profit
-                missed.append(template_bet)
+                # Normal / wagering: Kelly stake, consume balance
+                if pb.remaining >= bet.stake:
+                    placed = self._clone_bet_to_provider(bet, pid, pb)
+                    placed.funded = True
+                    pb.allocated += placed.stake
+                    bets_assigned[pid] = bets_assigned.get(pid, 0) + 1
+                    batch.append(placed)
+                    return True
+
+            return False
+
+        # -- Walk candidates in priority order ---------------------------------
+        for bet in candidates:
+            if bet.tier in ("polymarket", "pinnacle"):
+                if not _try_assign_sharp(bet):
+                    _assign_missed(bet, bet.cluster, f"insufficient balance for {bet.tier}")
+            else:
+                if not _try_assign_soft(bet):
+                    _assign_missed(
+                        bet, bet.cluster,
+                        f"insufficient balance or cap reached in cluster {bet.cluster}",
+                    )
 
         return batch, missed
 
@@ -1067,7 +974,6 @@ class BatchBuilder:
         cluster_opp_stats: dict[str, dict],
         avg_daily_wager: float = 0.0,
         has_wager_history: bool = False,
-        unfunded_sharp: list[dict] | None = None,
     ) -> dict:
         """
         Build capital plan: deposit where balance is short, withdraw where idle.
@@ -1082,8 +988,6 @@ class BatchBuilder:
 
         Returns {"total_deployed": float, "withdrawable": float, "actions": list[dict]}
         """
-        import math
-
         actions: list[dict] = []
 
         # Aggregate missed bets by provider
@@ -1130,26 +1034,6 @@ class BatchBuilder:
                 "priority_label": "sharp_deposit",
             })
             sharp_already_handled.add(pid)
-
-        # Unfunded sharp providers with opportunities in DB
-        for info in (unfunded_sharp or []):
-            pid = info["provider_id"]
-            if pid in sharp_already_handled:
-                continue
-            deposit_amount = round(info["total_stake"], 2)
-            actions.append({
-                "type": "deposit",
-                "provider_id": pid,
-                "cluster": pid,
-                "amount": deposit_amount,
-                "target_balance": deposit_amount,
-                "unlocks": info["opp_count"],
-                "avg_edge": info["avg_edge"],
-                "expected_ev": round(info["total_ev"], 2),
-                "currency": info["currency"],
-                "priority": 1,
-                "priority_label": "sharp_deposit",
-            })
 
         # --- Priority 2/3: Soft deposits ---
         # Aggregate missed bets per cluster, then recommend a single deposit

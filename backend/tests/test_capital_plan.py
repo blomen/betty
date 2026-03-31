@@ -16,7 +16,8 @@ def _make_missed_bet(provider_id, cluster, tier, stake=500, ev=40):
         odds=2.0, fair_odds=1.85, edge_pct=8.0, stake=stake,
         expected_profit=ev, is_bonus=False, bonus_type=None,
         display_home="A", display_away="B", sport="football",
-        league="Test", start_time=None, lifecycle="playing",
+        league="Test", start_time=None, detected_at=None,
+        odds_age_minutes=None, lifecycle="playing",
         cluster=cluster, skip_reason="insufficient balance",
     )
 
