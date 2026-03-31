@@ -504,10 +504,12 @@ class BatchBuilder:
                 bonus_cfg = unclaimed.get(pid)
                 bonus_boosted = False
                 if bonus_cfg:
-                    # Check cluster wagering cap: 2 max (3 if >20 bets)
+                    # Wagering cap = siblings needed to hold all bets (min 2)
+                    # e.g. 48 bets / 10 per provider = 5 siblings needed
+                    import math
                     active_wager = wagering_per_cluster.get(cluster, 0)
                     cluster_bets = bets_per_cluster.get(cluster, 0)
-                    cap_limit = 3 if cluster_bets > 20 else 2
+                    cap_limit = max(2, math.ceil(cluster_bets / self.BETS_PER_PROVIDER))
                     if active_wager < cap_limit:
                         bonus_amt = bonus_cfg.get("amount", 0)
                         wager_mult = bonus_cfg.get("wagering_multiplier", 12)
