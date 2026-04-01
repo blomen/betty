@@ -12,13 +12,13 @@ Total bankroll approach:
 
 Key safety features:
 1. Dynamic Kelly scaling by edge and bankroll
-2. Single bet cap (3% of bankroll)
+2. Single bet cap (2% of bankroll)
 3. Minimum stake guard (scales with bankroll: 5-25 kr)
 
-Monte Carlo optimal parameters (0% ruin, ~270% median growth):
+Monte Carlo optimal parameters (0% ruin, ~271% median growth at 7.5k):
 - max_kelly: 0.75 (3/4 Kelly ceiling at high bankrolls)
 - min_kelly: 0.25 (quarter Kelly floor for low-edge bets)
-- single_bet_cap: 3% of bankroll (4% at low BR, tapers to 3% at 10k+)
+- single_bet_cap: 2% of bankroll (3% at low BR, tapers to 2% at 10k+)
 - min_expected_profit: 0.75 kr
 - Dynamic boost at low bankrolls: kelly * 1.5 below 5k, taper to 5k-10k
 """
@@ -30,7 +30,7 @@ from typing import Optional
 # ── Sim-optimal constants (from Monte Carlo: 3k runs, 52 weeks, 0% ruin) ──
 OPTIMAL_MAX_KELLY = 0.75          # 3/4 Kelly ceiling (converges here at high bankroll)
 OPTIMAL_MIN_KELLY = 0.25          # Quarter Kelly floor for low-edge bets (≤2%)
-OPTIMAL_SINGLE_BET_CAP = 0.03    # 3% of bankroll max per bet
+OPTIMAL_SINGLE_BET_CAP = 0.02    # 2% of bankroll max per bet (MC-optimal: 86% of 3% growth, 40% less DD)
 
 # Default minimum stake (skip bets below this)
 DEFAULT_MIN_STAKE = 25.0
@@ -247,7 +247,7 @@ def calculate_stake(
         bankroll_total: Total bankroll across all providers
         edge_raw: Raw estimated edge (decimal, e.g., 0.05 for 5%)
         odds: Decimal odds (e.g., 2.0)
-        single_bet_cap_pct: Max stake as % of bankroll (sim-optimal: 3%)
+        single_bet_cap_pct: Max stake as % of bankroll (sim-optimal: 2%)
         min_edge: Minimum edge to place bet
         min_odds: Minimum odds (for bonus requirements, 0 to disable)
         min_odds_sanity: Minimum odds for sanity (avoid division issues)
@@ -321,14 +321,14 @@ def calculate_stake(
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
 
-    # Dynamic single bet cap: 4% at low bankrolls, taper to 3% at 10k+
-    # MC-optimal: +12-16% growth at low BR with 0% ruin increase.
+    # Dynamic single bet cap: 3% at low bankrolls, taper to 2% at 10k+
+    # MC-optimal: lets Kelly differentiate edges (24% cap hit vs 67% at 1%)
     effective_cap_pct = single_bet_cap_pct
     if bankroll_total <= DYNAMIC_KELLY_LOW_THRESHOLD:
-        effective_cap_pct = max(single_bet_cap_pct, 0.04)
+        effective_cap_pct = max(single_bet_cap_pct, 0.03)
     elif bankroll_total < DYNAMIC_KELLY_HIGH_THRESHOLD:
         t = (bankroll_total - DYNAMIC_KELLY_LOW_THRESHOLD) / (DYNAMIC_KELLY_HIGH_THRESHOLD - DYNAMIC_KELLY_LOW_THRESHOLD)
-        effective_cap_pct = max(single_bet_cap_pct, 0.04 - t * 0.01)
+        effective_cap_pct = max(single_bet_cap_pct, 0.03 - t * 0.01)
 
     # Apply single bet cap
     single_bet_cap = bankroll_total * effective_cap_pct
