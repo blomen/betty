@@ -386,9 +386,19 @@ class BetInterceptor:
         logger.info("[mirror] Stopped")
 
     def get_status(self) -> dict:
-        """Return current status info."""
+        """Return current status info including detected provider."""
+        current_url = ""
+        detected_provider = None
+        if self.context and self.context.pages:
+            current_url = self.context.pages[0].url or ""
+            for domain, pid in self.PROVIDER_MAP.items():
+                if domain in current_url:
+                    detected_provider = pid
+                    break
         return {
             "running": self.status == "listening",
             "status": self.status,
             "since": self._started_at.isoformat() if self._started_at else None,
+            "current_url": current_url,
+            "detected_provider": detected_provider,
         }

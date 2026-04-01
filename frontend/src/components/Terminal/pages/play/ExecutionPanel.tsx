@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { ProviderName } from '../../ProviderName';
 import { resolveOutcome, marketLabel } from '@/utils/betting';
 import { api } from '@/services/api';
 import type { BatchBet, WageringProjection } from '@/types';
+import { fetchJson } from '@/services/api/client';
 
 
 
@@ -155,6 +156,7 @@ interface ProviderSectionProps {
   onToggle: () => void;
   placedSet: Set<string>;
   onMarkAllDone: (keys: string[]) => void;
+  mirrorProvider: string | null; // Currently detected provider in mirror
 }
 
 function ProviderSection({
@@ -163,6 +165,7 @@ function ProviderSection({
   onToggle,
   placedSet,
   onMarkAllDone,
+  mirrorProvider,
 }: ProviderSectionProps) {
   // Polymarket: live edge from mirror tabs. Soft: null (use batch data).
   const [liveEdge, setLiveEdge] = useState<Record<string, any> | null>(null);
@@ -182,6 +185,9 @@ function ProviderSection({
 
   const tierClass = TIER_CLASSES[group.tier] ?? 'text-success';
   const isPoly = group.providerId === 'polymarket';
+
+  // Is the mirror currently connected to this provider?
+  const isConnected = mirrorProvider === group.providerId;
 
   const batchPayload = useMemo(() => group.bets.map((b) => ({
     event_id: b.event_id,
@@ -208,6 +214,15 @@ function ProviderSection({
       setScanning(false);
     }
   }, [batchPayload]);
+
+  // Auto-scan when mirror connects to this provider (Polymarket)
+  const autoScanned = useRef(false);
+  useEffect(() => {
+    if (isPoly && isConnected && isExpanded && !allDone && !liveEdge && !scanning && !autoScanned.current) {
+      autoScanned.current = true;
+      handleScan();
+    }
+  }, [isPoly, isConnected, isExpanded, allDone, liveEdge, scanning, handleScan]);
 
   // For all providers: has edge data been reviewed?
   // Poly: after scan. Soft: always ready (batch edge is current).
@@ -250,6 +265,9 @@ function ProviderSection({
         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-panel2/50 transition-colors text-left"
       >
         <StatusIcon status={status} />
+
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isConnected ? 'bg-success' : 'bg-border'}`}
+          title={isConnected ? 'Mirror connected' : 'Not connected'} />
 
         <span className={`text-sm font-medium ${tierClass}`}>
           <ProviderName name={group.providerId} />
@@ -434,6 +452,23 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // Poll mirror status every 3s to detect connected provider
+  const [mirrorProvider, setMirrorProvider] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await fetchJson<{ detected_provider?: string }>('/mirror/status');
+        if (!cancelled) setMirrorProvider(status.detected_provider ?? null);
+      } catch {
+        if (!cancelled) setMirrorProvider(null);
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 3_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   // Tick elapsed time every second
   useEffect(() => {
     const interval = setInterval(() => {
@@ -551,6 +586,7 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
             onToggle={() => handleToggleProvider(group.providerId)}
             placedSet={placedBets}
             onMarkAllDone={handleMarkAllDone}
+            mirrorProvider={mirrorProvider}
           />
         ))}
       </div>

@@ -197,7 +197,7 @@ export const settingsApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bets }),
-    });
+    }, 120_000); // 2 min — opening tabs + loading pages is slow
   },
 
   async fireLive(bets: { event_id: string; market: string; outcome: string; odds: number; stake: number }[]): Promise<any> {
