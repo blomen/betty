@@ -1332,6 +1332,110 @@ class MirrorService:
             return True
         return False
 
+    async def scan_polymarket_bets(self, bets: list[dict]) -> dict:
+        """Scan Polymarket markets — navigate to each, read live prices, report deltas.
+
+        Returns: {scanned: [{bet_id, slug, outcome, expected_price, live_price, delta_pct, live_odds, expected_odds, stake, status}]}
+        """
+        import asyncio
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "scanned": []}
+
+        page = context.pages[0]
+        scanned = []
+
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            slug = bet["market_slug"]
+            outcome = bet["outcome"]
+            expected_price = bet["expected_price"]
+            amount = bet["amount_usdc"]
+            original_outcome = bet.get("_original_outcome", outcome).lower()
+            market_type = bet.get("_market_type", "")
+
+            # Determine button index
+            if original_outcome in ("home", "over"):
+                btn_index = 0
+            elif original_outcome == "draw":
+                btn_index = 1
+            elif original_outcome in ("away", "under"):
+                btn_index = 2 if market_type == "1x2" else 1
+            else:
+                btn_index = 0
+
+            # Navigate to market page
+            slug_parts = slug.split("-")
+            league = slug_parts[0] if slug_parts else ""
+            market_url = f"https://polymarket.com/sports/{league}/{slug}"
+            logger.info(f"[mirror] Scanning bet {bet_id}: {market_url}")
+
+            try:
+                await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+            except Exception as e:
+                scanned.append({
+                    "bet_id": bet_id, "slug": slug, "outcome": outcome,
+                    "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
+                    "live_price": None, "live_odds": None, "delta_pct": None,
+                    "stake": amount, "status": "error", "reason": f"Page load failed: {e}",
+                })
+                continue
+
+            # Read all trading button prices
+            try:
+                btn_data = await page.evaluate(
+                    "() => {"
+                    "  const btns = [...document.querySelectorAll('button.trading-button')];"
+                    "  return btns.map(b => {"
+                    "    const text = b.textContent || '';"
+                    "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+                    "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
+                    "    return {text: text.trim().slice(0, 40), price};"
+                    "  });"
+                    "}"
+                )
+
+                if btn_index < len(btn_data) and btn_data[btn_index]["price"] is not None:
+                    live_price = btn_data[btn_index]["price"]
+                    live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+                    expected_odds = bet.get("original_odds", round(1 / expected_price, 2) if expected_price > 0 else 0)
+                    delta_pct = round((live_price - expected_price) / expected_price * 100, 1) if expected_price > 0 else 0
+
+                    scanned.append({
+                        "bet_id": bet_id,
+                        "slug": slug,
+                        "outcome": outcome,
+                        "button_text": btn_data[btn_index]["text"],
+                        "expected_price": expected_price,
+                        "expected_odds": expected_odds,
+                        "live_price": live_price,
+                        "live_odds": live_odds,
+                        "delta_pct": delta_pct,
+                        "stake": amount,
+                        "all_buttons": [b["text"] for b in btn_data],
+                        "status": "ok",
+                    })
+                else:
+                    scanned.append({
+                        "bet_id": bet_id, "slug": slug, "outcome": outcome,
+                        "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
+                        "live_price": None, "live_odds": None, "delta_pct": None,
+                        "stake": amount, "all_buttons": [b["text"] for b in btn_data],
+                        "status": "error", "reason": f"No price at button index {btn_index}",
+                    })
+            except Exception as e:
+                scanned.append({
+                    "bet_id": bet_id, "slug": slug, "outcome": outcome,
+                    "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
+                    "live_price": None, "live_odds": None, "delta_pct": None,
+                    "stake": amount, "status": "error", "reason": str(e),
+                })
+
+        self._notify("polymarket_scan_complete", {"scanned": scanned})
+        return {"scanned": scanned}
+
     async def place_polymarket_bets(self, bets: list[dict]) -> dict:
         """Place bets on Polymarket via Playwright UI automation.
 

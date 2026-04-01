@@ -285,13 +285,12 @@ class FireBatchRequest(BaseModel):
     max_slippage_pct: float = 3.0
 
 
-@router.post("/fire-batch")
-async def fire_polymarket_batch(request: FireBatchRequest):
-    """Fire a batch of Polymarket bets — resolves market slugs from DB, converts stakes to USDC.
+@router.post("/scan-batch")
+async def scan_polymarket_batch(request: FireBatchRequest):
+    """Scan Polymarket markets — navigate to each, read live prices, report deltas.
 
-    Accepts batch bets with event_id/market/outcome (same fields as BatchBet),
-    looks up event_slug from Odds.provider_meta, converts SEK stake to USDC,
-    and delegates to mirror browser for Playwright automation.
+    Call this before fire-batch to verify prices haven't moved.
+    Returns scanned bets with live_price, expected_price, delta_pct.
     """
     mirror = _get_active_mirror()
     if not mirror:
@@ -303,7 +302,20 @@ async def fire_polymarket_batch(request: FireBatchRequest):
     if "polymarket.com" not in (page.url or ""):
         raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
 
-    # Resolve slugs — stakes are already in USDC from batch builder
+    resolved = _resolve_batch_bets(request)
+    if not resolved["bets"]:
+        return {"scanned": [], "resolve_errors": resolved["errors"]}
+
+    result = await mirror.scan_polymarket_bets(resolved["bets"])
+    result["resolve_errors"] = resolved["errors"]
+    return result
+
+
+def _resolve_batch_bets(request: FireBatchRequest) -> dict:
+    """Resolve batch bets to Polymarket slugs and outcomes from DB.
+
+    Returns {"bets": [...resolved...], "errors": [...]}
+    """
     from ..deps import get_db as _get_db
     from ...db.models import Odds
 
@@ -312,7 +324,6 @@ async def fire_polymarket_batch(request: FireBatchRequest):
     errors = []
     try:
         for i, bet in enumerate(request.bets):
-            # Look up the Polymarket odds row to get event_slug
             odds_row = db.query(Odds).filter(
                 Odds.event_id == bet.event_id,
                 Odds.provider_id == "polymarket",
@@ -321,27 +332,17 @@ async def fire_polymarket_batch(request: FireBatchRequest):
             ).first()
 
             if not odds_row or not odds_row.provider_meta:
-                errors.append({
-                    "event_id": bet.event_id,
-                    "reason": "No Polymarket odds found for this event/market/outcome",
-                })
+                errors.append({"event_id": bet.event_id, "reason": "No Polymarket odds found"})
                 continue
 
             meta = odds_row.provider_meta if isinstance(odds_row.provider_meta, dict) else {}
             slug = meta.get("event_slug", "")
             if not slug:
-                errors.append({
-                    "event_id": bet.event_id,
-                    "reason": "No event_slug in provider_meta",
-                })
+                errors.append({"event_id": bet.event_id, "reason": "No event_slug in provider_meta"})
                 continue
 
-            # Stake is already in USDC (batch builder converts at line 763)
             amount_usdc = round(bet.stake, 2)
-            # Convert decimal odds to price (probability)
             expected_price = round(1 / bet.odds, 4) if bet.odds > 1 else 0.5
-
-            # Map outcome (home/away/draw) to Polymarket outcome (Yes/No or team name)
             poly_outcome = _resolve_poly_outcome(bet.outcome, meta)
 
             resolved.append({
@@ -352,21 +353,38 @@ async def fire_polymarket_batch(request: FireBatchRequest):
                 "amount_usdc": amount_usdc,
                 "expected_price": expected_price,
                 "max_slippage_pct": request.max_slippage_pct,
-                # Pass through for tracking and positional button matching
                 "event_id": bet.event_id,
-                "original_stake_sek": bet.stake,
                 "original_odds": bet.odds,
-                "_original_outcome": bet.outcome,  # home/away/draw/over/under
-                "_market_type": bet.market,         # 1x2/moneyline/spread/total
+                "_original_outcome": bet.outcome,
+                "_market_type": bet.market,
             })
     finally:
         db.close()
+    return {"bets": resolved, "errors": errors}
 
-    if not resolved:
-        return {"placed": [], "skipped": [], "failed": errors, "total": 0, "resolve_errors": errors}
 
-    result = await mirror.place_polymarket_bets(resolved)
-    result["resolve_errors"] = errors
+@router.post("/fire-batch")
+async def fire_polymarket_batch(request: FireBatchRequest):
+    """Place a batch of Polymarket bets via mirror browser automation.
+
+    Call scan-batch first to verify prices, then fire-batch to place.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    if "polymarket.com" not in (page.url or ""):
+        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+
+    resolved = _resolve_batch_bets(request)
+    if not resolved["bets"]:
+        return {"placed": [], "skipped": [], "failed": resolved["errors"], "total": 0, "resolve_errors": resolved["errors"]}
+
+    result = await mirror.place_polymarket_bets(resolved["bets"])
+    result["resolve_errors"] = resolved["errors"]
     return result
 
 

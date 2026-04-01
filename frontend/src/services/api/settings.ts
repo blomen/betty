@@ -192,6 +192,14 @@ export const settingsApi = {
     return fetchJson('/mirror/settlements/reject', { method: 'POST' });
   },
 
+  async scanPolymarketBatch(bets: { event_id: string; market: string; outcome: string; odds: number; stake: number }[], maxSlippagePct = 3.0): Promise<any> {
+    return fetchJson('/mirror/scan-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bets, max_slippage_pct: maxSlippagePct }),
+    });
+  },
+
   async firePolymarketBatch(bets: { event_id: string; market: string; outcome: string; odds: number; stake: number }[], maxSlippagePct = 3.0): Promise<any> {
     return fetchJson('/mirror/fire-batch', {
       method: 'POST',

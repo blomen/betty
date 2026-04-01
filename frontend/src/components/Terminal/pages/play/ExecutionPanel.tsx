@@ -194,6 +194,8 @@ function ProviderSection({
 }: ProviderSectionProps) {
   const [firing, setFiring] = useState(false);
   const [fireResult, setFireResult] = useState<string | null>(null);
+  const [scanResult, setScanResult] = useState<any[] | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   const betKeys = group.bets.map(betKey);
   const placedCount = betKeys.filter((k) => placedSet.has(k)).length;
@@ -209,22 +211,38 @@ function ProviderSection({
   const tierClass = TIER_CLASSES[group.tier] ?? 'text-success';
   const isPoly = group.providerId === 'polymarket';
 
-  const handleFire = async () => {
+  const batchPayload = group.bets.map((b) => ({
+    event_id: b.event_id,
+    market: b.market,
+    outcome: b.outcome,
+    odds: b.odds,
+    stake: b.stake,
+  }));
+
+  const handleScan = async () => {
+    setScanning(true);
+    setScanResult(null);
+    setFireResult(null);
+    try {
+      const result = await api.scanPolymarketBatch(batchPayload);
+      setScanResult(result.scanned ?? []);
+    } catch (err: any) {
+      setFireResult(`Scan error: ${err.message || err}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleConfirmFire = async () => {
     setFiring(true);
     setFireResult(null);
     try {
-      const bets = group.bets.map((b) => ({
-        event_id: b.event_id,
-        market: b.market,
-        outcome: b.outcome,
-        odds: b.odds,
-        stake: b.stake,
-      }));
-      const result = await api.firePolymarketBatch(bets);
+      const result = await api.firePolymarketBatch(batchPayload);
       const p = result.placed?.length ?? 0;
       const s = result.skipped?.length ?? 0;
       const f = result.failed?.length ?? 0;
       setFireResult(`${p} placed, ${s} skipped, ${f} failed`);
+      setScanResult(null);
       if (p > 0) {
         onMarkAllDone(betKeys);
       }
@@ -372,20 +390,72 @@ function ProviderSection({
             </tbody>
           </table>
 
+          {/* Scan results */}
+          {isPoly && scanResult && (
+            <div className="border-t border-border">
+              <table className="sq w-full">
+                <thead className="bg-panel2">
+                  <tr>
+                    <th className="text-left">Outcome</th>
+                    <th className="text-right">Expected</th>
+                    <th className="text-right">Live</th>
+                    <th className="text-right">Delta</th>
+                    <th className="text-right">Stake</th>
+                    <th className="text-left">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scanResult.map((s: any, i: number) => {
+                    const deltaOk = s.status === 'ok' && s.delta_pct != null && Math.abs(s.delta_pct) <= 10;
+                    return (
+                      <tr key={i} className={s.status !== 'ok' ? 'text-error' : ''}>
+                        <td className="text-sm">{s.outcome} <span className="text-[10px] text-muted">{s.button_text}</span></td>
+                        <td className="text-right text-sm">{s.expected_odds?.toFixed(2) ?? '?'}</td>
+                        <td className="text-right text-sm font-medium">{s.live_odds?.toFixed(2) ?? '?'}</td>
+                        <td className={`text-right text-sm font-semibold ${deltaOk ? 'text-success' : 'text-error'}`}>
+                          {s.delta_pct != null ? `${s.delta_pct > 0 ? '+' : ''}${s.delta_pct}%` : 'ERR'}
+                        </td>
+                        <td className="text-right text-sm">${s.stake?.toFixed(1)}</td>
+                        <td className="text-sm">{s.status === 'ok' ? (deltaOk ? 'OK' : 'DRIFT') : s.reason?.slice(0, 30)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* Actions */}
           {!allDone && (
             <div className="px-3 py-2 border-t border-border flex items-center justify-end gap-2">
               {fireResult && (
                 <span className="text-xs text-muted mr-auto">{fireResult}</span>
               )}
-              {isPoly && (
+              {isPoly && !scanResult && (
                 <button
-                  onClick={handleFire}
-                  disabled={firing || allDone}
+                  onClick={handleScan}
+                  disabled={scanning}
                   className="px-3 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
-                  {firing ? 'Firing...' : 'Fire Polymarket'}
+                  {scanning ? 'Scanning...' : 'Scan Prices'}
                 </button>
+              )}
+              {isPoly && scanResult && (
+                <>
+                  <button
+                    onClick={() => setScanResult(null)}
+                    className="px-3 py-1 bg-border text-text text-xs font-medium hover:opacity-90 transition-opacity"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmFire}
+                    disabled={firing}
+                    className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    {firing ? 'Placing...' : 'Confirm & Place'}
+                  </button>
+                </>
               )}
               <button
                 onClick={() => onMarkAllDone(betKeys)}
