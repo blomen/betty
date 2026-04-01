@@ -285,32 +285,6 @@ class FireBatchRequest(BaseModel):
     max_slippage_pct: float = 3.0
 
 
-@router.post("/scan-batch")
-async def scan_polymarket_batch(request: FireBatchRequest):
-    """Scan Polymarket markets — navigate to each, read live prices, report deltas.
-
-    Call this before fire-batch to verify prices haven't moved.
-    Returns scanned bets with live_price, expected_price, delta_pct.
-    """
-    mirror = _get_active_mirror()
-    if not mirror:
-        raise HTTPException(400, "No mirror running")
-    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
-        raise HTTPException(400, "No browser pages open")
-
-    page = mirror.interceptor.context.pages[0]
-    if "polymarket.com" not in (page.url or ""):
-        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
-
-    resolved = _resolve_batch_bets(request)
-    if not resolved["bets"]:
-        return {"scanned": [], "resolve_errors": resolved["errors"]}
-
-    result = await mirror.scan_polymarket_bets(resolved["bets"])
-    result["resolve_errors"] = resolved["errors"]
-    return result
-
-
 def _resolve_batch_bets(request: FireBatchRequest) -> dict:
     """Resolve batch bets to Polymarket slugs and outcomes from DB.
 
@@ -363,12 +337,60 @@ def _resolve_batch_bets(request: FireBatchRequest) -> dict:
     return {"bets": resolved, "errors": errors}
 
 
+@router.post("/live-edge")
+async def get_live_edge(request: FireBatchRequest):
+    """Get live Polymarket odds compared against Pinnacle fair odds.
+
+    Returns per-bet: live_odds, fair_odds, edge_pct, status.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    if "polymarket.com" not in (page.url or ""):
+        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+
+    resolved = _resolve_batch_bets(request)
+    if not resolved["bets"]:
+        return {"bets": [], "resolve_errors": resolved["errors"]}
+
+    result = await mirror.get_live_edge(resolved["bets"])
+    result["resolve_errors"] = resolved["errors"]
+    return result
+
+
+@router.post("/fire-live")
+async def fire_live(request: FireBatchRequest):
+    """Scan live Polymarket prices and auto-fire bets with positive edge.
+
+    Combines scan + fire in one pass. Only places bets where
+    edge_pct > 0 after Polymarket's 2% fee.
+    """
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
+        raise HTTPException(400, "No browser pages open")
+
+    page = mirror.interceptor.context.pages[0]
+    if "polymarket.com" not in (page.url or ""):
+        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+
+    resolved = _resolve_batch_bets(request)
+    if not resolved["bets"]:
+        return {"placed": [], "skipped": [], "negative": [], "errors": resolved["errors"], "total": 0}
+
+    result = await mirror.fire_with_live_edge(resolved["bets"])
+    result["resolve_errors"] = resolved["errors"]
+    return result
+
+
 @router.post("/fire-batch")
 async def fire_polymarket_batch(request: FireBatchRequest):
-    """Place a batch of Polymarket bets via mirror browser automation.
-
-    Call scan-batch first to verify prices, then fire-batch to place.
-    """
+    """Deprecated — use /fire-live instead."""
     mirror = _get_active_mirror()
     if not mirror:
         raise HTTPException(400, "No mirror running")
