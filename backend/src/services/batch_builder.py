@@ -1119,6 +1119,8 @@ class BatchBuilder:
             if pb.wagering_remaining <= 0:
                 continue
             batch_stake = provider_stakes.get(pid, 0)
+            if batch_stake <= 0:
+                continue
             projected_remaining = max(0, pb.wagering_remaining - batch_stake)
             projections.append({
                 "provider_id": pid,
@@ -1147,6 +1149,8 @@ class BatchBuilder:
             if pb.wagering_remaining <= 0:
                 continue
             batch_stake = provider_stakes.get(pid, 0)
+            if batch_stake <= 0:
+                continue
             projected_remaining = max(0, pb.wagering_remaining - batch_stake)
             projections.append({
                 "provider_id": pid,
