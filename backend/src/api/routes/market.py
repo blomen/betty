@@ -158,6 +158,21 @@ async def trigger_compute(
             "single_print_zones": [],
             "swing_structure": expanded.get("swing_structure"),
         }
+        # Enrich macro with live exchange stats from Databento stream
+        stream = _get_live_stream(request)
+        if stream:
+            ds = stream.daily_stats
+            if ds:
+                macro_dict = rl_context.get("macro") or {}
+                macro_dict.update({
+                    "oi": ds.get("open_interest", {}).get("value", 0),
+                    "oi_change": 0,  # No prior-day ref in live — zeroed
+                    "settlement_price": ds.get("settlement_price", {}).get("value", 0),
+                    "cleared_volume": ds.get("cleared_volume", {}).get("value", 0),
+                    "block_volume": ds.get("block_volume", {}).get("value", 0),
+                })
+                rl_context["macro"] = macro_dict
+
         level_monitor.set_session_context(rl_context)
 
     return data
