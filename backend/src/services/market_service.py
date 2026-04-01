@@ -45,10 +45,10 @@ def _get_provider() -> MarketDataProvider:
     if provider_type == "databento":
         from ..market_data.databento_provider import DabentoProvider
         from ..market_data.cache import CachedMarketDataProvider
-        from ..paths import get_app_data_dir
+        from ..paths import get_data_dir
 
         inner = DabentoProvider(config)
-        cache_dir = get_app_data_dir() / "data" / config.get("cache_dir", "market_cache")
+        cache_dir = get_data_dir() / config.get("cache_dir", "market_cache")
         _provider = CachedMarketDataProvider(inner, cache_dir)
     else:
         raise ValueError(f"Unknown market data provider: {provider_type}")

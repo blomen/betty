@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from ..paths import get_app_data_dir
+from ..paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class NotificationRecipe:
 
 def _recipes_path(base_dir: Path | None = None) -> Path:
     """Resolve path to recipes JSON file."""
-    base = base_dir or (get_app_data_dir() / "data")
+    base = base_dir or get_data_dir()
     base.mkdir(parents=True, exist_ok=True)
     return base / RECIPES_FILENAME
 

@@ -9,19 +9,19 @@ import asyncio
 import sys
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ...paths import get_bundle_dir
 from ..deps import get_db
 from ...db.models import SpecialOdds
 from ...analysis.ev_enrichment import enrich_specials_with_ev, filter_expired, deduplicate_specials, store_specials_to_db
 from ...analysis.llm_enrichment import get_llm_health
 
-# Ensure scripts/ package is importable (lives in bundle root / backend/)
-_backend_root = str(get_bundle_dir())
+# Ensure scripts/ package is importable (lives in backend/)
+_backend_root = str(Path(__file__).resolve().parent.parent.parent.parent)
 if _backend_root not in sys.path:
     sys.path.insert(0, _backend_root)
 

@@ -48,8 +48,8 @@ class NetworkRecorder:
     def __init__(self, provider_id: str, data_dir: Path | None = None):
         self.provider_id = provider_id
         if data_dir is None:
-            from ..paths import get_app_data_dir
-            data_dir = get_app_data_dir() / "data"
+            from ..paths import get_data_dir
+            data_dir = get_data_dir()
         self._recordings_dir = data_dir / "mirror_recordings" / provider_id
         self._file = None
         self._path: Path | None = None

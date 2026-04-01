@@ -411,8 +411,8 @@ async def lifespan(app: FastAPI):
         """
         await asyncio.sleep(30)  # Let API stabilize before launching browsers
         try:
-            from ..paths import get_app_data_dir
-            profiles_dir = get_app_data_dir() / "data" / "mirror_profiles"
+            from ..paths import get_data_dir
+            profiles_dir = get_data_dir() / "mirror_profiles"
             if not profiles_dir.exists():
                 logger.info("No mirror profiles found — skipping auto-start")
                 return
@@ -617,11 +617,11 @@ app.include_router(mirror_router)
 @app.get("/api/version")
 async def get_version():
     """Return app version and runtime info."""
-    from ..paths import get_app_data_dir, is_bundled
+    from ..paths import get_data_dir
     return {
         "version": app.version,
-        "data_dir": str(get_app_data_dir()),
-        "is_bundled": is_bundled(),
+        "data_dir": str(get_data_dir()),
+        "is_bundled": False,
     }
 
 

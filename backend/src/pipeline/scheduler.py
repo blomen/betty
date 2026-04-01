@@ -11,6 +11,7 @@ Each soft provider gets its own async loop with independent cooldown after compl
 
 import asyncio
 import logging
+from pathlib import Path
 import yaml
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -697,9 +698,8 @@ class ExtractionScheduler:
         """Execute the boost scraper in a thread executor."""
         import sys
         from dataclasses import asdict
-        from src.paths import get_bundle_dir
-        # Ensure scripts/ package is importable (lives in bundle root / backend/)
-        _root = str(get_bundle_dir())
+        # Ensure scripts/ package is importable (lives in backend/)
+        _root = str(Path(__file__).resolve().parent.parent.parent)
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import scrape_all, save_specials

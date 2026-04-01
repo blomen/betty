@@ -105,8 +105,8 @@ class BetInterceptor:
         self._started_at = None
         self.recorder = NetworkRecorder("mirror")
 
-        from ..paths import get_app_data_dir
-        self.user_data_dir = get_app_data_dir() / "data" / "mirror_profiles" / "default"
+        from ..paths import get_data_dir
+        self.user_data_dir = get_data_dir() / "mirror_profiles" / "default"
 
     async def start(self):
         """Launch headed browser — opens to a blank page, user navigates freely."""

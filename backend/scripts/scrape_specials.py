@@ -95,8 +95,8 @@ SPORT_KEYWORDS: dict[str, list[str]] = {
 # Output path — use centralized paths for bundled mode support
 def _get_data_dir() -> Path:
     try:
-        from src.paths import get_app_data_dir
-        return get_app_data_dir() / "data"
+        from src.paths import get_data_dir
+        return get_data_dir()
     except ImportError:
         return Path(__file__).parent.parent / "data"
 
