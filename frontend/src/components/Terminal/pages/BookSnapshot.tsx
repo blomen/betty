@@ -156,21 +156,6 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo
               </div>
             )}
 
-            {/* IB */}
-            {(s?.ib_high != null || s?.ib_low != null) && (
-              <div className="mb-1">
-                {s?.ib_high != null && <Row label="IBH" value={s.ib_high.toFixed(2)} color="text-amber-400" />}
-                {s?.ib_low != null && <Row label="IBL" value={s.ib_low.toFixed(2)} color="text-amber-400" />}
-                {s?.ib_range != null && <Row label="IB Range" value={s.ib_range.toFixed(2)} color="text-muted2" />}
-                {pricePos?.vs_ib && pricePos.vs_ib !== 'unknown' && (
-                  <div className="flex justify-between">
-                    <span className="text-[10px] text-muted2">Price vs IB</span>
-                    <PosTag value={pricePos.vs_ib} />
-                  </div>
-                )}
-              </div>
-            )}
-
             <Group label="Tokyo" hidden={isGroupHidden('tokyo')} onToggle={() => toggleGroup('tokyo')}>
               {s?.tokyo_high != null && <Row label="Tokyo H" value={s.tokyo_high.toFixed(2)} color="text-cyan-300" />}
               {s?.tokyo_low != null && <Row label="Tokyo L" value={s.tokyo_low.toFixed(2)} color="text-cyan-300" />}
@@ -647,7 +632,17 @@ function SessionTPOCard({ label, data, color, borderColor, hidden, onToggle }: {
       <div className="flex justify-between">
         <span className="text-muted2">VAL</span><span className="text-text">{data.val.toFixed(0)}</span>
       </div>
-      {/* IB Range (IBH/IBL shown in Session section) */}
+      {/* IB levels */}
+      {data.ib_valid && (
+        <>
+          <div className="flex justify-between">
+            <span className="text-muted2">IBH</span><span className="text-amber-400">{data.ib_high.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted2">IBL</span><span className="text-amber-400">{data.ib_low.toFixed(2)}</span>
+          </div>
+        </>
+      )}
       <div className="flex justify-between">
         <span className="text-muted2">IB Range</span>
         <span className="text-muted2">{ibTicks}t</span>

@@ -397,37 +397,29 @@ export function CandleChart({ lastCandle, session, hiddenLevels }: Props) {
       }
     }
 
-    // --- PDH/PDL levels — per-day, scoped from day_start to day_end ---
-    for (const sl of slDays) {
+    // --- PDH/PDL levels — latest day only, full chart width ---
+    if (latestSL) {
       const pdhpdlLevels: Array<{ price: number; label: string; key: string }> = [];
-      if (sl.pdh != null && !slHidden?.has('pdh')) pdhpdlLevels.push({ price: sl.pdh, label: 'PDH', key: 'pdh' });
-      if (sl.pdl != null && !slHidden?.has('pdl')) pdhpdlLevels.push({ price: sl.pdl, label: 'PDL', key: 'pdl' });
-      if (pdhpdlLevels.length === 0) continue;
-
-      const x1Raw = timeScale.timeToCoordinate(toLocalEpoch(sl.day_start) as Time);
-      const x2Raw = timeScale.timeToCoordinate(toLocalEpoch(sl.day_end) as Time);
-      if (x1Raw === null && x2Raw === null) continue;
+      if (latestSL.pdh != null && !slHidden?.has('pdh')) pdhpdlLevels.push({ price: latestSL.pdh, label: 'PDH', key: 'pdh' });
+      if (latestSL.pdl != null && !slHidden?.has('pdl')) pdhpdlLevels.push({ price: latestSL.pdl, label: 'PDL', key: 'pdl' });
 
       for (const lvl of pdhpdlLevels) {
         const y = pSeries.priceToCoordinate(lvl.price);
         if (y === null) continue;
-        const x1 = x1Raw != null ? Math.max(0, x1Raw) : 0;
-        const x2 = x2Raw != null ? Math.min(rect.width, x2Raw) : rect.width;
-        if (x2 < 0 || x1 > rect.width) continue;
 
         ctx.save();
         ctx.strokeStyle = '#FB923C'; // orange-400
         ctx.lineWidth = 1;
         ctx.setLineDash([6, 3]);
         ctx.beginPath();
-        ctx.moveTo(x1, y);
-        ctx.lineTo(x2, y);
+        ctx.moveTo(0, y);
+        ctx.lineTo(rect.width, y);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.font = '9px monospace';
         ctx.fillStyle = '#FB923C';
         ctx.textAlign = 'left';
-        ctx.fillText(lvl.label, x1 + 3, y - 3);
+        ctx.fillText(lvl.label, 3, y - 3);
         ctx.restore();
       }
     }
