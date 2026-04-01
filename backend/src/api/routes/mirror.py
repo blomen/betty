@@ -82,7 +82,7 @@ async def stop_mirror():
 
 
 @router.get("/status")
-async def mirror_status():
+def mirror_status():
     """Get mirror status — returns running if any mirror instance is active."""
     for m in _mirrors.values():
         status = m.get_status()
@@ -100,7 +100,7 @@ def _get_active_mirror() -> MirrorService | None:
 
 
 @router.get("/settlements")
-async def get_pending_settlements():
+def get_pending_settlements():
     """Get staged settlements awaiting confirmation."""
     mirror = _get_active_mirror()
     if not mirror:
@@ -109,7 +109,7 @@ async def get_pending_settlements():
 
 
 @router.post("/settlements/confirm")
-async def confirm_settlements():
+def confirm_settlements():
     """Apply all pending settlements to the database."""
     mirror = _get_active_mirror()
     if not mirror:
@@ -118,7 +118,7 @@ async def confirm_settlements():
 
 
 @router.post("/settlements/reject")
-async def reject_settlements():
+def reject_settlements():
     """Discard all pending settlements."""
     mirror = _get_active_mirror()
     if not mirror:
@@ -385,7 +385,7 @@ async def fire_live(request: FireBatchRequest):
     if not mirror or not mirror.interceptor.context:
         raise HTTPException(400, "Could not start mirror browser")
 
-    resolved = _resolve_batch_bets(request)
+    resolved = await asyncio.to_thread(_resolve_batch_bets, request)
     if not resolved["bets"]:
         return {"placed": [], "skipped": [], "negative": [], "errors": resolved["errors"], "total": 0}
 
@@ -407,7 +407,7 @@ async def fire_polymarket_batch(request: FireBatchRequest):
     if "polymarket.com" not in (page.url or ""):
         raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
 
-    resolved = _resolve_batch_bets(request)
+    resolved = await asyncio.to_thread(_resolve_batch_bets, request)
     if not resolved["bets"]:
         return {"placed": [], "skipped": [], "failed": resolved["errors"], "total": 0, "resolve_errors": resolved["errors"]}
 
@@ -454,7 +454,7 @@ async def page_eval(js: str = "() => document.body.innerText"):
 
 
 @router.get("/notification-recipes")
-async def get_notification_recipes():
+def get_notification_recipes():
     """List all stored notification mute recipes."""
     mirror = _get_active_mirror()
     if not mirror:
@@ -463,7 +463,7 @@ async def get_notification_recipes():
 
 
 @router.delete("/notification-recipes/{provider_id}")
-async def delete_notification_recipe(provider_id: str):
+def delete_notification_recipe(provider_id: str):
     """Delete a notification mute recipe for a provider."""
     mirror = _get_active_mirror()
     if not mirror:

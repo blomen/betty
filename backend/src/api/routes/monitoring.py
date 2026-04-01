@@ -11,7 +11,7 @@ router = APIRouter(tags=["monitoring"])
 # ============ Circuit Breaker ============
 
 @router.get("/api/circuit-breaker/status")
-async def get_circuit_breaker_status():
+def get_circuit_breaker_status():
     """Get circuit breaker status for all providers."""
     pipeline = get_pipeline()
 
@@ -36,7 +36,7 @@ async def get_circuit_breaker_status():
 
 
 @router.get("/api/circuit-breaker/status/{provider_id}")
-async def get_provider_circuit_breaker_status(provider_id: str):
+def get_provider_circuit_breaker_status(provider_id: str):
     """Get circuit breaker status for specific provider."""
     pipeline = get_pipeline()
 
@@ -57,7 +57,7 @@ async def get_provider_circuit_breaker_status(provider_id: str):
 
 
 @router.post("/api/circuit-breaker/reset/{provider_id}")
-async def reset_circuit_breaker(provider_id: str):
+def reset_circuit_breaker(provider_id: str):
     """Manually reset circuit breaker for provider."""
     pipeline = get_pipeline()
 
@@ -76,7 +76,7 @@ async def reset_circuit_breaker(provider_id: str):
 # ============ Cache ============
 
 @router.get("/api/cache/stats")
-async def get_cache_stats():
+def get_cache_stats():
     """Get cache statistics."""
     pipeline = get_pipeline()
 
@@ -89,7 +89,7 @@ async def get_cache_stats():
 
 
 @router.get("/api/cache/stats/{provider_id}")
-async def get_provider_cache_stats(provider_id: str):
+def get_provider_cache_stats(provider_id: str):
     """Get cache statistics for specific provider."""
     pipeline = get_pipeline()
 
@@ -105,7 +105,7 @@ async def get_provider_cache_stats(provider_id: str):
 
 
 @router.post("/api/cache/clear")
-async def clear_cache(provider_id: Optional[str] = None):
+def clear_cache(provider_id: Optional[str] = None):
     """Clear cache (all or specific provider)."""
     pipeline = get_pipeline()
 
@@ -121,7 +121,7 @@ async def clear_cache(provider_id: Optional[str] = None):
 
 
 @router.post("/api/cache/evict-expired")
-async def evict_expired_cache():
+def evict_expired_cache():
     """Manually evict expired cache entries."""
     pipeline = get_pipeline()
 
@@ -139,7 +139,7 @@ async def evict_expired_cache():
 # ============ Health Checks ============
 
 @router.get("/api/health-check/status")
-async def get_health_check_status():
+def get_health_check_status():
     """Get cached health check status for all providers."""
     pipeline = get_pipeline()
 
@@ -189,7 +189,7 @@ async def run_health_check(provider_id: str, force: bool = False):
 
 
 @router.post("/api/health-check/clear-cache")
-async def clear_health_check_cache(provider_id: Optional[str] = None):
+def clear_health_check_cache(provider_id: Optional[str] = None):
     """Clear health check cache."""
     pipeline = get_pipeline()
 
@@ -207,7 +207,7 @@ async def clear_health_check_cache(provider_id: Optional[str] = None):
 # ============ Provider Monitoring ============
 
 @router.get("/api/monitor/providers")
-async def monitor_all_providers(limit: int = 20):
+def monitor_all_providers(limit: int = 20):
     """Get health assessment for all providers."""
     pipeline = get_pipeline()
 
@@ -282,7 +282,7 @@ async def monitor_all_providers(limit: int = 20):
 
 
 @router.get("/api/monitor/providers/{provider_id}")
-async def monitor_provider(provider_id: str, limit: int = 20):
+def monitor_provider(provider_id: str, limit: int = 20):
     """Get detailed health assessment for specific provider."""
     pipeline = get_pipeline()
 
@@ -352,7 +352,7 @@ async def monitor_provider(provider_id: str, limit: int = 20):
 
 
 @router.get("/api/monitor/unhealthy")
-async def get_unhealthy_providers(limit: int = 20):
+def get_unhealthy_providers(limit: int = 20):
     """Get list of unhealthy providers."""
     pipeline = get_pipeline()
 
@@ -395,7 +395,7 @@ async def get_unhealthy_providers(limit: int = 20):
 
 
 @router.get("/api/monitor/critical")
-async def get_critical_providers(limit: int = 20):
+def get_critical_providers(limit: int = 20):
     """Get list of providers with critical issues."""
     pipeline = get_pipeline()
 

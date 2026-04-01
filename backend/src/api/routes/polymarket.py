@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/polymarket", tags=["polymarket"])
 
 
 @router.get("/value")
-async def get_polymarket_value(
+def get_polymarket_value(
     min_edge: Optional[float] = Query(None, description="Minimum edge percentage (defaults to profile min_edge_pct)"),
     sport: Optional[str] = None,
     limit: int = Query(200, ge=1, le=500),
@@ -193,7 +193,7 @@ async def get_polymarket_value(
 
 
 @router.get("/stats")
-async def get_polymarket_stats(
+def get_polymarket_stats(
     db: Session = Depends(get_db),
 ):
     """Get Polymarket extraction statistics and data quality metrics."""
@@ -265,7 +265,7 @@ async def get_polymarket_stats(
 
 
 @router.get("/matched")
-async def get_polymarket_matched(
+def get_polymarket_matched(
     sport: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db),
@@ -556,39 +556,46 @@ async def get_polymarket_rewards(
     db: Session = Depends(get_db),
 ):
     """Get Polymarket sport events with liquidity rewards, matched to Pinnacle."""
-    # Run all DB queries FIRST (before any async await) to avoid session staleness
-    db_events = db.query(Event).all()
-    events_by_id: dict[str, Event] = {e.id: e for e in db_events}
+    import asyncio
 
-    pinnacle_event_ids = set(
-        row[0] for row in
-        db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
-    )
+    # Run all DB queries in a thread to avoid blocking the event loop
+    def _db_queries():
+        db_events = db.query(Event).all()
+        events_by_id = {e.id: e for e in db_events}
 
-    pinnacle_odds_rows = (
-        db.query(Odds)
-        .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
-        .all()
-    ) if pinnacle_event_ids else []
-    pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
-    for o in pinnacle_odds_rows:
-        pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
-
-    excluded = SHARP_PROVIDERS | {"polymarket"}
-    soft_odds_rows = (
-        db.query(Odds)
-        .filter(
-            Odds.event_id.in_(pinnacle_event_ids),
-            ~Odds.provider_id.in_(excluded),
+        pinnacle_event_ids = set(
+            row[0] for row in
+            db.query(Odds.event_id).filter(Odds.provider_id == "pinnacle").distinct().all()
         )
-        .all()
-    ) if pinnacle_event_ids else []
-    best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
-    for o in soft_odds_rows:
-        by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
-        current = by_market.get(o.outcome)
-        if current is None or o.odds > current[0]:
-            by_market[o.outcome] = (o.odds, o.provider_id)
+
+        pinnacle_odds_rows = (
+            db.query(Odds)
+            .filter(Odds.provider_id == "pinnacle", Odds.event_id.in_(pinnacle_event_ids))
+            .all()
+        ) if pinnacle_event_ids else []
+        pinnacle_odds_map: dict[str, dict[str, dict[str, float]]] = {}
+        for o in pinnacle_odds_rows:
+            pinnacle_odds_map.setdefault(o.event_id, {}).setdefault(o.market, {})[o.outcome] = o.odds
+
+        excluded = SHARP_PROVIDERS | {"polymarket"}
+        soft_odds_rows = (
+            db.query(Odds)
+            .filter(
+                Odds.event_id.in_(pinnacle_event_ids),
+                ~Odds.provider_id.in_(excluded),
+            )
+            .all()
+        ) if pinnacle_event_ids else []
+        best_soft_map: dict[str, dict[str, dict[str, tuple[float, str]]]] = {}
+        for o in soft_odds_rows:
+            by_market = best_soft_map.setdefault(o.event_id, {}).setdefault(o.market, {})
+            current = by_market.get(o.outcome)
+            if current is None or o.odds > current[0]:
+                by_market[o.outcome] = (o.odds, o.provider_id)
+
+        return events_by_id, pinnacle_event_ids, pinnacle_odds_map, best_soft_map
+
+    events_by_id, pinnacle_event_ids, pinnacle_odds_map, best_soft_map = await asyncio.to_thread(_db_queries)
 
     # Now fetch Gamma API (async, may take 10-30s on cold cache)
     gamma_events = await _fetch_gamma_reward_events()
@@ -771,7 +778,7 @@ async def get_polymarket_rewards(
 
 
 @router.get("/mybets")
-async def get_mybets(
+def get_mybets(
     status: Optional[str] = None,
     exclude_bonus: bool = False,
     limit: int = Query(100, ge=1, le=500),

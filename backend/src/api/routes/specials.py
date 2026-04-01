@@ -84,7 +84,7 @@ def _load_from_json_fallback(db: Session) -> list[dict]:
 
 
 @router.get("")
-async def get_specials(
+def get_specials(
     sport: Optional[str] = Query(None, description="Filter by sport (e.g. football)"),
     provider: Optional[str] = Query(None, description="Filter by provider (matches provider + shared_providers)"),
     category: Optional[str] = Query(None, description="Filter by category (boost, superboost)"),
@@ -297,7 +297,7 @@ def _persist_boost_log(run_log):
 
 
 @router.get("/extraction-log")
-async def get_boost_extraction_log(db: Session = Depends(get_db)):
+def get_boost_extraction_log(db: Session = Depends(get_db)):
     """Get the latest boost extraction log."""
     from ...db.models import BoostExtractionLog
 

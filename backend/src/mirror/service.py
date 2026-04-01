@@ -38,6 +38,8 @@ class MirrorService:
         self._recipes: list[NotificationRecipe] = []
         self._muted_providers: set[str] = set()
         self._load_notification_recipes()
+        # Persistent tabs for Polymarket live edge: {slug: page}
+        self._poly_tabs: dict[str, any] = {}
         self.interceptor = BetInterceptor(
             on_bet_response=self._handle_bet_response,
             on_event_data=self._handle_event_data,
@@ -1405,11 +1407,53 @@ class MirrorService:
             "}"
         )
 
-    async def get_live_edge(self, bets: list[dict]) -> dict:
-        """Read live Polymarket prices from parallel tabs, compare against Pinnacle fair odds.
+    async def _ensure_poly_tabs(self, bets: list[dict]) -> None:
+        """Ensure one persistent tab per unique market slug. Reuses existing tabs."""
+        import asyncio
 
-        Opens one tab per bet, loads all pages concurrently, reads prices from each,
-        then closes extra tabs. No sequential navigation loop.
+        context = self.interceptor.context
+        if not context:
+            return
+
+        # Clean up stale tabs (closed pages)
+        for slug in list(self._poly_tabs):
+            try:
+                page = self._poly_tabs[slug]
+                if page.is_closed():
+                    del self._poly_tabs[slug]
+            except Exception:
+                del self._poly_tabs[slug]
+
+        # Find slugs that need new tabs
+        needed_slugs = {b["market_slug"] for b in bets} - set(self._poly_tabs)
+        if not needed_slugs:
+            return
+
+        # Open new tabs for missing slugs
+        async def open_tab(slug):
+            url = self._market_url(slug)
+            try:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+                self._poly_tabs[slug] = page
+            except Exception as e:
+                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
+
+        await asyncio.gather(*[open_tab(slug) for slug in needed_slugs])
+
+    async def close_poly_tabs(self) -> None:
+        """Close all persistent Polymarket tabs."""
+        for slug in list(self._poly_tabs):
+            try:
+                await self._poly_tabs.pop(slug).close()
+            except Exception:
+                self._poly_tabs.pop(slug, None)
+
+    async def get_live_edge(self, bets: list[dict]) -> dict:
+        """Read live Polymarket prices from persistent tabs, compare against Pinnacle fair odds.
+
+        Reuses tabs across poll cycles — only opens new tabs for unseen markets.
 
         Each bet dict: {bet_id, market_slug, outcome, expected_price, amount_usdc,
                         event_id, original_odds, _original_outcome, _market_type}
@@ -1424,40 +1468,12 @@ class MirrorService:
 
         # Fetch Pinnacle fair odds for all events in batch
         event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
-        fair_odds_map = self._fetch_fair_odds(event_ids)
+        fair_odds_map = await asyncio.to_thread(self._fetch_fair_odds, event_ids)
 
-        # Deduplicate by slug — multiple bets can share the same market page
-        slug_to_bets: dict[str, list[dict]] = {}
-        for bet in bets:
-            slug = bet["market_slug"]
-            slug_to_bets.setdefault(slug, []).append(bet)
+        # Ensure tabs are open (reuses existing ones)
+        await self._ensure_poly_tabs(bets)
 
-        # Open one tab per unique market slug
-        pages: dict[str, any] = {}
-        for slug in slug_to_bets:
-            url = self._market_url(slug)
-            try:
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                pages[slug] = page
-            except Exception as e:
-                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
-                pages[slug] = None
-
-        # Wait for trading buttons on all pages concurrently
-        async def wait_for_buttons(slug, page):
-            if page is None:
-                return
-            try:
-                await page.wait_for_selector('button.trading-button', timeout=15000)
-            except Exception:
-                pass  # Will show as error when reading prices
-
-        await asyncio.gather(*[
-            wait_for_buttons(slug, page) for slug, page in pages.items()
-        ])
-
-        # Read prices from all tabs
+        # Read prices from persistent tabs
         results = []
         for bet in bets:
             bet_id = bet["bet_id"]
@@ -1472,7 +1488,7 @@ class MirrorService:
             fair = event_fair.get(original_outcome)
             btn_index = self._btn_index_for_outcome(original_outcome, market_type)
 
-            page = pages.get(slug)
+            page = self._poly_tabs.get(slug)
             if page is None:
                 results.append({
                     "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
@@ -1514,14 +1530,6 @@ class MirrorService:
                     "status": "error", "reason": str(e),
                 })
 
-        # Close extra tabs (keep only the original page)
-        for slug, page in pages.items():
-            if page is not None:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
-
         self._notify("live_edge_complete", {"bets": results})
         return {"bets": results}
 
@@ -1542,7 +1550,7 @@ class MirrorService:
 
         # Fetch Pinnacle fair odds for all events
         event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
-        fair_odds_map = self._fetch_fair_odds(event_ids)
+        fair_odds_map = await asyncio.to_thread(self._fetch_fair_odds, event_ids)
 
         # Open one tab per unique market slug
         slug_to_page: dict[str, any] = {}

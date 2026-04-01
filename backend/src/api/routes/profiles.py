@@ -81,7 +81,7 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
 
 
 @router.get("")
-async def list_profiles(db: Session = Depends(get_db)):
+def list_profiles(db: Session = Depends(get_db)):
     """List all profiles."""
     profile_repo = ProfileRepo(db)
     profiles = db.query(Profile).order_by(Profile.created_at).all()
@@ -99,7 +99,7 @@ async def list_profiles(db: Session = Depends(get_db)):
 
 
 @router.get("/active")
-async def get_active_profile(db: Session = Depends(get_db)):
+def get_active_profile(db: Session = Depends(get_db)):
     """Get currently active profile."""
     profile_repo = ProfileRepo(db)
     profile = db.query(Profile).filter(Profile.is_active == True).first()
@@ -113,7 +113,7 @@ async def get_active_profile(db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
+def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
     """Create a new profile with fresh state (0 balance, no data copied)."""
     profile_repo = ProfileRepo(db)
     existing = db.query(Profile).filter(Profile.name == data.name).first()
@@ -142,7 +142,7 @@ async def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{profile_id}")
-async def get_profile(profile_id: int, db: Session = Depends(get_db)):
+def get_profile(profile_id: int, db: Session = Depends(get_db)):
     """Get profile by ID."""
     profile_repo = ProfileRepo(db)
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
@@ -153,7 +153,7 @@ async def get_profile(profile_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{profile_id}")
-async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Depends(get_db)):
+def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Depends(get_db)):
     """Update profile settings."""
     profile_repo = ProfileRepo(db)
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
@@ -197,7 +197,7 @@ async def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Dep
 
 
 @router.post("/{profile_id}/activate")
-async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
+def activate_profile(profile_id: int, db: Session = Depends(get_db)):
     """Set profile as active (deactivates others)."""
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
@@ -217,7 +217,7 @@ async def activate_profile(profile_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{profile_id}")
-async def delete_profile(profile_id: int, db: Session = Depends(get_db)):
+def delete_profile(profile_id: int, db: Session = Depends(get_db)):
     """Delete a profile and clean up all associated resources."""
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
@@ -234,7 +234,7 @@ async def delete_profile(profile_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/calculate/stake")
-async def calculate_stake_endpoint(
+def calculate_stake_endpoint(
     odds: float,
     fair_odds: float,
     db: Session = Depends(get_db),
@@ -264,7 +264,7 @@ async def calculate_stake_endpoint(
 
 
 @router.put("/providers/{provider_id}/account-date")
-async def set_account_opened_date(
+def set_account_opened_date(
     provider_id: str,
     data: AccountDateUpdate,
     db: Session = Depends(get_db),
@@ -316,7 +316,7 @@ async def set_account_opened_date(
 
 
 @router.get("/providers/{provider_id}/account-date")
-async def get_account_opened_date(
+def get_account_opened_date(
     provider_id: str,
     db: Session = Depends(get_db),
 ):
@@ -348,7 +348,7 @@ async def get_account_opened_date(
 
 
 @router.delete("/providers/{provider_id}/account-date")
-async def clear_account_opened_date(
+def clear_account_opened_date(
     provider_id: str,
     db: Session = Depends(get_db),
 ):

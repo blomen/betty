@@ -487,7 +487,7 @@ def get_bankroll_plan(db: Session = Depends(get_db)):
 
 
 @router.post("/plan/replan")
-async def trigger_replan(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def trigger_replan(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger re-planning in background. Returns immediately."""
     from ...services.planner_service import BankrollPlannerService
 
