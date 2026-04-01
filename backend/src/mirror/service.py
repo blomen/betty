@@ -1408,24 +1408,33 @@ class MirrorService:
         )
 
     async def _ensure_poly_tabs(self, bets: list[dict]) -> None:
-        """Ensure one persistent tab per unique market slug. Reuses existing tabs."""
+        """Ensure exactly one tab per unique market slug in the current batch.
+
+        - Closes tabs for slugs no longer needed
+        - Cleans up stale/closed tabs
+        - Opens new tabs for unseen slugs
+        """
         import asyncio
 
         context = self.interceptor.context
         if not context:
             return
 
-        # Clean up stale tabs (closed pages)
+        wanted_slugs = {b["market_slug"] for b in bets}
+
+        # Close tabs for slugs not in current batch + clean stale
         for slug in list(self._poly_tabs):
             try:
                 page = self._poly_tabs[slug]
-                if page.is_closed():
+                if page.is_closed() or slug not in wanted_slugs:
+                    if not page.is_closed():
+                        await page.close()
                     del self._poly_tabs[slug]
             except Exception:
-                del self._poly_tabs[slug]
+                self._poly_tabs.pop(slug, None)
 
         # Find slugs that need new tabs
-        needed_slugs = {b["market_slug"] for b in bets} - set(self._poly_tabs)
+        needed_slugs = wanted_slugs - set(self._poly_tabs)
         if not needed_slugs:
             return
 

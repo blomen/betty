@@ -394,6 +394,31 @@ async def fire_live(request: FireBatchRequest):
     return result
 
 
+@router.post("/close-poly-tabs")
+async def close_poly_tabs():
+    """Close all Polymarket tabs and any extra pages beyond the main one."""
+    mirror = _get_active_mirror()
+    if not mirror:
+        raise HTTPException(400, "No mirror running")
+
+    # Close tracked poly tabs
+    await mirror.close_poly_tabs()
+
+    # Close any untracked extra pages (leftover from previous spam)
+    context = mirror.interceptor.context
+    if context:
+        pages = context.pages
+        if len(pages) > 1:
+            for page in pages[1:]:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+    remaining = len(context.pages) if context else 0
+    return {"closed": True, "remaining_pages": remaining}
+
+
 @router.post("/fire-batch")
 async def fire_polymarket_batch(request: FireBatchRequest):
     """Deprecated — use /fire-live instead."""
