@@ -16,7 +16,7 @@ _ET = ZoneInfo("US/Eastern")
 rl_app = typer.Typer(help="RL Trading Agent — fetch, replay, train, eval")
 
 
-def _prepare_macro_data(macro_df, cot_df=None) -> dict:
+def _prepare_macro_data(macro_df, cot_df=None, stats_df=None) -> dict:
     """Convert raw macro parquet (VIX, DXY, US10Y, US2Y levels) into
     the dict format expected by extract_macro_features().
 
@@ -34,6 +34,21 @@ def _prepare_macro_data(macro_df, cot_df=None) -> dict:
             cot_lookup[str(date_idx)[:10]] = {
                 "cot_net_position": float(row.get("cot_net_position", 0)),
                 "cot_net_change": float(row.get("cot_net_change", 0)),
+            }
+
+    # Build statistics lookup: forward-fill daily stats
+    stats_lookup: dict = {}
+    if stats_df is not None and not stats_df.empty:
+        import pandas as pd
+        daily_idx = pd.date_range(stats_df.index.min(), stats_df.index.max(), freq="D")
+        stats_daily = stats_df.reindex(daily_idx, method="ffill")
+        for date_idx, row in stats_daily.iterrows():
+            stats_lookup[str(date_idx)[:10]] = {
+                "oi": float(row.get("open_interest", 0)),
+                "oi_change": float(row.get("oi_change", 0)),
+                "settlement_price": float(row.get("settlement_price", 0)),
+                "cleared_volume": float(row.get("cleared_volume", 0)),
+                "block_volume": float(row.get("block_volume", 0)),
             }
 
     macro_data: dict = {}
@@ -75,6 +90,12 @@ def _prepare_macro_data(macro_df, cot_df=None) -> dict:
             # News defaults (populated in live only)
             "news_proximity": 0.0,
             "news_importance": 0.0,
+            # Exchange stats defaults (overwritten if available)
+            "oi": 0.0,
+            "oi_change": 0.0,
+            "settlement_price": 0.0,
+            "cleared_volume": 0.0,
+            "block_volume": 0.0,
         }
 
         # Merge COT if available for this date
@@ -82,6 +103,11 @@ def _prepare_macro_data(macro_df, cot_df=None) -> dict:
         if cot:
             entry["cot_net_position"] = cot["cot_net_position"]
             entry["cot_net_change"] = cot["cot_net_change"]
+
+        # Merge exchange stats if available for this date
+        stats = stats_lookup.get(date_str)
+        if stats:
+            entry.update(stats)
 
         macro_data[date_str] = entry
         prev_row = row
@@ -425,7 +451,18 @@ def replay(
         try:
             macro_df = pd.read_parquet(macro_path)
             cot_df = pd.read_parquet(cot_path) if cot_path.exists() else None
-            macro_data = _prepare_macro_data(macro_df, cot_df=cot_df)
+            # Load exchange statistics
+            stats_path = MACRO_DIR / "statistics_daily.parquet"
+            stats_df = None
+            if stats_path.exists():
+                try:
+                    stats_df = pd.read_parquet(stats_path)
+                    typer.echo(f"Loaded exchange statistics: {len(stats_df)} days.")
+                except Exception as exc:
+                    typer.echo(f"Warning: could not load statistics data: {exc}")
+            else:
+                typer.echo("No statistics_daily.parquet found — exchange stats features will be zeroed.")
+            macro_data = _prepare_macro_data(macro_df, cot_df=cot_df, stats_df=stats_df)
             typer.echo(f"Loaded macro data: {len(macro_data)} days" +
                        (f" (COT: {len(cot_df)} weeks)" if cot_df is not None else " (no COT)") + ".")
         except Exception as exc:
@@ -864,7 +901,18 @@ def backtest(
     if macro_path.exists():
         macro_df = pd.read_parquet(macro_path)
         cot_df = pd.read_parquet(cot_path) if cot_path.exists() else None
-        macro_data = _prepare_macro_data(macro_df, cot_df=cot_df)
+        # Load exchange statistics
+        stats_path = MACRO_DIR / "statistics_daily.parquet"
+        stats_df = None
+        if stats_path.exists():
+            try:
+                stats_df = pd.read_parquet(stats_path)
+                typer.echo(f"Loaded exchange statistics: {len(stats_df)} days.")
+            except Exception as exc:
+                typer.echo(f"Warning: could not load statistics data: {exc}")
+        else:
+            typer.echo("No statistics_daily.parquet found — exchange stats features will be zeroed.")
+        macro_data = _prepare_macro_data(macro_df, cot_df=cot_df, stats_df=stats_df)
 
     # Load summaries
     summaries = load_summaries(_DATA_DIR / "session_summaries.json")
