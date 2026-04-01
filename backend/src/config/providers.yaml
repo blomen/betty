@@ -7,7 +7,7 @@ orchestrator:
   # Concurrency limits
   # Type-aware scheduling allows higher total concurrent providers by mixing types
   max_concurrent_providers: 10         # Increased - mixing allows higher total
-  max_concurrent_sports_per_provider: 4 # Max sports per provider
+  max_concurrent_sports_per_provider: 2 # Reduced for proxy — parallel sports × leagues overwhelms single ISP proxy
   max_browser_instances: 3             # Global browser limit (reduced from 6 — slow PC can't handle 7 concurrent browsers)
 
   # Provider groups for type-aware scheduling
@@ -213,6 +213,7 @@ providers:
     retriever_type: pinnacle
     api_base: https://guest.api.arcadia.pinnacle.com/0.1
     sharp: true
+    concurrent_leagues: 10               # Throttled for ISP proxy — too many parallel requests get 403
     sport_timeout: 240                   # Football has ~200 leagues × 2 API calls each; needs headroom under load
 
   # --------------------------------------------------------------------------
