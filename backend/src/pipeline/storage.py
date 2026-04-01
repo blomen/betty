@@ -1242,7 +1242,7 @@ class OddsBatchProcessor:
             else:
                 # New record
                 self.changed_event_ids.add(record["event_id"])
-                to_insert.append(record)
+                to_insert.append({**record, "updated_at": now})
 
         # Bulk insert new records
         if to_insert:
