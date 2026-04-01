@@ -341,19 +341,23 @@ def _resolve_batch_bets(request: FireBatchRequest) -> dict:
 async def get_live_edge(request: FireBatchRequest):
     """Get live Polymarket odds compared against Pinnacle fair odds.
 
+    Auto-ensures mirror is started. Opens tabs to market pages automatically.
     Returns per-bet: live_odds, fair_odds, edge_pct, status.
     """
     mirror = _get_active_mirror()
     if not mirror:
-        raise HTTPException(400, "No mirror running")
-    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
-        raise HTTPException(400, "No browser pages open")
+        # Auto-start mirror
+        async with _start_lock:
+            if not _any_running():
+                mirror = MirrorService(broadcaster=odds_broadcaster, provider_id=_DEFAULT_PROVIDER)
+                await mirror.start()
+                _mirrors[_DEFAULT_PROVIDER] = mirror
+            else:
+                mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor.context:
+        raise HTTPException(400, "Could not start mirror browser")
 
-    page = mirror.interceptor.context.pages[0]
-    if "polymarket.com" not in (page.url or ""):
-        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
-
-    resolved = _resolve_batch_bets(request)
+    resolved = await asyncio.to_thread(_resolve_batch_bets, request)
     if not resolved["bets"]:
         return {"bets": [], "resolve_errors": resolved["errors"]}
 
@@ -366,18 +370,20 @@ async def get_live_edge(request: FireBatchRequest):
 async def fire_live(request: FireBatchRequest):
     """Scan live Polymarket prices and auto-fire bets with positive edge.
 
-    Combines scan + fire in one pass. Only places bets where
-    edge_pct > 0 after Polymarket's 2% fee.
+    Auto-ensures mirror is started. Opens tabs to market pages automatically.
+    Only places bets where edge_pct > 0 after Polymarket's 2% fee.
     """
     mirror = _get_active_mirror()
     if not mirror:
-        raise HTTPException(400, "No mirror running")
-    if not mirror.interceptor.context or not mirror.interceptor.context.pages:
-        raise HTTPException(400, "No browser pages open")
-
-    page = mirror.interceptor.context.pages[0]
-    if "polymarket.com" not in (page.url or ""):
-        raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
+        async with _start_lock:
+            if not _any_running():
+                mirror = MirrorService(broadcaster=odds_broadcaster, provider_id=_DEFAULT_PROVIDER)
+                await mirror.start()
+                _mirrors[_DEFAULT_PROVIDER] = mirror
+            else:
+                mirror = _get_active_mirror()
+    if not mirror or not mirror.interceptor.context:
+        raise HTTPException(400, "Could not start mirror browser")
 
     resolved = _resolve_batch_bets(request)
     if not resolved["bets"]:

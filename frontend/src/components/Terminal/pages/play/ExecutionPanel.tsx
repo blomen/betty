@@ -291,12 +291,6 @@ function ProviderSection({
           </span>
         )}
 
-        {!isPoly && group.wageringRemaining !== null && (
-          <span className="text-[10px] px-1.5 py-0.5 bg-purple-900/40 text-purple-400 border border-purple-800/40">
-            {Math.round(group.wageringRemaining)} kr left
-            {group.daysRemaining !== null && ` · ${group.daysRemaining}d`}
-          </span>
-        )}
 
         <span className="text-sm text-muted ml-1">
           {placedCount}/{totalCount} bets
@@ -430,7 +424,7 @@ function ProviderSection({
               {fireResult && (
                 <span className="text-xs text-muted mr-auto">{fireResult}</span>
               )}
-              {isPoly && (
+              {isPoly ? (
                 <button
                   onClick={handleFireLive}
                   disabled={firing}
@@ -438,13 +432,14 @@ function ProviderSection({
                 >
                   {firing ? 'Firing...' : 'Fire All'}
                 </button>
+              ) : (
+                <button
+                  onClick={() => onMarkAllDone(betKeys)}
+                  className="px-3 py-1 bg-tabPlay text-bg text-xs font-medium hover:opacity-90 transition-opacity"
+                >
+                  Mark All Done
+                </button>
               )}
-              <button
-                onClick={() => onMarkAllDone(betKeys)}
-                className="px-3 py-1 bg-tabPlay text-bg text-xs font-medium hover:opacity-90 transition-opacity"
-              >
-                Mark All Done
-              </button>
             </div>
           )}
         </div>
