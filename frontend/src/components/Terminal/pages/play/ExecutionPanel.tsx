@@ -146,32 +146,6 @@ function StatusIcon({ status }: { status: 'done' | 'in-progress' | 'pending' }) 
 }
 
 // ---------------------------------------------------------------------------
-// CheckCircle
-// ---------------------------------------------------------------------------
-
-function CheckCircle({
-  checked,
-  onToggle,
-}: {
-  checked: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      className={`w-5 h-5 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors ${
-        checked
-          ? 'border-success bg-success/20 text-success'
-          : 'border-border bg-transparent text-transparent hover:border-muted'
-      }`}
-      title={checked ? 'Mark as pending' : 'Mark as placed'}
-    >
-      <span className="text-[10px] font-bold leading-none">✓</span>
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // ProviderSection
 // ---------------------------------------------------------------------------
 
@@ -180,7 +154,6 @@ interface ProviderSectionProps {
   isExpanded: boolean;
   onToggle: () => void;
   placedSet: Set<string>;
-  onToggleBet: (key: string) => void;
   onMarkAllDone: (keys: string[]) => void;
 }
 
@@ -189,14 +162,12 @@ function ProviderSection({
   isExpanded,
   onToggle,
   placedSet,
-  onToggleBet,
   onMarkAllDone,
 }: ProviderSectionProps) {
-  const [firing, setFiring] = useState(false);
-  const [fireResult, setFireResult] = useState<string | null>(null);
-  const [liveEdge, setLiveEdge] = useState<Record<string, any>>({});
-  const [edgeLoading, setEdgeLoading] = useState(false);
-  const [edgeError, setEdgeError] = useState<string | null>(null);
+  // Polymarket: live edge from mirror tabs. Soft: null (use batch data).
+  const [liveEdge, setLiveEdge] = useState<Record<string, any> | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const betKeys = group.bets.map(betKey);
   const placedCount = betKeys.filter((k) => placedSet.has(k)).length;
@@ -212,64 +183,58 @@ function ProviderSection({
   const tierClass = TIER_CLASSES[group.tier] ?? 'text-success';
   const isPoly = group.providerId === 'polymarket';
 
-  const batchPayload = group.bets.map((b) => ({
+  const batchPayload = useMemo(() => group.bets.map((b) => ({
     event_id: b.event_id,
     market: b.market,
     outcome: b.outcome,
     odds: b.odds,
     stake: b.stake,
-  }));
+  })), [group.bets]);
 
-  // Poll live edge when expanded and Polymarket — wait for each fetch to finish
-  useEffect(() => {
-    if (!isExpanded || !isPoly || allDone) return;
-
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    const fetchEdge = async () => {
-      setEdgeLoading(true);
-      try {
-        const result = await api.getLiveEdge(batchPayload);
-        if (cancelled) return;
-        const map: Record<string, any> = {};
-        for (const b of result.bets ?? []) {
-          map[b.bet_id] = b;
-        }
-        setLiveEdge(map);
-        setEdgeError(null);
-      } catch (err: any) {
-        if (!cancelled) setEdgeError(err.message || 'Failed to fetch live edge');
-      } finally {
-        if (!cancelled) {
-          setEdgeLoading(false);
-          // Schedule next poll AFTER this one completes
-          timeoutId = setTimeout(fetchEdge, 10_000);
-        }
-      }
-    };
-
-    fetchEdge();
-    return () => { cancelled = true; if (timeoutId) clearTimeout(timeoutId); };
-  }, [isExpanded, isPoly, allDone]);
-
-  const handleFireLive = async () => {
-    setFiring(true);
-    setFireResult(null);
+  // Scan: fetch live edge from mirror (Polymarket only)
+  const handleScan = useCallback(async () => {
+    setScanning(true);
+    setScanError(null);
     try {
-      const result = await api.fireLive(batchPayload);
-      const p = result.placed?.length ?? 0;
-      const s = result.skipped?.length ?? 0;
-      const n = result.negative?.length ?? 0;
-      const e = result.errors?.length ?? 0;
-      setFireResult(`${p} placed, ${s} slippage, ${n} no-edge, ${e} errors`);
-      if (p > 0) {
-        onMarkAllDone(betKeys.slice(0, p));
+      const result = await api.getLiveEdge(batchPayload);
+      const map: Record<string, any> = {};
+      for (const b of result.bets ?? []) {
+        map[b.bet_id] = b;
       }
+      setLiveEdge(map);
     } catch (err: any) {
-      setFireResult(`Error: ${err.message || err}`);
+      setScanError(err.message || 'Scan failed');
     } finally {
-      setFiring(false);
+      setScanning(false);
+    }
+  }, [batchPayload]);
+
+  // For all providers: has edge data been reviewed?
+  // Poly: after scan. Soft: always ready (batch edge is current).
+  const scanned = isPoly ? liveEdge !== null : true;
+
+  // Build display data per bet
+  const betRows = group.bets.map((b, i) => {
+    const key = betKey(b);
+    const placed = placedSet.has(key);
+    const live = isPoly && liveEdge ? liveEdge[i] : null;
+
+    const displayOdds = live?.live_odds ?? b.odds;
+    const displayFair = live?.fair_odds ?? b.fair_odds;
+    const displayEdge = live?.edge_pct ?? b.edge_pct;
+    const betStatus = live?.status ?? (b.edge_pct > 0 ? 'value' : 'negative');
+
+    return { b, i, key, placed, displayOdds, displayFair, displayEdge, betStatus };
+  });
+
+  const valueBets = betRows.filter(r => !r.placed && r.betStatus === 'value');
+  const skippedBets = betRows.filter(r => !r.placed && r.betStatus !== 'value');
+
+  // Confirm: mark all +EV bets as placed
+  const handleConfirm = () => {
+    const keysToPlace = valueBets.map(r => r.key);
+    if (keysToPlace.length > 0) {
+      onMarkAllDone(keysToPlace);
     }
   };
 
@@ -295,7 +260,6 @@ function ProviderSection({
             {group.cluster}
           </span>
         )}
-
 
         <span className="text-sm text-muted ml-1">
           {placedCount}/{totalCount} bets
@@ -327,29 +291,27 @@ function ProviderSection({
         <div className="border-t border-border">
           <table className="sq w-full">
             <colgroup>
-              {!isPoly && <col style={{ width: '28px' }} />}
               <col />
               <col style={{ width: '60px' }} />
               <col style={{ width: '55px' }} />
               <col style={{ width: '55px' }} />
               <col style={{ width: '55px' }} />
               <col style={{ width: '65px' }} />
+              <col style={{ width: '40px' }} />
             </colgroup>
             <thead className="bg-panel">
               <tr>
-                {!isPoly && <th className="text-left"></th>}
                 <th className="text-left">Event · Outcome</th>
                 <th className="text-right">Market</th>
-                <th className="text-right">{isPoly ? 'Live' : 'Odds'}</th>
+                <th className="text-right">{isPoly && scanned ? 'Live' : 'Odds'}</th>
                 <th className="text-right">Fair</th>
                 <th className="text-right">Edge</th>
                 <th className="text-right">Stake</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {group.bets.map((b, i) => {
-                const key = betKey(b);
-                const placed = placedSet.has(key);
+              {betRows.map(({ b, key, placed, displayOdds, displayFair, displayEdge, betStatus }) => {
                 const eventName = `${b.display_home} v ${b.display_away}`;
                 const outcomeLabel = resolveOutcome(
                   b.outcome,
@@ -367,11 +329,6 @@ function ProviderSection({
                   ? `$${b.stake.toFixed(1)}`
                   : `${Math.round(b.stake)} kr`;
 
-                const live = liveEdge[i];
-                const displayOdds = isPoly && live?.live_odds ? live.live_odds : b.odds;
-                const displayFair = isPoly && live?.fair_odds ? live.fair_odds : b.fair_odds;
-                const displayEdge = isPoly && live?.edge_pct != null ? live.edge_pct : b.edge_pct;
-
                 const edgeColor = displayEdge > 5
                   ? 'text-success'
                   : displayEdge > 0
@@ -381,16 +338,8 @@ function ProviderSection({
                 return (
                   <tr
                     key={key}
-                    className={`${placed ? 'opacity-40 line-through' : ''} transition-opacity`}
+                    className={`${placed ? 'opacity-40 line-through' : betStatus === 'negative' ? 'opacity-50' : ''} transition-opacity`}
                   >
-                    {!isPoly && (
-                      <td className="!py-1.5 !px-2">
-                        <CheckCircle
-                          checked={placed}
-                          onToggle={() => onToggleBet(key)}
-                        />
-                      </td>
-                    )}
                     <td className="!py-1.5">
                       <div className="text-sm text-text truncate max-w-[280px]" title={eventName}>
                         {eventName}
@@ -404,47 +353,58 @@ function ProviderSection({
                       {displayEdge != null ? `${displayEdge > 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '—'}
                     </td>
                     <td className="text-right text-sm text-text">{stakeText}</td>
+                    <td className="text-center text-[10px]">
+                      {placed && <span className="text-success font-bold">✓</span>}
+                      {!placed && betStatus === 'negative' && <span className="text-error">skip</span>}
+                      {!placed && betStatus === 'error' && <span className="text-error">err</span>}
+                      {!placed && betStatus === 'no-sharp' && <span className="text-muted">—</span>}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
 
-          {/* Edge status bar (Polymarket only) */}
-          {isPoly && !allDone && (
-            <div className="px-3 py-1.5 border-t border-border flex items-center gap-2">
-              {edgeLoading && <span className="text-[10px] text-muted animate-pulse">Scanning live prices...</span>}
-              {edgeError && <span className="text-[10px] text-error">{edgeError}</span>}
-              {!edgeLoading && !edgeError && Object.keys(liveEdge).length > 0 && (
-                <span className="text-[10px] text-muted">
-                  {Object.values(liveEdge).filter((b: any) => b.status === 'value').length}/{Object.keys(liveEdge).length} with +edge
-                </span>
-              )}
-            </div>
-          )}
-
           {/* Actions */}
           {!allDone && (
-            <div className="px-3 py-2 border-t border-border flex items-center justify-end gap-2">
-              {fireResult && (
-                <span className="text-xs text-muted mr-auto">{fireResult}</span>
-              )}
-              {isPoly ? (
-                <button
-                  onClick={handleFireLive}
-                  disabled={firing}
-                  className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-                >
-                  {firing ? 'Firing...' : 'Fire All'}
-                </button>
-              ) : (
-                <button
-                  onClick={() => onMarkAllDone(betKeys)}
-                  className="px-3 py-1 bg-tabPlay text-bg text-xs font-medium hover:opacity-90 transition-opacity"
-                >
-                  Mark All Done
-                </button>
-              )}
+            <div className="px-3 py-2 border-t border-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {scanning && <span className="text-[10px] text-muted animate-pulse">Scanning live prices...</span>}
+                {scanError && <span className="text-[10px] text-error">{scanError}</span>}
+                {scanned && !scanning && (
+                  <span className="text-[10px] text-muted">
+                    {valueBets.length} to place{skippedBets.length > 0 ? `, ${skippedBets.length} skipped` : ''}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {isPoly && !scanned && (
+                  <button
+                    onClick={handleScan}
+                    disabled={scanning}
+                    className="px-3 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    {scanning ? 'Scanning...' : 'Scan'}
+                  </button>
+                )}
+                {isPoly && scanned && (
+                  <button
+                    onClick={handleScan}
+                    disabled={scanning}
+                    className="px-2 py-1 bg-border text-text text-xs hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    Rescan
+                  </button>
+                )}
+                {scanned && valueBets.length > 0 && (
+                  <button
+                    onClick={handleConfirm}
+                    className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity"
+                  >
+                    Confirm {valueBets.length} bets
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -540,18 +500,6 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
   const progressPct = totalBets > 0 ? (placedCount / totalBets) * 100 : 0;
 
   // Handlers
-  const handleToggleBet = useCallback((key: string) => {
-    setPlacedBets((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  }, []);
-
   const handleMarkAllDone = useCallback((keys: string[]) => {
     setPlacedBets((prev) => {
       const next = new Set(prev);
@@ -602,7 +550,6 @@ export function ExecutionPanel({ batch, wageringProjections, onBack }: Props) {
             isExpanded={expandedProvider === group.providerId}
             onToggle={() => handleToggleProvider(group.providerId)}
             placedSet={placedBets}
-            onToggleBet={handleToggleBet}
             onMarkAllDone={handleMarkAllDone}
           />
         ))}
