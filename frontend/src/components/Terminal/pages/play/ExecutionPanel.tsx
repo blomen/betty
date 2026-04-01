@@ -295,18 +295,22 @@ function ProviderSection({
         <div className="border-t border-border">
           <table className="sq w-full">
             <colgroup>
-              <col style={{ width: '28px' }} />
+              {!isPoly && <col style={{ width: '28px' }} />}
               <col />
               <col style={{ width: '80px' }} />
               <col style={{ width: '50px' }} />
+              <col style={{ width: '50px' }} />
+              <col style={{ width: '55px' }} />
               <col style={{ width: '65px' }} />
             </colgroup>
             <thead className="bg-panel">
               <tr>
-                <th className="text-left"></th>
+                {!isPoly && <th className="text-left"></th>}
                 <th className="text-left">Event · Outcome</th>
                 <th className="text-right">Market</th>
                 <th className="text-right">Odds</th>
+                <th className="text-right">Prob</th>
+                <th className="text-right">Edge%</th>
                 <th className="text-right">Stake</th>
               </tr>
             </thead>
@@ -330,26 +334,37 @@ function ProviderSection({
                 const stakeText = isPoly
                   ? `$${(b.stake / USDC_RATE).toFixed(1)}`
                   : `${Math.round(b.stake)} kr`;
+                const prob = (1 / b.odds * 100).toFixed(0);
 
                 return (
                   <tr
                     key={key}
-                    className={`${placed ? 'opacity-40' : ''} transition-opacity`}
+                    className={`${placed ? 'opacity-40 line-through' : ''} transition-opacity`}
                   >
-                    <td className="!py-1.5 !px-2">
-                      <CheckCircle
-                        checked={placed}
-                        onToggle={() => onToggleBet(key)}
-                      />
-                    </td>
+                    {!isPoly && (
+                      <td className="!py-1.5 !px-2">
+                        <CheckCircle
+                          checked={placed}
+                          onToggle={() => onToggleBet(key)}
+                        />
+                      </td>
+                    )}
                     <td className="!py-1.5">
-                      <div className="text-sm text-text truncate max-w-[220px]" title={eventName}>
+                      <div className="text-sm text-text truncate max-w-[280px]" title={eventName}>
                         {eventName}
                       </div>
-                      <div className="text-[11px] text-muted">{outcomeLabel}</div>
+                      <div className="text-[11px] text-muted">{outcomeLabel}{b.point != null ? ` (${b.point > 0 ? '+' : ''}${b.point})` : ''}</div>
                     </td>
                     <td className="text-right text-sm text-muted">{marketLabel(b.market)}</td>
                     <td className="text-right text-sm text-text font-medium">{b.odds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-muted">{prob}%</td>
+                    <td
+                      className={`text-right text-sm font-semibold ${
+                        b.edge_pct > 0 ? 'text-success' : 'text-error'
+                      }`}
+                    >
+                      {b.edge_pct > 0 ? '+' : ''}{b.edge_pct.toFixed(1)}%
+                    </td>
                     <td className="text-right text-sm text-text">{stakeText}</td>
                   </tr>
                 );
