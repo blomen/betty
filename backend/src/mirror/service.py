@@ -1332,30 +1332,82 @@ class MirrorService:
             return True
         return False
 
-    async def scan_polymarket_bets(self, bets: list[dict]) -> dict:
-        """Scan Polymarket markets — navigate to each, read live prices, report deltas.
+    def _fetch_fair_odds(self, event_ids: list[str]) -> dict[str, dict[str, float]]:
+        """Fetch Pinnacle devigged fair odds for events from DB.
 
-        Returns: {scanned: [{bet_id, slug, outcome, expected_price, live_price, delta_pct, live_odds, expected_odds, stake, status}]}
+        Returns: {event_id: {outcome: fair_odds}} where fair_odds are devigged.
         """
-        import asyncio
+        from ..db.models import get_session, Odds
+        from ..analysis.devig import get_fair_odds_for_outcome
+        from collections import defaultdict
+
+        db = get_session()
+        try:
+            pinnacle_rows = (
+                db.query(Odds)
+                .filter(
+                    Odds.event_id.in_(event_ids),
+                    Odds.provider_id == "pinnacle",
+                )
+                .all()
+            )
+
+            # Group by (event_id, market, point) to build full markets for devigging
+            markets: dict[tuple, dict[str, float]] = defaultdict(dict)
+            for row in pinnacle_rows:
+                key = (row.event_id, row.market, row.point)
+                markets[key][row.outcome] = row.odds
+
+            # Devig each market, build result
+            result: dict[str, dict[str, float]] = defaultdict(dict)
+            for (event_id, market, point), market_odds in markets.items():
+                if len(market_odds) >= 2:
+                    for outcome in market_odds:
+                        fair = get_fair_odds_for_outcome(outcome, market_odds, method="multiplicative")
+                        if fair is not None:
+                            result[event_id][outcome] = fair
+                else:
+                    # Single outcome (e.g. spread) — use raw as conservative estimate
+                    for outcome, odds_val in market_odds.items():
+                        result[event_id][outcome] = odds_val
+            return dict(result)
+        finally:
+            db.close()
+
+    async def get_live_edge(self, bets: list[dict]) -> dict:
+        """Read live Polymarket prices, compare against Pinnacle fair odds.
+
+        Each bet dict: {bet_id, market_slug, outcome, expected_price, amount_usdc,
+                        event_id, original_odds, _original_outcome, _market_type}
+        Returns: {bets: [{bet_id, outcome, event_id, live_odds, fair_odds, edge_pct, stake, status}]}
+        """
+        from ..analysis.value import compute_edge
 
         context = self.interceptor.context
         if not context or not context.pages:
-            return {"error": "No mirror browser open", "scanned": []}
+            return {"error": "No mirror browser open", "bets": []}
 
         page = context.pages[0]
-        scanned = []
 
+        # Fetch Pinnacle fair odds for all events in batch
+        event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
+        fair_odds_map = self._fetch_fair_odds(event_ids)
+
+        results = []
         for bet in bets:
             bet_id = bet["bet_id"]
             slug = bet["market_slug"]
             outcome = bet["outcome"]
-            expected_price = bet["expected_price"]
             amount = bet["amount_usdc"]
             original_outcome = bet.get("_original_outcome", outcome).lower()
             market_type = bet.get("_market_type", "")
+            event_id = bet.get("event_id", "")
 
-            # Determine button index
+            # Get fair odds for this outcome
+            event_fair = fair_odds_map.get(event_id, {})
+            fair = event_fair.get(original_outcome)
+
+            # Button index mapping (same as existing scan logic)
             if original_outcome in ("home", "over"):
                 btn_index = 0
             elif original_outcome == "draw":
@@ -1365,25 +1417,23 @@ class MirrorService:
             else:
                 btn_index = 0
 
-            # Navigate to market page
+            # Navigate and read live price
             slug_parts = slug.split("-")
             league = slug_parts[0] if slug_parts else ""
             market_url = f"https://polymarket.com/sports/{league}/{slug}"
-            logger.info(f"[mirror] Scanning bet {bet_id}: {market_url}")
 
             try:
                 await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_selector('button.trading-button', timeout=15000)
             except Exception as e:
-                scanned.append({
-                    "bet_id": bet_id, "slug": slug, "outcome": outcome,
-                    "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
-                    "live_price": None, "live_odds": None, "delta_pct": None,
-                    "stake": amount, "status": "error", "reason": f"Page load failed: {e}",
+                results.append({
+                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                    "edge_pct": None, "stake": amount,
+                    "status": "error", "reason": f"Page load failed: {e}",
                 })
                 continue
 
-            # Read all trading button prices
             try:
                 btn_data = await page.evaluate(
                     "() => {"
@@ -1400,41 +1450,35 @@ class MirrorService:
                 if btn_index < len(btn_data) and btn_data[btn_index]["price"] is not None:
                     live_price = btn_data[btn_index]["price"]
                     live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
-                    expected_odds = bet.get("original_odds", round(1 / expected_price, 2) if expected_price > 0 else 0)
-                    delta_pct = round((live_price - expected_price) / expected_price * 100, 1) if expected_price > 0 else 0
+                    edge_pct = compute_edge("polymarket", live_odds, fair) if fair else None
 
-                    scanned.append({
-                        "bet_id": bet_id,
-                        "slug": slug,
-                        "outcome": outcome,
-                        "button_text": btn_data[btn_index]["text"],
-                        "expected_price": expected_price,
-                        "expected_odds": expected_odds,
-                        "live_price": live_price,
-                        "live_odds": live_odds,
-                        "delta_pct": delta_pct,
-                        "stake": amount,
-                        "all_buttons": [b["text"] for b in btn_data],
-                        "status": "ok",
+                    status = "value" if edge_pct is not None and edge_pct > 0 else (
+                        "negative" if edge_pct is not None else "no-sharp"
+                    )
+
+                    results.append({
+                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                        "live_odds": live_odds, "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                        "stake": amount, "status": status,
                     })
                 else:
-                    scanned.append({
-                        "bet_id": bet_id, "slug": slug, "outcome": outcome,
-                        "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
-                        "live_price": None, "live_odds": None, "delta_pct": None,
-                        "stake": amount, "all_buttons": [b["text"] for b in btn_data],
+                    results.append({
+                        "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                        "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                        "edge_pct": None, "stake": amount,
                         "status": "error", "reason": f"No price at button index {btn_index}",
                     })
             except Exception as e:
-                scanned.append({
-                    "bet_id": bet_id, "slug": slug, "outcome": outcome,
-                    "expected_price": expected_price, "expected_odds": bet.get("original_odds", 0),
-                    "live_price": None, "live_odds": None, "delta_pct": None,
-                    "stake": amount, "status": "error", "reason": str(e),
+                results.append({
+                    "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
+                    "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
+                    "edge_pct": None, "stake": amount,
+                    "status": "error", "reason": str(e),
                 })
 
-        self._notify("polymarket_scan_complete", {"scanned": scanned})
-        return {"scanned": scanned}
+        self._notify("live_edge_complete", {"bets": results})
+        return {"bets": results}
 
     async def place_polymarket_bets(self, bets: list[dict]) -> dict:
         """Place bets on Polymarket via Playwright UI automation.
