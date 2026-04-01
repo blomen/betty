@@ -117,7 +117,7 @@ class PinnacleRetriever(Retriever):
 
             # Build matchup -> markets mapping
             markets_by_matchup: Dict[int, List[dict]] = {}
-            for market in markets:
+            for market in (markets or []):
                 matchup_id = market.get("matchupId")
                 if matchup_id:
                     markets_by_matchup.setdefault(matchup_id, []).append(market)
