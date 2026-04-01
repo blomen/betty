@@ -1361,8 +1361,11 @@ class MirrorService:
             })
 
             try:
+                original_outcome = bet.get("_original_outcome", outcome)
+                market_type = bet.get("_market_type", "")
                 result = await self._place_single_polymarket_bet(
-                    page, bet_id, slug, outcome, amount, expected_price, max_slippage
+                    page, bet_id, slug, outcome, amount, expected_price, max_slippage,
+                    original_outcome=original_outcome, market_type=market_type,
                 )
                 if result["status"] == "placed":
                     placed.append(result)
@@ -1386,6 +1389,7 @@ class MirrorService:
     async def _place_single_polymarket_bet(
         self, page, bet_id: int, slug: str, outcome: str,
         amount: float, expected_price: float, max_slippage: float,
+        original_outcome: str = "", market_type: str = "",
     ) -> dict:
         """Place a single bet on Polymarket via browser automation.
 
@@ -1420,10 +1424,8 @@ class MirrorService:
         #   1x2:        home=0, draw=1, away=2
         #   moneyline:  home=0, away=1
         #   spread/total: home=0, away=1 (or over=0, under=1)
-        outcome_lower = bet.get("_original_outcome", outcome).lower() if isinstance(bet, dict) else outcome.lower()
+        outcome_lower = (original_outcome or outcome).lower()
         try:
-            # Get the market type from the bet metadata
-            market_type = bet.get("_market_type", "") if isinstance(bet, dict) else ""
             if outcome_lower in ("home", "over"):
                 btn_index = 0
             elif outcome_lower == "draw":
