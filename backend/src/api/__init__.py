@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
             logger.warning("[Startup] WAL checkpoint failed: %s", e)
     threading.Thread(target=_wal_checkpoint, daemon=True, name="startup-wal").start()
 
-    # Add extraction-specific log file (INFO level) alongside launcher's root handlers
+    # Add extraction-specific log file (INFO level) alongside root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
     # which blocks the event loop with synchronous disk I/O.
     import logging.handlers
