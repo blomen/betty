@@ -839,6 +839,7 @@ def store_provider_event(
             start_time=start_dt,
         )
         session.add(db_event)
+        session.flush()  # Flush event before odds insert (Postgres enforces FKs)
         is_new_event = True
 
         # Add to cache for subsequent providers to match against
