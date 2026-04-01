@@ -87,6 +87,8 @@ async def lifespan(app: FastAPI):
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # Warm up singletons / heavy imports in background — don't block API startup
+    import threading
+
     def _warmup_imports():
         from ..config.loader import load_config
         load_config()
@@ -98,7 +100,6 @@ async def lifespan(app: FastAPI):
 
     # Warm up opportunity cache in background thread so first page load is fast
     # Must not block the event loop — otherwise /api/version etc. hang during startup
-    import threading
     def _warmup_opportunities():
         try:
             from ..db.models import get_session as _warmup_session
