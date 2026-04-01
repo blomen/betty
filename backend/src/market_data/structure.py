@@ -166,8 +166,11 @@ class MarketStructureEngine:
         We are rising (or starting up). Track the running potential high.
         Confirmation trigger: price breaks BELOW the last confirmed swing low.
         """
+        # Track whether potential_high advances this bar (used for bootstrap reset)
+        high_advanced = (self._potential_high_price is None or hi > self._potential_high_price)
+
         # Update running potential high
-        if self._potential_high_price is None or hi > self._potential_high_price:
+        if high_advanced:
             self._potential_high_price = hi
             self._potential_high_ts = ts
 
@@ -209,8 +212,15 @@ class MarketStructureEngine:
             ):
                 self._confirm_high(cl, ts)
             else:
-                # Update running potential low AFTER the check
-                if self._potential_low_price is None or lo < self._potential_low_price:
+                # When potential_high advances, reset potential_low to this bar's
+                # low so the reference tracks the low near the current high.
+                # Without this, a sustained uptrend from the start leaves
+                # potential_low stuck at the very first bar's low, and the
+                # bootstrap check never fires.
+                if high_advanced:
+                    self._potential_low_price = lo
+                    self._potential_low_ts = ts
+                elif self._potential_low_price is None or lo < self._potential_low_price:
                     self._potential_low_price = lo
                     self._potential_low_ts = ts
 
@@ -227,6 +237,9 @@ class MarketStructureEngine:
         if self._potential_high_price is None or hi > self._potential_high_price:
             self._potential_high_price = hi
             self._potential_high_ts = ts
+
+        # Save old potential low BEFORE updating — needed for bootstrap comparison
+        prev_potential_low = self._potential_low_price
 
         # Update running potential low
         if self._potential_low_price is None or lo < self._potential_low_price:
@@ -253,10 +266,19 @@ class MarketStructureEngine:
                     sl_price=self._potential_low_price, sl_ts=self._potential_low_ts or ts,
                     trigger_close=cl, trigger_ts=ts,
                 )
-        elif not self._confirmed_highs:
-            # Bootstrap phase after first confirmed high doesn't apply here
-            # (we always confirm a high before entering SEEKING_LOW for the first time)
-            pass
+        elif not self._confirmed_lows and self._confirmed_highs:
+            # Bootstrap: first confirmed high but no confirmed lows yet.
+            # Compare against the PREVIOUS potential low (before this bar updated
+            # it) so the check can actually fire when price makes a new low.
+            # Without this, a sustained first downmove after the initial confirmed
+            # high leaves the engine stuck in SEEKING_LOW forever.
+            if (
+                prev_potential_low is not None
+                and self._potential_high_price is not None
+                and break_price_dn < prev_potential_low
+                and self._potential_high_price > prev_potential_low
+            ):
+                self._confirm_low(cl, ts)
 
     # ------------------------------------------------------------------
     # Confirmation helpers
