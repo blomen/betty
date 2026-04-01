@@ -1374,25 +1374,90 @@ class MirrorService:
         finally:
             db.close()
 
+    def _btn_index_for_outcome(self, original_outcome: str, market_type: str) -> int:
+        """Map outcome to Polymarket trading button index."""
+        if original_outcome in ("home", "over"):
+            return 0
+        elif original_outcome == "draw":
+            return 1
+        elif original_outcome in ("away", "under"):
+            return 2 if market_type == "1x2" else 1
+        return 0
+
+    @staticmethod
+    def _market_url(slug: str) -> str:
+        """Build Polymarket sports market URL from slug."""
+        league = slug.split("-")[0] if slug else ""
+        return f"https://polymarket.com/sports/{league}/{slug}"
+
+    @staticmethod
+    async def _read_btn_prices(page) -> list[dict]:
+        """Read all trading button prices from a Polymarket page."""
+        return await page.evaluate(
+            "() => {"
+            "  const btns = [...document.querySelectorAll('button.trading-button')];"
+            "  return btns.map(b => {"
+            "    const text = b.textContent || '';"
+            "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+            "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
+            "    return {text: text.trim().slice(0, 40), price};"
+            "  });"
+            "}"
+        )
+
     async def get_live_edge(self, bets: list[dict]) -> dict:
-        """Read live Polymarket prices, compare against Pinnacle fair odds.
+        """Read live Polymarket prices from parallel tabs, compare against Pinnacle fair odds.
+
+        Opens one tab per bet, loads all pages concurrently, reads prices from each,
+        then closes extra tabs. No sequential navigation loop.
 
         Each bet dict: {bet_id, market_slug, outcome, expected_price, amount_usdc,
                         event_id, original_odds, _original_outcome, _market_type}
         Returns: {bets: [{bet_id, outcome, event_id, live_odds, fair_odds, edge_pct, stake, status}]}
         """
+        import asyncio
         from ..analysis.value import compute_edge
 
         context = self.interceptor.context
         if not context or not context.pages:
             return {"error": "No mirror browser open", "bets": []}
 
-        page = context.pages[0]
-
         # Fetch Pinnacle fair odds for all events in batch
         event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
         fair_odds_map = self._fetch_fair_odds(event_ids)
 
+        # Deduplicate by slug — multiple bets can share the same market page
+        slug_to_bets: dict[str, list[dict]] = {}
+        for bet in bets:
+            slug = bet["market_slug"]
+            slug_to_bets.setdefault(slug, []).append(bet)
+
+        # Open one tab per unique market slug
+        pages: dict[str, any] = {}
+        for slug in slug_to_bets:
+            url = self._market_url(slug)
+            try:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                pages[slug] = page
+            except Exception as e:
+                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
+                pages[slug] = None
+
+        # Wait for trading buttons on all pages concurrently
+        async def wait_for_buttons(slug, page):
+            if page is None:
+                return
+            try:
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+            except Exception:
+                pass  # Will show as error when reading prices
+
+        await asyncio.gather(*[
+            wait_for_buttons(slug, page) for slug, page in pages.items()
+        ])
+
+        # Read prices from all tabs
         results = []
         for bet in bets:
             bet_id = bet["bet_id"]
@@ -1403,49 +1468,22 @@ class MirrorService:
             market_type = bet.get("_market_type", "")
             event_id = bet.get("event_id", "")
 
-            # Get fair odds for this outcome
             event_fair = fair_odds_map.get(event_id, {})
             fair = event_fair.get(original_outcome)
+            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
 
-            # Button index mapping (same as existing scan logic)
-            if original_outcome in ("home", "over"):
-                btn_index = 0
-            elif original_outcome == "draw":
-                btn_index = 1
-            elif original_outcome in ("away", "under"):
-                btn_index = 2 if market_type == "1x2" else 1
-            else:
-                btn_index = 0
-
-            # Navigate and read live price
-            slug_parts = slug.split("-")
-            league = slug_parts[0] if slug_parts else ""
-            market_url = f"https://polymarket.com/sports/{league}/{slug}"
-
-            try:
-                await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_selector('button.trading-button', timeout=15000)
-            except Exception as e:
+            page = pages.get(slug)
+            if page is None:
                 results.append({
                     "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
                     "live_odds": None, "fair_odds": round(fair, 2) if fair else None,
                     "edge_pct": None, "stake": amount,
-                    "status": "error", "reason": f"Page load failed: {e}",
+                    "status": "error", "reason": "Page load failed",
                 })
                 continue
 
             try:
-                btn_data = await page.evaluate(
-                    "() => {"
-                    "  const btns = [...document.querySelectorAll('button.trading-button')];"
-                    "  return btns.map(b => {"
-                    "    const text = b.textContent || '';"
-                    "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
-                    "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
-                    "    return {text: text.trim().slice(0, 40), price};"
-                    "  });"
-                    "}"
-                )
+                btn_data = await self._read_btn_prices(page)
 
                 if btn_index < len(btn_data) and btn_data[btn_index]["price"] is not None:
                     live_price = btn_data[btn_index]["price"]
@@ -1455,7 +1493,6 @@ class MirrorService:
                     status = "value" if edge_pct is not None and edge_pct > 0 else (
                         "negative" if edge_pct is not None else "no-sharp"
                     )
-
                     results.append({
                         "bet_id": bet_id, "outcome": outcome, "event_id": event_id,
                         "live_odds": live_odds, "fair_odds": round(fair, 2) if fair else None,
@@ -1477,25 +1514,61 @@ class MirrorService:
                     "status": "error", "reason": str(e),
                 })
 
+        # Close extra tabs (keep only the original page)
+        for slug, page in pages.items():
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
         self._notify("live_edge_complete", {"bets": results})
         return {"bets": results}
 
     async def fire_with_live_edge(self, bets: list[dict]) -> dict:
-        """Scan live Polymarket prices, auto-fire bets with positive edge after fees.
+        """Open parallel tabs, read live prices, auto-fire bets with positive edge.
+
+        Opens one tab per unique market, reads prices concurrently, then places
+        bets sequentially on their respective tabs. Closes extra tabs when done.
 
         Returns: {placed: [...], skipped: [...], negative: [...], errors: [], total: N}
         """
+        import asyncio
         from ..analysis.value import compute_edge
 
         context = self.interceptor.context
         if not context or not context.pages:
             return {"error": "No mirror browser open", "placed": [], "skipped": [], "negative": [], "errors": []}
 
-        page = context.pages[0]
-
         # Fetch Pinnacle fair odds for all events
         event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
         fair_odds_map = self._fetch_fair_odds(event_ids)
+
+        # Open one tab per unique market slug
+        slug_to_page: dict[str, any] = {}
+        for bet in bets:
+            slug = bet["market_slug"]
+            if slug in slug_to_page:
+                continue
+            url = self._market_url(slug)
+            try:
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                slug_to_page[slug] = page
+            except Exception as e:
+                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
+                slug_to_page[slug] = None
+
+        # Wait for trading buttons on all pages concurrently
+        async def wait_for_buttons(page):
+            if page is None:
+                return
+            try:
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+            except Exception:
+                pass
+
+        await asyncio.gather(*[wait_for_buttons(p) for p in slug_to_page.values()])
 
         placed = []
         skipped = []
@@ -1513,7 +1586,6 @@ class MirrorService:
             expected_price = bet["expected_price"]
             max_slippage = bet.get("max_slippage_pct", 2.0)
 
-            # Get fair odds
             event_fair = fair_odds_map.get(event_id, {})
             fair = event_fair.get(original_outcome)
 
@@ -1521,40 +1593,15 @@ class MirrorService:
                 errors.append({"bet_id": bet_id, "reason": "No Pinnacle fair odds", "status": "no-sharp"})
                 continue
 
-            # Navigate to market page
-            slug_parts = slug.split("-")
-            league = slug_parts[0] if slug_parts else ""
-            market_url = f"https://polymarket.com/sports/{league}/{slug}"
-
-            try:
-                await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_selector('button.trading-button', timeout=15000)
-            except Exception as e:
-                errors.append({"bet_id": bet_id, "reason": f"Page load failed: {e}", "status": "error"})
+            page = slug_to_page.get(slug)
+            if page is None:
+                errors.append({"bet_id": bet_id, "reason": "Page load failed", "status": "error"})
                 continue
 
-            # Read live price
-            if original_outcome in ("home", "over"):
-                btn_index = 0
-            elif original_outcome == "draw":
-                btn_index = 1
-            elif original_outcome in ("away", "under"):
-                btn_index = 2 if market_type == "1x2" else 1
-            else:
-                btn_index = 0
+            btn_index = self._btn_index_for_outcome(original_outcome, market_type)
 
             try:
-                btn_data = await page.evaluate(
-                    "() => {"
-                    "  const btns = [...document.querySelectorAll('button.trading-button')];"
-                    "  return btns.map(b => {"
-                    "    const text = b.textContent || '';"
-                    "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
-                    "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
-                    "    return {text: text.trim().slice(0, 40), price};"
-                    "  });"
-                    "}"
-                )
+                btn_data = await self._read_btn_prices(page)
             except Exception as e:
                 errors.append({"bet_id": bet_id, "reason": f"Could not read prices: {e}", "status": "error"})
                 continue
@@ -1579,7 +1626,7 @@ class MirrorService:
                 })
                 continue
 
-            # Edge is positive — place the bet
+            # Edge is positive — place the bet on its tab
             logger.info(
                 f"[mirror] Firing bet {bet_id}: live_odds={live_odds}, "
                 f"fair_odds={fair:.2f}, edge={edge_pct:.1f}%"
@@ -1607,6 +1654,14 @@ class MirrorService:
                 skipped.append(result)
             else:
                 errors.append(result)
+
+        # Close extra tabs
+        for page in slug_to_page.values():
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
         summary = {
             "placed": placed, "skipped": skipped, "negative": negative, "errors": errors,
