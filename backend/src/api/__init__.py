@@ -607,7 +607,6 @@ async def get_version():
     return {
         "version": app.version,
         "data_dir": str(get_data_dir()),
-        "is_bundled": False,
     }
 
 

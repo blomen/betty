@@ -308,18 +308,6 @@ class BrowserTransport(Transport):
     async def _ensure_browser(self):
         if self.page: return
 
-        # Safety check: Windows requires ProactorEventLoop for subprocess support.
-        # If running on SelectorEventLoop, patchright's create_subprocess_exec raises
-        # a bare NotImplementedError (empty message) that gets silently swallowed.
-        import sys
-        if sys.platform == "win32":
-            loop = asyncio.get_running_loop()
-            loop_type = type(loop).__name__
-            if "Proactor" not in loop_type:
-                raise RuntimeError(
-                    f"BrowserTransport requires ProactorEventLoop on Windows, "
-                    f"got {loop_type}. Subprocess creation will fail."
-                )
 
         try:
             self.playwright = await async_playwright().start()
