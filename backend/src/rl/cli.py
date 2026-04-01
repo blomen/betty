@@ -718,25 +718,36 @@ def train(
         st = float(train_stops[i])
         agent.store(train_obs[i], Action.CONTINUATION.value, rc, stop_target=st)
         agent.store(train_obs[i], Action.REVERSAL.value, rr, stop_target=st)
+        # Store SKIP with reward=0 so Q(SKIP) learns to stay near zero
+        agent.store(train_obs[i], Action.SKIP.value, 0.0, stop_target=st)
 
-    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes x 2 actions)")
+    typer.echo(f"Buffer loaded: {agent.buffer.size} transitions ({len(train_obs)} episodes x 3 actions)")
 
     if agent.buffer.size < BATCH_SIZE:
         typer.echo(f"Buffer too small ({agent.buffer.size} < {BATCH_SIZE}). Need more training data.", err=True)
         raise typer.Exit(1)
 
+    # Steps per epoch: sweep the buffer ~once per epoch
+    steps_per_epoch = max(1, agent.buffer.size // BATCH_SIZE)
+    total_steps = epochs * steps_per_epoch
+
     # Set up cosine annealing LR scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR
-    scheduler = CosineAnnealingLR(agent.optimizer, T_max=epochs, eta_min=1e-5)
+    scheduler = CosineAnnealingLR(agent.optimizer, T_max=total_steps, eta_min=1e-5)
 
     # Training loop
-    typer.echo(f"\nTraining for {epochs} epochs (LR: 3e-4 -> 1e-5 cosine) ...")
+    typer.echo(f"\nTraining for {epochs} epochs x {steps_per_epoch} steps/epoch = {total_steps:,} total steps ...")
+    typer.echo(f"LR: 3e-4 -> 1e-5 cosine | Epsilon: {agent.epsilon:.2f} -> 0.05 over {total_steps:,} steps")
     for epoch in range(1, epochs + 1):
-        loss = agent.train_step()
-        scheduler.step()
-        if epoch % 10 == 0:
+        epoch_loss = 0.0
+        for _step in range(steps_per_epoch):
+            loss = agent.train_step()
+            scheduler.step()
+            epoch_loss += loss
+        avg_loss = epoch_loss / steps_per_epoch
+        if epoch % max(1, epochs // 20) == 0 or epoch == 1:
             lr = scheduler.get_last_lr()[0]
-            typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={loss:.4f}  epsilon={agent.epsilon:.3f}  lr={lr:.2e}")
+            typer.echo(f"  Epoch {epoch:>5}/{epochs}  loss={avg_loss:.4f}  epsilon={agent.epsilon:.3f}  lr={lr:.2e}")
 
     # Validation: check if model predicts the better direction correctly
     typer.echo("\nRunning validation ...")
