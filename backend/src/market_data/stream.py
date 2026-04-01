@@ -1,4 +1,4 @@
-"""Databento live stream client for Trades + MBP-1."""
+"""Databento live stream client for Trades + MBP-1 + Statistics."""
 import asyncio
 import logging
 import threading
@@ -39,6 +39,7 @@ class StreamState:
     SNAPSHOT_TYPES = frozenset({
         "tick", "book", "candle",
         "orderflow_update", "ml_features", "dqn_inference",
+        "statistics",
     })
 
     def __init__(self):
@@ -302,7 +303,7 @@ class CandleFlow:
 
 
 class DatabentoLiveStream:
-    """Manages a persistent Databento live subscription (Trades + MBP-1)."""
+    """Manages a persistent Databento live subscription (Trades + MBP-1 + Statistics)."""
 
     _ET_TZ = None  # Lazy-init to avoid per-tick import overhead
 
@@ -390,6 +391,8 @@ class DatabentoLiveStream:
         self._stream_thread_loop: asyncio.AbstractEventLoop | None = None
         self._stream_thread_ready = threading.Event()
         self._live_client = None  # Databento Live client — stored for explicit shutdown
+        # Daily statistics from CME statistics schema
+        self._daily_stats: dict[str, dict] = {}  # stat_name -> {value, ts}
         self._tick_writer: TickWriter | None = None
         if db_session_factory:
             self._tick_writer = TickWriter(db_session_factory, symbol=symbol.split(".")[0])
@@ -486,6 +489,22 @@ class DatabentoLiveStream:
     def get_shared_state(self) -> StreamState:
         """Return the shared state for SSE polling."""
         return self.shared_state
+
+    @property
+    def daily_stats(self) -> dict[str, dict]:
+        """All CME statistics received this session.
+
+        Keys: open_interest, cleared_volume, block_volume, settlement_price,
+              vwap, session_high, session_low, net_change.
+        Values: {"value": int|float, "ts": datetime}
+        """
+        return dict(self._daily_stats)
+
+    @property
+    def open_interest(self) -> int | None:
+        """Latest open interest from CME statistics feed (updated once daily)."""
+        oi = self._daily_stats.get("open_interest")
+        return oi["value"] if oi else None
 
     def set_level_monitor(self, monitor: LevelMonitor) -> None:
         """Attach a level monitor to receive tick callbacks."""
@@ -795,7 +814,13 @@ class DatabentoLiveStream:
                 symbols=[self.symbol],
                 stype_in="continuous",
             )
-            logger.info("Databento stream subscribed, waiting for records...")
+            client.subscribe(
+                dataset=self.dataset,
+                schema="statistics",
+                symbols=[self.symbol],
+                stype_in="continuous",
+            )
+            logger.info("Databento stream subscribed (trades + mbp-1 + statistics), waiting for records...")
 
             record_count = 0
             async for record in client:
@@ -868,6 +893,42 @@ class DatabentoLiveStream:
                     # Level proximity check
                     if self._level_monitor:
                         self._level_monitor.on_tick(price, record.size, ts_epoch)
+
+                elif hasattr(record, "stat_type"):
+                    # Statistics record — capture all useful CME daily/intraday stats
+                    from databento_dbn import StatType
+                    _QUANTITY_STATS = {
+                        StatType.OPEN_INTEREST: "open_interest",
+                        StatType.CLEARED_VOLUME: "cleared_volume",
+                        StatType.BLOCK_VOLUME: "block_volume",
+                    }
+                    _PRICE_STATS = {
+                        StatType.SETTLEMENT_PRICE: "settlement_price",
+                        StatType.VWAP: "vwap",
+                        StatType.TRADING_SESSION_HIGH_PRICE: "session_high",
+                        StatType.TRADING_SESSION_LOW_PRICE: "session_low",
+                        StatType.NET_CHANGE: "net_change",
+                    }
+                    st = record.stat_type
+                    if st in _QUANTITY_STATS:
+                        name = _QUANTITY_STATS[st]
+                        self._daily_stats[name] = {"value": record.quantity, "ts": ts}
+                        logger.info("Stat %s: %s @ %s", name, f"{record.quantity:,}", ts.isoformat())
+                    elif st in _PRICE_STATS:
+                        name = _PRICE_STATS[st]
+                        value = record.price / 1e9
+                        self._daily_stats[name] = {"value": value, "ts": ts}
+                        logger.info("Stat %s: %.2f @ %s", name, value, ts.isoformat())
+                    else:
+                        name = None
+
+                    if name:
+                        self._publish({
+                            "type": "statistics",
+                            "ts": ts.isoformat(),
+                            "stat": name,
+                            **{k: v["value"] for k, v in self._daily_stats.items()},
+                        })
 
                 self._last_record_time = time.monotonic()
                 record_count += 1
