@@ -198,6 +198,20 @@ export interface StreamBookEvent {
   spread: number;
 }
 
+export interface StatisticsEvent {
+  type: 'statistics';
+  ts: string;
+  stat: string;
+  open_interest?: number;
+  cleared_volume?: number;
+  block_volume?: number;
+  settlement_price?: number;
+  vwap?: number;
+  session_high?: number;
+  session_low?: number;
+  net_change?: number;
+}
+
 export interface MarketContext {
   symbol: string;
   gates_set: boolean;

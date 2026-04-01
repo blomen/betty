@@ -5,7 +5,7 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { useMarketStatus } from '@/hooks/useMarketStatus';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { api } from '@/services/api';
-import type { StreamTickEvent, StreamBookEvent, CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse } from '@/types/market';
+import type { StreamTickEvent, StreamBookEvent, CandleData, ExpandedSession, TPOLiveProfile, SessionTPOResponse, StatisticsEvent } from '@/types/market';
 
 interface Props {
   lastTick: StreamTickEvent | null;
@@ -13,9 +13,10 @@ interface Props {
   lastCandle: CandleData | null;
   connected: boolean;
   session: ExpandedSession | null;
+  statistics?: StatisticsEvent | null;
 }
 
-export function ChartPage({ lastTick, book, lastCandle, connected, session }: Props) {
+export function ChartPage({ lastTick, book, lastCandle, connected, session, statistics }: Props) {
   const price = lastTick?.price ?? session?.price_position?.last_price ?? null;
   const [hiddenLevels, setHiddenLevels] = usePersistedState<Set<string>>('chart-hidden-levels', new Set());
   const [tpo, setTpo] = useState<TPOLiveProfile | null>(null);
@@ -112,7 +113,7 @@ export function ChartPage({ lastTick, book, lastCandle, connected, session }: Pr
 
         {/* Right — Book Snapshot (best bid/ask + candle stats) */}
         <div className="border border-border bg-panel min-h-0">
-          <BookSnapshot book={book} lastCandle={lastCandle} session={enrichedSession} hiddenLevels={hiddenLevels} setHiddenLevels={setHiddenLevels} tpo={tpo} sessionTPO={sessionTPO} />
+          <BookSnapshot book={book} lastCandle={lastCandle} session={enrichedSession} hiddenLevels={hiddenLevels} setHiddenLevels={setHiddenLevels} tpo={tpo} sessionTPO={sessionTPO} statistics={statistics} />
         </div>
       </div>
     </div>

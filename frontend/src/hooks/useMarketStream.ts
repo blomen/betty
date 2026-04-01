@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { connectionManager } from '@/services/connectionManager';
-import type { StreamTickEvent, StreamBookEvent, CandleData } from '@/types/market';
+import type { StreamTickEvent, StreamBookEvent, CandleData, StatisticsEvent } from '@/types/market';
 
 export function useMarketStream(symbol: string = 'NQ') {
   const [lastTick, setLastTick] = useState<StreamTickEvent | null>(null);
   const [book, setBook] = useState<StreamBookEvent | null>(null);
   const [lastCandle, setLastCandle] = useState<CandleData | null>(null);
+  const [statistics, setStatistics] = useState<StatisticsEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const [connectionId, setConnectionId] = useState(0);
   const esRef = useRef<EventSource | null>(null);
@@ -30,6 +31,10 @@ export function useMarketStream(symbol: string = 'NQ') {
 
     es.addEventListener('candle', (e) => {
       setLastCandle(JSON.parse(e.data));
+    });
+
+    es.addEventListener('statistics', (e) => {
+      setStatistics(JSON.parse(e.data));
     });
 
     es.onopen = () => {
@@ -76,5 +81,5 @@ export function useMarketStream(symbol: string = 'NQ') {
     };
   }, [connect]);
 
-  return { lastTick, book, lastCandle, connected, esRef, connectionId };
+  return { lastTick, book, lastCandle, statistics, connected, esRef, connectionId };
 }

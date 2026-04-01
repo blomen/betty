@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile, SessionTPOResponse, SessionTPOData, TimeframeSwings } from '@/types/market';
+import type { StreamBookEvent, CandleData, ExpandedSession, VPLevel, TPOLiveProfile, SessionTPOResponse, SessionTPOData, TimeframeSwings, StatisticsEvent } from '@/types/market';
 
 // Level groups: toggling a group toggles all its children
 const LEVEL_GROUPS: Record<string, string[]> = {
@@ -19,6 +19,7 @@ const LEVEL_GROUPS: Record<string, string[]> = {
   monthly_swing: ['monthly_swing_high', 'monthly_swing_low'],
   amt:           ['amt_day_type', 'amt_opening', 'amt_rotation', 'amt_aspr', 'amt_migration'],
   macro:         ['macro_regime', 'macro_vix', 'macro_dxy', 'macro_yields', 'macro_cot', 'macro_gex', 'macro_pc'],
+  exchange_stats: ['exchange_stats'],
 };
 
 interface Props {
@@ -29,9 +30,10 @@ interface Props {
   setHiddenLevels: React.Dispatch<React.SetStateAction<Set<string>>>;
   tpo?: TPOLiveProfile | null;
   sessionTPO?: SessionTPOResponse | null;
+  statistics?: StatisticsEvent | null;
 }
 
-export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo, sessionTPO }: Props) {
+export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo, sessionTPO, statistics }: Props) {
   const s = session?.session;
   const profiles = session?.profiles;
   const pricePos = session?.price_position;
@@ -589,6 +591,24 @@ export function BookSnapshot({ session, hiddenLevels, setHiddenLevels, tpo: _tpo
           </div>
         );
       })()}
+
+      {/* Exchange Statistics */}
+      {statistics && !hiddenLevels.has('exchange_stats') && (
+        <div className="flex gap-3 text-[10px] text-zinc-400 px-2 py-1 border-t border-zinc-800">
+          {statistics.open_interest != null && (
+            <span>OI: <span className="text-cyan-400">{(statistics.open_interest / 1000).toFixed(0)}k</span></span>
+          )}
+          {statistics.settlement_price != null && (
+            <span>Sttl: <span className="text-amber-400">{statistics.settlement_price.toFixed(2)}</span></span>
+          )}
+          {statistics.cleared_volume != null && (
+            <span>ClrVol: <span className="text-zinc-300">{(statistics.cleared_volume / 1000).toFixed(0)}k</span></span>
+          )}
+          {statistics.block_volume != null && (
+            <span>BlkVol: <span className="text-zinc-300">{(statistics.block_volume / 1000).toFixed(0)}k</span></span>
+          )}
+        </div>
+      )}
 
     </div>
   );

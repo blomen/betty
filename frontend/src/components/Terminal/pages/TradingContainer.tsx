@@ -112,7 +112,7 @@ export function TradingContainer({ activeSubTab }: Props) {
   const [positions] = useState<PositionRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const { lastTick, book, lastCandle, connected, esRef, connectionId } = useMarketStream();
+  const { lastTick, book, lastCandle, statistics, connected, esRef, connectionId } = useMarketStream();
   const { levels, activeBattle, battleActive, latestPrediction, latestFeatures, dqnInference, dismissBattle, switchBattleLevel, seedLevels } = useLevelMonitor(esRef, session, connectionId);
   const { unlock, play } = useSound();
   const prevBattle = useRef(false);
@@ -253,6 +253,7 @@ export function TradingContainer({ activeSubTab }: Props) {
           lastCandle={lastCandle}
           connected={connected}
           session={session}
+          statistics={statistics}
         />
       </div>
       <div className={`flex flex-col flex-1 min-h-0 ${activeSubTab === 'tradingDqn' ? '' : 'hidden'}`}>
