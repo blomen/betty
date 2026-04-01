@@ -391,6 +391,13 @@ class OpportunityRepo:
             if deletable_ids:
                 for i in range(0, len(deletable_ids), 500):
                     batch = deletable_ids[i:i + 500]
+                    # Delete odds first (Postgres enforces FK constraints)
+                    self.db.query(Odds).filter(
+                        Odds.event_id.in_(batch)
+                    ).delete(synchronize_session='fetch')
+                    self.db.query(Opportunity).filter(
+                        Opportunity.event_id.in_(batch)
+                    ).delete(synchronize_session='fetch')
                     stats["past_events_deleted"] += self.db.query(Event).filter(
                         Event.id.in_(batch)
                     ).delete(synchronize_session='fetch')
