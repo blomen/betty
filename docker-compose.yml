@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - firev_data:/app/data
+      - firev_logs:/app/logs
+      - firev_models:/app/models
+      - chrome_profile:/app/chrome-profile
+    env_file:
+      - .env.docker
+    environment:
+      - FIREV_DATA_DIR=/app/data
+      - FIREV_LOGS_DIR=/app/logs
+      - FIREV_FRONTEND_DIR=/app/frontend/dist
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  firev_data:
+  firev_logs:
+  firev_models:
+  chrome_profile:
