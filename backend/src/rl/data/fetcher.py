@@ -302,6 +302,104 @@ def fetch_cot_history(
     return out_path
 
 
+def fetch_statistics_history(
+    start: datetime,
+    end: datetime,
+    output_dir: Path | None = None,
+    api_key: str | None = None,
+) -> "Path | None":
+    """Fetch daily CME statistics (OI, settlement, cleared/block volume) from Databento.
+
+    Saves ``statistics_daily.parquet`` with columns:
+        date, open_interest, cleared_volume, block_volume, settlement_price, oi_change
+
+    Uses the ``statistics`` schema on GLBX.MDP3, filtering for relevant StatTypes.
+    Groups by trading date (from ts_ref).
+    """
+    try:
+        import databento as db
+    except ImportError:
+        logger.error("databento package not installed — pip install databento")
+        return None
+
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.error("pandas package not installed — pip install pandas pyarrow")
+        return None
+
+    key = api_key or os.environ.get("DATABENTO_API_KEY", "")
+    if not key:
+        raise ValueError("Databento API key not provided and DATABENTO_API_KEY env var not set")
+
+    out_dir = output_dir or MACRO_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "statistics_daily.parquet"
+
+    client = db.Historical(key=key)
+
+    try:
+        data = client.timeseries.get_range(
+            dataset=_DATASET,
+            symbols=[_SYMBOL],
+            stype_in="continuous",
+            schema="statistics",
+            start=start.isoformat(),
+            end=end.isoformat(),
+        )
+    except Exception as exc:
+        logger.error("Databento statistics fetch failed: %s", exc)
+        return None
+
+    from databento_dbn import StatType
+
+    _QUANTITY_TYPES = {
+        StatType.OPEN_INTEREST: "open_interest",
+        StatType.CLEARED_VOLUME: "cleared_volume",
+        StatType.BLOCK_VOLUME: "block_volume",
+    }
+    _PRICE_TYPES = {
+        StatType.SETTLEMENT_PRICE: "settlement_price",
+    }
+
+    # Collect per-date stats
+    daily: dict[str, dict] = {}  # date_str -> {col: value}
+    for rec in data:
+        st = rec.stat_type
+        # Use ts_ref for the trading date this stat applies to
+        ts_ref = rec.ts_ref if hasattr(rec, "ts_ref") else rec.hd.ts_event
+        date_str = datetime.fromtimestamp(int(ts_ref) / 1e9, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        if date_str not in daily:
+            daily[date_str] = {}
+
+        if st in _QUANTITY_TYPES:
+            daily[date_str][_QUANTITY_TYPES[st]] = rec.quantity
+        elif st in _PRICE_TYPES:
+            daily[date_str][_PRICE_TYPES[st]] = rec.price / 1e9
+
+    if not daily:
+        logger.warning("No statistics data returned for %s – %s", start.date(), end.date())
+        return None
+
+    df = pd.DataFrame.from_dict(daily, orient="index")
+    df.index = pd.to_datetime(df.index)
+    df.index.name = "date"
+    df.sort_index(inplace=True)
+
+    # Fill missing columns with 0
+    for col in ("open_interest", "cleared_volume", "block_volume", "settlement_price"):
+        if col not in df.columns:
+            df[col] = 0
+
+    # Compute day-over-day OI change
+    df["oi_change"] = df["open_interest"].diff()
+
+    df.to_parquet(out_path)
+    logger.info("Wrote statistics history (%d days) to %s", len(df), out_path.name)
+    return out_path
+
+
 def load_ticks(
     date_or_month: str,
     ticks_dir: Path | None = None,
