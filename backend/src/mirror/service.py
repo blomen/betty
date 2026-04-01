@@ -1411,11 +1411,28 @@ class MirrorService:
             await asyncio.sleep(5)  # Fallback wait
 
         # 2. Click the outcome's trading-button on the market card
-        # This opens the order panel on the right side
-        # The main trading-buttons show team names (e.g. "Arizona Diamondbacks52¢")
+        # Buttons use abbreviations (e.g. "hle191¢", "bro210¢") not full team names.
+        # Strategy: find all trading-buttons, match by checking if any word from the
+        # outcome name appears in the button text (case-insensitive).
         try:
-            outcome_btn = page.locator('button.trading-button').filter(has_text=outcome).first
-            await outcome_btn.click(timeout=5000)
+            clicked = await page.evaluate(
+                "(outcome) => {"
+                "  const btns = document.querySelectorAll('button.trading-button');"
+                "  const words = outcome.toLowerCase().split(/\\s+/).filter(w => w.length > 2);"
+                "  for (const btn of btns) {"
+                "    const text = btn.textContent.toLowerCase();"
+                "    if (words.some(w => text.includes(w))) {"
+                "      btn.click();"
+                "      return btn.textContent.trim().slice(0, 40);"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                outcome,
+            )
+            if not clicked:
+                return {"bet_id": bet_id, "status": "failed", "reason": f"No trading button found for '{outcome}'"}
+            logger.info(f"[mirror] Clicked outcome button: '{clicked}' for bet {bet_id}")
             await asyncio.sleep(1)
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {outcome}: {e}"}
