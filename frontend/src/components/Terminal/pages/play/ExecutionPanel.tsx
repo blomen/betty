@@ -194,8 +194,9 @@ function ProviderSection({
 }: ProviderSectionProps) {
   const [firing, setFiring] = useState(false);
   const [fireResult, setFireResult] = useState<string | null>(null);
-  const [scanResult, setScanResult] = useState<any[] | null>(null);
-  const [scanning, setScanning] = useState(false);
+  const [liveEdge, setLiveEdge] = useState<Record<string, any>>({});
+  const [edgeLoading, setEdgeLoading] = useState(false);
+  const [edgeError, setEdgeError] = useState<string | null>(null);
 
   const betKeys = group.bets.map(betKey);
   const placedCount = betKeys.filter((k) => placedSet.has(k)).length;
@@ -219,32 +220,46 @@ function ProviderSection({
     stake: b.stake,
   }));
 
-  const handleScan = async () => {
-    setScanning(true);
-    setScanResult(null);
-    setFireResult(null);
-    try {
-      const result = await api.scanPolymarketBatch(batchPayload);
-      setScanResult(result.scanned ?? []);
-    } catch (err: any) {
-      setFireResult(`Scan error: ${err.message || err}`);
-    } finally {
-      setScanning(false);
-    }
-  };
+  // Poll live edge every 10s when expanded and Polymarket
+  useEffect(() => {
+    if (!isExpanded || !isPoly || allDone) return;
 
-  const handleConfirmFire = async () => {
+    let cancelled = false;
+    const fetchEdge = async () => {
+      setEdgeLoading(true);
+      try {
+        const result = await api.getLiveEdge(batchPayload);
+        if (cancelled) return;
+        const map: Record<string, any> = {};
+        for (const b of result.bets ?? []) {
+          map[b.bet_id] = b;
+        }
+        setLiveEdge(map);
+        setEdgeError(null);
+      } catch (err: any) {
+        if (!cancelled) setEdgeError(err.message || 'Failed to fetch live edge');
+      } finally {
+        if (!cancelled) setEdgeLoading(false);
+      }
+    };
+
+    fetchEdge();
+    const interval = setInterval(fetchEdge, 10_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isExpanded, isPoly, allDone]);
+
+  const handleFireLive = async () => {
     setFiring(true);
     setFireResult(null);
     try {
-      const result = await api.firePolymarketBatch(batchPayload);
+      const result = await api.fireLive(batchPayload);
       const p = result.placed?.length ?? 0;
       const s = result.skipped?.length ?? 0;
-      const f = result.failed?.length ?? 0;
-      setFireResult(`${p} placed, ${s} skipped, ${f} failed`);
-      setScanResult(null);
+      const n = result.negative?.length ?? 0;
+      const e = result.errors?.length ?? 0;
+      setFireResult(`${p} placed, ${s} slippage, ${n} no-edge, ${e} errors`);
       if (p > 0) {
-        onMarkAllDone(betKeys);
+        onMarkAllDone(betKeys.slice(0, p));
       }
     } catch (err: any) {
       setFireResult(`Error: ${err.message || err}`);
@@ -315,9 +330,9 @@ function ProviderSection({
             <colgroup>
               {!isPoly && <col style={{ width: '28px' }} />}
               <col />
-              <col style={{ width: '80px' }} />
-              <col style={{ width: '50px' }} />
-              <col style={{ width: '50px' }} />
+              <col style={{ width: '60px' }} />
+              <col style={{ width: '55px' }} />
+              <col style={{ width: '55px' }} />
               <col style={{ width: '55px' }} />
               <col style={{ width: '65px' }} />
             </colgroup>
@@ -326,14 +341,14 @@ function ProviderSection({
                 {!isPoly && <th className="text-left"></th>}
                 <th className="text-left">Event · Outcome</th>
                 <th className="text-right">Market</th>
-                <th className="text-right">Odds</th>
-                <th className="text-right">Prob</th>
-                <th className="text-right">Edge%</th>
+                <th className="text-right">{isPoly ? 'Live' : 'Odds'}</th>
+                <th className="text-right">Fair</th>
+                <th className="text-right">Edge</th>
                 <th className="text-right">Stake</th>
               </tr>
             </thead>
             <tbody>
-              {group.bets.map((b) => {
+              {group.bets.map((b, i) => {
                 const key = betKey(b);
                 const placed = placedSet.has(key);
                 const eventName = `${b.display_home} v ${b.display_away}`;
@@ -352,7 +367,17 @@ function ProviderSection({
                 const stakeText = isPoly
                   ? `$${(b.stake / USDC_RATE).toFixed(1)}`
                   : `${Math.round(b.stake)} kr`;
-                const prob = (1 / b.odds * 100).toFixed(0);
+
+                const live = liveEdge[i];
+                const displayOdds = isPoly && live?.live_odds ? live.live_odds : b.odds;
+                const displayFair = isPoly && live?.fair_odds ? live.fair_odds : b.fair_odds;
+                const displayEdge = isPoly && live?.edge_pct != null ? live.edge_pct : b.edge_pct;
+
+                const edgeColor = displayEdge > 5
+                  ? 'text-success'
+                  : displayEdge > 0
+                  ? 'text-amber-400'
+                  : 'text-error';
 
                 return (
                   <tr
@@ -374,14 +399,10 @@ function ProviderSection({
                       <div className="text-[11px] text-muted">{outcomeLabel}{b.point != null ? ` (${b.point > 0 ? '+' : ''}${b.point})` : ''}</div>
                     </td>
                     <td className="text-right text-sm text-muted">{marketLabel(b.market)}</td>
-                    <td className="text-right text-sm text-text font-medium">{b.odds.toFixed(2)}</td>
-                    <td className="text-right text-sm text-muted">{prob}%</td>
-                    <td
-                      className={`text-right text-sm font-semibold ${
-                        b.edge_pct > 0 ? 'text-success' : 'text-error'
-                      }`}
-                    >
-                      {b.edge_pct > 0 ? '+' : ''}{b.edge_pct.toFixed(1)}%
+                    <td className="text-right text-sm text-text font-medium">{displayOdds.toFixed(2)}</td>
+                    <td className="text-right text-sm text-muted">{displayFair?.toFixed(2) ?? '—'}</td>
+                    <td className={`text-right text-sm font-semibold ${edgeColor}`}>
+                      {displayEdge != null ? `${displayEdge > 0 ? '+' : ''}${displayEdge.toFixed(1)}%` : '—'}
                     </td>
                     <td className="text-right text-sm text-text">{stakeText}</td>
                   </tr>
@@ -390,38 +411,16 @@ function ProviderSection({
             </tbody>
           </table>
 
-          {/* Scan results */}
-          {isPoly && scanResult && (
-            <div className="border-t border-border">
-              <table className="sq w-full">
-                <thead className="bg-panel2">
-                  <tr>
-                    <th className="text-left">Outcome</th>
-                    <th className="text-right">Expected</th>
-                    <th className="text-right">Live</th>
-                    <th className="text-right">Delta</th>
-                    <th className="text-right">Stake</th>
-                    <th className="text-left">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {scanResult.map((s: any, i: number) => {
-                    const deltaOk = s.status === 'ok' && s.delta_pct != null && Math.abs(s.delta_pct) <= 10;
-                    return (
-                      <tr key={i} className={s.status !== 'ok' ? 'text-error' : ''}>
-                        <td className="text-sm">{s.outcome} <span className="text-[10px] text-muted">{s.button_text}</span></td>
-                        <td className="text-right text-sm">{s.expected_odds?.toFixed(2) ?? '?'}</td>
-                        <td className="text-right text-sm font-medium">{s.live_odds?.toFixed(2) ?? '?'}</td>
-                        <td className={`text-right text-sm font-semibold ${deltaOk ? 'text-success' : 'text-error'}`}>
-                          {s.delta_pct != null ? `${s.delta_pct > 0 ? '+' : ''}${s.delta_pct}%` : 'ERR'}
-                        </td>
-                        <td className="text-right text-sm">${s.stake?.toFixed(1)}</td>
-                        <td className="text-sm">{s.status === 'ok' ? (deltaOk ? 'OK' : 'DRIFT') : s.reason?.slice(0, 30)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          {/* Edge status bar (Polymarket only) */}
+          {isPoly && !allDone && (
+            <div className="px-3 py-1.5 border-t border-border flex items-center gap-2">
+              {edgeLoading && <span className="text-[10px] text-muted animate-pulse">Scanning live prices...</span>}
+              {edgeError && <span className="text-[10px] text-error">{edgeError}</span>}
+              {!edgeLoading && !edgeError && Object.keys(liveEdge).length > 0 && (
+                <span className="text-[10px] text-muted">
+                  {Object.values(liveEdge).filter((b: any) => b.status === 'value').length}/{Object.keys(liveEdge).length} with +edge
+                </span>
+              )}
             </div>
           )}
 
@@ -431,31 +430,14 @@ function ProviderSection({
               {fireResult && (
                 <span className="text-xs text-muted mr-auto">{fireResult}</span>
               )}
-              {isPoly && !scanResult && (
+              {isPoly && (
                 <button
-                  onClick={handleScan}
-                  disabled={scanning}
-                  className="px-3 py-1 bg-tabPolymarket text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  onClick={handleFireLive}
+                  disabled={firing}
+                  className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
-                  {scanning ? 'Scanning...' : 'Scan Prices'}
+                  {firing ? 'Firing...' : 'Fire All'}
                 </button>
-              )}
-              {isPoly && scanResult && (
-                <>
-                  <button
-                    onClick={() => setScanResult(null)}
-                    className="px-3 py-1 bg-border text-text text-xs font-medium hover:opacity-90 transition-opacity"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleConfirmFire}
-                    disabled={firing}
-                    className="px-3 py-1 bg-success text-bg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
-                    {firing ? 'Placing...' : 'Confirm & Place'}
-                  </button>
-                </>
               )}
               <button
                 onClick={() => onMarkAllDone(betKeys)}
