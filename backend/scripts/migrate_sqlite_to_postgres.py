@@ -4,7 +4,7 @@ One-time migration: SQLite → PostgreSQL.
 Reads all data from SQLite firev.db and inserts into PostgreSQL.
 Run with both databases accessible:
 
-    DATABASE_URL=postgresql+psycopg2://firev:pw@localhost:5432/firev \
+    SQLITE_PATH=/tmp/firev.db DATABASE_URL=postgresql+asyncpg://firev:pw@postgres:5432/firev \
     python scripts/migrate_sqlite_to_postgres.py
 """
 
@@ -20,28 +20,38 @@ from psycopg2.extras import execute_values
 
 SQLITE_PATH = os.environ.get("SQLITE_PATH", "data/firev.db")
 PG_URL = os.environ["DATABASE_URL"].replace("+asyncpg", "").replace("+psycopg2", "")
-# Parse PG_URL: postgresql://user:pw@host:port/db
-# psycopg2 accepts this format directly
 
-# Tables to migrate in dependency order (FKs)
+# SQLite table → Postgres table mapping (in FK dependency order)
+# Format: (sqlite_name, postgres_name) or just name if same
 TABLES = [
-    "provider",
-    "profile",
-    "event",
+    "providers",
+    "profiles",
+    "events",
     "odds",
-    "bet",
+    "bets",
     "profile_provider_bonuses",
     "profile_provider_balances",
     "profile_provider_limits",
-    "opportunity",
-    "bet_postmortem",
+    "opportunities",
+    "bet_postmortems",
     "extraction_runs",
     "provider_run_metrics",
     "sport_run_metrics",
     "deferred_events",
-    "special_odds",
+    "specials",
     "provider_risk_profiles",
+    "provider_extraction_settings",
 ]
+
+
+def get_pg_columns(pg_cur, table):
+    """Get column names for a Postgres table."""
+    pg_cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = %s ORDER BY ordinal_position",
+        (table,)
+    )
+    return {row[0] for row in pg_cur.fetchall()}
 
 
 def migrate():
@@ -49,6 +59,9 @@ def migrate():
     sqlite_conn.row_factory = sqlite3.Row
     pg_conn = psycopg2.connect(PG_URL)
     pg_cur = pg_conn.cursor()
+
+    # Disable FK checks during migration
+    pg_cur.execute("SET session_replication_role = 'replica'")
 
     for table in TABLES:
         try:
@@ -61,24 +74,44 @@ def migrate():
             print(f"  SKIP {table} (0 rows)")
             continue
 
-        cols = rows[0].keys()
-        col_str = ", ".join(cols)
-        template = "(" + ", ".join(["%s"] * len(cols)) + ")"
+        # Get Postgres columns to filter out SQLite-only columns
+        pg_cols = get_pg_columns(pg_cur, table)
+        if not pg_cols:
+            print(f"  SKIP {table} (not in Postgres)")
+            continue
+
+        sqlite_cols = rows[0].keys()
+        # Only use columns that exist in both
+        common_cols = [c for c in sqlite_cols if c in pg_cols]
+        if not common_cols:
+            print(f"  SKIP {table} (no common columns)")
+            continue
+
+        col_str = ", ".join(common_cols)
+        template = "(" + ", ".join(["%s"] * len(common_cols)) + ")"
 
         # Truncate target first
         pg_cur.execute(f"TRUNCATE {table} CASCADE")
 
-        # Batch insert
-        values = [tuple(row) for row in rows]
-        execute_values(
-            pg_cur,
-            f"INSERT INTO {table} ({col_str}) VALUES %s",
-            values,
-            template=template,
-            page_size=1000,
-        )
-        pg_conn.commit()
-        print(f"  OK {table}: {len(rows)} rows")
+        # Extract only common columns, batch insert
+        values = [tuple(row[c] for c in common_cols) for row in rows]
+        try:
+            execute_values(
+                pg_cur,
+                f"INSERT INTO {table} ({col_str}) VALUES %s",
+                values,
+                template=template,
+                page_size=1000,
+            )
+            pg_conn.commit()
+            print(f"  OK {table}: {len(rows)} rows")
+        except Exception as e:
+            pg_conn.rollback()
+            print(f"  FAIL {table}: {e}")
+
+    # Re-enable FK checks
+    pg_cur.execute("SET session_replication_role = 'origin'")
+    pg_conn.commit()
 
     sqlite_conn.close()
     pg_conn.close()
