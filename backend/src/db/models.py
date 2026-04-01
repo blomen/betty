@@ -1,15 +1,18 @@
 """
 Firev Database Models
 
-SQLite schema for:
+Database schema for:
 - Canonical events (provider-agnostic)
 - Odds per provider
 - Provider balances
 - Manual bet tracking
 - User profile settings
 - Risk management profiles
+
+Supports PostgreSQL (via DATABASE_URL env var) and SQLite fallback.
 """
 
+import os
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -22,6 +25,7 @@ from sqlalchemy import (
     create_engine, event, text, Column, Integer, String, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Text, JSON, Index
 )
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.pool import NullPool
 
@@ -49,9 +53,12 @@ class LimitType(str, Enum):
     ODDS_RESTRICTED = "odds_restricted"
     FULLY_BANNED = "fully_banned"
 
-# Database file location
+# Database file location (SQLite only — not used in Postgres mode)
 from ..paths import get_db_path
-DB_PATH = get_db_path()
+try:
+    DB_PATH = get_db_path()
+except Exception:
+    DB_PATH = None
 
 Base = declarative_base()
 
@@ -1406,49 +1413,81 @@ class ProviderExtractionSetting(Base):
 
 # ============ Database Functions ============
 
-# Singleton engine with connection pooling
+# Singleton engines with connection pooling
 _engine = None
+_async_engine = None
+_AsyncSessionFactory = None
+
+
+def _is_postgres() -> bool:
+    """Check if we're configured for PostgreSQL."""
+    return bool(os.environ.get("DATABASE_URL", "").startswith("postgresql"))
 
 
 def get_engine():
-    """
-    Get or create the singleton database engine.
-
-    Uses NullPool — each session gets a fresh SQLite connection and releases
-    it immediately on close.  SQLite connections are just file handles so
-    pooling adds no benefit, but QueuePool caused pool-exhaustion errors
-    under concurrent load (extraction + scheduler + API + streaming).
-    """
+    """Get or create the sync database engine (for Alembic and legacy code)."""
     global _engine
     if _engine is None:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(
-            f"sqlite:///{DB_PATH}",
-            poolclass=NullPool,
-            # SQLite-specific: allow multi-thread access + 30s busy timeout
-            connect_args={
-                "check_same_thread": False,
-                "timeout": 30,  # Wait up to 30s for locks instead of default 5s
-            },
-        )
+        db_url = os.environ.get("DATABASE_URL")
+        if db_url:
+            # PostgreSQL — convert async URL to sync for Alembic
+            sync_url = db_url.replace("+asyncpg", "+psycopg2")
+            _engine = create_engine(sync_url)
+        else:
+            # SQLite fallback (local dev without Docker)
+            from ..paths import get_db_path
+            db_path = get_db_path()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _engine = create_engine(
+                f"sqlite:///{db_path}",
+                poolclass=NullPool,
+                connect_args={"check_same_thread": False, "timeout": 30},
+            )
+            with _engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.commit()
 
-        # Set WAL mode once (persistent across connections), then per-connection pragmas
-        with _engine.connect() as conn:
-            conn.execute(text("PRAGMA journal_mode=WAL"))
-            conn.commit()
+            @event.listens_for(_engine, "connect")
+            def _set_sqlite_pragmas(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
 
-        @event.listens_for(_engine, "connect")
-        def _set_sqlite_pragmas(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
-
-        # Create tables on first engine creation
         Base.metadata.create_all(_engine)
-        # Migrate existing tables (add new columns)
-        _run_migrations(_engine)
+        if not _is_postgres():
+            _run_migrations(_engine)
     return _engine
+
+
+def get_async_engine():
+    """Get or create the async database engine (for FastAPI routes)."""
+    global _async_engine
+    if _async_engine is None:
+        db_url = os.environ.get("DATABASE_URL")
+        if db_url:
+            _async_engine = create_async_engine(db_url, pool_size=20, max_overflow=10)
+        else:
+            # SQLite async fallback
+            from ..paths import get_db_path
+            db_path = get_db_path()
+            _async_engine = create_async_engine(
+                f"sqlite+aiosqlite:///{db_path}",
+                connect_args={"check_same_thread": False},
+            )
+    return _async_engine
+
+
+def get_async_session_factory():
+    """Get or create the async session factory."""
+    global _AsyncSessionFactory
+    if _AsyncSessionFactory is None:
+        _AsyncSessionFactory = async_sessionmaker(
+            bind=get_async_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+    return _AsyncSessionFactory
 
 
 def _run_migrations(engine):
@@ -2033,7 +2072,9 @@ def get_session():
 # ── Market DB (separate file for high-frequency tick/candle writes) ────────
 
 _market_engine = None
+_market_async_engine = None
 _MarketSessionFactory = None
+_MarketAsyncSessionFactory = None
 
 # Tables that live in market.db — high-frequency writes that must not
 # contend with extraction/analysis for SQLite's single-writer lock.
@@ -2041,45 +2082,48 @@ MARKET_DB_TABLES = {MarketTrade.__table__, MarketCandle.__table__}
 
 
 def get_market_engine():
-    """Get or create the market-data database engine (market.db).
+    """Get or create the market-data database engine.
 
-    Separate from firev.db so Databento tick writes (hundreds/sec) never
+    Uses MARKET_DATABASE_URL env var for PostgreSQL, or SQLite fallback.
+    Separate from main DB so Databento tick writes (hundreds/sec) never
     block extraction commits or frontend API queries.
     """
     global _market_engine
     if _market_engine is None:
-        from ..paths import get_market_db_path
-        market_path = get_market_db_path()
-        market_path.parent.mkdir(parents=True, exist_ok=True)
-        _market_engine = create_engine(
-            f"sqlite:///{market_path}",
-            poolclass=NullPool,
-            connect_args={
-                "check_same_thread": False,
-                "timeout": 10,  # Shorter timeout OK — only tick/candle writes compete
-            },
-        )
+        db_url = os.environ.get("MARKET_DATABASE_URL")
+        if db_url:
+            sync_url = db_url.replace("+asyncpg", "+psycopg2")
+            _market_engine = create_engine(sync_url)
+        else:
+            from ..paths import get_market_db_path
+            market_path = get_market_db_path()
+            market_path.parent.mkdir(parents=True, exist_ok=True)
+            _market_engine = create_engine(
+                f"sqlite:///{market_path}",
+                poolclass=NullPool,
+                connect_args={
+                    "check_same_thread": False,
+                    "timeout": 10,
+                },
+            )
+            with _market_engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.commit()
 
-        with _market_engine.connect() as conn:
-            conn.execute(text("PRAGMA journal_mode=WAL"))
-            conn.commit()
+            @event.listens_for(_market_engine, "connect")
+            def _set_market_pragmas(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=10000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
 
-        @event.listens_for(_market_engine, "connect")
-        def _set_market_pragmas(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA busy_timeout=10000")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
-
-        # Only create tick/candle tables in market.db
         for table in MARKET_DB_TABLES:
             table.create(_market_engine, checkfirst=True)
-
     return _market_engine
 
 
 def get_market_session_factory():
-    """Get or create session factory for market.db."""
+    """Get or create session factory for market DB."""
     global _MarketSessionFactory
     if _MarketSessionFactory is None:
         _MarketSessionFactory = sessionmaker(bind=get_market_engine())
@@ -2087,7 +2131,7 @@ def get_market_session_factory():
 
 
 def get_market_session():
-    """Get a database session for market.db (ticks + candles).
+    """Get a database session for market DB (ticks + candles).
 
     Caller is responsible for closing the session.
     """

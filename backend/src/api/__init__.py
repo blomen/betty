@@ -59,20 +59,6 @@ async def lifespan(app: FastAPI):
     _startup_time = time.time()
     await asyncio.to_thread(init_db)
 
-    # WAL checkpoint in background thread — don't block event loop on startup
-    import threading
-    def _wal_checkpoint():
-        try:
-            import sqlite3
-            from ..db.models import DB_PATH
-            _wal_conn = sqlite3.connect(str(DB_PATH), timeout=5)
-            _wal_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            _wal_conn.close()
-            logger.info("[Startup] WAL checkpoint complete")
-        except Exception as e:
-            logger.warning("[Startup] WAL checkpoint failed: %s", e)
-    threading.Thread(target=_wal_checkpoint, daemon=True, name="startup-wal").start()
-
     # Add extraction-specific log file (INFO level) alongside root handlers
     # IMPORTANT: DEBUG floods the log with Databento tick data (hundreds/sec)
     # which blocks the event loop with synchronous disk I/O.
