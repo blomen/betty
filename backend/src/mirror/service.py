@@ -1534,10 +1534,10 @@ class MirrorService:
         return {"bets": results}
 
     async def fire_with_live_edge(self, bets: list[dict]) -> dict:
-        """Open parallel tabs, read live prices, auto-fire bets with positive edge.
+        """Use persistent tabs to read live prices, auto-fire bets with positive edge.
 
-        Opens one tab per unique market, reads prices concurrently, then places
-        bets sequentially on their respective tabs. Closes extra tabs when done.
+        Reuses tabs from _poly_tabs. Places bets on their respective tabs.
+        Closes all tabs after firing is complete.
 
         Returns: {placed: [...], skipped: [...], negative: [...], errors: [], total: N}
         """
@@ -1552,31 +1552,8 @@ class MirrorService:
         event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
         fair_odds_map = await asyncio.to_thread(self._fetch_fair_odds, event_ids)
 
-        # Open one tab per unique market slug
-        slug_to_page: dict[str, any] = {}
-        for bet in bets:
-            slug = bet["market_slug"]
-            if slug in slug_to_page:
-                continue
-            url = self._market_url(slug)
-            try:
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                slug_to_page[slug] = page
-            except Exception as e:
-                logger.warning(f"[mirror] Failed to open tab for {slug}: {e}")
-                slug_to_page[slug] = None
-
-        # Wait for trading buttons on all pages concurrently
-        async def wait_for_buttons(page):
-            if page is None:
-                return
-            try:
-                await page.wait_for_selector('button.trading-button', timeout=15000)
-            except Exception:
-                pass
-
-        await asyncio.gather(*[wait_for_buttons(p) for p in slug_to_page.values()])
+        # Ensure tabs are open (reuses existing ones)
+        await self._ensure_poly_tabs(bets)
 
         placed = []
         skipped = []
@@ -1601,7 +1578,7 @@ class MirrorService:
                 errors.append({"bet_id": bet_id, "reason": "No Pinnacle fair odds", "status": "no-sharp"})
                 continue
 
-            page = slug_to_page.get(slug)
+            page = self._poly_tabs.get(slug)
             if page is None:
                 errors.append({"bet_id": bet_id, "reason": "Page load failed", "status": "error"})
                 continue
@@ -1663,13 +1640,8 @@ class MirrorService:
             else:
                 errors.append(result)
 
-        # Close extra tabs
-        for page in slug_to_page.values():
-            if page is not None:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
+        # Close all tabs after firing
+        await self.close_poly_tabs()
 
         summary = {
             "placed": placed, "skipped": skipped, "negative": negative, "errors": errors,
