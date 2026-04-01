@@ -1402,25 +1402,23 @@ class MirrorService:
         # 1. Navigate to market page
         market_url = f"https://polymarket.com/{slug}"
         logger.info(f"[mirror] Placing Polymarket bet {bet_id}: {market_url} {outcome} ${amount}")
-        await page.goto(market_url, wait_until="networkidle", timeout=20000)
-        await asyncio.sleep(2)  # Let React hydrate
+        await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
 
-        # 2. Click the outcome's trading-button in the order panel
-        # The order panel has trading-button[role="radio"] buttons with "Yes"/"No" text
-        # These are different from the main market trading-buttons (which show team names)
+        # Wait for trading buttons to appear (React hydration)
         try:
-            # First ensure Buy mode is selected (not Sell)
-            buy_toggle = page.locator('button[role="radio"]').filter(has_text="Buy").first
-            await buy_toggle.click(timeout=3000)
-            await asyncio.sleep(0.3)
+            await page.wait_for_selector('button.trading-button', timeout=15000)
+        except Exception:
+            await asyncio.sleep(5)  # Fallback wait
 
-            # Click the outcome button in the order panel
-            # Order panel outcome buttons are trading-button[role="radio"] inside the panel
-            outcome_btn = page.locator('button.trading-button[role="radio"]').filter(has_text=outcome).first
+        # 2. Click the outcome's trading-button on the market card
+        # This opens the order panel on the right side
+        # The main trading-buttons show team names (e.g. "Arizona Diamondbacks52¢")
+        try:
+            outcome_btn = page.locator('button.trading-button').filter(has_text=outcome).first
             await outcome_btn.click(timeout=5000)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
         except Exception as e:
-            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not select {outcome}: {e}"}
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {outcome}: {e}"}
 
         # 3. Read current price from the selected outcome button and check slippage
         try:
@@ -1473,32 +1471,32 @@ class MirrorService:
         except Exception as e:
             return {"bet_id": bet_id, "status": "failed", "reason": f"Could not enter amount: {e}"}
 
-        # 5. Click the submit button ("Buy Yes" / "Buy No")
-        # This is a button.trading-button (not role="radio") with text like "Buy Yes"
+        # 5. Click the submit button ("Buy [TeamName]")
+        # The submit button is a trading-button whose text starts with "Buy"
+        # and is NOT a role="radio" button (those are the outcome selectors)
         try:
-            submit_text = f"Buy {outcome}"
-            submit_btn = page.locator('button.trading-button').filter(has_text=submit_text).first
+            submit_btn = page.locator('button.trading-button:not([role="radio"])').filter(has_text="Buy").first
             await submit_btn.click(timeout=5000)
-            await asyncio.sleep(1)
+            logger.info(f"[mirror] Clicked Buy button for bet {bet_id}")
+            await asyncio.sleep(2)
         except Exception as e:
-            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click {submit_text}: {e}"}
+            return {"bet_id": bet_id, "status": "failed", "reason": f"Could not click Buy: {e}"}
 
-        # 6. Handle Fun.xyz transaction confirmation popup (may or may not appear)
-        try:
-            confirm_btn = page.locator('button:has-text("Confirm"), button:has-text("Approve")').first
-            await confirm_btn.click(timeout=15000)
-            await asyncio.sleep(3)
-        except Exception:
-            logger.debug(f"[mirror] No Fun.xyz confirm popup for bet {bet_id}")
-            await asyncio.sleep(3)
+        # 6. Wait for order to process (Magic wallet signing + CLOB submission)
+        # The signing happens automatically for Magic wallets — no popup needed.
+        # We wait and then check for the order confirmation via intercepted CLOB traffic.
+        await asyncio.sleep(5)
 
-        # 7. Check for success indicators on page
+        # 7. Check for success — look for order confirmation or position update
         try:
-            success = await page.evaluate("""() => {
-                const text = document.body.innerText;
-                return text.includes('Order placed') || text.includes('Success') ||
-                       text.includes('Confirmed') || text.includes('Position');
-            }""")
+            success = await page.evaluate(
+                "() => {"
+                "  const text = document.body.innerText;"
+                "  return text.includes('Order placed') || text.includes('Success') ||"
+                "         text.includes('Confirmed') || text.includes('Position') ||"
+                "         text.includes('Open order');"
+                "}"
+            )
             if success:
                 logger.info(f"[mirror] Polymarket bet {bet_id} confirmed")
                 result = {
