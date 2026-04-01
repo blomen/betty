@@ -1396,7 +1396,13 @@ class MarketService:
             return None
 
     async def _get_period_bars(self, symbol: str, timeframe: str) -> list[dict]:
-        """Get 1m bars for weekly or monthly VP from DB using actual volume."""
+        """Get 1m bars for weekly or monthly VP from DB, volume-normalized per day.
+
+        Composite (multi-day) VPs use TPO-style normalization: each bar contributes
+        1 unit of volume. This prevents days with more captured volume from
+        dominating the profile — the result is a time-at-price profile, which is
+        the correct approach when volume data quality varies across days.
+        """
         from zoneinfo import ZoneInfo
         _CET = ZoneInfo("Europe/Stockholm")
 
@@ -1413,7 +1419,8 @@ class MarketService:
 
         rows = self._filter_halt(self.repo.get_candles(symbol, "1m", d_start, now))
         logger.info("VP %s bars: %d from DB (%s to now)", timeframe, len(rows), start_date)
-        return [{"high": r.h, "low": r.l, "close": r.c, "volume": r.v or 1} for r in rows]
+        bars = [{"high": r.h, "low": r.l, "close": r.c, "volume": 1} for r in rows]
+        return bars
 
     async def get_developing_vwap(self, symbol: str = "NQ", interval: str = "1m") -> dict:
         """Return developing VWAP time series from 1m candle data.

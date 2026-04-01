@@ -674,14 +674,14 @@ def compute_session_levels(
             levels.ny_high = max(levels.ny_high or h, h)
             levels.ny_low = min(levels.ny_low or l, l)
 
-        # Weekly H/L (current week, NY session CET)
+        # Weekly H/L (current week, all sessions 00:00-22:00 CET)
         week_start = today_cet - timedelta(days=today_cet.weekday())
-        if week_start <= bar_date <= today_cet and _NY_START <= bar_time < _NY_END:
+        if week_start <= bar_date <= today_cet and bar_time < _NY_END:
             levels.weekly_high = max(levels.weekly_high or h, h)
             levels.weekly_low = min(levels.weekly_low or l, l)
 
-        # Monthly H/L (current month, NY session CET)
-        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and _NY_START <= bar_time < _NY_END:
+        # Monthly H/L (current month, all sessions 00:00-22:00 CET)
+        if bar_date.year == today_cet.year and bar_date.month == today_cet.month and bar_time < _NY_END:
             levels.monthly_high = max(levels.monthly_high or h, h)
             levels.monthly_low = min(levels.monthly_low or l, l)
 
