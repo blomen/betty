@@ -4,7 +4,7 @@
 
 Firev compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
-**Tech stack:** Python 3.10+ / FastAPI / SQLite / Playwright | React 19 / TypeScript / Vite / Tailwind
+**Tech stack:** Python 3.10+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
 ## Architecture
 
@@ -88,7 +88,7 @@ pytest tests/
 
 - `src/config/providers.yaml` - **Single source of truth** for all provider config: endpoints, types, bonuses, active list, extraction tiers, orchestrator settings. Always read this file for current provider state — never hardcode provider lists elsewhere.
 - `src/config/sports.yaml` - Sport/league mappings with provider-specific IDs
-- `backend/data/firev.db` - SQLite database (queryable via sqlite MCP)
+- PostgreSQL database in Docker (queryable via postgres MCP)
 
 ## When Working Here
 
@@ -149,7 +149,7 @@ The primary extraction quality metric is **how many soft provider events match a
 - `!` = Critical: failed providers, 0 events, match rate < 30%
 - `~` = Warning: missing markets, slow extraction, rate limits
 
-**Use the sqlite MCP to query `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` for extraction health.**
+**Use the postgres MCP to query `extraction_runs`, `provider_run_metrics`, and `sport_run_metrics` for extraction health.**
 
 **If match rate drops:** check `sports.yaml` aliases, team name normalization, timezone date offset.
 
@@ -159,7 +159,7 @@ The primary extraction quality metric is **how many soft provider events match a
 
 ## Extraction Health Checklist
 
-**After extraction runs, query these via sqlite MCP (tables: `extraction_runs`, `provider_run_metrics`, `sport_run_metrics`).**
+**After extraction runs, query these via postgres MCP (tables: `extraction_runs`, `provider_run_metrics`, `sport_run_metrics`).**
 
 Check in order of severity:
 - Failed providers (`status != 'success'`, error messages, 0 events)
@@ -205,6 +205,6 @@ EV logic (`src/analysis/ev_enrichment.py`):
 - **Shipping**: `/commit-push-pr` (commit-commands) → `/code-review` (posts review comment on PR)
 - **Code review** runs 5 parallel agents checking: CLAUDE.md compliance, bugs, git history, previous PRs, code comments. Only issues scoring 80+ confidence are posted.
 - **Frontend changes**: Use Claude Preview (`preview_start`, `preview_screenshot`) to verify UI
-- **DB queries**: Use sqlite MCP directly — no Python scripts needed
+- **DB queries**: Use postgres MCP directly — no Python scripts needed
 - **Multi-file sweeps**: `/ralph-loop` for repetitive changes across many files
 - **Docs lookup**: context7 MCP for FastAPI, SQLAlchemy, Playwright, rapidfuzz docs
