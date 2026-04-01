@@ -16,8 +16,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 WORKDIR /app
 
 # Python deps (cached layer — only rebuilds when pyproject.toml changes)
-COPY backend/pyproject.toml backend/
-RUN cd backend && pip install --no-cache-dir -e ".[scrape]" && \
+COPY pyproject.toml ./
+COPY backend/src/ backend/src/
+RUN pip install --no-cache-dir -e ".[scrape]" && \
     pip install --no-cache-dir uvloop
 
 # Playwright browser
@@ -30,7 +31,7 @@ RUN cd frontend && npm ci --ignore-scripts
 COPY frontend/ frontend/
 RUN cd frontend && npm run build
 
-# Backend source
+# Backend source (refresh — earlier COPY was just for dep install caching)
 COPY backend/ backend/
 
 # Data directories
