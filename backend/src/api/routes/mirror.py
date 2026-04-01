@@ -277,7 +277,7 @@ class FireBatchBet(BaseModel):
     market: str
     outcome: str
     odds: float
-    stake: float  # in SEK — will be converted to USDC
+    stake: float  # in USDC (batch builder already converts from SEK)
 
 
 class FireBatchRequest(BaseModel):
@@ -303,14 +303,9 @@ async def fire_polymarket_batch(request: FireBatchRequest):
     if "polymarket.com" not in (page.url or ""):
         raise HTTPException(400, f"Mirror browser is not on Polymarket (current: {page.url})")
 
-    # Resolve slugs and convert stakes
+    # Resolve slugs — stakes are already in USDC from batch builder
     from ..deps import get_db as _get_db
     from ...db.models import Odds
-    from ...config import get_exchange_rate
-
-    usdc_rate = get_exchange_rate("polymarket")
-    if usdc_rate <= 0:
-        usdc_rate = 10.50  # fallback
 
     db = next(_get_db())
     resolved = []
@@ -341,8 +336,8 @@ async def fire_polymarket_batch(request: FireBatchRequest):
                 })
                 continue
 
-            # Convert SEK stake to USDC
-            amount_usdc = round(bet.stake / usdc_rate, 2)
+            # Stake is already in USDC (batch builder converts at line 763)
+            amount_usdc = round(bet.stake, 2)
             # Convert decimal odds to price (probability)
             expected_price = round(1 / bet.odds, 4) if bet.odds > 1 else 0.5
 
