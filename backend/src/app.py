@@ -5,7 +5,6 @@ A Rich + Typer based terminal UI for betting analytics.
 """
 
 import asyncio
-import sys
 from datetime import datetime
 from typing import Optional
 
@@ -21,11 +20,6 @@ from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 from .analysis.scanner import OpportunityScanner
 from src.rl.cli import rl_app
-
-# Fix Windows console encoding for Unicode support
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(force_terminal=True)
 app = typer.Typer(help="Firev - Betting Analytics Platform")
