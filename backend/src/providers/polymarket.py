@@ -654,7 +654,10 @@ class PolymarketRetriever(Retriever):
 
         period = item.get("period")
         if period:
-            live_state["match_period"] = period
+            try:
+                live_state["match_period"] = int(period)
+            except (ValueError, TypeError):
+                live_state["match_status"] = str(period)  # "Bot 6th" etc.
 
         elapsed = item.get("elapsed")
         if elapsed:
