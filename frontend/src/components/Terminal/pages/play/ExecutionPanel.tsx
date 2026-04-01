@@ -4,7 +4,7 @@ import { resolveOutcome, marketLabel } from '@/utils/betting';
 import { api } from '@/services/api';
 import type { BatchBet, WageringProjection } from '@/types';
 
-const USDC_RATE = 10.50;
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -269,7 +269,7 @@ function ProviderSection({
   };
 
   const stakeDisplay = isPoly
-    ? `$${(group.totalStake / USDC_RATE).toFixed(0)} USDC`
+    ? `$${Math.round(group.totalStake)} USDC`
     : `${Math.round(group.totalStake)} kr`;
 
   return (
@@ -365,7 +365,7 @@ function ProviderSection({
                   false,
                 );
                 const stakeText = isPoly
-                  ? `$${(b.stake / USDC_RATE).toFixed(1)}`
+                  ? `$${b.stake.toFixed(1)}`
                   : `${Math.round(b.stake)} kr`;
 
                 const live = liveEdge[i];
