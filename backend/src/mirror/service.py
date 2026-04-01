@@ -1480,6 +1480,141 @@ class MirrorService:
         self._notify("live_edge_complete", {"bets": results})
         return {"bets": results}
 
+    async def fire_with_live_edge(self, bets: list[dict]) -> dict:
+        """Scan live Polymarket prices, auto-fire bets with positive edge after fees.
+
+        Returns: {placed: [...], skipped: [...], negative: [...], errors: [], total: N}
+        """
+        from ..analysis.value import compute_edge
+
+        context = self.interceptor.context
+        if not context or not context.pages:
+            return {"error": "No mirror browser open", "placed": [], "skipped": [], "negative": [], "errors": []}
+
+        page = context.pages[0]
+
+        # Fetch Pinnacle fair odds for all events
+        event_ids = list({b["event_id"] for b in bets if b.get("event_id")})
+        fair_odds_map = self._fetch_fair_odds(event_ids)
+
+        placed = []
+        skipped = []
+        negative = []
+        errors = []
+
+        for bet in bets:
+            bet_id = bet["bet_id"]
+            event_id = bet.get("event_id", "")
+            outcome = bet["outcome"]
+            original_outcome = bet.get("_original_outcome", outcome).lower()
+            market_type = bet.get("_market_type", "")
+            slug = bet["market_slug"]
+            amount = bet["amount_usdc"]
+            expected_price = bet["expected_price"]
+            max_slippage = bet.get("max_slippage_pct", 2.0)
+
+            # Get fair odds
+            event_fair = fair_odds_map.get(event_id, {})
+            fair = event_fair.get(original_outcome)
+
+            if fair is None:
+                errors.append({"bet_id": bet_id, "reason": "No Pinnacle fair odds", "status": "no-sharp"})
+                continue
+
+            # Navigate to market page
+            slug_parts = slug.split("-")
+            league = slug_parts[0] if slug_parts else ""
+            market_url = f"https://polymarket.com/sports/{league}/{slug}"
+
+            try:
+                await page.goto(market_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_selector('button.trading-button', timeout=15000)
+            except Exception as e:
+                errors.append({"bet_id": bet_id, "reason": f"Page load failed: {e}", "status": "error"})
+                continue
+
+            # Read live price
+            if original_outcome in ("home", "over"):
+                btn_index = 0
+            elif original_outcome == "draw":
+                btn_index = 1
+            elif original_outcome in ("away", "under"):
+                btn_index = 2 if market_type == "1x2" else 1
+            else:
+                btn_index = 0
+
+            try:
+                btn_data = await page.evaluate(
+                    "() => {"
+                    "  const btns = [...document.querySelectorAll('button.trading-button')];"
+                    "  return btns.map(b => {"
+                    "    const text = b.textContent || '';"
+                    "    const priceMatch = text.match(/([\\d.]+)\\u00a2/);"
+                    "    const price = priceMatch ? parseFloat(priceMatch[1]) / 100 : null;"
+                    "    return {text: text.trim().slice(0, 40), price};"
+                    "  });"
+                    "}"
+                )
+            except Exception as e:
+                errors.append({"bet_id": bet_id, "reason": f"Could not read prices: {e}", "status": "error"})
+                continue
+
+            if btn_index >= len(btn_data) or btn_data[btn_index]["price"] is None:
+                errors.append({"bet_id": bet_id, "reason": f"No price at button index {btn_index}", "status": "error"})
+                continue
+
+            live_price = btn_data[btn_index]["price"]
+            live_odds = round(1 / live_price, 2) if live_price > 0.01 else 999
+            edge_pct = compute_edge("polymarket", live_odds, fair)
+
+            if edge_pct is None or edge_pct <= 0:
+                negative.append({
+                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                    "status": "negative",
+                })
+                self._notify("live_edge_skip", {
+                    "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                    "edge_pct": round(edge_pct, 1) if edge_pct is not None else None,
+                })
+                continue
+
+            # Edge is positive — place the bet
+            logger.info(
+                f"[mirror] Firing bet {bet_id}: live_odds={live_odds}, "
+                f"fair_odds={fair:.2f}, edge={edge_pct:.1f}%"
+            )
+            self._notify("live_edge_firing", {
+                "bet_id": bet_id, "live_odds": live_odds, "fair_odds": round(fair, 2),
+                "edge_pct": round(edge_pct, 1),
+            })
+
+            result = await self._place_single_polymarket_bet(
+                page, bet_id, slug, outcome, amount, expected_price, max_slippage,
+                original_outcome=bet.get("_original_outcome", outcome),
+                market_type=market_type,
+            )
+
+            if result.get("status") == "placed":
+                result["live_odds"] = live_odds
+                result["fair_odds"] = round(fair, 2)
+                result["edge_pct"] = round(edge_pct, 1)
+                placed.append(result)
+            elif result.get("status") == "skipped":
+                result["live_odds"] = live_odds
+                result["fair_odds"] = round(fair, 2)
+                result["edge_pct"] = round(edge_pct, 1)
+                skipped.append(result)
+            else:
+                errors.append(result)
+
+        summary = {
+            "placed": placed, "skipped": skipped, "negative": negative, "errors": errors,
+            "total": len(bets),
+        }
+        self._notify("fire_live_complete", summary)
+        return summary
+
     async def place_polymarket_bets(self, bets: list[dict]) -> dict:
         """Place bets on Polymarket via Playwright UI automation.
 
