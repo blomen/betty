@@ -600,10 +600,9 @@ class MirrorService:
         balance = self._extract_balance(provider_id, data)
         if balance is not None:
             # Polymarket: /value returns portfolio value (positions), not cash.
-            # Cash balance has no API — must scrape from DOM. Only scrape once
-            # per session (on provider detection). Don't let /value overwrite it.
+            # Cash balance has no API — scrape from DOM every time we see /value traffic.
             if provider_id == "polymarket":
-                pass  # DOM scrape handles cash balance via _handle_provider_detected
+                await self._scrape_polymarket_balance()
             else:
                 await asyncio.to_thread(self._sync_balance, provider_id, balance)
 
